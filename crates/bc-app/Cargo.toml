@@ -6,10 +6,9 @@ description = "BorrowChecker desktop GUI (Tauri)"
 
 version.workspace      = true
 edition.workspace      = true
-authors.workspace      = true
-license.workspace      = true
-repository.workspace   = true
 rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
 
 publish = false
 

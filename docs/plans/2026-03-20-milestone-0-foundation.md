@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust stable/nightly (fmt only), Cargo workspaces, `cargo-hack`, `cargo-nextest`, `cargo-llvm-cov`, `prek`, `tombi`, `biome`, `committed`, `release-plz`, GitHub Actions
 
----
+______________________________________________________________________
 
 ## File Map
 
@@ -79,12 +79,14 @@ borrow-checker/
         └── src/main.rs
 ```
 
----
+______________________________________________________________________
 
 ## Task 1: Workspace Root
 
 **Files:**
+
 - Create: `Cargo.toml`
+
 - Create: `rust-toolchain.toml`
 
 - [ ] **Step 1: Create the workspace `Cargo.toml`**
@@ -204,7 +206,7 @@ cargo metadata --no-deps 2>&1 | head -3 || true
 
 Expected: error about missing crate directories (not a parse error) — exit code is non-zero here, which is fine. Move on.
 
----
+______________________________________________________________________
 
 ## Task 2: Library Crate Stubs
 
@@ -356,7 +358,7 @@ git add Cargo.toml rust-toolchain.toml crates/bc-models crates/bc-core crates/bc
 git commit -m "feat: add workspace root and library crate stubs"
 ```
 
----
+______________________________________________________________________
 
 ## Task 3: Format Crate Stubs
 
@@ -501,7 +503,7 @@ git add crates/bc-format-csv crates/bc-format-ledger crates/bc-format-beancount 
 git commit -m "feat: add format crate stubs (csv, ledger, beancount, ofx)"
 ```
 
----
+______________________________________________________________________
 
 ## Task 4: Binary Crate Stubs
 
@@ -645,7 +647,7 @@ git add crates/bc-cli crates/bc-tui crates/bc-app
 git commit -m "feat: add binary crate stubs (cli, tui, app)"
 ```
 
----
+______________________________________________________________________
 
 ## Task 5: Developer Config Files
 
@@ -830,13 +832,14 @@ git add .clippy.toml .rustfmt.toml .editorconfig .tombi.toml .yamlfix.toml biome
 git commit -m "chore: add clippy, rustfmt, editorconfig, tombi, biome, nextest configs"
 ```
 
----
+______________________________________________________________________
 
 ## Task 6: prek.toml
 
 `prek` is the TOML-based pre-commit tool (modern replacement for `.pre-commit-config.yaml`). Run on every commit and in CI.
 
 Uses:
+
 - `pre-commit-hooks` for generic file checks
 - `yamlfix` for YAML formatting
 - `biome` for JSON
@@ -848,6 +851,7 @@ Uses:
 - Local hooks for Rust (cargo check, clippy, fmt)
 
 **Files:**
+
 - Create: `prek.toml`
 
 - [ ] **Step 1: Create `prek.toml`**
@@ -1003,14 +1007,16 @@ git add prek.toml
 git commit -m "chore: add prek.toml pre-commit hooks"
 ```
 
----
+______________________________________________________________________
 
 ## Task 7: .gitignore + plugins placeholder
 
 Uses the comprehensive template from github/gitignore, following the same pattern as other JP-Ellis Rust projects.
 
 **Files:**
+
 - Create: `.gitignore`
+
 - Create: `plugins/.gitkeep`
 
 - [ ] **Step 1: Create `.gitignore`**
@@ -1200,7 +1206,7 @@ git add .gitignore plugins/.gitkeep Cargo.lock
 git commit -m "chore: add .gitignore, plugins/ placeholder, and Cargo.lock"
 ```
 
----
+______________________________________________________________________
 
 ## Task 8: Community Files
 
@@ -1234,7 +1240,7 @@ SOFTWARE.
 
 - [ ] **Step 2: Create `CONTRIBUTING.md`**
 
-```markdown
+````markdown
 # Contributing to BorrowChecker
 
 Thank you for your interest in contributing!
@@ -1258,7 +1264,7 @@ cd borrow-checker
 prek install           # install git hooks
 cargo build --workspace
 cargo nextest run --workspace
-```
+````
 
 ## Checks
 
@@ -1273,16 +1279,16 @@ cargo nextest run --workspace                    # test
 
 We use [Conventional Commits](https://www.conventionalcommits.org/):
 
-| Type        | Purpose                         |
+| Type | Purpose |
 | ----------- | ------------------------------- |
-| `feat:`     | new feature                     |
-| `fix:`      | bug fix                         |
-| `docs:`     | documentation only              |
-| `chore:`    | maintenance (CI, deps, tooling) |
+| `feat:` | new feature |
+| `fix:` | bug fix |
+| `docs:` | documentation only |
+| `chore:` | maintenance (CI, deps, tooling) |
 | `refactor:` | code change with no feature/fix |
-| `perf:`     | performance improvement         |
-| `test:`     | adding or updating tests        |
-| `revert:`   | reverting a commit              |
+| `perf:` | performance improvement |
+| `test:` | adding or updating tests |
+| `revert:` | reverting a commit |
 
 ## Plugin Development
 
@@ -1292,7 +1298,8 @@ Plugins are compiled to `wasm32-wasip1` and distributed as `.wasm` files.
 ## Code of Conduct
 
 This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
-```
+
+````
 
 - [ ] **Step 3: Create `CODE_OF_CONDUCT.md`**
 
@@ -1303,9 +1310,9 @@ Copy the full [Contributor Covenant v2.1](https://www.contributor-covenant.org/v
 ```bash
 git add LICENSE CONTRIBUTING.md CODE_OF_CONDUCT.md
 git commit -m "docs: add license and community files"
-```
+````
 
----
+______________________________________________________________________
 
 ## Task 9: CHANGELOG.md + release-plz.toml
 
@@ -1420,11 +1427,12 @@ git add CHANGELOG.md release-plz.toml
 git commit -m "chore: bootstrap CHANGELOG and add release-plz config"
 ```
 
----
+______________________________________________________________________
 
 ## Task 10: GitHub Actions CI
 
 Follows the pattern from `rust-skiplist` and `amber-api`:
+
 - `complete` sentinel job (required checks gate)
 - `committed` job (PR only)
 - `prek` job (runs all pre-commit hooks, skipping local Rust hooks)
@@ -1435,6 +1443,7 @@ Follows the pattern from `rust-skiplist` and `amber-api`:
 - All action SHAs are pinned; update periodically with Dependabot/Renovate
 
 **Files:**
+
 - Create: `.github/workflows/ci.yml`
 
 - [ ] **Step 1: Create `.github/workflows/ci.yml`**
@@ -1677,7 +1686,7 @@ git add .github/workflows/ci.yml
 git commit -m "ci: add GitHub Actions CI workflow"
 ```
 
----
+______________________________________________________________________
 
 ## Task 11: release-plz GitHub Actions Workflow
 
@@ -1686,6 +1695,7 @@ The release-plz workflow uses a GitHub App token (not `GITHUB_TOKEN`) so that th
 > **Pre-requisite:** Create a GitHub App for releases (or reuse an existing one) and add `RELEASE_APP_ID` (variable) and `RELEASE_APP_PRIVATE_KEY` (secret) to the repository. `CARGO_REGISTRY_TOKEN` is needed only when actually publishing to crates.io (can be added later).
 
 **Files:**
+
 - Create: `.github/workflows/release-plz.yml`
 
 - [ ] **Step 1: Create `.github/workflows/release-plz.yml`**
@@ -1806,7 +1816,7 @@ git add .github/workflows/release-plz.yml
 git commit -m "ci: add release-plz workflow"
 ```
 
----
+______________________________________________________________________
 
 ## Task 12: Final Verification
 
@@ -1815,22 +1825,26 @@ git commit -m "ci: add release-plz workflow"
 ```bash
 cargo build --workspace
 ```
+
 Expected: all 11 crates compile, zero errors, zero warnings
 
 ```bash
 cargo +nightly fmt --check
 ```
+
 Expected: no output (already formatted)
 
 ```bash
 cargo clippy --workspace -- -D warnings
 ```
+
 Expected: zero warnings
 
 ```bash
 # Install cargo-nextest if not present: cargo install cargo-nextest
 cargo nextest run --workspace
 ```
+
 Expected: `running 0 tests` per crate, all pass
 
 - [ ] **Step 2: Run prek on all files**
@@ -1838,6 +1852,7 @@ Expected: `running 0 tests` per crate, all pass
 ```bash
 prek run --all-files
 ```
+
 Expected: all hooks pass
 
 - [ ] **Step 3: Check git log**
@@ -1880,21 +1895,21 @@ git commit -m "chore: mark Milestone 0 complete"
 git push origin main
 ```
 
----
+______________________________________________________________________
 
 ## Checklist Summary
 
-| Task | Description                                                                                                                                       | Status |
+| Task | Description | Status |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| 1    | Workspace root (`Cargo.toml`, `rust-toolchain.toml`, comprehensive lints)                                                                         | ◻️      |
-| 2    | Library crate stubs (bc-models, bc-core, bc-plugins, bc-sdk)                                                                                      | ◻️      |
-| 3    | Format crate stubs (csv, ledger, beancount, ofx)                                                                                                  | ◻️      |
-| 4    | Binary crate stubs (cli, tui, app)                                                                                                                | ◻️      |
-| 5    | Developer config files (.clippy.toml, .rustfmt.toml, .editorconfig, .tombi.toml, .yamlfix.toml, biome.json, committed.toml, .config/nextest.toml) | ◻️      |
-| 6    | prek.toml (pre-commit hooks with mdformat)                                                                                                        | ◻️      |
-| 7    | .gitignore + plugins/.gitkeep + Cargo.lock                                                                                                        | ◻️      |
-| 8    | Community files (LICENSE, CONTRIBUTING.md, CODE_OF_CONDUCT.md)                                                                                    | ◻️      |
-| 9    | CHANGELOG.md + release-plz.toml                                                                                                                   | ◻️      |
-| 10   | GitHub Actions CI workflow                                                                                                                        | ◻️      |
-| 11   | release-plz GitHub Actions workflow                                                                                                               | ◻️      |
-| 12   | Final verification + push + ROADMAP update                                                                                                        | ◻️      |
+| 1 | Workspace root (`Cargo.toml`, `rust-toolchain.toml`, comprehensive lints) | ◻️ |
+| 2 | Library crate stubs (bc-models, bc-core, bc-plugins, bc-sdk) | ◻️ |
+| 3 | Format crate stubs (csv, ledger, beancount, ofx) | ◻️ |
+| 4 | Binary crate stubs (cli, tui, app) | ◻️ |
+| 5 | Developer config files (.clippy.toml, .rustfmt.toml, .editorconfig, .tombi.toml, .yamlfix.toml, biome.json, committed.toml, .config/nextest.toml) | ◻️ |
+| 6 | prek.toml (pre-commit hooks with mdformat) | ◻️ |
+| 7 | .gitignore + plugins/.gitkeep + Cargo.lock | ◻️ |
+| 8 | Community files (LICENSE, CONTRIBUTING.md, CODE_OF_CONDUCT.md) | ◻️ |
+| 9 | CHANGELOG.md + release-plz.toml | ◻️ |
+| 10 | GitHub Actions CI workflow | ◻️ |
+| 11 | release-plz GitHub Actions workflow | ◻️ |
+| 12 | Final verification + push + ROADMAP update | ◻️ |

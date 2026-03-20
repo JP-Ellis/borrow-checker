@@ -6,10 +6,9 @@ description = "CSV import for BorrowChecker (configurable column mapping)"
 
 version.workspace      = true
 edition.workspace      = true
-authors.workspace      = true
-license.workspace      = true
-repository.workspace   = true
 rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
 
 [dependencies]
 bc-core   = { workspace = true }

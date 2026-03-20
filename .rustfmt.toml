@@ -1,0 +1,7 @@
+#:schema https://www.schemastore.org/rustfmt.json
+# Used by `cargo +nightly fmt`; unknown options are ignored on stable.
+
+unstable_features   = true
+group_imports       = "StdExternalCrate"
+imports_granularity = "Crate"
+reorder_imports     = true
