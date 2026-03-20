@@ -1,0 +1,20 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[package]
+name        = "bc-cli"
+description = "Command-line interface for BorrowChecker"
+publish     = false   # distributed as binary, not via crates.io
+
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+
+[[bin]]
+name = "bc-cli"
+path = "src/main.rs"
+
+[lints]
+workspace = true
