@@ -6,10 +6,9 @@ description = "BorrowChecker core engine: event log, SQLite projections, busines
 
 version.workspace      = true
 edition.workspace      = true
-authors.workspace      = true
-license.workspace      = true
-repository.workspace   = true
 rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
 
 [dependencies]
 bc-models = { workspace = true }

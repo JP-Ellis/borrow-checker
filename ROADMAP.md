@@ -4,9 +4,10 @@
 
 BorrowChecker is a Rust-based personal finance application with ledger/beancount compatibility, a WASM plugin system, and three interfaces: CLI, TUI, and Tauri GUI.
 
----
+______________________________________________________________________
 
 ## Milestone 0 — Project Foundation
+
 **Status:** ◻️
 
 - [ ] Cargo workspace skeleton (`crates/` layout)
@@ -17,9 +18,10 @@ BorrowChecker is a Rust-based personal finance application with ledger/beancount
 - [ ] `CHANGELOG.md` bootstrapped
 - [ ] Release-plz config
 
----
+______________________________________________________________________
 
 ## Milestone 1 — Core Engine
+
 **Status:** ◻️
 **Crate:** `bc-core`
 
@@ -32,9 +34,10 @@ BorrowChecker is a Rust-based personal finance application with ledger/beancount
 - [ ] Period model (weekly, fortnightly, monthly, quarterly, financial year, calendar year, custom)
 - [ ] Global settings (financial year start, fortnightly anchor date, display currency)
 
----
+______________________________________________________________________
 
 ## Milestone 2 — Format Compatibility
+
 **Status:** ◻️
 **Crates:** `bc-format-csv`, `bc-format-ledger`, `bc-format-beancount`, `bc-format-ofx`
 
@@ -46,9 +49,10 @@ BorrowChecker is a Rust-based personal finance application with ledger/beancount
 - [ ] OFX/QFX import
 - [ ] Format auto-detection (`detect()`)
 
----
+______________________________________________________________________
 
 ## Milestone 3 — CLI
+
 **Status:** ◻️
 **Crate:** `bc-cli`
 
@@ -62,9 +66,10 @@ BorrowChecker is a Rust-based personal finance application with ledger/beancount
 - [ ] `--json` flag on all commands for scripting
 - [ ] Shell completions (bash, zsh, fish)
 
----
+______________________________________________________________________
 
 ## Milestone 4 — TUI
+
 **Status:** ◻️
 **Crate:** `bc-tui`
 **Depends on:** Milestone 1 (core views); budget/report views deferred until Milestone 5
@@ -77,9 +82,10 @@ BorrowChecker is a Rust-based personal finance application with ledger/beancount
 - [ ] Budget envelope view _(requires Milestone 5)_
 - [ ] Reports view _(requires Milestone 5)_
 
----
+______________________________________________________________________
 
 ## Milestone 5 — Budgeting
+
 **Status:** ◻️
 **Crate:** `bc-core` extension
 
@@ -93,9 +99,10 @@ BorrowChecker is a Rust-based personal finance application with ledger/beancount
 - [ ] Mixed-period display normalisation
 - [ ] Budget views in CLI + TUI
 
----
+______________________________________________________________________
 
 ## Milestone 6 — Plugin System Phase 1: Importers
+
 **Status:** ◻️
 **Crates:** `bc-plugins`, `bc-sdk`
 
@@ -108,9 +115,10 @@ BorrowChecker is a Rust-based personal finance application with ledger/beancount
 - [ ] `bc-sdk` v1 published to crates.io
 - [ ] Example importer plugin (generic CSV)
 
----
+______________________________________________________________________
 
 ## Milestone 7 — Tauri GUI
+
 **Status:** ◻️
 **Crate:** `bc-app`
 
@@ -121,9 +129,10 @@ BorrowChecker is a Rust-based personal finance application with ledger/beancount
 - [ ] Basic charts (net worth over time, spend by category)
 - [ ] Onboarding flow (financial year start, fortnightly anchor, first account)
 
----
+______________________________________________________________________
 
 ## Milestone 8 — Plugin System Phase 2: Transaction Processors
+
 **Status:** ◻️
 **Crates:** `bc-core`, `bc-plugins`, `bc-sdk`
 
@@ -135,9 +144,10 @@ BorrowChecker is a Rust-based personal finance application with ledger/beancount
 - [ ] Built-in processors: merchant normalisation, auto-categorisation
 - [ ] Review queue for flagged transactions (CLI + TUI + GUI)
 
----
+______________________________________________________________________
 
 ## Milestone 9 — Plugin System Phase 3: Report Generators
+
 **Status:** ◻️
 **Crates:** `bc-plugins`, `bc-sdk`
 
@@ -147,9 +157,10 @@ BorrowChecker is a Rust-based personal finance application with ledger/beancount
 - [ ] Plugin-provided reports surfaced in Tauri (Reports section)
 - [ ] Plugin-provided reports accessible via CLI (`--json`)
 
----
+______________________________________________________________________
 
 ## Milestone 10 — Plugin System Phase 4: UI Extensions
+
 **Status:** ◻️
 **Crates:** `bc-plugins`, `bc-app`
 
@@ -158,9 +169,10 @@ BorrowChecker is a Rust-based personal finance application with ledger/beancount
 - [ ] Plugin sandbox / permission model for UI extensions
 - [ ] Community plugin registry / discovery (design + prototype)
 
----
+______________________________________________________________________
 
 ## Milestone 11 — Sync & Multi-Device
+
 **Status:** ◻️
 
 - [ ] Event log replication protocol (design doc)
@@ -169,9 +181,10 @@ BorrowChecker is a Rust-based personal finance application with ledger/beancount
 - [ ] Multi-device event merge
 - [ ] Android companion app _(stretch goal)_
 
----
+______________________________________________________________________
 
 ## Ideas Backlog
+
 > Features that don't fit current milestones but shouldn't be forgotten.
 
 - Investment / portfolio tracking

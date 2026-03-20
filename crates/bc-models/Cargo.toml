@@ -6,10 +6,9 @@ description = "Shared domain types for BorrowChecker"
 
 version.workspace      = true
 edition.workspace      = true
-authors.workspace      = true
-license.workspace      = true
-repository.workspace   = true
 rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
 
 [lints]
 workspace = true

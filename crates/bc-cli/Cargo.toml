@@ -6,12 +6,11 @@ description = "BorrowChecker command-line interface"
 
 version.workspace      = true
 edition.workspace      = true
-authors.workspace      = true
-license.workspace      = true
-repository.workspace   = true
 rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
 
-publish = false   # distributed as binary, not via crates.io
+publish = false  # distributed as binary, not via crates.io
 
 [dependencies]
 bc-core   = { workspace = true }

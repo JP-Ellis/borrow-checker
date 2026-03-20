@@ -3,96 +3,98 @@
 [workspace]
 resolver = "2"
 members  = [
-  "crates/bc-models",
+  "crates/bc-app",
+  "crates/bc-cli",
   "crates/bc-core",
+  "crates/bc-format-beancount",
   "crates/bc-format-csv",
   "crates/bc-format-ledger",
-  "crates/bc-format-beancount",
   "crates/bc-format-ofx",
+  "crates/bc-models",
   "crates/bc-plugins",
   "crates/bc-sdk",
-  "crates/bc-cli",
   "crates/bc-tui",
-  "crates/bc-app",
 ]
 
-[workspace.package]
-version      = "0.1.0"
-edition      = "2024"
-authors      = ["Joshua Ellis <josh@jpellis.me>"]
-license      = "MIT"
-repository   = "https://github.com/JP-Ellis/borrow-checker"
-homepage     = "https://github.com/JP-Ellis/borrow-checker"
-rust-version = "1.85"
+  [workspace.package]
+  version      = "0.1.0"
+  edition      = "2024"
+  rust-version = "1.85"
+  homepage     = "https://github.com/JP-Ellis/borrow-checker"
+  repository   = "https://github.com/JP-Ellis/borrow-checker"
+  license      = "MIT"
 
-[workspace.dependencies]
-# Internal crates — reference as `bc-models.workspace = true` in member Cargo.tomls
-bc-models           = { path = "crates/bc-models" }
-bc-core             = { path = "crates/bc-core" }
-bc-format-csv       = { path = "crates/bc-format-csv" }
-bc-format-ledger    = { path = "crates/bc-format-ledger" }
-bc-format-beancount = { path = "crates/bc-format-beancount" }
-bc-format-ofx       = { path = "crates/bc-format-ofx" }
-bc-plugins          = { path = "crates/bc-plugins" }
-bc-sdk              = { path = "crates/bc-sdk" }
+  [workspace.dependencies]
+  # Internal crates — reference as `bc-models.workspace = true` in member Cargo.tomls
+  bc-core             = { path = "crates/bc-core" }
+  bc-format-beancount = { path = "crates/bc-format-beancount" }
+  bc-format-csv       = { path = "crates/bc-format-csv" }
+  bc-format-ledger    = { path = "crates/bc-format-ledger" }
+  bc-format-ofx       = { path = "crates/bc-format-ofx" }
+  bc-models           = { path = "crates/bc-models" }
+  bc-plugins          = { path = "crates/bc-plugins" }
+  bc-sdk              = { path = "crates/bc-sdk" }
 
-################################################################################
-## Lints
-################################################################################
-# Opt-out approach: all groups are enabled at warn, then individual lints that
-# don't fit the project are explicitly allowed. Add per-crate overrides inside
-# the crate's own [lints] table using `lints.workspace = true`.
-[workspace.lints.rust]
-future-incompatible = "warn"
-missing_docs        = "warn"
-warnings            = "warn"
+  ## ----------------------------------------
+  ## MARK: Lints
+  ## ----------------------------------------
+  [workspace.lints]
+  # Opt-out approach: all groups are enabled at warn, then individual lints that
+  # don't fit the project are explicitly allowed.
 
-[workspace.lints.rustdoc]
-missing-crate-level-docs = "warn"
+    [workspace.lints.rust]
+    # See https://doc.rust-lang.org/rustc/lints/groups.html
+    # and `rustc -W help` for the full list of built-in lints
 
-[workspace.lints.clippy]
-# Enable all groups at lower priority so individual lints can override
-cargo       = { level = "warn", priority = -1 }
-complexity  = { level = "warn", priority = -1 }
-correctness = { level = "warn", priority = -1 }
-pedantic    = { level = "warn", priority = -1 }
-perf        = { level = "warn", priority = -1 }
-restriction = { level = "warn", priority = -1 }
-style       = { level = "warn", priority = -1 }
-suspicious  = { level = "warn", priority = -1 }
+    deprecated-safe                            = "warn"
+    future-incompatible                        = "warn"
+    keyword-idents                             = "warn"
+    let-underscore                             = "warn"
+    missing_docs                               = "warn"
+    nonstandard-style                          = "warn"
+    refining-impl-trait                        = "warn"
+    unknown-or-malformed-diagnostic-attributes = "warn"
+    unused                                     = "warn"
+    warnings                                   = "warn"
 
-# Restriction lints: opt-in group; silence the meta-lint since we're using it
-blanket-clippy-restriction-lints = "allow"
+    [workspace.lints.rustdoc]
+    # See: https://doc.rust-lang.org/rustdoc/lints.html
+    missing-crate-level-docs = "warn"
+    private-doc-tests        = "warn"
 
-# Personal style preferences
-# Stubs: readme/keywords/categories added before publishing each crate
-cargo_common_metadata          = "allow"
-# "BorrowChecker" is a project name, not a Rust type
-doc_markdown                   = "allow"
-arbitrary_source_item_ordering = "allow"
-cognitive_complexity           = "allow"
-else_if_without_else           = "allow"
-impl_trait_in_params           = "allow"
-implicit_return                = "allow"
-min_ident_chars                = "allow"
-missing_trait_methods          = "allow"
-pattern_type_mismatch          = "allow"
-pub_with_shorthand             = "allow"
-question_mark_used             = "allow"
-ref_patterns                   = "allow"
-self_named_module_files        = "allow"
-separated_literal_suffix       = "allow"
-single_call_fn                 = "allow"
-single_char_lifetime_names     = "allow"
-unreachable                    = "allow"
+    [workspace.lints.clippy]
+    # Enable all groups at lower priority so individual lints can override
+    cargo       = { level = "warn", priority = -1 }
+    complexity  = { level = "warn", priority = -1 }
+    correctness = { level = "warn", priority = -1 }
+    pedantic    = { level = "warn", priority = -1 }
+    perf        = { level = "warn", priority = -1 }
+    restriction = { level = "warn", priority = -1 }
+    style       = { level = "warn", priority = -1 }
+    suspicious  = { level = "warn", priority = -1 }
 
-# Known upstream issues — revisit when fixed
-# https://github.com/rust-lang/rust-clippy/issues/14056
-panic_in_result_fn = "allow"
-# https://github.com/rust-lang/rust-clippy/issues/15111
-return_and_then = "allow"
+    # Restriction lints: opt-in group; silence the meta-lint since we're using it
+    blanket-clippy-restriction-lints = "allow"
 
-# String-handling crates (bc-format-*, bc-core, bc-models) legitimately work
-# with non-ASCII text (UTF-8 transaction descriptions, merchant names, currency
-# symbols, etc.). Allow workspace-wide; bc-plugins and bc-sdk have no literals.
-non_ascii_literal = "allow"
+    arbitrary_source_item_ordering = "allow"
+    cargo_common_metadata          = "allow"
+    cognitive_complexity           = "allow"
+    else_if_without_else           = "allow"
+    impl_trait_in_params           = "allow"
+    implicit_return                = "allow"
+    min_ident_chars                = "allow"
+    missing_trait_methods          = "allow"
+    non_ascii_literal              = "allow"
+    pattern_type_mismatch          = "allow"
+    pub_with_shorthand             = "allow"
+    question_mark_used             = "allow"
+    ref_patterns                   = "allow"
+    self_named_module_files        = "allow"
+    separated_literal_suffix       = "allow"
+    single_call_fn                 = "allow"
+    single_char_lifetime_names     = "allow"
+    unreachable                    = "allow"
+
+    # Known upstream issues — revisit when fixed
+    # https://github.com/rust-lang/rust-clippy/issues/14056
+    panic_in_result_fn = "allow"

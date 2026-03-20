@@ -6,10 +6,9 @@ description = "Plugin author SDK for BorrowChecker — compile to wasm32-wasip1"
 
 version.workspace      = true
 edition.workspace      = true
-authors.workspace      = true
-license.workspace      = true
-repository.workspace   = true
 rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
 
 # bc-sdk has NO internal workspace dependencies.
 # Plugin authors depend on this crate alone, not the full workspace.

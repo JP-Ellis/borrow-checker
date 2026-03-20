@@ -4,19 +4,20 @@
 **Status:** Approved
 **Pun:** Rust's borrow checker + personal finance (borrowing money)
 
----
+______________________________________________________________________
 
 ## 1. Overview
 
 BorrowChecker is a distributable, open-source personal finance application written in Rust. It targets users who want the transparency and auditability of plain-text accounting tools (ledger, beancount) without the UX tax of writing transactions by hand, wrestling with CSV imports, or manually composing reports.
 
 **Core principles:**
+
 - No lock-in: data is always exportable to open formats
 - Plain-text compatibility: ledger and beancount files are first-class citizens
 - Extensible: a WASM plugin system lets the community add importers, processors, and reports
 - Multiple surfaces: CLI for scripting, TUI for terminal power users, Tauri GUI for everyone else
 
----
+______________________________________________________________________
 
 ## 2. Goals
 
@@ -40,7 +41,7 @@ BorrowChecker is a distributable, open-source personal finance application writt
 - Bank API integrations / Open Banking (post-v1; covered by importers in the meantime)
 - Multi-user / shared accounts (post-v1)
 
----
+______________________________________________________________________
 
 ## 4. Architecture
 
@@ -68,6 +69,7 @@ borrow-checker/
 **Design philosophy — keep crates small and focused.** Each crate should have one clear purpose, a well-defined public API, and minimal dependencies. As the project grows it is expected and encouraged to introduce new crates or split existing ones. Utility crates will likely emerge as needed — e.g. `bc-config` (configuration management), `bc-tracing` (logging/tracing setup), `bc-telemetry` (metrics). Prefer creating a new crate over stuffing shared functionality into an existing one.
 
 **Dependency relationships:**
+
 - `bc-models` has no internal dependencies — it is the shared vocabulary for the whole workspace
 - `bc-core` depends on `bc-models`; `bc-cli`, `bc-tui`, `bc-app` depend on `bc-core`
 - `bc-format-*` crates depend on `bc-models` (domain types) and `bc-core` (import profiles, config)
@@ -80,15 +82,15 @@ The core owns two layers:
 
 **Storage layer (SQLite via `sqlx`):**
 
-| Table              | Purpose                                              |
+| Table | Purpose |
 | ------------------ | ---------------------------------------------------- |
-| `events`           | Append-only event log — never updated, never deleted |
-| `accounts`         | Projected read model                                 |
-| `transactions`     | Projected read model                                 |
-| `balances`         | Projected read model                                 |
-| `budget_envelopes` | Projected read model                                 |
-| `import_profiles`  | Account-bound importer configurations                |
-| `meta`             | Schema version, user preferences, last-sync cursor   |
+| `events` | Append-only event log — never updated, never deleted |
+| `accounts` | Projected read model |
+| `transactions` | Projected read model |
+| `balances` | Projected read model |
+| `budget_envelopes` | Projected read model |
+| `import_profiles` | Account-bound importer configurations |
+| `meta` | Schema version, user preferences, last-sync cursor |
 
 **Event vocabulary:**
 
@@ -101,6 +103,7 @@ PluginRegistered / PluginUnregistered
 ```
 
 **What the event log provides:**
+
 - Undo/redo — walk the log backward/forward
 - Full audit trail — every change is timestamped and sourced
 - Time-travel queries — "what was my balance on 1 Jan?"
@@ -109,21 +112,21 @@ PluginRegistered / PluginUnregistered
 
 **Double-entry accounting** is enforced at the core level: every transaction must balance to zero across accounts, consistent with ledger/beancount semantics.
 
----
+______________________________________________________________________
 
 ## 5. Format Compatibility (`bc-format-*`)
 
 ### 5.1 Built-in Formats
 
-| Format             | v1             | Later |
+| Format | v1 | Later |
 | ------------------ | -------------- | ----- |
-| Ledger             | ✅ read + write | —     |
-| Beancount          | ✅ read + write | —     |
-| CSV (configurable) | ✅ import       | —     |
-| OFX/QFX            | ✅ import       | —     |
-| QIF                | —              | ✅     |
-| CAMT.053           | —              | ✅     |
-| JSON/YAML (native) | —              | ✅     |
+| Ledger | ✅ read + write | — |
+| Beancount | ✅ read + write | — |
+| CSV (configurable) | ✅ import | — |
+| OFX/QFX | ✅ import | — |
+| QIF | — | ✅ |
+| CAMT.053 | — | ✅ |
+| JSON/YAML (native) | — | ✅ |
 
 Post-v1 built-in formats are delivered as additions to `bc-formats` (not as plugins), since they require no plugin ABI. Community-contributed bank-specific formats are delivered as plugins via `bc-sdk`.
 
@@ -158,7 +161,7 @@ struct ImportProfile {
 
 Multiple profiles can reference the same importer with different account bindings. All CLI/TUI/GUI import operations work on profiles, not raw importers.
 
----
+______________________________________________________________________
 
 ## 6. Plugin System
 
@@ -186,11 +189,11 @@ The SDK uses a **single integer ABI version**, separate from semver. Only breaki
 
 **Support window policy:** A new ABI version is announced at release N. The previous version is deprecated and dropped no earlier than release N+2 — giving plugin authors at least one full release cycle to migrate.
 
-| BorrowChecker | Supported ABIs | Notes                     |
+| BorrowChecker | Supported ABIs | Notes |
 | ------------- | -------------- | ------------------------- |
-| 0.x           | `[1]`          | Initial release           |
-| 1.x           | `[1, 2]`       | v1 deprecated, v2 active  |
-| 2.x           | `[2, 3]`       | v1 dropped, v2 deprecated |
+| 0.x | `[1]` | Initial release |
+| 1.x | `[1, 2]` | v1 deprecated, v2 active |
+| 2.x | `[2, 3]` | v1 dropped, v2 deprecated |
 
 During the grace period the host loads deprecated-ABI plugins via a compatibility shim and warns the user at startup with a link to the migration guide.
 
@@ -223,7 +226,7 @@ The host provides data; the plugin aggregates and shapes it. Chart rendering sta
 
 Plugins declare named pages. Tauri loads them as panels; plugin icons are auto-registered in the navigation rail. Requires Phase 3 to be meaningful.
 
----
+______________________________________________________________________
 
 ## 7. Budgeting
 
@@ -232,6 +235,7 @@ Plugins declare named pages. Tauri loads them as panels; plugin icons are auto-r
 Default methodology is **envelope/zero-based budgeting** (every dollar assigned to a purpose). Users who don't want zero-based budgeting use envelopes with no allocation target — they become plain category trackers. The data model is identical; it's a workflow preference.
 
 **Envelope fields:**
+
 - Name, group (nestable), icon/colour
 - Allocation target (optional)
 - Period (see §7.2)
@@ -240,30 +244,30 @@ Default methodology is **envelope/zero-based budgeting** (every dollar assigned 
 
 ### 7.2 Budget Periods
 
-| Period         | Notes                                            |
+| Period | Notes |
 | -------------- | ------------------------------------------------ |
-| Weekly         | Anchor: day of week                              |
-| Fortnightly    | Anchor: specific date, 14-day stride             |
-| Monthly        | Calendar month                                   |
-| Quarterly      | Jan/Apr/Jul/Oct or custom start month            |
+| Weekly | Anchor: day of week |
+| Fortnightly | Anchor: specific date, 14-day stride |
+| Monthly | Calendar month |
+| Quarterly | Jan/Apr/Jul/Oct or custom start month |
 | Financial Year | Configurable start month/day — set once globally |
-| Calendar Year  | January 1                                        |
-| Custom         | N days / N weeks / N months                      |
+| Calendar Year | January 1 |
+| Custom | N days / N weeks / N months |
 
 **Fortnightly anchor:** set once globally (e.g. "my pay cycle starts 3 March 2026"). Every fortnight is derived as a 14-day stride from this anchor — no ambiguity.
 
 **Financial year start** is a global preference, prompted during onboarding, with locale-based defaults:
 
-| Locale                   | Default FY start |
+| Locale | Default FY start |
 | ------------------------ | ---------------- |
-| 🇦🇺 Australia / 🇳🇿 NZ       | 1 July           |
-| 🇬🇧 UK                     | 6 April          |
-| 🇺🇸 US (federal)           | 1 October        |
-| 🇺🇸 US (personal) / Europe | 1 January        |
+| 🇦🇺 Australia / 🇳🇿 NZ | 1 July |
+| 🇬🇧 UK | 6 April |
+| 🇺🇸 US (federal) | 1 October |
+| 🇺🇸 US (personal) / Europe | 1 January |
 
 **Mixed-period display:** all envelopes normalise to a user-chosen display period (monthly by default). An annual `Car Registration` envelope that accumulates monthly is displayed correctly alongside monthly grocery envelopes.
 
----
+______________________________________________________________________
 
 ## 8. Frontends
 
@@ -298,39 +302,39 @@ Layout: **icon rail + context-sensitive content**.
 - Accounts view: account tree (left panel) + transaction list + detail (right panel)
 - Power users navigate directly via the account tree; new users land on the dashboard
 
----
+______________________________________________________________________
 
 ## 9. ROADMAP Summary
 
-| Milestone | Description                                      | Depends on |
+| Milestone | Description | Depends on |
 | --------- | ------------------------------------------------ | ---------- |
-| 0         | Project foundation (workspace, CI, docs)         | —          |
-| 1         | Core engine (`bc-core`, SQLite, event log)       | 0          |
-| 2         | Format compatibility (`bc-format-*` crates)      | 1          |
-| 3         | CLI (`bc-cli`)                                   | 1, 2       |
-| 4         | TUI (`bc-tui`)                                   | 1, 5*      |
-| 5         | Budgeting (envelope model, all periods)          | 1          |
-| 6         | Plugin Phase 1: Importers                        | 2, 3       |
-| 7         | Tauri GUI (`bc-app`)                             | 1, 2, 5    |
-| 8         | Plugin Phase 2: Transaction Processors           | 6          |
-| 9         | Plugin Phase 3: Report Generators                | 8          |
-| 10        | Plugin Phase 4: UI Extensions                    | 7, 9       |
-| 11        | Sync & multi-device (event replication, Android) | 10         |
+| 0 | Project foundation (workspace, CI, docs) | — |
+| 1 | Core engine (`bc-core`, SQLite, event log) | 0 |
+| 2 | Format compatibility (`bc-format-*` crates) | 1 |
+| 3 | CLI (`bc-cli`) | 1, 2 |
+| 4 | TUI (`bc-tui`) | 1, 5\* |
+| 5 | Budgeting (envelope model, all periods) | 1 |
+| 6 | Plugin Phase 1: Importers | 2, 3 |
+| 7 | Tauri GUI (`bc-app`) | 1, 2, 5 |
+| 8 | Plugin Phase 2: Transaction Processors | 6 |
+| 9 | Plugin Phase 3: Report Generators | 8 |
+| 10 | Plugin Phase 4: UI Extensions | 7, 9 |
+| 11 | Sync & multi-device (event replication, Android) | 10 |
 
-_* Milestone 4 (TUI) can start after Milestone 1 with basic transaction views. Budget and report views within the TUI are deferred until Milestone 5 is complete._
+_\* Milestone 4 (TUI) can start after Milestone 1 with basic transaction views. Budget and report views within the TUI are deferred until Milestone 5 is complete._
 
----
+______________________________________________________________________
 
 ## 10. Key Technical Decisions
 
-| Decision               | Choice                                       | Rationale                                                        |
+| Decision | Choice | Rationale |
 | ---------------------- | -------------------------------------------- | ---------------------------------------------------------------- |
-| Storage                | SQLite via `sqlx`                            | Portable, zero-server, fast for single-user workloads            |
-| Event log              | Append-only SQLite table                     | Audit trail, undo/redo, future sync without full CQRS overhead   |
-| WASM runtime           | extism (wasmtime-backed)                     | Higher-level than raw wasmtime; handles ABI plumbing             |
-| TUI framework          | ratatui                                      | De-facto standard in the Rust ecosystem                          |
-| GUI framework          | Tauri                                        | Rust-native, small binary, web frontend flexibility              |
-| Plugin ABI versioning  | Integer ABI + N+2 grace period               | Simple, explicit, protects the community ecosystem               |
-| Budget default         | Envelope/zero-based                          | Most intentional model; degrades gracefully to category tracking |
-| Importer/account split | Importer = parser, Profile = account binding | Clean separation; same parser serves multiple accounts           |
-| ID types               | `mti` newtype wrappers (e.g. `profile_01h…`) | Type-safe, log-readable, no ID confusion across domain types     |
+| Storage | SQLite via `sqlx` | Portable, zero-server, fast for single-user workloads |
+| Event log | Append-only SQLite table | Audit trail, undo/redo, future sync without full CQRS overhead |
+| WASM runtime | extism (wasmtime-backed) | Higher-level than raw wasmtime; handles ABI plumbing |
+| TUI framework | ratatui | De-facto standard in the Rust ecosystem |
+| GUI framework | Tauri | Rust-native, small binary, web frontend flexibility |
+| Plugin ABI versioning | Integer ABI + N+2 grace period | Simple, explicit, protects the community ecosystem |
+| Budget default | Envelope/zero-based | Most intentional model; degrades gracefully to category tracking |
+| Importer/account split | Importer = parser, Profile = account binding | Clean separation; same parser serves multiple accounts |
+| ID types | `mti` newtype wrappers (e.g. `profile_01h…`) | Type-safe, log-readable, no ID confusion across domain types |
