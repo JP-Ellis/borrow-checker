@@ -3,52 +3,80 @@
 version = 4
 
 [[package]]
-name = "bc-app"
-version = "0.1.0"
-
-[[package]]
-name = "bc-cli"
-version = "0.1.0"
-
-[[package]]
-name = "bc-core"
-version = "0.1.0"
+name         = "bc-app"
+version      = "0.1.0"
 dependencies = [
- "bc-models",
+  "bc-core",
+  "bc-models",
 ]
 
 [[package]]
-name = "bc-format-beancount"
-version = "0.1.0"
-
-[[package]]
-name = "bc-format-csv"
-version = "0.1.0"
-
-[[package]]
-name = "bc-format-ledger"
-version = "0.1.0"
-
-[[package]]
-name = "bc-format-ofx"
-version = "0.1.0"
-
-[[package]]
-name = "bc-models"
-version = "0.1.0"
-
-[[package]]
-name = "bc-plugins"
-version = "0.1.0"
+name         = "bc-cli"
+version      = "0.1.0"
 dependencies = [
- "bc-core",
- "bc-models",
+  "bc-core",
+  "bc-models",
 ]
 
 [[package]]
-name = "bc-sdk"
+name         = "bc-core"
+version      = "0.1.0"
+dependencies = [
+  "bc-models",
+]
+
+[[package]]
+name         = "bc-format-beancount"
+version      = "0.1.0"
+dependencies = [
+  "bc-core",
+  "bc-models",
+]
+
+[[package]]
+name         = "bc-format-csv"
+version      = "0.1.0"
+dependencies = [
+  "bc-core",
+  "bc-models",
+]
+
+[[package]]
+name         = "bc-format-ledger"
+version      = "0.1.0"
+dependencies = [
+  "bc-core",
+  "bc-models",
+]
+
+[[package]]
+name         = "bc-format-ofx"
+version      = "0.1.0"
+dependencies = [
+  "bc-core",
+  "bc-models",
+]
+
+[[package]]
+name    = "bc-models"
 version = "0.1.0"
 
 [[package]]
-name = "bc-tui"
+name         = "bc-plugins"
+version      = "0.1.0"
+dependencies = [
+  "bc-core",
+  "bc-models",
+]
+
+[[package]]
+name    = "bc-sdk"
 version = "0.1.0"
+
+[[package]]
+name         = "bc-tui"
+version      = "0.1.0"
+dependencies = [
+  "bc-core",
+  "bc-models",
+]

@@ -2,8 +2,7 @@
 
 [package]
 name        = "bc-cli"
-description = "Command-line interface for BorrowChecker"
-publish     = false   # distributed as binary, not via crates.io
+description = "BorrowChecker command-line interface"
 
 version.workspace      = true
 edition.workspace      = true
@@ -12,9 +11,11 @@ license.workspace      = true
 repository.workspace   = true
 rust-version.workspace = true
 
-[[bin]]
-name = "bc-cli"
-path = "src/main.rs"
+publish = false   # distributed as binary, not via crates.io
+
+[dependencies]
+bc-core   = { workspace = true }
+bc-models = { workspace = true }
 
 [lints]
 workspace = true

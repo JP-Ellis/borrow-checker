@@ -2,8 +2,7 @@
 
 [package]
 name        = "bc-app"
-description = "Desktop application for BorrowChecker"
-publish     = false
+description = "BorrowChecker desktop GUI (Tauri)"
 
 version.workspace      = true
 edition.workspace      = true
@@ -12,9 +11,14 @@ license.workspace      = true
 repository.workspace   = true
 rust-version.workspace = true
 
-[[bin]]
-name = "bc-app"
-path = "src/main.rs"
+publish = false
+
+# Full Tauri wiring (tauri-build, build.rs, tauri.conf.json, frontend) added in Milestone 7.
+# Plain binary here so the workspace compiles without Tauri system dependencies.
+
+[dependencies]
+bc-core   = { workspace = true }
+bc-models = { workspace = true }
 
 [lints]
 workspace = true

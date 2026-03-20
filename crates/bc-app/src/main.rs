@@ -1,2 +1,8 @@
-//! BorrowChecker desktop application binary.
-fn main() {}
+//! BorrowChecker desktop GUI — Tauri application.
+//!
+//! Full Tauri setup (tauri.conf.json, build.rs, frontend) added in Milestone 7.
+
+#[expect(clippy::print_stdout, reason = "stub placeholder")]
+fn main() {
+    println!("BorrowChecker GUI - not yet implemented");
+}

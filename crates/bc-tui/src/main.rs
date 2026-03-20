@@ -1,2 +1,6 @@
-//! BorrowChecker TUI binary.
-fn main() {}
+//! BorrowChecker TUI — keyboard-first terminal interface built with ratatui.
+
+#[expect(clippy::print_stdout, reason = "stub placeholder")]
+fn main() {
+    println!("BorrowChecker TUI - not yet implemented");
+}
