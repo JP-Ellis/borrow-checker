@@ -1178,6 +1178,8 @@ Temporary Items
 ################################################################################
 ## Project-specific overrides
 ################################################################################
+# Git worktrees (local development isolation)
+.worktrees/
 ```
 
 - [ ] **Step 2: Create `plugins/.gitkeep`**
