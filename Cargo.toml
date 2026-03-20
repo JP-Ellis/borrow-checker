@@ -91,3 +91,8 @@ unreachable                    = "allow"
 panic_in_result_fn = "allow"
 # https://github.com/rust-lang/rust-clippy/issues/15111
 return_and_then = "allow"
+
+# String-handling crates (bc-format-*, bc-core, bc-models) legitimately work
+# with non-ASCII text (UTF-8 transaction descriptions, merchant names, currency
+# symbols, etc.). Allow workspace-wide; bc-plugins and bc-sdk have no literals.
+non_ascii_literal = "allow"
