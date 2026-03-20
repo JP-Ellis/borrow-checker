@@ -1,0 +1,20 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[package]
+name        = "bc-app"
+description = "Desktop application for BorrowChecker"
+publish     = false
+
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+
+[[bin]]
+name = "bc-app"
+path = "src/main.rs"
+
+[lints]
+workspace = true
