@@ -1,0 +1,93 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[workspace]
+resolver = "2"
+members  = [
+  "crates/bc-models",
+  "crates/bc-core",
+  "crates/bc-format-csv",
+  "crates/bc-format-ledger",
+  "crates/bc-format-beancount",
+  "crates/bc-format-ofx",
+  "crates/bc-plugins",
+  "crates/bc-sdk",
+  "crates/bc-cli",
+  "crates/bc-tui",
+  "crates/bc-app",
+]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2024"
+authors      = ["Joshua Ellis <josh@jpellis.me>"]
+license      = "MIT"
+repository   = "https://github.com/JP-Ellis/borrow-checker"
+homepage     = "https://github.com/JP-Ellis/borrow-checker"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Internal crates — reference as `bc-models.workspace = true` in member Cargo.tomls
+bc-models           = { path = "crates/bc-models" }
+bc-core             = { path = "crates/bc-core" }
+bc-format-csv       = { path = "crates/bc-format-csv" }
+bc-format-ledger    = { path = "crates/bc-format-ledger" }
+bc-format-beancount = { path = "crates/bc-format-beancount" }
+bc-format-ofx       = { path = "crates/bc-format-ofx" }
+bc-plugins          = { path = "crates/bc-plugins" }
+bc-sdk              = { path = "crates/bc-sdk" }
+
+################################################################################
+## Lints
+################################################################################
+# Opt-out approach: all groups are enabled at warn, then individual lints that
+# don't fit the project are explicitly allowed. Add per-crate overrides inside
+# the crate's own [lints] table using `lints.workspace = true`.
+[workspace.lints.rust]
+future-incompatible = "warn"
+missing_docs        = "warn"
+warnings            = "warn"
+
+[workspace.lints.rustdoc]
+missing-crate-level-docs = "warn"
+
+[workspace.lints.clippy]
+# Enable all groups at lower priority so individual lints can override
+cargo       = { level = "warn", priority = -1 }
+complexity  = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic    = { level = "warn", priority = -1 }
+perf        = { level = "warn", priority = -1 }
+restriction = { level = "warn", priority = -1 }
+style       = { level = "warn", priority = -1 }
+suspicious  = { level = "warn", priority = -1 }
+
+# Restriction lints: opt-in group; silence the meta-lint since we're using it
+blanket-clippy-restriction-lints = "allow"
+
+# Personal style preferences
+# Stubs: readme/keywords/categories added before publishing each crate
+cargo_common_metadata          = "allow"
+# "BorrowChecker" is a project name, not a Rust type
+doc_markdown                   = "allow"
+arbitrary_source_item_ordering = "allow"
+cognitive_complexity           = "allow"
+else_if_without_else           = "allow"
+impl_trait_in_params           = "allow"
+implicit_return                = "allow"
+min_ident_chars                = "allow"
+missing_trait_methods          = "allow"
+pattern_type_mismatch          = "allow"
+pub_with_shorthand             = "allow"
+question_mark_used             = "allow"
+ref_patterns                   = "allow"
+self_named_module_files        = "allow"
+separated_literal_suffix       = "allow"
+single_call_fn                 = "allow"
+single_char_lifetime_names     = "allow"
+unreachable                    = "allow"
+
+# Known upstream issues — revisit when fixed
+# https://github.com/rust-lang/rust-clippy/issues/14056
+panic_in_result_fn = "allow"
+# https://github.com/rust-lang/rust-clippy/issues/15111
+return_and_then = "allow"

@@ -1,0 +1,18 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[package]
+name        = "bc-core"
+description = "BorrowChecker core engine: event log, SQLite projections, business logic"
+
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+
+[dependencies]
+bc-models = { workspace = true }
+
+[lints]
+workspace = true
