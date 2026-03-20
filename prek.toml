@@ -1,0 +1,106 @@
+#:schema https://raw.githubusercontent.com/j178/prek/refs/heads/master/prek.schema.json
+#:tombi toml-version = "v1.1.0"
+
+default_install_hook_types = ["commit-msg", "pre-commit", "pre-push"]
+default_stages             = ["pre-commit"]
+
+exclude = { glob = ["**/snapshots/**/*.snap"] }
+
+# Generic file hygiene
+[[repos]]
+repo  = "https://github.com/pre-commit/pre-commit-hooks"
+rev   = "v6.0.0"
+hooks = [
+  { id = "check-added-large-files" },
+  { id = "check-case-conflict" },
+  { id = "check-executables-have-shebangs" },
+  { id = "check-merge-conflict" },
+  { id = "check-shebang-scripts-are-executable", exclude = "\\.rs$" },
+  { id = "check-symlinks" },
+  { id = "destroyed-symlinks" },
+  { id = "detect-private-key" },
+  { id = "end-of-file-fixer" },
+  { id = "fix-byte-order-marker" },
+  { id = "mixed-line-ending" },
+  { id = "trailing-whitespace" },
+  # Syntax checks (check only, do not modify)
+  { id = "check-json" },
+  { id = "check-toml" },
+  { id = "check-xml" },
+  { id = "check-yaml" },
+]
+
+# YAML formatting
+[[repos]]
+repo  = "https://github.com/lyz-code/yamlfix/"
+rev   = "1.19.1"
+hooks = [{ id = "yamlfix", args = ["--config-file", ".yamlfix.toml"] }]
+
+# JSON formatting (via Biome)
+[[repos]]
+repo  = "https://github.com/biomejs/pre-commit"
+rev   = "v2.4.8"
+hooks = [{ id = "biome-check" }]
+
+# TOML formatting (tombi replaces taplo)
+[[repos]]
+repo  = "https://github.com/tombi-toml/tombi-pre-commit"
+rev   = "v0.9.9"
+hooks = [
+  { id = "tombi-format", exclude = '(^|/)Cargo\.lock$' },
+  { id = "tombi-lint" },
+]
+
+# Commit message style
+[[repos]]
+repo  = "https://github.com/crate-ci/committed"
+rev   = "v1.1.11"
+hooks = [{ id = "committed" }]
+
+# Markdown formatting (mdformat replaces markdownlint)
+# CHANGELOG.md is excluded because it contains HTML comments managed by release-plz
+# that mdformat would strip.
+[[repos]]
+repo  = "https://github.com/hukkin/mdformat"
+rev   = "1.0.0"
+hooks = [{ id = "mdformat", exclude = "^CHANGELOG\\.md$" }]
+
+# Spell checking
+[[repos]]
+repo  = "https://github.com/crate-ci/typos"
+rev   = "v1.44.0"
+hooks = [{ id = "typos" }]
+
+# Shell script linting
+[[repos]]
+repo  = "https://github.com/shellcheck-py/shellcheck-py"
+rev   = "v0.11.0.1"
+hooks = [{ id = "shellcheck", args = ["--external-sources"] }]
+
+# Shell script formatting
+[[repos]]
+repo  = "https://github.com/scop/pre-commit-shfmt"
+rev   = "v3.12.0-2"
+hooks = [{ id = "shfmt" }]
+
+# Rust local hooks
+[[repos]]
+repo  = "local"
+hooks = [
+  {
+    id             = "cargo-clippy",
+    name           = "cargo clippy",
+    entry          = "cargo clippy --",
+    language       = "system",
+    types          = ["rust"],
+    pass_filenames = false,
+  },
+  {
+    id             = "cargo-fmt",
+    name           = "cargo fmt",
+    entry          = "cargo fmt --",
+    language       = "system",
+    types          = ["rust"],
+    pass_filenames = false,
+  },
+]

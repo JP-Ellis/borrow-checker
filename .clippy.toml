@@ -1,0 +1,26 @@
+# Project name — not a Rust identifier, should not need backticks in docs
+doc-valid-idents = ["..", "BorrowChecker", "SQLite"]
+
+# Clippy's default only allows 2 segments; 3 is fine before requiring `use`
+absolute-paths-max-segments = 3
+
+# Relax in test code
+allow-expect-in-tests = true
+allow-panic-in-tests  = true
+allow-print-in-tests  = true
+allow-unwrap-in-tests = false  # Prefer .expect("reason") over .unwrap() even in tests
+
+# Prefer macros from the `pretty_assertions` crate
+disallowed-macros = [
+  "std::assert_eq",
+  "std::assert_matches::assert_matches",
+  "std::assert_matches::debug_assert_matches",
+  "std::assert_ne",
+]
+
+# Prefer semi-colons inside blocks _except_ for single-line blocks
+semicolon-inside-block-ignore-singleline = true
+semicolon-outside-block-ignore-multiline = true
+
+# We split `impl` across modules; one file with multiple impls is fine
+inherent-impl-lint-scope = "module"
