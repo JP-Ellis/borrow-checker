@@ -1,0 +1,170 @@
+---
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  push:
+    branches:
+      - main
+
+env:
+  RUST_BACKTRACE: '1'
+  FORCE_COLOR: '1'
+  NEXTEST_PROFILE: ci
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ## Sentinel: required checks gate
+  complete:
+    name: CI complete
+    if: always()
+    needs:
+      - committed
+      - prek
+      - clippy
+      - format
+      - test
+      - test-docs
+      - coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Failed
+        run: exit 1
+        if: >
+          contains(needs.*.result, 'failure')
+          || contains(needs.*.result, 'cancelled')
+
+  committed:
+    name: Committed
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+      - uses: crate-ci/committed@faeed42f2e10c244533a01525f13c4d8b6ce383f  # v1.1.11
+        with:
+          args: --no-merge-commit
+
+  prek:
+    name: Prek
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@a7e592b24782184db1613493a5e65d2e12199f80  # v2.69.4
+        with:
+          tool: prek
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: ~/.cache/prek
+          key: prek-${{ runner.os }}-${{ hashFiles('prek.toml') }}
+
+      - run: prek run --all-files
+        env:
+          # Rust hooks run in the dedicated clippy/format jobs below
+          SKIP: cargo-check,cargo-clippy,cargo-fmt
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: taiki-e/install-action@a7e592b24782184db1613493a5e65d2e12199f80  # v2.69.4
+        with:
+          tool: cargo-hack
+      - run: cargo hack --feature-powerset --workspace --no-dev-deps clippy -- -D warnings
+      - run: cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  ## Test matrix
+  test:
+    name: Test (${{ matrix.os }}, ${{ matrix.toolchain }})
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            toolchain: stable
+          - os: windows-latest
+            toolchain: stable
+          - os: macos-latest
+            toolchain: stable
+          - os: ubuntu-latest
+            toolchain: beta
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.toolchain != 'stable' }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: taiki-e/install-action@a7e592b24782184db1613493a5e65d2e12199f80  # v2.69.4
+        with:
+          tool: cargo-hack,cargo-nextest
+      - run: cargo hack --feature-powerset nextest run --workspace
+
+  ## Test docs
+  test-docs:
+    name: Test docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-docs
+      - run: cargo doc --workspace --no-deps --document-private-items --all-features
+      - run: cargo test --doc --workspace
+
+  ## Coverage
+  coverage:
+    name: Coverage
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+
+      - uses: taiki-e/install-action@a7e592b24782184db1613493a5e65d2e12199f80  # v2.69.4
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      - run: cargo llvm-cov nextest --all-features --lcov --output-path coverage.lcov
+      - uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN || '' }}
