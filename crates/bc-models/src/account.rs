@@ -56,9 +56,10 @@ impl Account {
 
 #[cfg(test)]
 mod tests {
+    use jiff::Timestamp;
+
     use super::*;
     use crate::ids::AccountId;
-    use jiff::Timestamp;
 
     #[test]
     fn account_type_variants_exist() {

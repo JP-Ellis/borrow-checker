@@ -1,6 +1,6 @@
 //! Transaction and posting domain types.
 
-use jiff::{civil::Date, Timestamp};
+use jiff::{Timestamp, civil::Date};
 
 use crate::{
     ids::{AccountId, PostingId, TransactionId},
@@ -64,12 +64,13 @@ pub struct Transaction {
 
 #[cfg(test)]
 mod tests {
+    use rust_decimal_macros::dec;
+
     use super::*;
     use crate::{
         ids::{AccountId, PostingId},
         money::{Amount, CommodityCode},
     };
-    use rust_decimal_macros::dec;
 
     #[test]
     fn transaction_status_variants_exist() {
