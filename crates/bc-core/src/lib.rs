@@ -2,3 +2,9 @@
 //!
 //! Owns the append-only event log, SQLite read projections, double-entry
 //! accounting enforcement, import profiles, and the budgeting model.
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {}
+}
