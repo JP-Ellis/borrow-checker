@@ -1,0 +1,35 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[package]
+name        = "bc-logging"
+description = "Logging and tracing initialisation for BorrowChecker"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
+
+[dependencies]
+opentelemetry         = { version = "0.27", optional = true }
+opentelemetry-otlp    = { version = "0.27", features = ["grpc-tonic"], optional = true }
+opentelemetry-sdk     = { version = "0.27", features = ["trace"], optional = true }
+thiserror             = { workspace = true }
+tracing               = { workspace = true }
+tracing-opentelemetry = { version = "0.28", optional = true }
+tracing-subscriber    = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[features]
+default       = []
+opentelemetry = [
+  "dep:opentelemetry",
+  "dep:opentelemetry-otlp",
+  "dep:opentelemetry-sdk",
+  "dep:tracing-opentelemetry",
+]
+
+[lints]
+workspace = true

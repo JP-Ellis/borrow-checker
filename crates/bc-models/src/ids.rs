@@ -49,11 +49,7 @@ macro_rules! define_id {
                     .prefix_str()
                     .map_err(|e| format!("invalid {} prefix: {e}", stringify!($name)))?;
                 if prefix != $prefix {
-                    return Err(format!(
-                        "expected prefix '{}', got '{}'",
-                        $prefix,
-                        prefix
-                    ));
+                    return Err(format!("expected prefix '{}', got '{}'", $prefix, prefix));
                 }
                 Ok(Self(id))
             }
@@ -61,11 +57,11 @@ macro_rules! define_id {
     };
 }
 
-define_id!(AccountId,     "account");
-define_id!(EventId,       "event");
+define_id!(AccountId, "account");
+define_id!(EventId, "event");
 define_id!(TransactionId, "transaction");
-define_id!(PostingId,     "posting");
-define_id!(ProfileId,     "profile");
+define_id!(PostingId, "posting");
+define_id!(ProfileId, "profile");
 define_id!(ImportBatchId, "importbatch");
 
 #[cfg(test)]
