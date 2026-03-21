@@ -22,6 +22,27 @@ pub struct GlobalSettings {
     pub display_commodity: CommodityCode,
 }
 
+impl GlobalSettings {
+    /// Creates a new [`GlobalSettings`] with all fields.
+    ///
+    /// This constructor is required because the struct is `#[non_exhaustive]`.
+    #[inline]
+    #[must_use]
+    pub fn new(
+        financial_year_start_month: u8,
+        financial_year_start_day: u8,
+        fortnightly_anchor: Option<Date>,
+        display_commodity: CommodityCode,
+    ) -> Self {
+        Self {
+            financial_year_start_month,
+            financial_year_start_day,
+            fortnightly_anchor,
+            display_commodity,
+        }
+    }
+}
+
 impl Default for GlobalSettings {
     #[inline]
     fn default() -> Self {

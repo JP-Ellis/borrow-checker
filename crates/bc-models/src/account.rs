@@ -46,6 +46,31 @@ pub struct Account {
 }
 
 impl Account {
+    /// Creates a new [`Account`] with all fields.
+    ///
+    /// This constructor is required because the struct is `#[non_exhaustive]`.
+    #[inline]
+    #[must_use]
+    pub fn new(
+        id: AccountId,
+        name: String,
+        account_type: AccountType,
+        commodity: CommodityCode,
+        description: Option<String>,
+        created_at: Timestamp,
+        archived_at: Option<Timestamp>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            account_type,
+            commodity,
+            description,
+            created_at,
+            archived_at,
+        }
+    }
+
     /// Returns `true` if the account has not been archived.
     #[inline]
     #[must_use]
