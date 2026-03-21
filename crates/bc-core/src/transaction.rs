@@ -2,7 +2,7 @@
 
 use bc_models::{
     Posting, Transaction, TransactionStatus,
-    ids::{AccountId, PostingId, TransactionId},
+    ids::{AccountId, EventId, PostingId, TransactionId},
     money::{Amount, CommodityCode},
 };
 use jiff::Timestamp;
@@ -11,8 +11,39 @@ use sqlx::SqlitePool;
 
 use crate::{
     error::{BcError, BcResult},
-    events::{Event, SqliteEventStore},
+    events::Event,
 };
+
+/// Converts a [`TransactionStatus`] to its canonical database string.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `s` is an unrecognised variant (future-proofing for
+/// `#[non_exhaustive]` additions).
+fn status_to_str(s: TransactionStatus) -> BcResult<&'static str> {
+    match s {
+        TransactionStatus::Pending => Ok("pending"),
+        TransactionStatus::Cleared => Ok("cleared"),
+        TransactionStatus::Voided => Ok("voided"),
+        _ => Err(BcError::BadData(format!(
+            "unknown transaction status: {s:?}"
+        ))),
+    }
+}
+
+/// Parses a [`TransactionStatus`] from its canonical database string.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `s` is not a recognised status string.
+fn status_from_str(s: &str) -> BcResult<TransactionStatus> {
+    match s {
+        "pending" => Ok(TransactionStatus::Pending),
+        "cleared" => Ok(TransactionStatus::Cleared),
+        "voided" => Ok(TransactionStatus::Voided),
+        other => Err(BcError::BadData(format!("unknown status: {other}"))),
+    }
+}
 
 /// Validates that the postings in a transaction sum to zero per commodity.
 #[expect(
@@ -20,6 +51,10 @@ use crate::{
     reason = "this crate is std-based; alloc is not separately available"
 )]
 fn validate_balance(postings: &[Posting]) -> BcResult<()> {
+    if postings.is_empty() {
+        return Err(BcError::UnbalancedTransaction);
+    }
+
     let mut sums: std::collections::BTreeMap<&str, Decimal> = std::collections::BTreeMap::new();
     for p in postings {
         let entry: &mut Decimal = sums.entry(p.amount.commodity.as_str()).or_default();
@@ -43,8 +78,6 @@ fn validate_balance(postings: &[Posting]) -> BcResult<()> {
 pub struct TransactionService {
     /// The SQLite connection pool.
     pool: SqlitePool,
-    /// The event store for appending domain events.
-    events: SqliteEventStore,
 }
 
 impl TransactionService {
@@ -52,11 +85,13 @@ impl TransactionService {
     #[must_use]
     #[inline]
     pub fn new(pool: SqlitePool) -> Self {
-        let events = SqliteEventStore::new(pool.clone());
-        Self { pool, events }
+        Self { pool }
     }
 
     /// Persists a transaction after validating double-entry balance.
+    ///
+    /// The event append and all projection inserts are wrapped in a single
+    /// SQLite transaction so they succeed or fail atomically.
     ///
     /// # Errors
     ///
@@ -67,15 +102,27 @@ impl TransactionService {
         validate_balance(&tx.postings)?;
 
         let tx_id = tx.id.clone();
-        self.events
-            .append(&Event::TransactionCreated { id: tx_id.clone() })
-            .await?;
+        let event_id = EventId::new().to_string();
+        let event = Event::TransactionCreated { id: tx_id.clone() };
+        let payload = serde_json::to_string(&event)?;
+        let now = Timestamp::now();
 
-        let status_str =
-            serde_json::to_string(&tx.status).map(|s| s.trim_matches('"').to_owned())?;
         let tags_json = serde_json::to_string(&tx.tags)?;
         let date_str = tx.date.to_string();
         let created_at_str = tx.created_at.to_string();
+
+        let mut db_tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "INSERT INTO events (id, kind, aggregate_id, payload, created_at) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(&event_id)
+        .bind(event.kind())
+        .bind(tx_id.to_string())
+        .bind(&payload)
+        .bind(now.to_string())
+        .execute(&mut *db_tx)
+        .await?;
 
         sqlx::query(
             "INSERT INTO transactions (id, date, payee, description, status, tags, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -84,10 +131,10 @@ impl TransactionService {
         .bind(&date_str)
         .bind(&tx.payee)
         .bind(&tx.description)
-        .bind(&status_str)
+        .bind(status_to_str(tx.status)?)
         .bind(&tags_json)
         .bind(&created_at_str)
-        .execute(&self.pool)
+        .execute(&mut *db_tx)
         .await?;
 
         for (position, posting) in tx.postings.iter().enumerate() {
@@ -101,11 +148,12 @@ impl TransactionService {
             .bind(posting.amount.commodity.as_str())
             .bind(posting.memo.as_deref())
             .bind(i64::try_from(position).unwrap_or(i64::MAX))
-            .execute(&self.pool)
+            .execute(&mut *db_tx)
             .await?;
         }
 
-        tracing::debug!(transaction_id = %tx_id, "transaction created");
+        db_tx.commit().await?;
+        tracing::info!(transaction_id = %tx_id, "transaction created");
         Ok(tx_id)
     }
 
@@ -136,8 +184,7 @@ impl TransactionService {
             .parse::<jiff::civil::Date>()
             .map_err(|e| BcError::BadData(format!("invalid date '{}': {e}", tx_row.1)))?;
 
-        let status: TransactionStatus = serde_json::from_str(&format!("\"{}\"", tx_row.4))
-            .map_err(|e| BcError::BadData(format!("invalid status '{}': {e}", tx_row.4)))?;
+        let status = status_from_str(&tx_row.4)?;
 
         let tags: Vec<String> = serde_json::from_str(&tx_row.5)
             .map_err(|e| BcError::BadData(format!("invalid tags '{}': {e}", tx_row.5)))?;
@@ -179,29 +226,55 @@ impl TransactionService {
 
     /// Voids a transaction by setting its status to `voided`.
     ///
+    /// The existence check happens before any write.  The event append and the
+    /// projection update are wrapped in a single SQLite transaction so they
+    /// succeed or fail atomically.
+    ///
     /// # Errors
     ///
-    /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
+    /// Returns [`BcError::NotFound`] if no transaction with that ID exists or is already voided.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
     pub async fn void(&self, id: &TransactionId) -> BcResult<()> {
-        self.events
-            .append(&Event::TransactionVoided { id: id.clone() })
-            .await?;
+        let now = Timestamp::now();
 
-        let rows_affected = sqlx::query(
-            "UPDATE transactions SET status = 'voided' WHERE id = ? AND status != 'voided'",
-        )
-        .bind(id.to_string())
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+        // Check existence first (before writing any event).
+        let exists: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM transactions WHERE id = ? AND status != 'voided'")
+                .bind(id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
 
-        if rows_affected == 0 {
+        if exists.is_none() {
             return Err(BcError::NotFound(id.to_string()));
         }
 
-        tracing::debug!(transaction_id = %id, "transaction voided");
+        let event_id = EventId::new().to_string();
+        let event = Event::TransactionVoided { id: id.clone() };
+        let payload = serde_json::to_string(&event)?;
+
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "INSERT INTO events (id, kind, aggregate_id, payload, created_at) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(&event_id)
+        .bind(event.kind())
+        .bind(id.to_string())
+        .bind(&payload)
+        .bind(now.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE transactions SET status = 'voided' WHERE id = ? AND status != 'voided'",
+        )
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        tracing::info!(transaction_id = %id, "transaction voided");
         Ok(())
     }
 }
@@ -256,7 +329,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap();
+            .expect("create Income account should succeed");
         let acc_b = acct_svc
             .create(
                 "Checking",
@@ -265,7 +338,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap();
+            .expect("create Checking account should succeed");
 
         let svc = TransactionService::new(pool.clone());
         let tx = make_balanced_transaction(acc_a, acc_b);

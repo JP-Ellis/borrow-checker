@@ -73,7 +73,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap();
+            .expect("create Wallet account should succeed");
         let acc_b = acct_svc
             .create(
                 "Income",
@@ -82,15 +82,15 @@ mod tests {
                 None,
             )
             .await
-            .unwrap();
+            .expect("create Income account should succeed");
 
         // Insert a transaction directly for simplicity
         sqlx::query("INSERT INTO transactions (id, date, description, status, tags, created_at) VALUES ('tx_1', '2026-01-01', 'Test', 'cleared', '[]', '2026-01-01T00:00:00Z')")
-            .execute(&pool).await.unwrap();
+            .execute(&pool).await.expect("insert transaction should succeed");
         sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p1', 'tx_1', ?, '100.00', 'AUD', 0)")
-            .bind(acc_a.to_string()).execute(&pool).await.unwrap();
+            .bind(acc_a.to_string()).execute(&pool).await.expect("insert posting p1 should succeed");
         sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p2', 'tx_1', ?, '-100.00', 'AUD', 1)")
-            .bind(acc_b.to_string()).execute(&pool).await.unwrap();
+            .bind(acc_b.to_string()).execute(&pool).await.expect("insert posting p2 should succeed");
 
         let engine = BalanceEngine::new(pool.clone());
         let balance = engine

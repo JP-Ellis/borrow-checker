@@ -18,7 +18,7 @@ rusty-money  = { workspace = true }
 serde        = { workspace = true }
 
 [dev-dependencies]
-rust_decimal_macros = "1"
+rust_decimal_macros = { workspace = true }
 
 [lints]
 workspace = true
