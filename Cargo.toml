@@ -10,6 +10,7 @@ members  = [
   "crates/bc-format-csv",
   "crates/bc-format-ledger",
   "crates/bc-format-ofx",
+  "crates/bc-logging",
   "crates/bc-models",
   "crates/bc-plugins",
   "crates/bc-sdk",
@@ -31,9 +32,23 @@ members  = [
   bc-format-csv       = { path = "crates/bc-format-csv" }
   bc-format-ledger    = { path = "crates/bc-format-ledger" }
   bc-format-ofx       = { path = "crates/bc-format-ofx" }
+  bc-logging          = { path = "crates/bc-logging" }
   bc-models           = { path = "crates/bc-models" }
   bc-plugins          = { path = "crates/bc-plugins" }
   bc-sdk              = { path = "crates/bc-sdk" }
+
+  # External — shared across crates
+  jiff          = { version = "0.2", features = ["serde"] }
+  mti           = { version = "1.1", features = ["serde"] }
+  rust_decimal  = { version = "1",   features = ["serde-with-str"] }
+  rusty-money   = { version = "0.5", features = ["iso", "serde"] }
+  serde         = { version = "1",   features = ["derive"] }
+  serde_json    = "1"
+  sqlx          = { version = "0.9", features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
+  thiserror     = "2"
+  tokio         = { version = "1",   features = ["full"] }
+  tracing       = "0.1"
+  tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 
   ## ----------------------------------------
   ## MARK: Lints
