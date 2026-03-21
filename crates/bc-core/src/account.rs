@@ -1,13 +1,50 @@
 //! Account projection service.
 
-use bc_models::{Account, AccountType, ids::AccountId, money::CommodityCode};
+use bc_models::{
+    Account, AccountType,
+    ids::{AccountId, EventId},
+    money::CommodityCode,
+};
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
 use crate::{
     error::{BcError, BcResult},
-    events::{Event, SqliteEventStore},
+    events::Event,
 };
+
+/// Converts an [`AccountType`] to its canonical database string.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `at` is an unrecognised variant (future-proofing for
+/// `#[non_exhaustive]` additions).
+fn account_type_to_str(at: AccountType) -> BcResult<&'static str> {
+    match at {
+        AccountType::Asset => Ok("asset"),
+        AccountType::Liability => Ok("liability"),
+        AccountType::Equity => Ok("equity"),
+        AccountType::Income => Ok("income"),
+        AccountType::Expense => Ok("expense"),
+        _ => Err(BcError::BadData(format!("unknown account type: {at:?}"))),
+    }
+}
+
+/// Parses an [`AccountType`] from its canonical database string.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `s` is not a recognised account-type string.
+fn account_type_from_str(s: &str) -> BcResult<AccountType> {
+    match s {
+        "asset" => Ok(AccountType::Asset),
+        "liability" => Ok(AccountType::Liability),
+        "equity" => Ok(AccountType::Equity),
+        "income" => Ok(AccountType::Income),
+        "expense" => Ok(AccountType::Expense),
+        other => Err(BcError::BadData(format!("unknown account type: {other}"))),
+    }
+}
 
 /// Internal row type returned from the `accounts` table.
 struct AccountRow {
@@ -39,11 +76,7 @@ impl AccountRow {
             .parse::<AccountId>()
             .map_err(|e| BcError::BadData(format!("invalid account id '{}': {e}", self.id)))?;
 
-        // account_type is stored as snake_case JSON string value (without quotes)
-        let account_type: AccountType = serde_json::from_str(&format!("\"{}\"", self.account_type))
-            .map_err(|e| {
-                BcError::BadData(format!("invalid account_type '{}': {e}", self.account_type))
-            })?;
+        let account_type = account_type_from_str(&self.account_type)?;
 
         let commodity = CommodityCode::new(self.commodity);
 
@@ -81,8 +114,6 @@ impl AccountRow {
 pub struct AccountService {
     /// The SQLite connection pool.
     pool: SqlitePool,
-    /// The event store for appending domain events.
-    events: SqliteEventStore,
 }
 
 impl AccountService {
@@ -90,11 +121,13 @@ impl AccountService {
     #[must_use]
     #[inline]
     pub fn new(pool: SqlitePool) -> Self {
-        let events = SqliteEventStore::new(pool.clone());
-        Self { pool, events }
+        Self { pool }
     }
 
     /// Creates a new account and returns its ID.
+    ///
+    /// Both the event append and the projection insert are wrapped in a single
+    /// SQLite transaction so they succeed or fail atomically.
     ///
     /// # Errors
     ///
@@ -108,36 +141,49 @@ impl AccountService {
         description: Option<&str>,
     ) -> BcResult<AccountId> {
         let id = AccountId::new();
-        let created_at = Timestamp::now();
+        let now = Timestamp::now();
+        let event_id = EventId::new().to_string();
+        let event = Event::AccountCreated {
+            id: id.clone(),
+            name: name.to_owned(),
+        };
+        let payload = serde_json::to_string(&event)?;
 
-        self.events
-            .append(&Event::AccountCreated {
-                id: id.clone(),
-                name: name.to_owned(),
-            })
-            .await?;
+        let mut tx = self.pool.begin().await?;
 
-        // Serialize account_type as the snake_case string value (strip JSON quotes)
-        let account_type_str =
-            serde_json::to_string(&account_type).map(|s| s.trim_matches('"').to_owned())?;
+        sqlx::query(
+            "INSERT INTO events (id, kind, aggregate_id, payload, created_at) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(&event_id)
+        .bind(event.kind())
+        .bind(id.to_string())
+        .bind(&payload)
+        .bind(now.to_string())
+        .execute(&mut *tx)
+        .await?;
 
         sqlx::query(
             "INSERT INTO accounts (id, name, account_type, commodity, description, created_at) VALUES (?, ?, ?, ?, ?, ?)"
         )
         .bind(id.to_string())
         .bind(name)
-        .bind(&account_type_str)
+        .bind(account_type_to_str(account_type)?)
         .bind(commodity.as_str())
         .bind(description)
-        .bind(created_at.to_string())
-        .execute(&self.pool)
+        .bind(now.to_string())
+        .execute(&mut *tx)
         .await?;
 
-        tracing::debug!(account_id = %id, %name, "account created");
+        tx.commit().await?;
+        tracing::info!(account_id = %id, %name, "account created");
         Ok(id)
     }
 
     /// Archives an account by setting its `archived_at` timestamp.
+    ///
+    /// The existence check happens before any write.  The event append and the
+    /// projection update are wrapped in a single SQLite transaction so they
+    /// succeed or fail atomically.
     ///
     /// # Errors
     ///
@@ -145,24 +191,44 @@ impl AccountService {
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
     pub async fn archive(&self, id: &AccountId) -> BcResult<()> {
-        self.events
-            .append(&Event::AccountArchived { id: id.clone() })
-            .await?;
+        let now = Timestamp::now();
 
-        let archived_at = Timestamp::now().to_string();
-        let rows_affected =
-            sqlx::query("UPDATE accounts SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
-                .bind(&archived_at)
+        // Check existence first (before writing any event).
+        let exists: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM accounts WHERE id = ? AND archived_at IS NULL")
                 .bind(id.to_string())
-                .execute(&self.pool)
-                .await?
-                .rows_affected();
+                .fetch_optional(&self.pool)
+                .await?;
 
-        if rows_affected == 0 {
+        if exists.is_none() {
             return Err(BcError::NotFound(id.to_string()));
         }
 
-        tracing::debug!(account_id = %id, "account archived");
+        let event_id = EventId::new().to_string();
+        let event = Event::AccountArchived { id: id.clone() };
+        let payload = serde_json::to_string(&event)?;
+
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "INSERT INTO events (id, kind, aggregate_id, payload, created_at) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(&event_id)
+        .bind(event.kind())
+        .bind(id.to_string())
+        .bind(&payload)
+        .bind(now.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query("UPDATE accounts SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
+            .bind(now.to_string())
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        tracing::info!(account_id = %id, "account archived");
         Ok(())
     }
 
