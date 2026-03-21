@@ -38,6 +38,22 @@ pub struct Posting {
     pub memo: Option<String>,
 }
 
+impl Posting {
+    /// Creates a new [`Posting`] with all fields.
+    ///
+    /// This constructor is required because the struct is `#[non_exhaustive]`.
+    #[inline]
+    #[must_use]
+    pub fn new(id: PostingId, account_id: AccountId, amount: Amount, memo: Option<String>) -> Self {
+        Self {
+            id,
+            account_id,
+            amount,
+            memo,
+        }
+    }
+}
+
 /// A double-entry accounting transaction.
 ///
 /// All postings must sum to zero per commodity (enforced by `bc-core`).
@@ -60,6 +76,39 @@ pub struct Transaction {
     pub tags: Vec<String>,
     /// When this record was created in the system.
     pub created_at: Timestamp,
+}
+
+impl Transaction {
+    /// Creates a new [`Transaction`] with all fields.
+    ///
+    /// This constructor is required because the struct is `#[non_exhaustive]`.
+    #[inline]
+    #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "domain struct requires all fields"
+    )]
+    pub fn new(
+        id: TransactionId,
+        date: Date,
+        payee: Option<String>,
+        description: String,
+        postings: Vec<Posting>,
+        status: TransactionStatus,
+        tags: Vec<String>,
+        created_at: Timestamp,
+    ) -> Self {
+        Self {
+            id,
+            date,
+            payee,
+            description,
+            postings,
+            status,
+            tags,
+            created_at,
+        }
+    }
 }
 
 #[cfg(test)]
