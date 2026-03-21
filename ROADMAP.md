@@ -8,15 +8,15 @@ ______________________________________________________________________
 
 ## Milestone 0 — Project Foundation
 
-**Status:** ◻️
+**Status:** ✅
 
-- [ ] Cargo workspace skeleton (`crates/` layout)
-- [ ] GitHub Actions CI (test, clippy, fmt)
-- [ ] License (MIT), CONTRIBUTING.md, CODE_OF_CONDUCT.md
-- [ ] `.gitignore`, `rust-toolchain.toml`
-- [ ] Basic `docs/` structure
-- [ ] `CHANGELOG.md` bootstrapped
-- [ ] Release-plz config
+- [x] Cargo workspace skeleton (`crates/` layout)
+- [x] GitHub Actions CI (test, clippy, fmt)
+- [x] License (MIT), CONTRIBUTING.md, CODE_OF_CONDUCT.md
+- [x] `.gitignore`, `rust-toolchain.toml`
+- [x] Basic `docs/` structure
+- [x] `CHANGELOG.md` bootstrapped
+- [x] Release-plz config
 
 ______________________________________________________________________
 
