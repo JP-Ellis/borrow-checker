@@ -11,7 +11,7 @@ pub use rust_decimal::Decimal;
     clippy::module_name_repetitions,
     reason = "re-exporting the upstream type name verbatim for discoverability"
 )]
-pub use rusty_money::{iso, Money, MoneyError};
+pub use rusty_money::{Money, MoneyError, iso};
 
 /// A commodity code string (e.g. `"USD"`, `"AUD"`, `"BTC"`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -68,7 +68,10 @@ impl Amount {
     #[inline]
     #[must_use]
     pub fn new(value: Decimal, commodity: impl Into<CommodityCode>) -> Self {
-        Self { value, commodity: commodity.into() }
+        Self {
+            value,
+            commodity: commodity.into(),
+        }
     }
 }
 
@@ -85,7 +88,10 @@ mod tests {
     #[test]
     fn amount_stores_value_and_commodity() {
         use rust_decimal_macros::dec;
-        let amt = Amount { value: dec!(100.50), commodity: CommodityCode::new("USD") };
+        let amt = Amount {
+            value: dec!(100.50),
+            commodity: CommodityCode::new("USD"),
+        };
         assert_eq!(amt.commodity.to_string(), "USD");
     }
 }

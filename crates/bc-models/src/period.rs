@@ -44,7 +44,11 @@ mod tests {
 
     #[test]
     fn custom_period_days() {
-        let p = Period::Custom { days: Some(30), weeks: None, months: None };
+        let p = Period::Custom {
+            days: Some(30),
+            weeks: None,
+            months: None,
+        };
         assert!(matches!(p, Period::Custom { days: Some(30), .. }));
     }
 }

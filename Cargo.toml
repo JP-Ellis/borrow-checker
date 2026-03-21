@@ -38,17 +38,28 @@ members  = [
   bc-sdk              = { path = "crates/bc-sdk" }
 
   # External — shared across crates
-  jiff          = { version = "0.2", features = ["serde"] }
-  mti           = { version = "1.1", features = ["serde"] }
-  rust_decimal  = { version = "1",   features = ["serde-with-str"] }
-  rusty-money   = { version = "0.5", features = ["iso", "serde"] }
-  serde         = { version = "1",   features = ["derive"] }
-  serde_json    = "1"
-  sqlx          = { version = "0.9", features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
-  thiserror     = "2"
-  tokio         = { version = "1",   features = ["full"] }
-  tracing       = "0.1"
-  tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+  jiff                = { version = "0.2", features = ["serde"] }
+  mti                 = { version = "1.1", features = ["serde"] }
+  pretty_assertions   = { version = "1", features = ["unstable"] }
+  rust_decimal        = { version = "1", features = ["serde-with-str"] }
+  rust_decimal_macros = "1"
+  rusty-money         = { version = "0.5", features = ["iso", "serde"] }
+  serde               = { version = "1", features = ["derive"] }
+  serde_json          = "1"
+  sqlx                = { version = "0.9", features = [
+    "macros",
+    "migrate",
+    "runtime-tokio",
+    "sqlite"
+  ] }
+  thiserror           = "2"
+  tokio               = { version = "1", features = ["full"] }
+  tracing             = "0.1"
+  tracing-subscriber  = { version = "0.3", features = [
+    "env-filter",
+    "fmt",
+    "json"
+  ] }
 
   ## ----------------------------------------
   ## MARK: Lints
