@@ -90,7 +90,7 @@ hooks = [
   {
     id             = "cargo-clippy",
     name           = "cargo clippy",
-    entry          = "cargo clippy --",
+    entry          = "cargo clippy --all-targets --",
     language       = "system",
     types          = ["rust"],
     pass_filenames = false,
