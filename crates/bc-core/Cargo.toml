@@ -11,7 +11,18 @@ repository.workspace   = true
 license.workspace      = true
 
 [dependencies]
-bc-models = { workspace = true }
+bc-models    = { workspace = true }
+jiff         = { workspace = true }
+rust_decimal = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+sqlx         = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+
+[dev-dependencies]
+rust_decimal_macros = "1"
+tokio               = { workspace = true }
 
 [lints]
 workspace = true
