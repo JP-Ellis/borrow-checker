@@ -10,5 +10,15 @@ rust-version.workspace = true
 repository.workspace   = true
 license.workspace      = true
 
+[dependencies]
+jiff         = { workspace = true }
+mti          = { workspace = true }
+rust_decimal = { workspace = true }
+rusty-money  = { workspace = true }
+serde        = { workspace = true }
+
+[dev-dependencies]
+rust_decimal_macros = "1"
+
 [lints]
 workspace = true
