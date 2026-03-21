@@ -4,3 +4,9 @@
 fn main() {
     println!("BorrowChecker TUI - not yet implemented");
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {}
+}
