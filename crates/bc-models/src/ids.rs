@@ -71,6 +71,22 @@ mod tests {
 
     use super::*;
 
+    /// Define a helper macro to redact the random suffix of the ID for
+    /// deterministic snapshots.
+    macro_rules! assert_json_snapshot {
+        ($value:expr, @$snapshot:literal) => {
+            insta::with_settings!({
+                filters => vec![
+                    ("_[a-z0-9]{26}", "_[id]"),
+                ],
+            }, {
+                insta::assert_json_snapshot!($value, @$snapshot);
+            });
+        }
+    }
+
+    // MARK: AccountId
+
     #[test]
     fn account_id_has_correct_prefix() {
         let id = AccountId::new();
@@ -84,6 +100,14 @@ mod tests {
         let parsed: AccountId = s.parse().expect("valid AccountId string");
         assert_eq!(id, parsed);
     }
+
+    #[test]
+    fn account_id_serialize() {
+        let id = AccountId::new();
+        assert_json_snapshot!(id, @r#""account_[id]""#);
+    }
+
+    // MARK: EventId
 
     #[test]
     fn event_id_has_correct_prefix() {
@@ -100,6 +124,14 @@ mod tests {
     }
 
     #[test]
+    fn event_id_serialize() {
+        let id = EventId::new();
+        assert_json_snapshot!(id, @r#""event_[id]""#);
+    }
+
+    // MARK: ImportBatchId
+
+    #[test]
     fn import_batch_id_has_correct_prefix() {
         let id = ImportBatchId::new();
         assert!(id.to_string().starts_with("import_batch_"));
@@ -112,6 +144,14 @@ mod tests {
         let parsed: ImportBatchId = s.parse().expect("valid ImportBatchId string");
         assert_eq!(id, parsed);
     }
+
+    #[test]
+    fn import_batch_id_serialize() {
+        let id = ImportBatchId::new();
+        assert_json_snapshot!(id, @r#""import_batch_[id]""#);
+    }
+
+    // MARK: PostingId
 
     #[test]
     fn posting_id_has_correct_prefix() {
@@ -128,6 +168,14 @@ mod tests {
     }
 
     #[test]
+    fn posting_id_serialize() {
+        let id = PostingId::new();
+        assert_json_snapshot!(id, @r#""posting_[id]""#);
+    }
+
+    // MARK: ProfileId
+
+    #[test]
     fn profile_id_has_correct_prefix() {
         let id = ProfileId::new();
         assert!(id.to_string().starts_with("profile_"));
@@ -142,6 +190,14 @@ mod tests {
     }
 
     #[test]
+    fn profile_id_serialize() {
+        let id = ProfileId::new();
+        assert_json_snapshot!(id, @r#""profile_[id]""#);
+    }
+
+    // MARK: TransactionId
+
+    #[test]
     fn transaction_id_has_correct_prefix() {
         let id = TransactionId::new();
         assert!(id.to_string().starts_with("transaction_"));
@@ -153,5 +209,11 @@ mod tests {
         let s = id.to_string();
         let parsed: TransactionId = s.parse().expect("valid TransactionId string");
         assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn transaction_id_serialize() {
+        let id = TransactionId::new();
+        assert_json_snapshot!(id, @r#""transaction_[id]""#);
     }
 }
