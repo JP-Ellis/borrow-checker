@@ -6,12 +6,13 @@
 use core::{fmt, str::FromStr};
 
 use mti::prelude::*;
+use serde::{Deserialize, Serialize};
 
 /// Defines a typed ID newtype wrapping [`MagicTypeId`] with a fixed prefix.
 macro_rules! define_id {
     ($name:ident, $prefix:literal) => {
         #[doc = concat!("A unique identifier for a `", stringify!($name), "` entity.")]
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
         pub struct $name(MagicTypeId);
 
@@ -59,10 +60,10 @@ macro_rules! define_id {
 
 define_id!(AccountId, "account");
 define_id!(EventId, "event");
-define_id!(TransactionId, "transaction");
+define_id!(ImportBatchId, "import_batch");
 define_id!(PostingId, "posting");
 define_id!(ProfileId, "profile");
-define_id!(ImportBatchId, "importbatch");
+define_id!(TransactionId, "transaction");
 
 #[cfg(test)]
 mod tests {
@@ -71,7 +72,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn account_id_new_has_correct_prefix() {
+    fn account_id_has_correct_prefix() {
         let id = AccountId::new();
         assert!(id.to_string().starts_with("account_"));
     }
@@ -85,9 +86,72 @@ mod tests {
     }
 
     #[test]
-    fn different_id_types_are_not_equal() {
-        // Compile-time check: AccountId and TransactionId are distinct types.
-        let _a = AccountId::new();
-        let _t = TransactionId::new();
+    fn event_id_has_correct_prefix() {
+        let id = EventId::new();
+        assert!(id.to_string().starts_with("event_"));
+    }
+
+    #[test]
+    fn event_id_roundtrip_display_parse() {
+        let id = EventId::new();
+        let s = id.to_string();
+        let parsed: EventId = s.parse().expect("valid EventId string");
+        assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn import_batch_id_has_correct_prefix() {
+        let id = ImportBatchId::new();
+        assert!(id.to_string().starts_with("import_batch_"));
+    }
+
+    #[test]
+    fn import_batch_id_roundtrip_display_parse() {
+        let id = ImportBatchId::new();
+        let s = id.to_string();
+        let parsed: ImportBatchId = s.parse().expect("valid ImportBatchId string");
+        assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn posting_id_has_correct_prefix() {
+        let id = PostingId::new();
+        assert!(id.to_string().starts_with("posting_"));
+    }
+
+    #[test]
+    fn posting_id_roundtrip_display_parse() {
+        let id = PostingId::new();
+        let s = id.to_string();
+        let parsed: PostingId = s.parse().expect("valid PostingId string");
+        assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn profile_id_has_correct_prefix() {
+        let id = ProfileId::new();
+        assert!(id.to_string().starts_with("profile_"));
+    }
+
+    #[test]
+    fn profile_id_roundtrip_display_parse() {
+        let id = ProfileId::new();
+        let s = id.to_string();
+        let parsed: ProfileId = s.parse().expect("valid ProfileId string");
+        assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn transaction_id_has_correct_prefix() {
+        let id = TransactionId::new();
+        assert!(id.to_string().starts_with("transaction_"));
+    }
+
+    #[test]
+    fn transaction_id_roundtrip_display_parse() {
+        let id = TransactionId::new();
+        let s = id.to_string();
+        let parsed: TransactionId = s.parse().expect("valid TransactionId string");
+        assert_eq!(id, parsed);
     }
 }
