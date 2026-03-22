@@ -68,6 +68,7 @@ impl SettingsStore {
 #[cfg(test)]
 mod tests {
     use bc_models::{GlobalSettings, money::CommodityCode};
+    use pretty_assertions::assert_eq;
 
     use super::*;
 

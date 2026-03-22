@@ -88,11 +88,13 @@ mod tests {
 
     #[test]
     fn account_type_variants_exist() {
-        let _a = AccountType::Asset;
-        let _l = AccountType::Liability;
-        let _e = AccountType::Equity;
-        let _i = AccountType::Income;
-        let _x = AccountType::Expense;
+        _ = (
+            AccountType::Asset,
+            AccountType::Liability,
+            AccountType::Equity,
+            AccountType::Income,
+            AccountType::Expense,
+        );
     }
 
     #[test]

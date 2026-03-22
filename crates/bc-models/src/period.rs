@@ -34,12 +34,14 @@ mod tests {
 
     #[test]
     fn period_variants_exist() {
-        let _w = Period::Weekly;
-        let _f = Period::Fortnightly;
-        let _m = Period::Monthly;
-        let _q = Period::Quarterly;
-        let _fy = Period::FinancialYear;
-        let _cy = Period::CalendarYear;
+        _ = (
+            Period::Weekly,
+            Period::Fortnightly,
+            Period::Monthly,
+            Period::Quarterly,
+            Period::FinancialYear,
+            Period::CalendarYear,
+        );
     }
 
     #[test]

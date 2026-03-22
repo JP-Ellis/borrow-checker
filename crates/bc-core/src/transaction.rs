@@ -287,6 +287,7 @@ mod tests {
         money::{Amount, CommodityCode},
     };
     use jiff::civil::date;
+    use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
     use super::*;

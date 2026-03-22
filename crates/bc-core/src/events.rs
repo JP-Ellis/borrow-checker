@@ -155,6 +155,7 @@ impl SqliteEventStore {
 #[cfg(test)]
 mod tests {
     use bc_models::ids::AccountId;
+    use pretty_assertions::assert_eq;
 
     use super::*;
 
@@ -174,6 +175,7 @@ mod tests {
             .await
             .expect("replay should succeed");
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].kind, "AccountCreated");
+        let first = records.first().expect("records should be non-empty");
+        assert_eq!(first.kind, "AccountCreated");
     }
 }

@@ -30,6 +30,8 @@ pub async fn open_db(url: &str) -> BcResult<SqlitePool> {
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
+
     #[sqlx::test(migrations = "./migrations")]
     async fn open_db_runs_migrations(pool: sqlx::SqlitePool) {
         let row: (i64,) = sqlx::query_as("SELECT count(*) FROM events")
