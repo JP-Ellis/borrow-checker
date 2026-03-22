@@ -99,6 +99,8 @@ impl AccountRow {
             account_type,
             commodity,
             self.description,
+            None,
+            vec![],
             created_at,
             archived_at,
         ))
