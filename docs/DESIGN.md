@@ -112,6 +112,31 @@ PluginRegistered / PluginUnregistered
 
 **Double-entry accounting** is enforced at the core level: every transaction must balance to zero across accounts, consistent with ledger/beancount semantics.
 
+### 4.3 Account Model
+
+Accounts are classified by `AccountType` (Asset, Liability, Equity, Income, Expense) — the canonical double-entry roots. The five variants are stable and unlikely to change; `#[non_exhaustive]` covers rare future additions.
+
+**Hierarchy via `parent_id`:**
+
+Accounts form an arbitrary-depth tree through an optional `parent_id: Option<AccountId>`. A root account (`parent_id = None`) is the authority for its `AccountType`; child accounts inherit their root's type (enforced in `bc-core` at creation time). The hierarchy supports:
+
+- Institution grouping: `Assets > CommBank > Savings, Checking`
+- Virtual sub-accounts: `Assets > CommBank > Offset > Mine, Partner, Shared`
+- Rollups: summing a subtree gives the parent balance; virtual sub-accounts of a joint account should always sum to the real account's bank-statement balance
+- Beancount/ledger export: the colon-separated path is derived by walking the ancestor chain
+
+An account is "real" (reconciles against a bank statement) when it has an import profile attached to it. Virtual sub-accounts have no import profile and exist purely to subdivide a parent account's balance.
+
+**Cross-cutting labels via `tags: Vec<TagPath>`:**
+
+The primary hierarchy can only express one grouping at a time. Cross-cutting concerns — ownership (mine / partner / shared), institution grouping across types, liquidity flags — are expressed as `TagPath` values. A `TagPath` is an ordered sequence of non-empty segments (`["institution", "commbank"]`) that serialises as a colon-joined string (`institution:commbank`). The hierarchy is explicit in the type, not a string convention.
+
+Example tags: `institution:commbank`, `owner:mine`, `owner:shared`, `liquid`.
+
+**Expense categorisation is separate from account hierarchy:**
+
+Deep expense category trees (food > restaurant, food > groceries, holiday > food, etc.) belong to the **envelope / budget system** (Milestone 5), not to `Account`. Account hierarchy is for real and virtual financial accounts. Cross-cutting expense views are handled via tags on transactions and postings, enabling queries like "all food spend regardless of holiday context."
+
 ______________________________________________________________________
 
 ## 5. Format Compatibility (`bc-format-*`)
