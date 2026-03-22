@@ -113,6 +113,7 @@ impl Transaction {
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -123,9 +124,11 @@ mod tests {
 
     #[test]
     fn transaction_status_variants_exist() {
-        let _p = TransactionStatus::Pending;
-        let _c = TransactionStatus::Cleared;
-        let _v = TransactionStatus::Voided;
+        _ = (
+            TransactionStatus::Pending,
+            TransactionStatus::Cleared,
+            TransactionStatus::Voided,
+        );
     }
 
     #[test]

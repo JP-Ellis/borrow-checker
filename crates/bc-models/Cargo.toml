@@ -18,6 +18,7 @@ rusty-money  = { workspace = true }
 serde        = { workspace = true }
 
 [dev-dependencies]
+pretty_assertions   = { workspace = true }
 rust_decimal_macros = { workspace = true }
 
 [lints]

@@ -21,6 +21,7 @@ thiserror    = { workspace = true }
 tracing      = { workspace = true }
 
 [dev-dependencies]
+pretty_assertions   = { workspace = true }
 rust_decimal_macros = { workspace = true }
 tokio               = { workspace = true }
 

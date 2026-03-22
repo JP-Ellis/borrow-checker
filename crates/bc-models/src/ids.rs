@@ -66,6 +66,8 @@ define_id!(ImportBatchId, "importbatch");
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
     #[test]
@@ -85,7 +87,7 @@ mod tests {
     #[test]
     fn different_id_types_are_not_equal() {
         // Compile-time check: AccountId and TransactionId are distinct types.
-        let _a: AccountId = AccountId::new();
-        let _t: TransactionId = TransactionId::new();
+        let _a = AccountId::new();
+        let _t = TransactionId::new();
     }
 }
