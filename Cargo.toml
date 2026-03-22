@@ -10,8 +10,8 @@ members  = [
   "crates/bc-format-csv",
   "crates/bc-format-ledger",
   "crates/bc-format-ofx",
-  "crates/bc-logging",
   "crates/bc-models",
+  "crates/bc-otel",
   "crates/bc-plugins",
   "crates/bc-sdk",
   "crates/bc-tui",
@@ -32,8 +32,8 @@ members  = [
   bc-format-csv       = { path = "crates/bc-format-csv" }
   bc-format-ledger    = { path = "crates/bc-format-ledger" }
   bc-format-ofx       = { path = "crates/bc-format-ofx" }
-  bc-logging          = { path = "crates/bc-logging" }
   bc-models           = { path = "crates/bc-models" }
+  bc-otel             = { path = "crates/bc-otel" }
   bc-plugins          = { path = "crates/bc-plugins" }
   bc-sdk              = { path = "crates/bc-sdk" }
 
@@ -110,6 +110,7 @@ members  = [
     implicit_return                = "allow"
     min_ident_chars                = "allow"
     missing_trait_methods          = "allow"
+    multiple_crate_versions        = "allow"
     non_ascii_literal              = "allow"
     pattern_type_mismatch          = "allow"
     pub_with_shorthand             = "allow"

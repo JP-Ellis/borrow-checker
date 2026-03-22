@@ -1,0 +1,20 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[package]
+name        = "bc-otel"
+description = "OpenTelemetry initialisation for BorrowChecker"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
+
+[dependencies]
+opentelemetry      = "0.31"
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
+opentelemetry_sdk  = { version = "0.31", features = ["trace"] }
+thiserror          = { workspace = true }
+
+[lints]
+workspace = true
