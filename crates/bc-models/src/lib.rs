@@ -13,6 +13,7 @@ pub mod ids;
 pub mod money;
 pub mod period;
 pub mod settings;
+pub mod tag;
 pub mod transaction;
 
 pub use account::{Account, AccountType};
@@ -20,4 +21,5 @@ pub use ids::{AccountId, EventId, ImportBatchId, PostingId, ProfileId, Transacti
 pub use money::{Amount, CommodityCode, Decimal};
 pub use period::Period;
 pub use settings::GlobalSettings;
+pub use tag::{ParseError as TagPathError, Path as TagPath};
 pub use transaction::{Posting, Transaction, TransactionStatus};

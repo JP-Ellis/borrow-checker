@@ -28,7 +28,7 @@ ______________________________________________________________________
 - [ ] SQLite storage layer via `sqlx` with migrations
 - [ ] Append-only event log table + projection engine
 - [ ] Event vocabulary: Account, Transaction, Envelope, Import, Plugin events
-- [ ] Account model (create, archive, multi-currency support)
+- [ ] Account model (create, archive, multi-currency support; parent hierarchy; cross-cutting `TagPath` labels)
 - [ ] Double-entry transaction model (enforced balance-to-zero)
 - [ ] Balance calculation engine
 - [ ] Period model (weekly, fortnightly, monthly, quarterly, financial year, calendar year, custom)

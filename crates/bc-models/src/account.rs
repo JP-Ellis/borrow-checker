@@ -2,7 +2,7 @@
 
 use jiff::Timestamp;
 
-use crate::{ids::AccountId, money::CommodityCode};
+use crate::{TagPath, ids::AccountId, money::CommodityCode};
 
 /// The classification of an account in the chart of accounts.
 #[expect(
@@ -39,6 +39,20 @@ pub struct Account {
     pub commodity: CommodityCode,
     /// Optional description.
     pub description: Option<String>,
+    /// Parent account ID, if this is a sub-account.
+    ///
+    /// `None` indicates a root account whose [`AccountType`] is authoritative.
+    /// `Some(id)` indicates a child whose type must match its root ancestor
+    /// (enforced in `bc-core`, not here).
+    pub parent_id: Option<AccountId>,
+    /// Cross-cutting hierarchical tags for grouping and filtering.
+    ///
+    /// Tags complement the primary [`parent_id`] hierarchy by providing
+    /// additional axes of organisation (e.g. `institution:commbank`,
+    /// `owner:mine`). An empty list means no tags.
+    ///
+    /// [`parent_id`]: Account::parent_id
+    pub tags: Vec<TagPath>,
     /// When the account was created.
     pub created_at: Timestamp,
     /// When the account was archived, if ever.
@@ -49,6 +63,10 @@ impl Account {
     /// Creates a new [`Account`] with all fields.
     ///
     /// This constructor is required because the struct is `#[non_exhaustive]`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "all fields are required for a complete Account; a builder is not warranted yet"
+    )]
     #[inline]
     #[must_use]
     pub fn new(
@@ -57,6 +75,8 @@ impl Account {
         account_type: AccountType,
         commodity: CommodityCode,
         description: Option<String>,
+        parent_id: Option<AccountId>,
+        tags: Vec<TagPath>,
         created_at: Timestamp,
         archived_at: Option<Timestamp>,
     ) -> Self {
@@ -66,6 +86,8 @@ impl Account {
             account_type,
             commodity,
             description,
+            parent_id,
+            tags,
             created_at,
             archived_at,
         }
@@ -82,9 +104,10 @@ impl Account {
 #[cfg(test)]
 mod tests {
     use jiff::Timestamp;
+    use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::ids::AccountId;
+    use crate::{TagPath, ids::AccountId};
 
     #[test]
     fn account_type_variants_exist() {
@@ -105,9 +128,77 @@ mod tests {
             account_type: AccountType::Asset,
             commodity: crate::money::CommodityCode::new("AUD"),
             description: None,
+            parent_id: None,
+            tags: vec![],
             created_at: Timestamp::now(),
             archived_at: None,
         };
         assert!(acct.is_active());
+    }
+
+    #[test]
+    fn account_with_parent_records_parent_id() {
+        let parent_id = AccountId::new();
+        let acct = Account::new(
+            AccountId::new(),
+            "Savings".to_owned(),
+            AccountType::Asset,
+            crate::money::CommodityCode::new("AUD"),
+            None,
+            Some(parent_id.clone()),
+            vec![],
+            Timestamp::now(),
+            None,
+        );
+        assert_eq!(acct.parent_id, Some(parent_id));
+    }
+
+    #[test]
+    fn account_root_has_no_parent() {
+        let acct = Account::new(
+            AccountId::new(),
+            "Assets".to_owned(),
+            AccountType::Asset,
+            crate::money::CommodityCode::new("AUD"),
+            None,
+            None,
+            vec![],
+            Timestamp::now(),
+            None,
+        );
+        assert!(acct.parent_id.is_none());
+    }
+
+    #[test]
+    fn account_stores_tags() {
+        let tag = TagPath::new(["institution", "commbank"]).expect("valid tag");
+        let acct = Account::new(
+            AccountId::new(),
+            "Savings".to_owned(),
+            AccountType::Asset,
+            crate::money::CommodityCode::new("AUD"),
+            None,
+            None,
+            vec![tag.clone()],
+            Timestamp::now(),
+            None,
+        );
+        assert_eq!(acct.tags, vec![tag]);
+    }
+
+    #[test]
+    fn account_without_tags_has_empty_tag_list() {
+        let acct = Account::new(
+            AccountId::new(),
+            "Checking".to_owned(),
+            AccountType::Asset,
+            crate::money::CommodityCode::new("AUD"),
+            None,
+            None,
+            vec![],
+            Timestamp::now(),
+            None,
+        );
+        assert!(acct.tags.is_empty());
     }
 }
