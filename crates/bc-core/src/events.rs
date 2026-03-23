@@ -1,6 +1,6 @@
 //! Append-only event log and event types.
 
-use bc_models::{AccountId, EventId, ids::TransactionId};
+use bc_models::{AccountId, EventId, TransactionId};
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
