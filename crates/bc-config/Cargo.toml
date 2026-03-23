@@ -1,0 +1,24 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[package]
+name        = "bc-config"
+description = "Application configuration for BorrowChecker"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
+
+[dependencies]
+bc-models = { workspace = true }
+config    = { workspace = true }
+jiff      = { workspace = true }
+serde     = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[lints]
+workspace = true
