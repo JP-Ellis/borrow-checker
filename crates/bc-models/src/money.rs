@@ -2,16 +2,10 @@
 //!
 //! [`Amount`] pairs a [`rust_decimal::Decimal`] with a [`CommodityCode`],
 //! allowing arbitrary commodity denominations (currencies, securities, etc.).
-//! Use [`rusty_money::iso`] for ISO-4217 currency operations.
 
 use core::fmt;
 
 pub use rust_decimal::Decimal;
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "re-exporting the upstream type name verbatim for discoverability"
-)]
-pub use rusty_money::{Money, MoneyError, iso};
 
 /// A commodity code string (e.g. `"USD"`, `"AUD"`, `"BTC"`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
