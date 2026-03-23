@@ -1,7 +1,8 @@
 //! Budget period types with embedded anchor data and jiff computation methods.
 
 use jiff::civil::Date;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Error returned when constructing a validated [`Period`] variant.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -2,14 +2,18 @@
 
 use std::collections::HashMap;
 
-use bc_models::{Account, AccountId, AccountType, CommodityId, EventId, TagId};
+use bc_models::Account;
+use bc_models::AccountId;
+use bc_models::AccountType;
+use bc_models::CommodityId;
+use bc_models::EventId;
+use bc_models::TagId;
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
-use crate::{
-    error::{BcError, BcResult},
-    events::Event,
-};
+use crate::error::BcError;
+use crate::error::BcResult;
+use crate::events::Event;
 
 /// Converts an [`AccountType`] to its canonical database string.
 ///
