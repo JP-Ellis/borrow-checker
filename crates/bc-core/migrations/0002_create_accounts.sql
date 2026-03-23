@@ -45,3 +45,5 @@ CREATE TABLE IF NOT EXISTS account_tags (
     tag_id     TEXT NOT NULL REFERENCES tags(id),
     PRIMARY KEY (account_id, tag_id)
 );
+CREATE INDEX IF NOT EXISTS idx_account_tags_tag ON account_tags (tag_id);
+CREATE INDEX IF NOT EXISTS idx_tags_parent ON tags (parent_id);
