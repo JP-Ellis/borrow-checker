@@ -11,11 +11,12 @@ repository.workspace   = true
 license.workspace      = true
 
 [dependencies]
-bc-models = { workspace = true }
-config    = { workspace = true }
-jiff      = { workspace = true }
-serde     = { workspace = true }
-thiserror = { workspace = true }
+bc-models   = { workspace = true }
+config      = { workspace = true }
+directories = { workspace = true }
+jiff        = { workspace = true }
+serde       = { workspace = true }
+thiserror   = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
