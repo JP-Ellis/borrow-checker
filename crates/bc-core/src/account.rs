@@ -1,6 +1,6 @@
 //! Account projection service.
 
-use bc_models::{Account, AccountId, AccountType, EventId, money::CommodityCode};
+use bc_models::{Account, AccountId, AccountType, CommodityCode, EventId};
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
@@ -291,7 +291,7 @@ impl AccountService {
 
 #[cfg(test)]
 mod tests {
-    use bc_models::money::CommodityCode;
+    use bc_models::CommodityCode;
     use pretty_assertions::assert_eq;
 
     use super::*;
