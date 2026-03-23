@@ -1,9 +1,11 @@
 //! Profile entity identifier.
 
-use core::{fmt, str::FromStr};
+use core::fmt;
+use core::str::FromStr;
 
 use mti::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 crate::define_id!(ProfileId, "profile");
 

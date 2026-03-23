@@ -71,17 +71,30 @@ mod profile;
 mod tag;
 mod transaction;
 
-pub use account::{
-    Account, AccountId, Type as AccountType, ValidationError as AccountValidationError,
-};
-pub use commodity::{Commodity, CommodityId};
+pub use account::Account;
+pub use account::AccountId;
+pub use account::Type as AccountType;
+pub use account::ValidationError as AccountValidationError;
+pub use commodity::Commodity;
+pub use commodity::CommodityId;
 pub use event::EventId;
 pub use import_batch::ImportBatchId;
-pub use money::{Amount, CommodityCode, Decimal};
+pub use money::Amount;
+pub use money::CommodityCode;
+pub use money::Decimal;
 pub use period::Period;
 pub use profile::ProfileId;
-pub use tag::{Forest as TagForest, ParseError as TagPathError, Path as TagPath, Tag, TagId};
-pub use transaction::{
-    Cost, Link as TransactionLink, LinkType as TransactionLinkType, Posting, PostingId,
-    Status as TransactionStatus, Transaction, TransactionId, TransactionLinkId,
-};
+pub use tag::Forest as TagForest;
+pub use tag::ParseError as TagPathError;
+pub use tag::Path as TagPath;
+pub use tag::Tag;
+pub use tag::TagId;
+pub use transaction::Cost;
+pub use transaction::Link as TransactionLink;
+pub use transaction::LinkType as TransactionLinkType;
+pub use transaction::Posting;
+pub use transaction::PostingId;
+pub use transaction::Status as TransactionStatus;
+pub use transaction::Transaction;
+pub use transaction::TransactionId;
+pub use transaction::TransactionLinkId;

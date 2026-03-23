@@ -4,7 +4,8 @@ use bc_models::AccountId;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
-use crate::error::{BcError, BcResult};
+use crate::error::BcError;
+use crate::error::BcResult;
 
 /// Calculates account balances from the `postings` projection table.
 #[expect(

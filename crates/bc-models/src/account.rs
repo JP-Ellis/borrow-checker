@@ -1,12 +1,15 @@
 //! Account domain types.
 
-use core::{fmt, str::FromStr};
+use core::fmt;
+use core::str::FromStr;
 
 use jiff::Timestamp;
 use mti::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::{CommodityId, TagId};
+use crate::CommodityId;
+use crate::TagId;
 
 crate::define_id!(AccountId, "account");
 

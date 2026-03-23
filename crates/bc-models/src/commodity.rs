@@ -1,10 +1,12 @@
 //! Commodity entity — the rich registry of tradeable assets.
 
-use core::{fmt, str::FromStr};
+use core::fmt;
+use core::str::FromStr;
 
 use jiff::civil::Date;
 use mti::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 crate::define_id!(CommodityId, "commodity");
 

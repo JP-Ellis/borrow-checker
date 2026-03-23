@@ -1,6 +1,7 @@
 //! SQLite connection pool setup.
 
-use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
+use sqlx::SqlitePool;
+use sqlx::sqlite::SqliteConnectOptions;
 
 use crate::error::BcResult;
 

@@ -2,18 +2,25 @@
 
 use std::collections::HashMap;
 
-use bc_models::{
-    AccountId, Amount, CommodityCode, Cost, EventId, Posting, PostingId, TagId, Transaction,
-    TransactionId, TransactionStatus,
-};
-use jiff::{Timestamp, civil::Date};
+use bc_models::AccountId;
+use bc_models::Amount;
+use bc_models::CommodityCode;
+use bc_models::Cost;
+use bc_models::EventId;
+use bc_models::Posting;
+use bc_models::PostingId;
+use bc_models::TagId;
+use bc_models::Transaction;
+use bc_models::TransactionId;
+use bc_models::TransactionStatus;
+use jiff::Timestamp;
+use jiff::civil::Date;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
-use crate::{
-    error::{BcError, BcResult},
-    events::Event,
-};
+use crate::error::BcError;
+use crate::error::BcResult;
+use crate::events::Event;
 
 /// Converts a [`TransactionStatus`] to its canonical database string.
 ///
@@ -436,10 +443,16 @@ impl TransactionService {
 
 #[cfg(test)]
 mod tests {
-    use bc_models::{
-        AccountId, AccountType, Amount, CommodityCode, Cost, Posting, PostingId, TagId,
-        Transaction, TransactionStatus,
-    };
+    use bc_models::AccountId;
+    use bc_models::AccountType;
+    use bc_models::Amount;
+    use bc_models::CommodityCode;
+    use bc_models::Cost;
+    use bc_models::Posting;
+    use bc_models::PostingId;
+    use bc_models::TagId;
+    use bc_models::Transaction;
+    use bc_models::TransactionStatus;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;

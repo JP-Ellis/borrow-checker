@@ -1,12 +1,16 @@
 //! Transaction, posting, cost and link domain types.
 
-use core::{fmt, str::FromStr};
+use core::fmt;
+use core::str::FromStr;
 
-use jiff::{Timestamp, civil::Date};
+use jiff::Timestamp;
+use jiff::civil::Date;
 use mti::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::{TagId, money::Amount};
+use crate::TagId;
+use crate::money::Amount;
 
 crate::define_id!(TransactionId, "transaction");
 crate::define_id!(PostingId, "posting");
@@ -298,7 +302,8 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::money::{Amount, CommodityCode};
+    use crate::money::Amount;
+    use crate::money::CommodityCode;
 
     // --- TransactionId ---
 
