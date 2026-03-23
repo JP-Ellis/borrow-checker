@@ -1,6 +1,8 @@
 //! Account projection service.
 
-use bc_models::{Account, AccountId, AccountType, CommodityCode, EventId};
+use std::collections::HashMap;
+
+use bc_models::{Account, AccountId, AccountType, CommodityId, EventId, TagId};
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
@@ -42,7 +44,7 @@ fn account_type_from_str(s: &str) -> BcResult<AccountType> {
     }
 }
 
-/// Internal row type returned from the `accounts` table.
+/// Internal row type returned from the `accounts` table plus join-loaded data.
 struct AccountRow {
     /// Raw account ID string.
     id: String,
@@ -50,19 +52,16 @@ struct AccountRow {
     name: String,
     /// Account type stored as `snake_case` string.
     account_type: String,
-    /// Commodity code string (retained for DB compatibility; not yet mapped to
-    /// `CommodityId` — will be wired up in Task 11).
-    #[expect(
-        dead_code,
-        reason = "retained for DB schema compatibility; full mapping in Task 11"
-    )]
-    commodity: String,
     /// Optional description.
     description: Option<String>,
     /// ISO 8601 creation timestamp.
     created_at: String,
     /// ISO 8601 archive timestamp if archived.
     archived_at: Option<String>,
+    /// Allowed commodities; first = default; empty = unrestricted.
+    commodities: Vec<CommodityId>,
+    /// Tags attached to this account.
+    tag_ids: Vec<TagId>,
 }
 
 impl AccountRow {
@@ -96,11 +95,47 @@ impl AccountRow {
             .id(id)
             .name(self.name)
             .account_type(account_type)
+            .commodities(self.commodities)
+            .tag_ids(self.tag_ids)
             .maybe_description(self.description)
             .maybe_archived_at(archived_at)
             .created_at(created_at)
             .build())
     }
+}
+
+/// Parses a slice of `(account_id, commodity_id)` rows into a `HashMap`.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if any commodity ID string is malformed.
+fn build_commodities_map(
+    rows: Vec<(String, String)>,
+) -> BcResult<HashMap<String, Vec<CommodityId>>> {
+    let mut map: HashMap<String, Vec<CommodityId>> = HashMap::new();
+    for (account_id, commodity_id) in rows {
+        let cid = commodity_id
+            .parse::<CommodityId>()
+            .map_err(|e| BcError::BadData(format!("invalid commodity_id '{commodity_id}': {e}")))?;
+        map.entry(account_id).or_default().push(cid);
+    }
+    Ok(map)
+}
+
+/// Parses a slice of `(account_id, tag_id)` rows into a `HashMap`.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if any tag ID string is malformed.
+fn build_tags_map(rows: Vec<(String, String)>) -> BcResult<HashMap<String, Vec<TagId>>> {
+    let mut map: HashMap<String, Vec<TagId>> = HashMap::new();
+    for (account_id, tag_id) in rows {
+        let tid = tag_id
+            .parse::<TagId>()
+            .map_err(|e| BcError::BadData(format!("invalid tag_id '{tag_id}': {e}")))?;
+        map.entry(account_id).or_default().push(tid);
+    }
+    Ok(map)
 }
 
 /// Service for creating and managing accounts.
@@ -135,7 +170,6 @@ impl AccountService {
         &self,
         name: &str,
         account_type: AccountType,
-        commodity: CommodityCode,
         description: Option<&str>,
     ) -> BcResult<AccountId> {
         let id = AccountId::new();
@@ -161,12 +195,11 @@ impl AccountService {
         .await?;
 
         sqlx::query(
-            "INSERT INTO accounts (id, name, account_type, commodity, description, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            "INSERT INTO accounts (id, name, account_type, description, created_at) VALUES (?, ?, ?, ?, ?)"
         )
         .bind(id.to_string())
         .bind(name)
         .bind(account_type_to_str(account_type)?)
-        .bind(commodity.as_str())
         .bind(description)
         .bind(now.to_string())
         .execute(&mut *tx)
@@ -230,7 +263,7 @@ impl AccountService {
         Ok(())
     }
 
-    /// Finds an account by ID.
+    /// Finds an account by ID, including its commodity and tag associations.
     ///
     /// # Errors
     ///
@@ -238,50 +271,136 @@ impl AccountService {
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
     pub async fn find_by_id(&self, id: &AccountId) -> BcResult<Account> {
-        let maybe_row = sqlx::query_as::<_, (String, String, String, String, Option<String>, String, Option<String>)>(
-            "SELECT id, name, account_type, commodity, description, created_at, archived_at FROM accounts WHERE id = ?"
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                Option<String>,
+                String,
+                Option<String>,
+            ),
+        >(
+            "SELECT id, name, account_type, description, created_at, archived_at \
+             FROM accounts WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| BcError::NotFound(id.to_string()))?;
+
+        let commodity_rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT commodity_id FROM account_commodities WHERE account_id = ? ORDER BY position",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.pool)
         .await?;
 
-        let row = maybe_row.ok_or_else(|| BcError::NotFound(id.to_string()))?;
+        let commodities: Vec<CommodityId> = commodity_rows
+            .into_iter()
+            .map(|(s,)| {
+                s.parse::<CommodityId>()
+                    .map_err(|e| BcError::BadData(format!("invalid commodity_id '{s}': {e}")))
+            })
+            .collect::<BcResult<_>>()?;
+
+        let tag_rows: Vec<(String,)> =
+            sqlx::query_as("SELECT tag_id FROM account_tags WHERE account_id = ?")
+                .bind(id.to_string())
+                .fetch_all(&self.pool)
+                .await?;
+
+        let tag_ids: Vec<TagId> = tag_rows
+            .into_iter()
+            .map(|(s,)| {
+                s.parse::<TagId>()
+                    .map_err(|e| BcError::BadData(format!("invalid tag_id '{s}': {e}")))
+            })
+            .collect::<BcResult<_>>()?;
 
         AccountRow {
             id: row.0,
             name: row.1,
             account_type: row.2,
-            commodity: row.3,
-            description: row.4,
-            created_at: row.5,
-            archived_at: row.6,
+            description: row.3,
+            created_at: row.4,
+            archived_at: row.5,
+            commodities,
+            tag_ids,
         }
         .into_account()
     }
 
     /// Lists all active (non-archived) accounts, ordered by name.
     ///
+    /// Commodity and tag associations are loaded in bulk (two additional queries)
+    /// to avoid N+1 database round-trips.
+    ///
     /// # Errors
     ///
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
     pub async fn list_active(&self) -> BcResult<Vec<Account>> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, Option<String>, String, Option<String>)>(
-            "SELECT id, name, account_type, commodity, description, created_at, archived_at FROM accounts WHERE archived_at IS NULL ORDER BY name ASC"
+        let account_rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                Option<String>,
+                String,
+                Option<String>,
+            ),
+        >(
+            "SELECT id, name, account_type, description, created_at, archived_at \
+             FROM accounts WHERE archived_at IS NULL ORDER BY name ASC",
         )
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
+        if account_rows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Load all commodity associations for active accounts in one query.
+        let commodity_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT ac.account_id, ac.commodity_id \
+             FROM account_commodities ac \
+             JOIN accounts a ON ac.account_id = a.id \
+             WHERE a.archived_at IS NULL \
+             ORDER BY ac.account_id, ac.position",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Load all tag associations for active accounts in one query.
+        let tag_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT at.account_id, at.tag_id \
+             FROM account_tags at \
+             JOIN accounts a ON at.account_id = a.id \
+             WHERE a.archived_at IS NULL",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut commodities_map = build_commodities_map(commodity_rows)?;
+        let mut tags_map = build_tags_map(tag_rows)?;
+
+        account_rows
+            .into_iter()
             .map(|row| {
+                let commodities = commodities_map.remove(&row.0).unwrap_or_default();
+                let tag_ids = tags_map.remove(&row.0).unwrap_or_default();
                 AccountRow {
                     id: row.0,
                     name: row.1,
                     account_type: row.2,
-                    commodity: row.3,
-                    description: row.4,
-                    created_at: row.5,
-                    archived_at: row.6,
+                    description: row.3,
+                    created_at: row.4,
+                    archived_at: row.5,
+                    commodities,
+                    tag_ids,
                 }
                 .into_account()
             })
@@ -291,7 +410,6 @@ impl AccountService {
 
 #[cfg(test)]
 mod tests {
-    use bc_models::CommodityCode;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -300,30 +418,22 @@ mod tests {
     async fn create_account_persists_projection(pool: sqlx::SqlitePool) {
         let svc = AccountService::new(pool.clone());
         let id = svc
-            .create(
-                "Checking",
-                bc_models::AccountType::Asset,
-                CommodityCode::new("AUD"),
-                None,
-            )
+            .create("Checking", bc_models::AccountType::Asset, None)
             .await
             .expect("create should succeed");
 
         let found = svc.find_by_id(&id).await.expect("find should succeed");
         assert_eq!(found.name(), "Checking");
         assert!(found.is_active());
+        assert!(found.commodities().is_empty());
+        assert!(found.tag_ids().is_empty());
     }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn archive_account_sets_archived_at(pool: sqlx::SqlitePool) {
         let svc = AccountService::new(pool.clone());
         let id = svc
-            .create(
-                "Old Account",
-                bc_models::AccountType::Liability,
-                CommodityCode::new("USD"),
-                None,
-            )
+            .create("Old Account", bc_models::AccountType::Liability, None)
             .await
             .expect("create should succeed");
 
@@ -331,5 +441,23 @@ mod tests {
 
         let found = svc.find_by_id(&id).await.expect("find should succeed");
         assert!(!found.is_active());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn list_active_excludes_archived(pool: sqlx::SqlitePool) {
+        let svc = AccountService::new(pool.clone());
+        let _id1 = svc
+            .create("Active", bc_models::AccountType::Asset, None)
+            .await
+            .expect("create should succeed");
+        let id2 = svc
+            .create("Archived", bc_models::AccountType::Expense, None)
+            .await
+            .expect("create should succeed");
+        svc.archive(&id2).await.expect("archive should succeed");
+
+        let active = svc.list_active().await.expect("list should succeed");
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].name(), "Active");
     }
 }

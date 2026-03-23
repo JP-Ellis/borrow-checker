@@ -106,7 +106,6 @@ impl TransactionService {
         let payload = serde_json::to_string(&event)?;
         let now = Timestamp::now();
 
-        let tags_json = serde_json::to_string(&tx.tag_ids())?;
         let date_str = tx.date().to_string();
         let created_at_str = tx.created_at().to_string();
 
@@ -124,14 +123,13 @@ impl TransactionService {
         .await?;
 
         sqlx::query(
-            "INSERT INTO transactions (id, date, payee, description, status, tags, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO transactions (id, date, payee, description, status, created_at) VALUES (?, ?, ?, ?, ?, ?)"
         )
         .bind(tx_id.to_string())
         .bind(&date_str)
         .bind(tx.payee())
         .bind(tx.description())
         .bind(status_to_str(tx.status())?)
-        .bind(&tags_json)
         .bind(&created_at_str)
         .execute(&mut *db_tx)
         .await?;
@@ -164,8 +162,8 @@ impl TransactionService {
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
     pub async fn find_by_id(&self, id: &TransactionId) -> BcResult<Transaction> {
-        let maybe_tx_row = sqlx::query_as::<_, (String, String, Option<String>, String, String, String, String)>(
-            "SELECT id, date, payee, description, status, tags, created_at FROM transactions WHERE id = ?"
+        let maybe_tx_row = sqlx::query_as::<_, (String, String, Option<String>, String, String, String)>(
+            "SELECT id, date, payee, description, status, created_at FROM transactions WHERE id = ?"
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -185,13 +183,10 @@ impl TransactionService {
 
         let status = status_from_str(&tx_row.4)?;
 
-        // tags column stores a JSON array; ignored until Task 12 wires TagIds properly
-        let _tags_raw = &tx_row.5;
-
         let created_at = tx_row
-            .6
+            .5
             .parse::<Timestamp>()
-            .map_err(|e| BcError::BadData(format!("invalid created_at '{}': {e}", tx_row.6)))?;
+            .map_err(|e| BcError::BadData(format!("invalid created_at '{}': {e}", tx_row.5)))?;
 
         // Fetch postings
         let posting_rows = sqlx::query_as::<_, (String, String, String, String, Option<String>)>(
@@ -328,21 +323,11 @@ mod tests {
     async fn create_balanced_transaction_succeeds(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::AccountService::new(pool.clone());
         let acc_a = acct_svc
-            .create(
-                "Income",
-                AccountType::Income,
-                CommodityCode::new("AUD"),
-                None,
-            )
+            .create("Income", AccountType::Income, None)
             .await
             .expect("create Income account should succeed");
         let acc_b = acct_svc
-            .create(
-                "Checking",
-                AccountType::Asset,
-                CommodityCode::new("AUD"),
-                None,
-            )
+            .create("Checking", AccountType::Asset, None)
             .await
             .expect("create Checking account should succeed");
 
