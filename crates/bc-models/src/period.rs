@@ -65,6 +65,7 @@ impl Period {
     ///
     /// Returns [`BuildError::CustomNoDuration`] if all three are `None`.
     #[inline]
+    #[must_use]
     pub fn custom(
         days: Option<u32>,
         weeks: Option<u32>,
@@ -87,6 +88,7 @@ impl Period {
     /// Returns [`BuildError::InvalidMonth`] if `start_month` is outside 1–12.
     /// Returns [`BuildError::InvalidDay`] if `start_day` is outside 1–28.
     #[inline]
+    #[must_use]
     pub fn financial_year(start_month: u8, start_day: u8) -> Result<Self, BuildError> {
         if !(1..=12).contains(&start_month) {
             return Err(BuildError::InvalidMonth(start_month));

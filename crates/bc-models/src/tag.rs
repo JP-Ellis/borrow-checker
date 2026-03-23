@@ -79,6 +79,7 @@ impl Tag {
 ///
 /// Re-exported from the crate root as [`crate::TagForest`].
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct Forest(Vec<Tag>);
 
 impl Forest {
