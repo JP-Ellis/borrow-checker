@@ -1,8 +1,7 @@
 //! Transaction service with double-entry validation.
 
 use bc_models::{
-    AccountId, EventId, Posting, Transaction, TransactionStatus,
-    ids::{PostingId, TransactionId},
+    AccountId, EventId, Posting, PostingId, Transaction, TransactionId, TransactionStatus,
     money::{Amount, CommodityCode},
 };
 use jiff::Timestamp;
@@ -57,8 +56,8 @@ fn validate_balance(postings: &[Posting]) -> BcResult<()> {
 
     let mut sums: std::collections::BTreeMap<&str, Decimal> = std::collections::BTreeMap::new();
     for p in postings {
-        let entry: &mut Decimal = sums.entry(p.amount.commodity.as_str()).or_default();
-        *entry = entry.saturating_add(p.amount.value);
+        let entry: &mut Decimal = sums.entry(p.amount().commodity.as_str()).or_default();
+        *entry = entry.saturating_add(p.amount().value);
     }
     for (commodity, sum) in &sums {
         if !sum.is_zero() {
@@ -99,17 +98,17 @@ impl TransactionService {
     /// Returns [`BcError`] on event append or database insert failure.
     #[inline]
     pub async fn create(&self, tx: Transaction) -> BcResult<TransactionId> {
-        validate_balance(&tx.postings)?;
+        validate_balance(tx.postings())?;
 
-        let tx_id = tx.id.clone();
+        let tx_id = tx.id().clone();
         let event_id = EventId::new().to_string();
         let event = Event::TransactionCreated { id: tx_id.clone() };
         let payload = serde_json::to_string(&event)?;
         let now = Timestamp::now();
 
-        let tags_json = serde_json::to_string(&tx.tags)?;
-        let date_str = tx.date.to_string();
-        let created_at_str = tx.created_at.to_string();
+        let tags_json = serde_json::to_string(&tx.tag_ids())?;
+        let date_str = tx.date().to_string();
+        let created_at_str = tx.created_at().to_string();
 
         let mut db_tx = self.pool.begin().await?;
 
@@ -129,24 +128,24 @@ impl TransactionService {
         )
         .bind(tx_id.to_string())
         .bind(&date_str)
-        .bind(&tx.payee)
-        .bind(&tx.description)
-        .bind(status_to_str(tx.status)?)
+        .bind(tx.payee())
+        .bind(tx.description())
+        .bind(status_to_str(tx.status())?)
         .bind(&tags_json)
         .bind(&created_at_str)
         .execute(&mut *db_tx)
         .await?;
 
-        for (position, posting) in tx.postings.iter().enumerate() {
+        for (position, posting) in tx.postings().iter().enumerate() {
             sqlx::query(
                 "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, memo, position) VALUES (?, ?, ?, ?, ?, ?, ?)"
             )
-            .bind(posting.id.to_string())
+            .bind(posting.id().to_string())
             .bind(tx_id.to_string())
-            .bind(posting.account_id.to_string())
-            .bind(posting.amount.value.to_string())
-            .bind(posting.amount.commodity.as_str())
-            .bind(posting.memo.as_deref())
+            .bind(posting.account_id().to_string())
+            .bind(posting.amount().value.to_string())
+            .bind(posting.amount().commodity.as_str())
+            .bind(posting.memo())
             .bind(i64::try_from(position).unwrap_or(i64::MAX))
             .execute(&mut *db_tx)
             .await?;
@@ -186,8 +185,8 @@ impl TransactionService {
 
         let status = status_from_str(&tx_row.4)?;
 
-        let tags: Vec<String> = serde_json::from_str(&tx_row.5)
-            .map_err(|e| BcError::BadData(format!("invalid tags '{}': {e}", tx_row.5)))?;
+        // tags column stores a JSON array; ignored until Task 12 wires TagIds properly
+        let _tags_raw = &tx_row.5;
 
         let created_at = tx_row
             .6
@@ -215,13 +214,24 @@ impl TransactionService {
                     .parse::<Decimal>()
                     .map_err(|e| BcError::BadData(format!("invalid amount '{amount_str}': {e}")))?;
                 let amount = Amount::new(value, CommodityCode::new(commodity));
-                Ok(Posting::new(posting_id, acc_id, amount, memo))
+                Ok(Posting::builder()
+                    .id(posting_id)
+                    .account_id(acc_id)
+                    .amount(amount)
+                    .maybe_memo(memo)
+                    .build())
             })
             .collect::<BcResult<Vec<_>>>()?;
 
-        Ok(Transaction::new(
-            tx_id, date, tx_row.2, tx_row.3, postings, status, tags, created_at,
-        ))
+        Ok(Transaction::builder()
+            .id(tx_id)
+            .date(date)
+            .maybe_payee(tx_row.2)
+            .description(tx_row.3)
+            .postings(postings)
+            .status(status)
+            .created_at(created_at)
+            .build())
     }
 
     /// Voids a transaction by setting its status to `voided`.
@@ -282,8 +292,7 @@ impl TransactionService {
 #[cfg(test)]
 mod tests {
     use bc_models::{
-        AccountId, AccountType, Posting, Transaction, TransactionStatus,
-        ids::PostingId,
+        AccountId, AccountType, Posting, PostingId, Transaction, TransactionStatus,
         money::{Amount, CommodityCode},
     };
     use jiff::civil::date;
@@ -294,29 +303,25 @@ mod tests {
 
     fn make_balanced_transaction(acc_a: AccountId, acc_b: AccountId) -> Transaction {
         use jiff::Timestamp;
-        Transaction::new(
-            bc_models::TransactionId::new(),
-            date(2026, 1, 15),
-            None,
-            "Test".to_owned(),
-            vec![
-                Posting::new(
-                    PostingId::new(),
-                    acc_a,
-                    Amount::new(dec!(100.00), CommodityCode::new("AUD")),
-                    None,
-                ),
-                Posting::new(
-                    PostingId::new(),
-                    acc_b,
-                    Amount::new(dec!(-100.00), CommodityCode::new("AUD")),
-                    None,
-                ),
-            ],
-            TransactionStatus::Cleared,
-            vec![],
-            Timestamp::now(),
-        )
+        Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Test")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_a)
+                    .amount(Amount::new(dec!(100.00), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_b)
+                    .amount(Amount::new(dec!(-100.00), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .status(TransactionStatus::Cleared)
+            .created_at(Timestamp::now())
+            .build()
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -343,34 +348,33 @@ mod tests {
 
         let svc = TransactionService::new(pool.clone());
         let tx = make_balanced_transaction(acc_a, acc_b);
-        let id = tx.id.clone();
+        let id = tx.id().clone();
         svc.create(tx)
             .await
             .expect("balanced transaction should succeed");
 
         let found = svc.find_by_id(&id).await.expect("find should succeed");
-        assert_eq!(found.postings.len(), 2);
+        assert_eq!(found.postings().len(), 2);
     }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn create_unbalanced_transaction_fails(pool: sqlx::SqlitePool) {
         use jiff::Timestamp;
         let svc = TransactionService::new(pool.clone());
-        let tx = Transaction::new(
-            bc_models::TransactionId::new(),
-            date(2026, 1, 15),
-            None,
-            "Unbalanced".to_owned(),
-            vec![Posting::new(
-                PostingId::new(),
-                AccountId::new(),
-                Amount::new(dec!(50.00), CommodityCode::new("AUD")),
-                None,
-            )],
-            TransactionStatus::Cleared,
-            vec![],
-            Timestamp::now(),
-        );
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Unbalanced")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .amount(Amount::new(dec!(50.00), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .status(TransactionStatus::Cleared)
+            .created_at(Timestamp::now())
+            .build();
         let result = svc.create(tx).await;
         assert!(matches!(result, Err(BcError::UnbalancedTransaction)));
     }

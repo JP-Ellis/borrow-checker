@@ -71,7 +71,7 @@ mod profile;
 mod tag;
 mod transaction;
 
-// IDs still come from ids.rs while migration is in progress
+// ids.rs is empty after migration; retained until Task 8 removes it
 pub mod ids;
 
 pub mod settings;
@@ -81,11 +81,13 @@ pub use account::{
 };
 pub use commodity::{Commodity, CommodityId};
 pub use event::EventId;
-pub use ids::{PostingId, TransactionId};
 pub use import_batch::ImportBatchId;
 pub use money::{Amount, CommodityCode, Decimal};
 pub use period::Period;
 pub use profile::ProfileId;
 pub use settings::GlobalSettings;
 pub use tag::{Forest as TagForest, ParseError as TagPathError, Path as TagPath, Tag, TagId};
-pub use transaction::{Posting, Transaction, TransactionStatus};
+pub use transaction::{
+    Cost, Link as TransactionLink, LinkType as TransactionLinkType, Posting, PostingId,
+    Status as TransactionStatus, Transaction, TransactionId, TransactionLinkId,
+};
