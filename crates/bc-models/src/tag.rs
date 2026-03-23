@@ -1,10 +1,178 @@
-//! Hierarchical tag path types.
+//! Tag entity and hierarchical tag path types.
 //!
 //! These types are re-exported from the crate root with fuller names:
+//! - [`crate::Tag`] for [`Tag`]
+//! - [`crate::TagId`] for [`TagId`]
+//! - [`crate::TagForest`] for [`Forest`]
 //! - [`crate::TagPath`] for [`Path`]
 //! - [`crate::TagPathError`] for [`ParseError`]
 
 use core::{fmt, str::FromStr};
+
+use jiff::Timestamp;
+use mti::prelude::*;
+use serde::{Deserialize, Serialize};
+
+crate::define_id!(TagId, "tag");
+
+/// A named tag entity with optional parent for hierarchy.
+///
+/// Re-exported from the crate root as [`crate::TagId`] and [`crate::Tag`].
+#[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct Tag {
+    /// The unique identifier for this tag.
+    id: TagId,
+    /// Leaf segment only (e.g. `"commbank"`, not `"institution:commbank"`).
+    #[builder(into)]
+    name: String,
+    /// Parent tag ID; `None` means this is a root tag.
+    parent_id: Option<TagId>,
+    /// Optional human-readable description.
+    #[builder(into)]
+    description: Option<String>,
+    /// When this tag was created.
+    created_at: Timestamp,
+}
+
+impl Tag {
+    /// Returns the tag ID.
+    #[inline]
+    #[must_use]
+    pub fn id(&self) -> &TagId {
+        &self.id
+    }
+
+    /// Returns the leaf name segment.
+    #[inline]
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the parent tag ID, if any.
+    #[inline]
+    #[must_use]
+    pub fn parent_id(&self) -> Option<&TagId> {
+        self.parent_id.as_ref()
+    }
+
+    /// Returns the description, if any.
+    #[inline]
+    #[must_use]
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    /// Returns the creation timestamp.
+    #[inline]
+    #[must_use]
+    pub fn created_at(&self) -> &Timestamp {
+        &self.created_at
+    }
+}
+
+/// A collection of [`Tag`] entities supporting hierarchy traversal.
+///
+/// Load all tags from `bc-core`, wrap them in a `Forest`, then use the
+/// methods here for path computation and tree navigation.
+///
+/// Re-exported from the crate root as [`crate::TagForest`].
+#[derive(Debug, Clone, Default)]
+pub struct Forest(Vec<Tag>);
+
+impl Forest {
+    /// Constructs a forest from a flat list of tags (any order).
+    #[inline]
+    #[must_use]
+    pub fn new(tags: Vec<Tag>) -> Self {
+        Self(tags)
+    }
+
+    /// Looks up a tag by ID.
+    #[inline]
+    #[must_use]
+    pub fn get(&self, id: &TagId) -> Option<&Tag> {
+        self.0.iter().find(|t| t.id() == id)
+    }
+
+    /// Computes the full colon-separated path for a tag.
+    ///
+    /// Returns `None` if the tag is not in this forest.
+    #[inline]
+    #[must_use]
+    pub fn path_of(&self, id: &TagId) -> Option<Path> {
+        let mut segments: Vec<String> = Vec::new();
+        let mut current_id = Some(id.clone());
+        while let Some(cid) = current_id {
+            let tag = self.get(&cid)?;
+            segments.push(tag.name().to_owned());
+            current_id = tag.parent_id().cloned();
+        }
+        segments.reverse();
+        Path::new(segments).ok()
+    }
+
+    /// Iterates from a tag up to its root (nearest-first, inclusive).
+    #[inline]
+    pub fn ancestors_of(&self, id: &TagId) -> impl Iterator<Item = &Tag> {
+        let mut chain: Vec<&Tag> = Vec::new();
+        let mut current_id: Option<TagId> = Some(id.clone());
+        while let Some(cid) = current_id {
+            match self.get(&cid) {
+                Some(tag) => {
+                    chain.push(tag);
+                    current_id = tag.parent_id().cloned();
+                }
+                None => break,
+            }
+        }
+        chain.into_iter()
+    }
+
+    /// Returns the root tag in the ancestor chain of `id`.
+    #[inline]
+    #[must_use]
+    pub fn root_of(&self, id: &TagId) -> Option<&Tag> {
+        self.ancestors_of(id).last()
+    }
+
+    /// Iterates over tags with the same parent as `id`, excluding `id` itself.
+    #[inline]
+    pub fn siblings_of<'a>(&'a self, id: &TagId) -> impl Iterator<Item = &'a Tag> {
+        let parent = self.get(id).and_then(|t| t.parent_id()).cloned();
+        let target = id.clone();
+        self.0.iter().filter(move |t| {
+            t.id() != &target && t.parent_id().cloned() == parent && parent.is_some()
+        })
+    }
+
+    /// Iterates over direct children of `id`.
+    #[inline]
+    pub fn children_of<'a>(&'a self, id: &TagId) -> impl Iterator<Item = &'a Tag> {
+        let target = id.clone();
+        self.0
+            .iter()
+            .filter(move |t| t.parent_id() == Some(&target))
+    }
+
+    /// Iterates over all descendants of `id` (depth-first).
+    #[inline]
+    pub fn descendants_of<'a>(&'a self, id: &TagId) -> impl Iterator<Item = &'a Tag> {
+        let all_tags: &'a [Tag] = &self.0;
+        let mut stack: Vec<&'a Tag> = all_tags
+            .iter()
+            .filter(|t| t.parent_id() == Some(id))
+            .collect();
+        core::iter::from_fn(move || {
+            let tag = stack.pop()?;
+            for child in all_tags.iter().filter(|t| t.parent_id() == Some(tag.id())) {
+                stack.push(child);
+            }
+            Some(tag)
+        })
+    }
+}
 
 /// Error returned when constructing a [`crate::TagPath`] with invalid segments.
 ///
@@ -181,6 +349,151 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn tag_id_has_correct_prefix() {
+        assert!(TagId::new().to_string().starts_with("tag_"));
+    }
+
+    #[test]
+    fn tag_builder_creates_root_tag() {
+        use jiff::Timestamp;
+        let tag = Tag::builder()
+            .id(TagId::new())
+            .name("institution")
+            .created_at(Timestamp::now())
+            .build();
+        assert_eq!(tag.name(), "institution");
+        assert!(tag.parent_id().is_none());
+    }
+
+    #[test]
+    fn tag_forest_path_of_root() {
+        use jiff::Timestamp;
+        let id = TagId::new();
+        let tag = Tag::builder()
+            .id(id.clone())
+            .name("institution")
+            .created_at(Timestamp::now())
+            .build();
+        let forest = Forest::new(vec![tag]);
+        let path = forest.path_of(&id).expect("tag exists");
+        assert_eq!(path.to_string(), "institution");
+    }
+
+    #[test]
+    fn tag_forest_path_of_child() {
+        use jiff::Timestamp;
+        let parent_id = TagId::new();
+        let child_id = TagId::new();
+        let parent = Tag::builder()
+            .id(parent_id.clone())
+            .name("institution")
+            .created_at(Timestamp::now())
+            .build();
+        let child = Tag::builder()
+            .id(child_id.clone())
+            .name("commbank")
+            .parent_id(parent_id.clone())
+            .created_at(Timestamp::now())
+            .build();
+        let forest = Forest::new(vec![parent, child]);
+        let path = forest.path_of(&child_id).expect("child exists");
+        assert_eq!(path.to_string(), "institution:commbank");
+    }
+
+    #[test]
+    fn tag_forest_root_of_nested_tag() {
+        use jiff::Timestamp;
+        let root_id = TagId::new();
+        let mid_id = TagId::new();
+        let leaf_id = TagId::new();
+        let root = Tag::builder()
+            .id(root_id.clone())
+            .name("a")
+            .created_at(Timestamp::now())
+            .build();
+        let mid = Tag::builder()
+            .id(mid_id.clone())
+            .name("b")
+            .parent_id(root_id.clone())
+            .created_at(Timestamp::now())
+            .build();
+        let leaf = Tag::builder()
+            .id(leaf_id.clone())
+            .name("c")
+            .parent_id(mid_id)
+            .created_at(Timestamp::now())
+            .build();
+        let forest = Forest::new(vec![root, mid, leaf]);
+        let found_root = forest.root_of(&leaf_id).expect("root exists");
+        assert_eq!(found_root.name(), "a");
+    }
+
+    #[test]
+    fn tag_forest_siblings() {
+        use jiff::Timestamp;
+        let parent_id = TagId::new();
+        let a_id = TagId::new();
+        let b_id = TagId::new();
+        let parent = Tag::builder()
+            .id(parent_id.clone())
+            .name("p")
+            .created_at(Timestamp::now())
+            .build();
+        let a = Tag::builder()
+            .id(a_id.clone())
+            .name("a")
+            .parent_id(parent_id.clone())
+            .created_at(Timestamp::now())
+            .build();
+        let b = Tag::builder()
+            .id(b_id.clone())
+            .name("b")
+            .parent_id(parent_id.clone())
+            .created_at(Timestamp::now())
+            .build();
+        let forest = Forest::new(vec![parent, a, b]);
+        let siblings: Vec<_> = forest.siblings_of(&a_id).collect();
+        assert_eq!(siblings.len(), 1);
+        assert_eq!(siblings.first().expect("one sibling exists").name(), "b");
+    }
+
+    #[test]
+    fn tag_forest_descendants() {
+        use jiff::Timestamp;
+        let root_id = TagId::new();
+        let child1_id = TagId::new();
+        let child2_id = TagId::new();
+        let grandchild_id = TagId::new();
+        let root = Tag::builder()
+            .id(root_id.clone())
+            .name("root")
+            .created_at(Timestamp::now())
+            .build();
+        let c1 = Tag::builder()
+            .id(child1_id.clone())
+            .name("c1")
+            .parent_id(root_id.clone())
+            .created_at(Timestamp::now())
+            .build();
+        let c2 = Tag::builder()
+            .id(child2_id.clone())
+            .name("c2")
+            .parent_id(root_id.clone())
+            .created_at(Timestamp::now())
+            .build();
+        let gc = Tag::builder()
+            .id(grandchild_id.clone())
+            .name("gc")
+            .parent_id(child1_id.clone())
+            .created_at(Timestamp::now())
+            .build();
+        let forest = Forest::new(vec![root, c1, c2, gc]);
+        let descendants: Vec<_> = forest.descendants_of(&root_id).collect();
+        // Should include c1, c2, and gc (3 total)
+        assert_eq!(descendants.len(), 3);
+    }
 
     #[test]
     fn single_segment_displays_without_colon() {
