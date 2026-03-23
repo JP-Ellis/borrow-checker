@@ -57,7 +57,7 @@ impl BalanceEngine {
 
 #[cfg(test)]
 mod tests {
-    use bc_models::{AccountType, CommodityCode};
+    use bc_models::AccountType;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
@@ -67,26 +67,16 @@ mod tests {
     async fn balance_reflects_transactions(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::AccountService::new(pool.clone());
         let acc_a = acct_svc
-            .create(
-                "Wallet",
-                AccountType::Asset,
-                CommodityCode::new("AUD"),
-                None,
-            )
+            .create("Wallet", AccountType::Asset, None)
             .await
             .expect("create Wallet account should succeed");
         let acc_b = acct_svc
-            .create(
-                "Income",
-                AccountType::Income,
-                CommodityCode::new("AUD"),
-                None,
-            )
+            .create("Income", AccountType::Income, None)
             .await
             .expect("create Income account should succeed");
 
         // Insert a transaction directly for simplicity
-        sqlx::query("INSERT INTO transactions (id, date, description, status, tags, created_at) VALUES ('tx_1', '2026-01-01', 'Test', 'cleared', '[]', '2026-01-01T00:00:00Z')")
+        sqlx::query("INSERT INTO transactions (id, date, description, status, created_at) VALUES ('tx_1', '2026-01-01', 'Test', 'cleared', '2026-01-01T00:00:00Z')")
             .execute(&pool).await.expect("insert transaction should succeed");
         sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p1', 'tx_1', ?, '100.00', 'AUD', 0)")
             .bind(acc_a.to_string()).execute(&pool).await.expect("insert posting p1 should succeed");
