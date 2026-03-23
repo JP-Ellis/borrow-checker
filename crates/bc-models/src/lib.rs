@@ -77,9 +77,12 @@ pub mod ids;
 pub mod settings;
 
 pub use account::{Account, AccountType};
-pub use ids::{AccountId, EventId, ImportBatchId, PostingId, ProfileId, TransactionId};
+pub use event::EventId;
+pub use ids::{AccountId, PostingId, TransactionId};
+pub use import_batch::ImportBatchId;
 pub use money::{Amount, CommodityCode, Decimal};
 pub use period::Period;
+pub use profile::ProfileId;
 pub use settings::GlobalSettings;
 pub use tag::{ParseError as TagPathError, Path as TagPath};
 pub use transaction::{Posting, Transaction, TransactionStatus};
