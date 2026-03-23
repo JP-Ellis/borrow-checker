@@ -59,10 +59,7 @@ macro_rules! define_id {
 }
 
 define_id!(AccountId, "account");
-define_id!(EventId, "event");
-define_id!(ImportBatchId, "import_batch");
 define_id!(PostingId, "posting");
-define_id!(ProfileId, "profile");
 define_id!(TransactionId, "transaction");
 
 #[cfg(test)]
@@ -107,50 +104,6 @@ mod tests {
         assert_json_snapshot!(id, @r#""account_[id]""#);
     }
 
-    // MARK: EventId
-
-    #[test]
-    fn event_id_has_correct_prefix() {
-        let id = EventId::new();
-        assert!(id.to_string().starts_with("event_"));
-    }
-
-    #[test]
-    fn event_id_roundtrip_display_parse() {
-        let id = EventId::new();
-        let s = id.to_string();
-        let parsed: EventId = s.parse().expect("valid EventId string");
-        assert_eq!(id, parsed);
-    }
-
-    #[test]
-    fn event_id_serialize() {
-        let id = EventId::new();
-        assert_json_snapshot!(id, @r#""event_[id]""#);
-    }
-
-    // MARK: ImportBatchId
-
-    #[test]
-    fn import_batch_id_has_correct_prefix() {
-        let id = ImportBatchId::new();
-        assert!(id.to_string().starts_with("import_batch_"));
-    }
-
-    #[test]
-    fn import_batch_id_roundtrip_display_parse() {
-        let id = ImportBatchId::new();
-        let s = id.to_string();
-        let parsed: ImportBatchId = s.parse().expect("valid ImportBatchId string");
-        assert_eq!(id, parsed);
-    }
-
-    #[test]
-    fn import_batch_id_serialize() {
-        let id = ImportBatchId::new();
-        assert_json_snapshot!(id, @r#""import_batch_[id]""#);
-    }
-
     // MARK: PostingId
 
     #[test]
@@ -171,28 +124,6 @@ mod tests {
     fn posting_id_serialize() {
         let id = PostingId::new();
         assert_json_snapshot!(id, @r#""posting_[id]""#);
-    }
-
-    // MARK: ProfileId
-
-    #[test]
-    fn profile_id_has_correct_prefix() {
-        let id = ProfileId::new();
-        assert!(id.to_string().starts_with("profile_"));
-    }
-
-    #[test]
-    fn profile_id_roundtrip_display_parse() {
-        let id = ProfileId::new();
-        let s = id.to_string();
-        let parsed: ProfileId = s.parse().expect("valid ProfileId string");
-        assert_eq!(id, parsed);
-    }
-
-    #[test]
-    fn profile_id_serialize() {
-        let id = ProfileId::new();
-        assert_json_snapshot!(id, @r#""profile_[id]""#);
     }
 
     // MARK: TransactionId
