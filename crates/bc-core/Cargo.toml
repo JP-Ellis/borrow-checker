@@ -11,6 +11,7 @@ repository.workspace   = true
 license.workspace      = true
 
 [dependencies]
+bc-config    = { workspace = true }
 bc-models    = { workspace = true }
 jiff         = { workspace = true }
 rust_decimal = { workspace = true }
