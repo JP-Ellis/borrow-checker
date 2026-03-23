@@ -14,6 +14,10 @@ use crate::error::BcResult;
 /// Application-wide settings stored once per database.
 ///
 /// Temporary definition — will be replaced by `bc_config::Settings` in Task 13.
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "GlobalSettings is the canonical domain name; module path repetition is intentional"
+)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct GlobalSettings {
