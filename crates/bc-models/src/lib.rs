@@ -85,5 +85,5 @@ pub use money::{Amount, CommodityCode, Decimal};
 pub use period::Period;
 pub use profile::ProfileId;
 pub use settings::GlobalSettings;
-pub use tag::{ParseError as TagPathError, Path as TagPath};
+pub use tag::{Forest as TagForest, ParseError as TagPathError, Path as TagPath, Tag, TagId};
 pub use transaction::{Posting, Transaction, TransactionStatus};
