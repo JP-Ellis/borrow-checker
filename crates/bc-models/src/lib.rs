@@ -77,6 +77,7 @@ pub mod ids;
 pub mod settings;
 
 pub use account::{Account, AccountType};
+pub use commodity::CommodityId;
 pub use event::EventId;
 pub use ids::{AccountId, PostingId, TransactionId};
 pub use import_batch::ImportBatchId;
