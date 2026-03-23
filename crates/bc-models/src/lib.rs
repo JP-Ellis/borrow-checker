@@ -65,16 +65,11 @@ mod account;
 mod commodity;
 mod event;
 mod import_batch;
-pub mod money;
+mod money;
 mod period;
 mod profile;
 mod tag;
 mod transaction;
-
-// ids.rs is empty after migration; retained until Task 8 removes it
-pub mod ids;
-
-pub mod settings;
 
 pub use account::{
     Account, AccountId, Type as AccountType, ValidationError as AccountValidationError,
@@ -85,7 +80,6 @@ pub use import_batch::ImportBatchId;
 pub use money::{Amount, CommodityCode, Decimal};
 pub use period::Period;
 pub use profile::ProfileId;
-pub use settings::GlobalSettings;
 pub use tag::{Forest as TagForest, ParseError as TagPathError, Path as TagPath, Tag, TagId};
 pub use transaction::{
     Cost, Link as TransactionLink, LinkType as TransactionLinkType, Posting, PostingId,

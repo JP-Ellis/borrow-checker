@@ -57,7 +57,7 @@ impl BalanceEngine {
 
 #[cfg(test)]
 mod tests {
-    use bc_models::{AccountType, money::CommodityCode};
+    use bc_models::{AccountType, CommodityCode};
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
