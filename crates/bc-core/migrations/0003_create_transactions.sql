@@ -13,12 +13,12 @@ CREATE TABLE IF NOT EXISTS postings (
     transaction_id       TEXT    NOT NULL REFERENCES transactions(id),
     account_id           TEXT    NOT NULL REFERENCES accounts(id),
     amount               TEXT    NOT NULL, -- decimal string
-    commodity            TEXT    NOT NULL,
+    commodity            TEXT    NOT NULL, -- CommodityCode (e.g. "AUD"); not FK to commodities
     memo                 TEXT,
     position             INTEGER NOT NULL DEFAULT 0,
     -- cost basis fields (all NULL if no commodity conversion)
     cost_total_value     TEXT,   -- decimal string
-    cost_total_commodity TEXT,
+    cost_total_commodity TEXT,             -- CommodityCode of the cost commodity; not FK
     cost_date            TEXT,   -- YYYY-MM-DD
     cost_label           TEXT
 );
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS transaction_tags (
     tag_id         TEXT NOT NULL REFERENCES tags(id),
     PRIMARY KEY (transaction_id, tag_id)
 );
+CREATE INDEX IF NOT EXISTS idx_transaction_tags_tag ON transaction_tags (tag_id);
 
 -- Posting ↔ tag membership
 CREATE TABLE IF NOT EXISTS posting_tags (
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS posting_tags (
     tag_id     TEXT NOT NULL REFERENCES tags(id),
     PRIMARY KEY (posting_id, tag_id)
 );
+CREATE INDEX IF NOT EXISTS idx_posting_tags_tag ON posting_tags (tag_id);
 
 -- Transaction link registry
 CREATE TABLE IF NOT EXISTS transaction_links (
