@@ -11,6 +11,7 @@ repository.workspace   = true
 license.workspace      = true
 
 [dependencies]
+bon          = { workspace = true }
 jiff         = { workspace = true }
 mti          = { workspace = true }
 rust_decimal = { workspace = true }
