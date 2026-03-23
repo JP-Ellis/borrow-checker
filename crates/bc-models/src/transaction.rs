@@ -3,15 +3,12 @@
 use jiff::{Timestamp, civil::Date};
 
 use crate::{
-    ids::{AccountId, PostingId, TransactionId},
+    AccountId,
+    ids::{PostingId, TransactionId},
     money::Amount,
 };
 
 /// The lifecycle status of a transaction.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "TransactionStatus is the canonical domain name regardless of module path"
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
@@ -118,7 +115,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        ids::{AccountId, PostingId},
+        AccountId,
+        ids::PostingId,
         money::{Amount, CommodityCode},
     };
 
