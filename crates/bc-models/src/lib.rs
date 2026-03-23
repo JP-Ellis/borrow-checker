@@ -76,10 +76,12 @@ pub mod ids;
 
 pub mod settings;
 
-pub use account::{Account, AccountType};
+pub use account::{
+    Account, AccountId, Type as AccountType, ValidationError as AccountValidationError,
+};
 pub use commodity::{Commodity, CommodityId};
 pub use event::EventId;
-pub use ids::{AccountId, PostingId, TransactionId};
+pub use ids::{PostingId, TransactionId};
 pub use import_batch::ImportBatchId;
 pub use money::{Amount, CommodityCode, Decimal};
 pub use period::Period;
