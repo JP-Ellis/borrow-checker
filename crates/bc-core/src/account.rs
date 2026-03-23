@@ -1,6 +1,6 @@
 //! Account projection service.
 
-use bc_models::{Account, AccountType, EventId, ids::AccountId, money::CommodityCode};
+use bc_models::{Account, AccountId, AccountType, EventId, money::CommodityCode};
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
@@ -50,7 +50,12 @@ struct AccountRow {
     name: String,
     /// Account type stored as `snake_case` string.
     account_type: String,
-    /// Commodity code string.
+    /// Commodity code string (retained for DB compatibility; not yet mapped to
+    /// `CommodityId` — will be wired up in Task 11).
+    #[expect(
+        dead_code,
+        reason = "retained for DB schema compatibility; full mapping in Task 11"
+    )]
     commodity: String,
     /// Optional description.
     description: Option<String>,
@@ -74,8 +79,6 @@ impl AccountRow {
 
         let account_type = account_type_from_str(&self.account_type)?;
 
-        let commodity = CommodityCode::new(self.commodity);
-
         let created_at = self.created_at.parse::<Timestamp>().map_err(|e| {
             BcError::BadData(format!("invalid created_at '{}': {e}", self.created_at))
         })?;
@@ -89,17 +92,14 @@ impl AccountRow {
             })
             .transpose()?;
 
-        Ok(Account::new(
-            id,
-            self.name,
-            account_type,
-            commodity,
-            self.description,
-            None,
-            vec![],
-            created_at,
-            archived_at,
-        ))
+        Ok(Account::builder()
+            .id(id)
+            .name(self.name)
+            .account_type(account_type)
+            .maybe_description(self.description)
+            .maybe_archived_at(archived_at)
+            .created_at(created_at)
+            .build())
     }
 }
 
@@ -310,7 +310,7 @@ mod tests {
             .expect("create should succeed");
 
         let found = svc.find_by_id(&id).await.expect("find should succeed");
-        assert_eq!(found.name, "Checking");
+        assert_eq!(found.name(), "Checking");
         assert!(found.is_active());
     }
 

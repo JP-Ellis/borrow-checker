@@ -8,7 +8,6 @@ use core::{fmt, str::FromStr};
 use mti::prelude::*;
 use serde::{Deserialize, Serialize};
 
-crate::define_id!(AccountId, "account");
 crate::define_id!(PostingId, "posting");
 crate::define_id!(TransactionId, "transaction");
 
@@ -30,28 +29,6 @@ mod tests {
                 insta::assert_json_snapshot!($value, @$snapshot);
             });
         }
-    }
-
-    // MARK: AccountId
-
-    #[test]
-    fn account_id_has_correct_prefix() {
-        let id = AccountId::new();
-        assert!(id.to_string().starts_with("account_"));
-    }
-
-    #[test]
-    fn account_id_roundtrip_display_parse() {
-        let id = AccountId::new();
-        let s = id.to_string();
-        let parsed: AccountId = s.parse().expect("valid AccountId string");
-        assert_eq!(id, parsed);
-    }
-
-    #[test]
-    fn account_id_serialize() {
-        let id = AccountId::new();
-        assert_json_snapshot!(id, @r#""account_[id]""#);
     }
 
     // MARK: PostingId

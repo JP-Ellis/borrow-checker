@@ -1,9 +1,6 @@
 //! Append-only event log and event types.
 
-use bc_models::{
-    EventId,
-    ids::{AccountId, TransactionId},
-};
+use bc_models::{AccountId, EventId, ids::TransactionId};
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
@@ -157,7 +154,7 @@ impl SqliteEventStore {
 
 #[cfg(test)]
 mod tests {
-    use bc_models::ids::AccountId;
+    use bc_models::AccountId;
     use pretty_assertions::assert_eq;
 
     use super::*;

@@ -1,8 +1,8 @@
 //! Transaction service with double-entry validation.
 
 use bc_models::{
-    EventId, Posting, Transaction, TransactionStatus,
-    ids::{AccountId, PostingId, TransactionId},
+    AccountId, EventId, Posting, Transaction, TransactionStatus,
+    ids::{PostingId, TransactionId},
     money::{Amount, CommodityCode},
 };
 use jiff::Timestamp;
@@ -282,8 +282,8 @@ impl TransactionService {
 #[cfg(test)]
 mod tests {
     use bc_models::{
-        AccountType, Posting, Transaction, TransactionStatus,
-        ids::{AccountId, PostingId},
+        AccountId, AccountType, Posting, Transaction, TransactionStatus,
+        ids::PostingId,
         money::{Amount, CommodityCode},
     };
     use jiff::civil::date;

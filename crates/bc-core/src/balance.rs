@@ -1,6 +1,6 @@
 //! Balance calculation engine.
 
-use bc_models::ids::AccountId;
+use bc_models::AccountId;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
