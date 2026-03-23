@@ -96,15 +96,16 @@ impl Link {
 /// `total` is the cost in the *cost commodity* (the commodity given up).
 /// Unit price = `total.value / posting.amount.value` (derive on demand).
 /// `bc-core` must ensure `posting.amount.value != 0` when cost is present.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Cost {
     /// Total acquisition cost in the cost commodity (given up / paid).
-    pub total: Amount,
+    total: Amount,
     /// Optional lot date for FIFO/LIFO tracking.
-    pub date: Option<Date>,
+    date: Option<Date>,
     /// Optional lot label.
-    pub label: Option<String>,
+    #[builder(into)]
+    label: Option<String>,
 }
 
 impl Cost {
@@ -299,6 +300,78 @@ mod tests {
     use super::*;
     use crate::money::{Amount, CommodityCode};
 
+    // --- TransactionId ---
+
+    #[test]
+    fn transaction_id_has_correct_prefix() {
+        let id = TransactionId::new();
+        assert!(id.to_string().starts_with("transaction_"));
+    }
+
+    #[test]
+    fn transaction_id_round_trips_through_string() {
+        let id = TransactionId::new();
+        let s = id.to_string();
+        let parsed: TransactionId = s.parse().expect("parse should succeed");
+        assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn transaction_id_serializes_to_bare_string() {
+        let id = TransactionId::new();
+        let json = serde_json::to_string(&id).expect("serialize should succeed");
+        assert!(json.starts_with('"'));
+        assert!(!json.contains('{'));
+    }
+
+    // --- PostingId ---
+
+    #[test]
+    fn posting_id_has_correct_prefix() {
+        let id = PostingId::new();
+        assert!(id.to_string().starts_with("posting_"));
+    }
+
+    #[test]
+    fn posting_id_round_trips_through_string() {
+        let id = PostingId::new();
+        let s = id.to_string();
+        let parsed: PostingId = s.parse().expect("parse should succeed");
+        assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn posting_id_serializes_to_bare_string() {
+        let id = PostingId::new();
+        let json = serde_json::to_string(&id).expect("serialize should succeed");
+        assert!(json.starts_with('"'));
+        assert!(!json.contains('{'));
+    }
+
+    // --- TransactionLinkId ---
+
+    #[test]
+    fn transaction_link_id_has_correct_prefix() {
+        let id = TransactionLinkId::new();
+        assert!(id.to_string().starts_with("transaction_link_"));
+    }
+
+    #[test]
+    fn transaction_link_id_round_trips_through_string() {
+        let id = TransactionLinkId::new();
+        let s = id.to_string();
+        let parsed: TransactionLinkId = s.parse().expect("parse should succeed");
+        assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn transaction_link_id_serializes_to_bare_string() {
+        let id = TransactionLinkId::new();
+        let json = serde_json::to_string(&id).expect("serialize should succeed");
+        assert!(json.starts_with('"'));
+        assert!(!json.contains('{'));
+    }
+
     #[test]
     fn transaction_status_variants_exist() {
         _ = (Status::Pending, Status::Cleared, Status::Voided);
@@ -327,11 +400,9 @@ mod tests {
 
     #[test]
     fn cost_stores_total_in_cost_commodity() {
-        let cost = Cost {
-            total: Amount::new(dec!(1500), CommodityCode::new("USD")),
-            date: None,
-            label: None,
-        };
+        let cost = Cost::builder()
+            .total(Amount::new(dec!(1500), CommodityCode::new("USD")))
+            .build();
         assert_eq!(cost.total().value.to_string(), "1500");
     }
 
