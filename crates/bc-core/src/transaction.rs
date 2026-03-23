@@ -1,8 +1,8 @@
 //! Transaction service with double-entry validation.
 
 use bc_models::{
-    AccountId, EventId, Posting, PostingId, Transaction, TransactionId, TransactionStatus,
-    money::{Amount, CommodityCode},
+    AccountId, Amount, CommodityCode, EventId, Posting, PostingId, Transaction, TransactionId,
+    TransactionStatus,
 };
 use jiff::Timestamp;
 use rust_decimal::Decimal;
@@ -292,8 +292,8 @@ impl TransactionService {
 #[cfg(test)]
 mod tests {
     use bc_models::{
-        AccountId, AccountType, Posting, PostingId, Transaction, TransactionStatus,
-        money::{Amount, CommodityCode},
+        AccountId, AccountType, Amount, CommodityCode, Posting, PostingId, Transaction,
+        TransactionStatus,
     };
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
