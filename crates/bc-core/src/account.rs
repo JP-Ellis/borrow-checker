@@ -458,6 +458,7 @@ mod tests {
 
         let active = svc.list_active().await.expect("list should succeed");
         assert_eq!(active.len(), 1);
-        assert_eq!(active[0].name(), "Active");
+        let first = active.first().expect("one active account should exist");
+        assert_eq!(first.name(), "Active");
     }
 }
