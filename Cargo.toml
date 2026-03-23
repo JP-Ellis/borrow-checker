@@ -44,6 +44,7 @@ members  = [
   config              = { version = "0.14", default-features = false, features = [
     "toml"
   ] }
+  directories         = "6"
   insta               = { version = "1", features = [
     "filters",
     "json",

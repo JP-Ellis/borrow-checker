@@ -1,7 +1,9 @@
 //! Application configuration for BorrowChecker.
 //!
 //! Settings are loaded from a hierarchy: built-in defaults → user config
-//! file → local project file → environment variables (`BC_` prefix).
+//! file(s) → local project file → environment variables (`BC_` prefix).
+
+use std::path::PathBuf;
 
 use bc_models::CommodityCode;
 use jiff::civil::Date;
@@ -50,9 +52,15 @@ impl Settings {
     ///
     /// Sources (lowest to highest priority):
     /// 1. Built-in defaults
-    /// 2. `~/.config/borrow-checker/config.toml`
-    /// 3. `./borrow-checker.toml`
-    /// 4. Environment variables prefixed `BC_`
+    /// 2. `$XDG_CONFIG_HOME/borrow-checker/config.toml` (or `~/.config/…`
+    ///    when `XDG_CONFIG_HOME` is unset)
+    /// 3. Platform-native config directory (e.g.
+    ///    `~/Library/Application Support/borrow-checker/config.toml` on macOS)
+    /// 4. `./borrow-checker.toml`
+    /// 5. Environment variables prefixed `BC_`
+    ///
+    /// Steps 2 and 3 are deduplicated when they resolve to the same path
+    /// (common on Linux).  All file sources are optional.
     ///
     /// # Errors
     ///
@@ -60,21 +68,18 @@ impl Settings {
     /// out of range.
     #[inline]
     pub fn load() -> Result<Self, ConfigError> {
-        let home_config =
-            home_dir().map(|h| h.join(".config").join("borrow-checker").join("config.toml"));
-
         let mut builder = config::Config::builder()
             .set_default("financial_year_start_month", 7_i64)?
             .set_default("financial_year_start_day", 1_i64)?
             .set_default("fortnightly_anchor", Option::<String>::None)?
             .set_default("display_commodity", "AUD")?;
 
-        if let Some(path) = home_config {
+        for path in user_config_paths() {
             builder = builder.add_source(config::File::from(path).required(false));
         }
         builder = builder
             .add_source(config::File::with_name("borrow-checker").required(false))
-            .add_source(config::Environment::with_prefix("BC").separator("__"));
+            .add_source(config::Environment::with_prefix("BC").separator("_"));
 
         let raw: RawSettings = builder.build()?.try_deserialize()?;
         Self::validate(raw)
@@ -152,13 +157,45 @@ impl Default for Settings {
     }
 }
 
-/// Returns the user home directory by reading the `HOME` environment variable.
-fn home_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(std::path::PathBuf::from)
+/// Returns the ordered list of user config file paths to load.
+///
+/// Priority (lowest first, so later entries override earlier ones):
+/// 1. XDG path: `$XDG_CONFIG_HOME/borrow-checker/config.toml`, falling back
+///    to `~/.config/borrow-checker/config.toml` when `XDG_CONFIG_HOME` is
+///    unset (the XDG Base Directory default).
+/// 2. Platform-native path from the [`directories`] crate (e.g.
+///    `~/Library/Application Support/borrow-checker/config.toml` on macOS).
+///
+/// The two paths are deduplicated when they resolve to the same location,
+/// which is the common case on Linux (where `directories` already honours
+/// `XDG_CONFIG_HOME`).
+fn user_config_paths() -> Vec<PathBuf> {
+    // XDG path: $XDG_CONFIG_HOME or fall back to $HOME/.config
+    let xdg_base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| directories::BaseDirs::new().map(|b| b.home_dir().join(".config")));
+    let xdg_path = xdg_base.map(|b| b.join("borrow-checker").join("config.toml"));
+
+    // Platform-native path via the directories crate
+    let native_path = directories::ProjectDirs::from("", "", "borrow-checker")
+        .map(|p| p.config_dir().join("config.toml"));
+
+    let mut paths: Vec<PathBuf> = Vec::new();
+    if let Some(xdg) = xdg_path {
+        paths.push(xdg);
+    }
+    if let Some(native) = native_path {
+        if !paths.contains(&native) {
+            paths.push(native);
+        }
+    }
+    paths
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -174,5 +211,30 @@ mod tests {
     fn load_returns_defaults_with_no_config_files() {
         let s = Settings::load().expect("load should succeed with no files");
         assert_eq!(s.financial_year_start_month(), 7);
+    }
+
+    #[test]
+    fn user_config_paths_contains_xdg_path_when_env_is_set() {
+        // SAFETY: Tests run in isolated processes under nextest; no concurrent
+        // threads are reading environment variables.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", "/tmp/bc_test_xdg_9f3a") }
+        let paths = user_config_paths();
+        // SAFETY: Same as above — isolated process, no concurrent env access.
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") }
+        assert!(
+            paths.contains(&PathBuf::from(
+                "/tmp/bc_test_xdg_9f3a/borrow-checker/config.toml"
+            )),
+            "expected XDG path in list, got: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn user_config_paths_has_no_duplicates() {
+        let paths = user_config_paths();
+        let mut seen = std::collections::HashSet::new();
+        for p in &paths {
+            assert!(seen.insert(p.clone()), "duplicate path found: {p:?}");
+        }
     }
 }
