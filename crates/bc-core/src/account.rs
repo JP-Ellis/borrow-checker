@@ -1,10 +1,6 @@
 //! Account projection service.
 
-use bc_models::{
-    Account, AccountType,
-    ids::{AccountId, EventId},
-    money::CommodityCode,
-};
+use bc_models::{Account, AccountType, EventId, ids::AccountId, money::CommodityCode};
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 

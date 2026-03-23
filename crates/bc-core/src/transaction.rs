@@ -1,8 +1,8 @@
 //! Transaction service with double-entry validation.
 
 use bc_models::{
-    Posting, Transaction, TransactionStatus,
-    ids::{AccountId, EventId, PostingId, TransactionId},
+    EventId, Posting, Transaction, TransactionStatus,
+    ids::{AccountId, PostingId, TransactionId},
     money::{Amount, CommodityCode},
 };
 use jiff::Timestamp;
