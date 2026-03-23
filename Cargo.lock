@@ -125,6 +125,7 @@ dependencies = [
 name = "bc-core"
 version = "0.1.0"
 dependencies = [
+ "bc-config",
  "bc-models",
  "jiff",
  "pretty_assertions",

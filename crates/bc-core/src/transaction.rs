@@ -77,6 +77,10 @@ fn validate_balance(postings: &[Posting]) -> BcResult<()> {
 /// # Errors
 ///
 /// Returns [`BcError::BadData`] if any stored value cannot be parsed.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "all parameters come from owned DB rows; passing by value is ergonomic at call sites"
+)]
 fn parse_cost(
     total_value: Option<String>,
     total_commodity: Option<String>,
@@ -108,6 +112,19 @@ fn parse_cost(
             .build(),
     ))
 }
+
+/// Column tuple returned from the `postings` table when loading a transaction.
+type PostingRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 /// Service for creating and managing transactions.
 #[expect(
@@ -237,6 +254,10 @@ impl TransactionService {
     /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "loading a transaction with postings, cost, and tags inherently requires several queries and field mappings"
+    )]
     pub async fn find_by_id(&self, id: &TransactionId) -> BcResult<Transaction> {
         let tx_row = sqlx::query_as::<_, (String, String, Option<String>, String, String, String)>(
             "SELECT id, date, payee, description, status, created_at \
@@ -280,17 +301,6 @@ impl TransactionService {
             .collect::<BcResult<_>>()?;
 
         // Load postings with cost columns.
-        type PostingRow = (
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        );
         let posting_rows: Vec<PostingRow> = sqlx::query_as(
             "SELECT id, account_id, amount, commodity, memo, \
                     cost_total_value, cost_total_commodity, cost_date, cost_label \
@@ -549,7 +559,10 @@ mod tests {
         svc.create(tx).await.expect("create should succeed");
 
         let found = svc.find_by_id(&id).await.expect("find should succeed");
-        let first_posting = &found.postings()[0];
+        let first_posting = found
+            .postings()
+            .first()
+            .expect("first posting should exist");
         let loaded_cost = first_posting.cost().expect("cost should be present");
         assert_eq!(loaded_cost.total().value, dec!(1500.00));
         assert_eq!(loaded_cost.total().commodity.as_str(), "AUD");
