@@ -5,6 +5,7 @@ resolver = "2"
 members  = [
   "crates/bc-app",
   "crates/bc-cli",
+  "crates/bc-config",
   "crates/bc-core",
   "crates/bc-format-beancount",
   "crates/bc-format-csv",
@@ -27,6 +28,7 @@ members  = [
 
   [workspace.dependencies]
   # Internal crates — reference as `bc-models.workspace = true` in member Cargo.tomls
+  bc-config           = { path = "crates/bc-config" }
   bc-core             = { path = "crates/bc-core" }
   bc-format-beancount = { path = "crates/bc-format-beancount" }
   bc-format-csv       = { path = "crates/bc-format-csv" }
