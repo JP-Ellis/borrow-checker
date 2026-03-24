@@ -47,6 +47,23 @@ pub enum LinkType {
 /// A link grouping related transactions (e.g. a transfer pair or reversal).
 ///
 /// Re-exported from the crate root as [`crate::TransactionLink`].
+///
+/// # Example
+///
+/// ```
+/// use bc_models::{TransactionLink, TransactionLinkId, TransactionLinkType};
+/// use jiff::Timestamp;
+///
+/// let link = TransactionLink::builder()
+///     .id(TransactionLinkId::new())
+///     .link_type(TransactionLinkType::Transfer)
+///     .created_at(Timestamp::now())
+///     .build();
+///
+/// assert!(link.member_transaction_ids().is_empty());
+/// ```
+// NOTE: the field docstrings propagate to the setter methods on the builder, so
+// keep them accurate and self-contained.
 #[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[expect(
@@ -54,14 +71,21 @@ pub enum LinkType {
     reason = "`link_type` is the idiomatic name for this domain field"
 )]
 pub struct Link {
-    /// Unique identifier.
+    /// Stable identifier for this link. Assigned by `bc-core` on creation; do not
+    /// generate ad hoc outside of the persistence layer.
     id: TransactionLinkId,
-    /// The type of relationship between linked transactions.
+
+    /// The nature of the relationship between linked transactions.
+    /// [`LinkType::Transfer`] matches two legs of the same inter-account movement;
+    /// [`LinkType::Reversal`] marks one transaction as cancelling a prior one.
     link_type: LinkType,
-    /// All transaction IDs that belong to this link; populated by `bc-core`.
+
+    /// IDs of all transactions that belong to this link. Defaults to empty;
+    /// `bc-core` appends each member transaction's ID after persisting it.
     #[builder(default)]
     member_transaction_ids: Vec<TransactionId>,
-    /// When this link was created in the system.
+
+    /// Timestamp recorded when this link was first persisted.
     created_at: Timestamp,
 }
 
@@ -100,14 +124,37 @@ impl Link {
 /// `total` is the cost in the *cost commodity* (the commodity given up).
 /// Unit price = `total.value / posting.amount.value` (derive on demand).
 /// `bc-core` must ensure `posting.amount.value != 0` when cost is present.
+///
+/// # Example
+///
+/// ```
+/// use bc_models::{Cost, Amount, CommodityCode};
+/// use rust_decimal::Decimal;
+///
+/// let cost = Cost::builder()
+///     .total(Amount::new(Decimal::from(1500), CommodityCode::new("USD")))
+///     .build();
+///
+/// assert_eq!(cost.total().value, Decimal::from(1500));
+/// assert!(cost.date().is_none());
+/// ```
+// NOTE: the field docstrings propagate to the setter methods on the builder, so
+// keep them accurate and self-contained.
 #[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Cost {
-    /// Total acquisition cost in the cost commodity (given up / paid).
+    /// Total acquisition cost expressed in the *cost commodity* — the asset
+    /// given up or paid. To derive the per-unit price, divide this by the
+    /// posting's `amount.value`; `bc-core` guarantees that value is non-zero
+    /// when a cost is attached.
     total: Amount,
-    /// Optional lot date for FIFO/LIFO tracking.
+
+    /// Calendar date assigned to this lot for `FIFO`/`LIFO` inventory tracking.
+    /// `None` if lot dating is not required for this position.
     date: Option<Date>,
-    /// Optional lot label.
+
+    /// Human-assigned label for manual lot identification (e.g. `"lot-2024-01"`).
+    /// `None` if the lot has not been labelled.
     #[builder(into)]
     label: Option<String>,
 }
@@ -136,21 +183,51 @@ impl Cost {
 }
 
 /// A single leg of a double-entry transaction.
+///
+/// # Example
+///
+/// ```
+/// use bc_models::{Posting, PostingId, AccountId, Amount, CommodityCode};
+/// use rust_decimal::Decimal;
+///
+/// let posting = Posting::builder()
+///     .id(PostingId::new())
+///     .account_id(AccountId::new())
+///     .amount(Amount::new(Decimal::from(100), CommodityCode::new("AUD")))
+///     .build();
+///
+/// assert_eq!(posting.amount().commodity.to_string(), "AUD");
+/// assert!(posting.cost().is_none());
+/// ```
+// NOTE: the field docstrings propagate to the setter methods on the builder, so
+// keep them accurate and self-contained.
 #[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Posting {
-    /// Unique identifier.
+    /// Stable, opaque identifier for this posting. Assigned by `bc-core` when the
+    /// parent transaction is persisted; do not generate outside the persistence layer.
     id: PostingId,
-    /// The account this posting affects.
+
+    /// The account this posting credits or debits.
     account_id: crate::AccountId,
-    /// The amount (positive = debit, negative = credit in standard accounting).
+
+    /// Monetary amount of this leg. Positive values are debits (money into the account);
+    /// negative values are credits (money out). The sum of all posting amounts in a
+    /// transaction must be zero per commodity — enforced by `bc-core`.
     amount: Amount,
-    /// Optional cost basis for commodity conversions.
+
+    /// Cost basis for a commodity conversion, if applicable. `None` for
+    /// same-commodity postings; required when tracking acquisition cost across
+    /// currency or asset conversions.
     cost: Option<Cost>,
-    /// Optional memo for this posting.
+
+    /// Optional free-text note for this individual posting leg. `None` means
+    /// no memo has been recorded.
     #[builder(into)]
     memo: Option<String>,
-    /// Posting-level tags (in addition to transaction-level tags).
+
+    /// Tags applied specifically to this posting leg, in addition to any
+    /// transaction-level tags. Defaults to empty.
     #[builder(default)]
     tag_ids: Vec<TagId>,
 }
@@ -202,31 +279,66 @@ impl Posting {
 /// A double-entry accounting transaction.
 ///
 /// All postings must sum to zero per commodity (enforced by `bc-core`).
+///
+/// # Example
+///
+/// ```
+/// use bc_models::{Transaction, TransactionId, TransactionStatus};
+/// use jiff::{civil::date, Timestamp};
+///
+/// let tx = Transaction::builder()
+///     .id(TransactionId::new())
+///     .date(date(2026, 1, 15))
+///     .description("Groceries")
+///     .status(TransactionStatus::Cleared)
+///     .created_at(Timestamp::now())
+///     .build();
+///
+/// assert_eq!(tx.description(), "Groceries");
+/// assert!(tx.postings().is_empty());
+/// ```
+// NOTE: the field docstrings propagate to the setter methods on the builder, so
+// keep them accurate and self-contained.
 #[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Transaction {
-    /// Unique identifier.
+    /// Stable, opaque identifier for this transaction. Assigned by `bc-core` on
+    /// persistence; do not generate outside the persistence layer.
     id: TransactionId,
-    /// The date on which the transaction occurred (no time component).
+
+    /// Calendar date on which the transaction occurred (no time-of-day component).
+    /// This is the *value date*, not the date the record was created in the system.
     date: Date,
-    /// Optional payee name.
+
+    /// Name of the counterparty (e.g. a merchant or payee). `None` if the payee is
+    /// unknown or not applicable for this transaction type.
     #[builder(into)]
     payee: Option<String>,
-    /// Description or narration.
+
+    /// Free-text description or narration summarising the purpose of this transaction.
     #[builder(into)]
     description: String,
-    /// All postings; must sum to zero per commodity.
+
+    /// All posting legs of this transaction. Must sum to zero per commodity —
+    /// `bc-core` enforces this invariant before persistence. Defaults to empty.
     #[builder(default)]
     postings: Vec<Posting>,
-    /// Lifecycle status.
+
+    /// Lifecycle status of this transaction (pending, cleared, or voided).
     status: Status,
-    /// Transaction-level tag IDs.
+
+    /// Tags applied at the transaction level, shared across all posting legs.
+    /// Defaults to empty.
     #[builder(default)]
     tag_ids: Vec<TagId>,
-    /// Link IDs this transaction participates in.
+
+    /// IDs of [`crate::TransactionLink`]s this transaction participates in (e.g.
+    /// a transfer pair or a reversal). Defaults to empty; managed by `bc-core`.
     #[builder(default)]
     link_ids: Vec<TransactionLinkId>,
-    /// When this record was created in the system.
+
+    /// Timestamp recorded when this transaction was first persisted. Callers
+    /// constructing a new transaction should pass [`jiff::Timestamp::now()`].
     created_at: Timestamp,
 }
 
