@@ -63,7 +63,7 @@ pub enum ValidationError {
 #[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Account {
-    /// Stable, opaque identifier for this account (a prefixed UUIDv7). Defaults to a
+    /// Stable, opaque identifier for this account (a prefixed `UUIDv7`). Defaults to a
     /// freshly generated value; only supply this when re-hydrating a record from storage.
     #[builder(default)]
     id: AccountId,
@@ -92,7 +92,7 @@ pub struct Account {
     commodities: Vec<CommodityId>,
 
     /// Optional free-text description providing context about this account.
-    /// `None` means no description has been recorded.
+    /// Defaults to `None`; supply a value to surface it in reports and exports.
     #[builder(into)]
     description: Option<String>,
 
@@ -301,6 +301,17 @@ mod tests {
         acct.set_name("New Name".to_owned())
             .expect("non-empty name should succeed");
         assert!(acct.set_name(String::new()).is_err());
+    }
+
+    #[test]
+    fn account_type_variants_exist() {
+        _ = (
+            Type::Asset,
+            Type::Liability,
+            Type::Equity,
+            Type::Income,
+            Type::Expense,
+        );
     }
 
     #[test]
