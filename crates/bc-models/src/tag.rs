@@ -6,6 +6,7 @@
 //! - [`crate::TagForest`] for [`Forest`]
 //! - [`crate::TagPath`] for [`Path`]
 //! - [`crate::TagPathError`] for [`ParseError`]
+//! - [`crate::TagBuilder`] for the bon-generated [`TagBuilder`]
 
 use core::fmt;
 use core::str::FromStr;
