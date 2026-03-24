@@ -42,38 +42,80 @@ pub enum ValidationError {
 }
 
 /// A financial account in the chart of accounts.
+///
+/// # Example
+///
+/// ```
+/// use bc_models::{Account, AccountType};
+/// use jiff::Timestamp;
+///
+/// let account = Account::builder()
+///     .name("Checking")
+///     .account_type(AccountType::Asset)
+///     .created_at(Timestamp::now())
+///     .build();
+///
+/// assert_eq!(account.name(), "Checking");
+/// assert!(account.is_active());
+/// ```
+// NOTE: the field docstrings propagate to the setter methods on the builder, so
+// keep them accurate and self-contained.
 #[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Account {
-    /// Unique identifier.
+    /// Stable, opaque identifier for this account (a prefixed UUIDv7). Defaults to a
+    /// freshly generated value; only supply this when re-hydrating a record from storage.
+    #[builder(default)]
     id: AccountId,
-    /// Human-readable name.
+
+    /// Display name shown in reports and the user interface. Must not be empty —
+    /// [`Account::set_name`] enforces this on mutation, but the builder does not
+    /// validate at construction time.
     #[builder(into)]
     name: String,
-    /// Account classification.
+
+    /// Classification in the chart of accounts. Determines how the account
+    /// contributes to the balance sheet and P&L statements.
+    ///
+    /// A sub-account (one with a `parent_id`) must share the root ancestor's
+    /// type; this invariant is enforced by `bc-core`, not here.
     #[expect(
         clippy::struct_field_names,
         reason = "account_type is the natural field name; renaming would reduce clarity"
     )]
     account_type: Type,
-    /// Allowed commodities; empty = unrestricted; first = default for display.
+
+    /// Commodities this account may hold. An empty list means unrestricted —
+    /// the account can hold any commodity. When non-empty, the *first* entry is
+    /// used as the default commodity for display purposes. Defaults to empty.
     #[builder(default)]
     commodities: Vec<CommodityId>,
-    /// Optional description.
+
+    /// Optional free-text description providing context about this account.
+    /// `None` means no description has been recorded.
     #[builder(into)]
     description: Option<String>,
+
     /// Parent account ID, if this is a sub-account.
     ///
     /// `None` indicates a root account whose [`Type`] is authoritative.
     /// `Some(id)` indicates a child whose type must match its root ancestor
     /// (enforced in `bc-core`, not here).
     parent_id: Option<AccountId>,
-    /// Tag IDs associated with this account for cross-cutting organisation.
+
+    /// Tags for cross-cutting labels (e.g. reporting categories). Applied at the
+    /// account level; individual transactions and postings carry their own tags.
+    /// Defaults to empty; managed in `bc-core`.
     #[builder(default)]
     tag_ids: Vec<TagId>,
-    /// When the account was created.
+
+    /// Timestamp recorded when this account was first persisted. Callers
+    /// constructing a new account should pass [`jiff::Timestamp::now()`].
     created_at: Timestamp,
-    /// When the account was archived, if ever.
+
+    /// Timestamp at which this account was archived, or `None` if still active.
+    /// Set via [`Account::archive`]; do not assign directly via the builder
+    /// unless re-hydrating an already-archived record.
     archived_at: Option<Timestamp>,
 }
 
@@ -182,17 +224,6 @@ mod tests {
 
     use super::*;
     use crate::CommodityId;
-
-    #[test]
-    fn account_type_variants_exist() {
-        _ = (
-            Type::Asset,
-            Type::Liability,
-            Type::Equity,
-            Type::Income,
-            Type::Expense,
-        );
-    }
 
     #[test]
     fn account_is_active_when_not_archived() {
