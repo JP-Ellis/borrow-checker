@@ -76,8 +76,8 @@ pub struct Link {
     id: TransactionLinkId,
 
     /// The nature of the relationship between linked transactions.
-    /// [`LinkType::Transfer`] matches two legs of the same inter-account movement;
-    /// [`LinkType::Reversal`] marks one transaction as cancelling a prior one.
+    /// [`crate::TransactionLinkType::Transfer`] matches two legs of the same inter-account movement;
+    /// [`crate::TransactionLinkType::Reversal`] marks one transaction as cancelling a prior one.
     link_type: LinkType,
 
     /// IDs of all transactions that belong to this link. Defaults to empty;
@@ -211,9 +211,9 @@ pub struct Posting {
     /// The account this posting credits or debits.
     account_id: crate::AccountId,
 
-    /// Monetary amount of this leg. Positive values are debits (money into the account);
-    /// negative values are credits (money out). The sum of all posting amounts in a
-    /// transaction must be zero per commodity — enforced by `bc-core`.
+    /// Monetary amount of this leg. Positive values are debits; negative values are credits.
+    /// The sum of all posting amounts in a transaction must be zero per commodity —
+    /// enforced by `bc-core`.
     amount: Amount,
 
     /// Cost basis for a commodity conversion, if applicable. `None` for
