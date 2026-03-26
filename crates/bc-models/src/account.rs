@@ -122,6 +122,15 @@ pub struct Account {
     )]
     account_type: Type,
 
+    /// Account maintenance kind — governs how this account's balance is updated.
+    ///
+    /// Defaults to [`Kind::DepositAccount`], which is backwards-compatible with all
+    /// existing accounts. Only `DepositAccount` accounts may have an import profile
+    /// attached; this invariant is enforced by `bc-core` at creation time.
+    /// Deferred to Milestone 2 (import profiles not yet implemented in M1).
+    #[builder(default = Kind::DepositAccount)]
+    kind: Kind,
+
     /// Commodities this account may hold. An empty list means unrestricted —
     /// the account can hold any commodity. When non-empty, the *first* entry is
     /// used as the default commodity for display purposes. Defaults to empty.
@@ -192,6 +201,13 @@ impl Account {
     #[must_use]
     pub fn account_type(&self) -> Type {
         self.account_type
+    }
+
+    /// Returns the account kind.
+    #[inline]
+    #[must_use]
+    pub fn kind(&self) -> Kind {
+        self.kind
     }
 
     /// Returns the allowed commodities (empty = unrestricted).
@@ -340,6 +356,25 @@ mod tests {
         acct.set_name("New Name".to_owned())
             .expect("non-empty name should succeed");
         assert!(acct.set_name(String::new()).is_err());
+    }
+
+    #[test]
+    fn account_kind_defaults_to_deposit_account() {
+        let acct = Account::builder()
+            .name("Checking")
+            .account_type(Type::Asset)
+            .build();
+        assert_eq!(acct.kind(), Kind::DepositAccount);
+    }
+
+    #[test]
+    fn account_kind_can_be_set_explicitly() {
+        let acct = Account::builder()
+            .name("House")
+            .account_type(Type::Asset)
+            .kind(Kind::ManualAsset)
+            .build();
+        assert_eq!(acct.kind(), Kind::ManualAsset);
     }
 
     #[test]
