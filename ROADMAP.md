@@ -28,7 +28,7 @@ ______________________________________________________________________
 - [ ] SQLite storage layer via `sqlx` with migrations
 - [ ] Append-only event log table + projection engine
 - [ ] Event vocabulary: Account, Transaction, Envelope, Import, Plugin events
-- [ ] Account model (create, archive, multi-currency support; parent hierarchy; cross-cutting `TagPath` labels)
+- [ ] Account model (create, archive, multi-currency support; parent hierarchy; cross-cutting `TagPath` labels; `AccountKind` discriminator)
 - [ ] Double-entry transaction model (enforced balance-to-zero)
 - [ ] Balance calculation engine
 - [ ] Period model (weekly, fortnightly, monthly, quarterly, financial year, calendar year, custom)
@@ -98,6 +98,30 @@ ______________________________________________________________________
 - [ ] Budget vs. actuals tracking
 - [ ] Mixed-period display normalisation
 - [ ] Budget views in CLI + TUI
+
+______________________________________________________________________
+
+## Milestone 5A — Illiquid Asset Tracking
+
+**Status:** ◻️
+**Crates:** `bc-models`, `bc-core`
+**Depends on:** Milestone 1, Milestone 5
+
+- [ ] `AccountKind` enum on `Account` model (`DepositAccount`, `ManualAsset`, `Receivable`, `VirtualAllocation`)
+- [ ] `bc-core` enforces: only `DepositAccount` may have an import profile
+- [ ] `AssetValuationRecorded` event: point-in-time market value with `ValuationSource`
+- [ ] `ValuationSource` enum: `ManualEstimate`, `ProfessionalAppraisal`, `TaxAssessment`, `MarketData`, `AgreedValue`
+- [ ] Auto-generated balancing transaction on valuation (configurable counterpart, default `Equity:Unrealized`)
+- [ ] `DepreciationPolicy` on `ManualAsset` accounts: `None`, `StraightLine`, `DecliningBalance`
+- [ ] On-demand depreciation calculation (`DepreciationCalculated` event)
+- [ ] Depreciation entries: `Expenses:Depreciation:<name>` / credit asset account
+- [ ] Book value (depreciation basis) and market value (appraisal) tracked separately in reports
+- [ ] `LoanTermsSet` event: principal, interest rate, start date, term, repayment frequency
+- [ ] Amortization schedule calculation for display and repayment-split assistance
+- [ ] `acquisition_date` + `acquisition_cost` optional fields on `ManualAsset` accounts (cost basis, depreciation baseline)
+- [ ] `RepaymentFrequency` enum: `Weekly`, `Fortnightly`, `Monthly`, `Quarterly`, `Custom`
+- [ ] Net worth calculation includes all `AccountKind` variants (zero balance if no value recorded)
+- [ ] CLI + TUI support: record valuation, trigger depreciation, set loan terms
 
 ______________________________________________________________________
 
