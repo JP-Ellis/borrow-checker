@@ -53,6 +53,29 @@ pub enum Period {
         /// non-leap years), avoiding cross-field validation of `(month, day)`.
         start_day: u8,
     },
+    /// Financial quarter aligned to a configurable financial year start.
+    ///
+    /// Q1 is the first 3 months of the financial year, Q2 the next 3, and
+    /// so on.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bc_models::Period;
+    /// let fq = Period::financial_quarter(7, 1)?;
+    /// // FY26Q1 (AU): 2026-07-01 to 2026-10-01
+    /// # Ok::<(), Box<dyn core::error::Error>>(())
+    /// ```
+    FinancialQuarter {
+        /// 1-based month (1–12). See [`BuildError::InvalidMonth`].
+        start_month: u8,
+        /// 1-based day of month (1–28). See [`BuildError::InvalidDay`].
+        ///
+        /// Capped at 28 to remain valid for every month (including February
+        /// in non-leap years), avoiding cross-field validation of
+        /// `(month, day)`.
+        start_day: u8,
+    },
     /// Calendar year (1 January).
     CalendarYear,
     /// Arbitrary duration; at least one field is `Some`.
@@ -105,6 +128,46 @@ impl Period {
             return Err(BuildError::InvalidDay(start_day));
         }
         Ok(Self::FinancialYear {
+            start_month,
+            start_day,
+        })
+    }
+
+    /// Constructs a validated `FinancialQuarter` period.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_month` - 1-based month (1–12) of the financial year start.
+    /// * `start_day` - 1-based day (1–28) of the financial year start.
+    ///
+    /// # Returns
+    ///
+    /// A `FinancialQuarter` period anchored to the given financial year start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BuildError::InvalidMonth`] if `start_month` is outside 1–12.
+    /// Returns [`BuildError::InvalidDay`] if `start_day` is outside 1–28.
+    /// The day is capped at 28 (rather than the calendar maximum) so that
+    /// the start date is valid in every month, including February in
+    /// non-leap years.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bc_models::Period;
+    /// let fq = Period::financial_quarter(7, 1)?;
+    /// # Ok::<(), Box<dyn core::error::Error>>(())
+    /// ```
+    #[inline]
+    pub fn financial_quarter(start_month: u8, start_day: u8) -> Result<Self, BuildError> {
+        if !(1..=12).contains(&start_month) {
+            return Err(BuildError::InvalidMonth(start_month));
+        }
+        if !(1..=28).contains(&start_day) {
+            return Err(BuildError::InvalidDay(start_day));
+        }
+        Ok(Self::FinancialQuarter {
             start_month,
             start_day,
         })
@@ -266,6 +329,60 @@ impl Period {
                 // Custom has no anchor; treat date as-is (period start = date itself)
                 date
             }
+            Self::FinancialQuarter {
+                start_month,
+                start_day,
+            } => {
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "start_month is validated to 1–12 at construction; fits in i8"
+                )]
+                #[expect(
+                    clippy::as_conversions,
+                    reason = "start_month is validated to 1–12 at construction; cast is safe"
+                )]
+                let sm = *start_month as i8;
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "start_day is validated to 1–28 at construction; fits in i8"
+                )]
+                #[expect(
+                    clippy::as_conversions,
+                    reason = "start_day is validated to 1–28 at construction; cast is safe"
+                )]
+                let sd = *start_day as i8;
+                #[expect(
+                    clippy::expect_used,
+                    reason = "month/day were validated at construction of FinancialQuarter"
+                )]
+                let this_year = Date::new(date.year(), sm, sd)
+                    .expect("FinancialQuarter was validated at construction");
+                let fy_start = if date >= this_year {
+                    this_year
+                } else {
+                    #[expect(
+                        clippy::arithmetic_side_effects,
+                        reason = "subtracting 1 from a valid i16 year is safe for any realistic year"
+                    )]
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "prior year with validated month/day is always a valid date"
+                    )]
+                    Date::new(date.year() - 1, sm, sd).expect("prior year FQ start is valid")
+                };
+                let q2 = fy_start.saturating_add(jiff::Span::new().months(3));
+                let q3 = fy_start.saturating_add(jiff::Span::new().months(6));
+                let q4 = fy_start.saturating_add(jiff::Span::new().months(9));
+                if date >= q4 {
+                    q4
+                } else if date >= q3 {
+                    q3
+                } else if date >= q2 {
+                    q2
+                } else {
+                    fy_start
+                }
+            }
         }
     }
 
@@ -275,7 +392,9 @@ impl Period {
             Self::Weekly => date.saturating_add(jiff::Span::new().weeks(1)),
             Self::Fortnightly { .. } => date.saturating_add(jiff::Span::new().weeks(2)),
             Self::Monthly => date.saturating_add(jiff::Span::new().months(1)),
-            Self::Quarterly => date.saturating_add(jiff::Span::new().months(3)),
+            Self::Quarterly | Self::FinancialQuarter { .. } => {
+                date.saturating_add(jiff::Span::new().months(3))
+            }
             Self::FinancialYear { .. } | Self::CalendarYear => {
                 date.saturating_add(jiff::Span::new().years(1))
             }
@@ -385,5 +504,88 @@ mod tests {
             months: None,
         };
         assert!(matches!(p, Period::Custom { days: Some(30), .. }));
+    }
+
+    #[test]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "unwrap/unwrap_err in tests is acceptable to assert the expected Ok/Err state"
+    )]
+    fn financial_quarter_constructor_validates_month() {
+        _ = Period::financial_quarter(13, 1).unwrap_err();
+        _ = Period::financial_quarter(0, 1).unwrap_err();
+        _ = Period::financial_quarter(7, 1).unwrap();
+    }
+
+    #[test]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "unwrap/unwrap_err in tests is acceptable to assert the expected Ok/Err state"
+    )]
+    fn financial_quarter_constructor_validates_day() {
+        _ = Period::financial_quarter(7, 0).unwrap_err();
+        _ = Period::financial_quarter(7, 29).unwrap_err();
+        _ = Period::financial_quarter(7, 28).unwrap();
+    }
+
+    #[test]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "unwrap is acceptable in tests to construct valid test fixtures"
+    )]
+    fn financial_quarter_au_boundaries() {
+        use jiff::civil::date;
+        let fq = Period::financial_quarter(7, 1).unwrap();
+
+        // Q1: 2026-07-01 – 2026-09-30
+        assert_eq!(
+            fq.range_containing(date(2026, 7, 1)),
+            (date(2026, 7, 1), date(2026, 10, 1))
+        );
+        assert_eq!(
+            fq.range_containing(date(2026, 9, 30)),
+            (date(2026, 7, 1), date(2026, 10, 1))
+        );
+        // Q2: 2026-10-01 – 2026-12-31
+        assert_eq!(
+            fq.range_containing(date(2026, 10, 1)),
+            (date(2026, 10, 1), date(2027, 1, 1))
+        );
+        // Q3: 2027-01-01 – 2027-03-31
+        assert_eq!(
+            fq.range_containing(date(2027, 1, 1)),
+            (date(2027, 1, 1), date(2027, 4, 1))
+        );
+        // Q4: 2027-04-01 – 2027-06-30
+        assert_eq!(
+            fq.range_containing(date(2027, 4, 1)),
+            (date(2027, 4, 1), date(2027, 7, 1))
+        );
+        assert_eq!(
+            fq.range_containing(date(2027, 6, 30)),
+            (date(2027, 4, 1), date(2027, 7, 1))
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "unwrap is acceptable in tests to construct valid test fixtures"
+    )]
+    fn financial_quarter_iter_from_yields_sequential_quarters() {
+        use jiff::civil::date;
+        let fq = Period::financial_quarter(7, 1).unwrap();
+        let quarters: Vec<_> = fq.iter_from(date(2026, 7, 1)).take(5).collect();
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "we just collected exactly 5 elements with .take(5); indices 0–4 are valid"
+        )]
+        {
+            assert_eq!(quarters[0], date(2026, 7, 1));
+            assert_eq!(quarters[1], date(2026, 10, 1));
+            assert_eq!(quarters[2], date(2027, 1, 1));
+            assert_eq!(quarters[3], date(2027, 4, 1));
+            assert_eq!(quarters[4], date(2027, 7, 1));
+        }
     }
 }
