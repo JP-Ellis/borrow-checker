@@ -21,7 +21,6 @@ crate::define_id!(CommodityId, "commodity");
 /// use bc_models::{Commodity, CommodityId};
 ///
 /// let commodity = Commodity::builder()
-///     .id(CommodityId::new())
 ///     .code("AUD")
 ///     .name("Australian Dollar")
 ///     .symbol("$")
@@ -36,17 +35,21 @@ crate::define_id!(CommodityId, "commodity");
 #[non_exhaustive]
 pub struct Commodity {
     /// Stable, opaque identifier for this commodity. Assigned by `bc-core` on
-    /// registration. Use this ID — not `code` — as the durable reference across renames.
+    /// registration. Use this ID — not `code` — as the durable reference across
+    /// renames.
+    #[builder(default)]
     id: CommodityId,
 
-    /// Ticker or currency code (e.g. `"AUD"`, `"BTC"`, `"AAPL"`). Must be non-empty.
-    /// Multiple commodities may share a code when they trade on different exchanges;
-    /// use [`CommodityId`] to distinguish them unambiguously.
+    /// Ticker or currency code (e.g. `"AUD"`, `"BTC"`, `"AAPL"`). Must be
+    /// non-empty. Multiple commodities may share a code when they trade on
+    /// different exchanges; use [`CommodityId`] to distinguish them
+    /// unambiguously.
     #[builder(into)]
     code: String,
 
-    /// Exchange or market where this commodity trades (e.g. `"ASX"`, `"NASDAQ"`).
-    /// `None` for fiat currencies and other globally-traded assets with no single exchange.
+    /// Exchange or market where this commodity trades (e.g. `"ASX"`,
+    /// `"NASDAQ"`). `None` for fiat currencies and other globally-traded assets
+    /// with no single exchange.
     #[builder(into)]
     exchange: Option<String>,
 
@@ -145,10 +148,7 @@ mod tests {
 
     #[test]
     fn commodity_builder_requires_code() {
-        let c = Commodity::builder()
-            .id(CommodityId::new())
-            .code("AUD")
-            .build();
+        let c = Commodity::builder().code("AUD").build();
         assert_eq!(c.code(), "AUD");
         assert!(c.name().is_none());
     }
@@ -156,7 +156,6 @@ mod tests {
     #[test]
     fn commodity_optional_fields() {
         let c = Commodity::builder()
-            .id(CommodityId::new())
             .code("BTC")
             .name("Bitcoin".to_owned())
             .build();

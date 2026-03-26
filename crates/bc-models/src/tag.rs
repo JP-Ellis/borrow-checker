@@ -29,7 +29,6 @@ crate::define_id!(TagId, "tag");
 /// use jiff::Timestamp;
 ///
 /// let tag = Tag::builder()
-///     .id(TagId::new())
 ///     .name("institution")
 ///     .created_at(Timestamp::now())
 ///     .build();
@@ -43,6 +42,7 @@ crate::define_id!(TagId, "tag");
 #[non_exhaustive]
 pub struct Tag {
     /// Stable, opaque identifier for this tag. Assigned by `bc-core` on creation.
+    #[builder(default)]
     id: TagId,
 
     /// Leaf name segment — the final component of the full colon-separated path
@@ -61,7 +61,9 @@ pub struct Tag {
     #[builder(into)]
     description: Option<String>,
 
-    /// Timestamp recorded when this tag was first persisted.
+    /// Timestamp recorded when this tag was first persisted. Defaults to
+    /// [`jiff::Timestamp::now()`].
+    #[builder(default = jiff::Timestamp::now())]
     created_at: Timestamp,
 }
 
