@@ -21,20 +21,47 @@ crate::define_id!(TagId, "tag");
 /// A named tag entity with optional parent for hierarchy.
 ///
 /// Re-exported from the crate root as [`crate::TagId`] and [`crate::Tag`].
+///
+/// # Example
+///
+/// ```
+/// use bc_models::{Tag, TagId};
+/// use jiff::Timestamp;
+///
+/// let tag = Tag::builder()
+///     .id(TagId::new())
+///     .name("institution")
+///     .created_at(Timestamp::now())
+///     .build();
+///
+/// assert_eq!(tag.name(), "institution");
+/// assert!(tag.parent_id().is_none());
+/// ```
+// NOTE: the field docstrings propagate to the setter methods on the builder, so
+// keep them accurate and self-contained.
 #[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Tag {
-    /// The unique identifier for this tag.
+    /// Stable, opaque identifier for this tag. Assigned by `bc-core` on creation.
     id: TagId,
-    /// Leaf segment only (e.g. `"commbank"`, not `"institution:commbank"`).
+
+    /// Leaf name segment — the final component of the full colon-separated path
+    /// (e.g. `"commbank"` for the path `"institution:commbank"`). Must be non-empty.
+    /// Use [`crate::TagForest::path_of`] to compute the full path from a forest.
     #[builder(into)]
     name: String,
-    /// Parent tag ID; `None` means this is a root tag.
+
+    /// ID of the parent tag in the hierarchy. `None` means this is a root tag
+    /// (e.g. `"institution"`). `Some(id)` means this tag is a child of that tag
+    /// (e.g. `"commbank"` under `"institution"`).
     parent_id: Option<TagId>,
-    /// Optional human-readable description.
+
+    /// Optional human-readable description for this tag. `None` means no
+    /// description has been recorded.
     #[builder(into)]
     description: Option<String>,
-    /// When this tag was created.
+
+    /// Timestamp recorded when this tag was first persisted.
     created_at: Timestamp,
 }
 
