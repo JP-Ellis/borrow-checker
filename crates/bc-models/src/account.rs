@@ -13,6 +13,42 @@ use crate::TagId;
 
 crate::define_id!(AccountId, "account");
 
+/// The maintenance kind of an account — governs how its balance is updated.
+///
+/// Re-exported from the crate root as [`crate::AccountKind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "re-exported as AccountKind in Task 2; not yet wired up"
+    )
+)]
+pub enum Kind {
+    /// Reconciles against a bank/card/brokerage statement.
+    /// May have an import profile. This is the default kind.
+    ///
+    /// Examples: checking account, savings, credit card, investment portfolio.
+    DepositAccount,
+    /// Manually-maintained real asset with no bank statement.
+    /// Balance is driven by periodic valuation events.
+    ///
+    /// Examples: real property, vehicle, private equity stake.
+    ManualAsset,
+    /// Money owed to you by a third party.
+    /// Tracked via ordinary transactions; may carry optional loan terms.
+    ///
+    /// Examples: personal loan to a friend, loan to a family trust.
+    Receivable,
+    /// Virtual allocation with no independent existence.
+    /// Subdivides a parent account's balance.
+    ///
+    /// Examples: earmarked sub-accounts within an offset account.
+    VirtualAllocation,
+}
+
 /// The classification of an account in the chart of accounts.
 ///
 /// Re-exported from the crate root as [`crate::AccountType`].
@@ -302,6 +338,27 @@ mod tests {
         acct.set_name("New Name".to_owned())
             .expect("non-empty name should succeed");
         assert!(acct.set_name(String::new()).is_err());
+    }
+
+    #[test]
+    fn account_kind_variants_exist() {
+        _ = (
+            Kind::DepositAccount,
+            Kind::ManualAsset,
+            Kind::Receivable,
+            Kind::VirtualAllocation,
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::no_effect_underscore_binding,
+        reason = "intentional: verifies Kind is Copy by using the same value twice"
+    )]
+    fn account_kind_is_copy() {
+        let k = Kind::DepositAccount;
+        let _a = k;
+        let _b = k; // only compiles if Kind is Copy
     }
 
     #[test]
