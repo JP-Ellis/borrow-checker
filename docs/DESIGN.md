@@ -100,6 +100,9 @@ TransactionCreated / TransactionAmended / TransactionVoided
 EnvelopeCreated / EnvelopeAllocated / EnvelopeMoved
 ImportBatchStarted / ImportBatchCompleted
 PluginRegistered / PluginUnregistered
+AssetValuationRecorded
+DepreciationCalculated
+LoanTermsSet
 ```
 
 **What the event log provides:**
@@ -125,7 +128,16 @@ Accounts form an arbitrary-depth tree through an optional `parent_id: Option<Acc
 - Rollups: summing a subtree gives the parent balance; virtual sub-accounts of a joint account should always sum to the real account's bank-statement balance
 - Beancount/ledger export: the colon-separated path is derived by walking the ancestor chain
 
-An account is "real" (reconciles against a bank statement) when it has an import profile attached to it. Virtual sub-accounts have no import profile and exist purely to subdivide a parent account's balance.
+**Account kind** governs how a leaf account's balance is maintained:
+
+| Kind | Description |
+| ---------------- | ----------- |
+| `DepositAccount` | Reconciles against a bank/card/brokerage statement. May have an import profile. Examples: checking, savings, credit card, investment portfolio. |
+| `ManualAsset` | Manually-maintained real asset with no bank statement. Balance driven by valuation events. Examples: real property, vehicle, private equity stake. |
+| `Receivable` | Money owed to you by a third party. Tracked via ordinary transactions (disbursement + repayments). May carry optional loan terms for amortization assistance. Examples: personal loan to a friend, loan to a trust. |
+| `VirtualAllocation` | No independent existence. Subdivides a parent account's balance. Examples: earmarked sub-accounts within an offset account. |
+
+Only `DepositAccount` accounts may have an import profile — enforced in `bc-core` at creation time.
 
 **Cross-cutting labels via `tags: Vec<TagPath>`:**
 
@@ -339,6 +351,7 @@ ______________________________________________________________________
 | 3 | CLI (`bc-cli`) | 1, 2 |
 | 4 | TUI (`bc-tui`) | 1, 5\* |
 | 5 | Budgeting (envelope model, all periods) | 1 |
+| 5A | Illiquid asset tracking (valuations, depreciation, loan terms) | 1, 5 |
 | 6 | Plugin Phase 1: Importers | 2, 3 |
 | 7 | Tauri GUI (`bc-app`) | 1, 2, 5 |
 | 8 | Plugin Phase 2: Transaction Processors | 6 |
