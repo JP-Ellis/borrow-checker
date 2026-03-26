@@ -16,6 +16,15 @@ crate::define_id!(AccountId, "account");
 /// The maintenance kind of an account — governs how its balance is updated.
 ///
 /// Re-exported from the crate root as [`crate::AccountKind`].
+///
+/// # Example
+///
+/// ```
+/// use bc_models::AccountKind;
+///
+/// let kind = AccountKind::DepositAccount;
+/// assert_eq!(kind, AccountKind::DepositAccount);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
