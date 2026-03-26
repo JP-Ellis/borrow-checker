@@ -565,6 +565,11 @@ mod tests {
             fq.range_containing(date(2027, 6, 30)),
             (date(2027, 4, 1), date(2027, 7, 1))
         );
+        // Date before FY start in the same calendar year falls into prior FY Q4
+        assert_eq!(
+            fq.range_containing(date(2026, 5, 15)),
+            (date(2026, 4, 1), date(2026, 7, 1))
+        );
     }
 
     #[test]
