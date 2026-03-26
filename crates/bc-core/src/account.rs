@@ -471,9 +471,9 @@ mod tests {
             (AccountKind::VirtualAllocation, "virtual_allocation"),
         ] {
             let s = account_kind_to_str(kind).expect("known variant should serialise");
-            pretty_assertions::assert_eq!(s, expected);
+            assert_eq!(s, expected);
             let back = account_kind_from_str(s).expect("known string should deserialise");
-            pretty_assertions::assert_eq!(back, kind);
+            assert_eq!(back, kind);
         }
     }
 
@@ -536,6 +536,7 @@ mod tests {
             .expect("create should succeed");
 
         let found = svc.find_by_id(&id).await.expect("find should succeed");
+        assert_eq!(found.account_type(), bc_models::AccountType::Asset);
         assert_eq!(found.kind(), AccountKind::ManualAsset);
     }
 
