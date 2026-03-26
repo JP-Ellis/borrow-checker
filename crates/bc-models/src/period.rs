@@ -15,6 +15,10 @@ pub enum BuildError {
     #[error("invalid month {0}: must be 1–12")]
     InvalidMonth(u8),
     /// `start_day` must be 1–28.
+    ///
+    /// The upper bound is 28 (not 31) so the date is valid for **every** month,
+    /// including February in non-leap years. This allows `start_month` and
+    /// `start_day` to be validated independently without cross-field logic.
     #[error("invalid day {0}: must be 1–28")]
     InvalidDay(u8),
 }
@@ -43,7 +47,10 @@ pub enum Period {
     FinancialYear {
         /// 1-based month (1–12).
         start_month: u8,
-        /// 1-based day (1–28).
+        /// 1-based day of month (1–28).
+        ///
+        /// Capped at 28 to remain valid for every month (including February in
+        /// non-leap years), avoiding cross-field validation of `(month, day)`.
         start_day: u8,
     },
     /// Calendar year (1 January).
@@ -87,6 +94,8 @@ impl Period {
     ///
     /// Returns [`BuildError::InvalidMonth`] if `start_month` is outside 1–12.
     /// Returns [`BuildError::InvalidDay`] if `start_day` is outside 1–28.
+    /// The day is capped at 28 (rather than the calendar maximum) so that the
+    /// start date is valid in every month, including February in non-leap years.
     #[inline]
     pub fn financial_year(start_month: u8, start_day: u8) -> Result<Self, BuildError> {
         if !(1..=12).contains(&start_month) {
