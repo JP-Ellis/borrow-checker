@@ -2,6 +2,32 @@
 //!
 //! [`Amount`] pairs a [`rust_decimal::Decimal`] with a [`CommodityCode`],
 //! allowing arbitrary commodity denominations (currencies, securities, etc.).
+//!
+//! # `CommodityCode` vs `Commodity`
+//!
+//! This crate also defines a rich [`Commodity`] struct (with a stable
+//! [`CommodityId`], exchange, description, etc.). [`CommodityCode`] is a
+//! deliberately simpler, complementary type — the two serve different layers:
+//!
+//! - **`CommodityCode` is unresolved.** It is the raw ticker or currency string
+//!   as it appears in external formats (Beancount, OFX, CSV, Ledger). It can be
+//!   constructed anywhere, with no registry or database access required.
+//!
+//! - **Codes are not unique identifiers.** The same code (e.g. `"AAPL"`) may
+//!   refer to different [`Commodity`] entries on different exchanges.
+//!   [`CommodityCode`] intentionally preserves that ambiguity; [`CommodityId`]
+//!   is the stable, unambiguous reference once the commodity is registered.
+//!
+//! - **`Amount` stays lightweight.** By using [`CommodityCode`] rather than
+//!   [`CommodityId`], [`Amount`] is a plain value type — no registry lookup is
+//!   needed to construct one. This is essential for the import/parsing pipeline,
+//!   where amounts are assembled before commodities are resolved.
+//!
+//! Resolution from [`CommodityCode`] to a [`Commodity`] / [`CommodityId`]
+//! happens at a higher layer (bc-core) once the exchange context is known.
+//!
+//! [`Commodity`]: crate::Commodity
+//! [`CommodityId`]: crate::CommodityId
 
 use core::fmt;
 
