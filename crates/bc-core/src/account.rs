@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use bc_models::Account;
 use bc_models::AccountId;
+use bc_models::AccountKind;
 use bc_models::AccountType;
 use bc_models::CommodityId;
 use bc_models::EventId;
@@ -48,6 +49,37 @@ fn account_type_from_str(s: &str) -> BcResult<AccountType> {
     }
 }
 
+/// Serialises an [`AccountKind`] to its canonical database string.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `kind` is an unrecognised variant
+/// (future-proofing for `#[non_exhaustive]` additions).
+fn account_kind_to_str(kind: AccountKind) -> BcResult<&'static str> {
+    match kind {
+        AccountKind::DepositAccount => Ok("deposit_account"),
+        AccountKind::ManualAsset => Ok("manual_asset"),
+        AccountKind::Receivable => Ok("receivable"),
+        AccountKind::VirtualAllocation => Ok("virtual_allocation"),
+        _ => Err(BcError::BadData(format!("unknown account kind: {kind:?}"))),
+    }
+}
+
+/// Parses an [`AccountKind`] from its canonical database string.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `s` is not a recognised account-kind string.
+fn account_kind_from_str(s: &str) -> BcResult<AccountKind> {
+    match s {
+        "deposit_account" => Ok(AccountKind::DepositAccount),
+        "manual_asset" => Ok(AccountKind::ManualAsset),
+        "receivable" => Ok(AccountKind::Receivable),
+        "virtual_allocation" => Ok(AccountKind::VirtualAllocation),
+        other => Err(BcError::BadData(format!("unknown account kind: {other}"))),
+    }
+}
+
 /// Internal row type returned from the `accounts` table plus join-loaded data.
 struct AccountRow {
     /// Raw account ID string.
@@ -56,6 +88,8 @@ struct AccountRow {
     name: String,
     /// Account type stored as `snake_case` string.
     account_type: String,
+    /// Account maintenance kind stored as `snake_case` string.
+    kind: String,
     /// Optional description.
     description: Option<String>,
     /// ISO 8601 creation timestamp.
@@ -82,6 +116,8 @@ impl AccountRow {
 
         let account_type = account_type_from_str(&self.account_type)?;
 
+        let kind = account_kind_from_str(&self.kind)?;
+
         let created_at = self.created_at.parse::<Timestamp>().map_err(|e| {
             BcError::BadData(format!("invalid created_at '{}': {e}", self.created_at))
         })?;
@@ -99,6 +135,7 @@ impl AccountRow {
             .id(id)
             .name(self.name)
             .account_type(account_type)
+            .kind(kind)
             .commodities(self.commodities)
             .tag_ids(self.tag_ids)
             .maybe_description(self.description)
@@ -174,6 +211,7 @@ impl AccountService {
         &self,
         name: &str,
         account_type: AccountType,
+        kind: AccountKind,
         description: Option<&str>,
     ) -> BcResult<AccountId> {
         let id = AccountId::new();
@@ -199,11 +237,12 @@ impl AccountService {
         .await?;
 
         sqlx::query(
-            "INSERT INTO accounts (id, name, account_type, description, created_at) VALUES (?, ?, ?, ?, ?)"
+            "INSERT INTO accounts (id, name, account_type, kind, description, created_at) VALUES (?, ?, ?, ?, ?, ?)"
         )
         .bind(id.to_string())
         .bind(name)
         .bind(account_type_to_str(account_type)?)
+        .bind(account_kind_to_str(kind)?)
         .bind(description)
         .bind(now.to_string())
         .execute(&mut *tx)
@@ -281,12 +320,13 @@ impl AccountService {
                 String,
                 String,
                 String,
+                String,
                 Option<String>,
                 String,
                 Option<String>,
             ),
         >(
-            "SELECT id, name, account_type, description, created_at, archived_at \
+            "SELECT id, name, account_type, kind, description, created_at, archived_at \
              FROM accounts WHERE id = ?",
         )
         .bind(id.to_string())
@@ -327,9 +367,10 @@ impl AccountService {
             id: row.0,
             name: row.1,
             account_type: row.2,
-            description: row.3,
-            created_at: row.4,
-            archived_at: row.5,
+            kind: row.3,
+            description: row.4,
+            created_at: row.5,
+            archived_at: row.6,
             commodities,
             tag_ids,
         }
@@ -352,12 +393,13 @@ impl AccountService {
                 String,
                 String,
                 String,
+                String,
                 Option<String>,
                 String,
                 Option<String>,
             ),
         >(
-            "SELECT id, name, account_type, description, created_at, archived_at \
+            "SELECT id, name, account_type, kind, description, created_at, archived_at \
              FROM accounts WHERE archived_at IS NULL ORDER BY name ASC",
         )
         .fetch_all(&self.pool)
@@ -400,9 +442,10 @@ impl AccountService {
                     id: row.0,
                     name: row.1,
                     account_type: row.2,
-                    description: row.3,
-                    created_at: row.4,
-                    archived_at: row.5,
+                    kind: row.3,
+                    description: row.4,
+                    created_at: row.5,
+                    archived_at: row.6,
                     commodities,
                     tag_ids,
                 }
@@ -418,11 +461,37 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn account_kind_round_trips() {
+        use bc_models::AccountKind;
+        for (kind, expected) in [
+            (AccountKind::DepositAccount, "deposit_account"),
+            (AccountKind::ManualAsset, "manual_asset"),
+            (AccountKind::Receivable, "receivable"),
+            (AccountKind::VirtualAllocation, "virtual_allocation"),
+        ] {
+            let s = account_kind_to_str(kind).expect("known variant should serialise");
+            pretty_assertions::assert_eq!(s, expected);
+            let back = account_kind_from_str(s).expect("known string should deserialise");
+            pretty_assertions::assert_eq!(back, kind);
+        }
+    }
+
+    #[test]
+    fn account_kind_from_str_rejects_unknown() {
+        account_kind_from_str("bogus").expect_err("unknown string should fail");
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn create_account_persists_projection(pool: sqlx::SqlitePool) {
         let svc = AccountService::new(pool.clone());
         let id = svc
-            .create("Checking", bc_models::AccountType::Asset, None)
+            .create(
+                "Checking",
+                bc_models::AccountType::Asset,
+                bc_models::AccountKind::DepositAccount,
+                None,
+            )
             .await
             .expect("create should succeed");
 
@@ -437,7 +506,12 @@ mod tests {
     async fn archive_account_sets_archived_at(pool: sqlx::SqlitePool) {
         let svc = AccountService::new(pool.clone());
         let id = svc
-            .create("Old Account", bc_models::AccountType::Liability, None)
+            .create(
+                "Old Account",
+                bc_models::AccountType::Liability,
+                bc_models::AccountKind::DepositAccount,
+                None,
+            )
             .await
             .expect("create should succeed");
 
@@ -448,14 +522,42 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn create_account_with_kind_persists(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        let svc = AccountService::new(pool.clone());
+        let id = svc
+            .create(
+                "House",
+                bc_models::AccountType::Asset,
+                AccountKind::ManualAsset,
+                None,
+            )
+            .await
+            .expect("create should succeed");
+
+        let found = svc.find_by_id(&id).await.expect("find should succeed");
+        assert_eq!(found.kind(), AccountKind::ManualAsset);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn list_active_excludes_archived(pool: sqlx::SqlitePool) {
         let svc = AccountService::new(pool.clone());
         let _id1 = svc
-            .create("Active", bc_models::AccountType::Asset, None)
+            .create(
+                "Active",
+                bc_models::AccountType::Asset,
+                bc_models::AccountKind::DepositAccount,
+                None,
+            )
             .await
             .expect("create should succeed");
         let id2 = svc
-            .create("Archived", bc_models::AccountType::Expense, None)
+            .create(
+                "Archived",
+                bc_models::AccountType::Expense,
+                bc_models::AccountKind::DepositAccount,
+                None,
+            )
             .await
             .expect("create should succeed");
         svc.archive(&id2).await.expect("archive should succeed");
