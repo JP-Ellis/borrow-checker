@@ -47,12 +47,10 @@ pub enum ValidationError {
 ///
 /// ```
 /// use bc_models::{Account, AccountType};
-/// use jiff::Timestamp;
 ///
 /// let account = Account::builder()
 ///     .name("Checking")
 ///     .account_type(AccountType::Asset)
-///     .created_at(Timestamp::now())
 ///     .build();
 ///
 /// assert_eq!(account.name(), "Checking");
@@ -63,14 +61,15 @@ pub enum ValidationError {
 #[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Account {
-    /// Stable, opaque identifier for this account (a prefixed `UUIDv7`). Defaults to a
-    /// freshly generated value; only supply this when re-hydrating a record from storage.
+    /// Stable, opaque identifier for this account (a prefixed `UUIDv7`).
+    /// Defaults to a freshly generated value; only supply this when
+    /// re-hydrating a record from storage.
     #[builder(default)]
     id: AccountId,
 
-    /// Display name shown in reports and the user interface. Must not be empty —
-    /// [`Account::set_name`] enforces this on mutation, but the builder does not
-    /// validate at construction time.
+    /// Display name shown in reports and the user interface. Must not be empty
+    /// — [`Account::set_name`] enforces this on mutation, but the builder does
+    /// not validate at construction time.
     #[builder(into)]
     name: String,
 
@@ -81,7 +80,7 @@ pub struct Account {
     /// type; this invariant is enforced by `bc-core`, not here.
     #[expect(
         clippy::struct_field_names,
-        reason = "account_type is the natural field name; renaming would reduce clarity"
+        reason = "account_type is the idiomatic name; renaming to avoid the lint would obscure intent"
     )]
     account_type: Type,
 
@@ -100,7 +99,8 @@ pub struct Account {
     ///
     /// `None` indicates a root account whose [`Type`] is authoritative.
     /// `Some(id)` indicates a child whose type must match its root ancestor
-    /// (enforced in `bc-core`, not here).
+    /// (enforced in `bc-core`, not here, as the model can only inspect the id,
+    /// without access to the underlying account).
     parent_id: Option<AccountId>,
 
     /// Tags for cross-cutting labels (e.g. reporting categories). Applied at the
@@ -109,8 +109,9 @@ pub struct Account {
     #[builder(default)]
     tag_ids: Vec<TagId>,
 
-    /// Timestamp recorded when this account was first persisted. Callers
-    /// constructing a new account should pass [`jiff::Timestamp::now()`].
+    /// Timestamp recorded when this account was first persisted. Defaults to
+    /// [`jiff::Timestamp::now()`].
+    #[builder(default = jiff::Timestamp::now())]
     created_at: Timestamp,
 
     /// Timestamp at which this account was archived, or `None` if still active.
@@ -226,9 +227,13 @@ mod tests {
     use crate::CommodityId;
 
     #[test]
+    fn account_id_has_correct_prefix() {
+        assert!(AccountId::new().to_string().starts_with("account_"));
+    }
+
+    #[test]
     fn account_is_active_when_not_archived() {
         let acct = Account::builder()
-            .id(AccountId::new())
             .name("Checking")
             .account_type(Type::Asset)
             .created_at(jiff::Timestamp::now())
@@ -240,7 +245,6 @@ mod tests {
     fn account_with_parent_records_parent_id() {
         let parent_id = AccountId::new();
         let acct = Account::builder()
-            .id(AccountId::new())
             .name("Savings")
             .account_type(Type::Asset)
             .parent_id(parent_id.clone())
@@ -252,7 +256,6 @@ mod tests {
     #[test]
     fn account_root_has_no_parent() {
         let acct = Account::builder()
-            .id(AccountId::new())
             .name("Assets")
             .account_type(Type::Asset)
             .created_at(jiff::Timestamp::now())
@@ -281,7 +284,6 @@ mod tests {
         let id1 = CommodityId::new();
         let id2 = CommodityId::new();
         let acct = Account::builder()
-            .id(AccountId::new())
             .name("Brokerage")
             .account_type(Type::Asset)
             .commodities(vec![id1.clone(), id2])
@@ -293,7 +295,6 @@ mod tests {
     #[test]
     fn set_name_rejects_empty() {
         let mut acct = Account::builder()
-            .id(AccountId::new())
             .name("Checking")
             .account_type(Type::Asset)
             .created_at(jiff::Timestamp::now())
@@ -315,10 +316,21 @@ mod tests {
     }
 
     #[test]
+    fn account_created_at_defaults_to_current_time() {
+        let before = jiff::Timestamp::now();
+        let acct = Account::builder()
+            .name("Defaults Test")
+            .account_type(Type::Asset)
+            .build();
+        let after = jiff::Timestamp::now();
+        assert!(acct.created_at() >= &before);
+        assert!(acct.created_at() <= &after);
+    }
+
+    #[test]
     fn account_archive() {
         use jiff::Timestamp;
         let mut acct = Account::builder()
-            .id(AccountId::new())
             .name("Old Account")
             .account_type(Type::Asset)
             .created_at(Timestamp::now())
