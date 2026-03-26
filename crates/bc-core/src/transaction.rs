@@ -444,6 +444,7 @@ impl TransactionService {
 #[cfg(test)]
 mod tests {
     use bc_models::AccountId;
+    use bc_models::AccountKind;
     use bc_models::AccountType;
     use bc_models::Amount;
     use bc_models::CommodityCode;
@@ -486,11 +487,21 @@ mod tests {
     async fn create_balanced_transaction_succeeds(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::AccountService::new(pool.clone());
         let acc_a = acct_svc
-            .create("Income", AccountType::Income, None)
+            .create(
+                "Income",
+                AccountType::Income,
+                AccountKind::DepositAccount,
+                None,
+            )
             .await
             .expect("create Income account should succeed");
         let acc_b = acct_svc
-            .create("Checking", AccountType::Asset, None)
+            .create(
+                "Checking",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+            )
             .await
             .expect("create Checking account should succeed");
 
@@ -533,11 +544,21 @@ mod tests {
         use jiff::Timestamp;
         let acct_svc = crate::account::AccountService::new(pool.clone());
         let acc_a = acct_svc
-            .create("Brokerage", AccountType::Asset, None)
+            .create(
+                "Brokerage",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+            )
             .await
             .expect("create Brokerage account should succeed");
         let acc_b = acct_svc
-            .create("Cash", AccountType::Asset, None)
+            .create(
+                "Cash",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+            )
             .await
             .expect("create Cash account should succeed");
 
@@ -587,11 +608,11 @@ mod tests {
         use jiff::Timestamp;
         let acct_svc = crate::account::AccountService::new(pool.clone());
         let acc_a = acct_svc
-            .create("A", AccountType::Asset, None)
+            .create("A", AccountType::Asset, AccountKind::DepositAccount, None)
             .await
             .expect("create A should succeed");
         let acc_b = acct_svc
-            .create("B", AccountType::Expense, None)
+            .create("B", AccountType::Expense, AccountKind::DepositAccount, None)
             .await
             .expect("create B should succeed");
 
