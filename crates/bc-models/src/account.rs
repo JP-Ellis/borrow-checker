@@ -19,12 +19,9 @@ crate::define_id!(AccountId, "account");
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "re-exported as AccountKind in Task 2; not yet wired up"
-    )
+#[expect(
+    dead_code,
+    reason = "re-exported as AccountKind in lib.rs in the next commit"
 )]
 pub enum Kind {
     /// Reconciles against a bank/card/brokerage statement.
