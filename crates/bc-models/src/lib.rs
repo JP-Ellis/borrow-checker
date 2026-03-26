@@ -74,6 +74,7 @@ mod transaction;
 pub use account::Account;
 pub use account::AccountBuilder;
 pub use account::AccountId;
+pub use account::Kind as AccountKind;
 pub use account::Type as AccountType;
 pub use account::ValidationError as AccountValidationError;
 pub use commodity::Commodity;

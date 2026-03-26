@@ -19,10 +19,6 @@ crate::define_id!(AccountId, "account");
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
-#[expect(
-    dead_code,
-    reason = "re-exported as AccountKind in lib.rs in the next commit"
-)]
 pub enum Kind {
     /// Reconciles against a bank/card/brokerage statement.
     /// May have an import profile. This is the default kind.
