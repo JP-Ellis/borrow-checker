@@ -14,29 +14,63 @@ crate::define_id!(CommodityId, "commodity");
 ///
 /// Two commodities may share a `code` (e.g. `"AAPL"` on different exchanges).
 /// [`CommodityId`] is the stable identity; `code` is display metadata.
+///
+/// # Example
+///
+/// ```
+/// use bc_models::{Commodity, CommodityId};
+///
+/// let commodity = Commodity::builder()
+///     .id(CommodityId::new())
+///     .code("AUD")
+///     .name("Australian Dollar")
+///     .symbol("$")
+///     .build();
+///
+/// assert_eq!(commodity.code(), "AUD");
+/// assert_eq!(commodity.name(), Some("Australian Dollar"));
+/// ```
+// NOTE: the field docstrings propagate to the setter methods on the builder, so
+// keep them accurate and self-contained.
 #[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Commodity {
-    /// The unique identifier for this commodity.
+    /// Stable, opaque identifier for this commodity. Assigned by `bc-core` on
+    /// registration. Use this ID — not `code` — as the durable reference across renames.
     id: CommodityId,
-    /// Non-empty code string, e.g. `"AUD"`, `"BTC"`, `"AAPL"`.
+
+    /// Ticker or currency code (e.g. `"AUD"`, `"BTC"`, `"AAPL"`). Must be non-empty.
+    /// Multiple commodities may share a code when they trade on different exchanges;
+    /// use [`CommodityId`] to distinguish them unambiguously.
     #[builder(into)]
     code: String,
-    /// Exchange or market, e.g. `"ASX"`, `"NASDAQ"`. `None` for fiat/universal.
+
+    /// Exchange or market where this commodity trades (e.g. `"ASX"`, `"NASDAQ"`).
+    /// `None` for fiat currencies and other globally-traded assets with no single exchange.
     #[builder(into)]
     exchange: Option<String>,
-    /// Human-readable name, e.g. `"Australian Dollar"`.
+
+    /// Human-readable full name (e.g. `"Australian Dollar"`, `"Bitcoin"`).
+    /// `None` if a name has not been recorded for this commodity.
     #[builder(into)]
     name: Option<String>,
-    /// Optional description.
+
+    /// Optional free-text description providing additional context (e.g. `ISIN`, notes on
+    /// the exchange listing). `None` if no description has been set.
     #[builder(into)]
     description: Option<String>,
-    /// Display symbol, e.g. `"$"`, `"₿"`.
+
+    /// Display symbol used when formatting amounts (e.g. `"$"`, `"₿"`). `None` if no
+    /// symbol has been recorded; in that case the `code` is used as the display fallback.
     #[builder(into)]
     symbol: Option<String>,
-    /// Date from which this commodity is valid.
+
+    /// First date from which this commodity is considered valid. `None` means there is
+    /// no lower bound on validity.
     active_from: Option<Date>,
-    /// Date until which this commodity is valid.
+
+    /// Last date on which this commodity is considered valid (inclusive). `None` means
+    /// there is no upper bound — the commodity is still active.
     active_until: Option<Date>,
 }
 
