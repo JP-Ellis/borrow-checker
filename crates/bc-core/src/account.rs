@@ -177,6 +177,9 @@ impl Service {
         let event = Event::AccountCreated {
             id: id.clone(),
             name: name.to_owned(),
+            account_type,
+            kind,
+            description: description.map(str::to_owned),
         };
 
         let mut tx = self.pool.begin().await?;
