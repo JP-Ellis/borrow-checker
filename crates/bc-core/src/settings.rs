@@ -142,4 +142,22 @@ mod tests {
         let loaded = store.load().await.expect("load should succeed");
         assert_eq!(loaded.display_commodity(), &CommodityCode::new("USD"));
     }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn corrupt_json_returns_serialisation_error(pool: sqlx::SqlitePool) {
+        // Insert a row with invalid JSON directly to bypass the normal save path.
+        sqlx::query("INSERT INTO meta (key, value) VALUES (?, ?)")
+            .bind(SETTINGS_KEY)
+            .bind("not valid json {{{")
+            .execute(&pool)
+            .await
+            .expect("direct insert should succeed");
+
+        let store = Store::new(pool.clone());
+        let result = store.load().await;
+        assert!(
+            matches!(result, Err(crate::BcError::Serialisation(_))),
+            "expected Serialisation error, got {result:?}"
+        );
+    }
 }

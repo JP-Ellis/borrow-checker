@@ -560,4 +560,32 @@ mod tests {
         assert!(tx.link_ids().is_empty());
         assert!(tx.tag_ids().is_empty());
     }
+
+    #[test]
+    fn posting_with_memo_cost_and_tag_ids_round_trips() {
+        use crate::TagId;
+
+        let tag_id = TagId::new();
+        let cost_basis = Cost::builder()
+            .total(Amount::new(dec!(500), CommodityCode::new("USD")))
+            .build();
+        let posting = Posting::builder()
+            .id(PostingId::new())
+            .account_id(crate::AccountId::new())
+            .amount(Amount::new(dec!(10), CommodityCode::new("AAPL")))
+            .memo("lot purchase memo")
+            .cost(cost_basis)
+            .tag_ids(vec![tag_id.clone()])
+            .build();
+
+        assert_eq!(posting.memo(), Some("lot purchase memo"));
+        let cost = posting.cost().expect("cost should be set");
+        assert_eq!(cost.total().value(), dec!(500));
+        assert_eq!(cost.total().commodity().to_string(), "USD");
+        assert_eq!(posting.tag_ids().len(), 1);
+        assert_eq!(
+            posting.tag_ids().first().expect("tag should exist"),
+            &tag_id
+        );
+    }
 }

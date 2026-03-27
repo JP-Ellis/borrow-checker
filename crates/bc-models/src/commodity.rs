@@ -161,4 +161,40 @@ mod tests {
             .build();
         assert_eq!(c.name(), Some("Bitcoin"));
     }
+
+    #[test]
+    fn commodity_all_optional_fields_set() {
+        use jiff::civil::date;
+
+        let c = Commodity::builder()
+            .code("AAPL")
+            .exchange("NASDAQ")
+            .name("Apple Inc.")
+            .description("US large-cap technology stock")
+            .symbol("$")
+            .active_from(date(2000, 1, 1))
+            .active_until(date(2099, 12, 31))
+            .build();
+
+        assert_eq!(c.code(), "AAPL");
+        assert_eq!(c.exchange(), Some("NASDAQ"));
+        assert_eq!(c.name(), Some("Apple Inc."));
+        assert_eq!(c.description(), Some("US large-cap technology stock"));
+        assert_eq!(c.symbol(), Some("$"));
+        assert_eq!(c.active_from(), Some(date(2000, 1, 1)));
+        assert_eq!(c.active_until(), Some(date(2099, 12, 31)));
+    }
+
+    #[test]
+    fn commodity_no_optional_fields_returns_none() {
+        let c = Commodity::builder().code("EUR").build();
+
+        assert_eq!(c.code(), "EUR");
+        assert!(c.exchange().is_none());
+        assert!(c.name().is_none());
+        assert!(c.description().is_none());
+        assert!(c.symbol().is_none());
+        assert!(c.active_from().is_none());
+        assert!(c.active_until().is_none());
+    }
 }
