@@ -11,9 +11,9 @@ repository.workspace   = true
 license.workspace      = true
 
 [dependencies]
-opentelemetry      = "0.31"
-opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
-opentelemetry_sdk  = { version = "0.31", features = ["trace"] }
+opentelemetry      = { workspace = true }
+opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
+opentelemetry_sdk  = { workspace = true, features = ["trace"] }
 thiserror          = { workspace = true }
 
 [lints]
