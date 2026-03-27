@@ -32,9 +32,9 @@ fn validate_balance(postings: &[Posting]) -> BcResult<()> {
 
     let mut sums: std::collections::BTreeMap<&str, Decimal> = std::collections::BTreeMap::new();
     for p in postings {
-        let entry: &mut Decimal = sums.entry(p.amount().commodity.as_str()).or_default();
+        let entry: &mut Decimal = sums.entry(p.amount().commodity().as_str()).or_default();
         *entry = entry
-            .checked_add(p.amount().value)
+            .checked_add(p.amount().value())
             .ok_or(BcError::BadData("posting sum overflow".into()))?;
     }
     for (commodity, sum) in &sums {
@@ -164,8 +164,8 @@ impl Service {
             let (cost_value, cost_commodity, cost_date, cost_label) =
                 if let Some(cost) = posting.cost() {
                     (
-                        Some(cost.total().value.to_string()),
-                        Some(cost.total().commodity.as_str().to_owned()),
+                        Some(cost.total().value().to_string()),
+                        Some(cost.total().commodity().as_str().to_owned()),
                         cost.date().map(|d| d.to_string()),
                         cost.label().map(str::to_owned),
                     )
@@ -182,8 +182,8 @@ impl Service {
             .bind(posting.id().to_string())
             .bind(tx_id.to_string())
             .bind(posting.account_id().to_string())
-            .bind(posting.amount().value.to_string())
-            .bind(posting.amount().commodity.as_str())
+            .bind(posting.amount().value().to_string())
+            .bind(posting.amount().commodity().as_str())
             .bind(posting.memo())
             .bind(
                 i64::try_from(position)
@@ -537,8 +537,8 @@ mod tests {
             .first()
             .expect("first posting should exist");
         let loaded_cost = first_posting.cost().expect("cost should be present");
-        assert_eq!(loaded_cost.total().value, dec!(1500.00));
-        assert_eq!(loaded_cost.total().commodity.as_str(), "AUD");
+        assert_eq!(loaded_cost.total().value(), dec!(1500.00));
+        assert_eq!(loaded_cost.total().commodity().as_str(), "AUD");
         assert_eq!(loaded_cost.label(), Some("lot-1"));
     }
 
