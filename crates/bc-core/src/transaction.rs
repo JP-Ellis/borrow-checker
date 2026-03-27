@@ -431,6 +431,7 @@ mod tests {
                 AccountType::Income,
                 AccountKind::DepositAccount,
                 None,
+                None,
             )
             .await
             .expect("create Income account should succeed");
@@ -439,6 +440,7 @@ mod tests {
                 "Checking",
                 AccountType::Asset,
                 AccountKind::DepositAccount,
+                None,
                 None,
             )
             .await
@@ -488,6 +490,7 @@ mod tests {
                 AccountType::Asset,
                 AccountKind::DepositAccount,
                 None,
+                None,
             )
             .await
             .expect("create Brokerage account should succeed");
@@ -496,6 +499,7 @@ mod tests {
                 "Cash",
                 AccountType::Asset,
                 AccountKind::DepositAccount,
+                None,
                 None,
             )
             .await
@@ -569,6 +573,7 @@ mod tests {
                 bc_models::AccountType::Asset,
                 bc_models::AccountKind::DepositAccount,
                 None,
+                None,
             )
             .await
             .expect("create A should succeed");
@@ -577,6 +582,7 @@ mod tests {
                 "B",
                 bc_models::AccountType::Expense,
                 bc_models::AccountKind::DepositAccount,
+                None,
                 None,
             )
             .await
@@ -596,11 +602,23 @@ mod tests {
         use jiff::Timestamp;
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
-            .create("A", AccountType::Asset, AccountKind::DepositAccount, None)
+            .create(
+                "A",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+                None,
+            )
             .await
             .expect("create A should succeed");
         let acc_b = acct_svc
-            .create("B", AccountType::Expense, AccountKind::DepositAccount, None)
+            .create(
+                "B",
+                AccountType::Expense,
+                AccountKind::DepositAccount,
+                None,
+                None,
+            )
             .await
             .expect("create B should succeed");
 
