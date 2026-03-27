@@ -52,6 +52,9 @@ members  = [
   ] }
   jiff                = { version = "0.2", features = ["serde"] }
   mti                 = { version = "1.1", features = ["serde"] }
+  opentelemetry       = "0.31"
+  opentelemetry-otlp  = "0.31"
+  opentelemetry_sdk   = "0.31"
   pretty_assertions   = { version = "1", features = ["unstable"] }
   rust_decimal        = { version = "1", features = ["serde-with-str"] }
   rust_decimal_macros = "1"
