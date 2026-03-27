@@ -69,13 +69,13 @@ impl From<&'static rusty_money::iso::Currency> for CommodityCode {
 }
 
 /// A precise monetary amount with an associated commodity denomination.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Amount {
     /// The numeric value.
-    pub value: Decimal,
+    value: Decimal,
     /// The commodity or currency code.
-    pub commodity: CommodityCode,
+    commodity: CommodityCode,
 }
 
 impl Amount {
@@ -92,6 +92,20 @@ impl Amount {
             value,
             commodity: commodity.into(),
         }
+    }
+
+    /// Returns the numeric value of this amount.
+    #[inline]
+    #[must_use]
+    pub fn value(&self) -> Decimal {
+        self.value
+    }
+
+    /// Returns the commodity code of this amount.
+    #[inline]
+    #[must_use]
+    pub fn commodity(&self) -> &CommodityCode {
+        &self.commodity
     }
 }
 
@@ -110,10 +124,7 @@ mod tests {
     #[test]
     fn amount_stores_value_and_commodity() {
         use rust_decimal_macros::dec;
-        let amt = Amount {
-            value: dec!(100.50),
-            commodity: CommodityCode::new("USD"),
-        };
-        assert_eq!(amt.commodity.to_string(), "USD");
+        let amt = Amount::new(dec!(100.50), CommodityCode::new("USD"));
+        assert_eq!(amt.commodity().to_string(), "USD");
     }
 }

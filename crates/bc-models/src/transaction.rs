@@ -135,7 +135,7 @@ impl Link {
 ///     .total(Amount::new(Decimal::from(1500), CommodityCode::new("USD")))
 ///     .build();
 ///
-/// assert_eq!(cost.total().value, Decimal::from(1500));
+/// assert_eq!(cost.total().value(), Decimal::from(1500));
 /// assert!(cost.date().is_none());
 /// ```
 // NOTE: the field docstrings propagate to the setter methods on the builder, so
@@ -196,7 +196,7 @@ impl Cost {
 ///     .amount(Amount::new(Decimal::from(100), CommodityCode::new("AUD")))
 ///     .build();
 ///
-/// assert_eq!(posting.amount().commodity.to_string(), "AUD");
+/// assert_eq!(posting.amount().commodity().to_string(), "AUD");
 /// assert!(posting.cost().is_none());
 /// ```
 // NOTE: the field docstrings propagate to the setter methods on the builder, so
@@ -501,7 +501,7 @@ mod tests {
             .account_id(crate::AccountId::new())
             .amount(Amount::new(dec!(100.00), CommodityCode::new("AUD")))
             .build();
-        assert_eq!(posting.amount().commodity.to_string(), "AUD");
+        assert_eq!(posting.amount().commodity().to_string(), "AUD");
     }
 
     #[test]
@@ -520,7 +520,7 @@ mod tests {
         let cost = Cost::builder()
             .total(Amount::new(dec!(1500), CommodityCode::new("USD")))
             .build();
-        assert_eq!(cost.total().value.to_string(), "1500");
+        assert_eq!(cost.total().value().to_string(), "1500");
     }
 
     #[test]
