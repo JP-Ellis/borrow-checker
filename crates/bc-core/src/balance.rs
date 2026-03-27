@@ -79,6 +79,7 @@ mod tests {
                 AccountType::Asset,
                 AccountKind::DepositAccount,
                 None,
+                None,
             )
             .await
             .expect("create Wallet account should succeed");
@@ -87,6 +88,7 @@ mod tests {
                 "Income",
                 AccountType::Income,
                 AccountKind::DepositAccount,
+                None,
                 None,
             )
             .await
@@ -117,6 +119,7 @@ mod tests {
                 AccountType::Asset,
                 AccountKind::DepositAccount,
                 None,
+                None,
             )
             .await
             .expect("create should succeed");
@@ -145,6 +148,7 @@ mod tests {
                 AccountType::Asset,
                 AccountKind::DepositAccount,
                 None,
+                None,
             )
             .await
             .expect("create Wallet should succeed");
@@ -153,6 +157,7 @@ mod tests {
                 "Income",
                 AccountType::Income,
                 AccountKind::DepositAccount,
+                None,
                 None,
             )
             .await

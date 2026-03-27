@@ -30,6 +30,8 @@ struct AccountRow {
     kind: String,
     /// Optional description.
     description: Option<String>,
+    /// Raw parent account ID string, if this account has a parent.
+    parent_id: Option<String>,
     /// ISO 8601 creation timestamp.
     created_at: String,
     /// ISO 8601 archive timestamp if archived.
@@ -72,6 +74,15 @@ impl TryFrom<AccountRow> for Account {
             })
             .transpose()?;
 
+        let parent_id = row
+            .parent_id
+            .as_deref()
+            .map(|s| {
+                s.parse::<AccountId>()
+                    .map_err(|e| BcError::BadData(format!("invalid parent_id '{s}': {e}")))
+            })
+            .transpose()?;
+
         Ok(Self::builder()
             .id(id)
             .name(row.name)
@@ -80,6 +91,7 @@ impl TryFrom<AccountRow> for Account {
             .commodities(row.commodities)
             .tag_ids(row.tag_ids)
             .maybe_description(row.description)
+            .maybe_parent_id(parent_id)
             .maybe_archived_at(archived_at)
             .created_at(created_at)
             .build())
@@ -140,6 +152,14 @@ impl Service {
     /// Both the event append and the projection insert are wrapped in a single
     /// SQLite transaction so they succeed or fail atomically.
     ///
+    /// # Arguments
+    ///
+    /// * `name` - Display name for the new account.
+    /// * `account_type` - Classification in the chart of accounts.
+    /// * `kind` - Account maintenance kind.
+    /// * `description` - Optional free-text description.
+    /// * `parent_id` - Optional parent account ID for sub-accounts.
+    ///
     /// # Errors
     ///
     /// Returns [`BcError`] on event append or database insert failure.
@@ -150,6 +170,7 @@ impl Service {
         account_type: AccountType,
         kind: AccountKind,
         description: Option<&str>,
+        parent_id: Option<&AccountId>,
     ) -> BcResult<AccountId> {
         let id = AccountId::new();
         let now = Timestamp::now();
@@ -163,13 +184,14 @@ impl Service {
         insert_event(&event, &mut tx).await?;
 
         sqlx::query(
-            "INSERT INTO accounts (id, name, account_type, kind, description, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            "INSERT INTO accounts (id, name, account_type, kind, description, parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(id.to_string())
         .bind(name)
         .bind(to_db_str(account_type)?)
         .bind(to_db_str(kind)?)
         .bind(description)
+        .bind(parent_id.map(AccountId::to_string))
         .bind(now.to_string())
         .execute(&mut *tx)
         .await?;
@@ -231,11 +253,12 @@ impl Service {
                 String,
                 String,
                 Option<String>,
+                Option<String>,
                 String,
                 Option<String>,
             ),
         >(
-            "SELECT id, name, account_type, kind, description, created_at, archived_at \
+            "SELECT id, name, account_type, kind, description, parent_id, created_at, archived_at \
              FROM accounts WHERE id = ?",
         )
         .bind(id.to_string())
@@ -278,8 +301,9 @@ impl Service {
             account_type: row.2,
             kind: row.3,
             description: row.4,
-            created_at: row.5,
-            archived_at: row.6,
+            parent_id: row.5,
+            created_at: row.6,
+            archived_at: row.7,
             commodities,
             tag_ids,
         })
@@ -303,11 +327,12 @@ impl Service {
                 String,
                 String,
                 Option<String>,
+                Option<String>,
                 String,
                 Option<String>,
             ),
         >(
-            "SELECT id, name, account_type, kind, description, created_at, archived_at \
+            "SELECT id, name, account_type, kind, description, parent_id, created_at, archived_at \
              FROM accounts WHERE archived_at IS NULL ORDER BY name ASC",
         )
         .fetch_all(&self.pool)
@@ -352,8 +377,9 @@ impl Service {
                     account_type: row.2,
                     kind: row.3,
                     description: row.4,
-                    created_at: row.5,
-                    archived_at: row.6,
+                    parent_id: row.5,
+                    created_at: row.6,
+                    archived_at: row.7,
                     commodities,
                     tag_ids,
                 })
@@ -398,6 +424,7 @@ mod tests {
                 bc_models::AccountType::Asset,
                 bc_models::AccountKind::DepositAccount,
                 None,
+                None,
             )
             .await
             .expect("create should succeed");
@@ -418,6 +445,7 @@ mod tests {
                 bc_models::AccountType::Liability,
                 bc_models::AccountKind::DepositAccount,
                 None,
+                None,
             )
             .await
             .expect("create should succeed");
@@ -437,6 +465,7 @@ mod tests {
                 "House",
                 bc_models::AccountType::Asset,
                 AccountKind::ManualAsset,
+                None,
                 None,
             )
             .await
@@ -474,6 +503,7 @@ mod tests {
                 bc_models::AccountType::Asset,
                 bc_models::AccountKind::DepositAccount,
                 None,
+                None,
             )
             .await
             .expect("create should succeed");
@@ -501,6 +531,7 @@ mod tests {
                 bc_models::AccountType::Asset,
                 bc_models::AccountKind::DepositAccount,
                 None,
+                None,
             )
             .await
             .expect("create should succeed");
@@ -509,6 +540,7 @@ mod tests {
                 "Archived",
                 bc_models::AccountType::Expense,
                 bc_models::AccountKind::DepositAccount,
+                None,
                 None,
             )
             .await

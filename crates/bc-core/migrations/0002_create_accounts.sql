@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     account_type TEXT NOT NULL,
     -- commodity column removed; replaced by account_commodities join table
     description  TEXT,
+    parent_id    TEXT REFERENCES accounts(id),
     created_at   TEXT NOT NULL,
     archived_at  TEXT
 );
