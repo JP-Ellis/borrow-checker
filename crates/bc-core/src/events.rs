@@ -1,6 +1,8 @@
 //! Append-only event log and event types.
 
 use bc_models::AccountId;
+use bc_models::AccountKind;
+use bc_models::AccountType;
 use bc_models::EventId;
 use bc_models::TransactionId;
 use jiff::Timestamp;
@@ -17,8 +19,14 @@ pub enum Event {
     AccountCreated {
         /// The new account's ID.
         id: AccountId,
-        /// Display name.
+        /// Display name of the new account.
         name: String,
+        /// Classification in the chart of accounts.
+        account_type: AccountType,
+        /// Account maintenance kind.
+        kind: AccountKind,
+        /// Optional free-text description.
+        description: Option<String>,
     },
     /// An account's metadata was updated.
     AccountUpdated {
@@ -199,11 +207,17 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn append_and_replay_account_created(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+
         let store = SqliteStore::new(pool.clone());
         let id = AccountId::new();
         let event = Event::AccountCreated {
             id: id.clone(),
             name: "Test".to_owned(),
+            account_type: AccountType::Asset,
+            kind: AccountKind::DepositAccount,
+            description: None,
         };
 
         store.append(&event).await.expect("append should succeed");
@@ -219,6 +233,9 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn replay_for_returns_events_in_insertion_order(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+
         let store = SqliteStore::new(pool.clone());
         let id = AccountId::new();
 
@@ -226,6 +243,9 @@ mod tests {
             .append(&Event::AccountCreated {
                 id: id.clone(),
                 name: "Created".to_owned(),
+                account_type: AccountType::Asset,
+                kind: AccountKind::DepositAccount,
+                description: None,
             })
             .await
             .expect("first append should succeed");
@@ -266,5 +286,56 @@ mod tests {
             .await
             .expect("replay should succeed");
         assert_eq!(records.len(), 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn account_created_payload_round_trips(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+
+        let store = SqliteStore::new(pool.clone());
+        let id = AccountId::new();
+        let original = Event::AccountCreated {
+            id: id.clone(),
+            name: "Round-Trip Account".to_owned(),
+            account_type: AccountType::Asset,
+            kind: AccountKind::DepositAccount,
+            description: Some("A test description".to_owned()),
+        };
+
+        store
+            .append(&original)
+            .await
+            .expect("append should succeed");
+
+        let records = store
+            .replay_for(&id.to_string())
+            .await
+            .expect("replay should succeed");
+        let record = records.first().expect("one record should exist");
+
+        let replayed: Event =
+            serde_json::from_str(&record.payload).expect("payload should deserialise");
+
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "Event is #[non_exhaustive]; wildcard arm is required for exhaustive match in tests"
+        )]
+        match replayed {
+            Event::AccountCreated {
+                id: replayed_id,
+                name,
+                account_type,
+                kind,
+                description,
+            } => {
+                assert_eq!(replayed_id, id);
+                assert_eq!(name, "Round-Trip Account");
+                assert_eq!(account_type, AccountType::Asset);
+                assert_eq!(kind, AccountKind::DepositAccount);
+                assert_eq!(description, Some("A test description".to_owned()));
+            }
+            other => panic!("expected AccountCreated, got {other:?}"),
+        }
     }
 }
