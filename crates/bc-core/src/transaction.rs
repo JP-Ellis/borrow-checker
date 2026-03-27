@@ -33,7 +33,9 @@ fn validate_balance(postings: &[Posting]) -> BcResult<()> {
     let mut sums: std::collections::BTreeMap<&str, Decimal> = std::collections::BTreeMap::new();
     for p in postings {
         let entry: &mut Decimal = sums.entry(p.amount().commodity.as_str()).or_default();
-        *entry = entry.saturating_add(p.amount().value);
+        *entry = entry
+            .checked_add(p.amount().value)
+            .ok_or(BcError::BadData("posting sum overflow".into()))?;
     }
     for (commodity, sum) in &sums {
         if !sum.is_zero() {

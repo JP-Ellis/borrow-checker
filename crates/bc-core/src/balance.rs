@@ -50,9 +50,12 @@ impl Engine {
         .await?;
 
         rows.into_iter().try_fold(Decimal::ZERO, |acc, (amt,)| {
-            amt.parse::<Decimal>()
-                .map(|d| acc.saturating_add(d))
-                .map_err(|e| BcError::BadData(format!("invalid decimal amount '{amt}': {e}")))
+            let d = amt
+                .parse::<Decimal>()
+                .map_err(|e| BcError::BadData(format!("invalid decimal amount '{amt}': {e}")))?;
+            acc.checked_add(d).ok_or_else(|| {
+                BcError::BadData("balance overflow: sum exceeds Decimal range".into())
+            })
         })
     }
 }
@@ -62,6 +65,7 @@ mod tests {
     use bc_models::AccountKind;
     use bc_models::AccountType;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -102,5 +106,91 @@ mod tests {
             .await
             .expect("balance query should succeed");
         assert_eq!(balance, dec!(100.00));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn balance_zero_for_account_with_no_postings(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create(
+                "Empty",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+            )
+            .await
+            .expect("create should succeed");
+        let engine = Engine::new(pool.clone());
+        let balance = engine
+            .balance_for(&acc, "AUD")
+            .await
+            .expect("balance query should succeed");
+        assert_eq!(balance, Decimal::ZERO);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn balance_excludes_voided_transactions(pool: sqlx::SqlitePool) {
+        use bc_models::Amount;
+        use bc_models::CommodityCode;
+        use bc_models::Posting;
+        use bc_models::PostingId;
+        use bc_models::Transaction;
+        use bc_models::TransactionStatus;
+        use jiff::civil::date;
+
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc_a = acct_svc
+            .create(
+                "Wallet",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+            )
+            .await
+            .expect("create Wallet should succeed");
+        let acc_b = acct_svc
+            .create(
+                "Income",
+                AccountType::Income,
+                AccountKind::DepositAccount,
+                None,
+            )
+            .await
+            .expect("create Income should succeed");
+
+        let tx_svc = crate::transaction::Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 1, 1))
+            .description("Voided")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_a.clone())
+                    .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_b)
+                    .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .status(TransactionStatus::Cleared)
+            .created_at(jiff::Timestamp::now())
+            .build();
+        let tx_id = tx.id().clone();
+        tx_svc.create(tx).await.expect("create should succeed");
+        tx_svc.void(&tx_id).await.expect("void should succeed");
+
+        let engine = Engine::new(pool.clone());
+        let balance = engine
+            .balance_for(&acc_a, "AUD")
+            .await
+            .expect("balance query should succeed");
+        assert_eq!(
+            balance,
+            Decimal::ZERO,
+            "voided transaction should not affect balance"
+        );
     }
 }
