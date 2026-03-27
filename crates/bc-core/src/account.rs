@@ -160,7 +160,7 @@ impl Service {
 
         let mut tx = self.pool.begin().await?;
 
-        insert_event(&event, &mut *tx).await?;
+        insert_event(&event, &mut tx).await?;
 
         sqlx::query(
             "INSERT INTO accounts (id, name, account_type, kind, description, created_at) VALUES (?, ?, ?, ?, ?, ?)"
@@ -208,7 +208,7 @@ impl Service {
 
         let mut tx = self.pool.begin().await?;
 
-        insert_event(&event, &mut *tx).await?;
+        insert_event(&event, &mut tx).await?;
 
         sqlx::query("UPDATE accounts SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
             .bind(now.to_string())
