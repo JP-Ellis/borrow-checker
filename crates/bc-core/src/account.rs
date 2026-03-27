@@ -181,9 +181,10 @@ impl Service {
 
     /// Archives an account by setting its `archived_at` timestamp.
     ///
-    /// The existence check happens before any write.  The event append and the
-    /// projection update are wrapped in a single SQLite transaction so they
-    /// succeed or fail atomically.
+    /// The event append and the projection UPDATE are wrapped in a single SQLite
+    /// transaction so they succeed or fail atomically.  `rows_affected()` is used
+    /// to detect a missing or already-archived account without a separate pre-check,
+    /// eliminating a TOCTOU race.
     ///
     /// # Errors
     ///
@@ -192,29 +193,22 @@ impl Service {
     #[inline]
     pub async fn archive(&self, id: &AccountId) -> BcResult<()> {
         let now = Timestamp::now();
-
-        // Check existence first (before writing any event).
-        let exists: Option<(String,)> =
-            sqlx::query_as("SELECT id FROM accounts WHERE id = ? AND archived_at IS NULL")
-                .bind(id.to_string())
-                .fetch_optional(&self.pool)
-                .await?;
-
-        if exists.is_none() {
-            return Err(BcError::NotFound(id.to_string()));
-        }
-
         let event = Event::AccountArchived { id: id.clone() };
 
         let mut tx = self.pool.begin().await?;
 
         insert_event(&event, &mut tx).await?;
 
-        sqlx::query("UPDATE accounts SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
-            .bind(now.to_string())
-            .bind(id.to_string())
-            .execute(&mut *tx)
-            .await?;
+        let result =
+            sqlx::query("UPDATE accounts SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
+                .bind(now.to_string())
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(BcError::NotFound(id.to_string()));
+        }
 
         tx.commit().await?;
         tracing::info!(account_id = %id, "account archived");
@@ -451,6 +445,41 @@ mod tests {
         let found = svc.find_by_id(&id).await.expect("find should succeed");
         assert_eq!(found.account_type(), bc_models::AccountType::Asset);
         assert_eq!(found.kind(), AccountKind::ManualAsset);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn archive_nonexistent_account_returns_not_found(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let fake_id = bc_models::AccountId::new();
+        let result = svc.archive(&fake_id).await;
+        assert!(matches!(result, Err(BcError::NotFound(_))));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn archive_already_archived_returns_not_found(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let id = svc
+            .create(
+                "Savings",
+                bc_models::AccountType::Asset,
+                bc_models::AccountKind::DepositAccount,
+                None,
+            )
+            .await
+            .expect("create should succeed");
+        svc.archive(&id)
+            .await
+            .expect("first archive should succeed");
+        let result = svc.archive(&id).await;
+        assert!(matches!(result, Err(BcError::NotFound(_))));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn find_by_id_nonexistent_returns_not_found(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let fake_id = bc_models::AccountId::new();
+        let result = svc.find_by_id(&fake_id).await;
+        assert!(matches!(result, Err(BcError::NotFound(_))));
     }
 
     #[sqlx::test(migrations = "./migrations")]
