@@ -117,27 +117,27 @@ members  = [
     # Restriction lints: opt-in group; silence the meta-lint since we're using it
     blanket-clippy-restriction-lints = "allow"
 
-    alloc_instead_of_core          = "allow"
-    arbitrary_source_item_ordering = "allow"
-    cargo_common_metadata          = "allow"
-    cognitive_complexity           = "allow"
-    else_if_without_else           = "allow"
-    impl_trait_in_params           = "allow"
-    implicit_return                = "allow"
-    min_ident_chars                = "allow"
-    missing_trait_methods          = "allow"
-    multiple_crate_versions        = "allow"
-    non_ascii_literal              = "allow"
-    pattern_type_mismatch          = "allow"
-    pub_with_shorthand             = "allow"
-    question_mark_used             = "allow"
-    ref_patterns                   = "allow"
-    self_named_module_files        = "allow"
-    separated_literal_suffix       = "allow"
-    single_call_fn                 = "allow"
-    single_char_lifetime_names     = "allow"
-    std_instead_of_alloc           = "allow"
-    unreachable                    = "allow"
+    alloc_instead_of_core          = "allow"  # prefer std::collections over core; alloc crate not used directly
+    arbitrary_source_item_ordering = "allow"  # item order is left to author discretion
+    cargo_common_metadata          = "allow"  # workspace-level metadata fields are intentionally omitted
+    cognitive_complexity           = "allow"  # complexity is managed via code review, not a numeric threshold
+    else_if_without_else           = "allow"  # final else branches are often unnecessary noise
+    impl_trait_in_params           = "allow"  # `impl Trait` in fn params is idiomatic for simple bounds
+    implicit_return                = "allow"  # Rust's implicit return is idiomatic; explicit `return` is reserved for early exits
+    min_ident_chars                = "allow"  # single-letter names (e.g. `i`, `n`) are fine in tight scopes
+    missing_trait_methods          = "allow"  # partial trait implementations with provided defaults are intentional
+    multiple_crate_versions        = "allow"  # duplicate transitive deps are unavoidable in a large workspace
+    non_ascii_literal              = "allow"  # Unicode string literals are used for currency symbols and display text
+    pattern_type_mismatch          = "allow"  # match ergonomics (auto-ref in patterns) is standard Rust style
+    pub_with_shorthand             = "allow"  # `pub(crate)` shorthand is preferred over `pub(in crate)`
+    question_mark_used             = "allow"  # `?` for error propagation is idiomatic Rust
+    ref_patterns                   = "allow"  # `ref` in patterns is occasionally needed for complex destructuring
+    self_named_module_files        = "allow"  # module file layout uses `mod.rs` convention in some crates
+    separated_literal_suffix       = "allow"  # `1_u32` style is preferred over `1u32` for readability
+    single_call_fn                 = "allow"  # helper functions aid readability even when called once
+    single_char_lifetime_names     = "allow"  # `'a`, `'b` lifetime names are standard for short-lived generics
+    std_instead_of_alloc           = "allow"  # `std::` is used throughout; alloc-only builds are not a goal
+    unreachable                    = "allow"  # `unreachable!()` is used to mark logically impossible branches
 
     # Known upstream issues — revisit when fixed
     # https://github.com/rust-lang/rust-clippy/issues/14056
