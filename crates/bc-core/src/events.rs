@@ -216,4 +216,55 @@ mod tests {
         let first = records.first().expect("records should be non-empty");
         assert_eq!(first.kind, "AccountCreated");
     }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn replay_for_returns_events_in_insertion_order(pool: sqlx::SqlitePool) {
+        let store = SqliteStore::new(pool.clone());
+        let id = AccountId::new();
+
+        store
+            .append(&Event::AccountCreated {
+                id: id.clone(),
+                name: "Created".to_owned(),
+            })
+            .await
+            .expect("first append should succeed");
+        store
+            .append(&Event::AccountUpdated { id: id.clone() })
+            .await
+            .expect("second append should succeed");
+        store
+            .append(&Event::AccountArchived { id: id.clone() })
+            .await
+            .expect("third append should succeed");
+
+        let records = store
+            .replay_for(&id.to_string())
+            .await
+            .expect("replay should succeed");
+
+        assert_eq!(records.len(), 3);
+        assert_eq!(
+            records.first().expect("first record should exist").kind,
+            "AccountCreated"
+        );
+        assert_eq!(
+            records.get(1).expect("second record should exist").kind,
+            "AccountUpdated"
+        );
+        assert_eq!(
+            records.get(2).expect("third record should exist").kind,
+            "AccountArchived"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn replay_for_returns_empty_for_unknown_aggregate(pool: sqlx::SqlitePool) {
+        let store = SqliteStore::new(pool.clone());
+        let records = store
+            .replay_for("account_nonexistent_id")
+            .await
+            .expect("replay should succeed");
+        assert_eq!(records.len(), 0);
+    }
 }
