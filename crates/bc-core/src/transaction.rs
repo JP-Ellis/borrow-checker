@@ -136,7 +136,7 @@ impl Service {
 
         let mut db_tx = self.pool.begin().await?;
 
-        insert_event(&event, &mut *db_tx).await?;
+        insert_event(&event, &mut db_tx).await?;
 
         sqlx::query(
             "INSERT INTO transactions (id, date, payee, description, status, created_at) VALUES (?, ?, ?, ?, ?, ?)"
@@ -364,7 +364,7 @@ impl Service {
 
         let mut tx = self.pool.begin().await?;
 
-        insert_event(&event, &mut *tx).await?;
+        insert_event(&event, &mut tx).await?;
 
         sqlx::query(
             "UPDATE transactions SET status = 'voided' WHERE id = ? AND status != 'voided'",
