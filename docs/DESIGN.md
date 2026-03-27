@@ -54,6 +54,8 @@ borrow-checker/
 ├── crates/
 │   ├── bc-models/              # shared domain types (accounts, transactions, envelopes, etc.)
 │   ├── bc-core/                # engine: event log, SQLite projections, business logic
+│   ├── bc-config/              # configuration management (XDG + platform config hierarchy, settings loading)
+│   ├── bc-otel/                # OpenTelemetry tracing setup
 │   ├── bc-format-csv/          # CSV import (configurable column mapping)
 │   ├── bc-format-ledger/       # Ledger read + write
 │   ├── bc-format-beancount/    # Beancount read + write
@@ -66,7 +68,7 @@ borrow-checker/
 └── plugins/                    # first-party example/bundled plugins
 ```
 
-**Design philosophy — keep crates small and focused.** Each crate should have one clear purpose, a well-defined public API, and minimal dependencies. As the project grows it is expected and encouraged to introduce new crates or split existing ones. Utility crates will likely emerge as needed — e.g. `bc-config` (configuration management), `bc-tracing` (logging/tracing setup), `bc-telemetry` (metrics). Prefer creating a new crate over stuffing shared functionality into an existing one.
+**Design philosophy — keep crates small and focused.** Each crate should have one clear purpose, a well-defined public API, and minimal dependencies. As the project grows it is expected and encouraged to introduce new crates or split existing ones. Utility crates will likely emerge as needed — e.g. `bc-config` (configuration management), `bc-otel` (OpenTelemetry tracing/metrics). Prefer creating a new crate over stuffing shared functionality into an existing one.
 
 **Dependency relationships:**
 
@@ -87,9 +89,9 @@ The core owns two layers:
 | `events` | Append-only event log — never updated, never deleted |
 | `accounts` | Projected read model |
 | `transactions` | Projected read model |
-| `balances` | Projected read model |
-| `budget_envelopes` | Projected read model |
-| `import_profiles` | Account-bound importer configurations |
+| `balances` | Projected read model (table exists in M1 schema as a planned cache; M1 queries the `postings` table live — this cache will be populated in a later milestone for performance) |
+| `budget_envelopes` | Projected read model _(delivered in Milestone 5)_ |
+| `import_profiles` | Account-bound importer configurations _(delivered in Milestone 2)_ |
 | `meta` | Schema version, user preferences, last-sync cursor |
 
 **Event vocabulary:**
@@ -139,11 +141,15 @@ Accounts form an arbitrary-depth tree through an optional `parent_id: Option<Acc
 
 Only `DepositAccount` accounts may have an import profile — enforced in `bc-core` at creation time.
 
-**Cross-cutting labels via `tags: Vec<TagPath>`:**
+**Cross-cutting labels via an entity-based tag model:**
 
-The primary hierarchy can only express one grouping at a time. Cross-cutting concerns — ownership (mine / partner / shared), institution grouping across types, liquidity flags — are expressed as `TagPath` values. A `TagPath` is an ordered sequence of non-empty segments (`["institution", "commbank"]`) that serialises as a colon-joined string (`institution:commbank`). The hierarchy is explicit in the type, not a string convention.
+The primary hierarchy can only express one grouping at a time. Cross-cutting concerns — ownership (mine / partner / shared), institution grouping across types, liquidity flags — are expressed as tag references on accounts.
 
-Example tags: `institution:commbank`, `owner:mine`, `owner:shared`, `liquid`.
+Tags are first-class entities stored in a `tags` table with `id`, `name`, `parent_id` (self-referential for tag hierarchy), and `description`. `Account` holds `tag_ids: Vec<TagId>` — stable opaque references that survive renames. Human-readable paths are derived on demand via `TagForest::path_of(id) -> TagPath`: a `TagPath` is an ordered sequence of non-empty segments (`["institution", "commbank"]`) that serialises as a colon-joined string (`institution:commbank`).
+
+The `account_tags` join table links accounts to their tags in the database.
+
+Example tag paths: `institution:commbank`, `owner:mine`, `owner:shared`, `liquid`.
 
 **Expense categorisation is separate from account hierarchy:**
 
@@ -282,11 +288,12 @@ Default methodology is **envelope/zero-based budgeting** (every dollar assigned 
 ### 7.2 Budget Periods
 
 | Period | Notes |
-| -------------- | ------------------------------------------------ |
+| ------------------ | ------------------------------------------------ |
 | Weekly | Anchor: day of week |
 | Fortnightly | Anchor: specific date, 14-day stride |
 | Monthly | Calendar month |
 | Quarterly | Jan/Apr/Jul/Oct or custom start month |
+| Financial Quarter | FY-aligned quarter; anchor: configured financial year start month |
 | Financial Year | Configurable start month/day — set once globally |
 | Calendar Year | January 1 |
 | Custom | N days / N weeks / N months |

@@ -31,7 +31,7 @@ ______________________________________________________________________
 - [ ] Account model (create, archive, multi-currency support; parent hierarchy; cross-cutting `TagPath` labels; `AccountKind` discriminator)
 - [ ] Double-entry transaction model (enforced balance-to-zero)
 - [ ] Balance calculation engine
-- [ ] Period model (weekly, fortnightly, monthly, quarterly, financial year, calendar year, custom)
+- [x] Period model (weekly, fortnightly, monthly, quarterly, **financial quarter**, financial year, calendar year, custom)
 - [ ] Global settings (financial year start, fortnightly anchor date, display currency)
 
 ______________________________________________________________________
@@ -107,7 +107,7 @@ ______________________________________________________________________
 **Crates:** `bc-models`, `bc-core`
 **Depends on:** Milestone 1, Milestone 5
 
-- [ ] `AccountKind` enum on `Account` model (`DepositAccount`, `ManualAsset`, `Receivable`, `VirtualAllocation`)
+- [x] `AccountKind` enum on `Account` model (`DepositAccount`, `ManualAsset`, `Receivable`, `VirtualAllocation`) — _implemented in Milestone 1_
 - [ ] `bc-core` enforces: only `DepositAccount` may have an import profile
 - [ ] `AssetValuationRecorded` event: point-in-time market value with `ValuationSource`
 - [ ] `ValuationSource` enum: `ManualEstimate`, `ProfessionalAppraisal`, `TaxAssessment`, `MarketData`, `AgreedValue`
