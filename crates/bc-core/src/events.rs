@@ -154,6 +154,42 @@ impl SqliteStore {
     }
 }
 
+/// Inserts an event record within an existing database transaction.
+///
+/// Used by services that need to append an event atomically alongside
+/// their own projection writes, sharing a single [`sqlx::SqliteConnection`].
+///
+/// # Arguments
+///
+/// * `event` - The event to insert.
+/// * `conn` - An open, in-progress database transaction connection.
+///
+/// # Errors
+///
+/// Returns an error if serialisation or the database insert fails.
+#[inline]
+pub(crate) async fn insert_event(event: &Event, conn: &mut sqlx::SqliteConnection) -> BcResult<()> {
+    let event_id = EventId::new().to_string();
+    let kind = event.kind();
+    let aggregate_id = event.aggregate_id();
+    let payload = serde_json::to_string(event)?;
+    let created_at = Timestamp::now().to_string();
+
+    sqlx::query(
+        "INSERT INTO events (id, kind, aggregate_id, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&event_id)
+    .bind(kind)
+    .bind(&aggregate_id)
+    .bind(&payload)
+    .bind(&created_at)
+    .execute(conn)
+    .await?;
+
+    tracing::debug!(%kind, %aggregate_id, "event appended");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use bc_models::AccountId;

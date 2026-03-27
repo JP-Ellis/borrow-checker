@@ -6,7 +6,6 @@ use bc_models::AccountId;
 use bc_models::Amount;
 use bc_models::CommodityCode;
 use bc_models::Cost;
-use bc_models::EventId;
 use bc_models::Posting;
 use bc_models::PostingId;
 use bc_models::TagId;
@@ -23,6 +22,7 @@ use crate::BcResult;
 use crate::db::from_db_str;
 use crate::db::to_db_str;
 use crate::events::Event;
+use crate::events::insert_event;
 
 /// Validates that the postings in a transaction sum to zero per commodity.
 fn validate_balance(postings: &[Posting]) -> BcResult<()> {
@@ -129,26 +129,14 @@ impl Service {
         validate_balance(tx.postings())?;
 
         let tx_id = tx.id().clone();
-        let event_id = EventId::new().to_string();
         let event = Event::TransactionCreated { id: tx_id.clone() };
-        let payload = serde_json::to_string(&event)?;
-        let now = Timestamp::now();
 
         let date_str = tx.date().to_string();
         let created_at_str = tx.created_at().to_string();
 
         let mut db_tx = self.pool.begin().await?;
 
-        sqlx::query(
-            "INSERT INTO events (id, kind, aggregate_id, payload, created_at) VALUES (?, ?, ?, ?, ?)"
-        )
-        .bind(&event_id)
-        .bind(event.kind())
-        .bind(tx_id.to_string())
-        .bind(&payload)
-        .bind(now.to_string())
-        .execute(&mut *db_tx)
-        .await?;
+        insert_event(&event, &mut *db_tx).await?;
 
         sqlx::query(
             "INSERT INTO transactions (id, date, payee, description, status, created_at) VALUES (?, ?, ?, ?, ?, ?)"
@@ -361,8 +349,6 @@ impl Service {
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
     pub async fn void(&self, id: &TransactionId) -> BcResult<()> {
-        let now = Timestamp::now();
-
         // Check existence first (before writing any event).
         let exists: Option<(String,)> =
             sqlx::query_as("SELECT id FROM transactions WHERE id = ? AND status != 'voided'")
@@ -374,22 +360,11 @@ impl Service {
             return Err(BcError::NotFound(id.to_string()));
         }
 
-        let event_id = EventId::new().to_string();
         let event = Event::TransactionVoided { id: id.clone() };
-        let payload = serde_json::to_string(&event)?;
 
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
-            "INSERT INTO events (id, kind, aggregate_id, payload, created_at) VALUES (?, ?, ?, ?, ?)"
-        )
-        .bind(&event_id)
-        .bind(event.kind())
-        .bind(id.to_string())
-        .bind(&payload)
-        .bind(now.to_string())
-        .execute(&mut *tx)
-        .await?;
+        insert_event(&event, &mut *tx).await?;
 
         sqlx::query(
             "UPDATE transactions SET status = 'voided' WHERE id = ? AND status != 'voided'",

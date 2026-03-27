@@ -7,7 +7,6 @@ use bc_models::AccountId;
 use bc_models::AccountKind;
 use bc_models::AccountType;
 use bc_models::CommodityId;
-use bc_models::EventId;
 use bc_models::TagId;
 use jiff::Timestamp;
 use sqlx::SqlitePool;
@@ -17,6 +16,7 @@ use crate::BcResult;
 use crate::db::from_db_str;
 use crate::db::to_db_str;
 use crate::events::Event;
+use crate::events::insert_event;
 
 /// Internal row type returned from the `accounts` table plus join-loaded data.
 struct AccountRow {
@@ -153,25 +153,14 @@ impl Service {
     ) -> BcResult<AccountId> {
         let id = AccountId::new();
         let now = Timestamp::now();
-        let event_id = EventId::new().to_string();
         let event = Event::AccountCreated {
             id: id.clone(),
             name: name.to_owned(),
         };
-        let payload = serde_json::to_string(&event)?;
 
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
-            "INSERT INTO events (id, kind, aggregate_id, payload, created_at) VALUES (?, ?, ?, ?, ?)"
-        )
-        .bind(&event_id)
-        .bind(event.kind())
-        .bind(id.to_string())
-        .bind(&payload)
-        .bind(now.to_string())
-        .execute(&mut *tx)
-        .await?;
+        insert_event(&event, &mut *tx).await?;
 
         sqlx::query(
             "INSERT INTO accounts (id, name, account_type, kind, description, created_at) VALUES (?, ?, ?, ?, ?, ?)"
@@ -215,22 +204,11 @@ impl Service {
             return Err(BcError::NotFound(id.to_string()));
         }
 
-        let event_id = EventId::new().to_string();
         let event = Event::AccountArchived { id: id.clone() };
-        let payload = serde_json::to_string(&event)?;
 
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
-            "INSERT INTO events (id, kind, aggregate_id, payload, created_at) VALUES (?, ?, ?, ?, ?)"
-        )
-        .bind(&event_id)
-        .bind(event.kind())
-        .bind(id.to_string())
-        .bind(&payload)
-        .bind(now.to_string())
-        .execute(&mut *tx)
-        .await?;
+        insert_event(&event, &mut *tx).await?;
 
         sqlx::query("UPDATE accounts SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
             .bind(now.to_string())
