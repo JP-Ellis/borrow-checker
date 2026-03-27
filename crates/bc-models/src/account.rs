@@ -188,7 +188,8 @@ impl Account {
     ///
     /// Returns [`ValidationError::EmptyName`] if `name` is empty.
     #[inline]
-    pub fn set_name(&mut self, name: String) -> Result<(), ValidationError> {
+    pub fn set_name(&mut self, name: impl Into<String>) -> Result<(), ValidationError> {
+        let name = name.into();
         if name.is_empty() {
             return Err(ValidationError::EmptyName);
         }
@@ -267,9 +268,14 @@ impl Account {
     }
 
     /// Archives the account at the given timestamp.
+    ///
+    /// This is a no-op if the account is already archived; the original
+    /// archive timestamp is preserved.
     #[inline]
     pub fn archive(&mut self, at: Timestamp) {
-        self.archived_at = Some(at);
+        if self.archived_at.is_none() {
+            self.archived_at = Some(at);
+        }
     }
 }
 
@@ -432,5 +438,32 @@ mod tests {
         assert!(acct.is_active());
         acct.archive(Timestamp::now());
         assert!(!acct.is_active());
+    }
+
+    #[test]
+    fn account_archive_is_noop_when_already_archived() {
+        use jiff::Timestamp;
+        let first_ts = Timestamp::now();
+        let mut acct = Account::builder()
+            .name("Old Account")
+            .account_type(Type::Asset)
+            .created_at(Timestamp::now())
+            .archived_at(first_ts)
+            .build();
+        assert!(!acct.is_active());
+        let original_archived_at = acct.archived_at().cloned();
+        // Archiving again with a different timestamp must not overwrite the original
+        acct.archive(Timestamp::now());
+        assert_eq!(acct.archived_at(), original_archived_at.as_ref());
+    }
+
+    #[test]
+    fn set_name_accepts_str_reference() {
+        let mut acct = Account::builder()
+            .name("Checking")
+            .account_type(Type::Asset)
+            .build();
+        acct.set_name("Savings").expect("&str should be accepted");
+        assert_eq!(acct.name(), "Savings");
     }
 }

@@ -85,6 +85,7 @@ pub use import_batch::ImportBatchId;
 pub use money::Amount;
 pub use money::CommodityCode;
 pub use money::Decimal;
+pub use period::BuildError as PeriodBuildError;
 pub use period::Period;
 pub use profile::ProfileId;
 pub use tag::Forest as TagForest;
