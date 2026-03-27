@@ -1,9 +1,10 @@
-//! SQLite connection pool setup.
+//! SQLite connection pool setup and shared database utilities.
 
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 
-use crate::error::BcResult;
+use crate::BcError;
+use crate::BcResult;
 
 /// Opens (or creates) the SQLite database at `url` and runs all pending migrations.
 ///
@@ -11,12 +12,8 @@ use crate::error::BcResult;
 ///
 /// # Errors
 ///
-/// Returns [`crate::error::BcError::Database`] if the pool cannot be created
-/// or migrations fail.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "open_db is the canonical name for this function regardless of module path"
-)]
+/// Returns [`BcError::Database`](crate::BcError::Database) if the pool
+/// cannot be created or migrations fail.
 #[inline]
 pub async fn open_db(url: &str) -> BcResult<SqlitePool> {
     let opts = url.parse::<SqliteConnectOptions>()?.create_if_missing(true);
@@ -27,6 +24,59 @@ pub async fn open_db(url: &str) -> BcResult<SqlitePool> {
 
     tracing::info!("database opened and migrations applied");
     Ok(pool)
+}
+
+/// Serialises a serde-enabled unit enum to its canonical database string.
+///
+/// Uses the type's [`serde::Serialize`] implementation, which must produce a
+/// JSON string value (i.e. a unit enum with `#[serde(rename_all = "...")]`).
+///
+/// # Arguments
+///
+/// * `val` - The enum value to serialise.
+///
+/// # Returns
+///
+/// The string representation as stored in the database (e.g. `"snake_case"`).
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if the serde output is not a plain string (future-proofing
+/// against `#[non_exhaustive]` additions).
+/// Returns [`BcError::Serialisation`] if serialisation itself fails.
+#[inline]
+pub(crate) fn to_db_str<T: serde::Serialize>(val: T) -> BcResult<String> {
+    match serde_json::to_value(val)? {
+        serde_json::Value::String(s) => Ok(s),
+        other @ (serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::Array(_)
+        | serde_json::Value::Object(_)) => Err(BcError::BadData(format!(
+            "expected a string serde value, got: {other:?}"
+        ))),
+    }
+}
+
+/// Deserialises a serde-enabled unit enum from its canonical database string.
+///
+/// Uses the type's [`serde::Deserialize`] implementation.
+///
+/// # Arguments
+///
+/// * `s` - The string as stored in the database.
+///
+/// # Returns
+///
+/// The deserialised enum value.
+///
+/// # Errors
+///
+/// Returns [`BcError::Serialisation`] if the string is not recognised by the
+/// type's deserialiser (e.g. unknown variant).
+#[inline]
+pub(crate) fn from_db_str<T: serde::de::DeserializeOwned>(s: &str) -> BcResult<T> {
+    serde_json::from_value(serde_json::Value::String(s.to_owned())).map_err(Into::into)
 }
 
 #[cfg(test)]

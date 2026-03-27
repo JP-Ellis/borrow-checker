@@ -12,73 +12,11 @@ use bc_models::TagId;
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
-use crate::error::BcError;
-use crate::error::BcResult;
+use crate::BcError;
+use crate::BcResult;
+use crate::db::from_db_str;
+use crate::db::to_db_str;
 use crate::events::Event;
-
-/// Converts an [`AccountType`] to its canonical database string.
-///
-/// # Errors
-///
-/// Returns [`BcError::BadData`] if `at` is an unrecognised variant (future-proofing for
-/// `#[non_exhaustive]` additions).
-fn account_type_to_str(at: AccountType) -> BcResult<&'static str> {
-    match at {
-        AccountType::Asset => Ok("asset"),
-        AccountType::Liability => Ok("liability"),
-        AccountType::Equity => Ok("equity"),
-        AccountType::Income => Ok("income"),
-        AccountType::Expense => Ok("expense"),
-        _ => Err(BcError::BadData(format!("unknown account type: {at:?}"))),
-    }
-}
-
-/// Parses an [`AccountType`] from its canonical database string.
-///
-/// # Errors
-///
-/// Returns [`BcError::BadData`] if `s` is not a recognised account-type string.
-fn account_type_from_str(s: &str) -> BcResult<AccountType> {
-    match s {
-        "asset" => Ok(AccountType::Asset),
-        "liability" => Ok(AccountType::Liability),
-        "equity" => Ok(AccountType::Equity),
-        "income" => Ok(AccountType::Income),
-        "expense" => Ok(AccountType::Expense),
-        other => Err(BcError::BadData(format!("unknown account type: {other}"))),
-    }
-}
-
-/// Serialises an [`AccountKind`] to its canonical database string.
-///
-/// # Errors
-///
-/// Returns [`BcError::BadData`] if `kind` is an unrecognised variant
-/// (future-proofing for `#[non_exhaustive]` additions).
-fn account_kind_to_str(kind: AccountKind) -> BcResult<&'static str> {
-    match kind {
-        AccountKind::DepositAccount => Ok("deposit_account"),
-        AccountKind::ManualAsset => Ok("manual_asset"),
-        AccountKind::Receivable => Ok("receivable"),
-        AccountKind::VirtualAllocation => Ok("virtual_allocation"),
-        _ => Err(BcError::BadData(format!("unknown account kind: {kind:?}"))),
-    }
-}
-
-/// Parses an [`AccountKind`] from its canonical database string.
-///
-/// # Errors
-///
-/// Returns [`BcError::BadData`] if `s` is not a recognised account-kind string.
-fn account_kind_from_str(s: &str) -> BcResult<AccountKind> {
-    match s {
-        "deposit_account" => Ok(AccountKind::DepositAccount),
-        "manual_asset" => Ok(AccountKind::ManualAsset),
-        "receivable" => Ok(AccountKind::Receivable),
-        "virtual_allocation" => Ok(AccountKind::VirtualAllocation),
-        other => Err(BcError::BadData(format!("unknown account kind: {other}"))),
-    }
-}
 
 /// Internal row type returned from the `accounts` table plus join-loaded data.
 struct AccountRow {
@@ -102,27 +40,30 @@ struct AccountRow {
     tag_ids: Vec<TagId>,
 }
 
-impl AccountRow {
-    /// Converts this row into a domain [`Account`].
+impl TryFrom<AccountRow> for Account {
+    type Error = BcError;
+
+    /// Converts a raw database row into a domain [`Account`].
     ///
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if any stored value cannot be parsed.
-    fn into_account(self) -> BcResult<Account> {
-        let id = self
+    #[inline]
+    fn try_from(row: AccountRow) -> BcResult<Self> {
+        let id = row
             .id
             .parse::<AccountId>()
-            .map_err(|e| BcError::BadData(format!("invalid account id '{}': {e}", self.id)))?;
+            .map_err(|e| BcError::BadData(format!("invalid account id '{}': {e}", row.id)))?;
 
-        let account_type = account_type_from_str(&self.account_type)?;
+        let account_type = from_db_str::<AccountType>(&row.account_type)?;
 
-        let kind = account_kind_from_str(&self.kind)?;
+        let kind = from_db_str::<AccountKind>(&row.kind)?;
 
-        let created_at = self.created_at.parse::<Timestamp>().map_err(|e| {
-            BcError::BadData(format!("invalid created_at '{}': {e}", self.created_at))
+        let created_at = row.created_at.parse::<Timestamp>().map_err(|e| {
+            BcError::BadData(format!("invalid created_at '{}': {e}", row.created_at))
         })?;
 
-        let archived_at = self
+        let archived_at = row
             .archived_at
             .as_deref()
             .map(|s| {
@@ -131,14 +72,14 @@ impl AccountRow {
             })
             .transpose()?;
 
-        Ok(Account::builder()
+        Ok(Self::builder()
             .id(id)
-            .name(self.name)
+            .name(row.name)
             .account_type(account_type)
             .kind(kind)
-            .commodities(self.commodities)
-            .tag_ids(self.tag_ids)
-            .maybe_description(self.description)
+            .commodities(row.commodities)
+            .tag_ids(row.tag_ids)
+            .maybe_description(row.description)
             .maybe_archived_at(archived_at)
             .created_at(created_at)
             .build())
@@ -180,18 +121,14 @@ fn build_tags_map(rows: Vec<(String, String)>) -> BcResult<HashMap<String, Vec<T
 }
 
 /// Service for creating and managing accounts.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "AccountService is the canonical domain name regardless of module path"
-)]
 #[derive(Debug, Clone)]
-pub struct AccountService {
+pub struct Service {
     /// The SQLite connection pool.
     pool: SqlitePool,
 }
 
-impl AccountService {
-    /// Creates a new [`AccountService`] with the given connection pool.
+impl Service {
+    /// Creates a new [`Service`] with the given connection pool.
     #[must_use]
     #[inline]
     pub fn new(pool: SqlitePool) -> Self {
@@ -241,8 +178,8 @@ impl AccountService {
         )
         .bind(id.to_string())
         .bind(name)
-        .bind(account_type_to_str(account_type)?)
-        .bind(account_kind_to_str(kind)?)
+        .bind(to_db_str(account_type)?)
+        .bind(to_db_str(kind)?)
         .bind(description)
         .bind(now.to_string())
         .execute(&mut *tx)
@@ -363,7 +300,7 @@ impl AccountService {
             })
             .collect::<BcResult<_>>()?;
 
-        AccountRow {
+        Account::try_from(AccountRow {
             id: row.0,
             name: row.1,
             account_type: row.2,
@@ -373,8 +310,7 @@ impl AccountService {
             archived_at: row.6,
             commodities,
             tag_ids,
-        }
-        .into_account()
+        })
     }
 
     /// Lists all active (non-archived) accounts, ordered by name.
@@ -438,7 +374,7 @@ impl AccountService {
             .map(|row| {
                 let commodities = commodities_map.remove(&row.0).unwrap_or_default();
                 let tag_ids = tags_map.remove(&row.0).unwrap_or_default();
-                AccountRow {
+                Account::try_from(AccountRow {
                     id: row.0,
                     name: row.1,
                     account_type: row.2,
@@ -448,8 +384,7 @@ impl AccountService {
                     archived_at: row.6,
                     commodities,
                     tag_ids,
-                }
-                .into_account()
+                })
             })
             .collect()
     }
@@ -470,21 +405,21 @@ mod tests {
             (AccountKind::Receivable, "receivable"),
             (AccountKind::VirtualAllocation, "virtual_allocation"),
         ] {
-            let s = account_kind_to_str(kind).expect("known variant should serialise");
+            let s = to_db_str(kind).expect("known variant should serialise");
             assert_eq!(s, expected);
-            let back = account_kind_from_str(s).expect("known string should deserialise");
+            let back = from_db_str::<AccountKind>(&s).expect("known string should deserialise");
             assert_eq!(back, kind);
         }
     }
 
     #[test]
     fn account_kind_from_str_rejects_unknown() {
-        account_kind_from_str("bogus").expect_err("unknown string should fail");
+        from_db_str::<AccountKind>("bogus").expect_err("unknown string should fail");
     }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn create_account_persists_projection(pool: sqlx::SqlitePool) {
-        let svc = AccountService::new(pool.clone());
+        let svc = Service::new(pool.clone());
         let id = svc
             .create(
                 "Checking",
@@ -504,7 +439,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn archive_account_sets_archived_at(pool: sqlx::SqlitePool) {
-        let svc = AccountService::new(pool.clone());
+        let svc = Service::new(pool.clone());
         let id = svc
             .create(
                 "Old Account",
@@ -524,7 +459,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn create_account_with_kind_persists(pool: sqlx::SqlitePool) {
         use bc_models::AccountKind;
-        let svc = AccountService::new(pool.clone());
+        let svc = Service::new(pool.clone());
         let id = svc
             .create(
                 "House",
@@ -542,7 +477,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn list_active_excludes_archived(pool: sqlx::SqlitePool) {
-        let svc = AccountService::new(pool.clone());
+        let svc = Service::new(pool.clone());
         let _id1 = svc
             .create(
                 "Active",

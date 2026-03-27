@@ -4,22 +4,18 @@ use bc_models::AccountId;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
-use crate::error::BcError;
-use crate::error::BcResult;
+use crate::BcError;
+use crate::BcResult;
 
 /// Calculates account balances from the `postings` projection table.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "BalanceEngine is the canonical domain name regardless of module path"
-)]
 #[derive(Debug, Clone)]
-pub struct BalanceEngine {
+pub struct Engine {
     /// The SQLite connection pool.
     pool: SqlitePool,
 }
 
-impl BalanceEngine {
-    /// Creates a [`BalanceEngine`] with the given connection pool.
+impl Engine {
+    /// Creates a [`Engine`] with the given connection pool.
     #[must_use]
     #[inline]
     pub fn new(pool: SqlitePool) -> Self {
@@ -40,7 +36,7 @@ impl BalanceEngine {
              FROM postings p
              JOIN transactions t ON t.id = p.transaction_id
              WHERE p.account_id = ?
-               AND p.commodity   = ?
+               AND p.commodity  = ?
                AND t.status     != 'voided'",
         )
         .bind(account_id.to_string())
@@ -67,7 +63,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn balance_reflects_transactions(pool: sqlx::SqlitePool) {
-        let acct_svc = crate::account::AccountService::new(pool.clone());
+        let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
             .create(
                 "Wallet",
@@ -95,7 +91,7 @@ mod tests {
         sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p2', 'tx_1', ?, '-100.00', 'AUD', 1)")
             .bind(acc_b.to_string()).execute(&pool).await.expect("insert posting p2 should succeed");
 
-        let engine = BalanceEngine::new(pool.clone());
+        let engine = Engine::new(pool.clone());
         let balance = engine
             .balance_for(&acc_a, "AUD")
             .await
