@@ -1,29 +1,25 @@
 //! Settings persistence for application-wide configuration.
 //!
-//! [`Settings`] is defined in `bc-config`; this module provides the `SettingsStore`
+//! [`Settings`] is defined in `bc-config`; this module provides the `Store`
 //! that persists and retrieves settings from the `meta` key-value table.
 
 pub use bc_config::Settings;
 use sqlx::SqlitePool;
 
-use crate::error::BcResult;
+use crate::BcResult;
 
 /// The key used in the `meta` table to store application settings.
 const SETTINGS_KEY: &str = "global_settings";
 
 /// Persists and retrieves [`Settings`] in the `meta` key-value table.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "SettingsStore is the canonical domain name regardless of module path"
-)]
 #[derive(Debug, Clone)]
-pub struct SettingsStore {
+pub struct Store {
     /// The SQLite connection pool.
     pool: SqlitePool,
 }
 
-impl SettingsStore {
-    /// Creates a [`SettingsStore`] with the given connection pool.
+impl Store {
+    /// Creates a [`Store`] with the given connection pool.
     #[must_use]
     #[inline]
     pub fn new(pool: SqlitePool) -> Self {
@@ -77,7 +73,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn settings_round_trip(pool: sqlx::SqlitePool) {
-        let store = SettingsStore::new(pool.clone());
+        let store = Store::new(pool.clone());
         let settings = Settings::default();
         store.save(&settings).await.expect("save should succeed");
         let loaded = store.load().await.expect("load should succeed");
@@ -93,7 +89,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn load_returns_default_when_not_set(pool: sqlx::SqlitePool) {
-        let store = SettingsStore::new(pool.clone());
+        let store = Store::new(pool.clone());
         let loaded = store.load().await.expect("load should succeed");
         assert_eq!(
             loaded.financial_year_start_month(),
@@ -104,7 +100,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn custom_display_commodity_round_trips(pool: sqlx::SqlitePool) {
         use bc_config::Settings;
-        let store = SettingsStore::new(pool.clone());
+        let store = Store::new(pool.clone());
         // Build a non-default settings using serde_json for simplicity
         let json = r#"{"financial_year_start_month":1,"financial_year_start_day":1,"fortnightly_anchor":null,"display_commodity":"USD"}"#;
         let settings: Settings = serde_json::from_str(json).expect("parse should succeed");
