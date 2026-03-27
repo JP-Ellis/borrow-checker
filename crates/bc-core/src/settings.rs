@@ -30,7 +30,7 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::BcError`] on database or deserialisation failure.
+    /// Returns [`crate::BcError`] on database or deserialisation failure.
     #[inline]
     pub async fn load(&self) -> BcResult<Settings> {
         let row: Option<(String,)> = sqlx::query_as("SELECT value FROM meta WHERE key = ?")
@@ -47,7 +47,7 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::BcError`] on serialisation or database failure.
+    /// Returns [`crate::BcError`] on serialisation or database failure.
     #[inline]
     pub async fn save(&self, settings: &Settings) -> BcResult<()> {
         let json = serde_json::to_string(settings)?;
@@ -95,6 +95,40 @@ mod tests {
             loaded.financial_year_start_month(),
             Settings::default().financial_year_start_month()
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn save_twice_updates_not_duplicates(pool: sqlx::SqlitePool) {
+        let store = Store::new(pool.clone());
+
+        let json1 = r#"{"financial_year_start_month":7,"financial_year_start_day":1,"fortnightly_anchor":null,"display_commodity":"USD"}"#;
+        let settings1: Settings =
+            serde_json::from_str(json1).expect("parse settings1 should succeed");
+        store
+            .save(&settings1)
+            .await
+            .expect("first save should succeed");
+
+        let json2 = r#"{"financial_year_start_month":7,"financial_year_start_day":1,"fortnightly_anchor":null,"display_commodity":"EUR"}"#;
+        let settings2: Settings =
+            serde_json::from_str(json2).expect("parse settings2 should succeed");
+        store
+            .save(&settings2)
+            .await
+            .expect("second save should succeed");
+
+        let loaded = store.load().await.expect("load should succeed");
+        assert_eq!(
+            loaded.display_commodity().as_str(),
+            settings2.display_commodity().as_str()
+        );
+
+        // Confirm there is only one row
+        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM meta")
+            .fetch_one(&pool)
+            .await
+            .expect("count query should succeed");
+        assert_eq!(count.0, 1, "upsert should not create duplicate rows");
     }
 
     #[sqlx::test(migrations = "./migrations")]
