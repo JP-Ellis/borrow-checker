@@ -6,7 +6,7 @@ use bc_models::TransactionId;
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
-use crate::error::BcResult;
+use crate::BcResult;
 
 /// All domain events produced by the core engine.
 #[non_exhaustive]
@@ -95,12 +95,12 @@ pub struct EventRecord {
 
 /// An append-only event store backed by SQLite.
 #[derive(Debug, Clone)]
-pub struct SqliteEventStore {
+pub struct SqliteStore {
     /// The SQLite connection pool.
     pool: SqlitePool,
 }
 
-impl SqliteEventStore {
+impl SqliteStore {
     /// Creates a new event store using the given connection pool.
     #[must_use]
     #[inline]
@@ -163,7 +163,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn append_and_replay_account_created(pool: sqlx::SqlitePool) {
-        let store = SqliteEventStore::new(pool.clone());
+        let store = SqliteStore::new(pool.clone());
         let id = AccountId::new();
         let event = Event::AccountCreated {
             id: id.clone(),

@@ -4,10 +4,6 @@
 pub type BcResult<T> = Result<T, BcError>;
 
 /// Errors produced by the BorrowChecker core engine.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "BcError is the canonical domain name regardless of module path"
-)]
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum BcError {

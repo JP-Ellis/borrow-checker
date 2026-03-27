@@ -8,20 +8,21 @@
     reason = "re-exports are intentional for an ergonomic public API surface"
 )]
 
-pub mod account;
-pub mod balance;
-pub mod db;
-pub mod error;
-pub mod events;
-pub mod settings;
-pub mod transaction;
-pub use account::AccountService;
-pub use balance::BalanceEngine;
+pub(crate) mod account;
+pub(crate) mod balance;
+pub(crate) mod db;
+pub(crate) mod error;
+pub(crate) mod events;
+pub(crate) mod settings;
+pub(crate) mod transaction;
+
+pub use account::Service as AccountService;
+pub use balance::Engine as BalanceEngine;
 pub use db::open_db;
 pub use error::BcError;
 pub use error::BcResult;
 pub use events::Event;
 pub use events::EventRecord;
-pub use events::SqliteEventStore;
-pub use settings::SettingsStore;
-pub use transaction::TransactionService;
+pub use events::SqliteStore as SqliteEventStore;
+pub use settings::Store as SettingsStore;
+pub use transaction::Service as TransactionService;

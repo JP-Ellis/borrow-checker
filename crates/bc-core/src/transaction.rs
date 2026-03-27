@@ -18,46 +18,13 @@ use jiff::civil::Date;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
-use crate::error::BcError;
-use crate::error::BcResult;
+use crate::BcError;
+use crate::BcResult;
+use crate::db::from_db_str;
+use crate::db::to_db_str;
 use crate::events::Event;
 
-/// Converts a [`TransactionStatus`] to its canonical database string.
-///
-/// # Errors
-///
-/// Returns [`BcError::BadData`] if `s` is an unrecognised variant (future-proofing for
-/// `#[non_exhaustive]` additions).
-fn status_to_str(s: TransactionStatus) -> BcResult<&'static str> {
-    match s {
-        TransactionStatus::Pending => Ok("pending"),
-        TransactionStatus::Cleared => Ok("cleared"),
-        TransactionStatus::Voided => Ok("voided"),
-        _ => Err(BcError::BadData(format!(
-            "unknown transaction status: {s:?}"
-        ))),
-    }
-}
-
-/// Parses a [`TransactionStatus`] from its canonical database string.
-///
-/// # Errors
-///
-/// Returns [`BcError::BadData`] if `s` is not a recognised status string.
-fn status_from_str(s: &str) -> BcResult<TransactionStatus> {
-    match s {
-        "pending" => Ok(TransactionStatus::Pending),
-        "cleared" => Ok(TransactionStatus::Cleared),
-        "voided" => Ok(TransactionStatus::Voided),
-        other => Err(BcError::BadData(format!("unknown status: {other}"))),
-    }
-}
-
 /// Validates that the postings in a transaction sum to zero per commodity.
-#[expect(
-    clippy::std_instead_of_alloc,
-    reason = "this crate is std-based; alloc is not separately available"
-)]
 fn validate_balance(postings: &[Posting]) -> BcResult<()> {
     if postings.is_empty() {
         return Err(BcError::UnbalancedTransaction);
@@ -134,18 +101,14 @@ type PostingRow = (
 );
 
 /// Service for creating and managing transactions.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "TransactionService is the canonical domain name regardless of module path"
-)]
 #[derive(Debug, Clone)]
-pub struct TransactionService {
+pub struct Service {
     /// The SQLite connection pool.
     pool: SqlitePool,
 }
 
-impl TransactionService {
-    /// Creates a new [`TransactionService`] with the given connection pool.
+impl Service {
+    /// Creates a new [`Service`] with the given connection pool.
     #[must_use]
     #[inline]
     pub fn new(pool: SqlitePool) -> Self {
@@ -194,7 +157,7 @@ impl TransactionService {
         .bind(&date_str)
         .bind(tx.payee())
         .bind(tx.description())
-        .bind(status_to_str(tx.status())?)
+        .bind(to_db_str(tx.status())?)
         .bind(&created_at_str)
         .execute(&mut *db_tx)
         .await?;
@@ -285,7 +248,7 @@ impl TransactionService {
             .parse::<Date>()
             .map_err(|e| BcError::BadData(format!("invalid date '{}': {e}", tx_row.1)))?;
 
-        let status = status_from_str(&tx_row.4)?;
+        let status = from_db_str::<TransactionStatus>(&tx_row.4)?;
 
         let created_at = tx_row
             .5
@@ -485,7 +448,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn create_balanced_transaction_succeeds(pool: sqlx::SqlitePool) {
-        let acct_svc = crate::account::AccountService::new(pool.clone());
+        let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
             .create(
                 "Income",
@@ -505,7 +468,7 @@ mod tests {
             .await
             .expect("create Checking account should succeed");
 
-        let svc = TransactionService::new(pool.clone());
+        let svc = Service::new(pool.clone());
         let tx = make_balanced_transaction(acc_a, acc_b);
         let id = tx.id().clone();
         svc.create(tx)
@@ -520,7 +483,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn create_unbalanced_transaction_fails(pool: sqlx::SqlitePool) {
         use jiff::Timestamp;
-        let svc = TransactionService::new(pool.clone());
+        let svc = Service::new(pool.clone());
         let tx = Transaction::builder()
             .id(bc_models::TransactionId::new())
             .date(date(2026, 1, 15))
@@ -542,7 +505,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn posting_cost_round_trips(pool: sqlx::SqlitePool) {
         use jiff::Timestamp;
-        let acct_svc = crate::account::AccountService::new(pool.clone());
+        let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
             .create(
                 "Brokerage",
@@ -567,7 +530,7 @@ mod tests {
             .label("lot-1")
             .build();
 
-        let svc = TransactionService::new(pool.clone());
+        let svc = Service::new(pool.clone());
         let tx = Transaction::builder()
             .id(bc_models::TransactionId::new())
             .date(date(2026, 1, 15))
@@ -606,7 +569,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn transaction_tag_ids_round_trip(pool: sqlx::SqlitePool) {
         use jiff::Timestamp;
-        let acct_svc = crate::account::AccountService::new(pool.clone());
+        let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
             .create("A", AccountType::Asset, AccountKind::DepositAccount, None)
             .await
@@ -625,7 +588,7 @@ mod tests {
             .await
             .expect("insert tag should succeed");
 
-        let svc = TransactionService::new(pool.clone());
+        let svc = Service::new(pool.clone());
         let tx = Transaction::builder()
             .id(bc_models::TransactionId::new())
             .date(date(2026, 1, 15))
