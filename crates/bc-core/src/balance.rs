@@ -1,11 +1,13 @@
 //! Balance calculation engine.
 
 use bc_models::AccountId;
+use bc_models::TransactionStatus;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
 use crate::BcError;
 use crate::BcResult;
+use crate::db::to_db_str;
 
 /// Calculates account balances from the `postings` projection table.
 #[derive(Debug, Clone)]
@@ -31,16 +33,19 @@ impl Engine {
     /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if a stored amount cannot be parsed.
     #[inline]
     pub async fn balance_for(&self, account_id: &AccountId, commodity: &str) -> BcResult<Decimal> {
+        let voided_str = to_db_str(TransactionStatus::Voided)?;
+
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT p.amount
              FROM postings p
              JOIN transactions t ON t.id = p.transaction_id
              WHERE p.account_id = ?
                AND p.commodity  = ?
-               AND t.status     != 'voided'",
+               AND t.status     != ?",
         )
         .bind(account_id.to_string())
         .bind(commodity)
+        .bind(&voided_str)
         .fetch_all(&self.pool)
         .await?;
 

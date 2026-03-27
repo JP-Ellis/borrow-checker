@@ -183,7 +183,10 @@ impl Service {
             .bind(posting.amount().value.to_string())
             .bind(posting.amount().commodity.as_str())
             .bind(posting.memo())
-            .bind(i64::try_from(position).unwrap_or(i64::MAX))
+            .bind(
+                i64::try_from(position)
+                    .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?,
+            )
             .bind(cost_value)
             .bind(cost_commodity)
             .bind(cost_date)
@@ -339,9 +342,11 @@ impl Service {
 
     /// Voids a transaction by setting its status to `voided`.
     ///
-    /// The existence check happens before any write.  The event append and the
-    /// projection update are wrapped in a single SQLite transaction so they
-    /// succeed or fail atomically.
+    /// The event append and the projection UPDATE are wrapped in a single SQLite
+    /// transaction so they succeed or fail atomically.  `rows_affected()` is used
+    /// to detect a missing or already-voided transaction without a separate pre-check,
+    /// eliminating a TOCTOU race.  The voided-status string is derived at runtime
+    /// via [`to_db_str`] so it stays in sync with the serde representation.
     ///
     /// # Errors
     ///
@@ -349,29 +354,23 @@ impl Service {
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
     pub async fn void(&self, id: &TransactionId) -> BcResult<()> {
-        // Check existence first (before writing any event).
-        let exists: Option<(String,)> =
-            sqlx::query_as("SELECT id FROM transactions WHERE id = ? AND status != 'voided'")
-                .bind(id.to_string())
-                .fetch_optional(&self.pool)
-                .await?;
-
-        if exists.is_none() {
-            return Err(BcError::NotFound(id.to_string()));
-        }
-
+        let voided_str = to_db_str(TransactionStatus::Voided)?;
         let event = Event::TransactionVoided { id: id.clone() };
 
         let mut tx = self.pool.begin().await?;
 
         insert_event(&event, &mut tx).await?;
 
-        sqlx::query(
-            "UPDATE transactions SET status = 'voided' WHERE id = ? AND status != 'voided'",
-        )
-        .bind(id.to_string())
-        .execute(&mut *tx)
-        .await?;
+        let result = sqlx::query("UPDATE transactions SET status = ? WHERE id = ? AND status != ?")
+            .bind(&voided_str)
+            .bind(id.to_string())
+            .bind(&voided_str)
+            .execute(&mut *tx)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(BcError::NotFound(id.to_string()));
+        }
 
         tx.commit().await?;
         tracing::info!(transaction_id = %id, "transaction voided");
@@ -539,6 +538,45 @@ mod tests {
         assert_eq!(loaded_cost.total().value, dec!(1500.00));
         assert_eq!(loaded_cost.total().commodity.as_str(), "AUD");
         assert_eq!(loaded_cost.label(), Some("lot-1"));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn void_nonexistent_transaction_returns_not_found(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let fake_id = bc_models::TransactionId::new();
+        let result = svc.void(&fake_id).await;
+        assert!(matches!(result, Err(BcError::NotFound(_))));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn void_already_voided_returns_not_found(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc_a = acct_svc
+            .create(
+                "A",
+                bc_models::AccountType::Asset,
+                bc_models::AccountKind::DepositAccount,
+                None,
+            )
+            .await
+            .expect("create A should succeed");
+        let acc_b = acct_svc
+            .create(
+                "B",
+                bc_models::AccountType::Expense,
+                bc_models::AccountKind::DepositAccount,
+                None,
+            )
+            .await
+            .expect("create B should succeed");
+
+        let svc = Service::new(pool.clone());
+        let tx = make_balanced_transaction(acc_a, acc_b);
+        let id = tx.id().clone();
+        svc.create(tx).await.expect("create should succeed");
+        svc.void(&id).await.expect("first void should succeed");
+        let result = svc.void(&id).await;
+        assert!(matches!(result, Err(BcError::NotFound(_))));
     }
 
     #[sqlx::test(migrations = "./migrations")]
