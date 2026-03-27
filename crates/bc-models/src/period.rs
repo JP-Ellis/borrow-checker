@@ -79,6 +79,14 @@ pub enum Period {
     /// Calendar year (1 January).
     CalendarYear,
     /// Arbitrary duration; at least one field is `Some`.
+    ///
+    /// **Iteration semantics:** `Custom` has no fixed anchor date, so
+    /// `period_start_on_or_before` returns the queried date itself as the period
+    /// start. This means `range_containing(d)` always returns `[d, d + duration)`,
+    /// and `iter_from(d)` yields periods starting exactly at each successive
+    /// boundary from `d`. Callers should supply a consistent start date (e.g.
+    /// the date of the first transaction) to obtain meaningful non-overlapping
+    /// periods.
     Custom {
         /// Days component.
         days: Option<u32>,

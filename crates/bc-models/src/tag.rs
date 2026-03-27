@@ -187,6 +187,11 @@ impl Forest {
     }
 
     /// Iterates over tags with the same parent as `id`, excluding `id` itself.
+    ///
+    /// **Root-tag behaviour:** if `id` refers to a root tag (one with no parent),
+    /// this method returns an empty iterator. Root tags do not share a common
+    /// parent with any other tag, so there are no siblings to report. To find
+    /// all other root tags, iterate the forest directly.
     #[inline]
     pub fn siblings_of<'a>(&'a self, id: &TagId) -> impl Iterator<Item = &'a Tag> {
         let parent = self.get(id).and_then(|t| t.parent_id()).cloned();
