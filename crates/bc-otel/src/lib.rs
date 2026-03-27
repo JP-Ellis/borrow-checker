@@ -3,7 +3,6 @@
 //! Call [`init`] once at binary startup. Returns an [`OtelGuard`] that must be
 //! kept alive until program exit to ensure telemetry is flushed on shutdown.
 
-use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 
 /// Errors returned by [`init`].
@@ -11,6 +10,10 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 #[derive(Debug, thiserror::Error)]
 pub enum OtelError {
     /// The OTLP exporter failed to build.
+    ///
+    /// Stores the error as a [`String`] because the underlying SDK error type
+    /// does not implement `Send + Sync`, which prevents it from being used
+    /// directly in an `enum` that must cross thread boundaries.
     #[error("failed to build OTLP exporter: {0}")]
     ExporterBuild(String),
 }
@@ -38,7 +41,9 @@ impl Drop for OtelGuard {
     #[inline]
     fn drop(&mut self) {
         if let Some(provider) = self.otel_provider.take() {
-            drop(provider.shutdown());
+            if let Err(e) = provider.shutdown() {
+                eprintln!("bc-otel: failed to flush telemetry on shutdown: {e}");
+            }
         }
     }
 }
@@ -48,6 +53,14 @@ impl Drop for OtelGuard {
 /// Reads the OTLP exporter endpoint from the standard
 /// `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable. Returns an
 /// [`OtelGuard`] that must be kept alive until program exit.
+///
+/// # Tracing bridge
+///
+/// This function registers the OTLP provider globally via
+/// [`opentelemetry::global::set_tracer_provider`], but does **not** install a
+/// `tracing`-to-OpenTelemetry bridge. Callers must add a
+/// `tracing_opentelemetry::layer()` to their [`tracing_subscriber`] stack for
+/// `tracing` spans to be forwarded to the OTLP exporter.
 ///
 /// # Errors
 ///
@@ -63,7 +76,6 @@ pub fn init() -> Result<OtelGuard, OtelError> {
         .with_batch_exporter(exporter)
         .build();
 
-    drop(provider.tracer("bc-otel"));
     opentelemetry::global::set_tracer_provider(provider.clone());
 
     Ok(OtelGuard {
