@@ -108,6 +108,12 @@ impl Settings {
             })
             .transpose()?;
 
+        if raw.display_commodity.is_empty() {
+            return Err(ConfigError::Validation(
+                "display_commodity must not be empty".into(),
+            ));
+        }
+
         Ok(Self {
             financial_year_start_month: raw.financial_year_start_month,
             financial_year_start_day: raw.financial_year_start_day,

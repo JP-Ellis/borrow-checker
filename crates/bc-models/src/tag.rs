@@ -132,12 +132,20 @@ impl Forest {
     /// Computes the full colon-separated path for a tag.
     ///
     /// Returns `None` if the tag is not in this forest.
+    ///
+    /// If a cycle is detected in the parent chain the traversal stops early and
+    /// returns the path accumulated so far (which may be a partial path).
     #[inline]
     #[must_use]
     pub fn path_of(&self, id: &TagId) -> Option<Path> {
         let mut segments: Vec<String> = Vec::new();
+        let mut visited = std::collections::HashSet::new();
         let mut current_id = Some(id.clone());
         while let Some(cid) = current_id {
+            if !visited.insert(cid.clone()) {
+                // Cycle detected — stop traversal to avoid an infinite loop.
+                break;
+            }
             let tag = self.get(&cid)?;
             segments.push(tag.name().to_owned());
             current_id = tag.parent_id().cloned();
@@ -147,11 +155,19 @@ impl Forest {
     }
 
     /// Iterates from a tag up to its root (nearest-first, inclusive).
+    ///
+    /// If a cycle is detected in the parent chain the traversal stops early,
+    /// yielding only the tags visited before the cycle was encountered.
     #[inline]
     pub fn ancestors_of(&self, id: &TagId) -> impl Iterator<Item = &Tag> {
         let mut chain: Vec<&Tag> = Vec::new();
+        let mut visited = std::collections::HashSet::new();
         let mut current_id: Option<TagId> = Some(id.clone());
         while let Some(cid) = current_id {
+            if !visited.insert(cid.clone()) {
+                // Cycle detected — stop traversal to avoid an infinite loop.
+                break;
+            }
             match self.get(&cid) {
                 Some(tag) => {
                     chain.push(tag);
@@ -603,5 +619,55 @@ mod tests {
         let tag: Path = serde_json::from_str(r#""institution:commbank""#)
             .expect("valid JSON string should deserialize");
         assert_eq!(tag.segments(), &["institution", "commbank"]);
+    }
+
+    #[test]
+    fn ancestors_of_does_not_infinite_loop_on_cycle() {
+        use jiff::Timestamp;
+        // Build a Forest with a synthetic cycle: tag A's parent is B, B's parent is A.
+        let id_a = TagId::new();
+        let id_b = TagId::new();
+        let tag_a = Tag::builder()
+            .id(id_a.clone())
+            .name("a")
+            .parent_id(id_b.clone())
+            .created_at(Timestamp::now())
+            .build();
+        let tag_b = Tag::builder()
+            .id(id_b.clone())
+            .name("b")
+            .parent_id(id_a.clone())
+            .created_at(Timestamp::now())
+            .build();
+        let forest = Forest::new(vec![tag_a, tag_b]);
+
+        // ancestors_of must terminate; collect() would hang if it didn't.
+        let ancestors: Vec<_> = forest.ancestors_of(&id_a).collect();
+        // Both tags are reachable before the cycle is detected.
+        assert_eq!(ancestors.len(), 2);
+    }
+
+    #[test]
+    fn path_of_does_not_infinite_loop_on_cycle() {
+        use jiff::Timestamp;
+        // Build a Forest with a synthetic cycle: tag A's parent is B, B's parent is A.
+        let id_a = TagId::new();
+        let id_b = TagId::new();
+        let tag_a = Tag::builder()
+            .id(id_a.clone())
+            .name("a")
+            .parent_id(id_b.clone())
+            .created_at(Timestamp::now())
+            .build();
+        let tag_b = Tag::builder()
+            .id(id_b.clone())
+            .name("b")
+            .parent_id(id_a.clone())
+            .created_at(Timestamp::now())
+            .build();
+        let forest = Forest::new(vec![tag_a, tag_b]);
+
+        // path_of must terminate; it will return a partial path rather than loop.
+        let _ = forest.path_of(&id_a);
     }
 }
