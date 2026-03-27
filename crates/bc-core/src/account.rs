@@ -453,6 +453,16 @@ mod tests {
         let fake_id = bc_models::AccountId::new();
         let result = svc.archive(&fake_id).await;
         assert!(matches!(result, Err(BcError::NotFound(_))));
+        // Verify the failed archive did not leave any orphaned events.
+        let store = crate::events::SqliteStore::new(pool.clone());
+        let events = store
+            .replay_for(&fake_id.to_string())
+            .await
+            .expect("replay should succeed");
+        assert!(
+            events.is_empty(),
+            "failed archive must not leave events in the log"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
