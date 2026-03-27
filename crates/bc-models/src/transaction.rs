@@ -280,6 +280,16 @@ impl Posting {
 ///
 /// All postings must sum to zero per commodity (enforced by `bc-core`).
 ///
+/// # Builder design — `id` and `created_at` are required
+///
+/// Unlike [`crate::Tag`], [`crate::Account`], and [`crate::Commodity`],
+/// `Transaction`, [`Posting`], and [`Link`] do **not** use `#[builder(default)]`
+/// on `id` or `created_at`. The reason is stability: transaction IDs must survive
+/// event-sourcing replay (re-processing the same import batch must produce the
+/// same IDs), so callers are required to supply a deterministic or pre-allocated
+/// ID rather than letting the model generate a fresh random one. `created_at` is
+/// similarly explicit so that import replays can preserve the original timestamp.
+///
 /// # Example
 ///
 /// ```
