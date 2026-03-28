@@ -58,7 +58,7 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      - uses: rust-lang/crates-io-auth-action@b7e9a28eded4986ec6b1fa40eeee8f8f165559ec  # v1.0.3
+      - uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe  # v1.0.4
         id: auth
       - uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859  # v3.0.0
         id: app-token
