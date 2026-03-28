@@ -673,6 +673,6 @@ mod tests {
         let forest = Forest::new(vec![tag_a, tag_b]);
 
         // path_of must terminate; it will return a partial path rather than loop.
-        let _ = forest.path_of(&id_a);
+        drop(forest.path_of(&id_a));
     }
 }
