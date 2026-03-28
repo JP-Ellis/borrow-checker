@@ -11,8 +11,10 @@ CREATE INDEX IF NOT EXISTS idx_transactions_status  ON transactions (status);
 -- postings: balance queries filter and group by both columns
 CREATE INDEX IF NOT EXISTS idx_postings_account_commodity ON postings (account_id, commodity);
 
--- commodities: most lookups are by code; enforce uniqueness too
-CREATE UNIQUE INDEX IF NOT EXISTS idx_commodities_code ON commodities (code);
+-- commodities: most lookups are by code
+-- Note: code is NOT unique — the same ticker (e.g. "BTC", "USDT") can appear
+-- across different exchanges or chains as distinct Commodity records.
+CREATE INDEX IF NOT EXISTS idx_commodities_code ON commodities (code);
 
 -- ---------------------------------------------------------------------------
 -- Deferred constraints (tracked here for visibility)
