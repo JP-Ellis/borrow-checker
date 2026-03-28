@@ -432,6 +432,8 @@ mod tests {
                 AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create Income account should succeed");
@@ -442,6 +444,8 @@ mod tests {
                 AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create Checking account should succeed");
@@ -491,6 +495,8 @@ mod tests {
                 AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create Brokerage account should succeed");
@@ -501,6 +507,8 @@ mod tests {
                 AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create Cash account should succeed");
@@ -574,6 +582,8 @@ mod tests {
                 bc_models::AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create A should succeed");
@@ -584,6 +594,8 @@ mod tests {
                 bc_models::AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create B should succeed");
@@ -608,6 +620,8 @@ mod tests {
                 AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create A should succeed");
@@ -618,6 +632,8 @@ mod tests {
                 AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create B should succeed");
