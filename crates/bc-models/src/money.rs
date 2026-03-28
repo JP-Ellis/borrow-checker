@@ -35,6 +35,7 @@ pub use rust_decimal::Decimal;
 
 /// A commodity code string (e.g. `"USD"`, `"AUD"`, `"BTC"`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 #[serde(transparent)]
 pub struct CommodityCode(String);
 

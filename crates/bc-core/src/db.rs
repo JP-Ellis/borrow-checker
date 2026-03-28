@@ -16,7 +16,15 @@ use crate::BcResult;
 /// cannot be created or migrations fail.
 #[inline]
 pub async fn open_db(url: &str) -> BcResult<SqlitePool> {
-    let opts = url.parse::<SqliteConnectOptions>()?.create_if_missing(true);
+    // Enable SQLite foreign-key enforcement per-connection.
+    // NOTE: account_commodities and account_tags have FKs to commodities and tags.
+    // Inserting into those join tables requires the referenced commodity/tag records
+    // to already exist, so any test or service that inserts into those tables must
+    // first insert the parent commodity or tag row.
+    let opts = url
+        .parse::<SqliteConnectOptions>()?
+        .create_if_missing(true)
+        .pragma("foreign_keys", "ON");
 
     let pool = SqlitePool::connect_with(opts).await?;
 
@@ -25,6 +33,16 @@ pub async fn open_db(url: &str) -> BcResult<SqlitePool> {
     tracing::info!("database opened and migrations applied");
     Ok(pool)
 }
+
+// Schema tables (managed by migrations in ./migrations/):
+//   events, accounts, commodities, account_commodities, tags, account_tags,
+//   transactions, postings, transaction_tags, posting_tags,
+//   transaction_links, transaction_link_members,
+//   balances (read-cache, deferred — see migration 0007),
+//   meta (key-value settings store).
+//
+// import_profiles table: deferred to Milestone 2 (Format Compatibility).
+// See DESIGN.md §4.2 and §5.3.
 
 /// Serialises a serde-enabled unit enum to its canonical database string.
 ///

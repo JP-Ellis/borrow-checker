@@ -1,12 +1,6 @@
 //! Account domain types.
 
-use core::fmt;
-use core::str::FromStr;
-
 use jiff::Timestamp;
-use mti::prelude::*;
-use serde::Deserialize;
-use serde::Serialize;
 
 use crate::CommodityId;
 use crate::TagId;
@@ -188,6 +182,10 @@ impl Account {
     ///
     /// Returns [`ValidationError::EmptyName`] if `name` is empty.
     #[inline]
+    #[expect(
+        clippy::shadow_reuse,
+        reason = "shadowing `name` with its owned form is the idiomatic conversion pattern"
+    )]
     pub fn set_name(&mut self, name: impl Into<String>) -> Result<(), ValidationError> {
         let name = name.into();
         if name.is_empty() {
@@ -451,7 +449,7 @@ mod tests {
             .archived_at(first_ts)
             .build();
         assert!(!acct.is_active());
-        let original_archived_at = acct.archived_at().cloned();
+        let original_archived_at = acct.archived_at().copied();
         // Archiving again with a different timestamp must not overwrite the original
         acct.archive(Timestamp::now());
         assert_eq!(acct.archived_at(), original_archived_at.as_ref());

@@ -35,3 +35,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_commodities_code ON commodities (code);
 --    Currently BalanceEngine always computes live from `postings` and never
 --    reads or writes the cache.  The table is retained for the planned
 --    optimisation; it should not be removed without also updating BalanceEngine.
+--
+-- 4. import_profiles table: deferred to Milestone 2 (Format Compatibility).
+--    See DESIGN.md §4.2 and §5.3.
