@@ -18,7 +18,11 @@ use crate::db::to_db_str;
 use crate::events::Event;
 use crate::events::insert_event;
 
-/// Internal row type returned from the `accounts` table plus join-loaded data.
+/// Internal row type returned from the `accounts` table, mapped by `sqlx::FromRow`.
+///
+/// The `commodities` and `tag_ids` fields are populated separately via join queries
+/// after the initial row fetch.
+#[derive(sqlx::FromRow)]
 struct AccountRow {
     /// Raw account ID string.
     id: String,
@@ -37,8 +41,10 @@ struct AccountRow {
     /// ISO 8601 archive timestamp if archived.
     archived_at: Option<String>,
     /// Allowed commodities; first = default; empty = unrestricted.
+    #[sqlx(skip)]
     commodities: Vec<CommodityId>,
     /// Tags attached to this account.
+    #[sqlx(skip)]
     tag_ids: Vec<TagId>,
 }
 
@@ -243,7 +249,8 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::NotFound`] if the account does not exist or is already archived.
+    /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::AlreadyArchived`] if the account exists but is already archived.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
     pub async fn archive(&self, id: &AccountId) -> BcResult<()> {
@@ -262,7 +269,22 @@ impl Service {
                 .await?;
 
         if result.rows_affected() == 0 {
-            return Err(BcError::NotFound(id.to_string()));
+            // rows_affected == 0 means the UPDATE found no matching row.
+            // Returning here drops `tx` without committing — sqlx rolls it
+            // back implicitly, discarding the event insert above.
+            //
+            // Perform a follow-up SELECT to distinguish "not found" from
+            // "already archived" so callers get a semantic error.
+            let exists: bool = sqlx::query_scalar("SELECT count(*) > 0 FROM accounts WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_one(&self.pool)
+                .await?;
+
+            return if exists {
+                Err(BcError::AlreadyArchived(id.clone()))
+            } else {
+                Err(BcError::NotFound(id.to_string()))
+            };
         }
 
         tx.commit().await?;
@@ -278,19 +300,7 @@ impl Service {
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
     pub async fn find_by_id(&self, id: &AccountId) -> BcResult<Account> {
-        let row = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                String,
-                Option<String>,
-            ),
-        >(
+        let mut row = sqlx::query_as::<_, AccountRow>(
             "SELECT id, name, account_type, kind, description, parent_id, created_at, archived_at \
              FROM accounts WHERE id = ?",
         )
@@ -306,7 +316,7 @@ impl Service {
         .fetch_all(&self.pool)
         .await?;
 
-        let commodities: Vec<CommodityId> = commodity_rows
+        row.commodities = commodity_rows
             .into_iter()
             .map(|(s,)| {
                 s.parse::<CommodityId>()
@@ -320,7 +330,7 @@ impl Service {
                 .fetch_all(&self.pool)
                 .await?;
 
-        let tag_ids: Vec<TagId> = tag_rows
+        row.tag_ids = tag_rows
             .into_iter()
             .map(|(s,)| {
                 s.parse::<TagId>()
@@ -328,18 +338,7 @@ impl Service {
             })
             .collect::<BcResult<_>>()?;
 
-        Account::try_from(AccountRow {
-            id: row.0,
-            name: row.1,
-            account_type: row.2,
-            kind: row.3,
-            description: row.4,
-            parent_id: row.5,
-            created_at: row.6,
-            archived_at: row.7,
-            commodities,
-            tag_ids,
-        })
+        Account::try_from(row)
     }
 
     /// Lists all active (non-archived) accounts, ordered by name.
@@ -352,19 +351,7 @@ impl Service {
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
     pub async fn list_active(&self) -> BcResult<Vec<Account>> {
-        let account_rows = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                String,
-                Option<String>,
-            ),
-        >(
+        let mut account_rows = sqlx::query_as::<_, AccountRow>(
             "SELECT id, name, account_type, kind, description, parent_id, created_at, archived_at \
              FROM accounts WHERE archived_at IS NULL ORDER BY name ASC",
         )
@@ -399,25 +386,12 @@ impl Service {
         let mut commodities_map = build_commodities_map(commodity_rows)?;
         let mut tags_map = build_tags_map(tag_rows)?;
 
-        account_rows
-            .into_iter()
-            .map(|row| {
-                let commodities = commodities_map.remove(&row.0).unwrap_or_default();
-                let tag_ids = tags_map.remove(&row.0).unwrap_or_default();
-                Account::try_from(AccountRow {
-                    id: row.0,
-                    name: row.1,
-                    account_type: row.2,
-                    kind: row.3,
-                    description: row.4,
-                    parent_id: row.5,
-                    created_at: row.6,
-                    archived_at: row.7,
-                    commodities,
-                    tag_ids,
-                })
-            })
-            .collect()
+        for row in account_rows.iter_mut() {
+            row.commodities = commodities_map.remove(&row.id).unwrap_or_default();
+            row.tag_ids = tags_map.remove(&row.id).unwrap_or_default();
+        }
+
+        account_rows.into_iter().map(Account::try_from).collect()
     }
 }
 
@@ -534,7 +508,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn archive_already_archived_returns_not_found(pool: sqlx::SqlitePool) {
+    async fn archive_already_archived_returns_already_archived(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool.clone());
         let id = svc
             .create(
@@ -552,7 +526,7 @@ mod tests {
             .await
             .expect("first archive should succeed");
         let result = svc.archive(&id).await;
-        assert!(matches!(result, Err(BcError::NotFound(_))));
+        assert!(matches!(result, Err(BcError::AlreadyArchived(_))));
     }
 
     #[sqlx::test(migrations = "./migrations")]

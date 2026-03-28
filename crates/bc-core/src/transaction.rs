@@ -22,6 +22,22 @@ use crate::BcResult;
 use crate::db::from_db_str;
 use crate::db::to_db_str;
 use crate::events::Event;
+
+/// Row type returned by the postings bulk-load query in [`Service::list`].
+///
+/// Includes `transaction_id` (field 1) so postings can be grouped by transaction.
+type ListPostingRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 use crate::events::insert_event;
 
 /// Validates that the postings in a transaction sum to zero per commodity.
@@ -352,7 +368,8 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::NotFound`] if no transaction with that ID exists or is already voided.
+    /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
+    /// Returns [`BcError::AlreadyVoided`] if the transaction exists but is already voided.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
     pub async fn void(&self, id: &TransactionId) -> BcResult<()> {
@@ -371,13 +388,181 @@ impl Service {
             .await?;
 
         if result.rows_affected() == 0 {
-            return Err(BcError::NotFound(id.to_string()));
+            // rows_affected == 0 means the UPDATE found no matching row.
+            // Returning here drops `tx` without committing — sqlx rolls it
+            // back implicitly, discarding the event insert above.
+            //
+            // Perform a follow-up SELECT to distinguish "not found" from
+            // "already voided" so callers get a semantic error.
+            let exists: bool =
+                sqlx::query_scalar("SELECT count(*) > 0 FROM transactions WHERE id = ?")
+                    .bind(id.to_string())
+                    .fetch_one(&self.pool)
+                    .await?;
+
+            return if exists {
+                Err(BcError::AlreadyVoided(id.clone()))
+            } else {
+                Err(BcError::NotFound(id.to_string()))
+            };
         }
 
         tx.commit().await?;
         tracing::info!(transaction_id = %id, "transaction voided");
         Ok(())
     }
+
+    /// Lists all non-voided transactions ordered by date descending, including postings.
+    ///
+    /// Postings, tags, and cost data are loaded via separate queries to avoid N+1
+    /// round-trips.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or data parse failure.
+    #[inline]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "loading transactions with postings, cost, and tags inherently requires several queries and field mappings"
+    )]
+    pub async fn list(&self) -> BcResult<Vec<Transaction>> {
+        let voided_str = to_db_str(TransactionStatus::Voided)?;
+
+        let tx_rows: Vec<(String, String, Option<String>, String, String, String)> =
+            sqlx::query_as(
+                "SELECT id, date, payee, description, status, created_at \
+                 FROM transactions WHERE status != ? ORDER BY date DESC",
+            )
+            .bind(&voided_str)
+            .fetch_all(&self.pool)
+            .await?;
+
+        if tx_rows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Load all transaction-level tags for non-voided transactions in one query.
+        let tx_tag_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT tt.transaction_id, tt.tag_id \
+             FROM transaction_tags tt \
+             JOIN transactions t ON tt.transaction_id = t.id \
+             WHERE t.status != ?",
+        )
+        .bind(&voided_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut tx_tags_map: HashMap<String, Vec<TagId>> = HashMap::new();
+        for (tx_id_str, tag_id_str) in tx_tag_rows {
+            let tid = tag_id_str
+                .parse::<TagId>()
+                .map_err(|e| BcError::BadData(format!("invalid tag_id '{tag_id_str}': {e}")))?;
+            tx_tags_map.entry(tx_id_str).or_default().push(tid);
+        }
+
+        // Load all postings for non-voided transactions in one query.
+        let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
+            "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.memo, \
+                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label \
+             FROM postings p \
+             JOIN transactions t ON p.transaction_id = t.id \
+             WHERE t.status != ? \
+             ORDER BY p.transaction_id, p.position ASC",
+        )
+        .bind(&voided_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Load all posting tags for non-voided transactions in one query.
+        let posting_tag_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT pt.posting_id, pt.tag_id \
+             FROM posting_tags pt \
+             JOIN postings p ON pt.posting_id = p.id \
+             JOIN transactions t ON p.transaction_id = t.id \
+             WHERE t.status != ?",
+        )
+        .bind(&voided_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut posting_tags_map: HashMap<String, Vec<TagId>> = HashMap::new();
+        for (posting_id, tag_id_str) in posting_tag_rows {
+            let tid = tag_id_str
+                .parse::<TagId>()
+                .map_err(|e| BcError::BadData(format!("invalid tag_id '{tag_id_str}': {e}")))?;
+            posting_tags_map.entry(posting_id).or_default().push(tid);
+        }
+
+        // Group postings by transaction_id.
+        let mut postings_by_tx: HashMap<String, Vec<Posting>> = HashMap::new();
+        for (
+            pid,
+            tx_id_str,
+            account_id,
+            amount_str,
+            commodity,
+            memo,
+            cost_val,
+            cost_com,
+            cost_dt,
+            cost_lbl,
+        ) in posting_rows
+        {
+            let posting_id = pid
+                .parse::<PostingId>()
+                .map_err(|e| BcError::BadData(format!("invalid posting id '{pid}': {e}")))?;
+            let acc_id = account_id
+                .parse::<AccountId>()
+                .map_err(|e| BcError::BadData(format!("invalid account id '{account_id}': {e}")))?;
+            let value = amount_str
+                .parse::<Decimal>()
+                .map_err(|e| BcError::BadData(format!("invalid amount '{amount_str}': {e}")))?;
+            let amount = Amount::new(value, CommodityCode::new(commodity));
+            let cost = parse_cost(cost_val, cost_com, cost_dt, cost_lbl)?;
+            let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
+            let posting = Posting::builder()
+                .id(posting_id)
+                .account_id(acc_id)
+                .amount(amount)
+                .maybe_cost(cost)
+                .maybe_memo(memo)
+                .tag_ids(p_tag_ids)
+                .build();
+            postings_by_tx.entry(tx_id_str).or_default().push(posting);
+        }
+
+        tx_rows
+            .into_iter()
+            .map(
+                |(id_str, date_str, payee, description, status_str, created_at_str)| {
+                    let tx_id = id_str
+                        .parse::<TransactionId>()
+                        .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
+                    let date = date_str
+                        .parse::<jiff::civil::Date>()
+                        .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
+                    let status = from_db_str::<TransactionStatus>(&status_str)?;
+                    let created_at = created_at_str.parse::<Timestamp>().map_err(|e| {
+                        BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
+                    })?;
+                    let tag_ids = tx_tags_map.remove(&id_str).unwrap_or_default();
+                    let postings = postings_by_tx.remove(&id_str).unwrap_or_default();
+                    Ok(Transaction::builder()
+                        .id(tx_id)
+                        .date(date)
+                        .maybe_payee(payee)
+                        .description(description)
+                        .postings(postings)
+                        .status(status)
+                        .tag_ids(tag_ids)
+                        .created_at(created_at)
+                        .build())
+                },
+            )
+            .collect()
+    }
+    // TODO(M2): implement Service::amend() — amend generates a TransactionAmended event
+    // with the new transaction state. See events.rs for the TransactionAmended variant.
 }
 
 #[cfg(test)]
@@ -573,7 +758,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn void_already_voided_returns_not_found(pool: sqlx::SqlitePool) {
+    async fn void_already_voided_returns_already_voided(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
             .create(
@@ -606,7 +791,54 @@ mod tests {
         svc.create(tx).await.expect("create should succeed");
         svc.void(&id).await.expect("first void should succeed");
         let result = svc.void(&id).await;
-        assert!(matches!(result, Err(BcError::NotFound(_))));
+        assert!(matches!(result, Err(BcError::AlreadyVoided(_))));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn list_excludes_voided_transactions(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc_a = acct_svc
+            .create(
+                "A",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create A should succeed");
+        let acc_b = acct_svc
+            .create(
+                "B",
+                AccountType::Expense,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create B should succeed");
+
+        let svc = Service::new(pool.clone());
+
+        // Create two transactions; void one.
+        let tx1 = make_balanced_transaction(acc_a.clone(), acc_b.clone());
+        let id1 = tx1.id().clone();
+        svc.create(tx1).await.expect("create tx1 should succeed");
+
+        let tx2 = make_balanced_transaction(acc_a, acc_b);
+        let id2 = tx2.id().clone();
+        svc.create(tx2).await.expect("create tx2 should succeed");
+        svc.void(&id2).await.expect("void tx2 should succeed");
+
+        let active = svc.list().await.expect("list should succeed");
+        assert_eq!(active.len(), 1);
+        let first = active.first().expect("one active transaction should exist");
+        assert_eq!(first.id(), &id1);
+        assert_eq!(first.postings().len(), 2);
     }
 
     #[sqlx::test(migrations = "./migrations")]

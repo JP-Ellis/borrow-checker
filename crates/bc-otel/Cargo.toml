@@ -11,10 +11,16 @@ repository.workspace   = true
 license.workspace      = true
 
 [dependencies]
-opentelemetry      = { workspace = true }
-opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
-opentelemetry_sdk  = { workspace = true, features = ["trace"] }
-thiserror          = { workspace = true }
+opentelemetry         = { workspace = true }
+opentelemetry-otlp    = { workspace = true, features = ["grpc-tonic"] }
+opentelemetry_sdk     = { workspace = true, features = ["trace"] }
+thiserror             = { workspace = true }
+tracing               = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+tracing-subscriber    = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
 
 [lints]
 workspace = true
