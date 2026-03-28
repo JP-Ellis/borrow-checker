@@ -8,8 +8,9 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum BuildError {
-    /// A `Custom` period requires at least one of `days`, `weeks`, or `months`.
-    #[error("custom period must specify at least one of days, weeks, or months")]
+    /// A `Custom` period requires a positive total duration; all of `days`,
+    /// `weeks`, and `months` were either `None` or `Some(0)`.
+    #[error("custom period must specify a positive duration via days, weeks, or months")]
     CustomNoDuration,
     /// `start_month` must be 1–12.
     #[error("invalid month {0}: must be 1–12")]
@@ -102,14 +103,15 @@ impl Period {
     ///
     /// # Errors
     ///
-    /// Returns [`BuildError::CustomNoDuration`] if all three are `None`.
+    /// Returns [`BuildError::CustomNoDuration`] if the total duration is zero
+    /// (i.e. all three components are `None` or `Some(0)`).
     #[inline]
     pub fn custom(
         days: Option<u32>,
         weeks: Option<u32>,
         months: Option<u32>,
     ) -> Result<Self, BuildError> {
-        if days.is_none() && weeks.is_none() && months.is_none() {
+        if days.unwrap_or(0) == 0 && weeks.unwrap_or(0) == 0 && months.unwrap_or(0) == 0 {
             return Err(BuildError::CustomNoDuration);
         }
         Ok(Self::Custom {
@@ -467,6 +469,17 @@ mod tests {
     fn custom_constructor_rejects_all_none() {
         _ = Period::custom(None, None, None).unwrap_err();
         _ = Period::custom(Some(30), None, None).unwrap();
+    }
+
+    #[test]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "unwrap/unwrap_err in tests is acceptable to assert the expected Ok/Err state"
+    )]
+    fn custom_constructor_rejects_all_zero() {
+        _ = Period::custom(Some(0), Some(0), Some(0)).unwrap_err();
+        _ = Period::custom(Some(0), None, None).unwrap_err();
+        _ = Period::custom(None, Some(0), Some(1)).unwrap();
     }
 
     #[test]

@@ -28,9 +28,11 @@ CREATE INDEX IF NOT EXISTS idx_commodities_code ON commodities (code);
 --
 -- 2. account_commodities FK to commodities(id)
 --    Migration 0002 added a FK from account_commodities.commodity_id to
---    commodities(id), but no Rust code ever inserts into `commodities`, so
---    every FK reference fails at runtime.  This constraint is intentionally
---    left as-is until a CommodityService is implemented.
+--    commodities(id). There is currently no CommodityService responsible for
+--    creating and managing Commodity records, so any code that inserts into
+--    account_commodities must ensure the referenced commodities row exists.
+--    The constraint is intentionally left as-is until a CommodityService is
+--    implemented.
 --
 -- 3. balances table (migration 0004)
 --    The `balances` table exists as a future read-cache for the balance engine.
