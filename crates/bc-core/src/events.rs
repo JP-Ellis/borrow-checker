@@ -29,6 +29,9 @@ pub enum Event {
         description: Option<String>,
     },
     /// An account's metadata was updated.
+    // TODO(M1): AccountUpdated must include the full new account state
+    // (all mutable fields) before Service::update() is implemented.
+    // AccountCreated correctly demonstrates the full-state pattern.
     AccountUpdated {
         /// The account's ID.
         id: AccountId,
@@ -44,6 +47,8 @@ pub enum Event {
         id: TransactionId,
     },
     /// A transaction was amended.
+    // TODO(M2): implement Service::amend() — amend generates a TransactionAmended event
+    // with the new transaction state.
     TransactionAmended {
         /// The transaction's ID.
         id: TransactionId,

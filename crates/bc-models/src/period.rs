@@ -216,6 +216,7 @@ impl Period {
     }
 
     /// Computes the period start date on or before `date`.
+    #[inline]
     #[expect(
         clippy::too_many_lines,
         reason = "match arms for each variant are clear and self-contained; extracting would obscure the logic"
@@ -395,6 +396,7 @@ impl Period {
     }
 
     /// Advances a period start date by one period length.
+    #[inline]
     fn advance(&self, date: Date) -> Date {
         match self {
             Self::Weekly => date.saturating_add(jiff::Span::new().weeks(1)),

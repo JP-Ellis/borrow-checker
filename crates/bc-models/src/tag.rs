@@ -12,9 +12,6 @@ use core::fmt;
 use core::str::FromStr;
 
 use jiff::Timestamp;
-use mti::prelude::*;
-use serde::Deserialize;
-use serde::Serialize;
 
 crate::define_id!(TagId, "tag");
 
@@ -131,10 +128,14 @@ impl Forest {
 
     /// Computes the full colon-separated path for a tag.
     ///
-    /// Returns `None` if the tag is not in this forest.
+    /// # Returns
     ///
-    /// If a cycle is detected in the parent chain the traversal stops early and
-    /// returns the path accumulated so far (which may be a partial path).
+    /// - Returns `None` if `id` is not found in this forest.
+    /// - Returns `Some(path)` on success with the full colon-separated path.
+    /// - Returns `Some(partial_path)` if a cycle is detected in the parent
+    ///   chain; the path is truncated at the point the cycle was encountered.
+    ///   A cycle is a data integrity violation and should never occur in valid
+    ///   data.
     #[inline]
     #[must_use]
     pub fn path_of(&self, id: &TagId) -> Option<Path> {

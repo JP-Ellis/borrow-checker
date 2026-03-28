@@ -23,9 +23,13 @@ pub enum ConfigError {
 /// Raw deserialized settings before validation.
 #[derive(Debug, Clone, serde::Deserialize)]
 struct RawSettings {
-    /// Financial year start month (1-based).
+    /// Financial year start month (1-based, 1–12).
     financial_year_start_month: u8,
-    /// Financial year start day (1-based).
+    /// Financial year start day (1-based, 1–28).
+    ///
+    /// Capped at 28 to ensure the start day exists in every calendar month,
+    /// including February (which has at minimum 28 days). Use 1 for the
+    /// safest cross-month anchor.
     financial_year_start_day: u8,
     /// Fortnightly anchor date string, if set.
     fortnightly_anchor: Option<String>,
@@ -35,11 +39,20 @@ struct RawSettings {
 
 /// Validated application-wide settings.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[non_exhaustive]
 pub struct Settings {
-    /// Financial year start month (1-based).
+    /// Financial year start month (1-based, 1–12).
     financial_year_start_month: u8,
-    /// Financial year start day (1-based).
+    /// Financial year start day (1-based, 1–28).
+    ///
+    /// Capped at 28 to ensure the start day exists in every calendar month,
+    /// including February (which has at minimum 28 days). Use 1 for the
+    /// safest cross-month anchor.
+    ///
+    /// # Example
+    ///
+    /// A value of `1` is always safe; `28` is the maximum accepted value.
+    /// Values of 29, 30, or 31 are rejected during validation because they
+    /// do not exist in every month.
     financial_year_start_day: u8,
     /// Fortnightly anchor date, if configured.
     fortnightly_anchor: Option<Date>,
@@ -95,7 +108,8 @@ impl Settings {
         }
         if !(1..=28).contains(&raw.financial_year_start_day) {
             return Err(ConfigError::Validation(format!(
-                "financial_year_start_day {} is out of range 1–28",
+                "financial_year_start_day must be between 1 and 28 (capped at 28 so the day \
+                 exists in every month, including February); got {}",
                 raw.financial_year_start_day
             )));
         }
@@ -176,9 +190,12 @@ impl Default for Settings {
 /// which is the common case on Linux (where `directories` already honours
 /// `XDG_CONFIG_HOME`).
 fn user_config_paths() -> Vec<PathBuf> {
-    // XDG path: $XDG_CONFIG_HOME or fall back to $HOME/.config
+    // XDG path: $XDG_CONFIG_HOME or fall back to $HOME/.config.
+    // Per the XDG Base Directory Specification, XDG_CONFIG_HOME must be an
+    // absolute path; non-absolute values are ignored.
     let xdg_base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
         .or_else(|| directories::BaseDirs::new().map(|b| b.home_dir().join(".config")));
     let xdg_path = xdg_base.map(|b| b.join("borrow-checker").join("config.toml"));
 
@@ -205,6 +222,17 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    /// Builds a fully-valid [`RawSettings`] that passes validation so individual
+    /// tests can override exactly one field at a time.
+    fn valid_raw() -> RawSettings {
+        RawSettings {
+            financial_year_start_month: 7,
+            financial_year_start_day: 1,
+            fortnightly_anchor: None,
+            display_commodity: "AUD".to_owned(),
+        }
+    }
 
     #[test]
     fn default_settings_fy_start_is_july() {
@@ -236,11 +264,105 @@ mod tests {
     }
 
     #[test]
+    fn user_config_paths_ignores_relative_xdg_config_home() {
+        // SAFETY: Tests run in isolated processes under nextest; no concurrent
+        // threads are reading environment variables.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", "relative/path") }
+        let paths = user_config_paths();
+        // SAFETY: Same as above — isolated process, no concurrent env access.
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") }
+        assert!(
+            !paths.iter().any(|p| p.starts_with("relative/path")),
+            "relative XDG_CONFIG_HOME must be ignored per XDG spec; got: {paths:?}"
+        );
+    }
+
+    #[test]
     fn user_config_paths_has_no_duplicates() {
         let paths = user_config_paths();
         let mut seen = std::collections::HashSet::new();
         for p in &paths {
             assert!(seen.insert(p.clone()), "duplicate path found: {p:?}");
         }
+    }
+
+    // --- Validation error paths ---
+
+    #[test]
+    fn invalid_fy_start_month_zero() {
+        let raw = RawSettings {
+            financial_year_start_month: 0,
+            ..valid_raw()
+        };
+        assert!(
+            Settings::validate(raw).is_err(),
+            "month 0 should fail validation"
+        );
+    }
+
+    #[test]
+    fn invalid_fy_start_month_thirteen() {
+        let raw = RawSettings {
+            financial_year_start_month: 13,
+            ..valid_raw()
+        };
+        assert!(
+            Settings::validate(raw).is_err(),
+            "month 13 should fail validation"
+        );
+    }
+
+    #[test]
+    fn invalid_fy_start_day_zero() {
+        let raw = RawSettings {
+            financial_year_start_day: 0,
+            ..valid_raw()
+        };
+        assert!(
+            Settings::validate(raw).is_err(),
+            "day 0 should fail validation"
+        );
+    }
+
+    #[test]
+    fn invalid_fy_start_day_twenty_nine() {
+        let raw = RawSettings {
+            financial_year_start_day: 29,
+            ..valid_raw()
+        };
+        let result = Settings::validate(raw);
+        assert!(
+            result.is_err(),
+            "day 29 should fail validation (capped at 28)"
+        );
+        let err_msg = result.expect_err("already asserted is_err").to_string();
+        assert!(
+            err_msg.contains("28"),
+            "error message should mention the cap of 28; got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn invalid_fortnightly_anchor_string() {
+        let raw = RawSettings {
+            fortnightly_anchor: Some("not-a-date".to_owned()),
+            ..valid_raw()
+        };
+        assert!(
+            Settings::validate(raw).is_err(),
+            "invalid anchor date string should fail validation"
+        );
+    }
+
+    #[test]
+    fn invalid_empty_display_commodity() {
+        let raw = RawSettings {
+            display_commodity: String::new(),
+            ..valid_raw()
+        };
+        assert!(
+            Settings::validate(raw).is_err(),
+            "empty display_commodity should fail validation"
+        );
     }
 }
