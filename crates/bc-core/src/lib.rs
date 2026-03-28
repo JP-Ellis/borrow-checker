@@ -13,6 +13,7 @@ pub(crate) mod balance;
 pub(crate) mod db;
 pub(crate) mod error;
 pub(crate) mod events;
+pub mod import;
 pub(crate) mod settings;
 pub(crate) mod transaction;
 
@@ -24,5 +25,9 @@ pub use error::BcResult;
 pub use events::Event;
 pub use events::EventRecord;
 pub use events::SqliteStore as SqliteEventStore;
+pub use import::ImportConfig;
+pub use import::ImportError;
+pub use import::Importer;
+pub use import::RawTransaction;
 pub use settings::Store as SettingsStore;
 pub use transaction::Service as TransactionService;
