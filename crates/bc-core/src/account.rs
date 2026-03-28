@@ -159,10 +159,16 @@ impl Service {
     /// * `kind` - Account maintenance kind.
     /// * `description` - Optional free-text description.
     /// * `parent_id` - Optional parent account ID for sub-accounts.
+    /// * `commodity_ids` - Ordered list of allowed commodity IDs; first entry is the default.
+    /// * `tag_ids` - Tags to attach to the account.
     ///
     /// # Errors
     ///
     /// Returns [`BcError`] on event append or database insert failure.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "all parameters are required for a complete account creation; a builder API is out of scope for this service method"
+    )]
     #[inline]
     pub async fn create(
         &self,
@@ -171,6 +177,8 @@ impl Service {
         kind: AccountKind,
         description: Option<&str>,
         parent_id: Option<&AccountId>,
+        commodity_ids: &[CommodityId],
+        tag_ids: &[TagId],
     ) -> BcResult<AccountId> {
         let id = AccountId::new();
         let now = Timestamp::now();
@@ -198,6 +206,28 @@ impl Service {
         .bind(now.to_string())
         .execute(&mut *tx)
         .await?;
+
+        for (position, commodity_id) in commodity_ids.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO account_commodities (account_id, commodity_id, position) VALUES (?, ?, ?)",
+            )
+            .bind(id.to_string())
+            .bind(commodity_id.to_string())
+            .bind(
+                i64::try_from(position)
+                    .map_err(|e| BcError::BadData(format!("commodity position overflow: {e}")))?,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        for tag_id in tag_ids {
+            sqlx::query("INSERT INTO account_tags (account_id, tag_id) VALUES (?, ?)")
+                .bind(id.to_string())
+                .bind(tag_id.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
 
         tx.commit().await?;
         tracing::info!(account_id = %id, %name, "account created");
@@ -428,6 +458,8 @@ mod tests {
                 bc_models::AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create should succeed");
@@ -449,6 +481,8 @@ mod tests {
                 bc_models::AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create should succeed");
@@ -470,6 +504,8 @@ mod tests {
                 AccountKind::ManualAsset,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create should succeed");
@@ -507,6 +543,8 @@ mod tests {
                 bc_models::AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create should succeed");
@@ -526,6 +564,46 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn create_account_with_commodities_and_tags(pool: sqlx::SqlitePool) {
+        // Insert a commodity row directly since there is no CommodityService yet.
+        let commodity_id = bc_models::CommodityId::new();
+        sqlx::query("INSERT INTO commodities (id, code) VALUES (?, ?)")
+            .bind(commodity_id.to_string())
+            .bind("USD")
+            .execute(&pool)
+            .await
+            .expect("commodity insert should succeed");
+
+        // Insert a tag row directly since there is no TagService yet.
+        let tag_id = bc_models::TagId::new();
+        sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, ?, ?)")
+            .bind(tag_id.to_string())
+            .bind("savings")
+            .bind(jiff::Timestamp::now().to_string())
+            .execute(&pool)
+            .await
+            .expect("tag insert should succeed");
+
+        let svc = Service::new(pool.clone());
+        let id = svc
+            .create(
+                "Checking",
+                bc_models::AccountType::Asset,
+                bc_models::AccountKind::DepositAccount,
+                None,
+                None,
+                core::slice::from_ref(&commodity_id),
+                core::slice::from_ref(&tag_id),
+            )
+            .await
+            .expect("create should succeed");
+
+        let found = svc.find_by_id(&id).await.expect("find should succeed");
+        assert_eq!(found.commodities(), &[commodity_id]);
+        assert_eq!(found.tag_ids(), &[tag_id]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn list_active_excludes_archived(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool.clone());
         let _id1 = svc
@@ -535,6 +613,8 @@ mod tests {
                 bc_models::AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create should succeed");
@@ -545,6 +625,8 @@ mod tests {
                 bc_models::AccountKind::DepositAccount,
                 None,
                 None,
+                &[],
+                &[],
             )
             .await
             .expect("create should succeed");
