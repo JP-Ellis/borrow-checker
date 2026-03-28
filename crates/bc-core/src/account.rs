@@ -386,7 +386,7 @@ impl Service {
         let mut commodities_map = build_commodities_map(commodity_rows)?;
         let mut tags_map = build_tags_map(tag_rows)?;
 
-        for row in account_rows.iter_mut() {
+        for row in &mut account_rows {
             row.commodities = commodities_map.remove(&row.id).unwrap_or_default();
             row.tag_ids = tags_map.remove(&row.id).unwrap_or_default();
         }
