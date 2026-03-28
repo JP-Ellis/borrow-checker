@@ -22,17 +22,17 @@ ______________________________________________________________________
 
 ## Milestone 1 — Core Engine
 
-**Status:** ◻️
-**Crate:** `bc-core`
+**Status:** ✅
+**Crates:** `bc-core`, `bc-config`, `bc-otel`
 
-- [ ] SQLite storage layer via `sqlx` with migrations
-- [ ] Append-only event log table + projection engine
-- [ ] Event vocabulary: Account, Transaction, Envelope, Import, Plugin events
-- [ ] Account model (create, archive, multi-currency support; parent hierarchy; cross-cutting `TagPath` labels; `AccountKind` discriminator)
-- [ ] Double-entry transaction model (enforced balance-to-zero)
-- [ ] Balance calculation engine
+- [x] SQLite storage layer via `sqlx` with migrations
+- [x] Append-only event log table + projection engine
+- [x] Event vocabulary: Account events (`AccountCreated`, `AccountUpdated`, `AccountArchived`) and Transaction events (`TransactionCreated`, `TransactionAmended`, `TransactionVoided`)
+- [x] Account model (create, archive, multi-currency support; parent hierarchy; cross-cutting `TagPath` labels; `AccountKind` discriminator)
+- [x] Double-entry transaction model (enforced balance-to-zero)
+- [x] Balance calculation engine
 - [x] Period model (weekly, fortnightly, monthly, quarterly, **financial quarter**, financial year, calendar year, custom)
-- [ ] Global settings (financial year start, fortnightly anchor date, display currency)
+- [x] Global settings (financial year start, fortnightly anchor date, display currency)
 
 ______________________________________________________________________
 
