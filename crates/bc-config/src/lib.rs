@@ -248,6 +248,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn user_config_paths_contains_xdg_path_when_env_is_set() {
         // SAFETY: Tests run in isolated processes under nextest; no concurrent
         // threads are reading environment variables.
