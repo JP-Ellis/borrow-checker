@@ -76,6 +76,13 @@ fn parse_v1(bytes: &[u8]) -> Result<OfxStatement, String> {
         }
     }
 
+    if currency.is_empty() {
+        return Err("OFX v1: missing CURDEF (currency) element".into());
+    }
+    if account_id.is_empty() {
+        return Err("OFX v1: missing ACCTID (account ID) element".into());
+    }
+
     Ok(OfxStatement {
         currency,
         account_id,
@@ -161,6 +168,13 @@ fn parse_v2(bytes: &[u8]) -> Result<OfxStatement, String> {
         buf.clear();
     }
 
+    if currency.is_empty() {
+        return Err("OFX v2: missing CURDEF (currency) element".into());
+    }
+    if account_id.is_empty() {
+        return Err("OFX v2: missing ACCTID (account ID) element".into());
+    }
+
     Ok(OfxStatement {
         currency,
         account_id,
@@ -210,10 +224,9 @@ impl OfxTransactionBuilder {
 ///
 /// Only the `YYYYMMDD` prefix is used.
 fn parse_ofx_date(s: &str) -> Result<Date, String> {
-    if s.len() < 8 {
-        return Err(format!("OFX date too short: '{s}'"));
-    }
-    let ymd = s.get(..8).unwrap_or_default();
+    let ymd = s
+        .get(..8)
+        .ok_or_else(|| format!("OFX date too short: '{s}'"))?;
     jiff::civil::Date::strptime("%Y%m%d", ymd)
         .map_err(|parse_err| format!("bad OFX date '{s}': {parse_err}"))
 }
