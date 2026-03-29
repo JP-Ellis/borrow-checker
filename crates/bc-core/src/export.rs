@@ -144,7 +144,7 @@ pub enum ExportError {
 /// struct LedgerExporter;
 ///
 /// impl bc_core::Exporter for LedgerExporter {
-///     fn name(&self) -> &str { "ledger" }
+///     fn name(&self) -> &'static str { "ledger" }
 ///
 ///     fn export(
 ///         &self,
@@ -156,7 +156,7 @@ pub enum ExportError {
 /// ```
 pub trait Exporter: Send + Sync + 'static {
     /// A short, stable identifier for this exporter (e.g. `"ledger"`, `"beancount"`).
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
 
     /// Serialises `data` into the exporter's format.
     ///
