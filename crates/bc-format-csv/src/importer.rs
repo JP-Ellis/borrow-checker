@@ -63,14 +63,23 @@ impl bc_core::Importer for CsvImporter {
     ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
         let cfg: CsvConfig = config.as_typed()?;
 
+        if !cfg.delimiter.is_ascii() {
+            return Err(bc_core::ImportError::BadValue {
+                field: "delimiter".to_owned(),
+                detail: format!(
+                    "delimiter must be a single printable ASCII character, got {:?}",
+                    cfg.delimiter
+                ),
+            });
+        }
+
         let required = cfg.required_column_names();
         let csv_bytes = find_csv_start(bytes, &cfg.preamble, cfg.delimiter, &required)?;
 
-        // The `as` cast is intentional: delimiter is always a printable ASCII
-        // char (validated at config time); the truncating cast is safe.
+        // The `as` cast is safe: delimiter is ASCII, confirmed by the guard above.
         #[expect(
             clippy::as_conversions,
-            reason = "delimiter is restricted to printable ASCII; the truncating cast is intentional"
+            reason = "delimiter is guaranteed ASCII by the is_ascii() guard above"
         )]
         let delimiter_byte = cfg.delimiter as u8;
 
@@ -103,7 +112,10 @@ impl bc_core::Importer for CsvImporter {
         let commodity = cfg
             .commodity
             .as_deref()
-            .ok_or_else(|| bc_core::ImportError::MissingField("commodity".to_owned()))?;
+            .ok_or_else(|| bc_core::ImportError::BadValue {
+                field: "commodity".to_owned(),
+                detail: "commodity must be set in config when the file does not contain a currency column".to_owned(),
+            })?;
 
         let mut transactions = Vec::new();
 

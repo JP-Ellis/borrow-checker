@@ -137,11 +137,11 @@ fn line_contains_all_columns(line: &[u8], delimiter: char, required_columns: &[&
     // Trim a trailing carriage return so Windows-style CRLF lines work.
     let line_str = line_utf8.trim_end_matches('\r');
 
-    // The `as` cast is saturating for the ASCII range (0–127) where all valid
-    // delimiters live; non-ASCII delimiters are rejected elsewhere.
+    // The `as` cast is safe: non-ASCII delimiters are rejected in
+    // CsvImporter::import before find_csv_start is called.
     #[expect(
         clippy::as_conversions,
-        reason = "delimiter is restricted to printable ASCII; the truncating cast is intentional"
+        reason = "delimiter is guaranteed ASCII by the is_ascii() guard in CsvImporter::import"
     )]
     let delimiter_byte = delimiter as u8;
 
