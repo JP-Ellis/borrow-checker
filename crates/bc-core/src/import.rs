@@ -30,6 +30,42 @@ pub struct RawTransaction {
     pub reference: Option<String>,
 }
 
+impl RawTransaction {
+    /// Constructs a new [`RawTransaction`].
+    ///
+    /// # Arguments
+    ///
+    /// * `date` - The transaction date.
+    /// * `amount` - The transaction amount (quantity + commodity).
+    /// * `balance` - The running balance after this transaction, if available.
+    /// * `payee` - The payee or merchant name, if available.
+    /// * `description` - A free-text description or memo for the transaction.
+    /// * `reference` - An institution-provided reference or check number, if available.
+    ///
+    /// # Returns
+    ///
+    /// A new [`RawTransaction`] with the provided fields.
+    #[inline]
+    #[must_use]
+    pub fn new(
+        date: jiff::civil::Date,
+        amount: Amount,
+        balance: Option<Amount>,
+        payee: Option<String>,
+        description: String,
+        reference: Option<String>,
+    ) -> Self {
+        Self {
+            date,
+            amount,
+            balance,
+            payee,
+            description,
+            reference,
+        }
+    }
+}
+
 /// Opaque JSON configuration blob passed to an [`Importer`].
 ///
 /// Format crates define their own typed configuration structs and use
