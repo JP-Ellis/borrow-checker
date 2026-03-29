@@ -203,12 +203,27 @@ struct OfxTransactionBuilder {
 
 impl OfxTransactionBuilder {
     /// Consumes the builder and returns a validated [`OfxTransaction`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a string error if `DTPOSTED` is absent or unparsable, or if
+    /// `TRNAMT` is absent or not a valid decimal.  A missing `FITID` is
+    /// permitted — it produces an empty string, which the importer converts
+    /// to `reference = None`.
     fn build(self) -> Result<OfxTransaction, String> {
+        if self.dtposted.is_empty() {
+            return Err("OFX transaction is missing required DTPOSTED element".into());
+        }
         let date = parse_ofx_date(&self.dtposted)?;
+
+        if self.trnamt.is_empty() {
+            return Err("OFX transaction is missing required TRNAMT element".into());
+        }
         let amount = self
             .trnamt
             .parse::<Decimal>()
             .map_err(|parse_err| format!("bad TRNAMT '{}': {parse_err}", self.trnamt))?;
+
         Ok(OfxTransaction {
             trntype: self.trntype,
             date,
@@ -312,5 +327,40 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\nVERSION:102\r\n\r\n\
         let input = OFX_V1.replace("20250115120000", "20250115");
         let stmt = parse(input.as_bytes()).expect("parse");
         assert_eq!(stmt.transactions[0].date, date(2025, 1, 15));
+    }
+
+    #[test]
+    fn missing_dtposted_returns_error() {
+        let input = OFX_V1.replace("<DTPOSTED>20250115120000\r\n", "");
+        let result = parse(input.as_bytes());
+        assert!(
+            result.is_err(),
+            "expected error when DTPOSTED is absent, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn missing_trnamt_returns_error() {
+        let input = OFX_V1.replace("<TRNAMT>-50.00\r\n", "");
+        let result = parse(input.as_bytes());
+        assert!(
+            result.is_err(),
+            "expected error when TRNAMT is absent, got: {result:?}"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test code: panicking on wrong index is desired"
+    )]
+    fn empty_fitid_produces_none_reference_in_importer() {
+        // A transaction with no FITID should succeed but produce no reference.
+        let input = OFX_V1.replace("<FITID>20250115001\r\n", "");
+        let stmt = parse(input.as_bytes()).expect("parse should succeed with missing FITID");
+        assert!(
+            stmt.transactions[0].fitid.is_empty(),
+            "fitid should be empty string when absent"
+        );
     }
 }
