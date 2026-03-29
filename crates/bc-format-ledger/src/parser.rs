@@ -33,7 +33,8 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Entry>, String> {
         }
 
         // `*` at line-start is a top-level comment in Ledger, not a cleared flag.
-        if trimmed.starts_with('*') && !trimmed.starts_with(|c: char| c.is_ascii_digit()) {
+        // (A `*` opener can never start with a digit, so no additional guard is needed.)
+        if trimmed.starts_with('*') {
             let content = trimmed.get(1..).unwrap_or_default().trim();
             entries.push(Entry::Comment(content.to_owned()));
             continue;
