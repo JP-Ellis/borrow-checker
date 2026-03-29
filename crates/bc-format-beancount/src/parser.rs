@@ -49,12 +49,11 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
         let date = parse_date(date_str)?;
         let rest = trimmed.get(10..).unwrap_or_default().trim_start();
 
-        if let Some(r) = rest.strip_prefix("* ").or_else(|| rest.strip_prefix("! ")) {
-            let flag = if rest.starts_with('*') {
-                TxFlag::Complete
-            } else {
-                TxFlag::Incomplete
-            };
+        if let Some((flag, r)) = rest
+            .strip_prefix("* ")
+            .map(|r| (TxFlag::Complete, r))
+            .or_else(|| rest.strip_prefix("! ").map(|r| (TxFlag::Incomplete, r)))
+        {
             let (payee, narration) = parse_payee_narration(r.trim_start())?;
             let postings = collect_postings(&mut lines)?;
             directives.push(Directive::Transaction(Transaction {

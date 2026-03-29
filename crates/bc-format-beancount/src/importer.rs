@@ -173,4 +173,16 @@ mod tests {
         let bytes = b"2025-01-15 * Payee without quotes\n    Assets:Bank    50.00 AUD\n";
         assert!(!BeancountImporter.detect(bytes));
     }
+
+    #[test]
+    fn import_transaction_with_no_postings_returns_error() {
+        // A transaction directive with zero postings is invalid; the importer
+        // must return an error rather than panic.
+        let input = "2025-01-15 * \"Payee\" \"No postings\"\n";
+        let result = BeancountImporter.import(input.as_bytes(), &ImportConfig::default());
+        assert!(
+            result.is_err(),
+            "expected error for zero-posting transaction"
+        );
+    }
 }
