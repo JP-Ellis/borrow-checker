@@ -86,8 +86,11 @@ impl Exporter for BeancountExporter {
             out.push('\n');
         }
 
-        // Transaction directives
-        for tx in data.transactions {
+        // Transaction directives (sorted by date)
+        let mut sorted_txs: Vec<_> = data.transactions.iter().collect();
+        sorted_txs.sort_by_key(|tx| tx.date());
+
+        for tx in sorted_txs {
             let mut postings = Vec::new();
             for posting in tx.postings() {
                 let account = data.account_by_id(posting.account_id()).ok_or_else(|| {
