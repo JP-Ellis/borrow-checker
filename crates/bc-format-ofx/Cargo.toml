@@ -16,8 +16,6 @@ bc-models    = { workspace = true }
 jiff         = { workspace = true }
 quick-xml    = { workspace = true }
 rust_decimal = { workspace = true }
-serde_json   = { workspace = true }
-thiserror    = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions   = { workspace = true }

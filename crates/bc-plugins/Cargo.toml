@@ -10,6 +10,11 @@ rust-version.workspace = true
 repository.workspace   = true
 license.workspace      = true
 
+  [package.metadata]
+    [package.metadata.cargo-machete]
+    # Stub crate — deps are forward-declared for Milestone 6 (WASM plugin host)
+    ignored = ["bc-core", "bc-models"]
+
 [dependencies]
 bc-core   = { workspace = true }
 bc-models = { workspace = true }
