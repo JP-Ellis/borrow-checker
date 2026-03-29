@@ -4,7 +4,10 @@
 //! crates (`bc-format-csv`, `bc-format-ledger`, `bc-format-beancount`,
 //! `bc-format-ofx`).  Each format crate produces [`RawTransaction`] values and
 //! implements the [`Importer`] trait; the core engine drives the import via
-//! [`ImportConfig`].
+//! [`Config`].
+
+pub(crate) mod profile;
+pub(crate) mod registry;
 
 use bc_models::Amount;
 use jiff::civil::Date;
@@ -69,19 +72,17 @@ impl RawTransaction {
 /// Opaque JSON configuration blob passed to an [`Importer`].
 ///
 /// Format crates define their own typed configuration structs and use
-/// [`ImportConfig::from_typed`] / [`ImportConfig::into_typed`] to convert.
+/// [`Config::from_typed`] / [`Config::into_typed`] to convert.
 /// The core engine stores and retrieves the raw [`serde_json::Value`] without
 /// needing to know the format-specific schema.
+///
+/// Re-exported from the crate root as [`crate::ImportConfig`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "types are exported at the crate root as ImportConfig / ImportError; the module-prefixed names are intentional for API clarity"
-)]
-pub struct ImportConfig(serde_json::Value);
+pub struct Config(serde_json::Value);
 
-impl ImportConfig {
-    /// Serialises a typed configuration value into an [`ImportConfig`].
+impl Config {
+    /// Serialises a typed configuration value into a [`Config`].
     ///
     /// # Arguments
     ///
@@ -89,7 +90,7 @@ impl ImportConfig {
     ///
     /// # Returns
     ///
-    /// An [`ImportConfig`] wrapping the serialised JSON representation.
+    /// A [`Config`] wrapping the serialised JSON representation.
     ///
     /// # Errors
     ///
@@ -98,13 +99,13 @@ impl ImportConfig {
     /// # Example
     ///
     /// ```rust
-    /// use bc_core::ImportConfig;
+    /// use bc_core::ImportConfig as Config;
     /// use serde::Serialize;
     ///
     /// #[derive(Serialize)]
     /// struct MyCfg { delimiter: char }
     ///
-    /// let cfg = ImportConfig::from_typed(&MyCfg { delimiter: ',' }).expect("serialisation is infallible for this type");
+    /// let cfg = Config::from_typed(&MyCfg { delimiter: ',' }).expect("serialisation is infallible for this type");
     /// ```
     #[inline]
     pub fn from_typed<T: serde::Serialize>(value: &T) -> Result<Self, serde_json::Error> {
@@ -125,14 +126,14 @@ impl ImportConfig {
     /// # Example
     ///
     /// ```rust
-    /// use bc_core::ImportConfig;
+    /// use bc_core::ImportConfig as Config;
     /// use serde::{Deserialize, Serialize};
     ///
     /// #[derive(Debug, PartialEq, Serialize, Deserialize)]
     /// struct MyCfg { delimiter: char }
     ///
     /// let original = MyCfg { delimiter: ',' };
-    /// let cfg = ImportConfig::from_typed(&original).expect("serialisation is infallible for this type");
+    /// let cfg = Config::from_typed(&original).expect("serialisation is infallible for this type");
     /// let back: MyCfg = cfg.into_typed().expect("deserialisation should succeed");
     /// assert_eq!(back, original);
     /// ```
@@ -141,7 +142,7 @@ impl ImportConfig {
         serde_json::from_value(self.0)
     }
 
-    /// Constructs an [`ImportConfig`] directly from a [`serde_json::Value`].
+    /// Constructs a [`Config`] directly from a [`serde_json::Value`].
     ///
     /// # Arguments
     ///
@@ -149,7 +150,7 @@ impl ImportConfig {
     ///
     /// # Returns
     ///
-    /// An [`ImportConfig`] wrapping the given value.
+    /// A [`Config`] wrapping the given value.
     #[must_use]
     #[inline]
     pub fn from_value(value: serde_json::Value) -> Self {
@@ -174,14 +175,14 @@ impl ImportConfig {
     /// # Example
     ///
     /// ```rust
-    /// use bc_core::ImportConfig;
+    /// use bc_core::ImportConfig as Config;
     /// use serde::{Deserialize, Serialize};
     ///
     /// #[derive(Debug, PartialEq, Serialize, Deserialize)]
     /// struct MyCfg { delimiter: char }
     ///
     /// let original = MyCfg { delimiter: ',' };
-    /// let cfg = ImportConfig::from_typed(&original).expect("serialisation should succeed");
+    /// let cfg = Config::from_typed(&original).expect("serialisation should succeed");
     /// let back: MyCfg = cfg.as_typed().expect("deserialisation should succeed");
     /// assert_eq!(back, original);
     /// ```
@@ -202,8 +203,8 @@ impl ImportConfig {
     }
 }
 
-impl Default for ImportConfig {
-    /// Returns an [`ImportConfig`] wrapping an empty JSON object (`{}`).
+impl Default for Config {
+    /// Returns a [`Config`] wrapping an empty JSON object (`{}`).
     #[inline]
     fn default() -> Self {
         Self(serde_json::Value::Object(serde_json::Map::new()))
@@ -211,13 +212,15 @@ impl Default for ImportConfig {
 }
 
 /// Errors produced during an import operation.
+///
+/// Re-exported from the crate root as [`crate::ImportError`].
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 #[expect(
-    clippy::module_name_repetitions,
-    reason = "types are exported at the crate root as ImportConfig / ImportError; the module-prefixed names are intentional for API clarity"
+    clippy::error_impl_error,
+    reason = "re-exported as ImportError; the name is unambiguous at the crate root"
 )]
-pub enum ImportError {
+pub enum Error {
     /// The supplied configuration could not be deserialised.
     #[error("invalid import configuration: {0}")]
     InvalidConfig(#[from] serde_json::Error),
@@ -292,12 +295,8 @@ pub trait Importer: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns [`ImportError`] on configuration, parse, or field errors.
-    fn import(
-        &self,
-        bytes: &[u8],
-        config: &ImportConfig,
-    ) -> Result<Vec<RawTransaction>, ImportError>;
+    /// Returns [`Error`] on configuration, parse, or field errors.
+    fn import(&self, bytes: &[u8], config: &Config) -> Result<Vec<RawTransaction>, Error>;
 }
 
 #[cfg(test)]
@@ -370,8 +369,8 @@ mod tests {
             skip_rows: 2,
         };
 
-        let cfg = ImportConfig::from_typed(&original)
-            .expect("serialisation of TestConfig should succeed");
+        let cfg =
+            Config::from_typed(&original).expect("serialisation of TestConfig should succeed");
         let back: TestConfig = cfg.into_typed().expect("deserialisation should succeed");
 
         assert_eq!(back, original);
@@ -379,7 +378,7 @@ mod tests {
 
     #[test]
     fn import_config_default_is_empty_object() {
-        let cfg = ImportConfig::default();
+        let cfg = Config::default();
         assert_eq!(
             cfg.as_value(),
             &serde_json::Value::Object(serde_json::Map::default())
@@ -392,7 +391,7 @@ mod tests {
             delimiter: ',',
             skip_rows: 0,
         };
-        let cfg = ImportConfig::from_typed(&original).expect("serialisation should succeed");
+        let cfg = Config::from_typed(&original).expect("serialisation should succeed");
         let value = cfg.as_value();
         assert_eq!(
             value.get("delimiter").and_then(serde_json::Value::as_str),
@@ -403,27 +402,27 @@ mod tests {
     #[test]
     fn import_error_invalid_config_displays() {
         // Deserialising a JSON string as TestConfig should fail.
-        let cfg = ImportConfig(serde_json::Value::String("bad".to_owned()));
+        let cfg = Config(serde_json::Value::String("bad".to_owned()));
         let err: Result<TestConfig, _> = cfg.into_typed();
-        let import_err = ImportError::InvalidConfig(err.expect_err("should fail"));
+        let import_err = Error::InvalidConfig(err.expect_err("should fail"));
         assert!(!import_err.to_string().is_empty());
     }
 
     #[test]
     fn import_error_parse_displays() {
-        let err = ImportError::Parse("unexpected token".to_owned());
+        let err = Error::Parse("unexpected token".to_owned());
         assert!(err.to_string().contains("unexpected token"));
     }
 
     #[test]
     fn import_error_missing_field_displays() {
-        let err = ImportError::MissingField("date".to_owned());
+        let err = Error::MissingField("date".to_owned());
         assert!(err.to_string().contains("date"));
     }
 
     #[test]
     fn import_error_bad_value_displays() {
-        let err = ImportError::BadValue {
+        let err = Error::BadValue {
             field: "amount".to_owned(),
             detail: "must be positive".to_owned(),
         };
