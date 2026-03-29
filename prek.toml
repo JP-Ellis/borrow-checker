@@ -103,4 +103,12 @@ hooks = [
     types          = ["rust"],
     pass_filenames = false,
   },
+  {
+    id             = "cargo-machete",
+    name           = "cargo machete",
+    entry          = "cargo machete --with-metadata",
+    language       = "system",
+    files          = "Cargo\\.toml",
+    pass_filenames = false,
+  },
 ]

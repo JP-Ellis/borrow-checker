@@ -136,7 +136,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "thiserror",
- "tokio",
  "tracing",
 ]
 
@@ -150,8 +149,6 @@ dependencies = [
  "pretty_assertions",
  "rust_decimal",
  "rust_decimal_macros",
- "serde_json",
- "thiserror",
  "tracing",
 ]
 
@@ -168,8 +165,6 @@ dependencies = [
  "rust_decimal",
  "rust_decimal_macros",
  "serde",
- "serde_json",
- "thiserror",
 ]
 
 [[package]]
@@ -182,8 +177,6 @@ dependencies = [
  "pretty_assertions",
  "rust_decimal",
  "rust_decimal_macros",
- "serde_json",
- "thiserror",
 ]
 
 [[package]]
@@ -197,8 +190,6 @@ dependencies = [
  "quick-xml",
  "rust_decimal",
  "rust_decimal_macros",
- "serde_json",
- "thiserror",
 ]
 
 [[package]]

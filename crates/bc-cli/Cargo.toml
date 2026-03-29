@@ -12,6 +12,11 @@ license.workspace      = true
 
 publish = false  # distributed as binary, not via crates.io
 
+  [package.metadata]
+    [package.metadata.cargo-machete]
+    # Stub crate — deps are forward-declared for CLI implementation
+    ignored = ["bc-core", "bc-models"]
+
 [dependencies]
 bc-core   = { workspace = true }
 bc-models = { workspace = true }
