@@ -15,6 +15,11 @@ publish = false
 # Full Tauri wiring (tauri-build, build.rs, tauri.conf.json, frontend) added in Milestone 7.
 # Plain binary here so the workspace compiles without Tauri system dependencies.
 
+  [package.metadata]
+    [package.metadata.cargo-machete]
+    # Stub crate — deps are forward-declared for future work
+    ignored = ["bc-core", "bc-models"]
+
 [dependencies]
 bc-core   = { workspace = true }
 bc-models = { workspace = true }
