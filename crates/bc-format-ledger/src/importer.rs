@@ -1,5 +1,7 @@
 //! [`LedgerImporter`]: implements [`bc_core::Importer`] for Ledger files.
 
+use std::collections::BTreeMap;
+
 use bc_core::ImportConfig;
 use bc_core::ImportError;
 use bc_core::Importer;
@@ -147,7 +149,7 @@ fn resolve_elided(postings: &[crate::ast::Posting]) -> Result<Vec<PostingAmount>
     }
 
     // Sum explicit postings per commodity.
-    let mut sums: std::collections::BTreeMap<String, Decimal> = std::collections::BTreeMap::new();
+    let mut sums: BTreeMap<String, Decimal> = BTreeMap::new();
     for p in postings {
         if let Some(amt) = &p.amount {
             *sums.entry(amt.commodity.clone()).or_default() += amt.value;
