@@ -61,7 +61,7 @@ impl bc_core::Importer for CsvImporter {
         bytes: &[u8],
         config: &bc_core::ImportConfig,
     ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
-        let cfg: CsvConfig = config.clone().into_typed()?;
+        let cfg: CsvConfig = config.as_typed()?;
 
         let required = cfg.required_column_names();
         let csv_bytes = find_csv_start(bytes, &cfg.preamble, cfg.delimiter, &required)?;
@@ -322,12 +322,18 @@ fn parse_number(
     // before trimming currency prefixes/suffixes.  `trim_matches` scans both
     // ends simultaneously, so a leading `−` stops it from ever reaching a `$`.
     let trimmed = raw.trim();
-    let (sign, magnitude) = if let Some(rest) = trimmed.strip_prefix('-') {
-        ("-", rest)
-    } else {
-        ("", trimmed)
-    };
-    let stripped_magnitude = magnitude
+
+    // Detect accounting notation: (50.00) means negative.
+    let (sign, magnitude_str) =
+        if let Some(inner) = trimmed.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+            ("-", inner)
+        } else if let Some(rest) = trimmed.strip_prefix('-') {
+            ("-", rest)
+        } else {
+            ("", trimmed)
+        };
+
+    let stripped_magnitude = magnitude_str
         .trim_matches(|c| matches!(c, '$' | '£' | '€' | '+'))
         .trim();
     let stripped = if sign.is_empty() {
@@ -402,5 +408,16 @@ mod tests {
     #[test]
     fn parse_number_negative() {
         assert_eq!(parse_number("-50.00", '.', None), Ok(dec!(-50.00)));
+    }
+
+    #[test]
+    fn parse_number_parenthesised_accounting_notation() {
+        // Many Australian bank exports use (50.00) to represent a debit.
+        assert_eq!(parse_number("(50.00)", '.', None), Ok(dec!(-50.00)));
+        assert_eq!(
+            parse_number("(1,234.56)", '.', Some(',')),
+            Ok(dec!(-1234.56))
+        );
+        assert_eq!(parse_number("($99.95)", '.', None), Ok(dec!(-99.95)));
     }
 }
