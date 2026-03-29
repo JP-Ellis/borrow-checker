@@ -77,7 +77,7 @@ jobs:
       - run: prek run --all-files
         env:
           # Rust hooks run in the dedicated clippy/format/machete jobs below
-          SKIP: cargo-check,cargo-clippy,cargo-fmt,cargo-machete
+          SKIP: cargo-clippy,cargo-fmt,cargo-machete
 
   clippy:
     name: Clippy
