@@ -13,13 +13,13 @@
 
 pub mod config;
 pub use config::AmountColumns;
-pub use config::CsvConfig;
+pub use config::Config as CsvConfig;
 pub use config::Preamble;
 
 pub(crate) mod preamble;
 
 pub mod importer;
-pub use importer::CsvImporter;
+pub use importer::Importer as CsvImporter;
 
 /// Detects whether `bytes` look like a CSV/delimited-text file.
 ///

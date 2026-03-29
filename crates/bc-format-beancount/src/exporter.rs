@@ -1,28 +1,23 @@
-//! [`BeancountExporter`]: implements [`bc_core::Exporter`] for Beancount files.
+//! [`Exporter`]: implements [`bc_core::Exporter`] for Beancount files.
 
 use bc_core::ExportData;
 use bc_core::ExportError;
-use bc_core::Exporter;
 use jiff::civil::date;
 
 use crate::writer::render_commodity;
 use crate::writer::render_open;
 use crate::writer::render_transaction;
 
-/// Implements [`Exporter`] for the Beancount plain-text accounting format.
+/// Implements [`bc_core::Exporter`] for the Beancount plain-text accounting format.
 ///
 /// Produces a well-formed Beancount file containing `commodity` directives,
 /// `open` directives for all accounts, and all non-voided transactions with
 /// their postings rendered using the colon-separated account path.
 #[non_exhaustive]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "BeancountExporter is the conventional public name for this type; re-exported from crate root"
-)]
-pub struct BeancountExporter;
+pub struct Exporter;
 
-impl BeancountExporter {
-    /// Creates a new [`BeancountExporter`].
+impl Exporter {
+    /// Creates a new [`Exporter`].
     #[inline]
     #[must_use]
     pub fn new() -> Self {
@@ -30,15 +25,15 @@ impl BeancountExporter {
     }
 }
 
-impl Default for BeancountExporter {
-    /// Returns a default [`BeancountExporter`].
+impl Default for Exporter {
+    /// Returns a default [`Exporter`].
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Exporter for BeancountExporter {
+impl bc_core::Exporter for Exporter {
     /// Returns the stable identifier for this exporter.
     #[inline]
     fn name(&self) -> &'static str {
@@ -134,12 +129,12 @@ mod tests {
     #[test]
     fn export_empty_data_produces_empty_output() {
         let data = ExportData::new(&[], &[], &[], &[]);
-        let bytes = BeancountExporter.export(&data).expect("export");
+        let bytes = Exporter.export(&data).expect("export");
         assert_eq!(bytes, b"");
     }
 
     #[test]
     fn exporter_name_is_beancount() {
-        assert_eq!(BeancountExporter.name(), "beancount");
+        assert_eq!(Exporter.name(), "beancount");
     }
 }

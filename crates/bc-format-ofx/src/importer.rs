@@ -1,28 +1,23 @@
-//! [`OfxImporter`]: implements [`bc_core::Importer`] for OFX/QFX files.
+//! [`Importer`]: implements [`bc_core::Importer`] for OFX/QFX files.
 
 use bc_core::ImportConfig;
 use bc_core::ImportError;
-use bc_core::Importer;
 use bc_core::RawTransaction;
 use bc_models::Amount;
 use bc_models::CommodityCode;
 
 use crate::parser::parse;
 
-/// Implements [`Importer`] for OFX v1 (SGML) and OFX v2 (XML) files.
+/// Implements [`bc_core::Importer`] for OFX v1 (SGML) and OFX v2 (XML) files.
 #[non_exhaustive]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "OfxImporter lives in the importer module; the name repetition is intentional for clarity at the call site"
-)]
-pub struct OfxImporter;
+pub struct Importer;
 
-impl OfxImporter {
-    /// Creates a new [`OfxImporter`].
+impl Importer {
+    /// Creates a new [`Importer`].
     ///
     /// # Returns
     ///
-    /// A new [`OfxImporter`] instance.
+    /// A new [`Importer`] instance.
     #[inline]
     #[must_use]
     pub const fn new() -> Self {
@@ -30,15 +25,15 @@ impl OfxImporter {
     }
 }
 
-impl Default for OfxImporter {
-    /// Returns a default [`OfxImporter`].
+impl Default for Importer {
+    /// Returns a default [`Importer`].
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Importer for OfxImporter {
+impl bc_core::Importer for Importer {
     #[inline]
     fn name(&self) -> &'static str {
         "ofx"
@@ -113,7 +108,7 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
         reason = "test code: panicking on wrong index is the desired behaviour"
     )]
     fn imports_v1_two_transactions() {
-        let txs = OfxImporter::new()
+        let txs = Importer::new()
             .import(OFX_V1, &ImportConfig::default())
             .expect("import");
         assert_eq!(txs.len(), 2);
@@ -130,7 +125,7 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
         reason = "test code: panicking on wrong index is the desired behaviour"
     )]
     fn payee_falls_back_to_name_when_no_memo() {
-        let txs = OfxImporter::new()
+        let txs = Importer::new()
             .import(OFX_V1, &ImportConfig::default())
             .expect("import");
         // Second transaction has no MEMO, so description = NAME.
@@ -139,16 +134,16 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
 
     #[test]
     fn detect_recognises_ofx_v1() {
-        assert!(OfxImporter::new().detect(b"OFXHEADER:100\nDATA:OFXSGML\n"));
+        assert!(Importer::new().detect(b"OFXHEADER:100\nDATA:OFXSGML\n"));
     }
 
     #[test]
     fn detect_recognises_ofx_v2() {
-        assert!(OfxImporter::new().detect(b"<?xml version=\"1.0\"?>\n<?OFX OFXHEADER=\"200\"?>"));
+        assert!(Importer::new().detect(b"<?xml version=\"1.0\"?>\n<?OFX OFXHEADER=\"200\"?>"));
     }
 
     #[test]
     fn detect_rejects_csv() {
-        assert!(!OfxImporter::new().detect(b"Date,Amount\n2025-01-15,-50.00\n"));
+        assert!(!Importer::new().detect(b"Date,Amount\n2025-01-15,-50.00\n"));
     }
 }
