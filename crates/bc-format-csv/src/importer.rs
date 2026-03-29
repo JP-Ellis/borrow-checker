@@ -318,11 +318,23 @@ fn parse_number(
     decimal_sep: char,
     thousands_sep: Option<char>,
 ) -> Result<Decimal, String> {
-    // Strip leading/trailing whitespace then common currency prefixes/suffixes.
+    // Strip leading/trailing whitespace, then separate any leading minus sign
+    // before trimming currency prefixes/suffixes.  `trim_matches` scans both
+    // ends simultaneously, so a leading `−` stops it from ever reaching a `$`.
     let trimmed = raw.trim();
-    let stripped = trimmed
+    let (sign, magnitude) = if let Some(rest) = trimmed.strip_prefix('-') {
+        ("-", rest)
+    } else {
+        ("", trimmed)
+    };
+    let stripped_magnitude = magnitude
         .trim_matches(|c| matches!(c, '$' | '£' | '€' | '+'))
         .trim();
+    let stripped = if sign.is_empty() {
+        stripped_magnitude.to_owned()
+    } else {
+        format!("-{stripped_magnitude}")
+    };
 
     // Remove thousands separator when configured.
     let without_thousands: String;
@@ -330,7 +342,7 @@ fn parse_number(
         without_thousands = stripped.chars().filter(|&c| c != ts).collect();
         without_thousands.as_str()
     } else {
-        stripped
+        stripped.as_str()
     };
 
     // Normalise decimal separator to '.'.
