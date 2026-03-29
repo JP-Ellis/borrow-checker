@@ -16,6 +16,7 @@ pub(crate) mod events;
 pub mod export;
 pub mod import;
 pub(crate) mod import_profile;
+pub mod registry;
 pub(crate) mod settings;
 pub(crate) mod transaction;
 
@@ -36,5 +37,6 @@ pub use import::Importer;
 pub use import::RawTransaction;
 pub use import_profile::ImportProfile;
 pub use import_profile::Service as ImportProfileService;
+pub use registry::ImporterFactory;
 pub use settings::Store as SettingsStore;
 pub use transaction::Service as TransactionService;
