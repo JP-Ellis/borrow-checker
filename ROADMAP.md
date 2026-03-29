@@ -38,16 +38,16 @@ ______________________________________________________________________
 
 ## Milestone 2 — Format Compatibility
 
-**Status:** ◻️
+**Status:** ✅
 **Crates:** `bc-format-csv`, `bc-format-ledger`, `bc-format-beancount`, `bc-format-ofx`
 
-- [ ] `Importer` + `Exporter` traits
-- [ ] CSV import (configurable column mapping)
-- [ ] Import profiles (account-bound importer configs, dedup strategy)
-- [ ] Ledger read + write (round-trip)
-- [ ] Beancount read + write (round-trip)
-- [ ] OFX/QFX import
-- [ ] Format auto-detection (`detect()`)
+- [x] `Importer` + `Exporter` traits
+- [x] CSV import (configurable column mapping)
+- [x] Import profiles (account-bound importer configs, dedup strategy)
+- [x] Ledger read + write (round-trip)
+- [x] Beancount read + write (round-trip)
+- [x] OFX/QFX import
+- [x] Format auto-detection (`detect()`)
 
 ______________________________________________________________________
 
