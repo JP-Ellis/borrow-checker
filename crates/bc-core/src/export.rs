@@ -1,7 +1,7 @@
 //! Export types and the [`Exporter`] trait.
 //!
-//! This module defines the data snapshot passed to each exporter ([`ExportData`]),
-//! the error type produced during export ([`ExportError`]), and the
+//! This module defines the data snapshot passed to each exporter ([`Data`]),
+//! the error type produced during export ([`Error`]), and the
 //! [`Exporter`] trait that format-specific crates implement.
 
 use std::collections::HashSet;
@@ -10,12 +10,10 @@ use std::collections::HashSet;
 ///
 /// All slices are borrowed from the calling context for the duration of the
 /// export operation; no data is copied.
+///
+/// Re-exported from the crate root as [`crate::Data`].
 #[non_exhaustive]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "exported at the crate root as ExportData; the module-prefixed name is intentional for API clarity"
-)]
-pub struct ExportData<'a> {
+pub struct Data<'a> {
     /// Accounts in the chart of accounts.
     pub accounts: &'a [bc_models::Account],
     /// Known commodities (currencies, securities, etc.).
@@ -26,8 +24,8 @@ pub struct ExportData<'a> {
     pub tags: &'a [bc_models::Tag],
 }
 
-impl<'a> ExportData<'a> {
-    /// Constructs a new [`ExportData`] snapshot.
+impl<'a> Data<'a> {
+    /// Constructs a new [`Data`] snapshot.
     ///
     /// # Arguments
     ///
@@ -38,7 +36,7 @@ impl<'a> ExportData<'a> {
     ///
     /// # Returns
     ///
-    /// A new [`ExportData`] referencing the provided slices.
+    /// A new [`Data`] referencing the provided slices.
     #[inline]
     #[must_use]
     pub fn new(
@@ -115,13 +113,15 @@ impl<'a> ExportData<'a> {
 }
 
 /// Errors produced during an export operation.
+///
+/// Re-exported from the crate root as [`crate::ExportError`].
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 #[expect(
-    clippy::module_name_repetitions,
-    reason = "exported at the crate root as ExportError; the module-prefixed name is intentional for API clarity"
+    clippy::error_impl_error,
+    reason = "re-exported as ExportError; the name is unambiguous at the crate root"
 )]
-pub enum ExportError {
+pub enum Error {
     /// An account referenced during export could not be found.
     #[error("account not found: {0}")]
     AccountNotFound(String),
@@ -170,9 +170,9 @@ pub trait Exporter: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns [`ExportError`] if an account or commodity is missing, or if a
+    /// Returns [`Error`] if an account or commodity is missing, or if a
     /// write error occurs while producing the output.
-    fn export(&self, data: &ExportData<'_>) -> Result<Vec<u8>, ExportError>;
+    fn export(&self, data: &Data<'_>) -> Result<Vec<u8>, Error>;
 }
 
 #[cfg(test)]
@@ -206,7 +206,7 @@ mod tests {
     fn account_path_for_root_account_returns_just_its_name() {
         let assets = make_root_account("Assets", AccountType::Asset);
         let accounts = [assets.clone()];
-        let data = ExportData::new(&accounts, &[], &[], &[]);
+        let data = Data::new(&accounts, &[], &[], &[]);
 
         let path = data.account_path(&assets);
 
@@ -220,7 +220,7 @@ mod tests {
         let savings = make_child_account("Savings", AccountType::Asset, &commbank);
 
         let accounts = [assets, commbank, savings.clone()];
-        let data = ExportData::new(&accounts, &[], &[], &[]);
+        let data = Data::new(&accounts, &[], &[], &[]);
 
         let path = data.account_path(&savings);
 
@@ -232,14 +232,14 @@ mod tests {
         let assets = make_root_account("Assets", AccountType::Asset);
         let id = assets.id().clone();
         let accounts = [assets];
-        let data = ExportData::new(&accounts, &[], &[], &[]);
+        let data = Data::new(&accounts, &[], &[], &[]);
 
         assert!(data.account_by_id(&id).is_some());
     }
 
     #[test]
     fn account_by_id_returns_none_for_unknown_id() {
-        let data = ExportData::new(&[], &[], &[], &[]);
+        let data = Data::new(&[], &[], &[], &[]);
         let unknown_id = bc_models::AccountId::new();
 
         assert!(data.account_by_id(&unknown_id).is_none());

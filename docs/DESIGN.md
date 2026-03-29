@@ -198,7 +198,6 @@ struct ImportProfile {
     importer: String,                // e.g. "commbank-au"
     account_id: AccountId,           // where transactions land
     config: ImportConfig,            // column mappings, date formats, etc.
-    dedup_strategy: DedupStrategy,   // how to detect already-imported rows (None / ContentHash / FitId)
     created_at: Timestamp,
 }
 ```

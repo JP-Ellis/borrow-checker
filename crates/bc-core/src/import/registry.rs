@@ -1,24 +1,29 @@
 //! Importer registry types for the BorrowChecker import pipeline.
 //!
-//! This module provides [`ImporterFactory`], a lightweight `Clone` descriptor
+//! This module provides [`Factory`], a lightweight `Clone` descriptor
 //! that associates a stable format name with two static function pointers: one for
-//! format detection and one for constructing a boxed [`crate::Importer`].
+//! format detection and one for constructing a boxed [`super::Importer`].
 //!
 //! Plugins register factories at startup; the core engine iterates them to detect
 //! and drive imports without taking ownership of any concrete importer type.
+//!
+//! Both types are re-exported from the crate root as [`crate::ImporterFactory`] and
+//! [`crate::ImporterRegistry`].
 
-use crate::Importer;
+use super::Importer;
 
 /// A lightweight descriptor for a single importer format.
 ///
-/// Each `ImporterFactory` bundles a stable format name with two static function
+/// Each `Factory` bundles a stable format name with two static function
 /// pointers: one for sniffing whether a byte slice looks like the format, and one
 /// for constructing a fresh [`Box<dyn Importer>`].
 ///
-/// External code must use [`ImporterFactory::new`] to construct instances; the
+/// External code must use [`Factory::new`] to construct instances; the
 /// struct's private fields prevent struct-literal construction outside this crate.
 /// The `#[non_exhaustive]` attribute is retained for consistency with the project's
 /// clippy settings.
+///
+/// Re-exported from the crate root as [`crate::ImporterFactory`].
 ///
 /// # Example
 ///
@@ -49,7 +54,7 @@ use crate::Importer;
 /// ```
 #[non_exhaustive]
 #[derive(Clone)]
-pub struct ImporterFactory {
+pub struct Factory {
     /// Stable format identifier (e.g. `"csv"`, `"ofx"`).
     name: &'static str,
     /// Static function pointer used to sniff whether bytes match this format.
@@ -58,25 +63,27 @@ pub struct ImporterFactory {
     create: fn() -> Box<dyn Importer>,
 }
 
-impl core::fmt::Debug for ImporterFactory {
+impl core::fmt::Debug for Factory {
     /// Formats the factory, showing only the `name` field.
     ///
     /// Function pointer addresses are unstable and convey no useful information,
     /// so only `name` is included in the debug output.
     #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ImporterFactory")
+        f.debug_struct("Factory")
             .field("name", &self.name)
             .finish_non_exhaustive()
     }
 }
 
-/// A collection of [`ImporterFactory`] instances that provides format auto-detection
+/// A collection of [`Factory`] instances that provides format auto-detection
 /// and importer creation for the BorrowChecker import pipeline.
 ///
-/// `ImporterRegistry` maintains an ordered list of factories. When detecting a format,
+/// `Registry` maintains an ordered list of factories. When detecting a format,
 /// the first factory whose `detect` function returns `true` wins. Factories are
 /// iterated in insertion order, so registration order determines detection priority.
+///
+/// Re-exported from the crate root as [`crate::ImporterRegistry`].
 ///
 /// # Example
 ///
@@ -104,23 +111,19 @@ impl core::fmt::Debug for ImporterFactory {
 /// registry.register(ImporterFactory::new("my-format", detect_my, create_my));
 /// assert_eq!(registry.detect_format(b"MY data"), Some("my-format"));
 /// ```
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "ImporterRegistry is the canonical public name; renaming to Registry would be ambiguous at the crate root"
-)]
 #[non_exhaustive]
 #[derive(Debug, Default)]
-pub struct ImporterRegistry {
+pub struct Registry {
     /// The ordered list of registered importer factories.
-    factories: Vec<ImporterFactory>,
+    factories: Vec<Factory>,
 }
 
-impl ImporterRegistry {
-    /// Creates an empty [`ImporterRegistry`].
+impl Registry {
+    /// Creates an empty [`Registry`].
     ///
     /// # Returns
     ///
-    /// A new, empty `ImporterRegistry` with no registered factories.
+    /// A new, empty `Registry` with no registered factories.
     ///
     /// # Example
     ///
@@ -142,7 +145,7 @@ impl ImporterRegistry {
     ///
     /// # Arguments
     ///
-    /// * `factory` - The [`ImporterFactory`] to register.
+    /// * `factory` - The [`Factory`] to register.
     ///
     /// # Returns
     ///
@@ -168,7 +171,7 @@ impl ImporterRegistry {
     ///     .register(ImporterFactory::new("b", detect_stub, create_stub));
     /// ```
     #[inline]
-    pub fn register(&mut self, factory: ImporterFactory) -> &mut Self {
+    pub fn register(&mut self, factory: Factory) -> &mut Self {
         self.factories.push(factory);
         self
     }
@@ -190,7 +193,7 @@ impl ImporterRegistry {
         self.factories
             .iter()
             .find(|f| f.detect(bytes))
-            .map(ImporterFactory::name)
+            .map(Factory::name)
     }
 
     /// Creates an importer for the named format, or `None` if not registered.
@@ -207,11 +210,11 @@ impl ImporterRegistry {
     /// `Some(Box<dyn Importer>)` if the format is registered, or `None`.
     #[inline]
     #[must_use]
-    pub fn create_for_name(&self, name: &str) -> Option<Box<dyn crate::Importer>> {
+    pub fn create_for_name(&self, name: &str) -> Option<Box<dyn Importer>> {
         self.factories
             .iter()
             .find(|f| f.name() == name)
-            .map(ImporterFactory::create)
+            .map(Factory::create)
     }
 
     /// Creates an importer for the first format that detects `bytes`, or `None`.
@@ -227,11 +230,11 @@ impl ImporterRegistry {
     /// `Some(Box<dyn Importer>)` if a matching format is found, or `None`.
     #[inline]
     #[must_use]
-    pub fn create_for_bytes(&self, bytes: &[u8]) -> Option<Box<dyn crate::Importer>> {
+    pub fn create_for_bytes(&self, bytes: &[u8]) -> Option<Box<dyn Importer>> {
         self.factories
             .iter()
             .find(|f| f.detect(bytes))
-            .map(ImporterFactory::create)
+            .map(Factory::create)
     }
 
     /// Returns an iterator over registered format names, in insertion order.
@@ -263,12 +266,12 @@ impl ImporterRegistry {
     /// ```
     #[inline]
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.factories.iter().map(ImporterFactory::name)
+        self.factories.iter().map(Factory::name)
     }
 }
 
-impl ImporterFactory {
-    /// Constructs a new [`ImporterFactory`].
+impl Factory {
+    /// Constructs a new [`Factory`].
     ///
     /// # Arguments
     ///
@@ -280,7 +283,7 @@ impl ImporterFactory {
     ///
     /// # Returns
     ///
-    /// A new [`ImporterFactory`] wrapping the provided name and function pointers.
+    /// A new [`Factory`] wrapping the provided name and function pointers.
     ///
     /// # Example
     ///
@@ -372,7 +375,7 @@ mod tests {
 
     struct StubImporter;
 
-    impl crate::Importer for StubImporter {
+    impl super::Importer for StubImporter {
         fn name(&self) -> &'static str {
             "stub"
         }
@@ -384,8 +387,8 @@ mod tests {
         fn import(
             &self,
             _bytes: &[u8],
-            _config: &crate::ImportConfig,
-        ) -> Result<Vec<crate::RawTransaction>, crate::ImportError> {
+            _config: &super::super::Config,
+        ) -> Result<Vec<super::super::RawTransaction>, super::super::Error> {
             Ok(vec![])
         }
     }
@@ -394,25 +397,25 @@ mod tests {
         true
     }
 
-    fn create_stub() -> Box<dyn crate::Importer> {
+    fn create_stub() -> Box<dyn super::Importer> {
         Box::new(StubImporter)
     }
 
     #[test]
     fn factory_name_returns_registered_name() {
-        let f = ImporterFactory::new("stub", detect_stub, create_stub);
+        let f = Factory::new("stub", detect_stub, create_stub);
         assert_eq!(f.name(), "stub");
     }
 
     #[test]
     fn factory_detect_delegates_to_fn_pointer() {
-        let f = ImporterFactory::new("stub", detect_stub, create_stub);
+        let f = Factory::new("stub", detect_stub, create_stub);
         assert!(f.detect(b"anything"));
     }
 
     #[test]
     fn factory_create_returns_importer_with_correct_name() {
-        let f = ImporterFactory::new("stub", detect_stub, create_stub);
+        let f = Factory::new("stub", detect_stub, create_stub);
         let imp = f.create();
         assert_eq!(imp.name(), "stub");
     }
@@ -422,23 +425,23 @@ mod tests {
         fn never(_b: &[u8]) -> bool {
             false
         }
-        let f = ImporterFactory::new("stub", never, create_stub);
+        let f = Factory::new("stub", never, create_stub);
         assert!(!f.detect(b"anything"));
     }
 
-    // ── ImporterRegistry tests ──────────────────────────────────────────────────
+    // ── Registry tests ──────────────────────────────────────────────────
 
     #[test]
     fn registry_detect_format_returns_name_of_matching_factory() {
-        let mut reg = ImporterRegistry::new();
-        reg.register(ImporterFactory::new("stub", detect_stub, create_stub));
+        let mut reg = Registry::new();
+        reg.register(Factory::new("stub", detect_stub, create_stub));
         assert_eq!(reg.detect_format(b"hello"), Some("stub"));
     }
 
     #[test]
     fn registry_detect_format_returns_none_when_nothing_matches() {
-        let mut reg = ImporterRegistry::new();
-        reg.register(ImporterFactory::new("stub", |_| false, create_stub));
+        let mut reg = Registry::new();
+        reg.register(Factory::new("stub", |_| false, create_stub));
         assert_eq!(reg.detect_format(b"hello"), None);
     }
 
@@ -447,19 +450,19 @@ mod tests {
         fn always(_: &[u8]) -> bool {
             true
         }
-        fn create2() -> Box<dyn crate::Importer> {
+        fn create2() -> Box<dyn super::Importer> {
             Box::new(StubImporter)
         }
-        let mut reg = ImporterRegistry::new();
-        reg.register(ImporterFactory::new("first", always, create_stub));
-        reg.register(ImporterFactory::new("second", always, create2));
+        let mut reg = Registry::new();
+        reg.register(Factory::new("first", always, create_stub));
+        reg.register(Factory::new("second", always, create2));
         assert_eq!(reg.detect_format(b"x"), Some("first"));
     }
 
     #[test]
     fn registry_create_for_name_returns_correct_importer() {
-        let mut reg = ImporterRegistry::new();
-        reg.register(ImporterFactory::new("stub", detect_stub, create_stub));
+        let mut reg = Registry::new();
+        reg.register(Factory::new("stub", detect_stub, create_stub));
         let imp = reg
             .create_for_name("stub")
             .expect("stub should be registered");
@@ -468,39 +471,39 @@ mod tests {
 
     #[test]
     fn registry_create_for_name_returns_none_for_unknown_format() {
-        let reg = ImporterRegistry::new();
+        let reg = Registry::new();
         assert!(reg.create_for_name("unknown").is_none());
     }
 
     #[test]
     fn registry_create_for_bytes_returns_importer_when_detected() {
-        let mut reg = ImporterRegistry::new();
-        reg.register(ImporterFactory::new("stub", detect_stub, create_stub));
+        let mut reg = Registry::new();
+        reg.register(Factory::new("stub", detect_stub, create_stub));
         let imp = reg.create_for_bytes(b"hello").expect("should detect stub");
         assert_eq!(imp.name(), "stub");
     }
 
     #[test]
     fn registry_create_for_bytes_returns_none_when_no_match() {
-        let mut reg = ImporterRegistry::new();
-        reg.register(ImporterFactory::new("stub", |_| false, create_stub));
+        let mut reg = Registry::new();
+        reg.register(Factory::new("stub", |_| false, create_stub));
         assert!(reg.create_for_bytes(b"hello").is_none());
     }
 
     #[test]
     fn registry_names_iterates_in_insertion_order() {
-        let mut reg = ImporterRegistry::new();
-        reg.register(ImporterFactory::new("csv", |_| false, create_stub))
-            .register(ImporterFactory::new("ofx", |_| false, create_stub));
+        let mut reg = Registry::new();
+        reg.register(Factory::new("csv", |_| false, create_stub))
+            .register(Factory::new("ofx", |_| false, create_stub));
         let names: Vec<_> = reg.names().collect();
         assert_eq!(names, &["csv", "ofx"]);
     }
 
     #[test]
     fn registry_register_is_chainable() {
-        let mut reg = ImporterRegistry::new();
-        reg.register(ImporterFactory::new("a", |_| false, create_stub))
-            .register(ImporterFactory::new("b", |_| false, create_stub));
+        let mut reg = Registry::new();
+        reg.register(Factory::new("a", |_| false, create_stub))
+            .register(Factory::new("b", |_| false, create_stub));
         let names: Vec<_> = reg.names().collect();
         assert_eq!(names, &["a", "b"]);
     }
@@ -512,7 +515,7 @@ mod tests {
         // each heap allocation (ZSTs may share a sentinel address).
         #[expect(dead_code, reason = "field exists solely to make the type non-ZST")]
         struct SizedStub(u8);
-        impl crate::Importer for SizedStub {
+        impl super::Importer for SizedStub {
             fn name(&self) -> &'static str {
                 "sized-stub"
             }
@@ -524,20 +527,20 @@ mod tests {
             fn import(
                 &self,
                 _bytes: &[u8],
-                _config: &crate::ImportConfig,
-            ) -> Result<Vec<crate::RawTransaction>, crate::ImportError> {
+                _config: &super::super::Config,
+            ) -> Result<Vec<super::super::RawTransaction>, super::super::Error> {
                 Ok(vec![])
             }
         }
-        fn create_sized() -> Box<dyn crate::Importer> {
+        fn create_sized() -> Box<dyn super::Importer> {
             Box::new(SizedStub(0))
         }
-        let f = ImporterFactory::new("sized-stub", detect_stub, create_sized);
+        let f = Factory::new("sized-stub", detect_stub, create_sized);
         let a = f.create();
         let b = f.create();
         // Each call must produce a new allocation — raw pointers must differ.
-        let a_ptr = core::ptr::from_ref::<dyn crate::Importer>(&*a).cast::<u8>();
-        let b_ptr = core::ptr::from_ref::<dyn crate::Importer>(&*b).cast::<u8>();
+        let a_ptr = core::ptr::from_ref::<dyn super::Importer>(&*a).cast::<u8>();
+        let b_ptr = core::ptr::from_ref::<dyn super::Importer>(&*b).cast::<u8>();
         assert_ne!(a_ptr, b_ptr);
     }
 }
