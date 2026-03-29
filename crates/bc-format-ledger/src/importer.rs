@@ -49,19 +49,37 @@ impl Importer for LedgerImporter {
         let Ok(text) = core::str::from_utf8(bytes) else {
             return false;
         };
-        // Heuristic: at least one line starts with `YYYY[-/]MM[-/]DD ` — i.e. a
-        // date immediately followed by a space (transaction header pattern).
-        // This distinguishes Ledger from CSV where dates appear inside fields.
+        // Heuristic: at least one line matches `YYYY[-/]MM[-/]DD ` and does NOT
+        // look like a Beancount transaction header.
+        //
+        // Beancount uses `YYYY-MM-DD * "Payee" "Narration"` — quoted strings
+        // immediately follow the `*` or `!` flag.  Ledger uses unquoted payees:
+        // `YYYY-MM-DD * Payee`.  We exclude lines where the first non-space
+        // character after the date+flag is a double-quote.
         text.lines().any(|l| {
             let b = l.as_bytes();
-            b.get(..4).is_some_and(|s| s.iter().all(u8::is_ascii_digit))
+            let is_date_line = b.get(..4).is_some_and(|s| s.iter().all(u8::is_ascii_digit))
                 && b.get(4).is_some_and(|&c| c == b'-' || c == b'/')
                 && b.get(5..7)
                     .is_some_and(|s| s.iter().all(u8::is_ascii_digit))
                 && b.get(7).is_some_and(|&c| c == b'-' || c == b'/')
                 && b.get(8..10)
                     .is_some_and(|s| s.iter().all(u8::is_ascii_digit))
-                && b.get(10).is_some_and(|&c| c == b' ')
+                && b.get(10).is_some_and(|&c| c == b' ');
+
+            if !is_date_line {
+                return false;
+            }
+
+            // Exclude Beancount: skip optional flag char + spaces, then reject
+            // if the payee/narration starts with a quote.
+            let rest = b.get(11..).unwrap_or(&[]);
+            let after_flag = if rest.first().is_some_and(|&c| c == b'*' || c == b'!') {
+                rest.get(1..).unwrap_or(&[]).trim_ascii_start()
+            } else {
+                rest.trim_ascii_start()
+            };
+            !after_flag.starts_with(b"\"")
         })
     }
 
@@ -231,6 +249,14 @@ mod tests {
     #[test]
     fn detect_rejects_csv() {
         let bytes = b"Date,Amount\n2025-01-15,-50.00\n";
+        assert!(!LedgerImporter.detect(bytes));
+    }
+
+    #[test]
+    fn detect_rejects_beancount_syntax() {
+        // Beancount uses quoted payees/narrations; Ledger does not.
+        let bytes =
+            b"2025-01-15 * \"Woolworths\" \"Weekly groceries\"\n  Expenses:Food   50.00 AUD\n";
         assert!(!LedgerImporter.detect(bytes));
     }
 }
