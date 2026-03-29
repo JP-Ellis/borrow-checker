@@ -1,10 +1,11 @@
 //! OFX/QFX import for BorrowChecker.
 //!
-//! Parses Open Financial Exchange (OFX) and Quicken (QFX) files,
-//! the standard export format for most US banks and brokerages.
+//! Implements [`bc_core::Importer`] for OFX v1 (SGML) and OFX v2 (XML)
+//! bank statement files.
+//!
+//! The main entry point is [`importer::OfxImporter`].
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {}
-}
+pub(crate) mod ast;
+pub mod importer;
+pub(crate) mod parser;
+pub(crate) mod sgml;

@@ -1,0 +1,303 @@
+//! Auto-detecting OFX parser: handles v1 (SGML) and v2 (XML).
+
+use jiff::civil::Date;
+use rust_decimal::Decimal;
+
+use crate::ast::OfxStatement;
+use crate::ast::OfxTransaction;
+use crate::sgml::SgmlToken;
+use crate::sgml::tokenise;
+
+/// Parses an OFX or QFX file (auto-detects v1 SGML vs v2 XML).
+///
+/// # Errors
+///
+/// Returns a string describing the parse error.
+pub(crate) fn parse(bytes: &[u8]) -> Result<OfxStatement, String> {
+    // OFX v2 starts with `<?xml` or contains `OFXHEADER="200"`.
+    // OFX v1 starts with `OFXHEADER:100` (no XML declaration).
+    let prefix = bytes.get(..bytes.len().min(64)).unwrap_or(bytes);
+    if prefix.windows(5).any(|w| w == b"<?xml")
+        || prefix.windows(15).any(|w| w == b"OFXHEADER=\"200\"")
+    {
+        parse_v2(bytes)
+    } else {
+        parse_v1(bytes)
+    }
+}
+
+// ── OFX v1 (SGML) ────────────────────────────────────────────────────────────
+
+/// Parses OFX v1 (SGML) bytes into an [`OfxStatement`].
+fn parse_v1(bytes: &[u8]) -> Result<OfxStatement, String> {
+    let text =
+        core::str::from_utf8(bytes).map_err(|e| format!("OFX file is not valid UTF-8: {e}"))?;
+
+    let tokens = tokenise(text);
+    let mut currency = String::new();
+    let mut account_id = String::new();
+    let mut transactions = Vec::new();
+    let mut in_stmttrn = false;
+    let mut current: Option<OfxTransactionBuilder> = None;
+
+    for token in tokens {
+        match token {
+            SgmlToken::Open(ref tag) if tag == "STMTTRN" => {
+                in_stmttrn = true;
+                current = Some(OfxTransactionBuilder::default());
+            }
+            SgmlToken::Close(ref tag) if tag == "STMTTRN" => {
+                in_stmttrn = false;
+                if let Some(builder) = current.take() {
+                    transactions.push(builder.build()?);
+                }
+            }
+            SgmlToken::Leaf { tag, value } => {
+                if in_stmttrn {
+                    let builder = current.get_or_insert_with(OfxTransactionBuilder::default);
+                    match tag.as_str() {
+                        "TRNTYPE" => builder.trntype = value,
+                        "DTPOSTED" => builder.dtposted = value,
+                        "TRNAMT" => builder.trnamt = value,
+                        "FITID" => builder.fitid = value,
+                        "NAME" => builder.name = Some(value),
+                        "MEMO" => builder.memo = Some(value),
+                        _ => {}
+                    }
+                } else {
+                    match tag.as_str() {
+                        "CURDEF" => currency = value,
+                        "ACCTID" => account_id = value,
+                        _ => {}
+                    }
+                }
+            }
+            SgmlToken::Open(_) | SgmlToken::Close(_) => {}
+        }
+    }
+
+    Ok(OfxStatement {
+        currency,
+        account_id,
+        transactions,
+    })
+}
+
+// ── OFX v2 (XML) ─────────────────────────────────────────────────────────────
+
+/// Parses OFX v2 (XML) bytes into an [`OfxStatement`].
+fn parse_v2(bytes: &[u8]) -> Result<OfxStatement, String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(true);
+
+    let mut currency = String::new();
+    let mut account_id = String::new();
+    let mut transactions = Vec::new();
+    let mut in_stmttrn = false;
+    let mut current: Option<OfxTransactionBuilder> = None;
+    let mut current_tag = String::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader
+            .read_event_into(&mut buf)
+            .map_err(|xml_err| xml_err.to_string())?
+        {
+            Event::Start(ref e) => {
+                current_tag = String::from_utf8_lossy(e.name().as_ref()).to_ascii_uppercase();
+                if current_tag == "STMTTRN" {
+                    in_stmttrn = true;
+                    current = Some(OfxTransactionBuilder::default());
+                }
+            }
+            Event::End(ref e) => {
+                let tag = String::from_utf8_lossy(e.name().as_ref()).to_ascii_uppercase();
+                if tag == "STMTTRN" {
+                    in_stmttrn = false;
+                    if let Some(builder) = current.take() {
+                        transactions.push(builder.build()?);
+                    }
+                }
+            }
+            Event::Text(ref e) => {
+                let text = e
+                    .unescape()
+                    .map_err(|xml_err| xml_err.to_string())?
+                    .trim()
+                    .to_owned();
+                if text.is_empty() {
+                    continue;
+                }
+                if in_stmttrn {
+                    let builder = current.get_or_insert_with(OfxTransactionBuilder::default);
+                    match current_tag.as_str() {
+                        "TRNTYPE" => builder.trntype = text,
+                        "DTPOSTED" => builder.dtposted = text,
+                        "TRNAMT" => builder.trnamt = text,
+                        "FITID" => builder.fitid = text,
+                        "NAME" => builder.name = Some(text),
+                        "MEMO" => builder.memo = Some(text),
+                        _ => {}
+                    }
+                } else {
+                    match current_tag.as_str() {
+                        "CURDEF" => currency = text,
+                        "ACCTID" => account_id = text,
+                        _ => {}
+                    }
+                }
+            }
+            Event::Eof => break,
+            Event::Empty(_)
+            | Event::Comment(_)
+            | Event::CData(_)
+            | Event::Decl(_)
+            | Event::PI(_)
+            | Event::DocType(_) => {}
+        }
+        buf.clear();
+    }
+
+    Ok(OfxStatement {
+        currency,
+        account_id,
+        transactions,
+    })
+}
+
+// ── Shared builder ────────────────────────────────────────────────────────────
+
+/// Builder for [`OfxTransaction`] accumulating fields as they are parsed.
+#[derive(Default)]
+struct OfxTransactionBuilder {
+    /// OFX transaction type.
+    trntype: String,
+    /// Value date string (raw OFX format).
+    dtposted: String,
+    /// Amount string (raw OFX format).
+    trnamt: String,
+    /// Unique transaction ID.
+    fitid: String,
+    /// Payee name.
+    name: Option<String>,
+    /// Memo / description.
+    memo: Option<String>,
+}
+
+impl OfxTransactionBuilder {
+    /// Consumes the builder and returns a validated [`OfxTransaction`].
+    fn build(self) -> Result<OfxTransaction, String> {
+        let date = parse_ofx_date(&self.dtposted)?;
+        let amount = self
+            .trnamt
+            .parse::<Decimal>()
+            .map_err(|parse_err| format!("bad TRNAMT '{}': {parse_err}", self.trnamt))?;
+        Ok(OfxTransaction {
+            trntype: self.trntype,
+            date,
+            amount,
+            fitid: self.fitid,
+            name: self.name,
+            memo: self.memo,
+        })
+    }
+}
+
+/// Parses an OFX date string: `YYYYMMDDHHMMSS[.mmm][TZ]` → [`Date`].
+///
+/// Only the `YYYYMMDD` prefix is used.
+fn parse_ofx_date(s: &str) -> Result<Date, String> {
+    if s.len() < 8 {
+        return Err(format!("OFX date too short: '{s}'"));
+    }
+    let ymd = s.get(..8).unwrap_or_default();
+    jiff::civil::Date::strptime("%Y%m%d", ymd)
+        .map_err(|parse_err| format!("bad OFX date '{s}': {parse_err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use jiff::civil::date;
+    use pretty_assertions::assert_eq;
+    use rust_decimal_macros::dec;
+
+    use super::*;
+
+    const OFX_V1: &str = "\
+OFXHEADER:100\r\nDATA:OFXSGML\r\nVERSION:102\r\n\r\n\
+<OFX>\r\n<BANKMSGSRSV1>\r\n<STMTTRNRS>\r\n<STMTRS>\r\n\
+<CURDEF>AUD\r\n<BANKACCTFROM>\r\n<ACCTID>123456789\r\n</BANKACCTFROM>\r\n\
+<BANKTRANLIST>\r\n\
+<STMTTRN>\r\n<TRNTYPE>DEBIT\r\n<DTPOSTED>20250115120000\r\n<TRNAMT>-50.00\r\n\
+<FITID>20250115001\r\n<NAME>Woolworths\r\n<MEMO>Grocery purchase\r\n</STMTTRN>\r\n\
+</BANKTRANLIST>\r\n</STMTRS>\r\n</STMTTRNRS>\r\n</BANKMSGSRSV1>\r\n</OFX>\r\n";
+
+    const OFX_V2: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<?OFX OFXHEADER="200" VERSION="220"?>
+<OFX>
+  <BANKMSGSRSV1>
+    <STMTTRNRS>
+      <STMTRS>
+        <CURDEF>AUD</CURDEF>
+        <BANKACCTFROM><ACCTID>123456789</ACCTID></BANKACCTFROM>
+        <BANKTRANLIST>
+          <STMTTRN>
+            <TRNTYPE>DEBIT</TRNTYPE>
+            <DTPOSTED>20250115120000</DTPOSTED>
+            <TRNAMT>-50.00</TRNAMT>
+            <FITID>20250115001</FITID>
+            <NAME>Woolworths</NAME>
+            <MEMO>Grocery purchase</MEMO>
+          </STMTTRN>
+        </BANKTRANLIST>
+      </STMTRS>
+    </STMTTRNRS>
+  </BANKMSGSRSV1>
+</OFX>"#;
+
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test code: panicking on wrong index is desired"
+    )]
+    fn parses_ofx_v1() {
+        let stmt = parse(OFX_V1.as_bytes()).expect("parse v1");
+        assert_eq!(stmt.currency, "AUD");
+        assert_eq!(stmt.account_id, "123456789");
+        assert_eq!(stmt.transactions.len(), 1);
+        let tx = &stmt.transactions[0];
+        assert_eq!(tx.date, date(2025, 1, 15));
+        assert_eq!(tx.amount, dec!(-50.00));
+        assert_eq!(tx.fitid, "20250115001");
+        assert_eq!(tx.name.as_deref(), Some("Woolworths"));
+        assert_eq!(tx.memo.as_deref(), Some("Grocery purchase"));
+    }
+
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test code: panicking on wrong index is desired"
+    )]
+    fn parses_ofx_v2() {
+        let stmt = parse(OFX_V2.as_bytes()).expect("parse v2");
+        assert_eq!(stmt.currency, "AUD");
+        assert_eq!(stmt.transactions.len(), 1);
+        let tx = &stmt.transactions[0];
+        assert_eq!(tx.date, date(2025, 1, 15));
+        assert_eq!(tx.amount, dec!(-50.00));
+    }
+
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test code: panicking on wrong index is desired"
+    )]
+    fn parses_ofx_date_yyyymmdd_only() {
+        let input = OFX_V1.replace("20250115120000", "20250115");
+        let stmt = parse(input.as_bytes()).expect("parse");
+        assert_eq!(stmt.transactions[0].date, date(2025, 1, 15));
+    }
+}
