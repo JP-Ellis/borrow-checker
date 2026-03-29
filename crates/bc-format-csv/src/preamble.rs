@@ -97,8 +97,14 @@ fn auto_detect<'a>(
 
         if line_end >= remaining.len() {
             // Reached end of file without finding the header.
+            // Use line_num + 1 for a human-readable 1-based count.
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "line_num < max_scan_lines so addition cannot overflow"
+            )]
             return Err(bc_core::ImportError::Parse(format!(
-                "header not found within {line_num} lines (end of file)"
+                "header not found within {} lines (end of file)",
+                line_num + 1
             )));
         }
 

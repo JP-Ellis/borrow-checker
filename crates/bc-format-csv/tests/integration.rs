@@ -30,6 +30,27 @@ fn make_config(cfg: &CsvConfig) -> ImportConfig {
     ImportConfig::from_typed(cfg).expect("config serialisation should succeed")
 }
 
+// ─── Test 0: empty input ─────────────────────────────────────────────────────
+
+/// Importing an empty byte slice with a valid config should return an empty
+/// transaction list without error.
+///
+/// The CSV reader treats the first row as headers; with no rows at all the
+/// header map is empty and column lookup will fail before reaching the record
+/// loop.  A header-only input (no data rows) is the minimal "empty" case that
+/// produces `Ok(vec![])`.
+#[test]
+fn empty_input_returns_empty_vec() {
+    let cfg = make_config(&CsvConfig::builder().commodity("AUD".to_owned()).build());
+
+    let importer = CsvImporter::new();
+    // Header row present, but no data rows — the record loop is never entered.
+    let txns = importer
+        .import(b"Date,Amount\n", &cfg)
+        .expect("import of header-only input should succeed");
+    assert_eq!(txns, vec![]);
+}
+
 // ─── Test 1: simple.csv ──────────────────────────────────────────────────────
 
 /// Imports a simple CSV with a single signed `Amount` column and verifies that

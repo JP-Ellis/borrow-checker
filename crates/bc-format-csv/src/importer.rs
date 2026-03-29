@@ -39,16 +39,23 @@ impl bc_core::Importer for CsvImporter {
 
     #[inline]
     fn detect(&self, bytes: &[u8]) -> bool {
-        // Must be valid UTF-8 and the first non-empty line must contain a comma.
+        // Must be valid UTF-8 and the first non-empty line must contain a
+        // delimiter character.
+        // NOTE: delimiter detection is heuristic — detect() has no access to
+        // the configured delimiter, so we accept any common delimiter character
         let Ok(text) = core::str::from_utf8(bytes) else {
             return false;
         };
         text.lines()
             .find(|l| !l.trim().is_empty())
-            .is_some_and(|first| first.contains(','))
+            .is_some_and(|first| first.contains([',', '\t', ';', '|']))
     }
 
     #[inline]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the import function coordinates several sequential parsing steps; splitting would harm readability"
+    )]
     fn import(
         &self,
         bytes: &[u8],
@@ -93,6 +100,11 @@ impl bc_core::Importer for CsvImporter {
 
         let date_idx = lookup(&cfg.date_column)?;
 
+        let commodity = cfg
+            .commodity
+            .as_deref()
+            .ok_or_else(|| bc_core::ImportError::MissingField("commodity".to_owned()))?;
+
         let mut transactions = Vec::new();
 
         for result in reader.records() {
@@ -108,25 +120,23 @@ impl bc_core::Importer for CsvImporter {
 
             let amount_value = parse_amount(&cfg, &record, &col_index)?;
 
-            let commodity = cfg.commodity.as_deref().unwrap_or("???");
             let amount = Amount::new(amount_value, CommodityCode::new(commodity));
 
             let balance = if let Some(col) = &cfg.balance_column {
-                if let Some(&idx) = col_index.get(&col.to_ascii_lowercase()) {
-                    let raw = record.get(idx).unwrap_or("").trim().to_owned();
-                    if raw.is_empty() {
-                        None
-                    } else {
-                        let val =
-                            parse_number(&raw, cfg.decimal_separator, cfg.thousands_separator)
-                                .map_err(|e| bc_core::ImportError::BadValue {
-                                    field: col.clone(),
-                                    detail: e,
-                                })?;
-                        Some(Amount::new(val, CommodityCode::new(commodity)))
-                    }
-                } else {
+                let &idx = col_index
+                    .get(&col.to_ascii_lowercase())
+                    .ok_or_else(|| bc_core::ImportError::MissingField(col.clone()))?;
+                let raw_owned = record_field(&record, idx, col)?;
+                let raw = raw_owned.trim();
+                if raw.is_empty() {
                     None
+                } else {
+                    let val = parse_number(raw, cfg.decimal_separator, cfg.thousands_separator)
+                        .map_err(|e| bc_core::ImportError::BadValue {
+                            field: col.clone(),
+                            detail: e,
+                        })?;
+                    Some(Amount::new(val, CommodityCode::new(commodity)))
                 }
             } else {
                 None
