@@ -48,7 +48,9 @@ impl Importer for OfxImporter {
     fn detect(&self, bytes: &[u8]) -> bool {
         let is_v1 = bytes.windows(11).any(|w| w == b"OFXHEADER:1");
         let is_v2 = bytes.windows(15).any(|w| w == b"OFXHEADER=\"200\"")
-            || (bytes.starts_with(b"<?xml") && bytes.windows(4).any(|w| w == b"<OFX"));
+            || (bytes.starts_with(b"<?xml")
+                && (bytes.windows(5).any(|w| w == b"<OFX>")
+                    || bytes.windows(5).any(|w| w == b"<OFX ")));
         is_v1 || is_v2
     }
 
