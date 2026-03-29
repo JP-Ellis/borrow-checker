@@ -7,14 +7,14 @@
 //! Implements [`bc_core::Importer`] for OFX v1 (SGML) and OFX v2 (XML)
 //! bank statement files.
 //!
-//! The main entry point is [`importer::OfxImporter`].
+//! The main entry point is [`OfxImporter`].
 
 pub(crate) mod ast;
 pub mod importer;
 pub(crate) mod parser;
 pub(crate) mod sgml;
 
-pub use importer::OfxImporter;
+pub use importer::Importer as OfxImporter;
 
 /// Detects whether `bytes` look like an OFX or QFX file.
 ///

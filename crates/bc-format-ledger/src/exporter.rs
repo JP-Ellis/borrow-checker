@@ -1,23 +1,18 @@
-//! [`LedgerExporter`]: implements [`bc_core::Exporter`] for Ledger files.
+//! [`Exporter`]: implements [`bc_core::Exporter`] for Ledger files.
 
 use bc_core::ExportData;
 use bc_core::ExportError;
-use bc_core::Exporter;
 
 use crate::writer::render_account_decl;
 use crate::writer::render_commodity_decl;
 use crate::writer::render_transaction;
 
-/// Implements [`Exporter`] for the Ledger plain-text accounting format.
+/// Implements [`bc_core::Exporter`] for the Ledger plain-text accounting format.
 #[non_exhaustive]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "the name LedgerExporter is conventional and unambiguous at the crate root"
-)]
-pub struct LedgerExporter;
+pub struct Exporter;
 
-impl LedgerExporter {
-    /// Creates a new [`LedgerExporter`].
+impl Exporter {
+    /// Creates a new [`Exporter`].
     #[inline]
     #[must_use]
     pub fn new() -> Self {
@@ -25,14 +20,14 @@ impl LedgerExporter {
     }
 }
 
-impl Default for LedgerExporter {
+impl Default for Exporter {
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Exporter for LedgerExporter {
+impl bc_core::Exporter for Exporter {
     #[inline]
     fn name(&self) -> &'static str {
         "ledger"
@@ -99,6 +94,7 @@ impl Exporter for LedgerExporter {
 #[cfg(test)]
 mod tests {
     use bc_core::ExportData;
+    use bc_core::Exporter as _;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -106,7 +102,7 @@ mod tests {
     #[test]
     fn exports_empty_data_produces_empty_output() {
         let data = ExportData::new(&[], &[], &[], &[]);
-        let bytes = LedgerExporter.export(&data).expect("export");
+        let bytes = Exporter.export(&data).expect("export");
         assert_eq!(bytes, b"");
     }
 }

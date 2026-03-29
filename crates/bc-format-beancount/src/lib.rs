@@ -14,8 +14,8 @@ pub mod importer;
 pub(crate) mod parser;
 pub(crate) mod writer;
 
-pub use exporter::BeancountExporter;
-pub use importer::BeancountImporter;
+pub use exporter::Exporter as BeancountExporter;
+pub use importer::Importer as BeancountImporter;
 
 /// Detects whether `bytes` look like a Beancount plain-text accounting file.
 ///

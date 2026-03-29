@@ -4,7 +4,7 @@
 mod tests {
     use bc_core::ImportConfig;
     use bc_core::Importer as _;
-    use bc_format_ofx::importer::OfxImporter;
+    use bc_format_ofx::OfxImporter;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
 

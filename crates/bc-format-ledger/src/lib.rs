@@ -13,8 +13,8 @@ pub mod importer;
 pub(crate) mod parser;
 pub(crate) mod writer;
 
-pub use exporter::LedgerExporter;
-pub use importer::LedgerImporter;
+pub use exporter::Exporter as LedgerExporter;
+pub use importer::Importer as LedgerImporter;
 
 /// Detects whether `bytes` look like a Ledger plain-text accounting file.
 ///

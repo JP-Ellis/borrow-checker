@@ -1,4 +1,4 @@
-//! [`CsvImporter`] — the main entry point for CSV-format imports.
+//! [`Importer`] — the main entry point for CSV-format imports.
 
 use std::collections::HashMap;
 
@@ -7,23 +7,19 @@ use bc_models::CommodityCode;
 use rust_decimal::Decimal;
 
 use crate::config::AmountColumns;
-use crate::config::CsvConfig;
+use crate::config::Config;
 use crate::preamble::find_csv_start;
 
 /// Imports transactions from delimited text (CSV) files.
 ///
 /// Implements [`bc_core::Importer`] and is registered under the name `"csv"`.
-/// Configuration is provided via a [`CsvConfig`] JSON blob.
+/// Configuration is provided via a [`Config`] JSON blob.
 #[non_exhaustive]
 #[derive(Debug, Default)]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "CsvImporter is the canonical public name; the module is implementation-private"
-)]
-pub struct CsvImporter;
+pub struct Importer;
 
-impl CsvImporter {
-    /// Creates a new [`CsvImporter`].
+impl Importer {
+    /// Creates a new [`Importer`].
     #[inline]
     #[must_use]
     pub fn new() -> Self {
@@ -31,7 +27,7 @@ impl CsvImporter {
     }
 }
 
-impl bc_core::Importer for CsvImporter {
+impl bc_core::Importer for Importer {
     #[inline]
     fn name(&self) -> &'static str {
         "csv"
@@ -39,6 +35,7 @@ impl bc_core::Importer for CsvImporter {
 
     #[inline]
     fn detect(&self, bytes: &[u8]) -> bool {
+
         // Must be valid UTF-8 and the first non-empty line must contain a
         // delimiter character.
         // NOTE: delimiter detection is heuristic — detect() has no access to
@@ -61,7 +58,7 @@ impl bc_core::Importer for CsvImporter {
         bytes: &[u8],
         config: &bc_core::ImportConfig,
     ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
-        let cfg: CsvConfig = config.as_typed()?;
+        let cfg: Config = config.as_typed()?;
 
         if !cfg.delimiter.is_ascii() {
             return Err(bc_core::ImportError::BadValue {
@@ -245,7 +242,7 @@ fn record_field(
 /// Returns [`bc_core::ImportError`] if the column is missing or the value
 /// cannot be parsed.
 fn parse_amount(
-    cfg: &CsvConfig,
+    cfg: &Config,
     record: &csv::StringRecord,
     col_index: &HashMap<String, usize>,
 ) -> Result<Decimal, bc_core::ImportError> {
@@ -390,13 +387,13 @@ mod tests {
 
     #[test]
     fn detect_returns_true_for_csv_bytes() {
-        let importer = CsvImporter::new();
+        let importer = Importer::new();
         assert!(importer.detect(b"Date,Amount,Description\n"));
     }
 
     #[test]
     fn detect_returns_false_for_non_csv() {
-        let importer = CsvImporter::new();
+        let importer = Importer::new();
         assert!(!importer.detect(b"\x89PNG\r\n"));
     }
 

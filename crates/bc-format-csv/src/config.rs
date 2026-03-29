@@ -66,14 +66,10 @@ impl Default for AmountColumns {
 /// Supports configurable column names, delimiters, date formats, amount
 /// representations, and preamble handling for bank-style CSV exports.
 ///
-/// Construct using [`CsvConfig::builder()`] or [`CsvConfig::default()`].
+/// Construct using [`Config::builder()`] or [`Config::default()`].
 #[non_exhaustive]
 #[derive(bon::Builder, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "CsvConfig lives in the config module; the name is clearer with the prefix at the call site"
-)]
-pub struct CsvConfig {
+pub struct Config {
     /// How to skip over metadata lines before the header row.
     #[serde(default)]
     #[builder(default)]
@@ -136,7 +132,7 @@ fn default_decimal_separator() -> char {
     '.'
 }
 
-impl Default for CsvConfig {
+impl Default for Config {
     #[inline]
     fn default() -> Self {
         Self {
@@ -156,7 +152,7 @@ impl Default for CsvConfig {
     }
 }
 
-impl CsvConfig {
+impl Config {
     /// Returns the column names that are required to identify the CSV header row.
     ///
     /// Used by the [`Preamble::AutoDetect`] strategy to locate the header line.
@@ -191,7 +187,7 @@ mod tests {
 
     #[test]
     fn default_config_has_expected_values() {
-        let cfg = CsvConfig::default();
+        let cfg = Config::default();
         assert_eq!(cfg.delimiter, ',');
         assert_eq!(cfg.date_column, "Date");
         assert_eq!(cfg.date_format, "%Y-%m-%d");
@@ -202,19 +198,19 @@ mod tests {
 
     #[test]
     fn required_column_names_single() {
-        let cfg = CsvConfig::default();
+        let cfg = Config::default();
         let cols = cfg.required_column_names();
         assert_eq!(cols, vec!["Date", "Amount"]);
     }
 
     #[test]
     fn required_column_names_split() {
-        let cfg = CsvConfig {
+        let cfg = Config {
             amount_columns: AmountColumns::SplitDebitCredit {
                 debit_column: "Debit".into(),
                 credit_column: "Credit".into(),
             },
-            ..CsvConfig::default()
+            ..Config::default()
         };
         let cols = cfg.required_column_names();
         assert_eq!(cols, vec!["Date", "Debit", "Credit"]);

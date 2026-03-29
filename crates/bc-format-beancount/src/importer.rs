@@ -1,8 +1,7 @@
-//! [`BeancountImporter`]: implements [`bc_core::Importer`] for Beancount files.
+//! [`Importer`]: implements [`bc_core::Importer`] for Beancount files.
 
 use bc_core::ImportConfig;
 use bc_core::ImportError;
-use bc_core::Importer;
 use bc_core::RawTransaction;
 use bc_models::Amount;
 use bc_models::CommodityCode;
@@ -10,20 +9,16 @@ use bc_models::CommodityCode;
 use crate::ast::Directive;
 use crate::parser::parse;
 
-/// Implements [`Importer`] for the Beancount plain-text accounting format.
+/// Implements [`bc_core::Importer`] for the Beancount plain-text accounting format.
 ///
 /// Parses Beancount-formatted files and converts transaction directives into
 /// [`RawTransaction`] values. Open, close, commodity, and balance directives
 /// are silently ignored.
 #[non_exhaustive]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "BeancountImporter is the conventional public name for this type; re-exported from crate root"
-)]
-pub struct BeancountImporter;
+pub struct Importer;
 
-impl BeancountImporter {
-    /// Creates a new [`BeancountImporter`].
+impl Importer {
+    /// Creates a new [`Importer`].
     #[inline]
     #[must_use]
     pub fn new() -> Self {
@@ -31,15 +26,15 @@ impl BeancountImporter {
     }
 }
 
-impl Default for BeancountImporter {
-    /// Returns a default [`BeancountImporter`].
+impl Default for Importer {
+    /// Returns a default [`Importer`].
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Importer for BeancountImporter {
+impl bc_core::Importer for Importer {
     /// Returns the stable identifier for this importer.
     #[inline]
     fn name(&self) -> &'static str {
@@ -146,7 +141,7 @@ mod tests {
     #[test]
     fn imports_transaction_payee_and_narration() {
         let input = "2025-01-15 * \"Woolworths\" \"Weekly groceries\"\n  Expenses:Food   50.00 AUD\n  Assets:Bank    -50.00 AUD\n";
-        let txs = BeancountImporter
+        let txs = Importer
             .import(input.as_bytes(), &ImportConfig::default())
             .expect("import");
         assert_eq!(txs.len(), 1);
@@ -159,7 +154,7 @@ mod tests {
     #[test]
     fn imports_narration_only() {
         let input = "2025-01-15 * \"Transfer\"\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
-        let txs = BeancountImporter
+        let txs = Importer
             .import(input.as_bytes(), &ImportConfig::default())
             .expect("import");
         let tx = txs.first().expect("should have one transaction");
@@ -170,7 +165,7 @@ mod tests {
     #[test]
     fn skips_open_commodity_directives() {
         let input = "2025-01-01 open Assets:Bank AUD\n2025-01-01 commodity AUD\n2025-01-15 * \"X\"\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
-        let txs = BeancountImporter
+        let txs = Importer
             .import(input.as_bytes(), &ImportConfig::default())
             .expect("import");
         assert_eq!(txs.len(), 1);
@@ -179,13 +174,13 @@ mod tests {
     #[test]
     fn detect_recognises_beancount() {
         let bytes = b"2025-01-15 * \"Payee\" \"Narration\"\n  Assets:Bank   50.00 AUD\n";
-        assert!(BeancountImporter.detect(bytes));
+        assert!(Importer.detect(bytes));
     }
 
     #[test]
     fn detect_rejects_ledger() {
         let bytes = b"2025-01-15 * Payee without quotes\n    Assets:Bank    50.00 AUD\n";
-        assert!(!BeancountImporter.detect(bytes));
+        assert!(!Importer.detect(bytes));
     }
 
     #[test]
@@ -194,7 +189,7 @@ mod tests {
         // and use the first posting's amount, emitting a warning for the rest.
         let input =
             "2025-01-15 * \"FX Purchase\"\n  Assets:USD   100.00 USD\n  Assets:AUD  -150.00 AUD\n";
-        let txs = BeancountImporter
+        let txs = Importer
             .import(input.as_bytes(), &ImportConfig::default())
             .expect("import should succeed even for multi-currency");
         let tx = txs.first().expect("should have one transaction");
@@ -207,7 +202,7 @@ mod tests {
         // A transaction directive with zero postings is invalid; the importer
         // must return an error rather than panic.
         let input = "2025-01-15 * \"Payee\" \"No postings\"\n";
-        let result = BeancountImporter.import(input.as_bytes(), &ImportConfig::default());
+        let result = Importer.import(input.as_bytes(), &ImportConfig::default());
         assert!(
             result.is_err(),
             "expected error for zero-posting transaction"
