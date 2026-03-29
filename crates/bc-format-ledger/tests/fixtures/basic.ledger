@@ -1,0 +1,9 @@
+; Basic Ledger fixture
+
+2025-01-15 * Woolworths
+    Expenses:Food:Groceries    50.00 AUD
+    Assets:CommBank:Savings   -50.00 AUD
+
+2025-01-16 ! Salary
+    Assets:CommBank:Savings  3000.00 AUD
+    Income:Salary           -3000.00 AUD

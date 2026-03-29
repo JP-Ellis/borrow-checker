@@ -162,6 +162,13 @@ version = "0.1.0"
 dependencies = [
  "bc-core",
  "bc-models",
+ "jiff",
+ "pretty_assertions",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde_json",
+ "thiserror",
+ "winnow 0.6.26",
 ]
 
 [[package]]
@@ -388,7 +395,7 @@ dependencies = [
  "pathdiff",
  "serde_core",
  "toml",
- "winnow",
+ "winnow 1.0.0",
 ]
 
 [[package]]
@@ -2520,7 +2527,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -2642,7 +2649,7 @@ dependencies = [
  "serde_spanned",
  "toml_datetime",
  "toml_parser",
- "winnow",
+ "winnow 1.0.0",
 ]
 
 [[package]]
@@ -2663,7 +2670,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
- "winnow",
+ "winnow 1.0.0",
 ]
 
 [[package]]
@@ -2672,7 +2679,7 @@ version = "1.1.0+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2334f11ee363607eb04df9b8fc8a13ca1715a72ba8662a26ac285c98aabb4011"
 dependencies = [
- "winnow",
+ "winnow 1.0.0",
 ]
 
 [[package]]
@@ -3222,6 +3229,15 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "winnow"
+version = "0.6.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e90edd2ac1aa278a5c4599b1d89cf03074b610800f866d4026dc199d7929a28"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "winnow"
