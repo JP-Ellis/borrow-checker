@@ -177,13 +177,15 @@ Post-v1 built-in formats are delivered as additions to `bc-formats` (not as plug
 
 ```rust
 pub trait Importer {
-    fn name(&self) -> &str;
-    fn detect(bytes: &[u8]) -> bool;        // format sniffing
-    fn import(bytes: &[u8], config: ImportConfig) -> Result<Vec<RawTransaction>>;
+    fn name(&self) -> &'static str;
+    fn detect(&self, bytes: &[u8]) -> bool;  // format / profile-aware sniffing
+    fn import(&self, bytes: &[u8], config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError>;
 }
 ```
 
 The importer is a **pure parsing concern** — it converts bytes to `RawTransaction` values with no opinion about which account they belong to.
+
+> **Option C factory pattern** — foundations implemented in Milestone 2, full plugin registry deferred to Milestone 6. `ImporterFactory` (in `bc-core`) holds two fn pointers: `fn(&[u8]) -> bool` for stateless format-level detection and `fn() -> Box<dyn Importer>` for instance creation. `ImporterRegistry` stores a list of factories and provides `detect_format`, `create_for_name`, and `create_for_bytes`. Each format crate exposes a free `importer_factory()` function. The `Importer::detect(&self, ...)` method is retained for profile-aware detection after an instance is configured with a specific account's import profile.
 
 ### 5.3 Import Profiles
 
@@ -194,9 +196,10 @@ struct ImportProfile {
     id: ProfileId,                   // newtype wrapper around TypeId (see ID convention below)
     name: String,                    // e.g. "CommBank Savings"
     importer: String,                // e.g. "commbank-au"
-    account: AccountId,              // where transactions land
+    account_id: AccountId,           // where transactions land
     config: ImportConfig,            // column mappings, date formats, etc.
-    dedup_strategy: DedupStrategy,   // how to detect already-imported rows
+    dedup_strategy: DedupStrategy,   // how to detect already-imported rows (None / ContentHash / FitId)
+    created_at: Timestamp,
 }
 ```
 
