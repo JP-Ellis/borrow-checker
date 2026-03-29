@@ -38,5 +38,6 @@ pub use import::RawTransaction;
 pub use import_profile::ImportProfile;
 pub use import_profile::Service as ImportProfileService;
 pub use registry::ImporterFactory;
+pub use registry::ImporterRegistry;
 pub use settings::Store as SettingsStore;
 pub use transaction::Service as TransactionService;
