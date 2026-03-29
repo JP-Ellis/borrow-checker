@@ -71,6 +71,202 @@ impl core::fmt::Debug for ImporterFactory {
     }
 }
 
+/// A collection of [`ImporterFactory`] instances that provides format auto-detection
+/// and importer creation for the BorrowChecker import pipeline.
+///
+/// `ImporterRegistry` maintains an ordered list of factories. When detecting a format,
+/// the first factory whose `detect` function returns `true` wins. Factories are
+/// iterated in insertion order, so registration order determines detection priority.
+///
+/// # Example
+///
+/// ```rust
+/// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, ImporterRegistry, RawTransaction};
+///
+/// struct MyImporter;
+///
+/// impl Importer for MyImporter {
+///     fn name(&self) -> &'static str { "my-format" }
+///     fn detect(&self, _bytes: &[u8]) -> bool { bytes.starts_with(b"MY") }
+///     fn import(
+///         &self,
+///         _bytes: &[u8],
+///         _config: &ImportConfig,
+///     ) -> Result<Vec<RawTransaction>, ImportError> {
+///         Ok(vec![])
+///     }
+/// }
+///
+/// fn detect_my(b: &[u8]) -> bool { b.starts_with(b"MY") }
+/// fn create_my() -> Box<dyn Importer> { Box::new(MyImporter) }
+///
+/// let mut registry = ImporterRegistry::new();
+/// registry.register(ImporterFactory::new("my-format", detect_my, create_my));
+/// assert_eq!(registry.detect_format(b"MY data"), Some("my-format"));
+/// ```
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "ImporterRegistry is the canonical public name; renaming to Registry would be ambiguous at the crate root"
+)]
+#[non_exhaustive]
+#[derive(Debug, Default)]
+pub struct ImporterRegistry {
+    /// The ordered list of registered importer factories.
+    factories: Vec<ImporterFactory>,
+}
+
+impl ImporterRegistry {
+    /// Creates an empty [`ImporterRegistry`].
+    ///
+    /// # Returns
+    ///
+    /// A new, empty `ImporterRegistry` with no registered factories.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use bc_core::ImporterRegistry;
+    ///
+    /// let registry = ImporterRegistry::new();
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a factory, returning `&mut self` for method chaining.
+    ///
+    /// Factories are stored in insertion order, which determines detection priority
+    /// when multiple factories could match the same input.
+    ///
+    /// # Arguments
+    ///
+    /// * `factory` - The [`ImporterFactory`] to register.
+    ///
+    /// # Returns
+    ///
+    /// `&mut self` to allow method chaining.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use bc_core::{Importer, ImporterFactory, ImporterRegistry, ImportConfig, ImportError, RawTransaction};
+    ///
+    /// struct Stub;
+    /// impl Importer for Stub {
+    ///     fn name(&self) -> &'static str { "stub" }
+    ///     fn detect(&self, _: &[u8]) -> bool { false }
+    ///     fn import(&self, _: &[u8], _: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+    /// }
+    /// fn detect_stub(_: &[u8]) -> bool { false }
+    /// fn create_stub() -> Box<dyn Importer> { Box::new(Stub) }
+    ///
+    /// let mut registry = ImporterRegistry::new();
+    /// registry
+    ///     .register(ImporterFactory::new("a", detect_stub, create_stub))
+    ///     .register(ImporterFactory::new("b", detect_stub, create_stub));
+    /// ```
+    #[inline]
+    pub fn register(&mut self, factory: ImporterFactory) -> &mut Self {
+        self.factories.push(factory);
+        self
+    }
+
+    /// Returns the name of the first format whose `detect` function returns `true`, or `None`.
+    ///
+    /// Factories are checked in insertion order; the first match wins.
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - Raw file bytes to inspect.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&'static str)` with the format name if a match is found, or `None`.
+    #[inline]
+    #[must_use]
+    pub fn detect_format(&self, bytes: &[u8]) -> Option<&'static str> {
+        self.factories
+            .iter()
+            .find(|f| f.detect(bytes))
+            .map(ImporterFactory::name)
+    }
+
+    /// Creates an importer for the named format, or `None` if not registered.
+    ///
+    /// Performs a linear scan over the registered factories and returns an importer
+    /// from the first factory whose name matches exactly.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The format name to look up (e.g. `"csv"`, `"ofx"`).
+    ///
+    /// # Returns
+    ///
+    /// `Some(Box<dyn Importer>)` if the format is registered, or `None`.
+    #[inline]
+    #[must_use]
+    pub fn create_for_name(&self, name: &str) -> Option<Box<dyn crate::Importer>> {
+        self.factories
+            .iter()
+            .find(|f| f.name() == name)
+            .map(ImporterFactory::create)
+    }
+
+    /// Creates an importer for the first format that detects `bytes`, or `None`.
+    ///
+    /// Factories are checked in insertion order; the first match wins.
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - Raw file bytes to inspect.
+    ///
+    /// # Returns
+    ///
+    /// `Some(Box<dyn Importer>)` if a matching format is found, or `None`.
+    #[inline]
+    #[must_use]
+    pub fn create_for_bytes(&self, bytes: &[u8]) -> Option<Box<dyn crate::Importer>> {
+        self.factories
+            .iter()
+            .find(|f| f.detect(bytes))
+            .map(ImporterFactory::create)
+    }
+
+    /// Returns an iterator over registered format names, in insertion order.
+    ///
+    /// # Returns
+    ///
+    /// An iterator yielding `&'static str` format names.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use bc_core::{Importer, ImporterFactory, ImporterRegistry, ImportConfig, ImportError, RawTransaction};
+    ///
+    /// struct Stub;
+    /// impl Importer for Stub {
+    ///     fn name(&self) -> &'static str { "stub" }
+    ///     fn detect(&self, _: &[u8]) -> bool { false }
+    ///     fn import(&self, _: &[u8], _: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+    /// }
+    /// fn detect_stub(_: &[u8]) -> bool { false }
+    /// fn create_stub() -> Box<dyn Importer> { Box::new(Stub) }
+    ///
+    /// let mut registry = ImporterRegistry::new();
+    /// registry
+    ///     .register(ImporterFactory::new("csv", detect_stub, create_stub))
+    ///     .register(ImporterFactory::new("ofx", detect_stub, create_stub));
+    /// let names: Vec<_> = registry.names().collect();
+    /// assert_eq!(names, &["csv", "ofx"]);
+    /// ```
+    #[inline]
+    pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.factories.iter().map(ImporterFactory::name)
+    }
+}
+
 impl ImporterFactory {
     /// Constructs a new [`ImporterFactory`].
     ///
@@ -228,6 +424,85 @@ mod tests {
         }
         let f = ImporterFactory::new("stub", never, create_stub);
         assert!(!f.detect(b"anything"));
+    }
+
+    // ── ImporterRegistry tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn registry_detect_format_returns_name_of_matching_factory() {
+        let mut reg = ImporterRegistry::new();
+        reg.register(ImporterFactory::new("stub", detect_stub, create_stub));
+        assert_eq!(reg.detect_format(b"hello"), Some("stub"));
+    }
+
+    #[test]
+    fn registry_detect_format_returns_none_when_nothing_matches() {
+        let mut reg = ImporterRegistry::new();
+        reg.register(ImporterFactory::new("stub", |_| false, create_stub));
+        assert_eq!(reg.detect_format(b"hello"), None);
+    }
+
+    #[test]
+    fn registry_detect_format_first_match_wins() {
+        fn always(_: &[u8]) -> bool {
+            true
+        }
+        fn create2() -> Box<dyn crate::Importer> {
+            Box::new(StubImporter)
+        }
+        let mut reg = ImporterRegistry::new();
+        reg.register(ImporterFactory::new("first", always, create_stub));
+        reg.register(ImporterFactory::new("second", always, create2));
+        assert_eq!(reg.detect_format(b"x"), Some("first"));
+    }
+
+    #[test]
+    fn registry_create_for_name_returns_correct_importer() {
+        let mut reg = ImporterRegistry::new();
+        reg.register(ImporterFactory::new("stub", detect_stub, create_stub));
+        let imp = reg
+            .create_for_name("stub")
+            .expect("stub should be registered");
+        assert_eq!(imp.name(), "stub");
+    }
+
+    #[test]
+    fn registry_create_for_name_returns_none_for_unknown_format() {
+        let reg = ImporterRegistry::new();
+        assert!(reg.create_for_name("unknown").is_none());
+    }
+
+    #[test]
+    fn registry_create_for_bytes_returns_importer_when_detected() {
+        let mut reg = ImporterRegistry::new();
+        reg.register(ImporterFactory::new("stub", detect_stub, create_stub));
+        let imp = reg.create_for_bytes(b"hello").expect("should detect stub");
+        assert_eq!(imp.name(), "stub");
+    }
+
+    #[test]
+    fn registry_create_for_bytes_returns_none_when_no_match() {
+        let mut reg = ImporterRegistry::new();
+        reg.register(ImporterFactory::new("stub", |_| false, create_stub));
+        assert!(reg.create_for_bytes(b"hello").is_none());
+    }
+
+    #[test]
+    fn registry_names_iterates_in_insertion_order() {
+        let mut reg = ImporterRegistry::new();
+        reg.register(ImporterFactory::new("csv", |_| false, create_stub))
+            .register(ImporterFactory::new("ofx", |_| false, create_stub));
+        let names: Vec<_> = reg.names().collect();
+        assert_eq!(names, &["csv", "ofx"]);
+    }
+
+    #[test]
+    fn registry_register_is_chainable() {
+        let mut reg = ImporterRegistry::new();
+        reg.register(ImporterFactory::new("a", |_| false, create_stub))
+            .register(ImporterFactory::new("b", |_| false, create_stub));
+        let names: Vec<_> = reg.names().collect();
+        assert_eq!(names, &["a", "b"]);
     }
 
     #[test]
