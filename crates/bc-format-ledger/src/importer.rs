@@ -1,10 +1,9 @@
-//! [`LedgerImporter`]: implements [`bc_core::Importer`] for Ledger files.
+//! [`Importer`]: implements [`bc_core::Importer`] for Ledger files.
 
 use std::collections::BTreeMap;
 
 use bc_core::ImportConfig;
 use bc_core::ImportError;
-use bc_core::Importer;
 use bc_core::RawTransaction;
 use bc_models::Amount;
 use bc_models::CommodityCode;
@@ -16,14 +15,10 @@ use crate::parser::parse;
 
 /// Implements [`Importer`] for the Ledger plain-text accounting format.
 #[non_exhaustive]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "the name LedgerImporter is conventional and unambiguous at the crate root"
-)]
-pub struct LedgerImporter;
+pub struct Importer;
 
-impl LedgerImporter {
-    /// Creates a new [`LedgerImporter`].
+impl Importer {
+    /// Creates a new [`Importer`].
     #[inline]
     #[must_use]
     pub fn new() -> Self {
@@ -31,14 +26,14 @@ impl LedgerImporter {
     }
 }
 
-impl Default for LedgerImporter {
+impl Default for Importer {
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Importer for LedgerImporter {
+impl bc_core::Importer for Importer {
     #[inline]
     fn name(&self) -> &'static str {
         "ledger"
@@ -214,7 +209,7 @@ mod tests {
     )]
     fn imports_simple_transaction() {
         let input = "2025-01-15 * Woolworths\n    Expenses:Food    50.00 AUD\n    Assets:Bank   -50.00 AUD\n";
-        let txs = LedgerImporter
+        let txs = Importer
             .import(input.as_bytes(), &empty_config())
             .expect("import");
         assert_eq!(txs.len(), 1);
@@ -225,7 +220,7 @@ mod tests {
     #[test]
     fn elided_amount_inferred_for_balance() {
         let input = "2025-01-17 Rent\n    Expenses:Rent    1500.00 AUD\n    Assets:Bank\n";
-        let txs = LedgerImporter
+        let txs = Importer
             .import(input.as_bytes(), &empty_config())
             .expect("import");
         assert!(!txs.is_empty());
@@ -234,7 +229,7 @@ mod tests {
     #[test]
     fn comments_and_blank_lines_ignored() {
         let input = "; comment\n\n2025-01-15 * A\n    X    1.00 AUD\n    Y   -1.00 AUD\n";
-        let txs = LedgerImporter
+        let txs = Importer
             .import(input.as_bytes(), &empty_config())
             .expect("import");
         assert_eq!(txs.len(), 1);
@@ -243,13 +238,13 @@ mod tests {
     #[test]
     fn detect_recognises_ledger_syntax() {
         let bytes = b"2025-01-15 * Payee\n    Assets:Bank    50.00 AUD\n";
-        assert!(LedgerImporter.detect(bytes));
+        assert!(Importer.detect(bytes));
     }
 
     #[test]
     fn detect_rejects_csv() {
         let bytes = b"Date,Amount\n2025-01-15,-50.00\n";
-        assert!(!LedgerImporter.detect(bytes));
+        assert!(!Importer.detect(bytes));
     }
 
     #[test]
@@ -257,6 +252,6 @@ mod tests {
         // Beancount uses quoted payees/narrations; Ledger does not.
         let bytes =
             b"2025-01-15 * \"Woolworths\" \"Weekly groceries\"\n  Expenses:Food   50.00 AUD\n";
-        assert!(!LedgerImporter.detect(bytes));
+        assert!(!Importer.detect(bytes));
     }
 }
