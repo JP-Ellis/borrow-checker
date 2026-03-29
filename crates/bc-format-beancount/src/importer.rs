@@ -104,6 +104,20 @@ impl Importer for BeancountImporter {
                 .first()
                 .ok_or_else(|| ImportError::Parse("transaction has no postings".into()))?;
 
+            // Warn when multiple commodities are present: only the first posting's
+            // commodity is used for `RawTransaction::amount`; the rest are dropped.
+            // This is a limitation of the single-commodity `RawTransaction` model.
+            let has_multiple_commodities = tx.postings.iter().any(|p| p.currency != first.currency);
+            if has_multiple_commodities {
+                tracing::warn!(
+                    date = %tx.date,
+                    narration = %tx.narration,
+                    "beancount transaction has multiple commodities; only the first posting's \
+                     commodity ({}) is imported — remaining postings are dropped",
+                    first.currency,
+                );
+            }
+
             let amount = Amount::new(first.amount, CommodityCode::new(&first.currency));
 
             raw_txs.push(RawTransaction::new(
@@ -172,6 +186,20 @@ mod tests {
     fn detect_rejects_ledger() {
         let bytes = b"2025-01-15 * Payee without quotes\n    Assets:Bank    50.00 AUD\n";
         assert!(!BeancountImporter.detect(bytes));
+    }
+
+    #[test]
+    fn import_multi_currency_transaction_uses_first_posting() {
+        // A transaction with mixed currencies: the importer should succeed
+        // and use the first posting's amount, emitting a warning for the rest.
+        let input =
+            "2025-01-15 * \"FX Purchase\"\n  Assets:USD   100.00 USD\n  Assets:AUD  -150.00 AUD\n";
+        let txs = BeancountImporter
+            .import(input.as_bytes(), &ImportConfig::default())
+            .expect("import should succeed even for multi-currency");
+        let tx = txs.first().expect("should have one transaction");
+        // First posting determines the amount
+        assert_eq!(tx.description, "FX Purchase");
     }
 
     #[test]
