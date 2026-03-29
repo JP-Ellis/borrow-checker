@@ -4,6 +4,9 @@
 //! a named importer (e.g. `"csv"`, `"ofx"`), and the opaque JSON configuration
 //! blob that drives that importer.  The [`Service`] provides CRUD operations
 //! backed by the `import_profiles` SQLite table.
+//!
+//! Each profile carries a [`DedupStrategy`] that the import pipeline uses to
+//! prevent the same transaction from being stored twice.
 
 use bc_models::AccountId;
 use bc_models::ProfileId;
@@ -14,9 +17,50 @@ use crate::BcError;
 use crate::BcResult;
 use crate::ImportConfig;
 
+/// Strategy used to detect and skip transactions that have already been imported.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum DedupStrategy {
+    /// No deduplication — all transactions from the file are accepted.
+    #[default]
+    None,
+    /// Deduplicate by SHA-256 hash of the raw transaction fields.
+    ContentHash,
+    /// Deduplicate by the institution-provided FITID field (OFX-specific).
+    FitId,
+}
+
+impl DedupStrategy {
+    /// Returns the canonical string representation stored in the database.
+    #[inline]
+    #[must_use]
+    fn as_db_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ContentHash => "content_hash",
+            Self::FitId => "fit_id",
+        }
+    }
+
+    /// Parses a string from the database into a [`DedupStrategy`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a `String` describing the unknown value.
+    #[inline]
+    fn from_db_str(s: &str) -> Result<Self, String> {
+        match s {
+            "none" => Ok(Self::None),
+            "content_hash" => Ok(Self::ContentHash),
+            "fit_id" => Ok(Self::FitId),
+            other => Err(format!("unknown dedup_strategy '{other}'")),
+        }
+    }
+}
+
 /// A persisted import profile linking an account to an importer and its config.
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ImportProfile {
     /// Unique identifier for this profile.
     pub id: ProfileId,
@@ -28,6 +72,8 @@ pub struct ImportProfile {
     pub account_id: AccountId,
     /// Opaque JSON configuration passed to the importer.
     pub config: ImportConfig,
+    /// How the import pipeline identifies and skips duplicate transactions.
+    pub dedup_strategy: DedupStrategy,
     /// The timestamp when this profile was created.
     pub created_at: Timestamp,
 }
@@ -60,6 +106,7 @@ impl Service {
     /// * `importer` - Stable identifier of the importer plugin.
     /// * `account_id` - The account this profile will feed transactions into.
     /// * `config` - Opaque JSON configuration for the importer.
+    /// * `dedup_strategy` - How to identify and skip already-imported transactions.
     ///
     /// # Returns
     ///
@@ -76,6 +123,7 @@ impl Service {
         importer: &str,
         account_id: &AccountId,
         config: ImportConfig,
+        dedup_strategy: DedupStrategy,
     ) -> BcResult<ProfileId> {
         let id = ProfileId::new();
         let created_at = Timestamp::now();
@@ -83,20 +131,72 @@ impl Service {
             serde_json::to_string(config.as_value()).map_err(BcError::Serialisation)?;
 
         sqlx::query(
-            "INSERT INTO import_profiles (id, name, importer, account_id, config, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO import_profiles \
+             (id, name, importer, account_id, config, dedup_strategy, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id.to_string())
         .bind(name)
         .bind(importer)
         .bind(account_id.to_string())
         .bind(&config_json)
+        .bind(dedup_strategy.as_db_str())
         .bind(created_at.to_string())
         .execute(&self.pool)
         .await?;
 
         tracing::info!(profile_id = %id, %name, %importer, "import profile created");
         Ok(id)
+    }
+
+    /// Updates an existing import profile's mutable fields.
+    ///
+    /// The `account_id` and `created_at` fields are immutable after creation.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The [`ProfileId`] of the profile to update.
+    /// * `name` - New human-readable name.
+    /// * `importer` - New stable importer identifier.
+    /// * `config` - New opaque JSON configuration.
+    /// * `dedup_strategy` - New deduplication strategy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if no profile with that ID exists.
+    /// Returns [`BcError::Serialisation`] if the config cannot be serialised.
+    /// Returns [`BcError::Database`] on database update failure.
+    #[inline]
+    pub async fn update(
+        &self,
+        id: &ProfileId,
+        name: &str,
+        importer: &str,
+        config: ImportConfig,
+        dedup_strategy: DedupStrategy,
+    ) -> BcResult<()> {
+        let config_json =
+            serde_json::to_string(config.as_value()).map_err(BcError::Serialisation)?;
+
+        let result = sqlx::query(
+            "UPDATE import_profiles \
+             SET name = ?, importer = ?, config = ?, dedup_strategy = ? \
+             WHERE id = ?",
+        )
+        .bind(name)
+        .bind(importer)
+        .bind(&config_json)
+        .bind(dedup_strategy.as_db_str())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(BcError::NotFound(format!("import profile {id}")));
+        }
+
+        tracing::info!(profile_id = %id, %name, %importer, "import profile updated");
+        Ok(())
     }
 
     /// Finds an import profile by its ID.
@@ -116,8 +216,8 @@ impl Service {
     /// Returns [`BcError::Database`] on database query failure.
     #[inline]
     pub async fn find_by_id(&self, id: &ProfileId) -> BcResult<ImportProfile> {
-        let row: (String, String, String, String, String, String) = sqlx::query_as(
-            "SELECT id, name, importer, account_id, config, created_at \
+        let row: (String, String, String, String, String, String, String) = sqlx::query_as(
+            "SELECT id, name, importer, account_id, config, dedup_strategy, created_at \
              FROM import_profiles WHERE id = ?",
         )
         .bind(id.to_string())
@@ -125,7 +225,7 @@ impl Service {
         .await?
         .ok_or_else(|| BcError::NotFound(format!("import profile {id}")))?;
 
-        parse_row(&row.0, row.1, row.2, &row.3, &row.4, &row.5)
+        parse_row(&row.0, row.1, row.2, &row.3, &row.4, &row.5, &row.6)
     }
 
     /// Lists all import profiles for a given account, ordered by creation time.
@@ -144,8 +244,8 @@ impl Service {
     /// Returns [`BcError::Database`] on database query failure.
     #[inline]
     pub async fn list_for_account(&self, account_id: &AccountId) -> BcResult<Vec<ImportProfile>> {
-        let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
-            "SELECT id, name, importer, account_id, config, created_at \
+        let rows: Vec<(String, String, String, String, String, String, String)> = sqlx::query_as(
+            "SELECT id, name, importer, account_id, config, dedup_strategy, created_at \
              FROM import_profiles WHERE account_id = ? ORDER BY created_at ASC",
         )
         .bind(account_id.to_string())
@@ -154,13 +254,22 @@ impl Service {
 
         rows.into_iter()
             .map(
-                |(raw_id, name, importer, raw_account_id, raw_config, raw_created_at)| {
+                |(
+                    raw_id,
+                    name,
+                    importer,
+                    raw_account_id,
+                    raw_config,
+                    raw_dedup,
+                    raw_created_at,
+                )| {
                     parse_row(
                         &raw_id,
                         name,
                         importer,
                         &raw_account_id,
                         &raw_config,
+                        &raw_dedup,
                         &raw_created_at,
                     )
                 },
@@ -194,11 +303,11 @@ impl Service {
     }
 }
 
-/// Parses six raw database column strings into an [`ImportProfile`].
+/// Parses seven raw database column strings into an [`ImportProfile`].
 ///
 /// # Errors
 ///
-/// Returns [`BcError::BadData`] if any ID or timestamp string is malformed.
+/// Returns [`BcError::BadData`] if any ID, timestamp, or dedup strategy string is malformed.
 /// Returns [`BcError::Serialisation`] if the config JSON is malformed.
 #[inline]
 fn parse_row(
@@ -207,6 +316,7 @@ fn parse_row(
     importer: String,
     raw_account_id: &str,
     raw_config: &str,
+    raw_dedup: &str,
     raw_created_at: &str,
 ) -> BcResult<ImportProfile> {
     let id = raw_id
@@ -217,13 +327,15 @@ fn parse_row(
         .parse::<AccountId>()
         .map_err(|e: bc_models::IdParseError| BcError::BadData(e.to_string()))?;
 
+    let dedup_strategy = DedupStrategy::from_db_str(raw_dedup).map_err(BcError::BadData)?;
+
     let created_at = raw_created_at
         .parse::<Timestamp>()
         .map_err(|e| BcError::BadData(e.to_string()))?;
 
-    let config = serde_json::from_str::<serde_json::Value>(raw_config)
-        .map_err(BcError::Serialisation)
-        .and_then(|v| ImportConfig::from_typed(&v).map_err(BcError::Serialisation))?;
+    let config_value =
+        serde_json::from_str::<serde_json::Value>(raw_config).map_err(BcError::Serialisation)?;
+    let config = ImportConfig::from_value(config_value);
 
     Ok(ImportProfile {
         id,
@@ -231,6 +343,7 @@ fn parse_row(
         importer,
         account_id,
         config,
+        dedup_strategy,
         created_at,
     })
 }
@@ -268,7 +381,13 @@ mod tests {
 
         let config = ImportConfig::default();
         let id = svc
-            .create("My Profile", "csv", &account_id, config)
+            .create(
+                "My Profile",
+                "csv",
+                &account_id,
+                config,
+                DedupStrategy::None,
+            )
             .await
             .expect("create should succeed");
 
@@ -277,6 +396,77 @@ mod tests {
         assert_eq!(found.name, "My Profile");
         assert_eq!(found.importer, "csv");
         assert_eq!(found.account_id, account_id);
+        assert_eq!(found.dedup_strategy, DedupStrategy::None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_with_dedup_strategy_round_trips(pool: SqlitePool) {
+        let account_id = make_account(&pool).await;
+        let svc = Service::new(pool.clone());
+
+        let id = svc
+            .create(
+                "OFX Profile",
+                "ofx",
+                &account_id,
+                ImportConfig::default(),
+                DedupStrategy::FitId,
+            )
+            .await
+            .expect("create should succeed");
+
+        let found = svc.find_by_id(&id).await.expect("find should succeed");
+        assert_eq!(found.dedup_strategy, DedupStrategy::FitId);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn update_changes_mutable_fields(pool: SqlitePool) {
+        let account_id = make_account(&pool).await;
+        let svc = Service::new(pool.clone());
+
+        let id = svc
+            .create(
+                "Old Name",
+                "csv",
+                &account_id,
+                ImportConfig::default(),
+                DedupStrategy::None,
+            )
+            .await
+            .expect("create should succeed");
+
+        svc.update(
+            &id,
+            "New Name",
+            "ofx",
+            ImportConfig::default(),
+            DedupStrategy::FitId,
+        )
+        .await
+        .expect("update should succeed");
+
+        let found = svc.find_by_id(&id).await.expect("find should succeed");
+        assert_eq!(found.name, "New Name");
+        assert_eq!(found.importer, "ofx");
+        assert_eq!(found.dedup_strategy, DedupStrategy::FitId);
+        // account_id must not change
+        assert_eq!(found.account_id, account_id);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn update_nonexistent_returns_not_found(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let fake_id = ProfileId::new();
+        let result = svc
+            .update(
+                &fake_id,
+                "Name",
+                "csv",
+                ImportConfig::default(),
+                DedupStrategy::None,
+            )
+            .await;
+        assert!(matches!(result, Err(BcError::NotFound(_))));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -284,12 +474,24 @@ mod tests {
         let account_id = make_account(&pool).await;
         let svc = Service::new(pool.clone());
 
-        svc.create("Profile A", "csv", &account_id, ImportConfig::default())
-            .await
-            .expect("create first should succeed");
-        svc.create("Profile B", "ofx", &account_id, ImportConfig::default())
-            .await
-            .expect("create second should succeed");
+        svc.create(
+            "Profile A",
+            "csv",
+            &account_id,
+            ImportConfig::default(),
+            DedupStrategy::None,
+        )
+        .await
+        .expect("create first should succeed");
+        svc.create(
+            "Profile B",
+            "ofx",
+            &account_id,
+            ImportConfig::default(),
+            DedupStrategy::None,
+        )
+        .await
+        .expect("create second should succeed");
 
         let profiles = svc
             .list_for_account(&account_id)
@@ -304,7 +506,13 @@ mod tests {
         let svc = Service::new(pool.clone());
 
         let id = svc
-            .create("To Delete", "csv", &account_id, ImportConfig::default())
+            .create(
+                "To Delete",
+                "csv",
+                &account_id,
+                ImportConfig::default(),
+                DedupStrategy::None,
+            )
             .await
             .expect("create should succeed");
 
