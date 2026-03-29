@@ -141,6 +141,55 @@ impl ImportConfig {
         serde_json::from_value(self.0)
     }
 
+    /// Constructs an [`ImportConfig`] directly from a [`serde_json::Value`].
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The JSON value to wrap.
+    ///
+    /// # Returns
+    ///
+    /// An [`ImportConfig`] wrapping the given value.
+    #[must_use]
+    #[inline]
+    pub fn from_value(value: serde_json::Value) -> Self {
+        Self(value)
+    }
+
+    /// Deserialises this config into a typed value without consuming it.
+    ///
+    /// Unlike [`into_typed`](Self::into_typed), this method borrows `self` and
+    /// clones the inner [`serde_json::Value`] to perform the conversion.
+    /// Prefer this over `config.clone().into_typed()` at call sites that need
+    /// to retain the original config.
+    ///
+    /// # Returns
+    ///
+    /// The deserialised value of type `T`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`serde_json::Error`] if the stored JSON does not match `T`'s schema.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use bc_core::ImportConfig;
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    /// struct MyCfg { delimiter: char }
+    ///
+    /// let original = MyCfg { delimiter: ',' };
+    /// let cfg = ImportConfig::from_typed(&original).expect("serialisation should succeed");
+    /// let back: MyCfg = cfg.as_typed().expect("deserialisation should succeed");
+    /// assert_eq!(back, original);
+    /// ```
+    #[inline]
+    pub fn as_typed<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
+        serde_json::from_value(self.0.clone())
+    }
+
     /// Returns a reference to the underlying [`serde_json::Value`].
     ///
     /// # Returns
@@ -199,7 +248,7 @@ pub enum ImportError {
 /// struct CsvImporter;
 ///
 /// impl bc_core::Importer for CsvImporter {
-///     fn name(&self) -> &str { "csv" }
+///     fn name(&self) -> &'static str { "csv" }
 ///
 ///     fn detect(&self, bytes: &[u8]) -> bool {
 ///         // heuristic: first non-whitespace byte is ASCII text
@@ -217,7 +266,7 @@ pub enum ImportError {
 /// ```
 pub trait Importer: Send + Sync + 'static {
     /// A short, stable identifier for this importer (e.g. `"csv"`, `"ofx"`).
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
 
     /// Returns `true` if `bytes` look like input this importer can handle.
     ///
