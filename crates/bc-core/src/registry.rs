@@ -87,7 +87,7 @@ impl core::fmt::Debug for ImporterFactory {
 ///
 /// impl Importer for MyImporter {
 ///     fn name(&self) -> &'static str { "my-format" }
-///     fn detect(&self, _bytes: &[u8]) -> bool { bytes.starts_with(b"MY") }
+///     fn detect(&self, bytes: &[u8]) -> bool { bytes.starts_with(b"MY") }
 ///     fn import(
 ///         &self,
 ///         _bytes: &[u8],
