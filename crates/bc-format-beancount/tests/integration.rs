@@ -10,7 +10,7 @@ mod tests {
 
     #[test]
     fn basic_two_transactions() {
-        let bytes = include_bytes!("../tests/fixtures/basic.beancount");
+        let bytes = include_bytes!("fixtures/basic.beancount");
         let txs = BeancountImporter::new()
             .import(bytes, &ImportConfig::default())
             .expect("import");

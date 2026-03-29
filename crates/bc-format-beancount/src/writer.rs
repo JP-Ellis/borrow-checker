@@ -33,10 +33,18 @@ pub(crate) fn render_transaction(
     narration: &str,
     postings: &[(&str, Amount)],
 ) -> String {
+    // TransactionStatus is #[non_exhaustive]: Voided is listed explicitly so any
+    // newly added variants cause a compile warning here; the `_` arm handles the
+    // mandatory non-exhaustive fallback.  Both arms omit the transaction.
+    #[expect(
+        clippy::match_same_arms,
+        reason = "Voided is listed explicitly to surface future-variant review; the _ arm is the required non-exhaustive fallback"
+    )]
     let flag = match status {
         TransactionStatus::Cleared => "*",
         TransactionStatus::Pending => "!",
-        TransactionStatus::Voided | _ => return String::new(),
+        TransactionStatus::Voided => return String::new(),
+        _ => return String::new(),
     };
 
     let mut out = String::new();
