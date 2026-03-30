@@ -1,0 +1,19 @@
+---
+source: crates/bc-cli/tests/cli/help.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Generate shell completion scripts
+
+Usage: borrow-checker completions [OPTIONS] <SHELL>
+
+Arguments:
+  <SHELL>  Target shell [possible values: bash, elvish, fish, powershell, zsh]
+
+Options:
+      --json               Emit machine-readable JSON instead of human-readable output [env: BC_JSON=]
+      --db-path <DB_PATH>  Path to the SQLite database file [env: BC_DB_PATH=[TEMP_DIR]/test.db]
+  -h, --help               Print help
+----- stderr -----
