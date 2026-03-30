@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/account.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+No active accounts.
+----- stderr -----
