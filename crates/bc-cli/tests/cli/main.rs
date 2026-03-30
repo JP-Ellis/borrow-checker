@@ -11,7 +11,7 @@ mod account;
 // mod export;
 // mod import;
 // mod report;
-// mod transaction;
+mod transaction;
 
 /// Capture binary output as a formatted snapshot string.
 macro_rules! cmd_snapshot {
