@@ -561,8 +561,129 @@ impl Service {
             )
             .collect()
     }
-    // TODO(M2): implement Service::amend() — amend generates a TransactionAmended event
-    // with the new transaction state. See events.rs for the TransactionAmended variant.
+
+    /// Amends an existing transaction, replacing its projection row and all postings atomically.
+    ///
+    /// The event append, projection UPDATE, posting DELETE/INSERT, and tag DELETE/INSERT
+    /// are all wrapped in a single SQLite transaction so they succeed or fail atomically.
+    ///
+    /// # Arguments
+    ///
+    /// * `updated` - The new transaction state. Must carry the same [`TransactionId`]
+    ///   as the existing transaction. All postings are replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::UnbalancedTransaction`] if postings do not sum to zero.
+    /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
+    /// Returns [`BcError::AlreadyVoided`] if the transaction exists but is already voided.
+    /// Returns [`BcError`] on event append or database update failure.
+    #[inline]
+    pub async fn amend(&self, updated: Transaction) -> BcResult<()> {
+        validate_balance(updated.postings())?;
+
+        let tx_id = updated.id().clone();
+        let tx_id_str = tx_id.to_string();
+        let event = Event::TransactionAmended { id: tx_id.clone() };
+        let voided_str = crate::db::to_db_str(bc_models::TransactionStatus::Voided)?;
+
+        let date_str = updated.date().to_string();
+
+        let mut db_tx = self.pool.begin().await?;
+
+        insert_event(&event, &mut db_tx).await?;
+
+        let result = sqlx::query(
+            "UPDATE transactions SET date = ?, payee = ?, description = ? WHERE id = ? AND status != ?",
+        )
+        .bind(&date_str)
+        .bind(updated.payee())
+        .bind(updated.description())
+        .bind(&tx_id_str)
+        .bind(&voided_str)
+        .execute(&mut *db_tx)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            let exists: bool =
+                sqlx::query_scalar("SELECT count(*) > 0 FROM transactions WHERE id = ?")
+                    .bind(&tx_id_str)
+                    .fetch_one(&self.pool)
+                    .await?;
+            return if exists {
+                Err(BcError::AlreadyVoided(tx_id.clone()))
+            } else {
+                Err(BcError::NotFound(tx_id_str))
+            };
+        }
+
+        sqlx::query("DELETE FROM postings WHERE transaction_id = ?")
+            .bind(&tx_id_str)
+            .execute(&mut *db_tx)
+            .await?;
+
+        sqlx::query("DELETE FROM transaction_tags WHERE transaction_id = ?")
+            .bind(&tx_id_str)
+            .execute(&mut *db_tx)
+            .await?;
+
+        for tag_id in updated.tag_ids() {
+            sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
+                .bind(&tx_id_str)
+                .bind(tag_id.to_string())
+                .execute(&mut *db_tx)
+                .await?;
+        }
+
+        for (position, posting) in updated.postings().iter().enumerate() {
+            let (cost_value, cost_commodity, cost_date, cost_label) =
+                if let Some(cost) = posting.cost() {
+                    (
+                        Some(cost.total().value().to_string()),
+                        Some(cost.total().commodity().as_str().to_owned()),
+                        cost.date().map(|d| d.to_string()),
+                        cost.label().map(str::to_owned),
+                    )
+                } else {
+                    (None, None, None, None)
+                };
+
+            sqlx::query(
+                "INSERT INTO postings \
+                 (id, transaction_id, account_id, amount, commodity, memo, position, \
+                  cost_total_value, cost_total_commodity, cost_date, cost_label) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(posting.id().to_string())
+            .bind(&tx_id_str)
+            .bind(posting.account_id().to_string())
+            .bind(posting.amount().value().to_string())
+            .bind(posting.amount().commodity().as_str())
+            .bind(posting.memo())
+            .bind(
+                i64::try_from(position)
+                    .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?,
+            )
+            .bind(cost_value)
+            .bind(cost_commodity)
+            .bind(cost_date)
+            .bind(cost_label)
+            .execute(&mut *db_tx)
+            .await?;
+
+            for tag_id in posting.tag_ids() {
+                sqlx::query("INSERT INTO posting_tags (posting_id, tag_id) VALUES (?, ?)")
+                    .bind(posting.id().to_string())
+                    .bind(tag_id.to_string())
+                    .execute(&mut *db_tx)
+                    .await?;
+            }
+        }
+
+        db_tx.commit().await?;
+        tracing::info!(transaction_id = %tx_id, "transaction amended");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -839,6 +960,144 @@ mod tests {
         let first = active.first().expect("one active transaction should exist");
         assert_eq!(first.id(), &id1);
         assert_eq!(first.postings().len(), 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amend_updates_projection(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let account_svc = crate::AccountService::new(pool.clone());
+
+        // Create two accounts so FK constraints pass.
+        let checking_id = account_svc
+            .create(
+                "Checking",
+                bc_models::AccountType::Asset,
+                bc_models::AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create checking");
+        let expenses_id = account_svc
+            .create(
+                "Expenses",
+                bc_models::AccountType::Expense,
+                bc_models::AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create expenses");
+
+        let original = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date("2026-01-01".parse::<jiff::civil::Date>().expect("date"))
+            .description("Original description")
+            .status(TransactionStatus::Cleared)
+            .created_at(jiff::Timestamp::now())
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(checking_id.clone())
+                    .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(expenses_id.clone())
+                    .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .build();
+
+        let id = svc.create(original.clone()).await.expect("create");
+
+        let amended = Transaction::builder()
+            .id(id.clone())
+            .date("2026-01-15".parse::<jiff::civil::Date>().expect("date"))
+            .description("Amended description")
+            .status(TransactionStatus::Cleared)
+            .postings(original.postings().to_vec())
+            .created_at(*original.created_at())
+            .build();
+
+        svc.amend(amended).await.expect("amend should succeed");
+
+        let loaded = svc.find_by_id(&id).await.expect("should still exist");
+        assert_eq!(loaded.description(), "Amended description");
+        assert_eq!(
+            loaded.date(),
+            "2026-01-15".parse::<jiff::civil::Date>().expect("date")
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amend_voided_transaction_returns_already_voided(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let account_svc = crate::AccountService::new(pool.clone());
+
+        let checking_id = account_svc
+            .create(
+                "Checking",
+                bc_models::AccountType::Asset,
+                bc_models::AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create checking");
+        let expenses_id = account_svc
+            .create(
+                "Expenses",
+                bc_models::AccountType::Expense,
+                bc_models::AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create expenses");
+
+        let original = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date("2026-01-01".parse::<jiff::civil::Date>().expect("date"))
+            .description("Original description")
+            .status(TransactionStatus::Cleared)
+            .created_at(jiff::Timestamp::now())
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(checking_id.clone())
+                    .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(expenses_id.clone())
+                    .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .build();
+
+        let id = svc.create(original.clone()).await.expect("create");
+        svc.void(&id).await.expect("void should succeed");
+
+        let amended = Transaction::builder()
+            .id(id.clone())
+            .date("2026-01-15".parse::<jiff::civil::Date>().expect("date"))
+            .description("Amended after void")
+            .status(TransactionStatus::Cleared)
+            .postings(original.postings().to_vec())
+            .created_at(*original.created_at())
+            .build();
+
+        let result = svc.amend(amended).await;
+        assert!(matches!(result, Err(BcError::AlreadyVoided(_))));
     }
 
     #[sqlx::test(migrations = "./migrations")]
