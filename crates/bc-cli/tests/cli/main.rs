@@ -7,7 +7,7 @@ mod common;
 mod help;
 mod version;
 // Subcommand test modules — uncommented as each command is implemented:
-// mod account;
+mod account;
 // mod export;
 // mod import;
 // mod report;

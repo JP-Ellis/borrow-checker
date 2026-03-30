@@ -1,0 +1,11 @@
+---
+source: crates/bc-cli/tests/cli/account.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+ID                                    NAME                            TYPE        KIND                
+------------------------------------------------------------------------------------------------------
+[ACCOUNT_ID]    Savings                         Asset       DepositAccount      
+----- stderr -----

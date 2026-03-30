@@ -46,6 +46,10 @@ impl TestContext {
                 Regex::new(&home_path_escaped).expect("valid temp-dir regex"),
                 "[TEMP_DIR]".to_owned(),
             ),
+            (
+                Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z").expect("valid regex"),
+                "[TIMESTAMP]".to_owned(),
+            ),
         ];
 
         Self {
