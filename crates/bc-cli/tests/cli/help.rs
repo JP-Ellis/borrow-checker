@@ -1,4 +1,4 @@
-//! Tests for `--help` and `-h` flags.
+//! Tests for `--help`, `-h`, `--version`, shell completions, and stub commands.
 
 use rstest::rstest;
 
@@ -32,4 +32,37 @@ fn subcommand_help(#[case] subcommand: &str) {
     let mut cmd = ctx.command();
     cmd.args([subcommand, "--help"]);
     cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[rstest]
+#[case("budget", "status")]
+#[case("plugin", "list")]
+fn stub_commands(#[case] cmd_name: &str, #[case] subcommand: &str) {
+    let ctx = TestContext::new();
+    set_snapshot_suffix!("{cmd_name}_{subcommand}");
+    let mut cmd = ctx.command();
+    cmd.args([cmd_name, subcommand]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[rstest]
+#[case("bash")]
+#[case("zsh")]
+#[case("fish")]
+fn completions_smoke(#[case] shell: &str) {
+    let ctx = TestContext::new();
+    let output = ctx
+        .command()
+        .args(["completions", shell])
+        .output()
+        .expect("run completions");
+    assert!(
+        output.status.success(),
+        "completions {shell} should exit 0, got: {}",
+        output.status
+    );
+    assert!(
+        !output.stdout.is_empty(),
+        "completions {shell} should produce output"
+    );
 }
