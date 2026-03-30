@@ -30,15 +30,54 @@ pub struct Args {
 
 /// Executes the `export` subcommand.
 ///
+/// Collects all accounts and transactions and serialises them using the
+/// requested exporter. Writes to `--output <file>` or stdout if omitted.
+///
 /// # Errors
 ///
 /// Propagates any [`crate::error::CliError`] from the core engine or I/O.
-#[expect(clippy::todo, reason = "implemented in a subsequent task")]
-#[expect(
-    clippy::unused_async,
-    reason = "signature required by command dispatch"
-)]
 #[inline]
-pub async fn execute(_args: Args, _ctx: &AppContext) -> CliResult<()> {
-    todo!()
+pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
+    // Gather domain data.
+    let accounts = ctx.accounts.list_active().await?;
+    let transactions = ctx.transactions.list().await?;
+    // Commodities and tags are not yet exposed by the service layer.
+    let tags: &[bc_models::Tag] = &[];
+    let commodities: &[bc_models::Commodity] = &[];
+
+    let export_data = bc_core::ExportData::new(&accounts, commodities, &transactions, tags);
+
+    let exporter: Box<dyn bc_core::Exporter> = match args.format {
+        Format::Ledger => Box::new(bc_format_ledger::LedgerExporter::default()),
+        Format::Beancount => Box::new(bc_format_beancount::BeancountExporter::default()),
+    };
+
+    let bytes = exporter
+        .export(&export_data)
+        .map_err(|e| crate::error::CliError::Arg(format!("export error: {e}")))?;
+
+    match args.output {
+        Some(ref path) => {
+            std::fs::write(path, &bytes).map_err(crate::error::CliError::Io)?;
+            if ctx.json {
+                crate::output::print_json(&serde_json::json!({
+                    "output": path.display().to_string(),
+                    "bytes": bytes.len(),
+                }))?;
+            } else {
+                #[expect(clippy::print_stdout, reason = "CLI output")]
+                {
+                    println!("Exported to {}", path.display());
+                }
+            }
+        }
+        None => {
+            #[expect(clippy::print_stdout, reason = "export output to stdout")]
+            {
+                print!("{}", String::from_utf8_lossy(&bytes));
+            }
+        }
+    }
+
+    Ok(())
 }
