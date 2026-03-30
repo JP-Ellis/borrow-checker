@@ -9,7 +9,7 @@ mod version;
 // Subcommand test modules — uncommented as each command is implemented:
 mod account;
 // mod export;
-// mod import;
+mod import;
 // mod report;
 mod transaction;
 
