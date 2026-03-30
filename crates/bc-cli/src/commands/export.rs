@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::error::CliResult;
 
 /// Supported export formats.
+#[non_exhaustive]
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum Format {
     /// Ledger journal format.
@@ -15,6 +16,7 @@ pub enum Format {
 }
 
 /// Arguments for the `export` subcommand.
+#[non_exhaustive]
 #[derive(Debug, clap::Args)]
 pub struct Args {
     /// Output format.
@@ -36,6 +38,7 @@ pub struct Args {
     clippy::unused_async,
     reason = "signature required by command dispatch"
 )]
+#[inline]
 pub async fn execute(_args: Args, _ctx: &AppContext) -> CliResult<()> {
     todo!()
 }

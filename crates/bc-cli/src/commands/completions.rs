@@ -8,6 +8,7 @@ use clap_complete::Shell;
 use crate::error::CliResult;
 
 /// Arguments for the `completions` subcommand.
+#[non_exhaustive]
 #[derive(Debug, clap::Args)]
 pub struct Args {
     /// Target shell.

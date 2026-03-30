@@ -7,6 +7,7 @@ use crate::context::AppContext;
 use crate::error::CliResult;
 
 /// Arguments for the `import` subcommand.
+#[non_exhaustive]
 #[derive(Debug, clap::Args)]
 pub struct Args {
     /// Name of the import profile to use.
@@ -34,6 +35,7 @@ pub struct Args {
     clippy::unused_async,
     reason = "signature required by command dispatch"
 )]
+#[inline]
 pub async fn execute(_args: Args, _ctx: &AppContext) -> CliResult<()> {
     todo!()
 }

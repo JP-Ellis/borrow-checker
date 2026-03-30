@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::error::CliResult;
 
 /// Arguments for the `report` subcommand.
+#[non_exhaustive]
 #[derive(Debug, clap::Args)]
 pub struct Args {
     /// The report to generate.
@@ -49,6 +50,7 @@ pub enum Command {
     clippy::unused_async,
     reason = "signature required by command dispatch"
 )]
+#[inline]
 pub async fn execute(args: Args, _ctx: &AppContext) -> CliResult<()> {
     match args.command {
         Command::NetWorth => todo!(),

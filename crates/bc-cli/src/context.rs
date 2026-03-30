@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 /// Shared application context threaded through every command handler.
+#[non_exhaustive]
 #[expect(
     dead_code,
     reason = "fields used by command handlers implemented in subsequent tasks"

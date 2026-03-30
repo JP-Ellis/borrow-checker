@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::error::CliResult;
 
 /// Arguments for the `transaction` subcommand.
+#[non_exhaustive]
 #[derive(Debug, clap::Args)]
 pub struct Args {
     /// The transaction operation to perform.
@@ -65,6 +66,7 @@ pub enum Command {
 /// # Errors
 ///
 /// Propagates any [`crate::error::CliError`] from the core engine or output layer.
+#[inline]
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
         Command::List => list(ctx).await,
