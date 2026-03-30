@@ -39,6 +39,10 @@ impl TestContext {
                 "[TRANSACTION_ID]".to_owned(),
             ),
             (
+                Regex::new("posting_[0-9a-z]{26}").expect("valid regex"),
+                "[POSTING_ID]".to_owned(),
+            ),
+            (
                 Regex::new("profile_[0-9a-z]{26}").expect("valid regex"),
                 "[PROFILE_ID]".to_owned(),
             ),
