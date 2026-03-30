@@ -10,13 +10,13 @@ use crate::error::CliResult;
 pub struct Args {
     /// The transaction operation to perform.
     #[command(subcommand)]
-    pub command: TransactionCommand,
+    pub command: Command,
 }
 
 /// Available transaction operations.
 #[derive(Debug, Subcommand)]
 #[non_exhaustive]
-pub enum TransactionCommand {
+pub enum Command {
     /// List all non-voided transactions ordered by date descending.
     List,
     /// Record a new double-entry transaction.
@@ -67,27 +67,39 @@ pub enum TransactionCommand {
 /// Propagates any [`crate::error::CliError`] from the core engine or output layer.
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
-        TransactionCommand::List => list(ctx).await,
-        TransactionCommand::Add {
+        Command::List => list(ctx).await,
+        Command::Add {
             date,
             description,
             payee,
             postings,
         } => add(ctx, date, description, payee, postings).await,
-        TransactionCommand::Amend {
+        Command::Amend {
             id,
             date,
             description,
             payee,
         } => amend(ctx, id, date, description, payee).await,
-        TransactionCommand::Void { id } => void(ctx, id).await,
+        Command::Void { id } => void(ctx, id).await,
     }
 }
 
+/// Lists all non-voided transactions.
+#[expect(clippy::todo, reason = "implemented in a subsequent task")]
+#[expect(
+    clippy::unused_async,
+    reason = "signature required by command dispatch"
+)]
 async fn list(_ctx: &AppContext) -> CliResult<()> {
     todo!()
 }
 
+/// Records a new double-entry transaction.
+#[expect(clippy::todo, reason = "implemented in a subsequent task")]
+#[expect(
+    clippy::unused_async,
+    reason = "signature required by command dispatch"
+)]
 async fn add(
     _ctx: &AppContext,
     _date: String,
@@ -98,6 +110,12 @@ async fn add(
     todo!()
 }
 
+/// Amends the metadata of an existing transaction.
+#[expect(clippy::todo, reason = "implemented in a subsequent task")]
+#[expect(
+    clippy::unused_async,
+    reason = "signature required by command dispatch"
+)]
 async fn amend(
     _ctx: &AppContext,
     _id: String,
@@ -108,6 +126,12 @@ async fn amend(
     todo!()
 }
 
+/// Voids a transaction by ID.
+#[expect(clippy::todo, reason = "implemented in a subsequent task")]
+#[expect(
+    clippy::unused_async,
+    reason = "signature required by command dispatch"
+)]
 async fn void(_ctx: &AppContext, _id: String) -> CliResult<()> {
     todo!()
 }

@@ -29,6 +29,11 @@ pub struct Args {
 /// # Errors
 ///
 /// Propagates any [`crate::error::CliError`] from the core engine, I/O, or parsing.
+#[expect(clippy::todo, reason = "implemented in a subsequent task")]
+#[expect(
+    clippy::unused_async,
+    reason = "signature required by command dispatch"
+)]
 pub async fn execute(_args: Args, _ctx: &AppContext) -> CliResult<()> {
     todo!()
 }

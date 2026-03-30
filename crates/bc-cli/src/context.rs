@@ -3,6 +3,10 @@
 use std::path::PathBuf;
 
 /// Shared application context threaded through every command handler.
+#[expect(
+    dead_code,
+    reason = "fields used by command handlers implemented in subsequent tasks"
+)]
 pub struct AppContext {
     /// Whether to emit JSON instead of human-readable output.
     pub json: bool,
@@ -51,7 +55,8 @@ impl AppContext {
 #[must_use]
 #[inline]
 pub fn default_db_path() -> PathBuf {
-    directories::ProjectDirs::from("", "", "borrow-checker")
-        .map(|dirs| dirs.data_dir().join("db.sqlite"))
-        .unwrap_or_else(|| PathBuf::from("borrow-checker.db"))
+    directories::ProjectDirs::from("", "", "borrow-checker").map_or_else(
+        || PathBuf::from("borrow-checker.db"),
+        |dirs| dirs.data_dir().join("db.sqlite"),
+    )
 }

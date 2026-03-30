@@ -10,13 +10,13 @@ use crate::error::CliResult;
 pub struct Args {
     /// The plugin operation to perform.
     #[command(subcommand)]
-    pub command: PluginCommand,
+    pub command: Command,
 }
 
 /// Available plugin operations.
 #[derive(Debug, Subcommand)]
 #[non_exhaustive]
-pub enum PluginCommand {
+pub enum Command {
     /// Install a plugin from a `.wasm` file or the plugin registry.
     Install {
         /// Plugin source (file path or registry name).
@@ -38,11 +38,19 @@ pub enum PluginCommand {
 /// # Errors
 ///
 /// Always returns `Ok(())`.
+#[expect(
+    clippy::print_stderr,
+    reason = "CLI stub message for unimplemented commands"
+)]
+#[expect(
+    clippy::unused_async,
+    reason = "signature required by command dispatch"
+)]
 pub async fn execute(args: Args, _ctx: &AppContext) -> CliResult<()> {
     let op = match args.command {
-        PluginCommand::Install { .. } => "install",
-        PluginCommand::List => "list",
-        PluginCommand::Remove { .. } => "remove",
+        Command::Install { .. } => "install",
+        Command::List => "list",
+        Command::Remove { .. } => "remove",
     };
     eprintln!("plugin {op}: requires Milestone 6 (plugin system) — not yet implemented");
     Ok(())

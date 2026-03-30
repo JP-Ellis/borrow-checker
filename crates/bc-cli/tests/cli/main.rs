@@ -14,15 +14,27 @@ mod common;
 // mod version;
 
 /// Capture binary output as a formatted snapshot string.
+#[expect(
+    unused_macros,
+    reason = "used by test modules added in subsequent tasks"
+)]
 macro_rules! cmd_snapshot {
     ($ctx:expr, $cmd:expr) => {{
         let output = $ctx.run($cmd);
         insta::assert_snapshot!(output);
     }};
 }
+#[expect(
+    unused_imports,
+    reason = "used by test modules added in subsequent tasks"
+)]
 pub(crate) use cmd_snapshot;
 
 /// Bind a snapshot suffix for parametrised tests.
+#[expect(
+    unused_macros,
+    reason = "used by test modules added in subsequent tasks"
+)]
 macro_rules! set_snapshot_suffix {
     ($($expr:tt)*) => {
         let _guard = {
@@ -32,4 +44,8 @@ macro_rules! set_snapshot_suffix {
         };
     };
 }
+#[expect(
+    unused_imports,
+    reason = "used by test modules added in subsequent tasks"
+)]
 pub(crate) use set_snapshot_suffix;

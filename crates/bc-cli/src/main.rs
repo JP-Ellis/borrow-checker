@@ -16,6 +16,10 @@ use crate::context::AppContext;
 use crate::context::default_db_path;
 use crate::error::CliError;
 
+#[expect(
+    clippy::print_stderr,
+    reason = "CLI binary: stderr is the intended channel for error messages"
+)]
 #[tokio::main]
 async fn main() {
     let cli = crate::cli::Cli::parse();
@@ -25,7 +29,7 @@ async fn main() {
     if let Some(parent) = db_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             eprintln!("error: cannot create database directory: {e}");
-            std::process::exit(1);
+            std::process::exit(1_i32);
         }
     }
 
@@ -33,7 +37,7 @@ async fn main() {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("error: {e}");
-            std::process::exit(1);
+            std::process::exit(1_i32);
         }
     };
 
@@ -51,8 +55,8 @@ async fn main() {
     if let Err(e) = result {
         eprintln!("error: {e}");
         let code = match &e {
-            CliError::Core(bc_core::BcError::NotFound(_)) => 2,
-            _ => 1,
+            CliError::Core(bc_core::BcError::NotFound(_)) => 2_i32,
+            CliError::Core(_) | CliError::Io(_) | CliError::Json(_) | CliError::Arg(_) => 1_i32,
         };
         std::process::exit(code);
     }

@@ -24,8 +24,12 @@ pub struct Args {
 ///
 /// Returns [`crate::error::CliError::Io`] if writing to stdout fails.
 #[expect(
-    clippy::print_stdout,
-    reason = "completion scripts are intentionally written to stdout"
+    clippy::needless_pass_by_value,
+    reason = "Args is consumed to unpack shell; clap convention passes by value"
+)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "signature matches the command dispatch contract"
 )]
 #[inline]
 pub fn execute(args: Args) -> CliResult<()> {

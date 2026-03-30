@@ -7,6 +7,10 @@ use assert_fs::TempDir;
 use regex::Regex;
 
 /// Isolated test environment: fresh SQLite database in a temp directory.
+#[expect(
+    clippy::partial_pub_fields,
+    reason = "filters is an internal implementation detail"
+)]
 pub struct TestContext {
     /// Temporary home directory (cleaned up on drop).
     pub home_dir: TempDir,
@@ -16,25 +20,28 @@ pub struct TestContext {
     filters: Vec<(Regex, String)>,
 }
 
+#[expect(dead_code, reason = "used by test modules added in subsequent tasks")]
 impl TestContext {
     /// Creates a new isolated test context with a fresh SQLite database.
+    #[expect(clippy::expect_used, reason = "test helper panics on setup failure")]
     pub fn new() -> Self {
         let home_dir = TempDir::new().expect("create temp dir");
         let db_path = home_dir.path().join("test.db");
 
-        let mut filters: Vec<(Regex, String)> = Vec::new();
-        filters.push((
-            Regex::new(r"account_[0-9a-z]{26}").expect("valid regex"),
-            "[ACCOUNT_ID]".into(),
-        ));
-        filters.push((
-            Regex::new(r"transaction_[0-9a-z]{26}").expect("valid regex"),
-            "[TRANSACTION_ID]".into(),
-        ));
-        filters.push((
-            Regex::new(r"profile_[0-9a-z]{26}").expect("valid regex"),
-            "[PROFILE_ID]".into(),
-        ));
+        let filters = vec![
+            (
+                Regex::new("account_[0-9a-z]{26}").expect("valid regex"),
+                "[ACCOUNT_ID]".to_owned(),
+            ),
+            (
+                Regex::new("transaction_[0-9a-z]{26}").expect("valid regex"),
+                "[TRANSACTION_ID]".to_owned(),
+            ),
+            (
+                Regex::new("profile_[0-9a-z]{26}").expect("valid regex"),
+                "[PROFILE_ID]".to_owned(),
+            ),
+        ];
 
         Self {
             home_dir,
@@ -44,6 +51,7 @@ impl TestContext {
     }
 
     /// Returns a configured `Command` pointing at the `borrow-checker` binary.
+    #[expect(clippy::expect_used, reason = "test helper panics on setup failure")]
     pub fn command(&self) -> Command {
         let mut cmd = Command::cargo_bin("borrow-checker").expect("borrow-checker binary");
         cmd.env_clear()
@@ -55,6 +63,7 @@ impl TestContext {
     }
 
     /// Executes `cmd`, formats stdout/stderr/exit code, applies filters, returns string.
+    #[expect(clippy::expect_used, reason = "test helper panics on setup failure")]
     pub fn run(&self, cmd: &mut Command) -> String {
         let output = cmd.output().expect("command executed");
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -63,7 +72,7 @@ impl TestContext {
         let mut result = format!(
             "success: {}\nexit_code: {}\n----- stdout -----\n{}----- stderr -----\n{}",
             output.status.success(),
-            output.status.code().unwrap_or(-1),
+            output.status.code().unwrap_or(-1_i32),
             stdout,
             stderr,
         );

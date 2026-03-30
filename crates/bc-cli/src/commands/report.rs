@@ -10,13 +10,13 @@ use crate::error::CliResult;
 pub struct Args {
     /// The report to generate.
     #[command(subcommand)]
-    pub command: ReportCommand,
+    pub command: Command,
 }
 
 /// Available reports.
 #[derive(Debug, Subcommand)]
 #[non_exhaustive]
-pub enum ReportCommand {
+pub enum Command {
     /// Net worth across all asset and liability accounts.
     NetWorth,
     /// Monthly income and expense summary.
@@ -40,12 +40,21 @@ pub enum ReportCommand {
 /// # Errors
 ///
 /// Propagates any [`crate::error::CliError`] from the core engine or output layer.
-pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
+#[expect(clippy::todo, reason = "implemented in a subsequent task")]
+#[expect(
+    clippy::print_stderr,
+    reason = "CLI stub message for unimplemented commands"
+)]
+#[expect(
+    clippy::unused_async,
+    reason = "signature required by command dispatch"
+)]
+pub async fn execute(args: Args, _ctx: &AppContext) -> CliResult<()> {
     match args.command {
-        ReportCommand::NetWorth => todo!(),
-        ReportCommand::Monthly { .. } => todo!(),
-        ReportCommand::Annual { .. } => todo!(),
-        ReportCommand::Budget => {
+        Command::NetWorth => todo!(),
+        Command::Monthly { .. } => todo!(),
+        Command::Annual { .. } => todo!(),
+        Command::Budget => {
             eprintln!("report budget: requires Milestone 5 — not yet implemented");
             Ok(())
         }

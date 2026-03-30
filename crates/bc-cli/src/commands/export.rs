@@ -7,7 +7,7 @@ use crate::error::CliResult;
 
 /// Supported export formats.
 #[derive(Debug, Clone, clap::ValueEnum)]
-pub enum ExportFormat {
+pub enum Format {
     /// Ledger journal format.
     Ledger,
     /// Beancount journal format.
@@ -19,7 +19,7 @@ pub enum ExportFormat {
 pub struct Args {
     /// Output format.
     #[arg(long, value_enum)]
-    pub format: ExportFormat,
+    pub format: Format,
 
     /// Output file path. Writes to stdout when omitted.
     #[arg(long, short)]
@@ -31,6 +31,11 @@ pub struct Args {
 /// # Errors
 ///
 /// Propagates any [`crate::error::CliError`] from the core engine or I/O.
+#[expect(clippy::todo, reason = "implemented in a subsequent task")]
+#[expect(
+    clippy::unused_async,
+    reason = "signature required by command dispatch"
+)]
 pub async fn execute(_args: Args, _ctx: &AppContext) -> CliResult<()> {
     todo!()
 }
