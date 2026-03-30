@@ -12,14 +12,66 @@ license.workspace      = true
 
 publish = false  # distributed as binary, not via crates.io
 
-  [package.metadata]
-    [package.metadata.cargo-machete]
-    # Stub crate — deps are forward-declared for CLI implementation
-    ignored = ["bc-core", "bc-models"]
+  [package.metadata.cargo-machete]
+  # Stub crate — deps are forward-declared for CLI implementation; none are used yet
+  ignored = [
+    "assert_cmd",
+    "assert_fs",
+    "bc-config",
+    "bc-core",
+    "bc-format-beancount",
+    "bc-format-csv",
+    "bc-format-ledger",
+    "bc-format-ofx",
+    "bc-models",
+    "clap",
+    "clap_complete",
+    "directories",
+    "insta",
+    "jiff",
+    "regex",
+    "rstest",
+    "rust_decimal",
+    "serde",
+    "serde_json",
+    "thiserror",
+    "tokio",
+    "tracing",
+  ]
+
+[[bin]]
+name = "borrow-checker"
+path = "src/main.rs"
+
+[[test]]
+name = "cli"
+path = "tests/cli/main.rs"
 
 [dependencies]
-bc-core   = { workspace = true }
-bc-models = { workspace = true }
+bc-config           = { workspace = true }
+bc-core             = { workspace = true }
+bc-format-beancount = { workspace = true }
+bc-format-csv       = { workspace = true }
+bc-format-ledger    = { workspace = true }
+bc-format-ofx       = { workspace = true }
+bc-models           = { workspace = true }
+clap                = { workspace = true }
+clap_complete       = { workspace = true }
+directories         = { workspace = true }
+jiff                = { workspace = true }
+rust_decimal        = { workspace = true }
+serde               = { workspace = true }
+serde_json          = { workspace = true }
+thiserror           = { workspace = true }
+tokio               = { workspace = true }
+tracing             = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+assert_fs  = { workspace = true }
+insta      = { workspace = true }
+regex      = { workspace = true }
+rstest     = { workspace = true }
 
 [lints]
 workspace = true
