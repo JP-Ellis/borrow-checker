@@ -12,6 +12,7 @@ use crate::commands::report;
 use crate::commands::transaction;
 
 /// BorrowChecker — personal finance with ledger/beancount compatibility.
+#[non_exhaustive]
 #[derive(Debug, clap::Parser)]
 #[command(name = "borrow-checker", version, about, long_about = None)]
 pub struct Cli {
@@ -25,6 +26,7 @@ pub struct Cli {
 }
 
 /// Global flags available on every subcommand.
+#[non_exhaustive]
 #[derive(Debug, clap::Args)]
 pub struct GlobalArgs {
     /// Emit machine-readable JSON instead of human-readable output.

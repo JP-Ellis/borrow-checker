@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::error::CliResult;
 
 /// Arguments for the `account` subcommand.
+#[non_exhaustive]
 #[derive(Debug, clap::Args)]
 pub struct Args {
     /// The account operation to perform.
@@ -42,6 +43,7 @@ pub enum Command {
 }
 
 /// CLI representation of [`bc_models::AccountType`].
+#[non_exhaustive]
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum TypeArg {
     /// Asset account.
@@ -57,6 +59,7 @@ pub enum TypeArg {
 }
 
 /// CLI representation of [`bc_models::AccountKind`].
+#[non_exhaustive]
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum KindArg {
     /// Standard bank/card/brokerage account (may have an import profile).
@@ -77,6 +80,7 @@ pub enum KindArg {
 /// # Errors
 ///
 /// Propagates any [`crate::error::CliError`] from the core engine or output layer.
+#[inline]
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
         Command::List => list(ctx).await,
