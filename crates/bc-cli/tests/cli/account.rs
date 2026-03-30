@@ -1,5 +1,10 @@
 //! Integration tests for the `account` subcommand.
 
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration test file — tests/ directory is implicitly cfg(test)"
+)]
+
 use crate::cmd_snapshot;
 use crate::common::TestContext;
 
@@ -82,7 +87,10 @@ fn archive_existing_account() {
         .output()
         .expect("create");
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
-    let id = json["id"].as_str().expect("id field");
+    let id = json
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("id field");
 
     let mut cmd = ctx.command();
     cmd.args(["account", "archive", id]);
