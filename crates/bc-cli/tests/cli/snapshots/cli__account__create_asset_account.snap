@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/account.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Created account: CommBank Savings ([ACCOUNT_ID])
+----- stderr -----

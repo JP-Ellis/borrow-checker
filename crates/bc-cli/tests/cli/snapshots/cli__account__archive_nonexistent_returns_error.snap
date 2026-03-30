@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/account.rs
+expression: output
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: invalid account ID 'account_notavalidid0000000000': invalid AccountId: Suffix error: Invalid `TypeID` suffix: Suffix must be exactly 26 characters long

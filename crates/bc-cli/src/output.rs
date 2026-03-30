@@ -11,7 +11,6 @@ use crate::error::CliResult;
     clippy::print_stdout,
     reason = "CLI binary: stdout is the intended output channel"
 )]
-#[expect(dead_code, reason = "used by command handlers in subsequent tasks")]
 #[inline]
 pub fn print_json<T: serde::Serialize>(value: &T) -> CliResult<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
@@ -27,7 +26,6 @@ pub fn print_json<T: serde::Serialize>(value: &T) -> CliResult<()> {
     clippy::print_stdout,
     reason = "CLI binary: stdout is the intended output channel"
 )]
-#[expect(dead_code, reason = "used by command handlers in subsequent tasks")]
 #[inline]
 pub fn print_row(columns: &[(&str, usize)]) {
     let parts: Vec<String> = columns
@@ -46,7 +44,6 @@ pub fn print_row(columns: &[(&str, usize)]) {
     clippy::print_stdout,
     reason = "CLI binary: stdout is the intended output channel"
 )]
-#[expect(dead_code, reason = "used by command handlers in subsequent tasks")]
 #[inline]
 pub fn print_divider(width: usize) {
     println!("{}", "-".repeat(width));

@@ -95,37 +95,144 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 }
 
 /// Lists all active accounts.
-#[expect(clippy::todo, reason = "implemented in a subsequent task")]
-#[expect(
-    clippy::unused_async,
-    reason = "signature required by command dispatch"
-)]
-async fn list(_ctx: &AppContext) -> CliResult<()> {
-    todo!()
+///
+/// # Errors
+///
+/// Propagates [`crate::error::CliError`] from the account service or JSON serialisation.
+async fn list(ctx: &AppContext) -> CliResult<()> {
+    const ID_W: usize = 36;
+    const NAME_W: usize = 30;
+    const TYPE_W: usize = 10;
+    const KIND_W: usize = 20;
+    /// Total divider width: column widths + 3 separators × 2 spaces each.
+    const DIVIDER_W: usize = ID_W + NAME_W + TYPE_W + KIND_W + 6;
+
+    let accounts = ctx.accounts.list_active().await?;
+
+    if ctx.json {
+        return crate::output::print_json(&accounts);
+    }
+
+    if accounts.is_empty() {
+        #[expect(clippy::print_stdout, reason = "CLI output")]
+        {
+            println!("No active accounts.");
+        }
+        return Ok(());
+    }
+
+    crate::output::print_row(&[
+        ("ID", ID_W),
+        ("NAME", NAME_W),
+        ("TYPE", TYPE_W),
+        ("KIND", KIND_W),
+    ]);
+    crate::output::print_divider(DIVIDER_W);
+
+    for account in &accounts {
+        let type_str = match account.account_type() {
+            bc_models::AccountType::Asset => "Asset",
+            bc_models::AccountType::Liability => "Liability",
+            bc_models::AccountType::Equity => "Equity",
+            bc_models::AccountType::Income => "Income",
+            bc_models::AccountType::Expense => "Expense",
+            _ => "Unknown",
+        };
+        let kind_str = match account.kind() {
+            bc_models::AccountKind::DepositAccount => "DepositAccount",
+            bc_models::AccountKind::ManualAsset => "ManualAsset",
+            bc_models::AccountKind::Receivable => "Receivable",
+            bc_models::AccountKind::VirtualAllocation => "VirtualAllocation",
+            _ => "Unknown",
+        };
+        crate::output::print_row(&[
+            (&account.id().to_string(), ID_W),
+            (account.name(), NAME_W),
+            (type_str, TYPE_W),
+            (kind_str, KIND_W),
+        ]);
+    }
+    Ok(())
 }
 
 /// Creates a new account.
-#[expect(clippy::todo, reason = "implemented in a subsequent task")]
-#[expect(
-    clippy::unused_async,
-    reason = "signature required by command dispatch"
-)]
+///
+/// # Errors
+///
+/// Propagates [`crate::error::CliError`] from the account service or JSON serialisation.
 async fn create(
-    _ctx: &AppContext,
-    _name: String,
-    _account_type: TypeArg,
-    _kind: KindArg,
-    _description: Option<String>,
+    ctx: &AppContext,
+    name: String,
+    account_type: TypeArg,
+    kind: KindArg,
+    description: Option<String>,
 ) -> CliResult<()> {
-    todo!()
+    use bc_models::AccountKind;
+    use bc_models::AccountType;
+
+    let bc_type = match account_type {
+        TypeArg::Asset => AccountType::Asset,
+        TypeArg::Liability => AccountType::Liability,
+        TypeArg::Equity => AccountType::Equity,
+        TypeArg::Income => AccountType::Income,
+        TypeArg::Expense => AccountType::Expense,
+    };
+
+    let bc_kind = match kind {
+        KindArg::DepositAccount => AccountKind::DepositAccount,
+        KindArg::ManualAsset => AccountKind::ManualAsset,
+        KindArg::Receivable => AccountKind::Receivable,
+        KindArg::VirtualAllocation => AccountKind::VirtualAllocation,
+    };
+
+    let account_id = ctx
+        .accounts
+        .create(
+            &name,
+            bc_type,
+            bc_kind,
+            description.as_deref(),
+            None,
+            &[],
+            &[],
+        )
+        .await?;
+
+    if ctx.json {
+        let account = ctx.accounts.find_by_id(&account_id).await?;
+        return crate::output::print_json(&account);
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("Created account: {name} ({account_id})");
+    }
+    Ok(())
 }
 
 /// Archives an account by ID.
-#[expect(clippy::todo, reason = "implemented in a subsequent task")]
-#[expect(
-    clippy::unused_async,
-    reason = "signature required by command dispatch"
-)]
-async fn archive(_ctx: &AppContext, _id: String) -> CliResult<()> {
-    todo!()
+///
+/// # Errors
+///
+/// Propagates [`crate::error::CliError`] from the account service or JSON serialisation.
+async fn archive(ctx: &AppContext, id: String) -> CliResult<()> {
+    use core::str::FromStr as _;
+
+    let account_id = bc_models::AccountId::from_str(&id)
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID '{id}': {e}")))?;
+
+    ctx.accounts.archive(&account_id).await?;
+
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "archived": true,
+            "id": id,
+        }));
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("Archived account: {id}");
+    }
+    Ok(())
 }

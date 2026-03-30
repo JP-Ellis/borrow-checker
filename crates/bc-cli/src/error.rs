@@ -6,10 +6,6 @@ pub type CliResult<T> = Result<T, CliError>;
 /// Top-level error type for the `borrow-checker` CLI.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-#[expect(
-    dead_code,
-    reason = "variants used by command handlers in subsequent tasks"
-)]
 pub enum CliError {
     /// An error propagated from the core engine.
     #[error("{0}")]
