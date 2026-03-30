@@ -10,7 +10,7 @@
 //! The main entry point is [`OfxImporter`].
 
 pub(crate) mod ast;
-pub mod importer;
+pub(crate) mod importer;
 pub(crate) mod parser;
 pub(crate) mod sgml;
 

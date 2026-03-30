@@ -8,6 +8,8 @@ use crate::ast::OfxTransaction;
 use crate::sgml::SgmlToken;
 use crate::sgml::tokenise;
 
+// TODO: consider migrating to nom parser combinators
+
 /// Parses an OFX or QFX file (auto-detects v1 SGML vs v2 XML).
 ///
 /// # Errors

@@ -35,17 +35,57 @@ impl bc_core::Importer for Importer {
 
     #[inline]
     fn detect(&self, bytes: &[u8]) -> bool {
+        // NOTE: detect() has no access to the configured delimiter, so we
+        // probe all common delimiter characters heuristically.
+        const DELIMITERS: [char; 4] = [',', '\t', ';', '|'];
+        // Number of non-empty lines to inspect before giving up.
+        const SCAN_LINES: usize = 20;
+        // Consecutive lines with the same non-trivial column count needed to
+        // confidently identify a CSV section.  Preamble rows from bank exports
+        // typically have irregular column counts, so a stable run of 3+
+        // strongly suggests we have reached the header and data lines.
+        const MIN_RUN: usize = 3;
 
-        // Must be valid UTF-8 and the first non-empty line must contain a
-        // delimiter character.
-        // NOTE: delimiter detection is heuristic — detect() has no access to
-        // the configured delimiter, so we accept any common delimiter character
+        // Must be valid UTF-8.
         let Ok(text) = core::str::from_utf8(bytes) else {
             return false;
         };
-        text.lines()
-            .find(|l| !l.trim().is_empty())
-            .is_some_and(|first| first.contains([',', '\t', ';', '|']))
+
+        // Collect up to SCAN_LINES non-empty lines.
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .take(SCAN_LINES)
+            .collect();
+
+        if lines.is_empty() {
+            return false;
+        }
+
+        // For each candidate delimiter, scan for MIN_RUN+ consecutive lines
+        // sharing the same column count > 1.  A count of 1 means the
+        // delimiter was absent on that line; those lines break a run.
+        for &delim in &DELIMITERS {
+            let mut run = 0_usize;
+            let mut prev = 0_usize;
+            for line in &lines {
+                let count = line.split(delim).count();
+                if count > 1 && count == prev {
+                    run = run.saturating_add(1);
+                    if run >= MIN_RUN {
+                        return true;
+                    }
+                } else {
+                    run = 1;
+                    prev = count;
+                }
+            }
+        }
+
+        // Fallback for files too short to produce a stable run (e.g. a single
+        // header line with no data rows yet): accept if the first non-empty
+        // line contains any recognised delimiter character.
+        lines.first().is_some_and(|l| l.contains(DELIMITERS))
     }
 
     #[inline]
@@ -395,6 +435,28 @@ mod tests {
     fn detect_returns_false_for_non_csv() {
         let importer = Importer::new();
         assert!(!importer.detect(b"\x89PNG\r\n"));
+    }
+
+    #[test]
+    fn detect_returns_true_for_csv_with_preamble() {
+        // Simulate a bank export with two metadata rows before the real CSV.
+        let importer = Importer::new();
+        let input = b"Bank of Somewhere\n\
+                      Export date: 2025-01-01\n\
+                      Date,Amount,Description\n\
+                      2025-01-01,50.00,Coffee\n\
+                      2025-01-02,12.00,Lunch\n";
+        assert!(importer.detect(input));
+    }
+
+    #[test]
+    fn detect_returns_false_for_preamble_only() {
+        // Lines with no consistent delimiter pattern should not be detected.
+        let importer = Importer::new();
+        let input = b"Bank of Somewhere\n\
+                      Export date: 2025-01-01\n\
+                      Account: 123456789\n";
+        assert!(!importer.detect(input));
     }
 
     #[test]

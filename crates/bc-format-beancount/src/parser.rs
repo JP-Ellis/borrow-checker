@@ -8,6 +8,8 @@ use crate::ast::Posting;
 use crate::ast::Transaction;
 use crate::ast::TxFlag;
 
+// TODO: consider migrating to nom parser combinators
+
 /// Parses a complete Beancount file and returns its directives.
 ///
 /// # Arguments

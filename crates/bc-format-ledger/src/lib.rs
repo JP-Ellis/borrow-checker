@@ -8,8 +8,8 @@
 //! [Ledger](https://ledger-cli.org/) plain-text accounting format.
 
 pub(crate) mod ast;
-pub mod exporter;
-pub mod importer;
+pub(crate) mod exporter;
+pub(crate) mod importer;
 pub(crate) mod parser;
 pub(crate) mod writer;
 
