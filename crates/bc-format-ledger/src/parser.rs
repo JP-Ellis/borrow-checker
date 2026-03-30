@@ -9,6 +9,8 @@ use crate::ast::Posting;
 use crate::ast::PostingAmount;
 use crate::ast::Transaction;
 
+// TODO: consider migrating to nom parser combinators
+
 /// Parses a complete Ledger file and returns its entries.
 ///
 /// # Errors

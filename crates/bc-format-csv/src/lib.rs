@@ -11,14 +11,14 @@
     reason = "re-exporting key types at the crate root so users only need bc_format_csv as an import path"
 )]
 
-pub mod config;
+pub(crate) mod config;
 pub use config::AmountColumns;
 pub use config::Config as CsvConfig;
 pub use config::Preamble;
 
 pub(crate) mod preamble;
 
-pub mod importer;
+pub(crate) mod importer;
 pub use importer::Importer as CsvImporter;
 
 /// Detects whether `bytes` look like a CSV/delimited-text file.
