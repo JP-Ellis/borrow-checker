@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/help.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+----- stderr -----
+budget status: requires Milestone 5 (budgeting) — not yet implemented
