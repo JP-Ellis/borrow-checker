@@ -10,7 +10,7 @@ mod version;
 mod account;
 mod export;
 mod import;
-// mod report;
+mod report;
 mod transaction;
 
 /// Capture binary output as a formatted snapshot string.
