@@ -216,6 +216,41 @@ impl Service {
             .collect()
     }
 
+    /// Lists all import profiles in the database, ordered by creation time.
+    ///
+    /// # Returns
+    ///
+    /// A [`Vec`] of all [`ImportProfile`] values ordered by `created_at` ascending.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if any stored value cannot be parsed.
+    /// Returns [`BcError::Database`] on database query failure.
+    #[inline]
+    pub async fn list_all(&self) -> BcResult<Vec<ImportProfile>> {
+        let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
+            "SELECT id, name, importer, account_id, config, created_at \
+             FROM import_profiles ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(
+                |(raw_id, name, importer, raw_account_id, raw_config, raw_created_at)| {
+                    parse_row(
+                        &raw_id,
+                        name,
+                        importer,
+                        &raw_account_id,
+                        &raw_config,
+                        &raw_created_at,
+                    )
+                },
+            )
+            .collect()
+    }
+
     /// Deletes an import profile by its ID.
     ///
     /// # Arguments
@@ -397,5 +432,34 @@ mod tests {
         let fake_id = ProfileId::new();
         let result = svc.delete(&fake_id).await;
         assert!(matches!(result, Err(BcError::NotFound(_))));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn list_all_returns_profiles_from_all_accounts(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+
+        let account1 = make_account(&pool).await;
+        let account2 = crate::AccountService::new(pool.clone())
+            .create(
+                "Checking",
+                bc_models::AccountType::Asset,
+                bc_models::AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create account2");
+
+        svc.create("Profile A", "csv", &account1, Config::default())
+            .await
+            .expect("create A");
+        svc.create("Profile B", "ofx", &account2, Config::default())
+            .await
+            .expect("create B");
+
+        let all = svc.list_all().await.expect("list_all should succeed");
+        assert_eq!(all.len(), 2);
     }
 }
