@@ -20,7 +20,6 @@ pub struct TestContext {
     filters: Vec<(Regex, String)>,
 }
 
-#[expect(dead_code, reason = "used by test modules added in subsequent tasks")]
 impl TestContext {
     /// Creates a new isolated test context with a fresh SQLite database.
     #[expect(clippy::expect_used, reason = "test helper panics on setup failure")]
@@ -28,6 +27,8 @@ impl TestContext {
         let home_dir = TempDir::new().expect("create temp dir");
         let db_path = home_dir.path().join("test.db");
 
+        let home_path_escaped =
+            regex::escape(home_dir.path().to_str().expect("temp dir path is UTF-8"));
         let filters = vec![
             (
                 Regex::new("account_[0-9a-z]{26}").expect("valid regex"),
@@ -40,6 +41,10 @@ impl TestContext {
             (
                 Regex::new("profile_[0-9a-z]{26}").expect("valid regex"),
                 "[PROFILE_ID]".to_owned(),
+            ),
+            (
+                Regex::new(&home_path_escaped).expect("valid temp-dir regex"),
+                "[TEMP_DIR]".to_owned(),
             ),
         ];
 

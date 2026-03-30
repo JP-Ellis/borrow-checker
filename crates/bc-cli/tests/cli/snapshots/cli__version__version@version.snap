@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/version.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+borrow-checker 0.1.0
+----- stderr -----
