@@ -10,13 +10,13 @@ use crate::error::CliResult;
 pub struct Args {
     /// The account operation to perform.
     #[command(subcommand)]
-    pub command: AccountCommand,
+    pub command: Command,
 }
 
 /// Available account operations.
 #[derive(Debug, Subcommand)]
 #[non_exhaustive]
-pub enum AccountCommand {
+pub enum Command {
     /// List all active accounts.
     List,
     /// Create a new account.
@@ -26,10 +26,10 @@ pub enum AccountCommand {
         name: String,
         /// Account type (asset, liability, equity, income, expense).
         #[arg(long, value_enum)]
-        r#type: AccountTypeArg,
+        r#type: TypeArg,
         /// Account maintenance kind.
         #[arg(long, value_enum, default_value = "deposit-account")]
-        kind: AccountKindArg,
+        kind: KindArg,
         /// Optional free-text description.
         #[arg(long)]
         description: Option<String>,
@@ -43,7 +43,7 @@ pub enum AccountCommand {
 
 /// CLI representation of [`bc_models::AccountType`].
 #[derive(Debug, Clone, clap::ValueEnum)]
-pub enum AccountTypeArg {
+pub enum TypeArg {
     /// Asset account.
     Asset,
     /// Liability account.
@@ -58,7 +58,7 @@ pub enum AccountTypeArg {
 
 /// CLI representation of [`bc_models::AccountKind`].
 #[derive(Debug, Clone, clap::ValueEnum)]
-pub enum AccountKindArg {
+pub enum KindArg {
     /// Standard bank/card/brokerage account (may have an import profile).
     #[value(name = "deposit-account")]
     DepositAccount,
@@ -79,31 +79,49 @@ pub enum AccountKindArg {
 /// Propagates any [`crate::error::CliError`] from the core engine or output layer.
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
-        AccountCommand::List => list(ctx).await,
-        AccountCommand::Create {
+        Command::List => list(ctx).await,
+        Command::Create {
             name,
             r#type,
             kind,
             description,
         } => create(ctx, name, r#type, kind, description).await,
-        AccountCommand::Archive { id } => archive(ctx, id).await,
+        Command::Archive { id } => archive(ctx, id).await,
     }
 }
 
+/// Lists all active accounts.
+#[expect(clippy::todo, reason = "implemented in a subsequent task")]
+#[expect(
+    clippy::unused_async,
+    reason = "signature required by command dispatch"
+)]
 async fn list(_ctx: &AppContext) -> CliResult<()> {
     todo!()
 }
 
+/// Creates a new account.
+#[expect(clippy::todo, reason = "implemented in a subsequent task")]
+#[expect(
+    clippy::unused_async,
+    reason = "signature required by command dispatch"
+)]
 async fn create(
     _ctx: &AppContext,
     _name: String,
-    _account_type: AccountTypeArg,
-    _kind: AccountKindArg,
+    _account_type: TypeArg,
+    _kind: KindArg,
     _description: Option<String>,
 ) -> CliResult<()> {
     todo!()
 }
 
+/// Archives an account by ID.
+#[expect(clippy::todo, reason = "implemented in a subsequent task")]
+#[expect(
+    clippy::unused_async,
+    reason = "signature required by command dispatch"
+)]
 async fn archive(_ctx: &AppContext, _id: String) -> CliResult<()> {
     todo!()
 }
