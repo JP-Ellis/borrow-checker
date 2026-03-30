@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/report.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Monthly report: 2026-03 (0 transactions)
+----- stderr -----
