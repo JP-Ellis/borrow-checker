@@ -53,18 +53,18 @@ ______________________________________________________________________
 
 ## Milestone 3 — CLI
 
-**Status:** ◻️
+**Status:** ✅
 **Crate:** `bc-cli`
 
-- [ ] `account` commands (list, create, archive)
-- [ ] `transaction` commands (list, add, amend, void)
-- [ ] `import` command (`--profile <name> <file>`)
-- [ ] `export` command (`--format`, `--output`)
-- [ ] `report` commands (monthly, annual, net-worth, budget)
-- [ ] `budget` commands (status, allocate, envelopes)
-- [ ] `plugin` commands (install, list, remove)
-- [ ] `--json` flag on all commands for scripting
-- [ ] Shell completions (bash, zsh, fish)
+- [x] `account` commands (list, create, archive)
+- [x] `transaction` commands (list, add, amend, void)
+- [x] `import` command (`--profile <name> <file>`)
+- [x] `export` command (`--format`, `--output`)
+- [x] `report` commands (monthly, annual, net-worth, budget)
+- [x] `budget` commands (status, allocate, envelopes)
+- [x] `plugin` commands (install, list, remove)
+- [x] `--json` flag on all commands for scripting
+- [x] Shell completions (bash, zsh, fish)
 
 ______________________________________________________________________
 
