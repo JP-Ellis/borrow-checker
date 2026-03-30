@@ -1,0 +1,37 @@
+---
+source: crates/bc-cli/tests/cli/help.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Import transactions from a file using a named import profile
+
+Usage: borrow-checker import [OPTIONS] --profile <NAME> --counterpart <ACCOUNT_ID> <FILE>
+
+Arguments:
+  <FILE>
+          File to import
+
+Options:
+      --json
+          Emit machine-readable JSON instead of human-readable output
+          
+          [env: BC_JSON=]
+
+      --profile <NAME>
+          Name of the import profile to use
+
+      --counterpart <ACCOUNT_ID>
+          Account ID for the offsetting (counterpart) posting.
+          
+          CSV and OFX imports produce single-account raw transactions. This account receives the balancing entry for each imported line.
+
+      --db-path <DB_PATH>
+          Path to the SQLite database file
+          
+          [env: BC_DB_PATH=[TEMP_DIR]/test.db]
+
+  -h, --help
+          Print help (see a summary with '-h')
+----- stderr -----

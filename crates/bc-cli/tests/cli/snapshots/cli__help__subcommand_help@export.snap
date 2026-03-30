@@ -1,0 +1,35 @@
+---
+source: crates/bc-cli/tests/cli/help.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Export all accounts and transactions to a file or stdout
+
+Usage: borrow-checker export [OPTIONS] --format <FORMAT>
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - ledger:    Ledger journal format
+          - beancount: Beancount journal format
+
+      --json
+          Emit machine-readable JSON instead of human-readable output
+          
+          [env: BC_JSON=]
+
+      --db-path <DB_PATH>
+          Path to the SQLite database file
+          
+          [env: BC_DB_PATH=[TEMP_DIR]/test.db]
+
+  -o, --output <OUTPUT>
+          Output file path. Writes to stdout when omitted
+
+  -h, --help
+          Print help (see a summary with '-h')
+----- stderr -----
