@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::error::CliResult;
 
 /// Arguments for the `plugin` subcommand.
+#[non_exhaustive]
 #[derive(Debug, clap::Args)]
 pub struct Args {
     /// The plugin operation to perform.
@@ -46,6 +47,7 @@ pub enum Command {
     clippy::unused_async,
     reason = "signature required by command dispatch"
 )]
+#[inline]
 pub async fn execute(args: Args, _ctx: &AppContext) -> CliResult<()> {
     let op = match args.command {
         Command::Install { .. } => "install",
