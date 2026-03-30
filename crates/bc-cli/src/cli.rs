@@ -1,0 +1,59 @@
+//! Clap CLI definition: top-level [`Cli`] struct and [`Commands`] enum.
+
+use std::path::PathBuf;
+
+use crate::commands::account;
+use crate::commands::budget;
+use crate::commands::completions;
+use crate::commands::export;
+use crate::commands::import;
+use crate::commands::plugin;
+use crate::commands::report;
+use crate::commands::transaction;
+
+/// BorrowChecker — personal finance with ledger/beancount compatibility.
+#[derive(Debug, clap::Parser)]
+#[command(name = "borrow-checker", version, about, long_about = None)]
+pub struct Cli {
+    /// Global flags shared across all subcommands.
+    #[command(flatten)]
+    pub global: GlobalArgs,
+
+    /// The subcommand to run.
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+/// Global flags available on every subcommand.
+#[derive(Debug, clap::Args)]
+pub struct GlobalArgs {
+    /// Emit machine-readable JSON instead of human-readable output.
+    #[arg(long, global = true, env = "BC_JSON")]
+    pub json: bool,
+
+    /// Path to the SQLite database file.
+    #[arg(long, global = true, env = "BC_DB_PATH")]
+    pub db_path: Option<PathBuf>,
+}
+
+/// Top-level subcommands.
+#[derive(Debug, clap::Subcommand)]
+#[non_exhaustive]
+pub enum Commands {
+    /// Manage accounts (list, create, archive).
+    Account(account::Args),
+    /// Manage transactions (list, add, amend, void).
+    Transaction(transaction::Args),
+    /// Import transactions from a file using a named import profile.
+    Import(import::Args),
+    /// Export all accounts and transactions to a file or stdout.
+    Export(export::Args),
+    /// Generate financial reports.
+    Report(report::Args),
+    /// Manage budget envelopes (requires Milestone 5).
+    Budget(budget::Args),
+    /// Manage plugins (requires Milestone 6).
+    Plugin(plugin::Args),
+    /// Generate shell completion scripts.
+    Completions(completions::Args),
+}
