@@ -20,7 +20,8 @@ exit_code: 0
       },
       "cost": null,
       "memo": null,
-      "tag_ids": []
+      "tag_ids": [],
+      "envelope_id": null
     },
     {
       "id": "[POSTING_ID]",
@@ -31,7 +32,8 @@ exit_code: 0
       },
       "cost": null,
       "memo": null,
-      "tag_ids": []
+      "tag_ids": [],
+      "envelope_id": null
     }
   ],
   "status": "cleared",
