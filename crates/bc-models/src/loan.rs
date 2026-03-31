@@ -276,7 +276,7 @@ mod tests {
     fn frequency_custom_periods_per_year() {
         let result = Frequency::Custom { period_days: 28 }.periods_per_year();
         // 365.25 / 28 = Decimal::new(36525, 2) / 28
-        let expected = Decimal::new(36_525, 2) / Decimal::from(28u32);
+        let expected = Decimal::new(36_525, 2) / Decimal::from(28_u32);
         assert_eq!(result, expected);
     }
 
