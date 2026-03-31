@@ -619,7 +619,7 @@ impl Service {
             let exists: bool =
                 sqlx::query_scalar("SELECT count(*) > 0 FROM transactions WHERE id = ?")
                     .bind(&tx_id_str)
-                    .fetch_one(&self.pool)
+                    .fetch_one(&mut *db_tx)
                     .await?;
             return if exists {
                 Err(BcError::AlreadyVoided(tx_id.clone()))

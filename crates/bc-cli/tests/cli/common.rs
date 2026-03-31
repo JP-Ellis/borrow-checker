@@ -64,6 +64,15 @@ impl TestContext {
     }
 
     /// Returns a configured `Command` pointing at the `borrow-checker` binary.
+    ///
+    /// Passes `--db-path` as an explicit CLI flag so the test's isolated
+    /// database is used on every platform. The `BC_DB_PATH` environment
+    /// variable is intentionally not used here: the config layer maps it via
+    /// the underscore separator which treats `DB_PATH` as the nested key
+    /// `db.path` rather than the flat `db_path` field, silently ignoring it.
+    ///
+    /// On Windows, `SystemRoot` is preserved after the `env_clear()` call so
+    /// that the spawned process can load system DLLs from the standard path.
     #[expect(clippy::expect_used, reason = "test helper panics on setup failure")]
     pub fn command(&self) -> Command {
         let mut cmd = Command::cargo_bin("borrow-checker").expect("borrow-checker binary");
@@ -71,7 +80,14 @@ impl TestContext {
             .env("LANG", "C")
             .env("TZ", "UTC")
             .env("HOME", self.home_dir.path())
-            .env("BC_DB_PATH", &self.db_path);
+            .arg("--db-path")
+            .arg(&self.db_path);
+        // On Windows, preserve SystemRoot so the spawned binary can locate
+        // system DLLs (env_clear() removes it, but it is required at runtime).
+        #[cfg(windows)]
+        if let Some(v) = std::env::var_os("SystemRoot") {
+            cmd.env("SystemRoot", v);
+        }
         cmd
     }
 
