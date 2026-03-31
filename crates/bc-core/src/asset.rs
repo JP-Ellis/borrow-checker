@@ -56,10 +56,13 @@ impl Service {
     /// Atomically:
     /// 1. Appends an [`Event::AssetValuationRecorded`] to the event log.
     /// 2. Inserts a row into `asset_valuations`.
-    /// 3. If `counterpart_id` is `Some` and `market_value` is non-zero, inserts a
-    ///    double-entry transaction with two postings:
-    ///    - `asset_account` receives `+market_value`
-    ///    - `counterpart_account` receives `-market_value`
+    /// 3. If `counterpart_id` is `Some` and the **change** from the previous valuation is
+    ///    non-zero, inserts a double-entry transaction with two postings:
+    ///    - `asset_account` receives `+change`
+    ///    - `counterpart_account` receives `-change`
+    ///
+    ///    On the first valuation with a counterpart, the full market value is used as the
+    ///    change (treating the initial opening as $0).
     ///
     /// # Arguments
     ///
@@ -102,6 +105,34 @@ impl Service {
 
         let mut tx = self.pool.begin().await?;
 
+        // Query the previous market value BEFORE inserting, so we can compute the delta.
+        // This must happen inside the transaction to get a consistent snapshot.
+        let prev_row: Option<(String,)> = sqlx::query_as(
+            "SELECT market_value \
+             FROM asset_valuations \
+             WHERE account_id = ? AND commodity = ? \
+             ORDER BY recorded_at DESC, created_at DESC \
+             LIMIT 1",
+        )
+        .bind(account_id.to_string())
+        .bind(commodity)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let previous_market_value = prev_row
+            .map(|(s,)| {
+                s.parse::<Decimal>()
+                    .map_err(|e| BcError::BadData(format!("invalid market_value '{s}': {e}")))
+            })
+            .transpose()?
+            .unwrap_or(Decimal::ZERO);
+
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "subtracting two well-bounded market values; overflow is not possible in practice"
+        )]
+        let change = market_value - previous_market_value;
+
         insert_event(&event, &mut tx).await?;
 
         sqlx::query(
@@ -119,10 +150,10 @@ impl Service {
         .execute(&mut *tx)
         .await?;
 
-        // If a counterpart account is supplied and value is non-zero, insert a
+        // If a counterpart account is supplied and the change is non-zero, insert a
         // double-entry transaction to record the unrealised gain/loss.
         if let Some(cpt_id) = counterpart_id {
-            if !market_value.is_zero() {
+            if !change.is_zero() {
                 let tx_id = TransactionId::new();
                 let status_str = to_db_str(TransactionStatus::Cleared)?;
 
@@ -142,7 +173,7 @@ impl Service {
                 .execute(&mut *tx)
                 .await?;
 
-                // Asset posting: +market_value
+                // Asset posting: +change
                 let asset_posting_id = PostingId::new();
                 sqlx::query(
                     "INSERT INTO postings \
@@ -153,18 +184,18 @@ impl Service {
                 .bind(asset_posting_id.to_string())
                 .bind(tx_id.to_string())
                 .bind(account_id.to_string())
-                .bind(market_value.to_string())
+                .bind(change.to_string())
                 .bind(commodity)
                 .execute(&mut *tx)
                 .await?;
 
-                // Counterpart posting: -market_value
+                // Counterpart posting: -change
                 let counterpart_posting_id = PostingId::new();
                 #[expect(
                     clippy::arithmetic_side_effects,
-                    reason = "negating a well-bounded user-supplied market value; overflow is not possible in practice"
+                    reason = "negating a well-bounded delta value; overflow is not possible in practice"
                 )]
-                let neg_value = -market_value;
+                let neg_change = -change;
                 sqlx::query(
                     "INSERT INTO postings \
                      (id, transaction_id, account_id, amount, commodity, memo, position, \
@@ -174,7 +205,7 @@ impl Service {
                 .bind(counterpart_posting_id.to_string())
                 .bind(tx_id.to_string())
                 .bind(cpt_id.to_string())
-                .bind(neg_value.to_string())
+                .bind(neg_change.to_string())
                 .bind(commodity)
                 .execute(&mut *tx)
                 .await?;
@@ -362,7 +393,10 @@ impl Service {
             return Ok(());
         }
 
+        let mut db_tx = self.pool.begin().await?;
+
         // Determine period start: last recorded depreciation end or acquisition_date.
+        // Read inside the transaction to avoid TOCTOU races.
         let last_end: Option<String> = sqlx::query_scalar(
             "SELECT period_end FROM asset_depreciations \
              WHERE account_id = ? AND commodity = ? \
@@ -371,7 +405,7 @@ impl Service {
         )
         .bind(account_id.to_string())
         .bind(commodity)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *db_tx)
         .await?;
 
         let period_start = match last_end {
@@ -391,11 +425,27 @@ impl Service {
             return Ok(());
         }
 
-        // Book value for declining balance.
-        let book_val = self
-            .book_value(account_id, commodity)
-            .await?
-            .unwrap_or(acquisition_cost);
+        // Compute book value within the transaction for a consistent snapshot.
+        // book_value = acquisition_cost - SUM(asset_depreciations.amount)
+        let depr_rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT amount FROM asset_depreciations WHERE account_id = ? AND commodity = ?",
+        )
+        .bind(account_id.to_string())
+        .bind(commodity)
+        .fetch_all(&mut *db_tx)
+        .await?;
+
+        let total_depr = depr_rows.into_iter().try_fold(Decimal::ZERO, |acc, (s,)| {
+            let d = s
+                .parse::<Decimal>()
+                .map_err(|e| BcError::BadData(format!("invalid depreciation amount '{s}': {e}")))?;
+            acc.checked_add(d)
+                .ok_or_else(|| BcError::BadData("depreciation sum overflow".into()))
+        })?;
+
+        let book_val = acquisition_cost
+            .checked_sub(total_depr)
+            .ok_or_else(|| BcError::BadData("book value underflow".into()))?;
 
         let days = days_between(period_start, as_of);
         if days <= 0_i32 {
@@ -448,8 +498,6 @@ impl Service {
             period_start,
             period_end: as_of,
         };
-
-        let mut db_tx = self.pool.begin().await?;
 
         insert_event(&event, &mut db_tx).await?;
 
@@ -676,5 +724,73 @@ mod tests {
             .expect("balance query");
         // The counterpart receives the opposite posting — if asset goes up, equity goes down
         assert_eq!(balance, dec!(-700_000));
+    }
+
+    /// Second valuation should only post the delta, not the full absolute value.
+    ///
+    /// First valuation: 700_000 → posts +700_000 to asset, -700_000 to counterpart.
+    /// Second valuation: 750_000 → change is +50_000 → posts +50_000 to asset, -50_000 to counterpart.
+    /// Net counterpart balance: -700_000 + -50_000 = -750_000.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn record_valuation_second_valuation_posts_delta(pool: SqlitePool) {
+        let asset_id = make_manual_asset(&pool).await;
+
+        let counterpart_id = crate::AccountService::new(pool.clone())
+            .create(
+                "Equity:Unrealized",
+                AccountType::Equity,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("create equity account");
+
+        let svc = super::Service::new(pool.clone());
+
+        // First valuation: full market value posted as change (previous = 0)
+        svc.record_valuation(
+            &asset_id,
+            dec!(700_000),
+            "AUD",
+            ValuationSource::ProfessionalAppraisal,
+            jiff::civil::date(2026, 3, 31),
+            Some(&counterpart_id),
+        )
+        .await
+        .expect("first valuation");
+
+        // Second valuation: only the delta (750_000 - 700_000 = 50_000) should be posted
+        svc.record_valuation(
+            &asset_id,
+            dec!(750_000),
+            "AUD",
+            ValuationSource::MarketData,
+            jiff::civil::date(2026, 6, 30),
+            Some(&counterpart_id),
+        )
+        .await
+        .expect("second valuation");
+
+        let balance_engine = crate::BalanceEngine::new(pool.clone());
+
+        // Asset balance should reflect cumulative postings: +700_000 + 50_000 = +750_000
+        let asset_balance = balance_engine
+            .balance_for(&asset_id, "AUD")
+            .await
+            .expect("asset balance query");
+        assert_eq!(asset_balance, dec!(750_000));
+
+        // Counterpart balance: -700_000 + -50_000 = -750_000
+        let counterpart_balance = balance_engine
+            .balance_for(&counterpart_id, "AUD")
+            .await
+            .expect("counterpart balance query");
+        assert_eq!(counterpart_balance, dec!(-750_000));
     }
 }
