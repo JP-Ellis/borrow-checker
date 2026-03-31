@@ -58,6 +58,18 @@ impl TestContext {
                 "[PROFILE_ID]".to_owned(),
             ),
             (
+                Regex::new("valuation_[0-9a-z]{26}").expect("valid regex"),
+                "[VALUATION_ID]".to_owned(),
+            ),
+            (
+                Regex::new("loan_[0-9a-z]{26}").expect("valid regex"),
+                "[LOAN_ID]".to_owned(),
+            ),
+            (
+                Regex::new("depreciation_[0-9a-z]{26}").expect("valid regex"),
+                "[DEPRECIATION_ID]".to_owned(),
+            ),
+            (
                 Regex::new(&home_path_escaped).expect("valid temp-dir regex"),
                 "[TEMP_DIR]".to_owned(),
             ),

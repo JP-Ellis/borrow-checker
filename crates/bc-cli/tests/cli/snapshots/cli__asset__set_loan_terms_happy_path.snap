@@ -1,0 +1,13 @@
+---
+source: crates/bc-cli/tests/cli/asset.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "account_id": "[ACCOUNT_ID]",
+  "set": true,
+  "term_months": 24
+}
+----- stderr -----
