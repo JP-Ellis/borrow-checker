@@ -39,6 +39,10 @@ pub struct Args {
 #[inline]
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     // Gather domain data.
+    // NOTE: Only active accounts are exported. Archived accounts are omitted,
+    // which means historical transactions referencing archived accounts may not
+    // re-import cleanly into a fresh database. A future milestone will add an
+    // `--include-archived` flag.
     let accounts = ctx.accounts.list_active().await?;
     let transactions = ctx.transactions.list().await?;
     // Commodities and tags are not yet exposed by the service layer.
@@ -72,10 +76,10 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             }
         }
         None => {
-            #[expect(clippy::print_stdout, reason = "export output to stdout")]
-            {
-                print!("{}", String::from_utf8_lossy(&bytes));
-            }
+            use std::io::Write as _;
+            std::io::stdout()
+                .write_all(&bytes)
+                .map_err(crate::error::CliError::Io)?;
         }
     }
 

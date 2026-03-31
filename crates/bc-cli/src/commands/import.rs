@@ -25,7 +25,10 @@ pub struct Args {
     pub file: PathBuf,
 }
 
-/// Builds an importer registry with all built-in format importers registered.
+/// Builds an [`bc_core::ImporterRegistry`] pre-loaded with all built-in format importers.
+///
+/// Registers CSV, Ledger, Beancount, and OFX importers. Plugin-provided importers
+/// are not included here — they will be injected by the plugin host in Milestone 6.
 fn default_registry() -> bc_core::ImporterRegistry {
     let mut registry = bc_core::ImporterRegistry::new();
     registry
@@ -82,8 +85,9 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         .map_err(|e| crate::error::CliError::Arg(format!("import parse error: {e}")))?;
 
     let account_id = profile.account_id.clone();
-    let mut import_count = 0_usize;
-
+    // NOTE: Import does not yet deduplicate — running the same file twice will create
+    // duplicate transactions. Deduplication (ContentHash / FitId strategies) is
+    // deferred to a later milestone once the full import pipeline matures.
     for raw in &raw_txs {
         let posting_account = bc_models::Posting::builder()
             .id(bc_models::PostingId::new())
@@ -114,19 +118,16 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             .build();
 
         ctx.transactions.create(tx).await?;
-        import_count = import_count.saturating_add(1);
     }
 
+    let count = raw_txs.len();
     if ctx.json {
-        return crate::output::print_json(&serde_json::json!({
-            "imported": import_count,
-            "total": raw_txs.len(),
-        }));
+        return crate::output::print_json(&serde_json::json!({ "imported": count }));
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        println!("Imported {import_count} of {} transactions.", raw_txs.len());
+        println!("Imported {count} transactions.");
     }
     Ok(())
 }

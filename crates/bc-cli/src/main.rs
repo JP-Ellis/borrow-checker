@@ -56,6 +56,8 @@ async fn main() {
         eprintln!("error: {e}");
         let code = match &e {
             CliError::Core(bc_core::BcError::NotFound(_)) => 2_i32,
+            CliError::Core(bc_core::BcError::AlreadyVoided(_))
+            | CliError::Core(bc_core::BcError::AlreadyArchived(_)) => 3_i32,
             CliError::Core(_) | CliError::Io(_) | CliError::Json(_) | CliError::Arg(_) => 1_i32,
         };
         std::process::exit(code);
