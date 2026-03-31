@@ -132,8 +132,8 @@ fn parse_v2(bytes: &[u8]) -> Result<OfxStatement, String> {
                 }
             }
             Event::Text(ref e) => {
-                let text = e
-                    .unescape()
+                let decoded = e.decode().map_err(|xml_err| xml_err.to_string())?;
+                let text = quick_xml::escape::unescape(&decoded)
                     .map_err(|xml_err| xml_err.to_string())?
                     .trim()
                     .to_owned();
@@ -165,7 +165,8 @@ fn parse_v2(bytes: &[u8]) -> Result<OfxStatement, String> {
             | Event::CData(_)
             | Event::Decl(_)
             | Event::PI(_)
-            | Event::DocType(_) => {}
+            | Event::DocType(_)
+            | Event::GeneralRef(_) => {}
         }
         buf.clear();
     }
