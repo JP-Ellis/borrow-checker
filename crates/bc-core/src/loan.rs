@@ -7,6 +7,7 @@ use bc_models::LoanTerms;
 use bc_models::RepaymentFrequency;
 use jiff::civil::Date;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive as _;
 use sqlx::SqlitePool;
 
 use crate::BcError;
@@ -17,6 +18,37 @@ use crate::events::insert_event;
 /// Raw `loan_terms` row columns: (`id`, `principal`, `interest_rate`, `start_date`,
 /// `term_months`, `repayment_frequency`, `commodity`, `created_at`).
 type LoanTermsRow = (String, String, String, String, i64, String, String, String);
+
+/// Serialises a [`RepaymentFrequency`] to a DB string.
+///
+/// Unit variants use `to_db_str`; the `Custom` variant is stored as `"custom:<period_days>"`.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the unit-variant serde output is not a plain string.
+fn freq_to_db(freq: RepaymentFrequency) -> BcResult<String> {
+    match freq {
+        RepaymentFrequency::Custom { period_days } => Ok(format!("custom:{period_days}")),
+        other => crate::db::to_db_str(other),
+    }
+}
+
+/// Deserialises a [`RepaymentFrequency`] from a DB string.
+///
+/// Handles both unit-variant strings and the `"custom:<period_days>"` format.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the string cannot be parsed.
+fn freq_from_db(s: &str) -> BcResult<RepaymentFrequency> {
+    if let Some(days_str) = s.strip_prefix("custom:") {
+        let period_days = days_str.parse::<u32>().map_err(|e| {
+            BcError::BadData(format!("invalid custom period_days '{days_str}': {e}"))
+        })?;
+        return Ok(RepaymentFrequency::Custom { period_days });
+    }
+    crate::db::from_db_str(s)
+}
 
 /// Service for persisting loan terms and computing amortization schedules.
 #[derive(Debug, Clone)]
@@ -55,10 +87,29 @@ impl Service {
     /// Returns [`BcError`] on serialisation or database failure.
     #[inline]
     pub async fn set_loan_terms(&self, terms: &LoanTerms) -> BcResult<()> {
-        let id = LoanId::new();
+        // Verify the account is a Receivable.
+        let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM accounts WHERE id = ?")
+            .bind(terms.account_id().to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match kind.as_deref() {
+            None => return Err(BcError::NotFound(format!("account {}", terms.account_id()))),
+            Some(k) if k != "receivable" => {
+                let parsed = crate::db::from_db_str::<bc_models::AccountKind>(k)?;
+                return Err(BcError::InvalidAccountKind {
+                    operation: "set loan terms",
+                    account_id: terms.account_id().clone(),
+                    kind: parsed,
+                });
+            }
+            Some(_) => {}
+        }
+
+        let id = terms.id().clone();
         let now = jiff::Timestamp::now();
 
-        let freq_str = crate::db::to_db_str(terms.repayment_frequency())?;
+        let freq_str = freq_to_db(terms.repayment_frequency())?;
 
         let event = Event::LoanTermsSet {
             id: id.clone(),
@@ -142,7 +193,7 @@ impl Service {
             .map_err(|e| BcError::BadData(format!("invalid start_date: {e}")))?;
         let term_months = u32::try_from(months)
             .map_err(|e| BcError::BadData(format!("invalid term_months: {e}")))?;
-        let repayment_frequency = crate::db::from_db_str::<RepaymentFrequency>(&freq)?;
+        let repayment_frequency = freq_from_db(&freq)?;
         let created_at = raw_created_at
             .parse::<jiff::Timestamp>()
             .map_err(|e| BcError::BadData(format!("invalid created_at: {e}")))?;
@@ -188,15 +239,15 @@ impl Service {
             .await?
             .ok_or_else(|| BcError::NotFound(format!("loan terms for {account_id}")))?;
 
-        Ok(compute_schedule(&terms))
+        compute_schedule(&terms)
     }
 }
 
 /// Returns the number of days to advance per period for `frequency`.
 ///
-/// For [`RepaymentFrequency::Weekly`] and [`RepaymentFrequency::Fortnightly`],
-/// returns the fixed day count. For calendar-month-based frequencies, returns
-/// `None` to indicate that [`months_per_period`] should be used instead.
+/// For [`RepaymentFrequency::Weekly`], [`RepaymentFrequency::Fortnightly`], and
+/// [`RepaymentFrequency::Custom`], returns the fixed day count. For calendar-month-based
+/// frequencies, returns `None` to indicate that [`months_per_period`] should be used instead.
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "RepaymentFrequency is #[non_exhaustive]; calendar-month arithmetic is the safe fallback for new variants"
@@ -205,6 +256,7 @@ fn days_per_period(frequency: RepaymentFrequency) -> Option<i64> {
     match frequency {
         RepaymentFrequency::Weekly => Some(7),
         RepaymentFrequency::Fortnightly => Some(14),
+        RepaymentFrequency::Custom { period_days } => Some(i64::from(period_days)),
         _ => None,
     }
 }
@@ -245,23 +297,19 @@ fn advance_date(date: Date, frequency: RepaymentFrequency) -> Date {
 
 /// Computes the total number of payment periods for the given loan terms.
 ///
-/// The number of periods is `term_months * periods_per_year / 12`.
-/// For monthly loans this is simply `term_months`.
+/// For standard frequencies, the number of periods is `term_months * periods_per_year / 12`.
+/// For `Custom`, it is approximated as `term_months * (365.25 / 12) / period_days`.
 #[expect(
-    clippy::integer_division,
-    clippy::integer_division_remainder_used,
-    reason = "intentional integer division: term_months * periods_per_year is always divisible by 12 for all supported frequencies"
+    clippy::arithmetic_side_effects,
+    reason = "Decimal arithmetic on small loan-term values; overflow is not possible in practice"
 )]
 fn total_payments(terms: &LoanTerms) -> u32 {
     let freq = terms.repayment_frequency();
     let periods_per_year = freq.periods_per_year();
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "term_months and periods_per_year are both small positive integers; overflow is not possible in practice"
-    )]
-    {
-        terms.term_months() * periods_per_year / 12
-    }
+    let term_months = Decimal::from(terms.term_months());
+    let n = (term_months * periods_per_year / Decimal::from(12_u32)).round_dp(0);
+    // Convert back to u32; saturate at u32::MAX for absurdly long loans.
+    n.try_into().unwrap_or(u32::MAX)
 }
 
 /// Computes a standard annuity amortization schedule from `terms`.
@@ -272,19 +320,24 @@ fn total_payments(terms: &LoanTerms) -> u32 {
 /// - `payment = principal * period_rate * (1+r)^n / ((1+r)^n - 1)`
 /// - For each period: `interest = balance * r`, `principal = payment - interest`
 /// - Last payment: adjusted to clear any rounding residual
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if the period rate or compound factor cannot be
+/// represented in the required numeric types.
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "all arithmetic is on Decimal values in the context of financial calculations where overflow is not a practical concern"
 )]
-fn compute_schedule(terms: &LoanTerms) -> Vec<AmortizationRow> {
+fn compute_schedule(terms: &LoanTerms) -> BcResult<Vec<AmortizationRow>> {
     let freq = terms.repayment_frequency();
     let n = total_payments(terms);
     if n == 0 {
-        return vec![];
+        return Ok(vec![]);
     }
 
     let annual_rate = terms.annual_rate();
-    let periods_per_year = Decimal::from(freq.periods_per_year());
+    let periods_per_year = freq.periods_per_year();
     let period_rate = annual_rate / periods_per_year;
 
     let principal = terms.principal();
@@ -299,10 +352,13 @@ fn compute_schedule(terms: &LoanTerms) -> Vec<AmortizationRow> {
     } else {
         let one_plus_r = Decimal::ONE + period_rate;
         // Use f64 for the power computation, then convert back to Decimal.
-        let one_plus_r_f64: f64 = one_plus_r.try_into().unwrap_or(1.0_f64);
+        let rate_f64 = one_plus_r.to_f64().ok_or_else(|| {
+            BcError::BadData(format!("period_rate {period_rate} out of f64 range"))
+        })?;
         let n_f64 = f64::from(n);
-        let compound_f64 = one_plus_r_f64.powf(n_f64);
-        let compound = Decimal::try_from(compound_f64).unwrap_or(Decimal::ONE);
+        let compound_f64 = rate_f64.powf(n_f64);
+        let compound = Decimal::try_from(compound_f64)
+            .map_err(|e| BcError::BadData(format!("compound factor out of Decimal range: {e}")))?;
         // P * r * compound / (compound - 1)
         let numerator = principal * period_rate * compound;
         let denominator = compound - Decimal::ONE;
@@ -353,7 +409,7 @@ fn compute_schedule(terms: &LoanTerms) -> Vec<AmortizationRow> {
         }
     }
 
-    rows
+    Ok(rows)
 }
 
 #[cfg(test)]
@@ -455,5 +511,70 @@ mod tests {
         let svc = super::Service::new(pool.clone());
         let result = svc.loan_terms_for(&account_id).await.expect("query");
         assert!(result.is_none());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amortization_schedule_custom_28_day_period(pool: SqlitePool) {
+        let account_id = make_receivable(&pool).await;
+        let svc = super::Service::new(pool.clone());
+
+        let terms = LoanTerms::builder()
+            .account_id(account_id.clone())
+            .principal(dec!(10_000))
+            .annual_rate(dec!(0.06))
+            .start_date(jiff::civil::date(2026, 1, 1))
+            .term_months(12_u32)
+            .repayment_frequency(RepaymentFrequency::Custom { period_days: 28 })
+            .commodity("AUD")
+            .build();
+
+        svc.set_loan_terms(&terms).await.expect("set terms");
+
+        let schedule = svc
+            .amortization_schedule(&account_id)
+            .await
+            .expect("schedule");
+        // ~13 payments in a year for 28-day periods
+        assert!(!schedule.is_empty(), "schedule should be non-empty");
+        let last = schedule.last().expect("last payment");
+        assert!(
+            last.remaining_balance.abs() < dec!(1.00),
+            "balance should be near zero, got {}",
+            last.remaining_balance
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_loan_terms_on_deposit_account_fails(pool: SqlitePool) {
+        let deposit_id = crate::AccountService::new(pool.clone())
+            .create(
+                "Savings",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("create DepositAccount");
+        let svc = super::Service::new(pool.clone());
+        let terms = LoanTerms::builder()
+            .account_id(deposit_id.clone())
+            .principal(dec!(10_000))
+            .annual_rate(dec!(0.05))
+            .start_date(jiff::civil::date(2026, 1, 1))
+            .term_months(12_u32)
+            .repayment_frequency(RepaymentFrequency::Monthly)
+            .commodity("AUD")
+            .build();
+        let result = svc.set_loan_terms(&terms).await;
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidAccountKind { .. })),
+            "expected InvalidAccountKind, got {result:?}"
+        );
     }
 }

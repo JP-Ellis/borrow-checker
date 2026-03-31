@@ -38,7 +38,7 @@ pub enum Source {
 /// let back: DepreciationPolicy = serde_json::from_str(&json).unwrap();
 /// assert_eq!(policy, back);
 /// ```
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DepreciationPolicy {

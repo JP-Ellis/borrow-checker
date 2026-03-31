@@ -23,20 +23,32 @@ pub enum Frequency {
     Monthly,
     /// One payment per calendar quarter.
     Quarterly,
+    /// A custom repayment period defined by an explicit number of days.
+    Custom {
+        /// Number of days between repayments.
+        period_days: u32,
+    },
 }
 
 impl Frequency {
     /// Returns the number of payment periods per year.
     ///
-    /// Used to derive the per-period interest rate from the annual rate.
+    /// For `Custom`, this is `365.25 / period_days` (average Gregorian year).
     #[must_use]
     #[inline]
-    pub fn periods_per_year(self) -> u32 {
+    pub fn periods_per_year(self) -> Decimal {
+        // 365.25 expressed as a Decimal without needing the `dec!` macro:
+        // Decimal::new(36525, 2) == 365.25
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "dividing 365.25 by a positive period_days; overflow is not possible in practice for valid loan terms"
+        )]
         match self {
-            Self::Weekly => 52,
-            Self::Fortnightly => 26,
-            Self::Monthly => 12,
-            Self::Quarterly => 4,
+            Self::Weekly => Decimal::from(52_u32),
+            Self::Fortnightly => Decimal::from(26_u32),
+            Self::Monthly => Decimal::from(12_u32),
+            Self::Quarterly => Decimal::from(4_u32),
+            Self::Custom { period_days } => Decimal::new(36_525, 2) / Decimal::from(period_days),
         }
     }
 }
@@ -61,7 +73,7 @@ impl Frequency {
 ///
 /// assert_eq!(terms.term_months(), 360);
 /// ```
-#[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(bon::Builder, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct LoanTerms {
     /// Stable identifier for this loan terms record.
@@ -161,7 +173,7 @@ impl LoanTerms {
 }
 
 /// A single row in a loan amortization schedule.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct AmortizationRow {
     /// Sequential payment number, starting at 1.
@@ -253,9 +265,26 @@ mod tests {
 
     #[test]
     fn frequency_periods_per_year() {
-        assert_eq!(Frequency::Weekly.periods_per_year(), 52);
-        assert_eq!(Frequency::Fortnightly.periods_per_year(), 26);
-        assert_eq!(Frequency::Monthly.periods_per_year(), 12);
-        assert_eq!(Frequency::Quarterly.periods_per_year(), 4);
+        use rust_decimal_macros::dec;
+        assert_eq!(Frequency::Weekly.periods_per_year(), dec!(52));
+        assert_eq!(Frequency::Fortnightly.periods_per_year(), dec!(26));
+        assert_eq!(Frequency::Monthly.periods_per_year(), dec!(12));
+        assert_eq!(Frequency::Quarterly.periods_per_year(), dec!(4));
+    }
+
+    #[test]
+    fn frequency_custom_periods_per_year() {
+        let result = Frequency::Custom { period_days: 28 }.periods_per_year();
+        // 365.25 / 28 = Decimal::new(36525, 2) / 28
+        let expected = Decimal::new(36_525, 2) / Decimal::from(28u32);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn repayment_frequency_custom_round_trips_via_serde() {
+        let f = Frequency::Custom { period_days: 28 };
+        let json = serde_json::to_string(&f).expect("serialise");
+        let back: Frequency = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(f, back);
     }
 }
