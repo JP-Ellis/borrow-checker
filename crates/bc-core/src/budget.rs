@@ -205,7 +205,9 @@ impl Engine {
                     .map_or(Decimal::MAX, bc_models::Amount::value);
                 surplus.max(Decimal::ZERO).min(cap)
             }
-            bc_models::RolloverPolicy::ResetToZero | _ => Decimal::ZERO,
+            // ResetToZero is already handled by the early return above; the wildcard
+            // arm covers any future #[non_exhaustive] variants.
+            _ => Decimal::ZERO,
         })
     }
 }
