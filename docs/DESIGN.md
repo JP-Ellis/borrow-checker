@@ -91,6 +91,9 @@ The core owns two layers:
 | `transactions` | Projected read model |
 | `balances` | Projected read model (table exists in M1 schema as a planned cache; M1 queries the `postings` table live — this cache will be populated in a later milestone for performance) |
 | `budget_envelopes` | Projected read model _(delivered in Milestone 5)_ |
+| `asset_valuations` | Projected read model — latest market value per ManualAsset account _(delivered in Milestone 5A)_ |
+| `asset_depreciations` | Projected read model — depreciation history per ManualAsset account _(delivered in Milestone 5A)_ |
+| `loan_terms` | Projected read model — loan terms per Receivable account _(delivered in Milestone 5A)_ |
 | `import_profiles` | Account-bound importer configurations _(delivered in Milestone 2)_ |
 | `meta` | Schema version, user preferences, last-sync cursor |
 
@@ -326,6 +329,7 @@ Thin binary over `bc-core`. Commands:
 ```
 borrow-checker account [list|create|archive]
 borrow-checker transaction [list|add|amend|void]
+borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization]
 borrow-checker import --profile <name> --counterpart <account-id> <file>
 borrow-checker export --format <ledger|beancount> --output <file>
 borrow-checker report [net-worth|summary|budget]
