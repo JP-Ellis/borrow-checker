@@ -329,7 +329,7 @@ Thin binary over `bc-core`. Commands:
 ```
 borrow-checker account [list|create|archive]
 borrow-checker transaction [list|add|amend|void]
-borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization]
+borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|book-value]
 borrow-checker import --profile <name> --counterpart <account-id> <file>
 borrow-checker export --format <ledger|beancount> --output <file>
 borrow-checker report [net-worth|summary|budget]
