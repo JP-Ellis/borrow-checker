@@ -16,6 +16,7 @@ pub(crate) mod error;
 pub(crate) mod events;
 pub(crate) mod export;
 pub(crate) mod import;
+pub(crate) mod loan;
 pub(crate) mod settings;
 pub(crate) mod transaction;
 
@@ -40,5 +41,6 @@ pub use import::profile::ImportProfile;
 pub use import::profile::Service as ImportProfileService;
 pub use import::registry::Factory as ImporterFactory;
 pub use import::registry::Registry as ImporterRegistry;
+pub use loan::Service as LoanService;
 pub use settings::Store as SettingsStore;
 pub use transaction::Service as TransactionService;

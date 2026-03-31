@@ -178,6 +178,38 @@ pub struct AmortizationRow {
     pub remaining_balance: Decimal,
 }
 
+impl AmortizationRow {
+    /// Creates a new [`AmortizationRow`] with all fields populated.
+    ///
+    /// # Arguments
+    ///
+    /// * `payment_number` - Sequential payment number, starting at 1.
+    /// * `date` - Scheduled payment due date.
+    /// * `total_payment` - Total payment amount (principal + interest).
+    /// * `principal` - Principal portion of this payment.
+    /// * `interest` - Interest portion of this payment.
+    /// * `remaining_balance` - Remaining principal balance after this payment.
+    #[must_use]
+    #[inline]
+    pub fn new(
+        payment_number: u32,
+        date: Date,
+        total_payment: Decimal,
+        principal: Decimal,
+        interest: Decimal,
+        remaining_balance: Decimal,
+    ) -> Self {
+        Self {
+            payment_number,
+            date,
+            total_payment,
+            principal,
+            interest,
+            remaining_balance,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
