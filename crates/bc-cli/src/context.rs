@@ -17,6 +17,18 @@ pub struct AppContext {
     pub assets: bc_core::AssetService,
     /// Loan terms and amortization service.
     pub loans: bc_core::LoanService,
+    /// Envelope service.
+    #[expect(
+        dead_code,
+        reason = "will be used by budget CLI commands in a later task"
+    )]
+    pub envelopes: bc_core::EnvelopeService,
+    /// Budget calculation engine.
+    #[expect(
+        dead_code,
+        reason = "will be used by budget CLI commands in a later task"
+    )]
+    pub budget: bc_core::BudgetEngine,
 }
 
 impl AppContext {
@@ -41,7 +53,9 @@ impl AppContext {
             balances: bc_core::BalanceEngine::new(pool.clone()),
             profiles: bc_core::ImportProfileService::new(pool.clone()),
             assets: bc_core::AssetService::new(pool.clone()),
-            loans: bc_core::LoanService::new(pool),
+            loans: bc_core::LoanService::new(pool.clone()),
+            envelopes: bc_core::EnvelopeService::new(pool.clone()),
+            budget: bc_core::BudgetEngine::new(pool),
         })
     }
 }
