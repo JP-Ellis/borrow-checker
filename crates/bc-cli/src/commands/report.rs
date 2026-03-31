@@ -206,3 +206,24 @@ async fn summary(ctx: &AppContext, period: PeriodArg, date: Option<String>) -> C
     crate::output::print_table(&["ID", "DATE", "DESCRIPTION"], &rows);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use bc_models::Period;
+
+    use super::PeriodArg;
+
+    #[test]
+    fn period_arg_converts_to_bc_models_period() {
+        assert!(matches!(Period::from(PeriodArg::Weekly), Period::Weekly));
+        assert!(matches!(Period::from(PeriodArg::Monthly), Period::Monthly));
+        assert!(matches!(
+            Period::from(PeriodArg::Quarterly),
+            Period::Quarterly
+        ));
+        assert!(matches!(
+            Period::from(PeriodArg::CalendarYear),
+            Period::CalendarYear
+        ));
+    }
+}

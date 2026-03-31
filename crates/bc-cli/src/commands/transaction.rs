@@ -287,3 +287,52 @@ async fn void(ctx: &AppContext, id: String) -> CliResult<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_posting_spec;
+
+    #[test]
+    fn valid_posting_spec_parses() {
+        // Use AccountId::new() to get a valid ID string.
+        let account_id = bc_models::AccountId::new().to_string();
+        let spec = format!("{account_id}:50.00:AUD");
+        let posting = parse_posting_spec(&spec).expect("valid spec");
+        pretty_assertions::assert_eq!(posting.amount().value().to_string(), "50.00");
+        pretty_assertions::assert_eq!(posting.amount().commodity().as_str(), "AUD");
+    }
+
+    #[test]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test — asserting error path, panics are acceptable"
+    )]
+    fn posting_spec_too_few_segments_returns_error() {
+        // Only one colon — missing commodity.
+        let err = parse_posting_spec("someaccount:50.00").unwrap_err();
+        assert!(err.to_string().contains("ACCOUNT_ID:AMOUNT:COMMODITY"));
+    }
+
+    #[test]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test — asserting error path, panics are acceptable"
+    )]
+    fn posting_spec_invalid_amount_returns_error() {
+        let account_id = bc_models::AccountId::new().to_string();
+        let spec = format!("{account_id}:notanumber:AUD");
+        let err = parse_posting_spec(&spec).unwrap_err();
+        assert!(err.to_string().contains("invalid amount"));
+    }
+
+    #[test]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test — asserting error path, panics are acceptable"
+    )]
+    fn posting_spec_invalid_account_id_returns_error() {
+        // Clearly invalid account ID.
+        let err = parse_posting_spec("notanid:50.00:AUD").unwrap_err();
+        assert!(err.to_string().contains("invalid account ID"));
+    }
+}

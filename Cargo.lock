@@ -201,6 +201,7 @@ dependencies = [
  "insta",
  "jiff",
  "owo-colors",
+ "pretty_assertions",
  "regex",
  "rstest",
  "rust_decimal",
