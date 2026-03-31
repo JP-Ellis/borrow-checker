@@ -584,7 +584,12 @@ impl Service {
 
         let tx_id = updated.id().clone();
         let tx_id_str = tx_id.to_string();
-        let event = Event::TransactionAmended { id: tx_id.clone() };
+        let event = Event::TransactionAmended {
+            id: tx_id.clone(),
+            date: updated.date(),
+            description: updated.description().to_owned(),
+            payee: updated.payee().map(str::to_owned),
+        };
         let voided_str = crate::db::to_db_str(bc_models::TransactionStatus::Voided)?;
 
         let date_str = updated.date().to_string();

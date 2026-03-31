@@ -7,3 +7,4 @@ exit_code: 0
 ----- stdout -----
 No asset or liability accounts.
 ----- stderr -----
+note: net-worth currently shows AUD balances only; multi-currency support requires Milestone 5

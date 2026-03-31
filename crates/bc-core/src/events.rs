@@ -47,11 +47,18 @@ pub enum Event {
         id: TransactionId,
     },
     /// A transaction was amended.
-    // TODO(M2): implement Service::amend() — amend generates a TransactionAmended event
-    // with the new transaction state.
+    ///
+    /// Carries the full new metadata state so the event log can be replayed
+    /// to reconstruct any point-in-time view of the transaction.
     TransactionAmended {
         /// The transaction's ID.
         id: TransactionId,
+        /// The new transaction date after amendment.
+        date: jiff::civil::Date,
+        /// The new description after amendment.
+        description: String,
+        /// The new payee after amendment, or `None` if cleared.
+        payee: Option<String>,
     },
     /// A transaction was voided.
     TransactionVoided {
@@ -84,7 +91,7 @@ impl Event {
             | Self::AccountUpdated { id }
             | Self::AccountArchived { id } => id.to_string(),
             Self::TransactionCreated { id }
-            | Self::TransactionAmended { id }
+            | Self::TransactionAmended { id, .. }
             | Self::TransactionVoided { id } => id.to_string(),
         }
     }
@@ -291,6 +298,89 @@ mod tests {
             .await
             .expect("replay should succeed");
         assert_eq!(records.len(), 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn transaction_amended_payload_round_trips(pool: sqlx::SqlitePool) {
+        use bc_models::TransactionId;
+        use jiff::civil::Date;
+
+        let store = SqliteStore::new(pool.clone());
+        let id = TransactionId::new();
+        let event = Event::TransactionAmended {
+            id: id.clone(),
+            date: Date::constant(2026, 3, 15),
+            description: "Amended description".to_owned(),
+            payee: Some("Woolworths".to_owned()),
+        };
+
+        store.append(&event).await.expect("append should succeed");
+
+        let records = store
+            .replay_for(&id.to_string())
+            .await
+            .expect("replay should succeed");
+        let record = records.first().expect("one record should exist");
+        assert_eq!(record.kind, "TransactionAmended");
+
+        let replayed: Event =
+            serde_json::from_str(&record.payload).expect("payload should deserialise");
+
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "Event is #[non_exhaustive]; wildcard arm is required for exhaustive match in tests"
+        )]
+        match replayed {
+            Event::TransactionAmended {
+                id: replayed_id,
+                date,
+                description,
+                payee,
+            } => {
+                assert_eq!(replayed_id, id);
+                assert_eq!(date, Date::constant(2026, 3, 15));
+                assert_eq!(description, "Amended description");
+                assert_eq!(payee, Some("Woolworths".to_owned()));
+            }
+            other => panic!("expected TransactionAmended, got {other:?}"),
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn transaction_amended_payload_round_trips_without_payee(pool: sqlx::SqlitePool) {
+        use bc_models::TransactionId;
+        use jiff::civil::Date;
+
+        let store = SqliteStore::new(pool.clone());
+        let id = TransactionId::new();
+        let event = Event::TransactionAmended {
+            id: id.clone(),
+            date: Date::constant(2026, 1, 1),
+            description: "No payee".to_owned(),
+            payee: None,
+        };
+
+        store.append(&event).await.expect("append should succeed");
+
+        let records = store
+            .replay_for(&id.to_string())
+            .await
+            .expect("replay should succeed");
+        let record = records.first().expect("one record should exist");
+
+        let replayed: Event =
+            serde_json::from_str(&record.payload).expect("payload should deserialise");
+
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "Event is #[non_exhaustive]; wildcard arm is required for exhaustive match in tests"
+        )]
+        match replayed {
+            Event::TransactionAmended { payee, .. } => {
+                assert_eq!(payee, None);
+            }
+            other => panic!("expected TransactionAmended, got {other:?}"),
+        }
     }
 
     #[sqlx::test(migrations = "./migrations")]
