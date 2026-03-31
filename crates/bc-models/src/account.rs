@@ -150,6 +150,18 @@ pub struct Account {
     #[builder(default)]
     tag_ids: Vec<TagId>,
 
+    /// Date the asset was acquired. Only meaningful for [`Kind::ManualAsset`] accounts.
+    /// Used as the depreciation baseline start date.
+    acquisition_date: Option<jiff::civil::Date>,
+
+    /// Cost of acquisition in the account's primary commodity. Only meaningful for
+    /// [`Kind::ManualAsset`] accounts. Used as the straight-line depreciation basis.
+    acquisition_cost: Option<rust_decimal::Decimal>,
+
+    /// Depreciation method applied to this asset. `None` means no depreciation is
+    /// tracked. Only meaningful for [`Kind::ManualAsset`] accounts.
+    depreciation_policy: Option<crate::valuation::DepreciationPolicy>,
+
     /// Timestamp recorded when this account was first persisted. Defaults to
     /// [`jiff::Timestamp::now()`].
     #[builder(default = jiff::Timestamp::now())]
@@ -263,6 +275,27 @@ impl Account {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.archived_at.is_none()
+    }
+
+    /// Returns the asset acquisition date, if recorded.
+    #[inline]
+    #[must_use]
+    pub fn acquisition_date(&self) -> Option<jiff::civil::Date> {
+        self.acquisition_date
+    }
+
+    /// Returns the asset acquisition cost, if recorded.
+    #[inline]
+    #[must_use]
+    pub fn acquisition_cost(&self) -> Option<rust_decimal::Decimal> {
+        self.acquisition_cost
+    }
+
+    /// Returns the depreciation policy, if set.
+    #[inline]
+    #[must_use]
+    pub fn depreciation_policy(&self) -> Option<&crate::valuation::DepreciationPolicy> {
+        self.depreciation_policy.as_ref()
     }
 
     /// Archives the account at the given timestamp.
@@ -463,5 +496,41 @@ mod tests {
             .build();
         acct.set_name("Savings").expect("&str should be accepted");
         assert_eq!(acct.name(), "Savings");
+    }
+
+    #[test]
+    fn account_default_has_no_acquisition_fields() {
+        let acct = Account::builder()
+            .name("House")
+            .account_type(Type::Asset)
+            .kind(Kind::ManualAsset)
+            .build();
+        assert!(acct.acquisition_date().is_none());
+        assert!(acct.acquisition_cost().is_none());
+        assert!(acct.depreciation_policy().is_none());
+    }
+
+    #[test]
+    fn account_with_acquisition_fields_round_trips() {
+        use jiff::civil::date;
+        use rust_decimal_macros::dec;
+
+        use crate::valuation::DepreciationPolicy;
+        let acct = Account::builder()
+            .name("House")
+            .account_type(Type::Asset)
+            .kind(Kind::ManualAsset)
+            .acquisition_date(date(2020, 6, 1))
+            .acquisition_cost(dec!(650_000))
+            .depreciation_policy(DepreciationPolicy::StraightLine {
+                annual_rate: dec!(0.025),
+            })
+            .build();
+        assert_eq!(acct.acquisition_date(), Some(date(2020, 6, 1)));
+        assert_eq!(acct.acquisition_cost(), Some(dec!(650_000)));
+        assert!(matches!(
+            acct.depreciation_policy(),
+            Some(DepreciationPolicy::StraightLine { .. })
+        ));
     }
 }
