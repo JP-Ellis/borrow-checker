@@ -36,6 +36,20 @@ pub struct GlobalArgs {
     /// Path to the SQLite database file.
     #[arg(long, global = true, env = "BC_DB_PATH")]
     pub db_path: Option<PathBuf>,
+
+    /// Increase log verbosity.
+    ///
+    /// Pass once for info (`-v`), twice for debug (`-vv`), three times for
+    /// trace (`-vvv`). Use `RUST_LOG` for fine-grained per-crate control.
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    pub verbose: u8,
+
+    /// Decrease log verbosity.
+    ///
+    /// Pass once for error-only output (`-q`). Use `RUST_LOG` for
+    /// fine-grained per-crate control.
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    pub quiet: u8,
 }
 
 /// Top-level subcommands.
