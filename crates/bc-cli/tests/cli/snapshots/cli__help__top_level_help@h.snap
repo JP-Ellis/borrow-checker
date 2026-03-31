@@ -22,7 +22,7 @@ Commands:
 
 Options:
       --json               Emit machine-readable JSON instead of human-readable output [env: BC_JSON=]
-      --db-path <DB_PATH>  Path to the SQLite database file [env: BC_DB_PATH=[TEMP_DIR]/test.db]
+      --db-path <DB_PATH>  Path to the SQLite database file
   -v, --verbose...         Increase log verbosity
   -q, --quiet...           Decrease log verbosity
   -h, --help               Print help (see more with '--help')
