@@ -566,6 +566,8 @@ impl Service {
     ///
     /// The event append, projection UPDATE, posting DELETE/INSERT, and tag DELETE/INSERT
     /// are all wrapped in a single SQLite transaction so they succeed or fail atomically.
+    /// `posting_tags` rows are deleted before `postings` rows to satisfy the FK constraint
+    /// `posting_tags.posting_id REFERENCES postings(id)` enforced by `PRAGMA foreign_keys = ON`.
     ///
     /// # Arguments
     ///
@@ -579,6 +581,10 @@ impl Service {
     /// Returns [`BcError::AlreadyVoided`] if the transaction exists but is already voided.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "complex atomic operation: event + UPDATE + FK-ordered DELETE + INSERT"
+    )]
     pub async fn amend(&self, updated: Transaction) -> BcResult<()> {
         validate_balance(updated.postings())?;
 
@@ -621,6 +627,17 @@ impl Service {
                 Err(BcError::NotFound(tx_id_str))
             };
         }
+
+        // Delete posting_tags first to satisfy the FK constraint
+        // `posting_tags.posting_id REFERENCES postings(id)` enforced by
+        // `PRAGMA foreign_keys = ON`.
+        sqlx::query(
+            "DELETE FROM posting_tags WHERE posting_id IN \
+             (SELECT id FROM postings WHERE transaction_id = ?)",
+        )
+        .bind(&tx_id_str)
+        .execute(&mut *db_tx)
+        .await?;
 
         sqlx::query("DELETE FROM postings WHERE transaction_id = ?")
             .bind(&tx_id_str)
@@ -1170,5 +1187,106 @@ mod tests {
 
         let found = svc.find_by_id(&id).await.expect("find should succeed");
         assert_eq!(found.tag_ids(), &[tag_id]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amend_transaction_with_posting_tags(pool: sqlx::SqlitePool) {
+        use jiff::Timestamp;
+
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc_a = acct_svc
+            .create(
+                "Income",
+                AccountType::Income,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create Income account should succeed");
+        let acc_b = acct_svc
+            .create(
+                "Checking",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create Checking account should succeed");
+
+        let svc = Service::new(pool.clone());
+
+        let posting_a = Posting::builder()
+            .id(PostingId::new())
+            .account_id(acc_a.clone())
+            .amount(Amount::new(dec!(75.00), CommodityCode::new("AUD")))
+            .build();
+        let posting_b = Posting::builder()
+            .id(PostingId::new())
+            .account_id(acc_b.clone())
+            .amount(Amount::new(dec!(-75.00), CommodityCode::new("AUD")))
+            .build();
+        let posting_a_id = posting_a.id().clone();
+
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 3, 1))
+            .description("Original description")
+            .postings(vec![posting_a, posting_b])
+            .status(TransactionStatus::Cleared)
+            .created_at(Timestamp::now())
+            .build();
+
+        let tx_id = tx.id().clone();
+        svc.create(tx).await.expect("create should succeed");
+
+        // Manually insert a tag and a posting_tag row to exercise the FK constraint path.
+        let tag_id = TagId::new();
+        sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, ?, ?)")
+            .bind(tag_id.to_string())
+            .bind("expenses:food")
+            .bind(Timestamp::now().to_string())
+            .execute(&pool)
+            .await
+            .expect("insert tag should succeed");
+        sqlx::query("INSERT INTO posting_tags (posting_id, tag_id) VALUES (?, ?)")
+            .bind(posting_a_id.to_string())
+            .bind(tag_id.to_string())
+            .execute(&pool)
+            .await
+            .expect("insert posting_tag should succeed");
+
+        // Amend: FK violation would occur here if posting_tags is not deleted first.
+        let updated = Transaction::builder()
+            .id(tx_id.clone())
+            .date(date(2026, 3, 1))
+            .description("Amended description")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_a)
+                    .amount(Amount::new(dec!(75.00), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_b)
+                    .amount(Amount::new(dec!(-75.00), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .status(TransactionStatus::Cleared)
+            .created_at(Timestamp::now())
+            .build();
+
+        svc.amend(updated)
+            .await
+            .expect("amend should succeed despite posting_tags FK");
+
+        let found = svc.find_by_id(&tx_id).await.expect("find should succeed");
+        assert_eq!(found.description(), "Amended description");
     }
 }
