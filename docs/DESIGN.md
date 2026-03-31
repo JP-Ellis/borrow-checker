@@ -328,17 +328,17 @@ borrow-checker account [list|create|archive]
 borrow-checker transaction [list|add|amend|void]
 borrow-checker import --profile <name> --counterpart <account-id> <file>
 borrow-checker export --format <ledger|beancount> --output <file>
-borrow-checker report [monthly|annual|net-worth|budget]
+borrow-checker report [net-worth|summary|budget]
 borrow-checker budget [status|allocate|envelopes]
 borrow-checker plugin [install|list|remove]
-borrow-checker completions <bash|zsh|fish>
+borrow-checker completions <bash|elvish|fish|powershell|zsh>
 ```
 
 `--counterpart` provides the offsetting account for the balancing posting on each imported line. CSV and OFX importers produce single-account `RawTransaction` values; the counterpart account is required to satisfy double-entry balance constraints.
 
 `csv` and `json` native export are post-v1 additions (see §5.1 format compatibility table) and will extend the `--format` option when implemented.
 
-All commands support `--json` for structured output. Shell completions are generated on demand via `borrow-checker completions <bash|zsh|fish>`.
+All commands support `--json` for structured output. Shell completions are generated on demand via `borrow-checker completions <bash|elvish|fish|powershell|zsh>`.
 
 ### 8.2 TUI (`bc-tui`)
 

@@ -48,8 +48,9 @@ pub enum Event {
     },
     /// A transaction was amended.
     ///
-    /// Carries the full new metadata state so the event log can be replayed
-    /// to reconstruct any point-in-time view of the transaction.
+    /// Records the updated metadata fields (date, description, payee).
+    /// Posting and tag mutations are applied directly to the projection tables
+    /// and are not captured in this event payload.
     TransactionAmended {
         /// The transaction's ID.
         id: TransactionId,
