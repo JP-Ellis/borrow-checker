@@ -57,7 +57,7 @@ pub enum Event {
         date: jiff::civil::Date,
         /// The new description after amendment.
         description: String,
-        /// The new payee after amendment, or `None` if cleared.
+        /// The new payee after amendment, or `None` if the payee was removed.
         payee: Option<String>,
     },
     /// A transaction was voided.

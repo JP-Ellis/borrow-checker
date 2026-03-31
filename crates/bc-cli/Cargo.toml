@@ -13,30 +13,8 @@ license.workspace      = true
 publish = false  # distributed as binary, not via crates.io
 
   [package.metadata.cargo-machete]
-  # Stub crate — deps are forward-declared for CLI implementation; none are used yet
-  ignored = [
-    "assert_cmd",
-    "assert_fs",
-    "bc-config",
-    "bc-core",
-    "bc-format-beancount",
-    "bc-format-csv",
-    "bc-format-ledger",
-    "bc-format-ofx",
-    "bc-models",
-    "clap",
-    "clap_complete",
-    "directories",
-    "insta",
-    "jiff",
-    "regex",
-    "rstest",
-    "rust_decimal",
-    "serde",
-    "serde_json",
-    "thiserror",
-    "tokio",
-  ]
+  # All dependencies are actively used; no ignores needed.
+  ignored = []
 
 [[bin]]
 name = "borrow-checker"
@@ -58,7 +36,6 @@ bc-otel             = { workspace = true }
 clap                = { workspace = true }
 clap_complete       = { workspace = true }
 comfy-table         = { workspace = true }
-directories         = { workspace = true }
 jiff                = { workspace = true }
 owo-colors          = { workspace = true }
 rust_decimal        = { workspace = true }

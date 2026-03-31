@@ -198,7 +198,6 @@ dependencies = [
  "clap",
  "clap_complete",
  "comfy-table",
- "directories",
  "insta",
  "jiff",
  "owo-colors",
