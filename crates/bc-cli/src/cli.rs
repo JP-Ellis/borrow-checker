@@ -34,7 +34,11 @@ pub struct GlobalArgs {
     pub json: bool,
 
     /// Path to the SQLite database file.
-    #[arg(long, global = true, env = "BC_DB_PATH")]
+    ///
+    /// Overrides the `db_path` config file setting and the platform default.
+    /// The `BC_DB_PATH` environment variable is also honoured via the config
+    /// layer rather than directly by this flag.
+    #[arg(long, global = true)]
     pub db_path: Option<PathBuf>,
 
     /// Increase log verbosity.

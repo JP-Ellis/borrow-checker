@@ -14,7 +14,6 @@ use clap::Parser as _;
 
 use crate::cli::Commands;
 use crate::context::AppContext;
-use crate::context::default_db_path;
 use crate::error::CliError;
 
 #[expect(
@@ -24,9 +23,28 @@ use crate::error::CliError;
 #[tokio::main]
 async fn main() {
     let cli = crate::cli::Cli::parse();
-    let _otel_guard = logging::setup_tracing(cli.global.verbose, cli.global.quiet);
 
-    let db_path = cli.global.db_path.clone().unwrap_or_else(default_db_path);
+    // Load config — non-fatal; fall back to defaults on error.
+    let settings = bc_config::Settings::load().unwrap_or_else(|e| {
+        #[expect(
+            clippy::print_stderr,
+            reason = "CLI binary: warning to stderr on config load failure"
+        )]
+        {
+            eprintln!("warning: could not load config: {e}; using defaults");
+        }
+        bc_config::Settings::default()
+    });
+
+    let _otel_guard =
+        logging::setup_tracing(cli.global.verbose, cli.global.quiet, settings.cli().log());
+
+    let db_path = cli
+        .global
+        .db_path
+        .clone()
+        .or_else(|| settings.db_path().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(bc_config::default_db_path);
 
     if let Some(parent) = db_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -35,7 +53,8 @@ async fn main() {
         }
     }
 
-    let ctx = match AppContext::open(&db_path, cli.global.json).await {
+    let json = cli.global.json || settings.cli().json();
+    let ctx = match AppContext::open(&db_path, json).await {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("error: {e}");
