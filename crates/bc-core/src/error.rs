@@ -22,6 +22,16 @@ pub enum BcError {
     /// A transaction's postings do not sum to zero per commodity.
     #[error("transaction postings are not balanced to zero")]
     UnbalancedTransaction,
+    /// An operation is not valid for the given account kind.
+    #[error("invalid account kind for {operation}: account {account_id} is {kind:?}")]
+    InvalidAccountKind {
+        /// The operation that was attempted.
+        operation: &'static str,
+        /// The account that was rejected.
+        account_id: bc_models::AccountId,
+        /// The kind that was found.
+        kind: bc_models::AccountKind,
+    },
     /// A value could not be parsed from its stored representation.
     #[error("data error: {0}")]
     BadData(String),
