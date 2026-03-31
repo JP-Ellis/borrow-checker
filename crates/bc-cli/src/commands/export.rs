@@ -1,5 +1,6 @@
 //! Export sub-command.
 
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use crate::context::AppContext;
@@ -60,27 +61,23 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         .export(&export_data)
         .map_err(|e| crate::error::CliError::Arg(format!("export error: {e}")))?;
 
-    match args.output {
-        Some(ref path) => {
-            std::fs::write(path, &bytes).map_err(crate::error::CliError::Io)?;
-            if ctx.json {
-                crate::output::print_json(&serde_json::json!({
-                    "output": path.display().to_string(),
-                    "bytes": bytes.len(),
-                }))?;
-            } else {
-                #[expect(clippy::print_stdout, reason = "CLI output")]
-                {
-                    println!("Exported to {}", path.display());
-                }
+    if let Some(ref path) = args.output {
+        std::fs::write(path, &bytes).map_err(crate::error::CliError::Io)?;
+        if ctx.json {
+            crate::output::print_json(&serde_json::json!({
+                "output": path.display().to_string(),
+                "bytes": bytes.len(),
+            }))?;
+        } else {
+            #[expect(clippy::print_stdout, reason = "CLI output")]
+            {
+                println!("Exported to {}", path.display());
             }
         }
-        None => {
-            use std::io::Write as _;
-            std::io::stdout()
-                .write_all(&bytes)
-                .map_err(crate::error::CliError::Io)?;
-        }
+    } else {
+        std::io::stdout()
+            .write_all(&bytes)
+            .map_err(crate::error::CliError::Io)?;
     }
 
     Ok(())

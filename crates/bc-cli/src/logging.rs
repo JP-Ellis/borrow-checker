@@ -5,6 +5,7 @@ use core::time::Duration;
 use std::sync::LazyLock;
 use std::time::Instant;
 
+use owo_colors::OwoColorize as _;
 use tracing::Event;
 use tracing::Subscriber;
 use tracing::debug;
@@ -47,67 +48,6 @@ impl fmt::Display for Elapsed {
     }
 }
 
-/// Extension trait for applying ANSI terminal styling to any [`fmt::Display`] value.
-///
-/// Only applied when the writer reports that ANSI escapes are supported.
-trait StyleExt: fmt::Display + Sized {
-    /// Wrap in dim styling (`\x1b[2m`).
-    #[inline]
-    fn dim(self) -> Styled<Self> {
-        Styled(self, "2")
-    }
-
-    /// Wrap in bold styling (`\x1b[1m`).
-    #[inline]
-    fn bold(self) -> Styled<Self> {
-        Styled(self, "1")
-    }
-
-    /// Wrap in red foreground colour (`\x1b[31m`).
-    #[inline]
-    fn red(self) -> Styled<Self> {
-        Styled(self, "31")
-    }
-
-    /// Wrap in yellow foreground colour (`\x1b[33m`).
-    #[inline]
-    fn yellow(self) -> Styled<Self> {
-        Styled(self, "33")
-    }
-
-    /// Wrap in green foreground colour (`\x1b[32m`).
-    #[inline]
-    fn green(self) -> Styled<Self> {
-        Styled(self, "32")
-    }
-
-    /// Wrap in blue foreground colour (`\x1b[34m`).
-    #[inline]
-    fn blue(self) -> Styled<Self> {
-        Styled(self, "34")
-    }
-
-    /// Wrap in magenta foreground colour (`\x1b[35m`).
-    #[inline]
-    fn magenta(self) -> Styled<Self> {
-        Styled(self, "35")
-    }
-}
-
-impl<T: fmt::Display> StyleExt for T {}
-
-/// A [`fmt::Display`] value wrapped in ANSI SGR escape sequences for terminal styling.
-///
-/// The second field is the SGR parameter string (e.g. `"31"` for red).
-struct Styled<T>(T, &'static str);
-
-impl<T: fmt::Display> fmt::Display for Styled<T> {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "\x1b[{}m{}\x1b[0m", self.1, self.0)
-    }
-}
-
 /// Custom log event formatter with optional elapsed timestamp and span breadcrumbs.
 struct LogFormat {
     /// Whether to prefix each line with the elapsed time since process start.
@@ -134,7 +74,7 @@ where
         if self.display_timestamp {
             let elapsed = Elapsed(START.elapsed());
             if ansi {
-                write!(writer, "{} ", elapsed.dim())?;
+                write!(writer, "{} ", elapsed.dimmed())?;
             } else {
                 write!(writer, "{elapsed} ")?;
             }
