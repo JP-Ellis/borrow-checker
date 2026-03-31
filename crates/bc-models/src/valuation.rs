@@ -36,8 +36,8 @@ pub enum Source {
 /// use rust_decimal_macros::dec;
 ///
 /// let policy = DepreciationPolicy::StraightLine { annual_rate: dec!(0.25) };
-/// let json = serde_json::to_string(&policy).unwrap();
-/// let back: DepreciationPolicy = serde_json::from_str(&json).unwrap();
+/// let json = serde_json::to_string(&policy).expect("serialize");
+/// let back: DepreciationPolicy = serde_json::from_str(&json).expect("deserialize");
 /// assert_eq!(policy, back);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -111,9 +111,24 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
     }
 
     let total = ctx.balances.net_worth(COMMODITY).await?;
+    let accounts = ctx.accounts.list_active().await?;
+
+    /// Returns a stable, user-friendly string for an [`bc_models::AccountKind`].
+    fn kind_label(kind: bc_models::AccountKind) -> &'static str {
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "AccountKind is #[non_exhaustive]; unknown future variants fall through"
+        )]
+        match kind {
+            bc_models::AccountKind::DepositAccount => "deposit",
+            bc_models::AccountKind::ManualAsset => "manual asset",
+            bc_models::AccountKind::Receivable => "receivable",
+            bc_models::AccountKind::VirtualAllocation => "virtual",
+            _ => "unknown",
+        }
+    }
 
     if ctx.json {
-        let accounts = ctx.accounts.list_active().await?;
         let mut rows = Vec::new();
         for account in &accounts {
             #[expect(
@@ -140,7 +155,7 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
             };
             rows.push(serde_json::json!({
                 "account": account.name(),
-                "kind": format!("{:?}", account.kind()),
+                "kind": kind_label(account.kind()),
                 "commodity": COMMODITY,
                 "balance": balance.to_string(),
             }));
@@ -154,7 +169,6 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
     }
 
     // Human-readable table.
-    let accounts = ctx.accounts.list_active().await?;
     let mut table_rows: Vec<Vec<String>> = Vec::new();
     for account in &accounts {
         #[expect(
@@ -181,7 +195,7 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
         };
         table_rows.push(vec![
             account.name().to_owned(),
-            format!("{:?}", account.kind()),
+            kind_label(account.kind()).to_owned(),
             balance.to_string(),
             COMMODITY.to_owned(),
         ]);
