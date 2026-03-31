@@ -65,7 +65,7 @@ members  = [
   pretty_assertions     = { version = "1", features = ["unstable"] }
   quick-xml             = "0.37"
   regex                 = "1"
-  rstest                = "0.24"
+  rstest                = "0.26"
   rust_decimal          = { version = "1", features = ["serde-with-str"] }
   rust_decimal_macros   = "1"
   rusty-money           = { version = "0.5", features = ["iso", "serde"] }
