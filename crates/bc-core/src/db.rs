@@ -10,6 +10,8 @@ use crate::BcResult;
 ///
 /// Pass `"sqlite::memory:"` for an in-memory database (useful in tests).
 ///
+/// Intended for in-memory / test use; production code should use [`open_db_at`].
+///
 /// # Errors
 ///
 /// Returns [`BcError::Database`](crate::BcError::Database) if the pool
@@ -30,6 +32,37 @@ pub async fn open_db(url: &str) -> BcResult<SqlitePool> {
 
     sqlx::migrate!("./migrations").run(&pool).await?;
 
+    tracing::info!("database opened and migrations applied");
+    Ok(pool)
+}
+
+/// Opens (or creates) the SQLite database at the given filesystem path and
+/// runs all pending migrations.
+///
+/// Prefer this over [`open_db`] for production callers — it uses
+/// [`SqliteConnectOptions::filename`] which handles platform path separators
+/// correctly (avoids backslash issues on Windows).
+///
+/// # Arguments
+///
+/// * `path` - Filesystem path to the SQLite database file.
+///
+/// # Returns
+///
+/// A connected and migrated [`SqlitePool`].
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] if the pool cannot be created or migrations fail.
+#[inline]
+pub async fn open_db_at(path: &std::path::Path) -> BcResult<SqlitePool> {
+    let opts = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .pragma("foreign_keys", "ON");
+
+    let pool = SqlitePool::connect_with(opts).await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
     tracing::info!("database opened and migrations applied");
     Ok(pool)
 }

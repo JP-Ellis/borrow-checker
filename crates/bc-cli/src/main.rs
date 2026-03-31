@@ -46,7 +46,7 @@ async fn main() {
         .or_else(|| settings.db_path().map(std::path::Path::to_path_buf))
         .unwrap_or_else(bc_config::default_db_path);
 
-    if let Some(parent) = db_path.parent() {
+    if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         if let Err(e) = std::fs::create_dir_all(parent) {
             eprintln!("error: cannot create database directory: {e}");
             std::process::exit(1_i32);

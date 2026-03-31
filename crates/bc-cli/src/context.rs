@@ -29,8 +29,7 @@ impl AppContext {
     /// Returns [`bc_core::BcError`] if the database cannot be opened or migrations fail.
     #[inline]
     pub async fn open(db_path: &std::path::Path, json: bool) -> bc_core::BcResult<Self> {
-        let url = format!("sqlite://{}?mode=rwc", db_path.display());
-        let pool = bc_core::open_db(&url).await?;
+        let pool = bc_core::open_db_at(db_path).await?;
         Ok(Self {
             json,
             accounts: bc_core::AccountService::new(pool.clone()),
