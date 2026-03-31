@@ -93,24 +93,69 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 
 /// Net-worth report: balance of every asset and liability account.
 ///
+/// Uses [`bc_core::AssetService::latest_market_value`] for
+/// [`bc_models::AccountKind::ManualAsset`] accounts and
+/// [`bc_core::BalanceEngine::balance_for`] for all others.
+///
 /// # Errors
 ///
-/// Propagates [`crate::error::CliError`] from the account or balance service.
+/// Propagates [`crate::error::CliError`] from the account, asset, or balance service.
 async fn net_worth(ctx: &AppContext) -> CliResult<()> {
-    // Hard-coded commodity for M3 until a commodity service is added.
-    // Only balances denominated in AUD are included; non-AUD accounts show zero.
     const COMMODITY: &str = "AUD";
-
-    let accounts = ctx.accounts.list_active().await?;
 
     #[expect(clippy::print_stderr, reason = "user-visible limitation warning")]
     {
         eprintln!(
-            "note: net-worth currently shows {COMMODITY} balances only; multi-currency support requires Milestone 5"
+            "note: net-worth shows {COMMODITY} balances only; multi-currency support requires Milestone 5"
         );
     }
 
-    let mut rows: Vec<(String, String, Decimal)> = Vec::new();
+    let total = ctx.balances.net_worth(COMMODITY).await?;
+
+    if ctx.json {
+        let accounts = ctx.accounts.list_active().await?;
+        let mut rows = Vec::new();
+        for account in &accounts {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "AccountType is non_exhaustive; unknown future variants are skipped"
+            )]
+            match account.account_type() {
+                AccountType::Asset | AccountType::Liability => {}
+                _ => continue,
+            }
+            let balance = {
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "AccountKind is non_exhaustive; fall through to posting-based balance"
+                )]
+                match account.kind() {
+                    bc_models::AccountKind::ManualAsset => ctx
+                        .assets
+                        .latest_market_value(account.id(), COMMODITY)
+                        .await?
+                        .unwrap_or(Decimal::ZERO),
+                    _ => ctx.balances.balance_for(account.id(), COMMODITY).await?,
+                }
+            };
+            rows.push(serde_json::json!({
+                "account": account.name(),
+                "kind": format!("{:?}", account.kind()),
+                "commodity": COMMODITY,
+                "balance": balance.to_string(),
+            }));
+        }
+        let summary = serde_json::json!({
+            "accounts": rows,
+            "total": total.to_string(),
+            "commodity": COMMODITY,
+        });
+        return crate::output::print_json(&summary);
+    }
+
+    // Human-readable table.
+    let accounts = ctx.accounts.list_active().await?;
+    let mut table_rows: Vec<Vec<String>> = Vec::new();
     for account in &accounts {
         #[expect(
             clippy::wildcard_enum_match_arm,
@@ -120,21 +165,29 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
             AccountType::Asset | AccountType::Liability => {}
             _ => continue,
         }
-        let balance = ctx.balances.balance_for(account.id(), COMMODITY).await?;
-        rows.push((account.name().to_owned(), COMMODITY.to_owned(), balance));
+        let balance = {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "AccountKind is non_exhaustive; fall through to posting-based balance"
+            )]
+            match account.kind() {
+                bc_models::AccountKind::ManualAsset => ctx
+                    .assets
+                    .latest_market_value(account.id(), COMMODITY)
+                    .await?
+                    .unwrap_or(Decimal::ZERO),
+                _ => ctx.balances.balance_for(account.id(), COMMODITY).await?,
+            }
+        };
+        table_rows.push(vec![
+            account.name().to_owned(),
+            format!("{:?}", account.kind()),
+            balance.to_string(),
+            COMMODITY.to_owned(),
+        ]);
     }
 
-    if ctx.json {
-        let json_rows: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|(name, ccy, bal)| {
-                serde_json::json!({ "account": name, "commodity": ccy, "balance": bal.to_string() })
-            })
-            .collect();
-        return crate::output::print_json(&json_rows);
-    }
-
-    if rows.is_empty() {
+    if table_rows.is_empty() {
         #[expect(clippy::print_stdout, reason = "CLI output")]
         {
             println!("No asset or liability accounts.");
@@ -142,11 +195,12 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
         return Ok(());
     }
 
-    let table_rows: Vec<Vec<String>> = rows
-        .iter()
-        .map(|(name, ccy, bal)| vec![name.clone(), bal.to_string(), ccy.clone()])
-        .collect();
-    crate::output::print_table(&["ACCOUNT", "BALANCE", "CCY"], &table_rows);
+    crate::output::print_table(&["ACCOUNT", "KIND", "BALANCE", "CCY"], &table_rows);
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("\nNet Worth: {total} {COMMODITY}");
+    }
     Ok(())
 }
 
