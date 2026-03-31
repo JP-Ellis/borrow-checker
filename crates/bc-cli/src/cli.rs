@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use crate::commands::account;
+use crate::commands::asset;
 use crate::commands::budget;
 use crate::commands::completions;
 use crate::commands::export;
@@ -62,6 +63,8 @@ pub struct GlobalArgs {
 pub enum Commands {
     /// Manage accounts (list, create, archive).
     Account(account::Args),
+    /// Manage assets (record-valuation, depreciate, set-loan-terms, amortization).
+    Asset(asset::Args),
     /// Manage transactions (list, add, amend, void).
     Transaction(transaction::Args),
     /// Import transactions from a file using a named import profile.

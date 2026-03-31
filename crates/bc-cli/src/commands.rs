@@ -4,6 +4,7 @@
 //! `fn execute(args: Args, ctx: &AppContext) -> CliResult<()>`.
 
 pub mod account;
+pub mod asset;
 pub mod budget;
 pub mod completions;
 pub mod export;
