@@ -358,6 +358,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create account")
@@ -464,6 +467,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create ManualAsset account");
@@ -491,6 +497,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create account2");

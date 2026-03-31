@@ -762,6 +762,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create Income account should succeed");
@@ -774,6 +777,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create Checking account should succeed");
@@ -825,6 +831,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create Brokerage account should succeed");
@@ -837,6 +846,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create Cash account should succeed");
@@ -912,6 +924,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create A should succeed");
@@ -924,6 +939,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create B should succeed");
@@ -949,6 +967,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create A should succeed");
@@ -961,6 +982,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create B should succeed");
@@ -999,6 +1023,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create checking");
@@ -1011,6 +1038,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create expenses");
@@ -1070,6 +1100,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create checking");
@@ -1082,6 +1115,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create expenses");
@@ -1135,6 +1171,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create A should succeed");
@@ -1147,6 +1186,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create B should succeed");
@@ -1203,6 +1245,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create Income account should succeed");
@@ -1215,6 +1260,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create Checking account should succeed");
