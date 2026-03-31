@@ -7,6 +7,7 @@ mod cli;
 mod commands;
 mod context;
 mod error;
+mod logging;
 mod output;
 
 use clap::Parser as _;
@@ -23,6 +24,7 @@ use crate::error::CliError;
 #[tokio::main]
 async fn main() {
     let cli = crate::cli::Cli::parse();
+    let _otel_guard = logging::setup_tracing(cli.global.verbose, cli.global.quiet);
 
     let db_path = cli.global.db_path.clone().unwrap_or_else(default_db_path);
 
@@ -56,8 +58,9 @@ async fn main() {
         eprintln!("error: {e}");
         let code = match &e {
             CliError::Core(bc_core::BcError::NotFound(_)) => 2_i32,
-            CliError::Core(bc_core::BcError::AlreadyVoided(_))
-            | CliError::Core(bc_core::BcError::AlreadyArchived(_)) => 3_i32,
+            CliError::Core(
+                bc_core::BcError::AlreadyVoided(_) | bc_core::BcError::AlreadyArchived(_),
+            ) => 3_i32,
             CliError::Core(_) | CliError::Io(_) | CliError::Json(_) | CliError::Arg(_) => 1_i32,
         };
         std::process::exit(code);

@@ -17,7 +17,26 @@ Commands:
   help   Print this message or the help of the given subcommand(s)
 
 Options:
-      --json               Emit machine-readable JSON instead of human-readable output [env: BC_JSON=]
-      --db-path <DB_PATH>  Path to the SQLite database file [env: BC_DB_PATH=[TEMP_DIR]/test.db]
-  -h, --help               Print help
+      --json
+          Emit machine-readable JSON instead of human-readable output
+          
+          [env: BC_JSON=]
+
+      --db-path <DB_PATH>
+          Path to the SQLite database file
+          
+          [env: BC_DB_PATH=[TEMP_DIR]/test.db]
+
+  -v, --verbose...
+          Increase log verbosity.
+          
+          Pass once for info (`-v`), twice for debug (`-vv`), three times for trace (`-vvv`). Use `RUST_LOG` for fine-grained per-crate control.
+
+  -q, --quiet...
+          Decrease log verbosity.
+          
+          Pass once for error-only output (`-q`). Use `RUST_LOG` for fine-grained per-crate control.
+
+  -h, --help
+          Print help (see a summary with '-h')
 ----- stderr -----

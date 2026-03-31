@@ -30,6 +30,16 @@ Options:
   -o, --output <OUTPUT>
           Output file path. Writes to stdout when omitted
 
+  -v, --verbose...
+          Increase log verbosity.
+          
+          Pass once for info (`-v`), twice for debug (`-vv`), three times for trace (`-vvv`). Use `RUST_LOG` for fine-grained per-crate control.
+
+  -q, --quiet...
+          Decrease log verbosity.
+          
+          Pass once for error-only output (`-q`). Use `RUST_LOG` for fine-grained per-crate control.
+
   -h, --help
           Print help (see a summary with '-h')
 ----- stderr -----

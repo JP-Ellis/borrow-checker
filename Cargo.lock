@@ -194,6 +194,7 @@ dependencies = [
  "bc-format-ledger",
  "bc-format-ofx",
  "bc-models",
+ "bc-otel",
  "clap",
  "clap_complete",
  "directories",
@@ -207,6 +208,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
