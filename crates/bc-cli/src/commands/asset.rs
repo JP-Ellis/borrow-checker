@@ -22,7 +22,7 @@ pub struct Args {
 #[derive(Debug, Subcommand)]
 #[non_exhaustive]
 pub enum Command {
-    /// Record a point-in-time market valuation for a ManualAsset account.
+    /// Record a point-in-time market valuation for a `ManualAsset` account.
     RecordValuation {
         /// Account ID to record a valuation for.
         #[arg(long)]
@@ -43,7 +43,7 @@ pub enum Command {
         #[arg(long)]
         counterpart: Option<String>,
     },
-    /// Calculate and record depreciation for a ManualAsset account.
+    /// Calculate and record depreciation for a `ManualAsset` account.
     Depreciate {
         /// Account ID to depreciate.
         #[arg(long)]
