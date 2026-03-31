@@ -93,6 +93,7 @@ macro_rules! define_id {
 
 mod account;
 mod commodity;
+mod envelope;
 mod event;
 mod import_batch;
 mod loan;
@@ -112,6 +113,16 @@ pub use account::ValidationError as AccountValidationError;
 pub use commodity::Commodity;
 pub use commodity::CommodityBuilder;
 pub use commodity::CommodityId;
+pub use envelope::Allocation;
+pub use envelope::AllocationBuilder;
+pub use envelope::AllocationId;
+pub use envelope::Envelope;
+pub use envelope::EnvelopeBuilder;
+pub use envelope::EnvelopeGroupId;
+pub use envelope::EnvelopeId;
+pub use envelope::Group as EnvelopeGroup;
+pub use envelope::GroupBuilder as EnvelopeGroupBuilder;
+pub use envelope::RolloverPolicy;
 pub use event::EventId;
 pub use import_batch::ImportBatchId;
 pub use loan::AmortizationRow;
