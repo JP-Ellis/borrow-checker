@@ -35,6 +35,13 @@ impl TestContext {
                 "borrow-checker".to_owned(),
             ),
             (
+                // SQLx emits WARN lines for slow statements on Windows (where SQLite
+                // migration DDL can exceed the 1 s threshold). Strip them so snapshots
+                // remain platform-independent.
+                Regex::new(r"WARN slow statement:[^\n]*\n?").expect("valid regex"),
+                String::new(),
+            ),
+            (
                 Regex::new("account_[0-9a-z]{26}").expect("valid regex"),
                 "[ACCOUNT_ID]".to_owned(),
             ),
