@@ -18,16 +18,8 @@ pub struct AppContext {
     /// Loan terms and amortization service.
     pub loans: bc_core::LoanService,
     /// Envelope service.
-    #[expect(
-        dead_code,
-        reason = "will be used by budget CLI commands in a later task"
-    )]
     pub envelopes: bc_core::EnvelopeService,
     /// Budget calculation engine.
-    #[expect(
-        dead_code,
-        reason = "will be used by budget CLI commands in a later task"
-    )]
     pub budget: bc_core::BudgetEngine,
 }
 

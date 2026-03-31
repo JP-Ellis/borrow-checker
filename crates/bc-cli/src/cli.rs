@@ -73,7 +73,7 @@ pub enum Commands {
     Export(export::Args),
     /// Generate financial reports.
     Report(report::Args),
-    /// Manage budget envelopes (requires Milestone 5).
+    /// Manage budget envelopes: groups, envelopes, allocate, status.
     Budget(budget::Args),
     /// Manage plugins (requires Milestone 6).
     Plugin(plugin::Args),
