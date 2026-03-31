@@ -207,7 +207,7 @@ impl Engine {
             }
             // ResetToZero is already handled by the early return above; the wildcard
             // arm covers any future #[non_exhaustive] variants.
-            _ => Decimal::ZERO,
+            bc_models::RolloverPolicy::ResetToZero | _ => Decimal::ZERO,
         })
     }
 }

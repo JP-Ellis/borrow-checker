@@ -26,12 +26,14 @@ use crate::events::Event;
 /// Row type returned by the postings bulk-load query in [`Service::list`].
 ///
 /// Includes `transaction_id` (field 1) so postings can be grouped by transaction.
+/// The final field is the nullable `envelope_id`.
 type ListPostingRow = (
     String,
     String,
     String,
     String,
     String,
+    Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -106,11 +108,14 @@ fn parse_cost(
 }
 
 /// Column tuple returned from the `postings` table when loading a transaction.
+///
+/// The final field is the nullable `envelope_id`.
 type PostingRow = (
     String,
     String,
     String,
     String,
+    Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -192,8 +197,8 @@ impl Service {
             sqlx::query(
                 "INSERT INTO postings \
                  (id, transaction_id, account_id, amount, commodity, memo, position, \
-                  cost_total_value, cost_total_commodity, cost_date, cost_label) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  cost_total_value, cost_total_commodity, cost_date, cost_label, envelope_id) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(posting.id().to_string())
             .bind(tx_id.to_string())
@@ -209,6 +214,7 @@ impl Service {
             .bind(cost_commodity)
             .bind(cost_date)
             .bind(cost_label)
+            .bind(posting.envelope_id().map(ToString::to_string))
             .execute(&mut *db_tx)
             .await?;
 
@@ -279,10 +285,10 @@ impl Service {
             })
             .collect::<BcResult<_>>()?;
 
-        // Load postings with cost columns.
+        // Load postings with cost columns and envelope assignment.
         let posting_rows: Vec<PostingRow> = sqlx::query_as(
             "SELECT id, account_id, amount, commodity, memo, \
-                    cost_total_value, cost_total_commodity, cost_date, cost_label \
+                    cost_total_value, cost_total_commodity, cost_date, cost_label, envelope_id \
              FROM postings WHERE transaction_id = ? ORDER BY position ASC",
         )
         .bind(id.to_string())
@@ -321,6 +327,7 @@ impl Service {
                     cost_com,
                     cost_dt,
                     cost_lbl,
+                    env_id_str,
                 )| {
                     let posting_id = pid.parse::<PostingId>().map_err(|e| {
                         BcError::BadData(format!("invalid posting id '{pid}': {e}"))
@@ -333,6 +340,14 @@ impl Service {
                     })?;
                     let amount = Amount::new(value, CommodityCode::new(commodity));
                     let cost = parse_cost(cost_val, cost_com, cost_dt, cost_lbl)?;
+                    let env_id = env_id_str
+                        .as_deref()
+                        .map(|s| {
+                            s.parse::<bc_models::EnvelopeId>().map_err(|e| {
+                                BcError::BadData(format!("invalid envelope_id '{s}': {e}"))
+                            })
+                        })
+                        .transpose()?;
                     let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
                     Ok(Posting::builder()
                         .id(posting_id)
@@ -341,6 +356,7 @@ impl Service {
                         .maybe_cost(cost)
                         .maybe_memo(memo)
                         .tag_ids(p_tag_ids)
+                        .maybe_envelope_id(env_id)
                         .build())
                 },
             )
@@ -463,7 +479,8 @@ impl Service {
         // Load all postings for non-voided transactions in one query.
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
             "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.memo, \
-                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label \
+                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
+                    p.envelope_id \
              FROM postings p \
              JOIN transactions t ON p.transaction_id = t.id \
              WHERE t.status != ? \
@@ -506,6 +523,7 @@ impl Service {
             cost_com,
             cost_dt,
             cost_lbl,
+            env_id_str,
         ) in posting_rows
         {
             let posting_id = pid
@@ -519,6 +537,13 @@ impl Service {
                 .map_err(|e| BcError::BadData(format!("invalid amount '{amount_str}': {e}")))?;
             let amount = Amount::new(value, CommodityCode::new(commodity));
             let cost = parse_cost(cost_val, cost_com, cost_dt, cost_lbl)?;
+            let env_id = env_id_str
+                .as_deref()
+                .map(|s| {
+                    s.parse::<bc_models::EnvelopeId>()
+                        .map_err(|e| BcError::BadData(format!("invalid envelope_id '{s}': {e}")))
+                })
+                .transpose()?;
             let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
             let posting = Posting::builder()
                 .id(posting_id)
@@ -527,6 +552,7 @@ impl Service {
                 .maybe_cost(cost)
                 .maybe_memo(memo)
                 .tag_ids(p_tag_ids)
+                .maybe_envelope_id(env_id)
                 .build();
             postings_by_tx.entry(tx_id_str).or_default().push(posting);
         }
@@ -673,8 +699,8 @@ impl Service {
             sqlx::query(
                 "INSERT INTO postings \
                  (id, transaction_id, account_id, amount, commodity, memo, position, \
-                  cost_total_value, cost_total_commodity, cost_date, cost_label) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  cost_total_value, cost_total_commodity, cost_date, cost_label, envelope_id) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(posting.id().to_string())
             .bind(&tx_id_str)
@@ -690,6 +716,7 @@ impl Service {
             .bind(cost_commodity)
             .bind(cost_date)
             .bind(cost_label)
+            .bind(posting.envelope_id().map(ToString::to_string))
             .execute(&mut *db_tx)
             .await?;
 
@@ -1224,5 +1251,108 @@ mod tests {
 
         let found = svc.find_by_id(&tx_id).await.expect("find should succeed");
         assert_eq!(found.description(), "Amended description");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_envelope_id_persists_and_loads(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+        use bc_models::Amount;
+        use bc_models::CommodityCode;
+        use bc_models::Decimal;
+        use bc_models::Period;
+        use bc_models::Posting;
+        use bc_models::PostingId;
+        use bc_models::RolloverPolicy;
+        use bc_models::Transaction;
+        use bc_models::TransactionId;
+        use bc_models::TransactionStatus;
+        use jiff::civil::Date;
+
+        use crate::account::Service as AccountService;
+        use crate::envelope::CreateParams;
+        use crate::envelope::Service as EnvelopeService;
+
+        let acct_svc = AccountService::new(pool.clone());
+        let acct_id = acct_svc
+            .create(
+                "Checking",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create account");
+        let expense_id = acct_svc
+            .create(
+                "Food",
+                AccountType::Expense,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create expense account");
+
+        let env_svc = EnvelopeService::new(pool.clone());
+        let env = env_svc
+            .create(CreateParams {
+                name: "Groceries".to_owned(),
+                group_id: None,
+                icon: None,
+                colour: None,
+                allocation_target: None,
+                period: Period::Monthly,
+                rollover_policy: RolloverPolicy::ResetToZero,
+                account_ids: vec![],
+            })
+            .await
+            .expect("create envelope");
+
+        let svc = Service::new(pool.clone());
+        let tx_id = svc
+            .create(
+                Transaction::builder()
+                    .id(TransactionId::new())
+                    .date(Date::constant(2026, 3, 15))
+                    .description("Woolworths")
+                    .status(TransactionStatus::Cleared)
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(expense_id.clone())
+                            .amount(Amount::new(
+                                Decimal::from(100_i32),
+                                CommodityCode::new("AUD"),
+                            ))
+                            .envelope_id(env.id().clone())
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(acct_id.clone())
+                            .amount(Amount::new(
+                                Decimal::from(-100_i32),
+                                CommodityCode::new("AUD"),
+                            ))
+                            .build(),
+                    ])
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("create transaction");
+
+        let loaded = svc.find_by_id(&tx_id).await.expect("find");
+        let posting = loaded
+            .postings()
+            .iter()
+            .find(|p| p.account_id() == &expense_id)
+            .expect("expense posting");
+        assert_eq!(posting.envelope_id(), Some(env.id()));
     }
 }
