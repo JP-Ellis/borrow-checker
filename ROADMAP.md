@@ -85,18 +85,19 @@ ______________________________________________________________________
 
 ## Milestone 5 — Budgeting
 
-**Status:** ◻️
+**Status:** ✅
 **Crate:** `bc-core` extension
 
-- [ ] Envelope model (name, group, icon, allocation target, rollover policy)
-- [ ] Envelope groups (nestable categories)
-- [ ] All period types (incl. fortnightly + financial year)
-- [ ] Allocation workflow (zero-based: assign every dollar)
-- [ ] Category tracking mode (envelopes without allocation target)
-- [ ] Rollover policies (carry forward / reset / cap)
-- [ ] Budget vs. actuals tracking
-- [ ] Mixed-period display normalisation
-- [ ] Budget views in CLI + TUI
+- [x] Envelope model (name, group, icon, allocation target, rollover policy)
+- [x] Envelope groups (nestable categories)
+- [x] All period types (incl. fortnightly + financial year)
+- [x] Allocation workflow (zero-based: assign every dollar)
+- [x] Category tracking mode (envelopes without allocation target)
+- [x] Rollover policies (carry forward / reset / cap)
+- [x] Budget vs. actuals tracking
+- [x] Mixed-period display normalisation
+- [x] Budget views in CLI
+- [ ] Budget views in TUI _(deferred to Milestone 4)_
 
 ______________________________________________________________________
 
