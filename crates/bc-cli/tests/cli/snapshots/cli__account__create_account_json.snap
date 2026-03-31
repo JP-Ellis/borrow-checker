@@ -14,6 +14,9 @@ exit_code: 0
   "description": null,
   "parent_id": null,
   "tag_ids": [],
+  "acquisition_date": null,
+  "acquisition_cost": null,
+  "depreciation_policy": null,
   "created_at": "[TIMESTAMP]",
   "archived_at": null
 }

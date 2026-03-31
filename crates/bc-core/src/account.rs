@@ -40,6 +40,12 @@ struct AccountRow {
     created_at: String,
     /// ISO 8601 archive timestamp if archived.
     archived_at: Option<String>,
+    /// Acquisition date for `ManualAsset` accounts (YYYY-MM-DD), if recorded.
+    acquisition_date: Option<String>,
+    /// Acquisition cost as a decimal string, if recorded.
+    acquisition_cost: Option<String>,
+    /// JSON-encoded `DepreciationPolicy`, if set.
+    depreciation_policy: Option<String>,
     /// Allowed commodities; first = default; empty = unrestricted.
     #[sqlx(skip)]
     commodities: Vec<CommodityId>,
@@ -89,6 +95,33 @@ impl TryFrom<AccountRow> for Account {
             })
             .transpose()?;
 
+        let acquisition_date = row
+            .acquisition_date
+            .as_deref()
+            .map(|s| {
+                s.parse::<jiff::civil::Date>()
+                    .map_err(|e| BcError::BadData(format!("invalid acquisition_date '{s}': {e}")))
+            })
+            .transpose()?;
+
+        let acquisition_cost = row
+            .acquisition_cost
+            .as_deref()
+            .map(|s| {
+                s.parse::<rust_decimal::Decimal>()
+                    .map_err(|e| BcError::BadData(format!("invalid acquisition_cost '{s}': {e}")))
+            })
+            .transpose()?;
+
+        let depreciation_policy = row
+            .depreciation_policy
+            .as_deref()
+            .map(|s| {
+                serde_json::from_str::<bc_models::DepreciationPolicy>(s)
+                    .map_err(|e| BcError::BadData(format!("invalid depreciation_policy: {e}")))
+            })
+            .transpose()?;
+
         Ok(Self::builder()
             .id(id)
             .name(row.name)
@@ -99,6 +132,9 @@ impl TryFrom<AccountRow> for Account {
             .maybe_description(row.description)
             .maybe_parent_id(parent_id)
             .maybe_archived_at(archived_at)
+            .maybe_acquisition_date(acquisition_date)
+            .maybe_acquisition_cost(acquisition_cost)
+            .maybe_depreciation_policy(depreciation_policy)
             .created_at(created_at)
             .build())
     }
@@ -167,6 +203,9 @@ impl Service {
     /// * `parent_id` - Optional parent account ID for sub-accounts.
     /// * `commodity_ids` - Ordered list of allowed commodity IDs; first entry is the default.
     /// * `tag_ids` - Tags to attach to the account.
+    /// * `acquisition_date` - Date the asset was acquired (only for [`AccountKind::ManualAsset`]).
+    /// * `acquisition_cost` - Cost of acquisition (only for [`AccountKind::ManualAsset`]).
+    /// * `depreciation_policy` - Depreciation method (only for [`AccountKind::ManualAsset`]).
     ///
     /// # Errors
     ///
@@ -185,6 +224,9 @@ impl Service {
         parent_id: Option<&AccountId>,
         commodity_ids: &[CommodityId],
         tag_ids: &[TagId],
+        acquisition_date: Option<jiff::civil::Date>,
+        acquisition_cost: Option<rust_decimal::Decimal>,
+        depreciation_policy: Option<&bc_models::DepreciationPolicy>,
     ) -> BcResult<AccountId> {
         let id = AccountId::new();
         let now = Timestamp::now();
@@ -201,7 +243,9 @@ impl Service {
         insert_event(&event, &mut tx).await?;
 
         sqlx::query(
-            "INSERT INTO accounts (id, name, account_type, kind, description, parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO accounts (id, name, account_type, kind, description, parent_id, created_at, \
+             acquisition_date, acquisition_cost, depreciation_policy) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(id.to_string())
         .bind(name)
@@ -210,6 +254,14 @@ impl Service {
         .bind(description)
         .bind(parent_id.map(AccountId::to_string))
         .bind(now.to_string())
+        .bind(acquisition_date.map(|d| d.to_string()))
+        .bind(acquisition_cost.map(|c| c.to_string()))
+        .bind(
+            depreciation_policy
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(BcError::Serialisation)?,
+        )
         .execute(&mut *tx)
         .await?;
 
@@ -301,7 +353,8 @@ impl Service {
     #[inline]
     pub async fn find_by_id(&self, id: &AccountId) -> BcResult<Account> {
         let mut row = sqlx::query_as::<_, AccountRow>(
-            "SELECT id, name, account_type, kind, description, parent_id, created_at, archived_at \
+            "SELECT id, name, account_type, kind, description, parent_id, created_at, archived_at, \
+             acquisition_date, acquisition_cost, depreciation_policy \
              FROM accounts WHERE id = ?",
         )
         .bind(id.to_string())
@@ -352,7 +405,8 @@ impl Service {
     #[inline]
     pub async fn list_active(&self) -> BcResult<Vec<Account>> {
         let mut account_rows = sqlx::query_as::<_, AccountRow>(
-            "SELECT id, name, account_type, kind, description, parent_id, created_at, archived_at \
+            "SELECT id, name, account_type, kind, description, parent_id, created_at, archived_at, \
+             acquisition_date, acquisition_cost, depreciation_policy \
              FROM accounts WHERE archived_at IS NULL ORDER BY name ASC",
         )
         .fetch_all(&self.pool)
@@ -434,6 +488,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create should succeed");
@@ -457,6 +514,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create should succeed");
@@ -480,6 +540,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create should succeed");
@@ -519,6 +582,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create should succeed");
@@ -568,6 +634,9 @@ mod tests {
                 None,
                 core::slice::from_ref(&commodity_id),
                 core::slice::from_ref(&tag_id),
+                None,
+                None,
+                None,
             )
             .await
             .expect("create should succeed");
@@ -589,6 +658,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create should succeed");
@@ -601,6 +673,9 @@ mod tests {
                 None,
                 &[],
                 &[],
+                None,
+                None,
+                None,
             )
             .await
             .expect("create should succeed");
