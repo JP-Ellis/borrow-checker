@@ -1,6 +1,7 @@
 //! Service for recording asset valuations and calculating depreciation.
 
 use bc_models::AccountId;
+use bc_models::DepreciationId;
 use bc_models::DepreciationPolicy;
 use bc_models::PostingId;
 use bc_models::TransactionId;
@@ -514,7 +515,7 @@ impl Service {
             }
         };
 
-        let depr_id = ValuationId::new();
+        let depr_id = DepreciationId::new();
         let now = Timestamp::now();
         let status_str = to_db_str(TransactionStatus::Cleared)?;
 

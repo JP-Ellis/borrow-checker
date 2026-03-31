@@ -4,6 +4,8 @@ use rust_decimal::Decimal;
 
 crate::define_id!(ValuationId, "valuation");
 
+crate::define_id!(DepreciationId, "depreciation");
+
 /// The authoritative source of a recorded asset market value.
 ///
 /// Re-exported from the crate root as [`crate::ValuationSource`].
