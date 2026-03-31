@@ -11,8 +11,7 @@ Usage: borrow-checker report [OPTIONS] <COMMAND>
 
 Commands:
   net-worth  Net worth across all asset and liability accounts
-  monthly    Monthly income and expense summary
-  annual     Annual summary broken down by month
+  summary    Transaction summary for a configurable time period
   budget     Budget vs actuals (requires Milestone 5)
   help       Print this message or the help of the given subcommand(s)
 
