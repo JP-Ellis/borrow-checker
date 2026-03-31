@@ -60,6 +60,7 @@ members  = [
   opentelemetry         = "0.31"
   opentelemetry-otlp    = "0.31"
   opentelemetry_sdk     = "0.31"
+  owo-colors            = "4"
   pretty_assertions     = { version = "1", features = ["unstable"] }
   quick-xml             = "0.37"
   regex                 = "1"
