@@ -77,6 +77,25 @@ impl Service {
         account_id: &AccountId,
         config: Config,
     ) -> BcResult<ProfileId> {
+        // Verify the target account is a DepositAccount — only they may have import profiles.
+        let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM accounts WHERE id = ?")
+            .bind(account_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match kind.as_deref() {
+            None => return Err(BcError::NotFound(format!("account {account_id}"))),
+            Some(k) if k != "deposit_account" => {
+                let parsed = crate::db::from_db_str::<bc_models::AccountKind>(k)?;
+                return Err(BcError::InvalidAccountKind {
+                    operation: "create import profile",
+                    account_id: account_id.clone(),
+                    kind: parsed,
+                });
+            }
+            Some(_) => {} // deposit_account — allowed
+        }
+
         let id = ProfileId::new();
         let created_at = Timestamp::now();
         let config_json =
@@ -432,6 +451,30 @@ mod tests {
         let fake_id = ProfileId::new();
         let result = svc.delete(&fake_id).await;
         assert!(matches!(result, Err(BcError::NotFound(_))));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_profile_for_manual_asset_account_fails(pool: SqlitePool) {
+        let account_id = crate::AccountService::new(pool.clone())
+            .create(
+                "House",
+                bc_models::AccountType::Asset,
+                bc_models::AccountKind::ManualAsset,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create ManualAsset account");
+        let svc = Service::new(pool.clone());
+        let result = svc
+            .create("Bad Profile", "csv", &account_id, Config::default())
+            .await;
+        assert!(
+            matches!(result, Err(BcError::InvalidAccountKind { .. })),
+            "expected InvalidAccountKind, got {result:?}"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
