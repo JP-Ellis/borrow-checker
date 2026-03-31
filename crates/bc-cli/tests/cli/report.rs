@@ -25,18 +25,32 @@ fn net_worth_empty_json() {
 }
 
 #[test]
-fn monthly_empty() {
+fn summary_monthly_empty() {
     let ctx = TestContext::new();
     let mut cmd = ctx.command();
-    cmd.args(["report", "monthly", "2026-03"]);
+    cmd.args([
+        "report",
+        "summary",
+        "--period",
+        "monthly",
+        "--date",
+        "2026-03-15",
+    ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
 #[test]
-fn annual_empty() {
+fn summary_calendar_year_empty() {
     let ctx = TestContext::new();
     let mut cmd = ctx.command();
-    cmd.args(["report", "annual", "2026"]);
+    cmd.args([
+        "report",
+        "summary",
+        "--period",
+        "calendar-year",
+        "--date",
+        "2026-06-01",
+    ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 

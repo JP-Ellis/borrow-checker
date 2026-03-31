@@ -5,5 +5,5 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Annual report: 2026 (0 transactions)
+Report: 2026-01-01 – 2027-01-01 (0 transactions)
 ----- stderr -----

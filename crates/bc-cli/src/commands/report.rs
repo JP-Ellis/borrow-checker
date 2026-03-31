@@ -1,7 +1,6 @@
 //! Report generation sub-commands.
 
 use core::str::FromStr as _;
-use std::collections::BTreeMap;
 
 use bc_models::AccountType;
 use clap::Subcommand;
@@ -19,31 +18,57 @@ pub struct Args {
     pub command: Command,
 }
 
-// CLAUDE: NetWorth and Budget make sense as top-level subcommands. But Monthly
-// and Annual feel like they are variants of a more general report which should
-// have a time period as an argument. This argument should align with the
-// various periods in `bc-models`.
-
 /// Available reports.
 #[derive(Debug, Subcommand)]
 #[non_exhaustive]
 pub enum Command {
     /// Net worth across all asset and liability accounts.
     NetWorth,
-    /// Monthly income and expense summary.
-    Monthly {
-        /// Month to report (YYYY-MM). Defaults to the current month.
-        #[arg(value_name = "YYYY-MM")]
-        month: Option<String>,
-    },
-    /// Annual summary broken down by month.
-    Annual {
-        /// Year to report (YYYY). Defaults to the current year.
-        #[arg(value_name = "YYYY")]
-        year: Option<String>,
+    /// Transaction summary for a configurable time period.
+    Summary {
+        /// Period granularity.
+        ///
+        /// Determines the date range: the period instance containing `--date`
+        /// is selected. Defaults to `monthly`.
+        #[arg(long, value_enum, default_value = "monthly")]
+        period: PeriodArg,
+        /// A date within the desired period (YYYY-MM-DD). Defaults to today.
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        date: Option<String>,
     },
     /// Budget vs actuals (requires Milestone 5).
     Budget,
+}
+
+/// CLI period selector for the `report summary` command.
+///
+/// Covers the fixed-anchor periods that require no additional configuration.
+/// Financial-year periods (which need a configurable start month/day from the
+/// config file) will be added once config integration is complete.
+#[non_exhaustive]
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum PeriodArg {
+    /// Every 7 days (Monday–Sunday).
+    Weekly,
+    /// Calendar month.
+    Monthly,
+    /// Calendar quarter (Jan/Apr/Jul/Oct).
+    Quarterly,
+    /// Full calendar year (1 Jan – 31 Dec).
+    #[value(name = "calendar-year")]
+    CalendarYear,
+}
+
+impl From<PeriodArg> for bc_models::Period {
+    #[inline]
+    fn from(arg: PeriodArg) -> Self {
+        match arg {
+            PeriodArg::Weekly => Self::Weekly,
+            PeriodArg::Monthly => Self::Monthly,
+            PeriodArg::Quarterly => Self::Quarterly,
+            PeriodArg::CalendarYear => Self::CalendarYear,
+        }
+    }
 }
 
 /// Executes the `report` subcommand.
@@ -55,8 +80,7 @@ pub enum Command {
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
         Command::NetWorth => net_worth(ctx).await,
-        Command::Monthly { month } => monthly(ctx, month).await,
-        Command::Annual { year } => annual(ctx, year).await,
+        Command::Summary { period, date } => summary(ctx, period, date).await,
         Command::Budget => {
             #[expect(clippy::print_stderr, reason = "CLI stub message")]
             {
@@ -126,27 +150,34 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
     Ok(())
 }
 
-/// Monthly transactions report.
+/// Period summary report: lists transactions within the period instance
+/// containing `date`.
+///
+/// # Arguments
+///
+/// * `ctx` - Shared application context.
+/// * `period` - The period granularity to use.
+/// * `date` - A date within the desired period. Defaults to today.
 ///
 /// # Errors
 ///
-/// Propagates [`crate::error::CliError`] from the transaction service.
-async fn monthly(ctx: &AppContext, month: Option<String>) -> CliResult<()> {
-    let month_str = month.unwrap_or_else(|| {
-        let now = jiff::Zoned::now();
-        format!("{:04}-{:02}", now.year(), now.month())
-    });
+/// Propagates [`crate::error::CliError`] from the transaction service or
+/// date parsing.
+async fn summary(ctx: &AppContext, period: PeriodArg, date: Option<String>) -> CliResult<()> {
+    let anchor = if let Some(d) = date {
+        jiff::civil::Date::from_str(&d)
+            .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{d}': {e}")))?
+    } else {
+        jiff::Zoned::now().date()
+    };
 
-    let year_month = jiff::civil::Date::from_str(&format!("{month_str}-01"))
-        .map_err(|e| crate::error::CliError::Arg(format!("invalid month '{month_str}': {e}")))?;
-    let month_end = year_month
-        .checked_add(jiff::Span::new().months(1_i64))
-        .map_err(|e| crate::error::CliError::Arg(format!("date arithmetic error: {e}")))?;
+    let bc_period = bc_models::Period::from(period);
+    let (start, end) = bc_period.range_containing(anchor);
 
     let all_txs = ctx.transactions.list().await?;
     let txs: Vec<_> = all_txs
         .iter()
-        .filter(|tx| tx.date() >= year_month && tx.date() < month_end)
+        .filter(|tx| tx.date() >= start && tx.date() < end)
         .collect();
 
     if ctx.json {
@@ -155,7 +186,7 @@ async fn monthly(ctx: &AppContext, month: Option<String>) -> CliResult<()> {
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        println!("Monthly report: {month_str} ({} transactions)", txs.len());
+        println!("Report: {} – {} ({} transactions)", start, end, txs.len());
     }
 
     if txs.is_empty() {
@@ -173,62 +204,5 @@ async fn monthly(ctx: &AppContext, month: Option<String>) -> CliResult<()> {
         })
         .collect();
     crate::output::print_table(&["ID", "DATE", "DESCRIPTION"], &rows);
-    Ok(())
-}
-
-/// Annual transactions report grouped by month.
-///
-/// # Errors
-///
-/// Propagates [`crate::error::CliError`] from the transaction service.
-async fn annual(ctx: &AppContext, year: Option<String>) -> CliResult<()> {
-    let year_str = year.unwrap_or_else(|| {
-        let now = jiff::Zoned::now();
-        format!("{:04}", now.year())
-    });
-
-    let year_start = jiff::civil::Date::from_str(&format!("{year_str}-01-01"))
-        .map_err(|e| crate::error::CliError::Arg(format!("invalid year '{year_str}': {e}")))?;
-    let year_end = year_start
-        .checked_add(jiff::Span::new().years(1_i64))
-        .map_err(|e| crate::error::CliError::Arg(format!("date arithmetic error: {e}")))?;
-
-    let all_txs = ctx.transactions.list().await?;
-    let txs: Vec<_> = all_txs
-        .iter()
-        .filter(|tx| tx.date() >= year_start && tx.date() < year_end)
-        .collect();
-
-    if ctx.json {
-        return crate::output::print_json(&txs);
-    }
-
-    #[expect(clippy::print_stdout, reason = "CLI output")]
-    {
-        println!("Annual report: {year_str} ({} transactions)", txs.len());
-    }
-
-    if txs.is_empty() {
-        return Ok(());
-    }
-
-    // Group by month.
-    let mut by_month: BTreeMap<String, Vec<_>> = BTreeMap::new();
-    for tx in &txs {
-        let key = format!("{:04}-{:02}", tx.date().year(), tx.date().month());
-        by_month.entry(key).or_default().push(tx);
-    }
-
-    for (month, month_txs) in &by_month {
-        #[expect(clippy::print_stdout, reason = "CLI output")]
-        {
-            println!("\n{month}");
-        }
-        let rows: Vec<Vec<String>> = month_txs
-            .iter()
-            .map(|tx| vec![tx.date().to_string(), tx.description().to_owned()])
-            .collect();
-        crate::output::print_table(&["DATE", "DESCRIPTION"], &rows);
-    }
     Ok(())
 }
