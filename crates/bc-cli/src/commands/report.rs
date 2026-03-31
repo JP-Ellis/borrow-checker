@@ -19,6 +19,11 @@ pub struct Args {
     pub command: Command,
 }
 
+// CLAUDE: NetWorth and Budget make sense as top-level subcommands. But Monthly
+// and Annual feel like they are variants of a more general report which should
+// have a time period as an argument. This argument should align with the
+// various periods in `bc-models`.
+
 /// Available reports.
 #[derive(Debug, Subcommand)]
 #[non_exhaustive]
@@ -68,10 +73,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 ///
 /// Propagates [`crate::error::CliError`] from the account or balance service.
 async fn net_worth(ctx: &AppContext) -> CliResult<()> {
-    const NAME_W: usize = 35;
-    const BAL_W: usize = 15;
-    const COMM_W: usize = 8;
-    const DIVIDER_W: usize = NAME_W + BAL_W + COMM_W + 4;
     // Hard-coded commodity for M3 until a commodity service is added.
     // Only balances denominated in AUD are included; non-AUD accounts show zero.
     const COMMODITY: &str = "AUD";
@@ -117,11 +118,11 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
         return Ok(());
     }
 
-    crate::output::print_row(&[("ACCOUNT", NAME_W), ("BALANCE", BAL_W), ("CCY", COMM_W)]);
-    crate::output::print_divider(DIVIDER_W);
-    for (name, ccy, bal) in &rows {
-        crate::output::print_row(&[(name, NAME_W), (&bal.to_string(), BAL_W), (ccy, COMM_W)]);
-    }
+    let table_rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|(name, ccy, bal)| vec![name.clone(), bal.to_string(), ccy.clone()])
+        .collect();
+    crate::output::print_table(&["ACCOUNT", "BALANCE", "CCY"], &table_rows);
     Ok(())
 }
 
@@ -131,11 +132,6 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
 ///
 /// Propagates [`crate::error::CliError`] from the transaction service.
 async fn monthly(ctx: &AppContext, month: Option<String>) -> CliResult<()> {
-    const ID_W: usize = 36;
-    const DATE_W: usize = 12;
-    const DESC_W: usize = 35;
-    const DIVIDER_W: usize = ID_W + DATE_W + DESC_W + 4;
-
     let month_str = month.unwrap_or_else(|| {
         let now = jiff::Zoned::now();
         format!("{:04}-{:02}", now.year(), now.month())
@@ -166,15 +162,17 @@ async fn monthly(ctx: &AppContext, month: Option<String>) -> CliResult<()> {
         return Ok(());
     }
 
-    crate::output::print_row(&[("ID", ID_W), ("DATE", DATE_W), ("DESCRIPTION", DESC_W)]);
-    crate::output::print_divider(DIVIDER_W);
-    for tx in &txs {
-        crate::output::print_row(&[
-            (&tx.id().to_string(), ID_W),
-            (&tx.date().to_string(), DATE_W),
-            (tx.description(), DESC_W),
-        ]);
-    }
+    let rows: Vec<Vec<String>> = txs
+        .iter()
+        .map(|tx| {
+            vec![
+                tx.id().to_string(),
+                tx.date().to_string(),
+                tx.description().to_owned(),
+            ]
+        })
+        .collect();
+    crate::output::print_table(&["ID", "DATE", "DESCRIPTION"], &rows);
     Ok(())
 }
 
@@ -224,14 +222,13 @@ async fn annual(ctx: &AppContext, year: Option<String>) -> CliResult<()> {
     for (month, month_txs) in &by_month {
         #[expect(clippy::print_stdout, reason = "CLI output")]
         {
-            println!("\n  {month} ({} transactions)", month_txs.len());
+            println!("\n{month}");
         }
-        for tx in month_txs {
-            #[expect(clippy::print_stdout, reason = "CLI output")]
-            {
-                println!("    {}  {}", tx.date(), tx.description());
-            }
-        }
+        let rows: Vec<Vec<String>> = month_txs
+            .iter()
+            .map(|tx| vec![tx.date().to_string(), tx.description().to_owned()])
+            .collect();
+        crate::output::print_table(&["DATE", "DESCRIPTION"], &rows);
     }
     Ok(())
 }

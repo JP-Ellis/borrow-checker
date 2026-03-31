@@ -1,5 +1,7 @@
 //! Transaction management sub-commands: list, add, amend, void.
 
+use core::str::FromStr as _;
+
 use clap::Subcommand;
 
 use crate::context::AppContext;
@@ -71,8 +73,6 @@ pub enum Command {
 /// Returns [`crate::error::CliError::Arg`] if the spec is malformed or the
 /// amount cannot be parsed as a [`rust_decimal::Decimal`].
 fn parse_posting_spec(spec: &str) -> crate::error::CliResult<bc_models::Posting> {
-    use core::str::FromStr as _;
-
     // `rsplitn` splits right-to-left so index 0 is the rightmost segment.
     let mut parts = spec.rsplitn(3, ':');
     let (Some(commodity), Some(amount_str), Some(account_id_str)) =
@@ -128,13 +128,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 
 /// Lists all non-voided transactions.
 async fn list(ctx: &AppContext) -> CliResult<()> {
-    const ID_W: usize = 36;
-    const DATE_W: usize = 12;
-    const DESC_W: usize = 35;
-    const AMOUNT_W: usize = 20;
-    /// Total divider width.
-    const DIVIDER_W: usize = ID_W + DATE_W + DESC_W + AMOUNT_W + 6;
-
     let transactions = ctx.transactions.list().await?;
 
     if ctx.json {
@@ -149,35 +142,29 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
         return Ok(());
     }
 
-    crate::output::print_row(&[
-        ("ID", ID_W),
-        ("DATE", DATE_W),
-        ("DESCRIPTION", DESC_W),
-        ("AMOUNTS", AMOUNT_W),
-    ]);
-    crate::output::print_divider(DIVIDER_W);
-
-    for tx in &transactions {
-        let amounts: Vec<String> = tx
-            .postings()
-            .iter()
-            .filter(|p| p.amount().value() > rust_decimal::Decimal::ZERO)
-            .map(|p| format!("{} {}", p.amount().value(), p.amount().commodity().as_str()))
-            .collect();
-        let amounts_str = amounts.join(", ");
-
-        let description = tx.payee().map_or_else(
-            || tx.description().to_owned(),
-            |payee| format!("{payee}: {}", tx.description()),
-        );
-
-        crate::output::print_row(&[
-            (&tx.id().to_string(), ID_W),
-            (&tx.date().to_string(), DATE_W),
-            (&description, DESC_W),
-            (&amounts_str, AMOUNT_W),
-        ]);
-    }
+    let rows: Vec<Vec<String>> = transactions
+        .iter()
+        .map(|tx| {
+            let amounts: Vec<String> = tx
+                .postings()
+                .iter()
+                .filter(|p| p.amount().value() > rust_decimal::Decimal::ZERO)
+                .map(|p| format!("{} {}", p.amount().value(), p.amount().commodity().as_str()))
+                .collect();
+            let amounts_str = amounts.join(", ");
+            let description = tx.payee().map_or_else(
+                || tx.description().to_owned(),
+                |payee| format!("{payee}: {}", tx.description()),
+            );
+            vec![
+                tx.id().to_string(),
+                tx.date().to_string(),
+                description,
+                amounts_str,
+            ]
+        })
+        .collect();
+    crate::output::print_table(&["ID", "DATE", "DESCRIPTION", "AMOUNTS"], &rows);
     Ok(())
 }
 
@@ -189,8 +176,6 @@ async fn add(
     payee: Option<String>,
     posting_specs: Vec<String>,
 ) -> CliResult<()> {
-    use core::str::FromStr as _;
-
     if posting_specs.len() < 2 {
         return Err(crate::error::CliError::Arg(
             "at least two --posting arguments are required".into(),
@@ -238,8 +223,6 @@ async fn amend(
     payee: Option<String>,
     clear_payee: bool,
 ) -> CliResult<()> {
-    use core::str::FromStr as _;
-
     let tx_id = bc_models::TransactionId::from_str(&id)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid transaction ID '{id}': {e}")))?;
 
@@ -286,8 +269,6 @@ async fn amend(
 
 /// Voids a transaction by ID.
 async fn void(ctx: &AppContext, id: String) -> CliResult<()> {
-    use core::str::FromStr as _;
-
     let tx_id = bc_models::TransactionId::from_str(&id)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid transaction ID '{id}': {e}")))?;
 
