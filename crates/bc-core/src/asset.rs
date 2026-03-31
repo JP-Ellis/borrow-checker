@@ -80,6 +80,10 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError`] on event append, serialisation, or database insert failure.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "record_valuation inherently spans account kind check, event logging, projection insert, and double-entry transaction; refactoring into helpers would obscure the atomic operation"
+    )]
     #[inline]
     pub async fn record_valuation(
         &self,
@@ -90,6 +94,25 @@ impl Service {
         recorded_at: Date,
         counterpart_id: Option<&AccountId>,
     ) -> BcResult<ValuationId> {
+        // Verify the account is a ManualAsset.
+        let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM accounts WHERE id = ?")
+            .bind(account_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match kind.as_deref() {
+            None => return Err(BcError::NotFound(format!("account {account_id}"))),
+            Some(k) if k != "manual_asset" => {
+                let parsed = crate::db::from_db_str::<bc_models::AccountKind>(k)?;
+                return Err(BcError::InvalidAccountKind {
+                    operation: "record asset valuation",
+                    account_id: account_id.clone(),
+                    kind: parsed,
+                });
+            }
+            Some(_) => {}
+        }
+
         let id = ValuationId::new();
         let now = Timestamp::now();
         let source_str = to_db_str(source)?;
@@ -283,11 +306,14 @@ impl Service {
         account_id: &AccountId,
         commodity: &str,
     ) -> BcResult<Option<Decimal>> {
+        // Use a read transaction for a consistent snapshot across the two queries.
+        let mut tx = self.pool.begin().await?;
+
         // Fetch acquisition_cost from the accounts table.
         let row: Option<(Option<String>,)> =
             sqlx::query_as("SELECT acquisition_cost FROM accounts WHERE id = ?")
                 .bind(account_id.to_string())
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *tx)
                 .await?;
 
         let acquisition_cost_str = match row {
@@ -308,8 +334,10 @@ impl Service {
         )
         .bind(account_id.to_string())
         .bind(commodity)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+
+        tx.commit().await?;
 
         let total_depr = depr_rows.into_iter().try_fold(Decimal::ZERO, |acc, (s,)| {
             let d = s
@@ -594,6 +622,40 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
     use sqlx::SqlitePool;
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn record_valuation_on_deposit_account_fails(pool: SqlitePool) {
+        let deposit_id = crate::AccountService::new(pool.clone())
+            .create(
+                "Savings",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("create DepositAccount");
+        let svc = super::Service::new(pool.clone());
+        let result = svc
+            .record_valuation(
+                &deposit_id,
+                dec!(1_000),
+                "AUD",
+                ValuationSource::ManualEstimate,
+                jiff::civil::date(2026, 1, 1),
+                None,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidAccountKind { .. })),
+            "expected InvalidAccountKind, got {result:?}"
+        );
+    }
 
     async fn make_manual_asset(pool: &SqlitePool) -> AccountId {
         crate::AccountService::new(pool.clone())

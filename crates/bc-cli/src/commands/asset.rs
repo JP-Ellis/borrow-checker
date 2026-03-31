@@ -81,6 +81,9 @@ pub enum Command {
         /// Commodity code (e.g. AUD).
         #[arg(long)]
         commodity: String,
+        /// Number of days in a custom repayment period (required when --frequency custom).
+        #[arg(long, required_if_eq("frequency", "custom"))]
+        period_days: Option<u32>,
     },
     /// Display the full amortization schedule for a Receivable account.
     Amortization {
@@ -136,18 +139,9 @@ pub enum FrequencyArg {
     Monthly,
     /// Quarterly payments.
     Quarterly,
-}
-
-impl From<FrequencyArg> for bc_models::RepaymentFrequency {
-    #[inline]
-    fn from(arg: FrequencyArg) -> Self {
-        match arg {
-            FrequencyArg::Weekly => Self::Weekly,
-            FrequencyArg::Fortnightly => Self::Fortnightly,
-            FrequencyArg::Monthly => Self::Monthly,
-            FrequencyArg::Quarterly => Self::Quarterly,
-        }
-    }
+    /// A custom repayment period.
+    #[value(name = "custom")]
+    Custom,
 }
 
 /// Executes the `asset` subcommand.
@@ -180,6 +174,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             term_months,
             frequency,
             commodity,
+            period_days,
         } => {
             set_loan_terms(
                 ctx,
@@ -190,6 +185,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
                 term_months,
                 frequency,
                 commodity,
+                period_days,
             )
             .await
         }
@@ -203,10 +199,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 ///
 /// Returns [`crate::error::CliError::Arg`] for invalid IDs, amounts, or dates.
 /// Propagates [`crate::error::CliError::Core`] from the asset service.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "all parameters come from CLI flags"
-)]
 async fn record_valuation(
     ctx: &AppContext,
     account: String,
@@ -267,6 +259,7 @@ async fn record_valuation(
 ///
 /// Returns [`crate::error::CliError::Arg`] for invalid IDs or dates.
 /// Propagates [`crate::error::CliError::Core`] from the asset service.
+#[inline]
 async fn depreciate(
     ctx: &AppContext,
     account: String,
@@ -316,6 +309,7 @@ async fn set_loan_terms(
     term_months: u32,
     frequency: FrequencyArg,
     commodity: String,
+    period_days: Option<u32>,
 ) -> CliResult<()> {
     let account_id = AccountId::from_str(&account)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID: {e}")))?;
@@ -331,13 +325,26 @@ async fn set_loan_terms(
     let start_date = jiff::civil::Date::from_str(&start)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid start date '{start}': {e}")))?;
 
+    let repayment_frequency = match frequency {
+        FrequencyArg::Weekly => bc_models::RepaymentFrequency::Weekly,
+        FrequencyArg::Fortnightly => bc_models::RepaymentFrequency::Fortnightly,
+        FrequencyArg::Monthly => bc_models::RepaymentFrequency::Monthly,
+        FrequencyArg::Quarterly => bc_models::RepaymentFrequency::Quarterly,
+        FrequencyArg::Custom => {
+            let days = period_days.ok_or_else(|| {
+                crate::error::CliError::Arg("--period-days required when --frequency custom".into())
+            })?;
+            bc_models::RepaymentFrequency::Custom { period_days: days }
+        }
+    };
+
     let terms = bc_models::LoanTerms::builder()
         .account_id(account_id.clone())
         .principal(principal_val)
         .annual_rate(annual_rate)
         .start_date(start_date)
         .term_months(term_months)
-        .repayment_frequency(frequency.into())
+        .repayment_frequency(repayment_frequency)
         .commodity(commodity)
         .build();
 
