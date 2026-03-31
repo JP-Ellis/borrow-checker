@@ -438,6 +438,11 @@ impl Service {
     /// Allocates funds to an envelope for the period starting on `period_start`.
     ///
     /// If an allocation already exists for that period, it is replaced (upsert).
+    /// Each call appends a new [`Event::EnvelopeAllocated`] regardless of whether
+    /// an existing allocation was replaced; the event log will therefore contain one
+    /// event per call rather than a tombstone for the superseded allocation.  This is
+    /// intentional: the projection table (`envelope_allocations`) is the authoritative
+    /// read model, and the event log is used for audit purposes only.
     ///
     /// # Errors
     ///
