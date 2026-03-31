@@ -419,7 +419,9 @@ impl Service {
             })?;
 
         if matches!(policy, DepreciationPolicy::None) {
-            return Ok(());
+            return Err(BcError::BadData(
+                "account has no depreciation policy set".into(),
+            ));
         }
 
         let mut db_tx = self.pool.begin().await?;
@@ -450,8 +452,9 @@ impl Service {
         };
 
         if as_of <= period_start {
-            // Nothing to depreciate.
-            return Ok(());
+            return Err(BcError::BadData(
+                "as_of date must be after the depreciation period start".into(),
+            ));
         }
 
         // Compute book value within the transaction for a consistent snapshot.

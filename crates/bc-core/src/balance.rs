@@ -75,6 +75,10 @@ impl Engine {
     /// [`Receivable`]: bc_models::AccountKind::Receivable
     /// [`VirtualAllocation`]: bc_models::AccountKind::VirtualAllocation
     /// [`ManualAsset`]: bc_models::AccountKind::ManualAsset
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "AccountKind and AccountType are #[non_exhaustive]; future variants should be excluded from net-worth like other non-Asset/Liability types, or fall through to posting-based balance"
+    )]
     #[inline]
     pub async fn net_worth(&self, commodity: &str) -> BcResult<Decimal> {
         use bc_models::AccountKind;
@@ -88,10 +92,6 @@ impl Engine {
         let mut total = Decimal::ZERO;
 
         for account in &accounts {
-            #[expect(
-                clippy::wildcard_enum_match_arm,
-                reason = "AccountType is non_exhaustive; skip unknown variants"
-            )]
             match account.account_type() {
                 AccountType::Asset | AccountType::Liability => {}
                 _ => continue,
@@ -99,30 +99,12 @@ impl Engine {
 
             let contribution = match account.kind() {
                 AccountKind::ManualAsset => {
-                    // Use the latest market valuation.
-                    let mv: Option<String> = sqlx::query_scalar(
-                        "SELECT market_value FROM asset_valuations \
-                         WHERE account_id = ? AND commodity = ? \
-                         ORDER BY recorded_at DESC, created_at DESC LIMIT 1",
-                    )
-                    .bind(account.id().to_string())
-                    .bind(commodity)
-                    .fetch_optional(&self.pool)
-                    .await?;
-
-                    mv.as_deref()
-                        .map(|s| {
-                            s.parse::<Decimal>().map_err(|e| {
-                                BcError::BadData(format!("invalid market_value '{s}': {e}"))
-                            })
-                        })
-                        .transpose()?
+                    // Delegate to AssetService to avoid duplicating the SQL.
+                    crate::asset::Service::new(self.pool.clone())
+                        .latest_market_value(account.id(), commodity)
+                        .await?
                         .unwrap_or(Decimal::ZERO)
                 }
-                #[expect(
-                    clippy::wildcard_enum_match_arm,
-                    reason = "AccountKind is non_exhaustive; use posting-based balance for all other kinds"
-                )]
                 _ => {
                     // Posting-based balance for all other kinds.
                     self.balance_for(account.id(), commodity).await?
