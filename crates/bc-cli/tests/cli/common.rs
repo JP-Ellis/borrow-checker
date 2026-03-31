@@ -31,6 +31,10 @@ impl TestContext {
             regex::escape(home_dir.path().to_str().expect("temp dir path is UTF-8"));
         let filters = vec![
             (
+                Regex::new("borrow-checker\\.exe").expect("valid regex"),
+                "borrow-checker".to_owned(),
+            ),
+            (
                 Regex::new("account_[0-9a-z]{26}").expect("valid regex"),
                 "[ACCOUNT_ID]".to_owned(),
             ),
