@@ -224,6 +224,12 @@ pub struct Posting {
     /// transaction-level tags. Defaults to empty.
     #[builder(default)]
     tag_ids: Vec<TagId>,
+
+    /// Budget envelope this posting is assigned to, for actuals tracking.
+    ///
+    /// `None` means this posting is not attributed to any budget envelope.
+    /// Set when recording a transaction against a budgeted category.
+    envelope_id: Option<crate::envelope::EnvelopeId>,
 }
 
 impl Posting {
@@ -267,6 +273,13 @@ impl Posting {
     #[must_use]
     pub fn tag_ids(&self) -> &[TagId] {
         &self.tag_ids
+    }
+
+    /// Returns the budget envelope ID this posting is assigned to, if any.
+    #[inline]
+    #[must_use]
+    pub fn envelope_id(&self) -> Option<&crate::envelope::EnvelopeId> {
+        self.envelope_id.as_ref()
     }
 }
 
@@ -553,6 +566,47 @@ mod tests {
             .build();
         assert!(tx.link_ids().is_empty());
         assert!(tx.tag_ids().is_empty());
+    }
+
+    #[test]
+    fn posting_envelope_id_defaults_to_none() {
+        use crate::AccountId;
+        use crate::Amount;
+        use crate::CommodityCode;
+        use crate::Decimal;
+        use crate::PostingId;
+        let p = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .amount(Amount::new(
+                Decimal::from(100_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .build();
+        assert!(p.envelope_id().is_none());
+    }
+
+    #[test]
+    fn posting_envelope_id_round_trips_through_serde() {
+        use crate::AccountId;
+        use crate::Amount;
+        use crate::CommodityCode;
+        use crate::Decimal;
+        use crate::EnvelopeId;
+        use crate::PostingId;
+        let env_id = EnvelopeId::new();
+        let p = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .amount(Amount::new(
+                Decimal::from(50_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .envelope_id(env_id.clone())
+            .build();
+        let json = serde_json::to_string(&p).expect("ser");
+        let p2: Posting = serde_json::from_str(&json).expect("deser");
+        assert_eq!(p2.envelope_id(), Some(&env_id));
     }
 
     #[test]
