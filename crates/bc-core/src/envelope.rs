@@ -147,6 +147,48 @@ pub struct CreateParams {
     pub account_ids: Vec<AccountId>,
 }
 
+impl CreateParams {
+    /// Creates a new [`CreateParams`] with all required and optional fields.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Display name for the envelope.
+    /// * `group_id` - Group this envelope belongs to, if any.
+    /// * `icon` - Optional display icon (emoji or icon name).
+    /// * `colour` - Optional display colour (e.g. `"#4CAF50"`).
+    /// * `allocation_target` - Budget target per period. `None` = category tracking mode.
+    /// * `period` - Recurrence period.
+    /// * `rollover_policy` - How unspent funds roll between periods.
+    /// * `account_ids` - Accounts linked for UI hints.
+    #[inline]
+    #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "all fields are distinct configuration values"
+    )]
+    pub fn new(
+        name: String,
+        group_id: Option<EnvelopeGroupId>,
+        icon: Option<String>,
+        colour: Option<String>,
+        allocation_target: Option<Amount>,
+        period: Period,
+        rollover_policy: RolloverPolicy,
+        account_ids: Vec<AccountId>,
+    ) -> Self {
+        Self {
+            name,
+            group_id,
+            icon,
+            colour,
+            allocation_target,
+            period,
+            rollover_policy,
+            account_ids,
+        }
+    }
+}
+
 /// Envelope group + envelope CRUD service.
 #[derive(Debug, Clone)]
 pub struct Service {

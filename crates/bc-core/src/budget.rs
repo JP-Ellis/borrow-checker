@@ -14,7 +14,7 @@ use crate::db::to_db_str;
 use crate::envelope::Service as EnvelopeService;
 
 /// Computed budget status for one envelope in one period.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[non_exhaustive]
 pub struct EnvelopeStatus {
     /// The envelope this status is for.

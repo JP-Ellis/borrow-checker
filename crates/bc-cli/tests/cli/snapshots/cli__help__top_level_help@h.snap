@@ -17,7 +17,7 @@ Commands:
   import       Import transactions from a file using a named import profile
   export       Export all accounts and transactions to a file or stdout
   report       Generate financial reports
-  budget       Manage budget envelopes (requires Milestone 5)
+  budget       Manage budget envelopes: groups, envelopes, allocate, status
   plugin       Manage plugins (requires Milestone 6)
   completions  Generate shell completion scripts
   help         Print this message or the help of the given subcommand(s)
