@@ -9,6 +9,7 @@
 )]
 
 pub(crate) mod account;
+pub(crate) mod asset;
 pub(crate) mod balance;
 pub(crate) mod db;
 pub(crate) mod error;
@@ -19,6 +20,7 @@ pub(crate) mod settings;
 pub(crate) mod transaction;
 
 pub use account::Service as AccountService;
+pub use asset::Service as AssetService;
 pub use balance::Engine as BalanceEngine;
 pub use db::open_db;
 pub use db::open_db_at;
