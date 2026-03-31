@@ -1,0 +1,14 @@
+---
+source: crates/bc-cli/tests/cli/asset.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "account_id": "[ACCOUNT_ID]",
+  "commodity": "AUD",
+  "market_value": "650000.00",
+  "valuation_id": "[VALUATION_ID]"
+}
+----- stderr -----

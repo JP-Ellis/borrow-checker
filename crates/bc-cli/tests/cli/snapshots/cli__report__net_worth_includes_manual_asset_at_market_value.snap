@@ -1,0 +1,21 @@
+---
+source: crates/bc-cli/tests/cli/report.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "accounts": [
+    {
+      "account": "Family Home",
+      "balance": "750000.00",
+      "commodity": "AUD",
+      "kind": "manual asset"
+    }
+  ],
+  "commodity": "AUD",
+  "total": "750000.00"
+}
+----- stderr -----
+note: net-worth shows AUD balances only; multi-currency support requires Milestone 5
