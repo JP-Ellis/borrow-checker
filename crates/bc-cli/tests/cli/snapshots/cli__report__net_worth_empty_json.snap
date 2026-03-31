@@ -7,3 +7,4 @@ exit_code: 0
 ----- stdout -----
 []
 ----- stderr -----
+note: net-worth currently shows AUD balances only; multi-currency support requires Milestone 5

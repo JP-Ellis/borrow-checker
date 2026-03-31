@@ -50,9 +50,12 @@ pub enum Command {
         /// New description.
         #[arg(long)]
         description: Option<String>,
-        /// New payee.
-        #[arg(long)]
+        /// New payee. To remove an existing payee, use `--clear-payee` instead.
+        #[arg(long, conflicts_with = "clear_payee")]
         payee: Option<String>,
+        /// Remove the payee from this transaction.
+        #[arg(long)]
+        clear_payee: bool,
     },
     /// Void a transaction (preserves data; excludes from balances and reports).
     Void {
@@ -70,13 +73,11 @@ pub enum Command {
 fn parse_posting_spec(spec: &str) -> crate::error::CliResult<bc_models::Posting> {
     use core::str::FromStr as _;
 
-    // rsplitn reverses order: parts[0] = commodity, [1] = amount, [2] = account_id
-    let parts: Vec<&str> = spec.rsplitn(3, ':').collect();
-    let (Some(commodity), Some(amount_str), Some(account_id_str)) = (
-        parts.first().copied(),
-        parts.get(1).copied(),
-        parts.get(2).copied(),
-    ) else {
+    // `rsplitn` splits right-to-left so index 0 is the rightmost segment.
+    let mut parts = spec.rsplitn(3, ':');
+    let (Some(commodity), Some(amount_str), Some(account_id_str)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
         return Err(crate::error::CliError::Arg(format!(
             "invalid posting '{spec}': expected ACCOUNT_ID:AMOUNT:COMMODITY"
         )));
@@ -119,7 +120,8 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             date,
             description,
             payee,
-        } => amend(ctx, id, date, description, payee).await,
+            clear_payee,
+        } => amend(ctx, id, date, description, payee, clear_payee).await,
         Command::Void { id } => void(ctx, id).await,
     }
 }
@@ -234,6 +236,7 @@ async fn amend(
     date: Option<String>,
     description: Option<String>,
     payee: Option<String>,
+    clear_payee: bool,
 ) -> CliResult<()> {
     use core::str::FromStr as _;
 
@@ -249,7 +252,13 @@ async fn amend(
         original.date()
     };
     let new_description = description.unwrap_or_else(|| original.description().to_owned());
-    let new_payee = payee.or_else(|| original.payee().map(str::to_owned));
+    // `--clear-payee` sets payee to None; `--payee <value>` sets a new payee;
+    // omitting both preserves the original payee.
+    let new_payee = if clear_payee {
+        None
+    } else {
+        payee.or_else(|| original.payee().map(str::to_owned))
+    };
 
     let updated = bc_models::Transaction::builder()
         .id(tx_id.clone())

@@ -1,0 +1,42 @@
+---
+source: crates/bc-cli/tests/cli/transaction.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "id": "[TRANSACTION_ID]",
+  "date": "2026-03-01",
+  "payee": null,
+  "description": "Coffee",
+  "postings": [
+    {
+      "id": "[POSTING_ID]",
+      "account_id": "[ACCOUNT_ID]",
+      "amount": {
+        "value": "-5.00",
+        "commodity": "AUD"
+      },
+      "cost": null,
+      "memo": null,
+      "tag_ids": []
+    },
+    {
+      "id": "[POSTING_ID]",
+      "account_id": "[ACCOUNT_ID]",
+      "amount": {
+        "value": "5.00",
+        "commodity": "AUD"
+      },
+      "cost": null,
+      "memo": null,
+      "tag_ids": []
+    }
+  ],
+  "status": "cleared",
+  "tag_ids": [],
+  "link_ids": [],
+  "created_at": "[TIMESTAMP]"
+}
+----- stderr -----

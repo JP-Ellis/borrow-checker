@@ -1,6 +1,7 @@
 //! Report generation sub-commands.
 
 use core::str::FromStr as _;
+use std::collections::BTreeMap;
 
 use bc_models::AccountType;
 use clap::Subcommand;
@@ -72,9 +73,17 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
     const COMM_W: usize = 8;
     const DIVIDER_W: usize = NAME_W + BAL_W + COMM_W + 4;
     // Hard-coded commodity for M3 until a commodity service is added.
+    // Only balances denominated in AUD are included; non-AUD accounts show zero.
     const COMMODITY: &str = "AUD";
 
     let accounts = ctx.accounts.list_active().await?;
+
+    #[expect(clippy::print_stderr, reason = "user-visible limitation warning")]
+    {
+        eprintln!(
+            "note: net-worth currently shows {COMMODITY} balances only; multi-currency support requires Milestone 5"
+        );
+    }
 
     let mut rows: Vec<(String, String, Decimal)> = Vec::new();
     for account in &accounts {
@@ -86,11 +95,7 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
             AccountType::Asset | AccountType::Liability => {}
             _ => continue,
         }
-        let balance = ctx
-            .balances
-            .balance_for(account.id(), COMMODITY)
-            .await
-            .unwrap_or(Decimal::ZERO);
+        let balance = ctx.balances.balance_for(account.id(), COMMODITY).await?;
         rows.push((account.name().to_owned(), COMMODITY.to_owned(), balance));
     }
 
@@ -210,8 +215,7 @@ async fn annual(ctx: &AppContext, year: Option<String>) -> CliResult<()> {
     }
 
     // Group by month.
-    let mut by_month: std::collections::BTreeMap<String, Vec<_>> =
-        std::collections::BTreeMap::new();
+    let mut by_month: BTreeMap<String, Vec<_>> = BTreeMap::new();
     for tx in &txs {
         let key = format!("{:04}-{:02}", tx.date().year(), tx.date().month());
         by_month.entry(key).or_default().push(tx);

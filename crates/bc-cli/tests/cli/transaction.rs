@@ -204,3 +204,174 @@ fn amend_description() {
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+#[test]
+fn amend_date_only() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+
+    let out = ctx
+        .command()
+        .args([
+            "--json",
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "Original",
+            "--posting",
+            &format!("{checking_id}:-10.00:AUD"),
+            "--posting",
+            &format!("{expenses_id}:10.00:AUD"),
+        ])
+        .output()
+        .expect("add");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let tx_id = json
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("id")
+        .to_owned();
+
+    let mut cmd = ctx.command();
+    cmd.args(["transaction", "amend", &tx_id, "--date", "2026-04-15"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn amend_voided_returns_error() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+
+    let out = ctx
+        .command()
+        .args([
+            "--json",
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "To void then amend",
+            "--posting",
+            &format!("{checking_id}:-10.00:AUD"),
+            "--posting",
+            &format!("{expenses_id}:10.00:AUD"),
+        ])
+        .output()
+        .expect("add");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let tx_id = json
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("id")
+        .to_owned();
+
+    ctx.command()
+        .args(["transaction", "void", &tx_id])
+        .output()
+        .expect("void");
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "amend",
+        &tx_id,
+        "--description",
+        "Should fail",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn void_already_voided_returns_error() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+
+    let out = ctx
+        .command()
+        .args([
+            "--json",
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "Void twice",
+            "--posting",
+            &format!("{checking_id}:-10.00:AUD"),
+            "--posting",
+            &format!("{expenses_id}:10.00:AUD"),
+        ])
+        .output()
+        .expect("add");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let tx_id = json
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("id")
+        .to_owned();
+
+    ctx.command()
+        .args(["transaction", "void", &tx_id])
+        .output()
+        .expect("first void");
+
+    let mut cmd = ctx.command();
+    cmd.args(["transaction", "void", &tx_id]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn amend_clear_payee() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+
+    let out = ctx
+        .command()
+        .args([
+            "--json",
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "Coffee",
+            "--payee",
+            "Café Central",
+            "--posting",
+            &format!("{checking_id}:-5.00:AUD"),
+            "--posting",
+            &format!("{expenses_id}:5.00:AUD"),
+        ])
+        .output()
+        .expect("add");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let tx_id = json
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("id")
+        .to_owned();
+
+    // Verify the payee exists before clearing.
+    let before: serde_json::Value = serde_json::from_slice(
+        &ctx.command()
+            .args(["--json", "transaction", "list"])
+            .output()
+            .expect("list")
+            .stdout,
+    )
+    .expect("json");
+    assert!(
+        before
+            .as_array()
+            .expect("array")
+            .iter()
+            .any(|tx| tx.get("payee").and_then(serde_json::Value::as_str) == Some("Café Central"))
+    );
+
+    let mut cmd = ctx.command();
+    cmd.args(["--json", "transaction", "amend", &tx_id, "--clear-payee"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}

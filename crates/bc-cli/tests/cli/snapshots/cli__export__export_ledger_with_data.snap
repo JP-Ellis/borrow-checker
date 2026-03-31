@@ -1,0 +1,15 @@
+---
+source: crates/bc-cli/tests/cli/export.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+account Checking
+account Groceries
+
+2026-03-01 * Weekly groceries
+    Checking    -80.00 AUD
+    Groceries    80.00 AUD
+
+----- stderr -----

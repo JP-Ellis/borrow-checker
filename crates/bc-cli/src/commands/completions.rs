@@ -28,15 +28,13 @@ pub struct Args {
     clippy::needless_pass_by_value,
     reason = "Args is consumed to unpack shell; clap convention passes by value"
 )]
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "signature matches the command dispatch contract"
-)]
 #[inline]
 pub fn execute(args: Args) -> CliResult<()> {
-    use clap::CommandFactory as _;
     let mut cmd = crate::cli::Cli::command();
     let bin_name = cmd.get_name().to_owned();
-    clap_complete::generate(args.shell, &mut cmd, bin_name, &mut std::io::stdout());
-    Ok(())
+    let mut buf = Vec::new();
+    clap_complete::generate(args.shell, &mut cmd, bin_name, &mut buf);
+    std::io::stdout()
+        .write_all(&buf)
+        .map_err(crate::error::CliError::Io)
 }
