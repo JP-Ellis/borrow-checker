@@ -8,6 +8,25 @@ use std::path::PathBuf;
 use bc_models::CommodityCode;
 use jiff::civil::Date;
 
+/// Returns the platform-appropriate default database path.
+///
+/// Priority:
+/// 1. Platform data directory: `$XDG_DATA_HOME/borrow-checker/db.sqlite`
+///    (Linux), `~/Library/Application Support/borrow-checker/db.sqlite`
+///    (macOS).
+/// 2. Fallback: `./borrow-checker.db` in the current working directory.
+///
+/// All frontends (CLI, TUI, GUI) should use this function rather than
+/// implementing their own path resolution.
+#[must_use]
+#[inline]
+pub fn default_db_path() -> std::path::PathBuf {
+    directories::ProjectDirs::from("", "", "borrow-checker").map_or_else(
+        || std::path::PathBuf::from("borrow-checker.db"),
+        |dirs| dirs.data_dir().join("db.sqlite"),
+    )
+}
+
 /// Error returned when loading or validating configuration.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -18,6 +37,57 @@ pub enum ConfigError {
     /// A field value is out of range.
     #[error("invalid configuration: {0}")]
     Validation(String),
+}
+
+/// Raw deserialized `[cli]` settings.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RawCliSection {
+    /// Emit machine-readable JSON by default.
+    json: bool,
+    /// Log filter in `RUST_LOG` format, e.g. `"bc_cli=debug,bc_core=info"`.
+    log: Option<String>,
+}
+
+/// CLI-specific settings from the `[cli]` section of the config file.
+///
+/// These settings allow users to persist command-line flag defaults so they
+/// do not need to pass `--json` or set `RUST_LOG` on every invocation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct CliSection {
+    /// Emit machine-readable JSON by default (equivalent to `--json`).
+    json: bool,
+    /// Default log filter in `RUST_LOG` format.
+    ///
+    /// When set, this acts as the default log filter unless overridden by
+    /// the `RUST_LOG` environment variable or the `-v`/`-q` CLI flags.
+    log: Option<String>,
+}
+
+impl CliSection {
+    /// Returns `true` if JSON output is the configured default.
+    #[inline]
+    #[must_use]
+    pub fn json(&self) -> bool {
+        self.json
+    }
+
+    /// Returns the configured log filter string, if any.
+    #[inline]
+    #[must_use]
+    pub fn log(&self) -> Option<&str> {
+        self.log.as_deref()
+    }
+}
+
+impl Default for CliSection {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            json: false,
+            log: None,
+        }
+    }
 }
 
 /// Raw deserialized settings before validation.
@@ -35,6 +105,10 @@ struct RawSettings {
     fortnightly_anchor: Option<String>,
     /// Display commodity code string.
     display_commodity: String,
+    /// Optional override for the database file path.
+    db_path: Option<String>,
+    /// CLI-specific settings from the `[cli]` section.
+    cli: RawCliSection,
 }
 
 /// Validated application-wide settings.
@@ -58,6 +132,14 @@ pub struct Settings {
     fortnightly_anchor: Option<Date>,
     /// Display commodity code.
     display_commodity: CommodityCode,
+    /// Database file path override from the config file.
+    ///
+    /// When `None`, callers should fall back to [`default_db_path`].
+    #[serde(default)]
+    db_path: Option<std::path::PathBuf>,
+    /// CLI-specific settings from the `[cli]` section.
+    #[serde(default)]
+    cli: CliSection,
 }
 
 impl Settings {
@@ -85,7 +167,10 @@ impl Settings {
             .set_default("financial_year_start_month", 7_i64)?
             .set_default("financial_year_start_day", 1_i64)?
             .set_default("fortnightly_anchor", Option::<String>::None)?
-            .set_default("display_commodity", "AUD")?;
+            .set_default("display_commodity", "AUD")?
+            .set_default("db_path", Option::<String>::None)?
+            .set_default("cli.json", false)?
+            .set_default("cli.log", Option::<String>::None)?;
 
         for path in user_config_paths() {
             builder = builder.add_source(config::File::from(path).required(false));
@@ -128,11 +213,20 @@ impl Settings {
             ));
         }
 
+        let db_path = raw.db_path.map(std::path::PathBuf::from);
+
+        let cli = CliSection {
+            json: raw.cli.json,
+            log: raw.cli.log,
+        };
+
         Ok(Self {
             financial_year_start_month: raw.financial_year_start_month,
             financial_year_start_day: raw.financial_year_start_day,
             fortnightly_anchor,
             display_commodity: CommodityCode::new(raw.display_commodity),
+            db_path,
+            cli,
         })
     }
 
@@ -163,6 +257,23 @@ impl Settings {
     pub fn display_commodity(&self) -> &CommodityCode {
         &self.display_commodity
     }
+
+    /// Returns the configured database path, if set in the config file.
+    ///
+    /// Returns `None` when not configured; callers should fall back to
+    /// [`default_db_path`] in that case.
+    #[inline]
+    #[must_use]
+    pub fn db_path(&self) -> Option<&std::path::Path> {
+        self.db_path.as_deref()
+    }
+
+    /// Returns the CLI-specific settings from the `[cli]` config section.
+    #[inline]
+    #[must_use]
+    pub fn cli(&self) -> &CliSection {
+        &self.cli
+    }
 }
 
 impl Default for Settings {
@@ -173,6 +284,8 @@ impl Default for Settings {
             financial_year_start_day: 1,
             fortnightly_anchor: None,
             display_commodity: CommodityCode::new("AUD"),
+            db_path: None,
+            cli: CliSection::default(),
         }
     }
 }
@@ -231,6 +344,11 @@ mod tests {
             financial_year_start_day: 1,
             fortnightly_anchor: None,
             display_commodity: "AUD".to_owned(),
+            db_path: None,
+            cli: RawCliSection {
+                json: false,
+                log: None,
+            },
         }
     }
 

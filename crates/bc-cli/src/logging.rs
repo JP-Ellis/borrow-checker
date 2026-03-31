@@ -120,33 +120,44 @@ where
 
 /// Initialise the tracing subscriber for the CLI.
 ///
-/// The effective log level is determined by `verbose` and `quiet` counts relative
-/// to a `warn` baseline:
+/// Log level priority (highest to lowest):
+/// 1. `RUST_LOG` environment variable.
+/// 2. `-v`/`-q` flag counts, when either is non-zero.
+/// 3. `config_log` — a `RUST_LOG`-style string from `[cli].log` in the
+///    config file (e.g. `"bc_cli=debug,bc_core=info"`).
+/// 4. Default `warn`.
 ///
-/// | Flags | Level |
-/// |-------|-------|
-/// | `-q` (or more) | `error` |
-/// | _(default)_ | `warn` |
-/// | `-v` | `info` |
-/// | `-vv` | `debug` (+ elapsed timestamps and span breadcrumbs) |
-/// | `-vvv` | `trace` (+ elapsed timestamps and span breadcrumbs) |
+/// | `-v`/`-q` flags   | Level  |
+/// |-------------------|--------|
+/// | `-q` (or more)    | error  |
+/// | _(default)_       | warn   |
+/// | `-v`              | info   |
+/// | `-vv`             | debug (+ timestamps and span breadcrumbs) |
+/// | `-vvv`            | trace (+ timestamps and span breadcrumbs) |
 ///
-/// Setting `RUST_LOG` overrides the flag-based level entirely and suppresses
-/// span breadcrumbs (use spans directly via `RUST_LOG` directives instead).
+/// If `OTEL_EXPORTER_OTLP_ENDPOINT` is set, OpenTelemetry tracing is
+/// initialised automatically via [`bc_otel::init`].
 ///
-/// If `OTEL_EXPORTER_OTLP_ENDPOINT` is set, OpenTelemetry tracing is initialised
-/// automatically via [`bc_otel::init`], regardless of the log level.
+/// # Arguments
+///
+/// * `verbose` - Count of `-v` flags passed by the user.
+/// * `quiet` - Count of `-q` flags passed by the user.
+/// * `config_log` - Optional `RUST_LOG`-format filter from the config file.
 ///
 /// # Returns
 ///
-/// An [`bc_otel::OtelGuard`] that **must** be kept alive for the duration of the
-/// process to ensure telemetry is flushed on exit, or [`None`] if
-/// `OTEL_EXPORTER_OTLP_ENDPOINT` was not set.
+/// An [`bc_otel::OtelGuard`] that **must** be kept alive for the duration
+/// of the process, or [`None`] if `OTEL_EXPORTER_OTLP_ENDPOINT` was not
+/// set.
 #[must_use]
-pub(crate) fn setup_tracing(verbose: u8, quiet: u8) -> Option<bc_otel::OtelGuard> {
+pub(crate) fn setup_tracing(
+    verbose: u8,
+    quiet: u8,
+    config_log: Option<&str>,
+) -> Option<bc_otel::OtelGuard> {
     let (filter, show_spans) = if let Ok(rust_log) = std::env::var("RUST_LOG") {
         (EnvFilter::new(rust_log), false)
-    } else {
+    } else if verbose > 0 || quiet > 0 {
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "verbose and quiet are u8 values (max 255 each), so the \
@@ -161,6 +172,10 @@ pub(crate) fn setup_tracing(verbose: u8, quiet: u8) -> Option<bc_otel::OtelGuard
             _ => ("trace", true),
         };
         (EnvFilter::new(level_str), show_spans)
+    } else if let Some(log_filter) = config_log {
+        (EnvFilter::new(log_filter), false)
+    } else {
+        (EnvFilter::new("warn"), false)
     };
 
     let ansi = std::io::IsTerminal::is_terminal(&std::io::stderr());

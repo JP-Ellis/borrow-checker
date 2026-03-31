@@ -1,7 +1,5 @@
 //! Application context: shared database pool and service handles.
 
-use std::path::PathBuf;
-
 /// Shared application context threaded through every command handler.
 #[non_exhaustive]
 pub struct AppContext {
@@ -41,19 +39,4 @@ impl AppContext {
             profiles: bc_core::ImportProfileService::new(pool),
         })
     }
-}
-
-/// Returns the default database path based on the platform data directory.
-///
-/// Priority:
-/// 1. Platform data dir: `$XDG_DATA_HOME/borrow-checker/db.sqlite` (Linux),
-///    `~/Library/Application Support/borrow-checker/db.sqlite` (macOS).
-/// 2. Fallback: `./borrow-checker.db` in the current directory.
-#[must_use]
-#[inline]
-pub fn default_db_path() -> PathBuf {
-    directories::ProjectDirs::from("", "", "borrow-checker").map_or_else(
-        || PathBuf::from("borrow-checker.db"),
-        |dirs| dirs.data_dir().join("db.sqlite"),
-    )
 }
