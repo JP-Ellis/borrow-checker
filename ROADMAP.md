@@ -102,25 +102,25 @@ ______________________________________________________________________
 
 ## Milestone 5A — Illiquid Asset Tracking
 
-**Status:** ◻️
+**Status:** ✅
 **Crates:** `bc-models`, `bc-core`
 **Depends on:** Milestone 1, Milestone 5
 
 - [x] `AccountKind` enum on `Account` model (`DepositAccount`, `ManualAsset`, `Receivable`, `VirtualAllocation`) — _implemented in Milestone 1_
-- [ ] `bc-core` enforces: only `DepositAccount` may have an import profile
-- [ ] `AssetValuationRecorded` event: point-in-time market value with `ValuationSource`
+- [x] `bc-core` enforces: only `DepositAccount` may have an import profile
+- [x] `AssetValuationRecorded` event: point-in-time market value with `ValuationSource`
 - [ ] `ValuationSource` enum: `ManualEstimate`, `ProfessionalAppraisal`, `TaxAssessment`, `MarketData`, `AgreedValue`
-- [ ] Auto-generated balancing transaction on valuation (configurable counterpart, default `Equity:Unrealized`)
-- [ ] `DepreciationPolicy` on `ManualAsset` accounts: `None`, `StraightLine`, `DecliningBalance`
-- [ ] On-demand depreciation calculation (`DepreciationCalculated` event)
-- [ ] Depreciation entries: `Expenses:Depreciation:<name>` / credit asset account
-- [ ] Book value (depreciation basis) and market value (appraisal) tracked separately in reports
-- [ ] `LoanTermsSet` event: principal, interest rate, start date, term, repayment frequency
-- [ ] Amortization schedule calculation for display and repayment-split assistance
-- [ ] `acquisition_date` + `acquisition_cost` optional fields on `ManualAsset` accounts (cost basis, depreciation baseline)
-- [ ] `RepaymentFrequency` enum: `Weekly`, `Fortnightly`, `Monthly`, `Quarterly`, `Custom`
-- [ ] Net worth calculation includes all `AccountKind` variants (zero balance if no value recorded)
-- [ ] CLI + TUI support: record valuation, trigger depreciation, set loan terms
+- [x] Auto-generated balancing transaction on valuation (optional, via `counterpart_id`)
+- [x] `DepreciationPolicy` on `ManualAsset` accounts: `None`, `StraightLine`, `DecliningBalance`
+- [x] On-demand depreciation calculation (`DepreciationCalculated` event)
+- [x] Depreciation entries: `Expenses:Depreciation:<name>` / credit asset account
+- [x] Book value (depreciation basis) and market value (appraisal) tracked separately in reports
+- [x] `LoanTermsSet` event: principal, interest rate, start date, term, repayment frequency
+- [x] Amortization schedule calculation for display and repayment-split assistance
+- [x] `acquisition_date` + `acquisition_cost` optional fields on `ManualAsset` accounts (cost basis, depreciation baseline)
+- [x] `RepaymentFrequency` enum: `Weekly`, `Fortnightly`, `Monthly`, `Quarterly`, `Custom`
+- [x] Net worth calculation includes all `AccountKind` variants (zero balance if no value recorded)
+- [x] CLI + TUI support: record valuation, trigger depreciation, set loan terms
 
 ______________________________________________________________________
 
