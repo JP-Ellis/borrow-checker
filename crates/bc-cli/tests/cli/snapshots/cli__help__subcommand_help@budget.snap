@@ -5,14 +5,15 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Manage budget envelopes (requires Milestone 5)
+Manage budget envelopes: groups, envelopes, allocate, status
 
 Usage: borrow-checker budget [OPTIONS] <COMMAND>
 
 Commands:
-  status     Show budget status across all envelopes
-  allocate   Allocate funds to an envelope
-  envelopes  List all budget envelopes
+  groups     Manage envelope groups
+  envelopes  Manage budget envelopes
+  allocate   Allocate funds to an envelope for a period
+  status     Show budget status for all envelopes
   help       Print this message or the help of the given subcommand(s)
 
 Options:
