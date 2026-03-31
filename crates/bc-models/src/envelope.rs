@@ -121,6 +121,13 @@ impl Group {
     pub fn is_archived(&self) -> bool {
         self.archived_at.is_some()
     }
+
+    /// Returns the archive timestamp, if archived.
+    #[inline]
+    #[must_use]
+    pub fn archived_at(&self) -> Option<&Timestamp> {
+        self.archived_at.as_ref()
+    }
 }
 
 /// A budgeting envelope — a named category with an optional allocation target.
@@ -280,6 +287,13 @@ impl Envelope {
     #[must_use]
     pub fn is_archived(&self) -> bool {
         self.archived_at.is_some()
+    }
+
+    /// Returns the archive timestamp, if archived.
+    #[inline]
+    #[must_use]
+    pub fn archived_at(&self) -> Option<&Timestamp> {
+        self.archived_at.as_ref()
     }
 }
 
