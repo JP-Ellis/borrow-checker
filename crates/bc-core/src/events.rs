@@ -633,6 +633,32 @@ mod tests {
             records.first().expect("record should exist").kind,
             "EnvelopeCreated"
         );
+
+        let replayed: Event = serde_json::from_str(&records.first().expect("record").payload)
+            .expect("payload should deserialise");
+
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "Event is #[non_exhaustive]; wildcard arm is required for exhaustive match in tests"
+        )]
+        match replayed {
+            Event::EnvelopeCreated {
+                id: replayed_id,
+                name,
+                group_id,
+                period,
+                rollover_policy,
+                allocation_target,
+            } => {
+                assert_eq!(replayed_id, id);
+                assert_eq!(name, "Groceries");
+                assert_eq!(group_id, None);
+                assert_eq!(period, Period::Monthly);
+                assert_eq!(rollover_policy, RolloverPolicy::CarryForward);
+                assert_eq!(allocation_target, None);
+            }
+            other => panic!("expected EnvelopeCreated, got {other:?}"),
+        }
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -661,6 +687,31 @@ mod tests {
             .await
             .expect("replay should succeed");
         assert_eq!(records.first().expect("record").kind, "EnvelopeAllocated");
+
+        let replayed: Event = serde_json::from_str(&records.first().expect("record").payload)
+            .expect("payload should deserialise");
+
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "Event is #[non_exhaustive]; wildcard arm is required for exhaustive match in tests"
+        )]
+        match replayed {
+            Event::EnvelopeAllocated {
+                id: replayed_id,
+                envelope_id: replayed_env_id,
+                period_start,
+                amount: replayed_amount,
+            } => {
+                assert_eq!(replayed_id, alloc_id);
+                assert_eq!(replayed_env_id, env_id);
+                assert_eq!(period_start, Date::constant(2026, 3, 1));
+                assert_eq!(
+                    replayed_amount,
+                    Amount::new(Decimal::from(500_i32), CommodityCode::new("AUD"))
+                );
+            }
+            other => panic!("expected EnvelopeAllocated, got {other:?}"),
+        }
     }
 
     #[sqlx::test(migrations = "./migrations")]
