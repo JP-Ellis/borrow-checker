@@ -118,6 +118,7 @@ pub use loan::AmortizationRow;
 pub use loan::Frequency as RepaymentFrequency;
 pub use loan::LoanId;
 pub use loan::LoanTerms;
+pub use loan::LoanTermsBuilder;
 pub use money::Amount;
 pub use money::CommodityCode;
 pub use money::Decimal;
