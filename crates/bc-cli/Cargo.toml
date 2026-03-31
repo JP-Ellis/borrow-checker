@@ -57,6 +57,7 @@ bc-models           = { workspace = true }
 bc-otel             = { workspace = true }
 clap                = { workspace = true }
 clap_complete       = { workspace = true }
+comfy-table         = { workspace = true }
 directories         = { workspace = true }
 jiff                = { workspace = true }
 owo-colors          = { workspace = true }

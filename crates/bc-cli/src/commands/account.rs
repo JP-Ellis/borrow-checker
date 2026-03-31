@@ -1,5 +1,9 @@
 //! Account management sub-commands: list, create, archive.
 
+use core::str::FromStr as _;
+
+use bc_models::AccountKind;
+use bc_models::AccountType;
 use clap::Subcommand;
 
 use crate::context::AppContext;
@@ -100,13 +104,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 ///
 /// Propagates [`crate::error::CliError`] from the account service or JSON serialisation.
 async fn list(ctx: &AppContext) -> CliResult<()> {
-    const ID_W: usize = 36;
-    const NAME_W: usize = 30;
-    const TYPE_W: usize = 10;
-    const KIND_W: usize = 20;
-    /// Total divider width: column widths + 3 separators × 2 spaces each.
-    const DIVIDER_W: usize = ID_W + NAME_W + TYPE_W + KIND_W + 6;
-
     let accounts = ctx.accounts.list_active().await?;
 
     if ctx.json {
@@ -121,37 +118,33 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
         return Ok(());
     }
 
-    crate::output::print_row(&[
-        ("ID", ID_W),
-        ("NAME", NAME_W),
-        ("TYPE", TYPE_W),
-        ("KIND", KIND_W),
-    ]);
-    crate::output::print_divider(DIVIDER_W);
-
-    for account in &accounts {
-        let type_str = match account.account_type() {
-            bc_models::AccountType::Asset => "Asset",
-            bc_models::AccountType::Liability => "Liability",
-            bc_models::AccountType::Equity => "Equity",
-            bc_models::AccountType::Income => "Income",
-            bc_models::AccountType::Expense => "Expense",
-            _ => "Unknown",
-        };
-        let kind_str = match account.kind() {
-            bc_models::AccountKind::DepositAccount => "DepositAccount",
-            bc_models::AccountKind::ManualAsset => "ManualAsset",
-            bc_models::AccountKind::Receivable => "Receivable",
-            bc_models::AccountKind::VirtualAllocation => "VirtualAllocation",
-            _ => "Unknown",
-        };
-        crate::output::print_row(&[
-            (&account.id().to_string(), ID_W),
-            (account.name(), NAME_W),
-            (type_str, TYPE_W),
-            (kind_str, KIND_W),
-        ]);
-    }
+    let rows: Vec<Vec<String>> = accounts
+        .iter()
+        .map(|account| {
+            let type_str = match account.account_type() {
+                bc_models::AccountType::Asset => "Asset",
+                bc_models::AccountType::Liability => "Liability",
+                bc_models::AccountType::Equity => "Equity",
+                bc_models::AccountType::Income => "Income",
+                bc_models::AccountType::Expense => "Expense",
+                _ => "Unknown",
+            };
+            let kind_str = match account.kind() {
+                bc_models::AccountKind::DepositAccount => "DepositAccount",
+                bc_models::AccountKind::ManualAsset => "ManualAsset",
+                bc_models::AccountKind::Receivable => "Receivable",
+                bc_models::AccountKind::VirtualAllocation => "VirtualAllocation",
+                _ => "Unknown",
+            };
+            vec![
+                account.id().to_string(),
+                account.name().to_owned(),
+                type_str.to_owned(),
+                kind_str.to_owned(),
+            ]
+        })
+        .collect();
+    crate::output::print_table(&["ID", "NAME", "TYPE", "KIND"], &rows);
     Ok(())
 }
 
@@ -167,9 +160,6 @@ async fn create(
     kind: KindArg,
     description: Option<String>,
 ) -> CliResult<()> {
-    use bc_models::AccountKind;
-    use bc_models::AccountType;
-
     let bc_type = match account_type {
         TypeArg::Asset => AccountType::Asset,
         TypeArg::Liability => AccountType::Liability,
@@ -216,8 +206,6 @@ async fn create(
 ///
 /// Propagates [`crate::error::CliError`] from the account service or JSON serialisation.
 async fn archive(ctx: &AppContext, id: String) -> CliResult<()> {
-    use core::str::FromStr as _;
-
     let account_id = bc_models::AccountId::from_str(&id)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID '{id}': {e}")))?;
 
