@@ -3,6 +3,7 @@
 use bc_models::AccountId;
 use bc_models::AccountKind;
 use bc_models::AccountType;
+use bc_models::DepreciationId;
 use bc_models::EventId;
 use bc_models::LoanId;
 use bc_models::RepaymentFrequency;
@@ -94,7 +95,7 @@ pub enum Event {
     /// [`ManualAsset`]: bc_models::AccountKind::ManualAsset
     DepreciationCalculated {
         /// Unique identifier for this depreciation record.
-        id: ValuationId,
+        id: DepreciationId,
         /// The account being depreciated.
         account_id: AccountId,
         /// Depreciation amount (positive = asset value reduced by this amount).
@@ -483,14 +484,14 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn depreciation_calculated_round_trips(pool: sqlx::SqlitePool) {
-        use bc_models::ValuationId;
+        use bc_models::DepreciationId;
         use jiff::civil::date;
         use rust_decimal_macros::dec;
 
         let store = SqliteStore::new(pool.clone());
         let account_id = AccountId::new();
         let event = Event::DepreciationCalculated {
-            id: ValuationId::new(),
+            id: DepreciationId::new(),
             account_id: account_id.clone(),
             amount: dec!(16_250),
             commodity: "AUD".to_owned(),

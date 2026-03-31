@@ -144,6 +144,7 @@ pub use transaction::Transaction;
 pub use transaction::TransactionBuilder;
 pub use transaction::TransactionId;
 pub use transaction::TransactionLinkId;
+pub use valuation::DepreciationId;
 pub use valuation::DepreciationPolicy;
 pub use valuation::Source as ValuationSource;
 pub use valuation::ValuationId;
