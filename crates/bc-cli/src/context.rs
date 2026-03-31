@@ -13,6 +13,10 @@ pub struct AppContext {
     pub balances: bc_core::BalanceEngine,
     /// Import profile service.
     pub profiles: bc_core::ImportProfileService,
+    /// Asset valuation and depreciation service.
+    pub assets: bc_core::AssetService,
+    /// Loan terms and amortization service.
+    pub loans: bc_core::LoanService,
 }
 
 impl AppContext {
@@ -35,7 +39,9 @@ impl AppContext {
             accounts: bc_core::AccountService::new(pool.clone()),
             transactions: bc_core::TransactionService::new(pool.clone()),
             balances: bc_core::BalanceEngine::new(pool.clone()),
-            profiles: bc_core::ImportProfileService::new(pool),
+            profiles: bc_core::ImportProfileService::new(pool.clone()),
+            assets: bc_core::AssetService::new(pool.clone()),
+            loans: bc_core::LoanService::new(pool),
         })
     }
 }

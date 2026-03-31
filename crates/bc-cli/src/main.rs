@@ -64,6 +64,7 @@ async fn main() {
 
     let result: crate::error::CliResult<()> = match cli.command {
         Commands::Account(args) => commands::account::execute(args, &ctx).await,
+        Commands::Asset(args) => commands::asset::execute(args, &ctx).await,
         Commands::Transaction(args) => commands::transaction::execute(args, &ctx).await,
         Commands::Import(args) => commands::import::execute(args, &ctx).await,
         Commands::Export(args) => commands::export::execute(args, &ctx).await,
