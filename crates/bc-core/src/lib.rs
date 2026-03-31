@@ -21,6 +21,7 @@ pub(crate) mod transaction;
 pub use account::Service as AccountService;
 pub use balance::Engine as BalanceEngine;
 pub use db::open_db;
+pub use db::open_db_at;
 pub use error::BcError;
 pub use error::BcResult;
 pub use events::Event;
