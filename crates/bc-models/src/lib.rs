@@ -100,6 +100,7 @@ mod period;
 mod profile;
 mod tag;
 mod transaction;
+mod valuation;
 
 pub use account::Account;
 pub use account::AccountBuilder;
@@ -137,3 +138,6 @@ pub use transaction::Transaction;
 pub use transaction::TransactionBuilder;
 pub use transaction::TransactionId;
 pub use transaction::TransactionLinkId;
+pub use valuation::DepreciationPolicy;
+pub use valuation::Source as ValuationSource;
+pub use valuation::ValuationId;
