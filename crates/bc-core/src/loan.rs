@@ -26,6 +26,10 @@ type LoanTermsRow = (String, String, String, String, i64, String, String, String
 /// # Errors
 ///
 /// Returns [`BcError`] if the unit-variant serde output is not a plain string.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "Frequency is #[non_exhaustive]; new unit variants should serialize via the default path"
+)]
 fn freq_to_db(freq: RepaymentFrequency) -> BcResult<String> {
     match freq {
         RepaymentFrequency::Custom { period_days } => Ok(format!("custom:{period_days}")),
