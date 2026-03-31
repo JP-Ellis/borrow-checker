@@ -3,10 +3,15 @@
 use bc_models::AccountId;
 use bc_models::AccountKind;
 use bc_models::AccountType;
+use bc_models::AllocationId;
+use bc_models::Amount;
 use bc_models::DepreciationId;
+use bc_models::EnvelopeGroupId;
+use bc_models::EnvelopeId;
 use bc_models::EventId;
 use bc_models::LoanId;
 use bc_models::Period;
+use bc_models::RolloverPolicy;
 use bc_models::TransactionId;
 use bc_models::ValuationId;
 use bc_models::ValuationSource;
@@ -132,6 +137,53 @@ pub enum Event {
         /// Commodity of the loan (e.g. `"AUD"`).
         commodity: String,
     },
+    /// A new envelope group was created.
+    EnvelopeGroupCreated {
+        /// The new group's ID.
+        id: EnvelopeGroupId,
+        /// Display name of the group.
+        name: String,
+        /// Parent group ID, if nested.
+        group_id: Option<EnvelopeGroupId>,
+    },
+    /// A new budget envelope was created.
+    EnvelopeCreated {
+        /// The new envelope's ID.
+        id: EnvelopeId,
+        /// Display name.
+        name: String,
+        /// Group this envelope belongs to, if any.
+        group_id: Option<EnvelopeGroupId>,
+        /// Recurrence period.
+        period: Period,
+        /// Rollover policy.
+        rollover_policy: RolloverPolicy,
+        /// Budget target per period; `None` = category tracking mode.
+        allocation_target: Option<Amount>,
+    },
+    /// Funds were allocated to an envelope for a period.
+    EnvelopeAllocated {
+        /// Allocation record ID (aggregate for replay).
+        id: AllocationId,
+        /// The envelope receiving the allocation.
+        envelope_id: EnvelopeId,
+        /// Canonical period start date.
+        period_start: jiff::civil::Date,
+        /// Amount allocated.
+        amount: Amount,
+    },
+    /// An envelope was archived.
+    EnvelopeArchived {
+        /// The envelope's ID.
+        id: EnvelopeId,
+    },
+    /// An envelope was moved to a different group (or to the root).
+    EnvelopeMoved {
+        /// The envelope's ID.
+        id: EnvelopeId,
+        /// New group ID, or `None` to place at the root.
+        group_id: Option<EnvelopeGroupId>,
+    },
 }
 
 impl Event {
@@ -149,6 +201,11 @@ impl Event {
             Self::AssetValuationRecorded { .. } => "AssetValuationRecorded",
             Self::DepreciationCalculated { .. } => "DepreciationCalculated",
             Self::LoanTermsSet { .. } => "LoanTermsSet",
+            Self::EnvelopeGroupCreated { .. } => "EnvelopeGroupCreated",
+            Self::EnvelopeCreated { .. } => "EnvelopeCreated",
+            Self::EnvelopeAllocated { .. } => "EnvelopeAllocated",
+            Self::EnvelopeArchived { .. } => "EnvelopeArchived",
+            Self::EnvelopeMoved { .. } => "EnvelopeMoved",
         }
     }
 
@@ -170,6 +227,11 @@ impl Event {
             Self::AssetValuationRecorded { account_id, .. }
             | Self::DepreciationCalculated { account_id, .. }
             | Self::LoanTermsSet { account_id, .. } => account_id.to_string(),
+            Self::EnvelopeGroupCreated { id, .. } => id.to_string(),
+            Self::EnvelopeCreated { id, .. }
+            | Self::EnvelopeArchived { id }
+            | Self::EnvelopeMoved { id, .. } => id.to_string(),
+            Self::EnvelopeAllocated { id, .. } => id.to_string(),
         }
     }
 }
@@ -541,6 +603,64 @@ mod tests {
             .await
             .expect("replay");
         assert_eq!(records.first().expect("one").kind, "LoanTermsSet");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn envelope_created_payload_round_trips(pool: sqlx::SqlitePool) {
+        use bc_models::EnvelopeId;
+        use bc_models::Period;
+        use bc_models::RolloverPolicy;
+
+        let store = SqliteStore::new(pool.clone());
+        let id = EnvelopeId::new();
+        let event = Event::EnvelopeCreated {
+            id: id.clone(),
+            name: "Groceries".to_owned(),
+            group_id: None,
+            period: Period::Monthly,
+            rollover_policy: RolloverPolicy::CarryForward,
+            allocation_target: None,
+        };
+
+        store.append(&event).await.expect("append should succeed");
+
+        let records = store
+            .replay_for(&id.to_string())
+            .await
+            .expect("replay should succeed");
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records.first().expect("record should exist").kind,
+            "EnvelopeCreated"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn envelope_allocated_payload_round_trips(pool: sqlx::SqlitePool) {
+        use bc_models::AllocationId;
+        use bc_models::Amount;
+        use bc_models::CommodityCode;
+        use bc_models::Decimal;
+        use bc_models::EnvelopeId;
+        use jiff::civil::Date;
+
+        let store = SqliteStore::new(pool.clone());
+        let alloc_id = AllocationId::new();
+        let env_id = EnvelopeId::new();
+        let event = Event::EnvelopeAllocated {
+            id: alloc_id.clone(),
+            envelope_id: env_id.clone(),
+            period_start: Date::constant(2026, 3, 1),
+            amount: Amount::new(Decimal::from(500_i32), CommodityCode::new("AUD")),
+        };
+
+        store.append(&event).await.expect("append should succeed");
+
+        let records = store
+            .replay_for(&alloc_id.to_string())
+            .await
+            .expect("replay should succeed");
+        assert_eq!(records.first().expect("record").kind, "EnvelopeAllocated");
     }
 
     #[sqlx::test(migrations = "./migrations")]
