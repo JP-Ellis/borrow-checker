@@ -4,8 +4,14 @@ use bc_models::AccountId;
 use bc_models::AccountKind;
 use bc_models::AccountType;
 use bc_models::EventId;
+use bc_models::LoanId;
+use bc_models::RepaymentFrequency;
 use bc_models::TransactionId;
+use bc_models::ValuationId;
+use bc_models::ValuationSource;
 use jiff::Timestamp;
+use jiff::civil::Date;
+use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
 use crate::BcResult;
@@ -66,6 +72,61 @@ pub enum Event {
         /// The transaction's ID.
         id: TransactionId,
     },
+    /// A point-in-time market value was recorded for a [`ManualAsset`] account.
+    ///
+    /// [`ManualAsset`]: bc_models::AccountKind::ManualAsset
+    AssetValuationRecorded {
+        /// Unique identifier for this valuation record.
+        id: ValuationId,
+        /// The account whose value was assessed.
+        account_id: AccountId,
+        /// Assessed market value (positive).
+        market_value: Decimal,
+        /// Commodity of the valuation (e.g. `"AUD"`).
+        commodity: String,
+        /// Source / authority for this valuation.
+        source: ValuationSource,
+        /// Business date of the assessment (not the insertion timestamp).
+        recorded_at: Date,
+    },
+    /// A depreciation amount was calculated for a [`ManualAsset`] account.
+    ///
+    /// [`ManualAsset`]: bc_models::AccountKind::ManualAsset
+    DepreciationCalculated {
+        /// Unique identifier for this depreciation record.
+        id: ValuationId,
+        /// The account being depreciated.
+        account_id: AccountId,
+        /// Depreciation amount (positive = asset value reduced by this amount).
+        amount: Decimal,
+        /// Commodity (e.g. `"AUD"`).
+        commodity: String,
+        /// Start of the depreciation period (inclusive).
+        period_start: Date,
+        /// End of the depreciation period (inclusive).
+        period_end: Date,
+    },
+    /// Loan terms were set or updated for a [`Receivable`] account.
+    ///
+    /// [`Receivable`]: bc_models::AccountKind::Receivable
+    LoanTermsSet {
+        /// Unique identifier for this loan terms record.
+        id: LoanId,
+        /// The account these terms apply to.
+        account_id: AccountId,
+        /// Original principal amount.
+        principal: Decimal,
+        /// Annual interest rate as a fraction (e.g. `0.065` = 6.5 %).
+        annual_rate: Decimal,
+        /// Date the loan commenced.
+        start_date: Date,
+        /// Total term in months.
+        term_months: u32,
+        /// Repayment frequency.
+        repayment_frequency: RepaymentFrequency,
+        /// Commodity of the loan (e.g. `"AUD"`).
+        commodity: String,
+    },
 }
 
 impl Event {
@@ -80,6 +141,9 @@ impl Event {
             Self::TransactionCreated { .. } => "TransactionCreated",
             Self::TransactionAmended { .. } => "TransactionAmended",
             Self::TransactionVoided { .. } => "TransactionVoided",
+            Self::AssetValuationRecorded { .. } => "AssetValuationRecorded",
+            Self::DepreciationCalculated { .. } => "DepreciationCalculated",
+            Self::LoanTermsSet { .. } => "LoanTermsSet",
         }
     }
 
@@ -94,6 +158,9 @@ impl Event {
             Self::TransactionCreated { id }
             | Self::TransactionAmended { id, .. }
             | Self::TransactionVoided { id } => id.to_string(),
+            Self::AssetValuationRecorded { account_id, .. }
+            | Self::DepreciationCalculated { account_id, .. }
+            | Self::LoanTermsSet { account_id, .. } => account_id.to_string(),
         }
     }
 }
@@ -382,6 +449,89 @@ mod tests {
             }
             other => panic!("expected TransactionAmended, got {other:?}"),
         }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn asset_valuation_recorded_round_trips(pool: sqlx::SqlitePool) {
+        use bc_models::ValuationId;
+        use bc_models::ValuationSource;
+        use jiff::civil::date;
+        use rust_decimal_macros::dec;
+
+        let store = SqliteStore::new(pool.clone());
+        let account_id = AccountId::new();
+        let event = Event::AssetValuationRecorded {
+            id: ValuationId::new(),
+            account_id: account_id.clone(),
+            market_value: dec!(650_000),
+            commodity: "AUD".to_owned(),
+            source: ValuationSource::ProfessionalAppraisal,
+            recorded_at: date(2026, 3, 31),
+        };
+
+        store.append(&event).await.expect("append should succeed");
+        let records = store
+            .replay_for(&account_id.to_string())
+            .await
+            .expect("replay");
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records.first().expect("one record").kind,
+            "AssetValuationRecorded"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn depreciation_calculated_round_trips(pool: sqlx::SqlitePool) {
+        use bc_models::ValuationId;
+        use jiff::civil::date;
+        use rust_decimal_macros::dec;
+
+        let store = SqliteStore::new(pool.clone());
+        let account_id = AccountId::new();
+        let event = Event::DepreciationCalculated {
+            id: ValuationId::new(),
+            account_id: account_id.clone(),
+            amount: dec!(16_250),
+            commodity: "AUD".to_owned(),
+            period_start: date(2026, 1, 1),
+            period_end: date(2026, 3, 31),
+        };
+
+        store.append(&event).await.expect("append");
+        let records = store
+            .replay_for(&account_id.to_string())
+            .await
+            .expect("replay");
+        assert_eq!(records.first().expect("one").kind, "DepreciationCalculated");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn loan_terms_set_round_trips(pool: sqlx::SqlitePool) {
+        use bc_models::LoanId;
+        use bc_models::RepaymentFrequency;
+        use jiff::civil::date;
+        use rust_decimal_macros::dec;
+
+        let store = SqliteStore::new(pool.clone());
+        let account_id = AccountId::new();
+        let event = Event::LoanTermsSet {
+            id: LoanId::new(),
+            account_id: account_id.clone(),
+            principal: dec!(100_000),
+            annual_rate: dec!(0.065),
+            start_date: date(2026, 1, 1),
+            term_months: 360,
+            repayment_frequency: RepaymentFrequency::Monthly,
+            commodity: "AUD".to_owned(),
+        };
+
+        store.append(&event).await.expect("append");
+        let records = store
+            .replay_for(&account_id.to_string())
+            .await
+            .expect("replay");
+        assert_eq!(records.first().expect("one").kind, "LoanTermsSet");
     }
 
     #[sqlx::test(migrations = "./migrations")]
