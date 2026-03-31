@@ -58,6 +58,84 @@ impl Engine {
             })
         })
     }
+
+    /// Computes total net worth in `commodity` across all asset and liability accounts.
+    ///
+    /// - [`DepositAccount`], [`Receivable`], [`VirtualAllocation`]: balance from postings.
+    /// - [`ManualAsset`]: latest recorded market value from `asset_valuations`.
+    /// - Accounts with `AccountType` other than `Asset`/`Liability` are excluded.
+    ///
+    /// Returns `Decimal::ZERO` if no relevant accounts exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or parse failure.
+    ///
+    /// [`DepositAccount`]: bc_models::AccountKind::DepositAccount
+    /// [`Receivable`]: bc_models::AccountKind::Receivable
+    /// [`VirtualAllocation`]: bc_models::AccountKind::VirtualAllocation
+    /// [`ManualAsset`]: bc_models::AccountKind::ManualAsset
+    #[inline]
+    pub async fn net_worth(&self, commodity: &str) -> BcResult<Decimal> {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+
+        // Load all active asset + liability accounts.
+        let accounts = crate::account::Service::new(self.pool.clone())
+            .list_active()
+            .await?;
+
+        let mut total = Decimal::ZERO;
+
+        for account in &accounts {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "AccountType is non_exhaustive; skip unknown variants"
+            )]
+            match account.account_type() {
+                AccountType::Asset | AccountType::Liability => {}
+                _ => continue,
+            }
+
+            let contribution = match account.kind() {
+                AccountKind::ManualAsset => {
+                    // Use the latest market valuation.
+                    let mv: Option<String> = sqlx::query_scalar(
+                        "SELECT market_value FROM asset_valuations \
+                         WHERE account_id = ? AND commodity = ? \
+                         ORDER BY recorded_at DESC, created_at DESC LIMIT 1",
+                    )
+                    .bind(account.id().to_string())
+                    .bind(commodity)
+                    .fetch_optional(&self.pool)
+                    .await?;
+
+                    mv.as_deref()
+                        .map(|s| {
+                            s.parse::<Decimal>().map_err(|e| {
+                                BcError::BadData(format!("invalid market_value '{s}': {e}"))
+                            })
+                        })
+                        .transpose()?
+                        .unwrap_or(Decimal::ZERO)
+                }
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "AccountKind is non_exhaustive; use posting-based balance for all other kinds"
+                )]
+                _ => {
+                    // Posting-based balance for all other kinds.
+                    self.balance_for(account.id(), commodity).await?
+                }
+            };
+
+            total = total
+                .checked_add(contribution)
+                .ok_or_else(|| BcError::BadData("net worth overflow".into()))?;
+        }
+
+        Ok(total)
+    }
 }
 
 #[cfg(test)]
@@ -144,6 +222,92 @@ mod tests {
             .await
             .expect("balance query should succeed");
         assert_eq!(balance, Decimal::ZERO);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn net_worth_includes_manual_asset_valuation(pool: sqlx::SqlitePool) {
+        use bc_models::ValuationSource;
+        use rust_decimal_macros::dec;
+
+        let acct_svc = crate::account::Service::new(pool.clone());
+
+        // A ManualAsset with a recorded valuation.
+        let house_id = acct_svc
+            .create(
+                "House",
+                AccountType::Asset,
+                AccountKind::ManualAsset,
+                None,
+                None,
+                &[],
+                &[],
+                Some(jiff::civil::date(2020, 1, 1)),
+                Some(dec!(500_000)),
+                None,
+            )
+            .await
+            .expect("create ManualAsset");
+
+        // A DepositAccount with a posting-based balance.
+        let savings_id = acct_svc
+            .create(
+                "Savings",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("create DepositAccount");
+
+        // Give the savings account a balance via a direct insert.
+        let income_id = acct_svc
+            .create(
+                "Income",
+                AccountType::Income,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("create Income");
+        sqlx::query("INSERT INTO transactions (id, date, description, status, created_at) VALUES ('tx_nw1', '2026-01-01', 'Test', 'cleared', '2026-01-01T00:00:00Z')")
+            .execute(&pool).await.expect("tx insert");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_nw1', 'tx_nw1', ?, '50000.00', 'AUD', 0)")
+            .bind(savings_id.to_string()).execute(&pool).await.expect("posting insert");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_nw2', 'tx_nw1', ?, '-50000.00', 'AUD', 1)")
+            .bind(income_id.to_string()).execute(&pool).await.expect("posting insert 2");
+
+        // Record a valuation for the house.
+        let asset_svc = crate::asset::Service::new(pool.clone());
+        asset_svc
+            .record_valuation(
+                &house_id,
+                dec!(650_000),
+                "AUD",
+                ValuationSource::ProfessionalAppraisal,
+                jiff::civil::date(2026, 3, 1),
+                None,
+            )
+            .await
+            .expect("record valuation");
+
+        let engine = Engine::new(pool.clone());
+        let net_worth = engine.net_worth("AUD").await.expect("net worth");
+
+        // Expected: savings (50_000) + house valuation (650_000) = 700_000
+        // (Income account is excluded from net worth as it's not Asset/Liability)
+        assert_eq!(net_worth, dec!(700_000));
     }
 
     #[sqlx::test(migrations = "./migrations")]
