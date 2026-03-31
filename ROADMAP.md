@@ -109,7 +109,7 @@ ______________________________________________________________________
 - [x] `AccountKind` enum on `Account` model (`DepositAccount`, `ManualAsset`, `Receivable`, `VirtualAllocation`) — _implemented in Milestone 1_
 - [x] `bc-core` enforces: only `DepositAccount` may have an import profile
 - [x] `AssetValuationRecorded` event: point-in-time market value with `ValuationSource`
-- [ ] `ValuationSource` enum: `ManualEstimate`, `ProfessionalAppraisal`, `TaxAssessment`, `MarketData`, `AgreedValue`
+- [x] `ValuationSource` enum: `ManualEstimate`, `ProfessionalAppraisal`, `TaxAssessment`, `MarketData`, `AgreedValue`
 - [x] Auto-generated balancing transaction on valuation (optional, via `counterpart_id`)
 - [x] `DepreciationPolicy` on `ManualAsset` accounts: `None`, `StraightLine`, `DecliningBalance`
 - [x] On-demand depreciation calculation (`DepreciationCalculated` event)
@@ -121,6 +121,7 @@ ______________________________________________________________________
 - [x] `RepaymentFrequency` enum: `Weekly`, `Fortnightly`, `Monthly`, `Quarterly`, `Custom`
 - [x] Net worth calculation includes all `AccountKind` variants (zero balance if no value recorded)
 - [x] CLI + TUI support: record valuation, trigger depreciation, set loan terms
+- [ ] CLI `asset book-value` command (deferred — service layer complete, CLI exposure pending)
 
 ______________________________________________________________________
 
