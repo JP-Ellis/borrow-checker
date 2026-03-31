@@ -5,6 +5,10 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-[]
+{
+  "accounts": [],
+  "commodity": "AUD",
+  "total": "0"
+}
 ----- stderr -----
-note: net-worth currently shows AUD balances only; multi-currency support requires Milestone 5
+note: net-worth shows AUD balances only; multi-currency support requires Milestone 5
