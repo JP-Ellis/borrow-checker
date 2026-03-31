@@ -2,6 +2,8 @@
 
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::sqlite::SqliteJournalMode;
+use sqlx::sqlite::SqliteSynchronous;
 
 use crate::BcError;
 use crate::BcResult;
@@ -26,7 +28,9 @@ pub async fn open_db(url: &str) -> BcResult<SqlitePool> {
     let opts = url
         .parse::<SqliteConnectOptions>()?
         .create_if_missing(true)
-        .pragma("foreign_keys", "ON");
+        .pragma("foreign_keys", "ON")
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
 
     let pool = SqlitePool::connect_with(opts).await?;
 
@@ -59,7 +63,9 @@ pub async fn open_db_at(path: &std::path::Path) -> BcResult<SqlitePool> {
     let opts = SqliteConnectOptions::new()
         .filename(path)
         .create_if_missing(true)
-        .pragma("foreign_keys", "ON");
+        .pragma("foreign_keys", "ON")
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
 
     let pool = SqlitePool::connect_with(opts).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
