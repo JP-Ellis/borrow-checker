@@ -144,7 +144,8 @@ pub enum Event {
         /// Display name of the group.
         name: String,
         /// Parent group ID, if nested.
-        group_id: Option<EnvelopeGroupId>,
+        #[serde(alias = "group_id")]
+        parent_id: Option<EnvelopeGroupId>,
     },
     /// A new budget envelope was created.
     EnvelopeCreated {
