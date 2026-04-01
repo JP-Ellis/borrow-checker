@@ -1,4 +1,4 @@
-//! Asset management sub-commands: record-valuation, depreciate, set-loan-terms, amortization.
+//! Asset management sub-commands: record-valuation, depreciate, set-loan-terms, amortization, book-value.
 
 use core::str::FromStr as _;
 
@@ -90,6 +90,18 @@ pub enum Command {
         /// Account ID with loan terms set.
         #[arg(long)]
         account: String,
+    },
+    /// Display the book value for a `ManualAsset` account.
+    ///
+    /// `book_value = acquisition_cost - SUM(recorded depreciation amounts)`.
+    /// Returns nothing if no acquisition cost has been set.
+    BookValue {
+        /// Account ID to query.
+        #[arg(long)]
+        account: String,
+        /// Commodity code (e.g. AUD).
+        #[arg(long)]
+        commodity: String,
     },
 }
 
@@ -190,6 +202,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             .await
         }
         Command::Amortization { account } => amortization(ctx, account).await,
+        Command::BookValue { account, commodity } => book_value(ctx, account, commodity).await,
     }
 }
 
@@ -407,6 +420,36 @@ async fn amortization(ctx: &AppContext, account: String) -> CliResult<()> {
         &["#", "DATE", "TOTAL", "PRINCIPAL", "INTEREST", "BALANCE"],
         &rows,
     );
+    Ok(())
+}
+
+/// Displays the book value for a [`bc_models::AccountKind::ManualAsset`] account.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError::Arg`] for an invalid account ID.
+/// Propagates [`crate::error::CliError::Core`] from the asset service.
+async fn book_value(ctx: &AppContext, account: String, commodity: String) -> CliResult<()> {
+    let account_id = AccountId::from_str(&account)
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID: {e}")))?;
+
+    let value = ctx.assets.book_value(&account_id, &commodity).await?;
+
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "account_id": account_id.to_string(),
+            "commodity": commodity,
+            "book_value": value.map(|v| v.to_string()),
+        }));
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        match value {
+            Some(v) => println!("Book value: {v} {commodity}"),
+            None => println!("No acquisition cost set for this account."),
+        }
+    }
     Ok(())
 }
 
