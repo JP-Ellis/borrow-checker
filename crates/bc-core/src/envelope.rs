@@ -235,7 +235,7 @@ impl Service {
         let event = Event::EnvelopeGroupCreated {
             id: id.clone(),
             name: name.to_owned(),
-            group_id: parent_id.cloned(),
+            parent_id: parent_id.cloned(),
         };
 
         let mut db_tx = self.pool.begin().await?;

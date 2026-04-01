@@ -40,6 +40,7 @@ type ListPostingRow = (
     Option<String>,
     Option<String>,
 );
+use crate::envelope::Service as EnvelopeService;
 use crate::events::insert_event;
 
 /// Validates that the postings in a transaction sum to zero per commodity.
@@ -59,6 +60,34 @@ fn validate_balance(postings: &[Posting]) -> BcResult<()> {
         if !sum.is_zero() {
             tracing::warn!(%commodity, %sum, "transaction postings do not balance");
             return Err(BcError::UnbalancedTransaction);
+        }
+    }
+    Ok(())
+}
+
+/// Validates that every posting whose `envelope_id` is set references an active envelope
+/// with a matching commodity.
+///
+/// # Errors
+///
+/// Returns [`BcError::NotFound`] if a posting's `envelope_id` refers to a non-existent or
+/// archived envelope.
+/// Returns [`BcError::InvalidInput`] if a posting's commodity does not match the envelope's
+/// commodity.
+async fn validate_envelope_postings(postings: &[Posting], pool: &SqlitePool) -> BcResult<()> {
+    let env_svc = EnvelopeService::new(pool.clone());
+    for posting in postings {
+        let Some(env_id) = posting.envelope_id() else {
+            continue;
+        };
+        let envelope = env_svc.get(env_id).await?;
+        if posting.amount().commodity() != envelope.commodity() {
+            return Err(BcError::InvalidInput(format!(
+                "posting commodity '{}' does not match envelope '{}' commodity '{}'",
+                posting.amount().commodity(),
+                env_id,
+                envelope.commodity(),
+            )));
         }
     }
     Ok(())
@@ -146,10 +175,13 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::UnbalancedTransaction`] if postings do not sum to zero.
+    /// Returns [`BcError::NotFound`] if a posting references a non-existent or archived envelope.
+    /// Returns [`BcError::InvalidInput`] if a posting's commodity does not match its envelope's commodity.
     /// Returns [`BcError`] on event append or database insert failure.
     #[inline]
     pub async fn create(&self, tx: Transaction) -> BcResult<TransactionId> {
         validate_balance(tx.postings())?;
+        validate_envelope_postings(tx.postings(), &self.pool).await?;
 
         let tx_id = tx.id().clone();
         let event = Event::TransactionCreated { id: tx_id.clone() };
@@ -605,6 +637,8 @@ impl Service {
     /// Returns [`BcError::UnbalancedTransaction`] if postings do not sum to zero.
     /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
     /// Returns [`BcError::AlreadyVoided`] if the transaction exists but is already voided.
+    /// Returns [`BcError::NotFound`] if a posting references a non-existent or archived envelope.
+    /// Returns [`BcError::InvalidInput`] if a posting's commodity does not match its envelope's commodity.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
     #[expect(
@@ -613,6 +647,7 @@ impl Service {
     )]
     pub async fn amend(&self, updated: Transaction) -> BcResult<()> {
         validate_balance(updated.postings())?;
+        validate_envelope_postings(updated.postings(), &self.pool).await?;
 
         let tx_id = updated.id().clone();
         let tx_id_str = tx_id.to_string();

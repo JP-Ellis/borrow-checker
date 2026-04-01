@@ -200,6 +200,11 @@ impl Engine {
         Ok(match envelope.rollover_policy() {
             bc_models::RolloverPolicy::CarryForward => surplus,
             bc_models::RolloverPolicy::CapAtTarget => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "CapAtTarget envelopes are validated to have allocation_target \
+                              at creation time; Service::create() enforces this invariant"
+                )]
                 let cap = envelope
                     .allocation_target()
                     .expect(
