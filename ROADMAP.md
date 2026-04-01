@@ -120,7 +120,8 @@ ______________________________________________________________________
 - [x] `acquisition_date` + `acquisition_cost` optional fields on `ManualAsset` accounts (cost basis, depreciation baseline)
 - [x] `RepaymentFrequency` enum: `Weekly`, `Fortnightly`, `Monthly`, `Quarterly`, `Custom`
 - [x] Net worth calculation includes all `AccountKind` variants (zero balance if no value recorded)
-- [x] CLI + TUI support: record valuation, trigger depreciation, set loan terms
+- [x] CLI support: record valuation, trigger depreciation, set loan terms
+- [ ] TUI support: record valuation, trigger depreciation, set loan terms (blocked on Milestone 4)
 - [ ] CLI `asset book-value` command (deferred — service layer complete, CLI exposure pending)
 
 ______________________________________________________________________

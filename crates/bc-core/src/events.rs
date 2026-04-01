@@ -159,6 +159,10 @@ impl Event {
             Self::TransactionCreated { id }
             | Self::TransactionAmended { id, .. }
             | Self::TransactionVoided { id } => id.to_string(),
+            // Asset/loan events belong to the account aggregate: `account_id` is the
+            // aggregate root, so it is used as the aggregate ID rather than the entity's
+            // own ID (`valuation_id`, `depreciation_id`, `loan_id`). This differs from
+            // transaction events, which use their own `id` as the aggregate ID.
             Self::AssetValuationRecorded { account_id, .. }
             | Self::DepreciationCalculated { account_id, .. }
             | Self::LoanTermsSet { account_id, .. } => account_id.to_string(),
