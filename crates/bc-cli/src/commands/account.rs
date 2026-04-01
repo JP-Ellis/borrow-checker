@@ -4,7 +4,9 @@ use core::str::FromStr as _;
 
 use bc_models::AccountKind;
 use bc_models::AccountType;
+use bc_models::DepreciationPolicy;
 use clap::Subcommand;
+use rust_decimal::Decimal;
 
 use crate::context::AppContext;
 use crate::error::CliResult;
@@ -38,6 +40,21 @@ pub enum Command {
         /// Optional free-text description.
         #[arg(long)]
         description: Option<String>,
+        /// Acquisition date for `ManualAsset` accounts (YYYY-MM-DD).
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        acquisition_date: Option<String>,
+        /// Acquisition cost for `ManualAsset` accounts (decimal).
+        #[arg(long)]
+        acquisition_cost: Option<String>,
+        /// Depreciation method for `ManualAsset` accounts.
+        #[arg(long, value_enum)]
+        depreciation_policy: Option<DepreciationPolicyArg>,
+        /// Annual depreciation rate as a fraction (e.g. 0.10 = 10%).
+        ///
+        /// Required when `--depreciation-policy` is `straight-line` or
+        /// `declining-balance`.
+        #[arg(long)]
+        annual_rate: Option<String>,
     },
     /// Archive an account (hides it from active lists; data is preserved).
     Archive {
@@ -79,6 +96,20 @@ pub enum KindArg {
     VirtualAllocation,
 }
 
+/// CLI representation of [`bc_models::DepreciationPolicy`] (without the `annual_rate` field).
+///
+/// The annual rate is supplied via a separate `--annual-rate` flag.
+#[non_exhaustive]
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum DepreciationPolicyArg {
+    /// Straight-line depreciation.
+    #[value(name = "straight-line")]
+    StraightLine,
+    /// Declining-balance depreciation.
+    #[value(name = "declining-balance")]
+    DecliningBalance,
+}
+
 /// Executes the `account` subcommand.
 ///
 /// # Errors
@@ -93,7 +124,24 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             r#type,
             kind,
             description,
-        } => create(ctx, name, r#type, kind, description).await,
+            acquisition_date,
+            acquisition_cost,
+            depreciation_policy,
+            annual_rate,
+        } => {
+            create(
+                ctx,
+                name,
+                r#type,
+                kind,
+                description,
+                acquisition_date,
+                acquisition_cost,
+                depreciation_policy,
+                annual_rate,
+            )
+            .await
+        }
         Command::Archive { id } => archive(ctx, id).await,
     }
 }
@@ -153,13 +201,24 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
 /// # Errors
 ///
 /// Propagates [`crate::error::CliError`] from the account service or JSON serialisation.
+/// Returns [`crate::error::CliError::Arg`] if acquisition date/cost/rate cannot be parsed.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "all parameters come from CLI flags"
+)]
 async fn create(
     ctx: &AppContext,
     name: String,
     account_type: TypeArg,
     kind: KindArg,
     description: Option<String>,
+    acquisition_date: Option<String>,
+    acquisition_cost: Option<String>,
+    depreciation_policy: Option<DepreciationPolicyArg>,
+    annual_rate: Option<String>,
 ) -> CliResult<()> {
+    use core::str::FromStr as _;
+
     let bc_type = match account_type {
         TypeArg::Asset => AccountType::Asset,
         TypeArg::Liability => AccountType::Liability,
@@ -175,6 +234,40 @@ async fn create(
         KindArg::VirtualAllocation => AccountKind::VirtualAllocation,
     };
 
+    let acq_date = acquisition_date
+        .as_deref()
+        .map(jiff::civil::Date::from_str)
+        .transpose()
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid acquisition_date: {e}")))?;
+
+    let acq_cost = acquisition_cost
+        .as_deref()
+        .map(Decimal::from_str)
+        .transpose()
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid acquisition_cost: {e}")))?;
+
+    let depr_policy = match depreciation_policy {
+        None => None,
+        Some(policy_arg) => {
+            let rate_str = annual_rate.as_deref().ok_or_else(|| {
+                crate::error::CliError::Arg(
+                    "--annual-rate is required when --depreciation-policy is set".into(),
+                )
+            })?;
+            let rate = Decimal::from_str(rate_str)
+                .map_err(|e| crate::error::CliError::Arg(format!("invalid annual_rate: {e}")))?;
+            let policy = match policy_arg {
+                DepreciationPolicyArg::StraightLine => {
+                    DepreciationPolicy::StraightLine { annual_rate: rate }
+                }
+                DepreciationPolicyArg::DecliningBalance => {
+                    DepreciationPolicy::DecliningBalance { annual_rate: rate }
+                }
+            };
+            Some(policy)
+        }
+    };
+
     let account_id = ctx
         .accounts
         .create(
@@ -185,9 +278,9 @@ async fn create(
             None,
             &[],
             &[],
-            None,
-            None,
-            None,
+            acq_date,
+            acq_cost,
+            depr_policy.as_ref(),
         )
         .await?;
 
