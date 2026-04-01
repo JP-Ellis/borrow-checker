@@ -9,6 +9,7 @@ mod version;
 // Subcommand test modules — uncommented as each command is implemented:
 mod account;
 mod asset;
+mod budget;
 mod export;
 mod import;
 mod report;

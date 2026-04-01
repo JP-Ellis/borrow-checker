@@ -229,7 +229,7 @@ pub struct Posting {
     ///
     /// `None` means this posting is not attributed to any budget envelope.
     /// Set when recording a transaction against a budgeted category.
-    envelope_id: Option<crate::envelope::EnvelopeId>,
+    envelope_id: Option<crate::EnvelopeId>,
 }
 
 impl Posting {
@@ -278,7 +278,7 @@ impl Posting {
     /// Returns the budget envelope ID this posting is assigned to, if any.
     #[inline]
     #[must_use]
-    pub fn envelope_id(&self) -> Option<&crate::envelope::EnvelopeId> {
+    pub fn envelope_id(&self) -> Option<&crate::EnvelopeId> {
         self.envelope_id.as_ref()
     }
 }
