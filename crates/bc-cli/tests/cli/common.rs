@@ -111,6 +111,11 @@ impl TestContext {
         if let Some(v) = std::env::var_os("SystemRoot") {
             cmd.env("SystemRoot", v);
         }
+        // Propagate the LLVM coverage profile path so the spawned binary writes
+        // its instrumentation data when running under `cargo llvm-cov`.
+        if let Some(v) = std::env::var_os("LLVM_PROFILE_FILE") {
+            cmd.env("LLVM_PROFILE_FILE", v);
+        }
         cmd
     }
 
