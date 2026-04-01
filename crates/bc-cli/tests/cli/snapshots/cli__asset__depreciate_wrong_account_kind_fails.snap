@@ -6,4 +6,4 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: data error: account is missing depreciation_policy — set it when creating the account
+error: invalid account kind for record depreciation: account [ACCOUNT_ID] is DepositAccount

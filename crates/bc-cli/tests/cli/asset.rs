@@ -18,7 +18,7 @@ fn parse_account_id(stdout: &[u8]) -> String {
         .to_owned()
 }
 
-/// Creates a `ManualAsset` account and returns its ID.
+/// Creates a `ManualAsset` account with acquisition fields and returns its ID.
 #[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
 fn create_manual_asset(ctx: &TestContext, name: &str) -> String {
     let out = ctx
@@ -33,9 +33,42 @@ fn create_manual_asset(ctx: &TestContext, name: &str) -> String {
             "asset",
             "--kind",
             "manual-asset",
+            "--acquisition-date",
+            "2020-01-01",
+            "--acquisition-cost",
+            "500000.00",
+            "--depreciation-policy",
+            "straight-line",
+            "--annual-rate",
+            "0.025",
         ])
         .output()
         .expect("create ManualAsset");
+    parse_account_id(&out.stdout)
+}
+
+/// Creates a `ManualAsset` account with no depreciation policy and returns its ID.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn create_manual_asset_no_policy(ctx: &TestContext, name: &str) -> String {
+    let out = ctx
+        .command()
+        .args([
+            "--json",
+            "account",
+            "create",
+            "--name",
+            name,
+            "--type",
+            "asset",
+            "--kind",
+            "manual-asset",
+            "--acquisition-date",
+            "2020-01-01",
+            "--acquisition-cost",
+            "500000.00",
+        ])
+        .output()
+        .expect("create ManualAsset without policy");
     parse_account_id(&out.stdout)
 }
 
@@ -210,16 +243,11 @@ fn amortization_shows_schedule() {
 }
 
 #[test]
-fn depreciate_no_policy_returns_error() {
+fn depreciate_wrong_account_kind_fails() {
     let ctx = TestContext::new();
-    // Create a ManualAsset with no depreciation policy by going through a
-    // DepositAccount — or rather, create a manual asset and try depreciation
-    // which requires a policy. The account create command does not yet expose
-    // depreciation policy flags, so we use an account that cannot be depreciated
-    // (a DepositAccount) to force an error from the asset kind check.
+    // Verify that trying to depreciate a DepositAccount returns InvalidAccountKind.
     let deposit_id = create_deposit_account(&ctx, "Not A ManualAsset");
 
-    // Also create an expense account to satisfy the CLI args.
     let expense_id = ctx
         .command()
         .args([
@@ -241,6 +269,43 @@ fn depreciate_no_policy_returns_error() {
         "depreciate",
         "--account",
         &deposit_id,
+        "--commodity",
+        "AUD",
+        "--date",
+        "2026-03-31",
+        "--expense-account",
+        &expense_id,
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn depreciate_no_policy_returns_error() {
+    let ctx = TestContext::new();
+    // Create a ManualAsset with acquisition fields but no depreciation policy.
+    let asset_id = create_manual_asset_no_policy(&ctx, "Undepreciated Asset");
+
+    let expense_id = ctx
+        .command()
+        .args([
+            "--json",
+            "account",
+            "create",
+            "--name",
+            "Depreciation Expense",
+            "--type",
+            "expense",
+        ])
+        .output()
+        .expect("create expense account");
+    let expense_id = parse_account_id(&expense_id.stdout);
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "asset",
+        "depreciate",
+        "--account",
+        &asset_id,
         "--commodity",
         "AUD",
         "--date",
