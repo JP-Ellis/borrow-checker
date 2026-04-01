@@ -141,12 +141,13 @@ impl Group {
 /// # Example
 ///
 /// ```
-/// use bc_models::{Envelope, EnvelopeId, RolloverPolicy, Period};
+/// use bc_models::{Envelope, EnvelopeId, RolloverPolicy, Period, CommodityCode};
 /// use jiff::Timestamp;
 ///
 /// let env = Envelope::builder()
 ///     .id(EnvelopeId::new())
 ///     .name("Groceries")
+///     .commodity(CommodityCode::new("AUD"))
 ///     .period(Period::Monthly)
 ///     .rollover_policy(RolloverPolicy::CarryForward)
 ///     .created_at(Timestamp::now())
@@ -179,6 +180,13 @@ pub struct Envelope {
     /// Optional colour code (e.g. a CSS hex colour).
     #[builder(into)]
     colour: Option<String>,
+
+    /// The commodity (currency) this envelope tracks.
+    ///
+    /// All actuals, allocations, and rollovers for this envelope are
+    /// denominated in this commodity. When [`Envelope::allocation_target`]
+    /// is set, its commodity **must** match this field.
+    commodity: crate::money::CommodityCode,
 
     /// Optional allocation target amount.
     ///
@@ -238,6 +246,13 @@ impl Envelope {
     #[must_use]
     pub fn colour(&self) -> Option<&str> {
         self.colour.as_deref()
+    }
+
+    /// Returns the commodity this envelope is denominated in.
+    #[inline]
+    #[must_use]
+    pub fn commodity(&self) -> &crate::money::CommodityCode {
+        &self.commodity
     }
 
     /// Returns the allocation target, if set.
@@ -418,10 +433,12 @@ mod tests {
     fn envelope_without_target_is_tracking_only() {
         use jiff::Timestamp;
 
+        use crate::CommodityCode;
         use crate::Period;
         let env = Envelope::builder()
             .id(EnvelopeId::new())
             .name("Dining Out")
+            .commodity(CommodityCode::new("AUD"))
             .period(Period::Monthly)
             .rollover_policy(RolloverPolicy::ResetToZero)
             .created_at(Timestamp::now())
@@ -440,6 +457,7 @@ mod tests {
         let env = Envelope::builder()
             .id(EnvelopeId::new())
             .name("Groceries")
+            .commodity(CommodityCode::new("AUD"))
             .allocation_target(Amount::new(
                 Decimal::from(500_i32),
                 CommodityCode::new("AUD"),

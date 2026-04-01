@@ -32,6 +32,9 @@ pub enum BcError {
         /// The kind that was found.
         kind: bc_models::AccountKind,
     },
+    /// A supplied parameter violates a business rule.
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
     /// A value could not be parsed from its stored representation.
     #[error("data error: {0}")]
     BadData(String),
@@ -54,6 +57,12 @@ mod tests {
     fn not_found_error_displays_id() {
         let err = BcError::NotFound("account_01j".to_owned());
         assert!(err.to_string().contains("account_01j"));
+    }
+
+    #[test]
+    fn invalid_input_error_displays() {
+        let err = BcError::InvalidInput("bad param".to_owned());
+        assert!(err.to_string().contains("bad param"));
     }
 
     #[test]

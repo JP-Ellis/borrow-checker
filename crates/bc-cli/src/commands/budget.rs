@@ -98,23 +98,34 @@ pub enum EnvelopeCommand {
         /// Rollover policy.
         #[arg(long, value_enum, default_value = "reset-to-zero")]
         rollover: RolloverArg,
+        /// Commodity code for this envelope (e.g. `AUD`, `USD`).
+        #[arg(long)]
+        commodity: String,
         /// Budget target amount per period.
         #[arg(long)]
         target: Option<rust_decimal::Decimal>,
-        /// Commodity code for the target.
-        #[arg(long)]
-        commodity: Option<String>,
         /// Group ID to assign this envelope to.
         #[arg(long)]
         group: Option<String>,
         /// Display icon (emoji or name).
         #[arg(long)]
         icon: Option<String>,
+        /// Display colour (e.g. `#4CAF50`).
+        #[arg(long)]
+        colour: Option<String>,
     },
     /// Archive an envelope (hides it; data is preserved).
     Archive {
         /// Envelope ID to archive.
         id: String,
+    },
+    /// Move an envelope to a different group, or remove it from all groups.
+    Move {
+        /// Envelope ID to move.
+        id: String,
+        /// Target group ID, or omit to remove from all groups.
+        #[arg(long)]
+        group: Option<String>,
     },
 }
 
@@ -253,10 +264,11 @@ async fn envelopes(cmd: EnvelopeCommand, ctx: &AppContext) -> CliResult<()> {
             fy_start_month,
             fy_start_day,
             rollover,
-            target,
             commodity,
+            target,
             group,
             icon,
+            colour,
         } => {
             envelopes_create(
                 ctx,
@@ -266,14 +278,16 @@ async fn envelopes(cmd: EnvelopeCommand, ctx: &AppContext) -> CliResult<()> {
                 fy_start_month,
                 fy_start_day,
                 rollover,
-                target,
                 commodity,
+                target,
                 group,
                 icon,
+                colour,
             )
             .await
         }
         EnvelopeCommand::Archive { id } => envelopes_archive(ctx, id).await,
+        EnvelopeCommand::Move { id, group } => envelopes_move(ctx, id, group).await,
     }
 }
 
@@ -333,10 +347,11 @@ async fn envelopes_create(
     fy_start_month: Option<u8>,
     fy_start_day: u8,
     rollover_arg: RolloverArg,
+    commodity: String,
     target: Option<rust_decimal::Decimal>,
-    commodity: Option<String>,
     group: Option<String>,
     icon: Option<String>,
+    colour: Option<String>,
 ) -> CliResult<()> {
     use core::str::FromStr as _;
 
@@ -350,15 +365,9 @@ async fn envelopes_create(
         RolloverArg::ResetToZero => RolloverPolicy::ResetToZero,
         RolloverArg::CapAtTarget => RolloverPolicy::CapAtTarget,
     };
-    let allocation_target = match (target, commodity) {
-        (Some(amt), Some(com)) => Some(Amount::new(amt, CommodityCode::new(com))),
-        (Some(_), None) => {
-            return Err(CliError::Arg(
-                "--commodity is required when --target is set".to_owned(),
-            ));
-        }
-        _ => None,
-    };
+    let allocation_target =
+        target.map(|amt| Amount::new(amt, CommodityCode::new(commodity.clone())));
+    let envelope_commodity = CommodityCode::new(commodity);
     let group_id = group
         .as_deref()
         .map(|s| {
@@ -373,7 +382,8 @@ async fn envelopes_create(
             name.clone(),
             group_id,
             icon,
-            None,
+            colour,
+            envelope_commodity,
             allocation_target,
             bc_period,
             rollover_policy,
@@ -410,6 +420,39 @@ async fn envelopes_archive(ctx: &AppContext, id: String) -> CliResult<()> {
     Ok(())
 }
 
+/// Moves an envelope to a different group, or removes it from all groups.
+async fn envelopes_move(ctx: &AppContext, id: String, group: Option<String>) -> CliResult<()> {
+    use core::str::FromStr as _;
+
+    let env_id = bc_models::EnvelopeId::from_str(&id)
+        .map_err(|e| CliError::Arg(format!("invalid envelope ID '{id}': {e}")))?;
+    let group_id = group
+        .as_deref()
+        .map(|s| {
+            bc_models::EnvelopeGroupId::from_str(s)
+                .map_err(|e| CliError::Arg(format!("invalid group ID '{s}': {e}")))
+        })
+        .transpose()?;
+
+    let env = ctx
+        .envelopes
+        .move_to_group(&env_id, group_id.as_ref())
+        .await?;
+
+    if ctx.json {
+        return crate::output::print_json(&env);
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        match env.parent_id() {
+            Some(gid) => println!("Moved envelope {} to group {gid}", env.id()),
+            None => println!("Moved envelope {} to root (no group)", env.id()),
+        }
+    }
+    Ok(())
+}
+
 // ── Allocate ──────────────────────────────────────────────────────────────────
 
 /// Allocates funds to an envelope and prints a confirmation.
@@ -431,8 +474,18 @@ async fn allocate(
     let env = ctx.envelopes.get(&env_id).await?;
 
     let period_start = if let Some(s) = period_start_str {
-        s.parse::<Date>()
-            .map_err(|e| CliError::Arg(format!("invalid period-start '{s}': {e}")))?
+        let date = s
+            .parse::<Date>()
+            .map_err(|e| CliError::Arg(format!("invalid period-start '{s}': {e}")))?;
+        let canonical = env.period().range_containing(date).0;
+        if canonical != date {
+            return Err(CliError::Arg(format!(
+                "'{date}' is not a canonical period start for this envelope's {:?} period; \
+                 did you mean '{canonical}'?",
+                env.period(),
+            )));
+        }
+        date
     } else {
         let today = jiff::Timestamp::now()
             .to_zoned(jiff::tz::TimeZone::system())
@@ -497,7 +550,12 @@ async fn status(ctx: &AppContext, as_of_str: Option<String>) -> CliResult<()> {
     let rows: Vec<Vec<String>> = statuses
         .iter()
         .map(|s| {
-            let period_str = format!("{} \u{2013} {}", s.period_start, s.period_end);
+            // period_end is exclusive; subtract one day for the inclusive human-readable range.
+            let display_end = s
+                .period_end
+                .checked_sub(jiff::Span::new().days(1_i32))
+                .unwrap_or(s.period_end);
+            let period_str = format!("{} \u{2013} {}", s.period_start, display_end);
             let alloc_str = if s.allocated.is_zero() && s.rollover.is_zero() {
                 "\u{2014}".to_owned()
             } else {
@@ -613,6 +671,12 @@ fn period_display(period: &bc_models::Period) -> String {
             }
             format!("Custom ({})", parts.join("+"))
         }
-        _ => "Unknown".to_owned(),
+        _ => {
+            tracing::warn!(
+                "unrecognised Period variant in period_display — \
+                 add a match arm if a new Period variant was introduced"
+            );
+            "Unknown".to_owned()
+        }
     }
 }

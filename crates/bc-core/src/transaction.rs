@@ -1306,6 +1306,7 @@ mod tests {
                 group_id: None,
                 icon: None,
                 colour: None,
+                commodity: bc_models::CommodityCode::new("AUD"),
                 allocation_target: None,
                 period: Period::Monthly,
                 rollover_policy: RolloverPolicy::ResetToZero,
