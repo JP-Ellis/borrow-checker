@@ -61,9 +61,7 @@ impl Engine {
     pub async fn status_for(&self, envelope: &Envelope, as_of: Date) -> BcResult<EnvelopeStatus> {
         let (period_start, period_end) = envelope.period().range_containing(as_of);
 
-        let commodity = envelope
-            .allocation_target()
-            .map_or_else(|| CommodityCode::new("AUD"), |a| a.commodity().clone());
+        let commodity = envelope.commodity().clone();
 
         let env_svc = EnvelopeService::new(self.pool.clone());
         let allocation = env_svc.get_allocation(envelope.id(), period_start).await?;
@@ -121,6 +119,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns [`BcError`] on database or data parse failure.
+    #[inline]
     async fn sum_actuals(
         &self,
         envelope_id: &EnvelopeId,
@@ -165,6 +164,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns [`BcError`] on database or data parse failure.
+    #[inline]
     async fn rollover_for(
         &self,
         envelope: &Envelope,
@@ -202,12 +202,24 @@ impl Engine {
             bc_models::RolloverPolicy::CapAtTarget => {
                 let cap = envelope
                     .allocation_target()
-                    .map_or(Decimal::MAX, bc_models::Amount::value);
+                    .expect(
+                        "CapAtTarget envelope must have allocation_target; \
+                         Service::create() validates this invariant",
+                    )
+                    .value();
                 surplus.max(Decimal::ZERO).min(cap)
             }
             // ResetToZero is already handled by the early return above; the wildcard
-            // arm covers any future #[non_exhaustive] variants.
-            bc_models::RolloverPolicy::ResetToZero | _ => Decimal::ZERO,
+            // arm covers any future #[non_exhaustive] variants added to bc-models.
+            bc_models::RolloverPolicy::ResetToZero => Decimal::ZERO,
+            _ => {
+                tracing::warn!(
+                    policy = ?envelope.rollover_policy(),
+                    "unrecognised rollover policy variant — defaulting to zero; \
+                     add a match arm if a new RolloverPolicy variant was introduced"
+                );
+                Decimal::ZERO
+            }
         })
     }
 }
@@ -236,6 +248,7 @@ mod tests {
             group_id: None,
             icon: None,
             colour: None,
+            commodity: CommodityCode::new("AUD"),
             allocation_target: Some(Amount::new(
                 Decimal::from(500_i32),
                 CommodityCode::new("AUD"),
@@ -264,6 +277,105 @@ mod tests {
         assert_eq!(status.rollover, Decimal::ZERO);
         assert_eq!(status.available, Decimal::ZERO);
         assert_eq!(status.period_start, Date::constant(2026, 3, 1));
+    }
+
+    /// A tracking-only envelope in USD must report USD actuals, not zero (AUD default regression).
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tracking_envelope_reports_actuals_in_its_own_commodity(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+        use bc_models::Posting;
+        use bc_models::PostingId;
+        use bc_models::Transaction;
+        use bc_models::TransactionId;
+        use bc_models::TransactionStatus;
+
+        use crate::account::Service as AccountService;
+        use crate::transaction::Service as TxService;
+
+        let acct_svc = AccountService::new(pool.clone());
+        let checking = acct_svc
+            .create(
+                "Checking",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create account");
+        let expense = acct_svc
+            .create(
+                "Dining",
+                AccountType::Expense,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create expense");
+
+        let env_svc = EnvelopeService::new(pool.clone());
+        let env = env_svc
+            .create(CreateParams {
+                name: "Dining".to_owned(),
+                group_id: None,
+                icon: None,
+                colour: None,
+                commodity: CommodityCode::new("USD"),
+                allocation_target: None,
+                period: Period::Monthly,
+                rollover_policy: RolloverPolicy::ResetToZero,
+                account_ids: vec![],
+            })
+            .await
+            .expect("create tracking envelope");
+
+        let tx_svc = TxService::new(pool.clone());
+        tx_svc
+            .create(
+                Transaction::builder()
+                    .id(TransactionId::new())
+                    .date(Date::constant(2026, 3, 10))
+                    .description("Restaurant")
+                    .status(TransactionStatus::Cleared)
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(expense.clone())
+                            .amount(Amount::new(
+                                Decimal::from(42_i32),
+                                CommodityCode::new("USD"),
+                            ))
+                            .envelope_id(env.id().clone())
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(checking.clone())
+                            .amount(Amount::new(
+                                Decimal::from(-42_i32),
+                                CommodityCode::new("USD"),
+                            ))
+                            .build(),
+                    ])
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("create transaction");
+
+        let engine = Engine::new(pool.clone());
+        let status = engine
+            .status_for(&env, Date::constant(2026, 3, 15))
+            .await
+            .expect("status");
+
+        assert_eq!(status.commodity, CommodityCode::new("USD"));
+        assert_eq!(status.actuals, Decimal::from(42_i32));
     }
 
     #[sqlx::test(migrations = "./migrations")]

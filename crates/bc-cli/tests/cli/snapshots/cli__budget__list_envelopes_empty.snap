@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/budget.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+No envelopes.
+----- stderr -----
