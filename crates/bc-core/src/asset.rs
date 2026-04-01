@@ -36,12 +36,21 @@ pub struct Service {
 /// # Returns
 ///
 /// Non-negative day count, or `0` if `to` is not after `from`.
-fn days_between(from: Date, to: Date) -> i32 {
+fn days_between(from: Date, to: Date) -> u32 {
     use jiff::Unit;
-    from.until((Unit::Day, to))
-        .map(|s| s.get_days())
-        .unwrap_or(0)
-        .max(0)
+    let days = from
+        .until((Unit::Day, to))
+        .map_or(0_i64, |s| s.get_days().into())
+        .max(0_i64)
+        .min(i64::from(u32::MAX));
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "clamped to u32::MAX above; a loan term exceeding ~11.7 million years is not a practical concern"
+    )]
+    #[expect(clippy::cast_sign_loss, reason = "clamped to non-negative by .max(0)")]
+    {
+        days as u32
+    }
 }
 
 impl Service {
@@ -112,6 +121,10 @@ impl Service {
                 });
             }
             Some(_) => {}
+        }
+
+        if market_value <= Decimal::ZERO {
+            return Err(BcError::BadData("market_value must be positive".into()));
         }
 
         let id = ValuationId::new();
@@ -374,8 +387,9 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::InvalidAccountKind`] if the account has no `acquisition_cost` or
-    /// `depreciation_policy`.
+    /// Returns [`BcError::InvalidAccountKind`] if the account is not a `ManualAsset`.
+    /// Returns [`BcError::BadData`] if `acquisition_cost`, `acquisition_date`, or
+    /// `depreciation_policy` are not set, or if `as_of` is not after the period start.
     /// Returns [`BcError`] on event append, serialisation, or database insert failure.
     #[expect(
         clippy::too_many_lines,
@@ -389,34 +403,45 @@ impl Service {
         as_of: Date,
         expense_account_id: &AccountId,
     ) -> BcResult<()> {
+        // Verify the account is a ManualAsset before accessing ManualAsset-specific fields.
+        let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM accounts WHERE id = ?")
+            .bind(account_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match kind.as_deref() {
+            None => return Err(BcError::NotFound(format!("account {account_id}"))),
+            Some(k) if k != "manual_asset" => {
+                let parsed = crate::db::from_db_str::<bc_models::AccountKind>(k)?;
+                return Err(BcError::InvalidAccountKind {
+                    operation: "record depreciation",
+                    account_id: account_id.clone(),
+                    kind: parsed,
+                });
+            }
+            Some(_) => {}
+        }
+
         let acct_svc = crate::account::Service::new(self.pool.clone());
         let account = acct_svc.find_by_id(account_id).await?;
 
-        let acquisition_cost =
-            account
-                .acquisition_cost()
-                .ok_or_else(|| BcError::InvalidAccountKind {
-                    operation: "record_depreciation",
-                    account_id: account_id.clone(),
-                    kind: account.kind(),
-                })?;
+        let acquisition_cost = account.acquisition_cost().ok_or_else(|| {
+            BcError::BadData(
+                "account is missing acquisition_cost — set it when creating the account".into(),
+            )
+        })?;
 
-        let acquisition_date =
-            account
-                .acquisition_date()
-                .ok_or_else(|| BcError::InvalidAccountKind {
-                    operation: "record_depreciation",
-                    account_id: account_id.clone(),
-                    kind: account.kind(),
-                })?;
+        let acquisition_date = account.acquisition_date().ok_or_else(|| {
+            BcError::BadData(
+                "account is missing acquisition_date — set it when creating the account".into(),
+            )
+        })?;
 
-        let policy = account
-            .depreciation_policy()
-            .ok_or_else(|| BcError::InvalidAccountKind {
-                operation: "record_depreciation",
-                account_id: account_id.clone(),
-                kind: account.kind(),
-            })?;
+        let policy = account.depreciation_policy().ok_or_else(|| {
+            BcError::BadData(
+                "account is missing depreciation_policy — set it when creating the account".into(),
+            )
+        })?;
 
         if matches!(policy, DepreciationPolicy::None) {
             return Err(BcError::BadData(
@@ -480,7 +505,7 @@ impl Service {
             .ok_or_else(|| BcError::BadData("book value underflow".into()))?;
 
         let days = days_between(period_start, as_of);
-        if days <= 0_i32 {
+        if days == 0 {
             return Ok(());
         }
 
@@ -490,7 +515,9 @@ impl Service {
 
         let days_decimal = Decimal::from(days);
         let amount = match policy {
-            DepreciationPolicy::None => return Ok(()),
+            DepreciationPolicy::None => {
+                unreachable!("DepreciationPolicy::None filtered by the guard above")
+            }
             DepreciationPolicy::StraightLine { annual_rate } => {
                 let daily = acquisition_cost
                     .checked_mul(*annual_rate)

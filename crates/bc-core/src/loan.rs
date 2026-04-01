@@ -171,7 +171,7 @@ impl Service {
             "SELECT id, principal, interest_rate, start_date, term_months, \
              repayment_frequency, commodity, created_at \
              FROM loan_terms WHERE account_id = ? \
-             ORDER BY created_at DESC LIMIT 1",
+             ORDER BY rowid DESC LIMIT 1",
         )
         .bind(account_id.to_string())
         .fetch_optional(&self.pool)
@@ -303,17 +303,23 @@ fn advance_date(date: Date, frequency: RepaymentFrequency) -> Date {
 ///
 /// For standard frequencies, the number of periods is `term_months * periods_per_year / 12`.
 /// For `Custom`, it is approximated as `term_months * (365.25 / 12) / period_days`.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if the computed number of payments exceeds [`u32::MAX`]
+/// (i.e. a loan term of ~11.7 million years at weekly frequency).
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "Decimal arithmetic on small loan-term values; overflow is not possible in practice"
 )]
-fn total_payments(terms: &LoanTerms) -> u32 {
+fn total_payments(terms: &LoanTerms) -> BcResult<u32> {
     let freq = terms.repayment_frequency();
     let periods_per_year = freq.periods_per_year();
     let term_months = Decimal::from(terms.term_months());
     let n = (term_months * periods_per_year / Decimal::from(12_u32)).round_dp(0);
-    // Convert back to u32; saturate at u32::MAX for absurdly long loans.
-    n.try_into().unwrap_or(u32::MAX)
+    n.try_into().map_err(|_| {
+        BcError::BadData("loan term produces an unreasonably large number of payments".into())
+    })
 }
 
 /// Computes a standard annuity amortization schedule from `terms`.
@@ -335,7 +341,7 @@ fn total_payments(terms: &LoanTerms) -> u32 {
 )]
 fn compute_schedule(terms: &LoanTerms) -> BcResult<Vec<AmortizationRow>> {
     let freq = terms.repayment_frequency();
-    let n = total_payments(terms);
+    let n = total_payments(terms)?;
     if n == 0 {
         return Ok(vec![]);
     }

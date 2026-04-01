@@ -90,6 +90,7 @@ impl Engine {
             .await?;
 
         let mut total = Decimal::ZERO;
+        let asset_svc = crate::asset::Service::new(self.pool.clone());
 
         for account in &accounts {
             match account.account_type() {
@@ -100,7 +101,7 @@ impl Engine {
             let contribution = match account.kind() {
                 AccountKind::ManualAsset => {
                     // Delegate to AssetService to avoid duplicating the SQL.
-                    crate::asset::Service::new(self.pool.clone())
+                    asset_svc
                         .latest_market_value(account.id(), commodity)
                         .await?
                         .unwrap_or(Decimal::ZERO)
