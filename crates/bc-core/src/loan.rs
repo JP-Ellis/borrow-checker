@@ -15,9 +15,28 @@ use crate::BcResult;
 use crate::events::Event;
 use crate::events::insert_event;
 
-/// Raw `loan_terms` row columns: (`id`, `principal`, `interest_rate`, `start_date`,
-/// `term_months`, `repayment_frequency`, `commodity`, `created_at`).
-type LoanTermsRow = (String, String, String, String, i64, String, String, String);
+/// Raw row returned by the `loan_terms` projection table.
+#[derive(sqlx::FromRow)]
+struct LoanTermsRow {
+    /// UUID of the loan-terms record.
+    id: String,
+    /// Serialised [`rust_decimal::Decimal`] principal amount.
+    principal: String,
+    /// Serialised [`rust_decimal::Decimal`] annual interest rate.
+    interest_rate: String,
+    /// ISO 8601 date string for the loan start date.
+    start_date: String,
+    /// Stored as signed 64-bit integer (SQLite's native integer type).
+    /// Validated to be in `u32` range on read. A negative value in the DB
+    /// indicates data corruption.
+    term_months: i64,
+    /// Serialised [`RepaymentFrequency`] — unit variants or `"custom:<days>"`.
+    repayment_frequency: String,
+    /// ISO 4217 commodity code (e.g. `"AUD"`).
+    commodity: String,
+    /// ISO 8601 timestamp string for when the record was created.
+    created_at: String,
+}
 
 /// Serialises a [`RepaymentFrequency`] to a DB string.
 ///
@@ -183,7 +202,7 @@ impl Service {
     /// Returns [`BcError`] on database or parse failure.
     #[inline]
     pub async fn loan_terms_for(&self, account_id: &AccountId) -> BcResult<Option<LoanTerms>> {
-        let row: Option<LoanTermsRow> = sqlx::query_as(
+        let maybe_row: Option<LoanTermsRow> = sqlx::query_as(
             "SELECT id, principal, interest_rate, start_date, term_months, \
              repayment_frequency, commodity, created_at \
              FROM loan_terms WHERE account_id = ? \
@@ -193,28 +212,31 @@ impl Service {
         .fetch_optional(&self.pool)
         .await?;
 
-        let Some((raw_id, raw_principal, rate, start, months, freq, commodity, raw_created_at)) =
-            row
-        else {
+        let Some(row) = maybe_row else {
             return Ok(None);
         };
 
-        let id = raw_id
+        let id = row
+            .id
             .parse::<LoanId>()
             .map_err(|e| BcError::BadData(e.to_string()))?;
-        let principal = raw_principal
+        let principal = row
+            .principal
             .parse::<Decimal>()
             .map_err(|e| BcError::BadData(format!("invalid principal: {e}")))?;
-        let annual_rate = rate
+        let annual_rate = row
+            .interest_rate
             .parse::<Decimal>()
             .map_err(|e| BcError::BadData(format!("invalid interest_rate: {e}")))?;
-        let start_date = start
+        let start_date = row
+            .start_date
             .parse::<Date>()
             .map_err(|e| BcError::BadData(format!("invalid start_date: {e}")))?;
-        let term_months = u32::try_from(months)
+        let term_months = u32::try_from(row.term_months)
             .map_err(|e| BcError::BadData(format!("invalid term_months: {e}")))?;
-        let repayment_frequency = freq_from_db(&freq)?;
-        let created_at = raw_created_at
+        let repayment_frequency = freq_from_db(&row.repayment_frequency)?;
+        let created_at = row
+            .created_at
             .parse::<jiff::Timestamp>()
             .map_err(|e| BcError::BadData(format!("invalid created_at: {e}")))?;
 
@@ -227,7 +249,7 @@ impl Service {
                 .start_date(start_date)
                 .term_months(term_months)
                 .repayment_frequency(repayment_frequency)
-                .commodity(commodity)
+                .commodity(row.commodity)
                 .created_at(created_at)
                 .build(),
         ))
@@ -283,36 +305,37 @@ fn days_per_period(frequency: RepaymentFrequency) -> Option<i64> {
 
 /// Returns calendar months to advance per period.
 ///
-/// Returns `1` (monthly) as the safe fallback for day-based or unknown frequencies.
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `frequency` does not use calendar-month advancement.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "RepaymentFrequency is #[non_exhaustive]; monthly is the safe fallback for new variants"
+    reason = "RepaymentFrequency is #[non_exhaustive]; unrecognised variants are an error not a fallback"
 )]
-fn months_per_period(frequency: RepaymentFrequency) -> i32 {
+fn months_per_period(frequency: RepaymentFrequency) -> BcResult<i32> {
     match frequency {
-        RepaymentFrequency::Quarterly => 3,
-        _ => 1,
+        RepaymentFrequency::Monthly => Ok(1),
+        RepaymentFrequency::Quarterly => Ok(3),
+        other => Err(BcError::BadData(format!(
+            "frequency {other:?} does not use calendar-month advancement"
+        ))),
     }
 }
 
 /// Advances `date` by one payment period for the given `frequency`.
-fn advance_date(date: Date, frequency: RepaymentFrequency) -> Date {
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if date arithmetic overflows or the frequency is unrecognised.
+fn advance_date(date: Date, frequency: RepaymentFrequency) -> BcResult<Date> {
     if let Some(days) = days_per_period(frequency) {
-        #[expect(
-            clippy::expect_used,
-            reason = "date arithmetic on valid dates within a loan term cannot overflow"
-        )]
         return date
             .checked_add(jiff::Span::new().days(days))
-            .expect("date arithmetic should not overflow");
+            .map_err(|_e| BcError::BadData("date arithmetic overflow advancing by days".into()));
     }
-    let months = months_per_period(frequency);
-    #[expect(
-        clippy::expect_used,
-        reason = "date arithmetic on valid dates within a loan term cannot overflow"
-    )]
+    let months = months_per_period(frequency)?;
     date.checked_add(jiff::Span::new().months(months))
-        .expect("date arithmetic should not overflow")
+        .map_err(|_e| BcError::BadData("date arithmetic overflow advancing by months".into()))
 }
 
 /// Computes the total number of payment periods for the given loan terms.
@@ -333,7 +356,7 @@ fn total_payments(terms: &LoanTerms) -> BcResult<u32> {
     let periods_per_year = freq.periods_per_year();
     let term_months = Decimal::from(terms.term_months());
     let n = (term_months * periods_per_year / Decimal::from(12_u32)).round_dp(0);
-    n.try_into().map_err(|_| {
+    n.try_into().map_err(|_e| {
         BcError::BadData("loan term produces an unreasonably large number of payments".into())
     })
 }
@@ -400,7 +423,7 @@ fn compute_schedule(terms: &LoanTerms) -> BcResult<Vec<AmortizationRow>> {
     let mut date = terms.start_date();
 
     // Advance to first payment date.
-    date = advance_date(date, freq);
+    date = advance_date(date, freq)?;
 
     for i in 1..=n {
         let interest = (balance * period_rate).round_dp(2);
@@ -431,7 +454,7 @@ fn compute_schedule(terms: &LoanTerms) -> BcResult<Vec<AmortizationRow>> {
         ));
 
         if !is_last {
-            date = advance_date(date, freq);
+            date = advance_date(date, freq)?;
         }
     }
 
@@ -465,6 +488,25 @@ mod tests {
             )
             .await
             .expect("create Receivable account")
+    }
+
+    #[test]
+    fn months_per_period_errors_on_unrecognised_variant() {
+        // Monthly should return Ok(1)
+        use bc_models::RepaymentFrequency;
+        pretty_assertions::assert_eq!(
+            super::months_per_period(RepaymentFrequency::Monthly).unwrap(),
+            1
+        );
+        // Quarterly should return Ok(3)
+        pretty_assertions::assert_eq!(
+            super::months_per_period(RepaymentFrequency::Quarterly).unwrap(),
+            3
+        );
+        assert!(
+            super::months_per_period(RepaymentFrequency::Weekly).is_err(),
+            "Weekly is not a calendar-month frequency"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
