@@ -445,7 +445,7 @@ impl Service {
 
         if matches!(policy, DepreciationPolicy::None) {
             return Err(BcError::BadData(
-                "account has no depreciation policy set".into(),
+                "depreciation is disabled for this account (policy is None)".into(),
             ));
         }
 
