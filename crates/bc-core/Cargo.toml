@@ -13,6 +13,7 @@ license.workspace      = true
 [dependencies]
 bc-config    = { workspace = true }
 bc-models    = { workspace = true }
+bon          = { workspace = true }
 jiff         = { workspace = true }
 rust_decimal = { workspace = true }
 serde        = { workspace = true }

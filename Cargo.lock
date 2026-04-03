@@ -232,6 +232,7 @@ version = "0.1.0"
 dependencies = [
  "bc-config",
  "bc-models",
+ "bon",
  "jiff",
  "pretty_assertions",
  "rust_decimal",
