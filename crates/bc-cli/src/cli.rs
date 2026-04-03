@@ -63,7 +63,7 @@ pub struct GlobalArgs {
 pub enum Commands {
     /// Manage accounts (list, create, archive).
     Account(account::Args),
-    /// Manage assets (record-valuation, depreciate, set-loan-terms, amortization).
+    /// Manage assets (record-valuation, book-value, depreciate, set-loan-terms, amortization).
     Asset(asset::Args),
     /// Manage transactions (list, add, amend, void).
     Transaction(transaction::Args),
