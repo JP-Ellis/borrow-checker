@@ -754,33 +754,19 @@ mod tests {
     async fn create_balanced_transaction_succeeds(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
-            .create(
-                "Income",
-                AccountType::Income,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create Income account should succeed");
         let acc_b = acct_svc
-            .create(
-                "Checking",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create Checking account should succeed");
 
@@ -823,33 +809,19 @@ mod tests {
         use jiff::Timestamp;
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
-            .create(
-                "Brokerage",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Brokerage")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create Brokerage account should succeed");
         let acc_b = acct_svc
-            .create(
-                "Cash",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Cash")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create Cash account should succeed");
 
@@ -916,33 +888,19 @@ mod tests {
     async fn void_already_voided_returns_already_voided(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
-            .create(
-                "A",
-                bc_models::AccountType::Asset,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("A")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create A should succeed");
         let acc_b = acct_svc
-            .create(
-                "B",
-                bc_models::AccountType::Expense,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("B")
+            .account_type(bc_models::AccountType::Expense)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create B should succeed");
 
@@ -959,33 +917,19 @@ mod tests {
     async fn list_excludes_voided_transactions(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
-            .create(
-                "A",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create A should succeed");
         let acc_b = acct_svc
-            .create(
-                "B",
-                AccountType::Expense,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create B should succeed");
 
@@ -1015,33 +959,19 @@ mod tests {
 
         // Create two accounts so FK constraints pass.
         let checking_id = account_svc
-            .create(
-                "Checking",
-                bc_models::AccountType::Asset,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create checking");
         let expenses_id = account_svc
-            .create(
-                "Expenses",
-                bc_models::AccountType::Expense,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Expenses")
+            .account_type(bc_models::AccountType::Expense)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create expenses");
 
@@ -1092,33 +1022,19 @@ mod tests {
         let account_svc = crate::AccountService::new(pool.clone());
 
         let checking_id = account_svc
-            .create(
-                "Checking",
-                bc_models::AccountType::Asset,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create checking");
         let expenses_id = account_svc
-            .create(
-                "Expenses",
-                bc_models::AccountType::Expense,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Expenses")
+            .account_type(bc_models::AccountType::Expense)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create expenses");
 
@@ -1163,33 +1079,19 @@ mod tests {
         use jiff::Timestamp;
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
-            .create(
-                "A",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create A should succeed");
         let acc_b = acct_svc
-            .create(
-                "B",
-                AccountType::Expense,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create B should succeed");
 
@@ -1237,33 +1139,19 @@ mod tests {
 
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
-            .create(
-                "Income",
-                AccountType::Income,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create Income account should succeed");
         let acc_b = acct_svc
-            .create(
-                "Checking",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create Checking account should succeed");
 

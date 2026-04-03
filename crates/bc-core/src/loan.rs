@@ -474,18 +474,11 @@ mod tests {
 
     async fn make_receivable(pool: &SqlitePool) -> AccountId {
         crate::AccountService::new(pool.clone())
-            .create(
-                "Loan to Friend",
-                AccountType::Asset,
-                AccountKind::Receivable,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Loan to Friend")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::Receivable)
+            .call()
             .await
             .expect("create Receivable account")
     }
@@ -615,18 +608,11 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn set_loan_terms_on_deposit_account_fails(pool: SqlitePool) {
         let deposit_id = crate::AccountService::new(pool.clone())
-            .create(
-                "Savings",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create DepositAccount");
         let svc = super::Service::new(pool.clone());

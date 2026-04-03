@@ -664,18 +664,11 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn record_valuation_on_deposit_account_fails(pool: SqlitePool) {
         let deposit_id = crate::AccountService::new(pool.clone())
-            .create(
-                "Savings",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create DepositAccount");
         let svc = super::Service::new(pool.clone());
@@ -697,20 +690,16 @@ mod tests {
 
     async fn make_manual_asset(pool: &SqlitePool) -> AccountId {
         crate::AccountService::new(pool.clone())
-            .create(
-                "House",
-                AccountType::Asset,
-                AccountKind::ManualAsset,
-                None,
-                None,
-                &[],
-                &[],
-                Some(jiff::civil::date(2020, 1, 1)),
-                Some(dec!(650_000)),
-                Some(&bc_models::DepreciationPolicy::StraightLine {
-                    annual_rate: dec!(0.025),
-                }),
-            )
+            .create()
+            .name("House")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::ManualAsset)
+            .acquisition_date(jiff::civil::date(2020, 1, 1))
+            .acquisition_cost(dec!(650_000))
+            .depreciation_policy(&bc_models::DepreciationPolicy::StraightLine {
+                annual_rate: dec!(0.025),
+            })
+            .call()
             .await
             .expect("create ManualAsset account")
     }
@@ -790,18 +779,11 @@ mod tests {
 
         // Create an equity counterpart account
         let counterpart_id = crate::AccountService::new(pool.clone())
-            .create(
-                "Equity:Unrealized",
-                AccountType::Equity,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Equity:Unrealized")
+            .account_type(AccountType::Equity)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create equity account");
 
@@ -836,18 +818,11 @@ mod tests {
         let asset_id = make_manual_asset(&pool).await;
 
         let counterpart_id = crate::AccountService::new(pool.clone())
-            .create(
-                "Equity:Unrealized",
-                AccountType::Equity,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Equity:Unrealized")
+            .account_type(AccountType::Equity)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create equity account");
 

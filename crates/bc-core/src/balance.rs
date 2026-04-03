@@ -144,33 +144,19 @@ mod tests {
     async fn balance_reflects_transactions(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
-            .create(
-                "Wallet",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Wallet")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create Wallet account should succeed");
         let acc_b = acct_svc
-            .create(
-                "Income",
-                AccountType::Income,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create Income account should succeed");
 
@@ -194,18 +180,11 @@ mod tests {
     async fn balance_zero_for_account_with_no_postings(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc = acct_svc
-            .create(
-                "Empty",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Empty")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create should succeed");
         let engine = Engine::new(pool.clone());
@@ -225,52 +204,33 @@ mod tests {
 
         // A ManualAsset with a recorded valuation.
         let house_id = acct_svc
-            .create(
-                "House",
-                AccountType::Asset,
-                AccountKind::ManualAsset,
-                None,
-                None,
-                &[],
-                &[],
-                Some(jiff::civil::date(2020, 1, 1)),
-                Some(dec!(500_000)),
-                None,
-            )
+            .create()
+            .name("House")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::ManualAsset)
+            .acquisition_date(jiff::civil::date(2020, 1, 1))
+            .acquisition_cost(dec!(500_000))
+            .call()
             .await
             .expect("create ManualAsset");
 
         // A DepositAccount with a posting-based balance.
         let savings_id = acct_svc
-            .create(
-                "Savings",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create DepositAccount");
 
         // Give the savings account a balance via a direct insert.
         let income_id = acct_svc
-            .create(
-                "Income",
-                AccountType::Income,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create Income");
         sqlx::query("INSERT INTO transactions (id, date, description, status, created_at) VALUES ('tx_nw1', '2026-01-01', 'Test', 'cleared', '2026-01-01T00:00:00Z')")
@@ -314,33 +274,19 @@ mod tests {
 
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
-            .create(
-                "Wallet",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Wallet")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create Wallet should succeed");
         let acc_b = acct_svc
-            .create(
-                "Income",
-                AccountType::Income,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create Income should succeed");
 
