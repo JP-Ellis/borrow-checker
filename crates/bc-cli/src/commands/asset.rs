@@ -347,6 +347,11 @@ async fn set_loan_terms(
             let days = period_days.ok_or_else(|| {
                 crate::error::CliError::Arg("--period-days required when --frequency custom".into())
             })?;
+            if days == 0 {
+                return Err(crate::error::CliError::Arg(
+                    "--period-days must be at least 1 when --frequency custom".into(),
+                ));
+            }
             bc_models::RepaymentFrequency::Custom { period_days: days }
         }
     };
