@@ -1,5 +1,6 @@
 ---
 source: crates/bc-cli/tests/cli/help.rs
+assertion_line: 17
 expression: output
 ---
 success: true
@@ -11,7 +12,7 @@ Usage: borrow-checker [OPTIONS] <COMMAND>
 
 Commands:
   account      Manage accounts (list, create, archive)
-  asset        Manage assets (record-valuation, depreciate, set-loan-terms, amortization)
+  asset        Manage assets (record-valuation, book-value, depreciate, set-loan-terms, amortization)
   transaction  Manage transactions (list, add, amend, void)
   import       Import transactions from a file using a named import profile
   export       Export all accounts and transactions to a file or stdout
