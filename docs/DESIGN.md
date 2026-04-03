@@ -296,7 +296,7 @@ Default methodology is **envelope/zero-based budgeting** (every dollar assigned 
 
 **Hierarchy:**
 
-Envelopes form an arbitrary-depth tree via `parent_id: Option<EnvelopeId>`. There is no separate "group" entity — a parent envelope is simply an envelope whose children roll their actuals and allocations upward. This mirrors the `Expense:Health:Gym:Me` hierarchy from ledger/beancount.
+Envelopes form an arbitrary-depth tree via `parent_id: Option<EnvelopeId>`. There is no separate "group" entity — a parent envelope is simply an envelope whose children roll their actuals and allocations upward. This mirrors the `Expense:Health:Gym:Me` hierarchy from ledger/beancount. Postings are assigned to leaf envelopes only; parent envelopes aggregate their children's actuals and allocations upward automatically.
 
 **Budget assignment vs. reporting dimensions:**
 
@@ -385,7 +385,7 @@ ______________________________________________________________________
 | 2 | Format compatibility (`bc-format-*` crates) | 1 |
 | 3 | CLI (`bc-cli`) | 1, 2 |
 | 4 | TUI (`bc-tui`) | 1, 5\* |
-| 5 | Budgeting (envelope model, all periods) | 1 |
+| 5 | Budgeting (flat envelope hierarchy, tags, allocation, all periods) | 1 |
 | 5A | Illiquid asset tracking (valuations, depreciation, loan terms) | 1, 5 |
 | 6 | Plugin Phase 1: Importers | 2, 3 |
 | 7 | Tauri GUI (`bc-app`) | 1, 2, 5 |
