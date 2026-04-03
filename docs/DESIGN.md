@@ -286,11 +286,26 @@ Default methodology is **envelope/zero-based budgeting** (every dollar assigned 
 
 **Envelope fields:**
 
-- Name, group (nestable), icon/colour
+- Name, parent envelope (nestable to arbitrary depth), icon/colour
 - Allocation target (optional)
+- Commodity (optional — required only when commodity-specific reporting is needed)
 - Period (see §7.2)
 - Rollover policy: carry forward / reset to zero / cap at target
+- Tags (cross-cutting labels; see below)
 - Linked account(s)
+
+**Hierarchy:**
+
+Envelopes form an arbitrary-depth tree via `parent_id: Option<EnvelopeId>`. There is no separate "group" entity — a parent envelope is simply an envelope whose children roll their actuals and allocations upward. This mirrors the `Expense:Health:Gym:Me` hierarchy from ledger/beancount.
+
+**Budget assignment vs. reporting dimensions:**
+
+Two orthogonal mechanisms exist for categorising spending:
+
+- `posting.envelope_id` → **where** the money was budgeted (zero-based assignment; one leaf envelope per posting; the primary budget signal)
+- `posting.tag_ids` / `envelope.tag_ids` → **how** to slice for reporting (multi-dimensional; many tags per entity; enables cross-cutting views like "all spending tagged `person:me`" or "total budget for all envelopes tagged `context:holiday`")
+
+Example: a gym posting assigned to `Health > Gym > Me` envelope and tagged `person:me`. This counts against the gym budget explicitly, and also appears in any "personal spending" report filtered by `person:me` tag — without double-counting in the budget.
 
 ### 7.2 Budget Periods
 
