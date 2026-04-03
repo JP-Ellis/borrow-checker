@@ -49,6 +49,11 @@ fn freq_from_db(s: &str) -> BcResult<RepaymentFrequency> {
         let period_days = days_str.parse::<u32>().map_err(|e| {
             BcError::BadData(format!("invalid custom period_days '{days_str}': {e}"))
         })?;
+        if period_days == 0 {
+            return Err(BcError::BadData(
+                "custom repayment period_days must be at least 1".into(),
+            ));
+        }
         return Ok(RepaymentFrequency::Custom { period_days });
     }
     crate::db::from_db_str(s)
@@ -88,6 +93,9 @@ impl Service {
     ///
     /// # Errors
     ///
+    /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::InvalidAccountKind`] if the account is not a `Receivable`.
+    /// Returns [`BcError::BadData`] if `Custom` frequency has `period_days == 0`.
     /// Returns [`BcError`] on serialisation or database failure.
     #[inline]
     pub async fn set_loan_terms(&self, terms: &LoanTerms) -> BcResult<()> {
@@ -108,6 +116,14 @@ impl Service {
                 });
             }
             Some(_) => {}
+        }
+
+        if let RepaymentFrequency::Custom { period_days } = terms.repayment_frequency() {
+            if period_days == 0 {
+                return Err(BcError::BadData(
+                    "custom repayment period_days must be at least 1".into(),
+                ));
+            }
         }
 
         let id = terms.id().clone();
