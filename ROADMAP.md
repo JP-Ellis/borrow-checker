@@ -122,7 +122,7 @@ ______________________________________________________________________
 - [x] Net worth calculation includes all `AccountKind` variants (zero balance if no value recorded)
 - [x] CLI support: record valuation, trigger depreciation, set loan terms
 - [ ] TUI support: record valuation, trigger depreciation, set loan terms (blocked on Milestone 4)
-- [ ] CLI `asset book-value` command (deferred — service layer complete, CLI exposure pending)
+- [x] CLI `asset book-value` command
 
 ______________________________________________________________________
 
