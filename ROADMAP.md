@@ -71,7 +71,7 @@ ______________________________________________________________________
 
 **Status:** ◻️
 **Crate:** `bc-tui`
-**Depends on:** Milestone 1 (core views); budget/report views deferred until Milestone 5
+**Depends on:** Milestone 1 (core views); budget/report views depend on Milestone 5
 
 - [ ] Sidebar + main panel layout (ratatui)
 - [ ] Account tree navigation (keyboard-first)
@@ -88,8 +88,9 @@ ______________________________________________________________________
 **Status:** ✅
 **Crate:** `bc-core` extension
 
-- [x] Envelope model (name, group, icon, allocation target, rollover policy)
-- [x] Envelope groups (nestable categories)
+- [x] Envelope model (name, parent hierarchy, icon, allocation target, rollover policy)
+- [x] Arbitrary-depth envelope hierarchy via `parent_id: Option<EnvelopeId>` (no separate group entity)
+- [x] Envelope tags for cross-cutting budget views
 - [x] All period types (incl. fortnightly + financial year)
 - [x] Allocation workflow (zero-based: assign every dollar)
 - [x] Category tracking mode (envelopes without allocation target)
