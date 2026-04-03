@@ -181,6 +181,7 @@ pub struct Service {
     pool: SqlitePool,
 }
 
+#[bon::bon]
 impl Service {
     /// Creates a new [`Service`] with the given connection pool.
     #[must_use]
@@ -210,10 +211,7 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError`] on event append or database insert failure.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "all parameters are required for a complete account creation; a builder API is out of scope for this service method"
-    )]
+    #[builder]
     #[inline]
     pub async fn create(
         &self,
@@ -222,8 +220,8 @@ impl Service {
         kind: AccountKind,
         description: Option<&str>,
         parent_id: Option<&AccountId>,
-        commodity_ids: &[CommodityId],
-        tag_ids: &[TagId],
+        #[builder(default)] commodity_ids: &[CommodityId],
+        #[builder(default)] tag_ids: &[TagId],
         acquisition_date: Option<jiff::civil::Date>,
         acquisition_cost: Option<rust_decimal::Decimal>,
         depreciation_policy: Option<&bc_models::DepreciationPolicy>,
@@ -455,6 +453,20 @@ mod tests {
 
     use super::*;
 
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_via_builder_api(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let id = svc
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create via builder");
+        assert!(id.to_string().starts_with("account_"));
+    }
+
     #[test]
     fn account_kind_round_trips() {
         use bc_models::AccountKind;
@@ -480,18 +492,11 @@ mod tests {
     async fn create_account_persists_projection(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool.clone());
         let id = svc
-            .create(
-                "Checking",
-                bc_models::AccountType::Asset,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create should succeed");
 
@@ -506,18 +511,11 @@ mod tests {
     async fn archive_account_sets_archived_at(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool.clone());
         let id = svc
-            .create(
-                "Old Account",
-                bc_models::AccountType::Liability,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Old Account")
+            .account_type(bc_models::AccountType::Liability)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create should succeed");
 
@@ -532,18 +530,11 @@ mod tests {
         use bc_models::AccountKind;
         let svc = Service::new(pool.clone());
         let id = svc
-            .create(
-                "House",
-                bc_models::AccountType::Asset,
-                AccountKind::ManualAsset,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("House")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(AccountKind::ManualAsset)
+            .call()
             .await
             .expect("create should succeed");
 
@@ -574,18 +565,11 @@ mod tests {
     async fn archive_already_archived_returns_already_archived(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool.clone());
         let id = svc
-            .create(
-                "Savings",
-                bc_models::AccountType::Asset,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Savings")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create should succeed");
         svc.archive(&id)
@@ -626,18 +610,13 @@ mod tests {
 
         let svc = Service::new(pool.clone());
         let id = svc
-            .create(
-                "Checking",
-                bc_models::AccountType::Asset,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                core::slice::from_ref(&commodity_id),
-                core::slice::from_ref(&tag_id),
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .commodity_ids(core::slice::from_ref(&commodity_id))
+            .tag_ids(core::slice::from_ref(&tag_id))
+            .call()
             .await
             .expect("create should succeed");
 
@@ -650,33 +629,19 @@ mod tests {
     async fn list_active_excludes_archived(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool.clone());
         let _id1 = svc
-            .create(
-                "Active",
-                bc_models::AccountType::Asset,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Active")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create should succeed");
         let id2 = svc
-            .create(
-                "Archived",
-                bc_models::AccountType::Expense,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Archived")
+            .account_type(bc_models::AccountType::Expense)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create should succeed");
         svc.archive(&id2).await.expect("archive should succeed");

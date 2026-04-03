@@ -350,18 +350,11 @@ mod tests {
     /// Creates a minimal account and returns its ID, for use in profile tests.
     async fn make_account(pool: &SqlitePool) -> AccountId {
         crate::AccountService::new(pool.clone())
-            .create(
-                "Savings",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create account")
     }
@@ -459,18 +452,11 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn create_profile_for_manual_asset_account_fails(pool: SqlitePool) {
         let account_id = crate::AccountService::new(pool.clone())
-            .create(
-                "House",
-                bc_models::AccountType::Asset,
-                bc_models::AccountKind::ManualAsset,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("House")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::ManualAsset)
+            .call()
             .await
             .expect("create ManualAsset account");
         let svc = Service::new(pool.clone());
@@ -489,18 +475,11 @@ mod tests {
 
         let account1 = make_account(&pool).await;
         let account2 = crate::AccountService::new(pool.clone())
-            .create(
-                "Checking",
-                bc_models::AccountType::Asset,
-                bc_models::AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-                None,
-                None,
-                None,
-            )
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create account2");
 

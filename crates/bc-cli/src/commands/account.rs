@@ -268,18 +268,15 @@ async fn create(
 
     let account_id = ctx
         .accounts
-        .create(
-            &name,
-            bc_type,
-            bc_kind,
-            description.as_deref(),
-            None,
-            &[],
-            &[],
-            acq_date,
-            acq_cost,
-            depr_policy.as_ref(),
-        )
+        .create()
+        .name(&name)
+        .account_type(bc_type)
+        .kind(bc_kind)
+        .maybe_description(description.as_deref())
+        .maybe_acquisition_date(acq_date)
+        .maybe_acquisition_cost(acq_cost)
+        .maybe_depreciation_policy(depr_policy.as_ref())
+        .call()
         .await?;
 
     if ctx.json {
