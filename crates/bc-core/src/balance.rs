@@ -77,7 +77,7 @@ impl Engine {
     /// [`ManualAsset`]: bc_models::AccountKind::ManualAsset
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "AccountKind and AccountType are #[non_exhaustive]; future variants should be excluded from net-worth like other non-Asset/Liability types, or fall through to posting-based balance"
+        reason = "intentional fallback with warning for future AccountKind variants"
     )]
     #[inline]
     pub async fn net_worth(&self, commodity: &str) -> BcResult<Decimal> {
@@ -100,14 +100,23 @@ impl Engine {
 
             let contribution = match account.kind() {
                 AccountKind::ManualAsset => {
-                    // Delegate to AssetService to avoid duplicating the SQL.
+                    // Use latest recorded market value, not posting-based balance.
                     asset_svc
                         .latest_market_value(account.id(), commodity)
                         .await?
                         .unwrap_or(Decimal::ZERO)
                 }
+                AccountKind::DepositAccount
+                | AccountKind::Receivable
+                | AccountKind::VirtualAllocation => {
+                    self.balance_for(account.id(), commodity).await?
+                }
                 _ => {
-                    // Posting-based balance for all other kinds.
+                    tracing::warn!(
+                        account_id = %account.id(),
+                        kind = ?account.kind(),
+                        "unknown AccountKind in net_worth; using posting-based balance"
+                    );
                     self.balance_for(account.id(), commodity).await?
                 }
             };

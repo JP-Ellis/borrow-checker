@@ -33,22 +33,20 @@ pub enum Frequency {
 impl Frequency {
     /// Returns the number of payment periods per year.
     ///
-    /// For `Custom`, this is `365.25 / period_days` (average Gregorian year).
+    /// For `Custom`, this is `365 / period_days` (standard bank day-count convention).
     #[must_use]
     #[inline]
     pub fn periods_per_year(self) -> Decimal {
-        // 365.25 expressed as a Decimal without needing the `dec!` macro:
-        // Decimal::new(36525, 2) == 365.25
         #[expect(
             clippy::arithmetic_side_effects,
-            reason = "dividing 365.25 by a positive period_days; overflow is not possible in practice for valid loan terms"
+            reason = "dividing 365 by a positive period_days; overflow is not possible in practice for valid loan terms"
         )]
         match self {
             Self::Weekly => Decimal::from(52_u32),
             Self::Fortnightly => Decimal::from(26_u32),
             Self::Monthly => Decimal::from(12_u32),
             Self::Quarterly => Decimal::from(4_u32),
-            Self::Custom { period_days } => Decimal::new(36_525, 2) / Decimal::from(period_days),
+            Self::Custom { period_days } => Decimal::from(365_u32) / Decimal::from(period_days),
         }
     }
 }
@@ -275,8 +273,7 @@ mod tests {
     #[test]
     fn frequency_custom_periods_per_year() {
         let result = Frequency::Custom { period_days: 28 }.periods_per_year();
-        // 365.25 / 28 = Decimal::new(36525, 2) / 28
-        let expected = Decimal::new(36_525, 2) / Decimal::from(28_u32);
+        let expected = Decimal::from(365_u32) / Decimal::from(28_u32);
         assert_eq!(result, expected);
     }
 
