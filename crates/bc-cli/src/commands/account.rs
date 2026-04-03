@@ -217,8 +217,6 @@ async fn create(
     depreciation_policy: Option<DepreciationPolicyArg>,
     annual_rate: Option<String>,
 ) -> CliResult<()> {
-    use core::str::FromStr as _;
-
     let bc_type = match account_type {
         TypeArg::Asset => AccountType::Asset,
         TypeArg::Liability => AccountType::Liability,
