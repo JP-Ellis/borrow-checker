@@ -26,7 +26,10 @@ pub struct Service {
     pool: SqlitePool,
 }
 
-/// Returns the number of days between two dates (0 if `to <= from`).
+/// Returns the inclusive number of days in the range `[from, to]`.
+///
+/// Both endpoints are counted, so the same date returns `1`. Returns `0`
+/// when `to < from`.
 ///
 /// # Arguments
 ///
@@ -35,21 +38,28 @@ pub struct Service {
 ///
 /// # Returns
 ///
-/// Non-negative day count, or `0` if `to` is not after `from`.
+/// Inclusive day count (`1` for same day), or `0` if `to < from`.
 fn days_between(from: Date, to: Date) -> u32 {
     use jiff::Unit;
-    let days = from
-        .until((Unit::Day, to))
-        .map_or(0_i64, |s| s.get_days().into())
-        .max(0_i64)
-        .min(i64::from(u32::MAX));
+    let elapsed: i64 = match from.until((Unit::Day, to)) {
+        Ok(s) => s.get_days().into(),
+        Err(_) => return 0,
+    };
+    if elapsed < 0 {
+        return 0;
+    }
+    // Both endpoints are inclusive: add 1 to the elapsed day difference.
+    let inclusive = (elapsed + 1).min(i64::from(u32::MAX));
     #[expect(
         clippy::cast_possible_truncation,
         reason = "clamped to u32::MAX above; a loan term exceeding ~11.7 million years is not a practical concern"
     )]
-    #[expect(clippy::cast_sign_loss, reason = "clamped to non-negative by .max(0)")]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "non-negative after the < 0 check above"
+    )]
     {
-        days as u32
+        inclusive as u32
     }
 }
 
@@ -389,7 +399,7 @@ impl Service {
     ///
     /// Returns [`BcError::InvalidAccountKind`] if the account is not a `ManualAsset`.
     /// Returns [`BcError::BadData`] if `acquisition_cost`, `acquisition_date`, or
-    /// `depreciation_policy` are not set, or if `as_of` is not after the period start.
+    /// `depreciation_policy` are not set, or if `as_of` is before the period start.
     /// Returns [`BcError`] on event append, serialisation, or database insert failure.
     #[expect(
         clippy::too_many_lines,
@@ -476,9 +486,9 @@ impl Service {
             None => acquisition_date,
         };
 
-        if as_of <= period_start {
+        if as_of < period_start {
             return Err(BcError::BadData(
-                "as_of date must be after the depreciation period start".into(),
+                "as_of date must not be before the depreciation period start".into(),
             ));
         }
 
@@ -505,9 +515,6 @@ impl Service {
             .ok_or_else(|| BcError::BadData("book value underflow".into()))?;
 
         let days = days_between(period_start, as_of);
-        if days == 0 {
-            return Ok(());
-        }
 
         let divisor = "365.25"
             .parse::<Decimal>()
