@@ -182,8 +182,10 @@ impl Engine {
     /// Computes the rollover balance from the period immediately before `period_start`.
     ///
     /// For `ResetToZero`: always returns [`Decimal::ZERO`].
-    /// For `CarryForward`: returns `prev_allocated - prev_actuals` (can be negative).
-    /// For `CapAtTarget`: returns `min(max(0, prev_allocated - prev_actuals), allocation_target)`.
+    /// For `CarryForward`: recursively returns `prev_allocated + prev_rollover - prev_actuals`
+    /// (can be negative).
+    /// For `CapAtTarget`: returns
+    /// `min(max(0, prev_allocated + prev_rollover - prev_actuals), allocation_target)`.
     ///
     /// When `commodity` is `None`, actuals are summed across all commodities.
     ///
