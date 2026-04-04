@@ -114,11 +114,30 @@ impl Service {
     ///
     /// # Errors
     ///
+    /// Returns [`BcError::BadData`] if `terms.principal()` is zero or negative.
+    /// Returns [`BcError::BadData`] if `terms.annual_rate()` is negative.
+    /// Returns [`BcError::BadData`] if `terms.term_months()` is zero.
     /// Returns [`BcError::NotFound`] if the account does not exist.
     /// Returns [`BcError::InvalidAccountKind`] if the account is not a `Receivable`.
     /// Returns [`BcError`] on serialisation or database failure.
     #[inline]
     pub async fn set_loan_terms(&self, terms: &LoanTerms) -> BcResult<()> {
+        if terms.principal() <= Decimal::ZERO {
+            return Err(BcError::BadData(
+                "loan principal must be greater than zero".into(),
+            ));
+        }
+        if terms.annual_rate() < Decimal::ZERO {
+            return Err(BcError::BadData(
+                "loan annual rate must not be negative".into(),
+            ));
+        }
+        if terms.term_months() == 0 {
+            return Err(BcError::BadData(
+                "loan term must be at least one month".into(),
+            ));
+        }
+
         // Verify the account is a Receivable.
         let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM accounts WHERE id = ?")
             .bind(terms.account_id().to_string())
@@ -711,6 +730,66 @@ mod tests {
             first.interest > dec!(509) && first.interest < dec!(511),
             "expected ~509.59 interest for Jan (31 days), got {}",
             first.interest
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_loan_terms_rejects_zero_principal(pool: SqlitePool) {
+        let account_id = make_receivable(&pool).await;
+        let svc = super::Service::new(pool.clone());
+        let terms = LoanTerms::builder()
+            .account_id(account_id)
+            .principal(rust_decimal::Decimal::ZERO)
+            .annual_rate(dec!(0.05))
+            .start_date(jiff::civil::date(2026, 1, 1))
+            .term_months(12_u32)
+            .repayment_frequency(Period::Monthly)
+            .commodity("AUD")
+            .build();
+        let result = svc.set_loan_terms(&terms).await;
+        assert!(
+            matches!(result, Err(crate::BcError::BadData(_))),
+            "expected BadData for zero principal, got {result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_loan_terms_rejects_negative_annual_rate(pool: SqlitePool) {
+        let account_id = make_receivable(&pool).await;
+        let svc = super::Service::new(pool.clone());
+        let terms = LoanTerms::builder()
+            .account_id(account_id)
+            .principal(dec!(10_000))
+            .annual_rate(rust_decimal::Decimal::new(-1, 2))
+            .start_date(jiff::civil::date(2026, 1, 1))
+            .term_months(12_u32)
+            .repayment_frequency(Period::Monthly)
+            .commodity("AUD")
+            .build();
+        let result = svc.set_loan_terms(&terms).await;
+        assert!(
+            matches!(result, Err(crate::BcError::BadData(_))),
+            "expected BadData for negative annual rate, got {result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_loan_terms_rejects_zero_term(pool: SqlitePool) {
+        let account_id = make_receivable(&pool).await;
+        let svc = super::Service::new(pool.clone());
+        let terms = LoanTerms::builder()
+            .account_id(account_id)
+            .principal(dec!(10_000))
+            .annual_rate(dec!(0.05))
+            .start_date(jiff::civil::date(2026, 1, 1))
+            .term_months(0_u32)
+            .repayment_frequency(Period::Monthly)
+            .commodity("AUD")
+            .build();
+        let result = svc.set_loan_terms(&terms).await;
+        assert!(
+            matches!(result, Err(crate::BcError::BadData(_))),
+            "expected BadData for zero term_months, got {result:?}"
         );
     }
 
