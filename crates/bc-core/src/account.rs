@@ -699,7 +699,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn create_manual_asset_with_acquisition_fields_succeeds(pool: sqlx::SqlitePool) {
-        let svc = Service::new(pool);
+        let svc = Service::new(pool.clone());
         let result = svc
             .create()
             .name("House")
@@ -715,6 +715,26 @@ mod tests {
         assert!(result.is_ok(), "expected Ok(AccountId), got: {result:?}");
         let id = result.expect("create should succeed");
         assert!(id.to_string().starts_with("account_"));
+
+        let found = svc.find_by_id(&id).await.expect("find should succeed");
+        assert_eq!(
+            found.acquisition_date(),
+            Some(jiff::civil::Date::new(2024, 1, 1).expect("valid"))
+        );
+        assert_eq!(
+            found.acquisition_cost(),
+            Some(rust_decimal::Decimal::new(100_000, 0))
+        );
+        assert!(
+            found.depreciation_policy().is_some(),
+            "depreciation_policy should be persisted"
+        );
+        assert_eq!(
+            found.depreciation_policy(),
+            Some(&bc_models::DepreciationPolicy::StraightLine {
+                annual_rate: rust_decimal::Decimal::new(2, 1),
+            })
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
