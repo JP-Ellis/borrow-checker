@@ -165,8 +165,9 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::InvalidInput`] if `rollover_policy` is `CapAtTarget`
-    /// but `allocation_target` is `None`, or if the allocation target's commodity
-    /// does not match `commodity` when both are provided.
+    /// but `allocation_target` is `None`, if `allocation_target` is set but
+    /// `commodity` is `None`, or if the allocation target's commodity does not
+    /// match `commodity` when both are provided.
     /// Returns [`BcError`] on event append or database insert failure.
     #[builder]
     #[inline]
@@ -186,6 +187,12 @@ impl Service {
         if rollover_policy == RolloverPolicy::CapAtTarget && allocation_target.is_none() {
             return Err(BcError::InvalidInput(
                 "CapAtTarget rollover policy requires an allocation target".to_owned(),
+            ));
+        }
+
+        if allocation_target.is_some() && commodity.is_none() {
+            return Err(BcError::InvalidInput(
+                "allocation_target requires a commodity to be set on the envelope".to_owned(),
             ));
         }
 
@@ -1083,6 +1090,30 @@ mod tests {
             .await
             .expect("set_parent");
         assert_eq!(moved.parent_id(), Some(parent.id()));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_with_allocation_target_but_no_commodity_is_invalid(pool: sqlx::SqlitePool) {
+        use bc_models::Amount;
+        use bc_models::CommodityCode;
+        use bc_models::Decimal;
+
+        let svc = Service::new(pool);
+        let result = svc
+            .create()
+            .name("Test")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .allocation_target(Amount::new(
+                Decimal::from(500_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .call()
+            .await;
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidInput(_))),
+            "allocation_target without commodity must be InvalidInput, got: {result:?}"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
