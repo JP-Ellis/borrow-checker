@@ -53,16 +53,16 @@ fn create_envelope_with_colour_persists_colour() {
 }
 
 #[test]
-fn move_envelope_to_group() {
+fn move_envelope_to_parent() {
     let ctx = TestContext::new();
 
-    // Create a group.
-    let group_out = ctx
+    // Create a parent envelope.
+    let parent_out = ctx
         .command()
         .args([
             "--json",
             "budget",
-            "groups",
+            "envelopes",
             "create",
             "--name",
             "Transport",
@@ -70,18 +70,18 @@ fn move_envelope_to_group() {
         .output()
         .expect("command executed");
     assert!(
-        group_out.status.success(),
-        "group create should succeed: {}",
-        String::from_utf8_lossy(&group_out.stderr)
+        parent_out.status.success(),
+        "parent envelope create should succeed: {}",
+        String::from_utf8_lossy(&parent_out.stderr)
     );
-    let group_json: serde_json::Value =
-        serde_json::from_slice(&group_out.stdout).expect("valid JSON");
-    let group_id = group_json
+    let parent_json: serde_json::Value =
+        serde_json::from_slice(&parent_out.stdout).expect("valid JSON");
+    let parent_id = parent_json
         .get("id")
         .and_then(serde_json::Value::as_str)
-        .expect("group id");
+        .expect("parent envelope id");
 
-    // Create an envelope with no group.
+    // Create a child envelope with no parent.
     let env_out = ctx
         .command()
         .args([
@@ -107,7 +107,7 @@ fn move_envelope_to_group() {
         .and_then(serde_json::Value::as_str)
         .expect("envelope id");
 
-    // Move the envelope to the group.
+    // Move the envelope under the parent.
     let move_out = ctx
         .command()
         .args([
@@ -116,8 +116,8 @@ fn move_envelope_to_group() {
             "envelopes",
             "move",
             env_id,
-            "--group",
-            group_id,
+            "--parent",
+            parent_id,
         ])
         .output()
         .expect("command executed");
@@ -132,30 +132,33 @@ fn move_envelope_to_group() {
         moved_json
             .get("parent_id")
             .and_then(serde_json::Value::as_str),
-        Some(group_id),
-        "parent_id should match the target group"
+        Some(parent_id),
+        "parent_id should match the target parent envelope"
     );
 }
 
 #[test]
-fn move_envelope_to_root_clears_group() {
+fn move_envelope_to_root_clears_parent() {
     let ctx = TestContext::new();
 
-    // Create a group.
-    let group_out = ctx
+    // Create a parent envelope.
+    let parent_out = ctx
         .command()
-        .args(["--json", "budget", "groups", "create", "--name", "Food"])
+        .args(["--json", "budget", "envelopes", "create", "--name", "Food"])
         .output()
         .expect("command executed");
-    assert!(group_out.status.success(), "group create should succeed");
-    let group_json: serde_json::Value =
-        serde_json::from_slice(&group_out.stdout).expect("valid JSON");
-    let group_id = group_json
+    assert!(
+        parent_out.status.success(),
+        "parent envelope create should succeed"
+    );
+    let parent_json: serde_json::Value =
+        serde_json::from_slice(&parent_out.stdout).expect("valid JSON");
+    let parent_id = parent_json
         .get("id")
         .and_then(serde_json::Value::as_str)
-        .expect("group id");
+        .expect("parent id");
 
-    // Create an envelope in the group.
+    // Create an envelope under the parent.
     let env_out = ctx
         .command()
         .args([
@@ -167,8 +170,8 @@ fn move_envelope_to_root_clears_group() {
             "Groceries",
             "--commodity",
             "AUD",
-            "--group",
-            group_id,
+            "--parent",
+            parent_id,
         ])
         .output()
         .expect("command executed");
@@ -179,7 +182,7 @@ fn move_envelope_to_root_clears_group() {
         .and_then(serde_json::Value::as_str)
         .expect("envelope id");
 
-    // Move to root by omitting --group.
+    // Move to root by omitting --parent.
     let move_out = ctx
         .command()
         .args(["--json", "budget", "envelopes", "move", env_id])

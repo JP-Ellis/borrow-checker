@@ -29,7 +29,6 @@ pub use budget::Engine as BudgetEngine;
 pub use budget::EnvelopeStatus;
 pub use db::open_db;
 pub use db::open_db_at;
-pub use envelope::CreateParams as EnvelopeCreateParams;
 pub use envelope::Service as EnvelopeService;
 pub use error::BcError;
 pub use error::BcResult;

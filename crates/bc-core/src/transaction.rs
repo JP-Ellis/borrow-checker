@@ -21,27 +21,38 @@ use crate::BcError;
 use crate::BcResult;
 use crate::db::from_db_str;
 use crate::db::to_db_str;
-use crate::events::Event;
-
-/// Row type returned by the postings bulk-load query in [`Service::list`].
-///
-/// Includes `transaction_id` (field 1) so postings can be grouped by transaction.
-/// The final field is the nullable `envelope_id`.
-type ListPostingRow = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
 use crate::envelope::Service as EnvelopeService;
+use crate::events::Event;
 use crate::events::insert_event;
+
+/// Named row type for postings loaded in bulk during [`Service::list`].
+///
+/// Includes `transaction_id` so postings can be grouped by transaction.
+#[derive(sqlx::FromRow)]
+struct ListPostingRow {
+    /// Posting ID.
+    id: String,
+    /// Parent transaction ID (used for grouping).
+    transaction_id: String,
+    /// Account ID for this posting.
+    account_id: String,
+    /// Decimal string for the posting amount.
+    amount: String,
+    /// Commodity code string.
+    commodity: String,
+    /// Optional free-text memo.
+    memo: Option<String>,
+    /// Decimal string for the cost basis total value; NULL if no cost basis.
+    cost_total_value: Option<String>,
+    /// Commodity code for the cost basis total; NULL when `cost_total_value` is NULL.
+    cost_total_commodity: Option<String>,
+    /// Optional cost acquisition date in ISO 8601 format.
+    cost_date: Option<String>,
+    /// Optional cost lot label.
+    cost_label: Option<String>,
+    /// Optional envelope ID assigned to this posting.
+    envelope_id: Option<String>,
+}
 
 /// Validates that the postings in a transaction sum to zero per commodity.
 fn validate_balance(postings: &[Posting]) -> BcResult<()> {
@@ -81,13 +92,16 @@ async fn validate_envelope_postings(postings: &[Posting], pool: &SqlitePool) -> 
             continue;
         };
         let envelope = env_svc.get(env_id).await?;
-        if posting.amount().commodity() != envelope.commodity() {
-            return Err(BcError::InvalidInput(format!(
-                "posting commodity '{}' does not match envelope '{}' commodity '{}'",
-                posting.amount().commodity(),
-                env_id,
-                envelope.commodity(),
-            )));
+        // Only validate commodity when the envelope has one set.
+        if let Some(env_commodity) = envelope.commodity() {
+            if posting.amount().commodity() != env_commodity {
+                return Err(BcError::InvalidInput(format!(
+                    "posting commodity '{}' does not match envelope '{}' commodity '{}'",
+                    posting.amount().commodity(),
+                    env_id,
+                    env_commodity,
+                )));
+            }
         }
     }
     Ok(())
@@ -136,21 +150,32 @@ fn parse_cost(
     ))
 }
 
-/// Column tuple returned from the `postings` table when loading a transaction.
+/// Named row type for postings loaded during [`Service::find_by_id`].
 ///
-/// The final field is the nullable `envelope_id`.
-type PostingRow = (
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
+/// Does not include `transaction_id` since we already know it from context.
+#[derive(sqlx::FromRow)]
+struct PostingRow {
+    /// Posting ID.
+    id: String,
+    /// Account ID for this posting.
+    account_id: String,
+    /// Decimal string for the posting amount.
+    amount: String,
+    /// Commodity code string.
+    commodity: String,
+    /// Optional free-text memo.
+    memo: Option<String>,
+    /// Decimal string for the cost basis total value; NULL if no cost basis.
+    cost_total_value: Option<String>,
+    /// Commodity code for the cost basis total; NULL when `cost_total_value` is NULL.
+    cost_total_commodity: Option<String>,
+    /// Optional cost acquisition date in ISO 8601 format.
+    cost_date: Option<String>,
+    /// Optional cost lot label.
+    cost_label: Option<String>,
+    /// Optional envelope ID assigned to this posting.
+    envelope_id: Option<String>,
+}
 
 /// Service for creating and managing transactions.
 #[derive(Debug, Clone)]
@@ -232,21 +257,21 @@ impl Service {
                   cost_total_value, cost_total_commodity, cost_date, cost_label, envelope_id) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(posting.id().to_string())
-            .bind(tx_id.to_string())
-            .bind(posting.account_id().to_string())
-            .bind(posting.amount().value().to_string())
-            .bind(posting.amount().commodity().as_str())
-            .bind(posting.memo())
+            .bind(posting.id().to_string()) //  1. id
+            .bind(tx_id.to_string()) //  2. transaction_id
+            .bind(posting.account_id().to_string()) //  3. account_id
+            .bind(posting.amount().value().to_string()) //  4. amount
+            .bind(posting.amount().commodity().as_str()) //  5. commodity
+            .bind(posting.memo()) //  6. memo
             .bind(
                 i64::try_from(position)
                     .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?,
-            )
-            .bind(cost_value)
-            .bind(cost_commodity)
-            .bind(cost_date)
-            .bind(cost_label)
-            .bind(posting.envelope_id().map(ToString::to_string))
+            ) //  7. position
+            .bind(cost_value) //  8. cost_total_value
+            .bind(cost_commodity) //  9. cost_total_commodity
+            .bind(cost_date) // 10. cost_date
+            .bind(cost_label) // 11. cost_label
+            .bind(posting.envelope_id().map(ToString::to_string)) // 12. envelope_id
             .execute(&mut *db_tx)
             .await?;
 
@@ -348,50 +373,44 @@ impl Service {
 
         let postings = posting_rows
             .into_iter()
-            .map(
-                |(
-                    pid,
-                    account_id,
-                    amount_str,
-                    commodity,
-                    memo,
-                    cost_val,
-                    cost_com,
-                    cost_dt,
-                    cost_lbl,
-                    env_id_str,
-                )| {
-                    let posting_id = pid.parse::<PostingId>().map_err(|e| {
-                        BcError::BadData(format!("invalid posting id '{pid}': {e}"))
-                    })?;
-                    let acc_id = account_id.parse::<AccountId>().map_err(|e| {
-                        BcError::BadData(format!("invalid account id '{account_id}': {e}"))
-                    })?;
-                    let value = amount_str.parse::<Decimal>().map_err(|e| {
-                        BcError::BadData(format!("invalid amount '{amount_str}': {e}"))
-                    })?;
-                    let amount = Amount::new(value, CommodityCode::new(commodity));
-                    let cost = parse_cost(cost_val, cost_com, cost_dt, cost_lbl)?;
-                    let env_id = env_id_str
-                        .as_deref()
-                        .map(|s| {
-                            s.parse::<bc_models::EnvelopeId>().map_err(|e| {
-                                BcError::BadData(format!("invalid envelope_id '{s}': {e}"))
-                            })
+            .map(|row| {
+                let pid = row.id;
+                let posting_id = pid
+                    .parse::<PostingId>()
+                    .map_err(|e| BcError::BadData(format!("invalid posting id '{pid}': {e}")))?;
+                let acc_id = row.account_id.parse::<AccountId>().map_err(|e| {
+                    BcError::BadData(format!("invalid account id '{}': {e}", row.account_id))
+                })?;
+                let value = row.amount.parse::<Decimal>().map_err(|e| {
+                    BcError::BadData(format!("invalid amount '{}': {e}", row.amount))
+                })?;
+                let amount = Amount::new(value, CommodityCode::new(row.commodity));
+                let cost = parse_cost(
+                    row.cost_total_value,
+                    row.cost_total_commodity,
+                    row.cost_date,
+                    row.cost_label,
+                )?;
+                let env_id = row
+                    .envelope_id
+                    .as_deref()
+                    .map(|s| {
+                        s.parse::<bc_models::EnvelopeId>().map_err(|e| {
+                            BcError::BadData(format!("invalid envelope_id '{s}': {e}"))
                         })
-                        .transpose()?;
-                    let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
-                    Ok(Posting::builder()
-                        .id(posting_id)
-                        .account_id(acc_id)
-                        .amount(amount)
-                        .maybe_cost(cost)
-                        .maybe_memo(memo)
-                        .tag_ids(p_tag_ids)
-                        .maybe_envelope_id(env_id)
-                        .build())
-                },
-            )
+                    })
+                    .transpose()?;
+                let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
+                Ok(Posting::builder()
+                    .id(posting_id)
+                    .account_id(acc_id)
+                    .amount(amount)
+                    .maybe_cost(cost)
+                    .maybe_memo(row.memo)
+                    .tag_ids(p_tag_ids)
+                    .maybe_envelope_id(env_id)
+                    .build())
+            })
             .collect::<BcResult<Vec<_>>>()?;
 
         Ok(Transaction::builder()
@@ -544,32 +563,28 @@ impl Service {
 
         // Group postings by transaction_id.
         let mut postings_by_tx: HashMap<String, Vec<Posting>> = HashMap::new();
-        for (
-            pid,
-            tx_id_str,
-            account_id,
-            amount_str,
-            commodity,
-            memo,
-            cost_val,
-            cost_com,
-            cost_dt,
-            cost_lbl,
-            env_id_str,
-        ) in posting_rows
-        {
+        for row in posting_rows {
+            let pid = row.id;
+            let tx_id_str = row.transaction_id;
             let posting_id = pid
                 .parse::<PostingId>()
                 .map_err(|e| BcError::BadData(format!("invalid posting id '{pid}': {e}")))?;
-            let acc_id = account_id
-                .parse::<AccountId>()
-                .map_err(|e| BcError::BadData(format!("invalid account id '{account_id}': {e}")))?;
-            let value = amount_str
+            let acc_id = row.account_id.parse::<AccountId>().map_err(|e| {
+                BcError::BadData(format!("invalid account id '{}': {e}", row.account_id))
+            })?;
+            let value = row
+                .amount
                 .parse::<Decimal>()
-                .map_err(|e| BcError::BadData(format!("invalid amount '{amount_str}': {e}")))?;
-            let amount = Amount::new(value, CommodityCode::new(commodity));
-            let cost = parse_cost(cost_val, cost_com, cost_dt, cost_lbl)?;
-            let env_id = env_id_str
+                .map_err(|e| BcError::BadData(format!("invalid amount '{}': {e}", row.amount)))?;
+            let amount = Amount::new(value, CommodityCode::new(row.commodity));
+            let cost = parse_cost(
+                row.cost_total_value,
+                row.cost_total_commodity,
+                row.cost_date,
+                row.cost_label,
+            )?;
+            let env_id = row
+                .envelope_id
                 .as_deref()
                 .map(|s| {
                     s.parse::<bc_models::EnvelopeId>()
@@ -582,7 +597,7 @@ impl Service {
                 .account_id(acc_id)
                 .amount(amount)
                 .maybe_cost(cost)
-                .maybe_memo(memo)
+                .maybe_memo(row.memo)
                 .tag_ids(p_tag_ids)
                 .maybe_envelope_id(env_id)
                 .build();
@@ -737,21 +752,21 @@ impl Service {
                   cost_total_value, cost_total_commodity, cost_date, cost_label, envelope_id) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(posting.id().to_string())
-            .bind(&tx_id_str)
-            .bind(posting.account_id().to_string())
-            .bind(posting.amount().value().to_string())
-            .bind(posting.amount().commodity().as_str())
-            .bind(posting.memo())
+            .bind(posting.id().to_string()) //  1. id
+            .bind(&tx_id_str) //  2. transaction_id
+            .bind(posting.account_id().to_string()) //  3. account_id
+            .bind(posting.amount().value().to_string()) //  4. amount
+            .bind(posting.amount().commodity().as_str()) //  5. commodity
+            .bind(posting.memo()) //  6. memo
             .bind(
                 i64::try_from(position)
                     .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?,
-            )
-            .bind(cost_value)
-            .bind(cost_commodity)
-            .bind(cost_date)
-            .bind(cost_label)
-            .bind(posting.envelope_id().map(ToString::to_string))
+            ) //  7. position
+            .bind(cost_value) //  8. cost_total_value
+            .bind(cost_commodity) //  9. cost_total_commodity
+            .bind(cost_date) // 10. cost_date
+            .bind(cost_label) // 11. cost_label
+            .bind(posting.envelope_id().map(ToString::to_string)) // 12. envelope_id
             .execute(&mut *db_tx)
             .await?;
 
@@ -1305,7 +1320,6 @@ mod tests {
         use jiff::civil::Date;
 
         use crate::account::Service as AccountService;
-        use crate::envelope::CreateParams;
         use crate::envelope::Service as EnvelopeService;
 
         let acct_svc = AccountService::new(pool.clone());
@@ -1336,17 +1350,11 @@ mod tests {
 
         let env_svc = EnvelopeService::new(pool.clone());
         let env = env_svc
-            .create(CreateParams {
-                name: "Groceries".to_owned(),
-                group_id: None,
-                icon: None,
-                colour: None,
-                commodity: bc_models::CommodityCode::new("AUD"),
-                allocation_target: None,
-                period: Period::Monthly,
-                rollover_policy: RolloverPolicy::ResetToZero,
-                account_ids: vec![],
-            })
+            .create()
+            .name("Groceries")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
             .await
             .expect("create envelope");
 
