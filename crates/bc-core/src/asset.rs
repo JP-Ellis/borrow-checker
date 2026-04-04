@@ -49,7 +49,14 @@ fn days_between(from: Date, to: Date) -> u32 {
         return 0;
     }
     // Both endpoints are inclusive: add 1 to the elapsed day difference.
-    let inclusive = (elapsed + 1).min(i64::from(u32::MAX));
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "elapsed + 1 is bounded; elapsed >= 0 checked above"
+    )]
+    #[expect(
+        clippy::as_conversions,
+        reason = "inclusive is min(elapsed+1, i64::from(u32::MAX)); fits u32"
+    )]
     #[expect(
         clippy::cast_possible_truncation,
         reason = "clamped to u32::MAX above; a loan term exceeding ~11.7 million years is not a practical concern"
@@ -59,6 +66,7 @@ fn days_between(from: Date, to: Date) -> u32 {
         reason = "non-negative after the < 0 check above"
     )]
     {
+        let inclusive = (elapsed + 1).min(i64::from(u32::MAX));
         inclusive as u32
     }
 }
@@ -810,9 +818,9 @@ mod tests {
 
     /// Second valuation should only post the delta, not the full absolute value.
     ///
-    /// First valuation: 700_000 → posts +700_000 to asset, -700_000 to counterpart.
-    /// Second valuation: 750_000 → change is +50_000 → posts +50_000 to asset, -50_000 to counterpart.
-    /// Net counterpart balance: -700_000 + -50_000 = -750_000.
+    /// First valuation: `700_000` → posts +`700_000` to asset, -`700_000` to counterpart.
+    /// Second valuation: `750_000` → change is +`50_000` → posts +`50_000` to asset, -`50_000` to counterpart.
+    /// Net counterpart balance: -`700_000` + -`50_000` = -`750_000`.
     #[sqlx::test(migrations = "./migrations")]
     async fn record_valuation_second_valuation_posts_delta(pool: SqlitePool) {
         let asset_id = make_manual_asset(&pool).await;

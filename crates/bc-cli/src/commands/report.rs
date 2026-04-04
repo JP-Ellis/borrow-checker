@@ -100,8 +100,23 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 /// # Errors
 ///
 /// Propagates [`crate::error::CliError`] from the account, asset, or balance service.
+#[expect(
+    clippy::too_many_lines,
+    reason = "report function spans table setup and output"
+)]
 async fn net_worth(ctx: &AppContext) -> CliResult<()> {
     const COMMODITY: &str = "AUD";
+
+    /// Returns a stable, user-friendly string for an [`bc_models::AccountKind`].
+    fn kind_label(kind: bc_models::AccountKind) -> &'static str {
+        match kind {
+            bc_models::AccountKind::DepositAccount => "deposit",
+            bc_models::AccountKind::ManualAsset => "manual asset",
+            bc_models::AccountKind::Receivable => "receivable",
+            bc_models::AccountKind::VirtualAllocation => "virtual",
+            _ => "unknown",
+        }
+    }
 
     #[expect(clippy::print_stderr, reason = "user-visible limitation warning")]
     {
@@ -112,21 +127,6 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
 
     let total = ctx.balances.net_worth(COMMODITY).await?;
     let accounts = ctx.accounts.list_active().await?;
-
-    /// Returns a stable, user-friendly string for an [`bc_models::AccountKind`].
-    fn kind_label(kind: bc_models::AccountKind) -> &'static str {
-        #[expect(
-            clippy::wildcard_enum_match_arm,
-            reason = "AccountKind is #[non_exhaustive]; unknown future variants fall through"
-        )]
-        match kind {
-            bc_models::AccountKind::DepositAccount => "deposit",
-            bc_models::AccountKind::ManualAsset => "manual asset",
-            bc_models::AccountKind::Receivable => "receivable",
-            bc_models::AccountKind::VirtualAllocation => "virtual",
-            _ => "unknown",
-        }
-    }
 
     if ctx.json {
         let mut rows = Vec::new();
