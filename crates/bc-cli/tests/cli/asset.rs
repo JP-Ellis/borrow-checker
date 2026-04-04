@@ -261,6 +261,10 @@ fn depreciate_wrong_account_kind_fails() {
         ])
         .output()
         .expect("create expense account");
+    #[expect(
+        clippy::shadow_reuse,
+        reason = "rebinding parse result to same name is idiomatic"
+    )]
     let expense_id = parse_account_id(&expense_id.stdout);
 
     let mut cmd = ctx.command();
@@ -298,6 +302,10 @@ fn depreciate_no_policy_returns_error() {
         ])
         .output()
         .expect("create expense account");
+    #[expect(
+        clippy::shadow_reuse,
+        reason = "rebinding parse result to same name is idiomatic"
+    )]
     let expense_id = parse_account_id(&expense_id.stdout);
 
     let mut cmd = ctx.command();
