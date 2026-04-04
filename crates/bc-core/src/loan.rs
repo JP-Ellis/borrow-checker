@@ -472,9 +472,9 @@ fn compute_schedule(
         terms.principal(),
     );
 
-    // Compute fixed payment using offset-adjusted principal.
-    let effective_principal = (terms.principal() - offset_total).max(Decimal::ZERO);
-    let payment = annuity_payment(effective_principal, period_rate, n)?;
+    // Compute fixed payment on the full principal: offset accounts reduce interest
+    // charged each period but do NOT reduce the repayment amount itself.
+    let payment = annuity_payment(terms.principal(), period_rate, n)?;
 
     #[expect(
         clippy::as_conversions,
@@ -843,6 +843,13 @@ mod tests {
         let no_first = no_offset
             .first()
             .expect("schedule without offset has payments");
+
+        // Offset reduces interest but must NOT change the fixed repayment amount.
+        pretty_assertions::assert_eq!(
+            with_first.total_payment,
+            no_first.total_payment,
+            "offset must not change the fixed payment amount"
+        );
         assert!(
             with_first.interest < no_first.interest,
             "offset should reduce interest: {} vs {}",
