@@ -335,27 +335,19 @@ mod tests {
 
         let acct_svc = AccountService::new(pool.clone());
         let checking = acct_svc
-            .create(
-                "Checking",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-            )
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create account");
         let expense = acct_svc
-            .create(
-                "Dining",
-                AccountType::Expense,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-            )
+            .create()
+            .name("Dining")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create expense");
 
@@ -458,27 +450,19 @@ mod tests {
 
         let acct_svc = AccountService::new(pool.clone());
         let checking = acct_svc
-            .create(
-                "Checking",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-            )
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create checking account");
         let expense = acct_svc
-            .create(
-                "Groceries",
-                AccountType::Expense,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-            )
+            .create()
+            .name("Groceries")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create expense account");
 
