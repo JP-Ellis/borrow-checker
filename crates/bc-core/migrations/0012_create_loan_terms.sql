@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS loan_terms (
     interest_rate        TEXT NOT NULL,     -- annual rate as decimal fraction e.g. "0.065"
     start_date           TEXT NOT NULL,     -- YYYY-MM-DD
     term_months          INTEGER NOT NULL,
-    repayment_frequency  TEXT NOT NULL,     -- snake_case RepaymentFrequency
+    repayment_frequency  TEXT NOT NULL,     -- JSON-encoded bc_models::Period (e.g. "monthly", "weekly", {"fortnightly":{"anchor":"YYYY-MM-DD"}})
     commodity            TEXT NOT NULL,
     created_at           TEXT NOT NULL
 );
