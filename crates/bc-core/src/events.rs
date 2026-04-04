@@ -5,12 +5,14 @@ use bc_models::AccountKind;
 use bc_models::AccountType;
 use bc_models::AllocationId;
 use bc_models::Amount;
+use bc_models::CommodityCode;
 use bc_models::DepreciationId;
 use bc_models::EnvelopeId;
 use bc_models::EventId;
 use bc_models::LoanId;
 use bc_models::Period;
 use bc_models::RolloverPolicy;
+use bc_models::TagId;
 use bc_models::TransactionId;
 use bc_models::ValuationId;
 use bc_models::ValuationSource;
@@ -150,10 +152,20 @@ pub enum Event {
         rollover_policy: RolloverPolicy,
         /// Budget target per period; `None` = category tracking mode.
         allocation_target: Option<Amount>,
+        /// Commodity this envelope tracks; `None` = multi-commodity.
+        commodity: Option<CommodityCode>,
+        /// Optional icon identifier.
+        icon: Option<String>,
+        /// Optional colour code.
+        colour: Option<String>,
+        /// Account IDs linked to this envelope.
+        account_ids: Vec<AccountId>,
+        /// Tag IDs linked to this envelope.
+        tag_ids: Vec<TagId>,
     },
     /// Funds were allocated to an envelope for a period.
     EnvelopeAllocated {
-        /// Allocation record ID (aggregate for replay).
+        /// Unique allocation record ID.
         id: AllocationId,
         /// The envelope receiving the allocation.
         envelope_id: EnvelopeId,
@@ -219,7 +231,7 @@ impl Event {
             Self::EnvelopeCreated { id, .. }
             | Self::EnvelopeArchived { id }
             | Self::EnvelopeMoved { id, .. } => id.to_string(),
-            Self::EnvelopeAllocated { id, .. } => id.to_string(),
+            Self::EnvelopeAllocated { envelope_id, .. } => envelope_id.to_string(),
         }
     }
 }
@@ -595,19 +607,33 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn envelope_created_payload_round_trips(pool: sqlx::SqlitePool) {
+        use bc_models::Amount;
+        use bc_models::CommodityCode;
+        use bc_models::Decimal;
         use bc_models::EnvelopeId;
         use bc_models::Period;
         use bc_models::RolloverPolicy;
+        use bc_models::TagId;
 
         let store = SqliteStore::new(pool.clone());
         let id = EnvelopeId::new();
+        let account_id = AccountId::new();
+        let tag_id = TagId::new();
         let event = Event::EnvelopeCreated {
             id: id.clone(),
             name: "Groceries".to_owned(),
             parent_id: None,
             period: Period::Monthly,
             rollover_policy: RolloverPolicy::CarryForward,
-            allocation_target: None,
+            allocation_target: Some(Amount::new(
+                Decimal::from(300_i32),
+                CommodityCode::new("AUD"),
+            )),
+            commodity: Some(CommodityCode::new("AUD")),
+            icon: Some("cart".to_owned()),
+            colour: Some("#00ff00".to_owned()),
+            account_ids: vec![account_id.clone()],
+            tag_ids: vec![tag_id.clone()],
         };
 
         store.append(&event).await.expect("append should succeed");
@@ -637,13 +663,29 @@ mod tests {
                 period,
                 rollover_policy,
                 allocation_target,
+                commodity,
+                icon,
+                colour,
+                account_ids,
+                tag_ids,
             } => {
                 assert_eq!(replayed_id, id);
                 assert_eq!(name, "Groceries");
                 assert_eq!(parent_id, None);
                 assert_eq!(period, Period::Monthly);
                 assert_eq!(rollover_policy, RolloverPolicy::CarryForward);
-                assert_eq!(allocation_target, None);
+                assert_eq!(
+                    allocation_target,
+                    Some(Amount::new(
+                        Decimal::from(300_i32),
+                        CommodityCode::new("AUD")
+                    ))
+                );
+                assert_eq!(commodity, Some(CommodityCode::new("AUD")));
+                assert_eq!(icon, Some("cart".to_owned()));
+                assert_eq!(colour, Some("#00ff00".to_owned()));
+                assert_eq!(account_ids, vec![account_id]);
+                assert_eq!(tag_ids, vec![tag_id]);
             }
             other => panic!("expected EnvelopeCreated, got {other:?}"),
         }
@@ -670,8 +712,11 @@ mod tests {
 
         store.append(&event).await.expect("append should succeed");
 
+        // aggregate_id() must now return envelope_id, not the transient alloc_id
+        assert_eq!(event.aggregate_id(), env_id.to_string());
+
         let records = store
-            .replay_for(&alloc_id.to_string())
+            .replay_for(&env_id.to_string())
             .await
             .expect("replay should succeed");
         assert_eq!(records.first().expect("record").kind, "EnvelopeAllocated");
