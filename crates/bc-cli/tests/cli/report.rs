@@ -63,7 +63,6 @@ fn budget_stub() {
 }
 
 #[test]
-#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
 fn net_worth_includes_manual_asset_at_market_value() {
     let ctx = TestContext::new();
 
