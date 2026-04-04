@@ -226,6 +226,17 @@ impl Service {
         acquisition_cost: Option<rust_decimal::Decimal>,
         depreciation_policy: Option<&bc_models::DepreciationPolicy>,
     ) -> BcResult<AccountId> {
+        if kind != AccountKind::ManualAsset
+            && (acquisition_date.is_some()
+                || acquisition_cost.is_some()
+                || depreciation_policy.is_some())
+        {
+            return Err(BcError::BadData(
+                "acquisition and depreciation fields are only valid for ManualAsset accounts"
+                    .into(),
+            ));
+        }
+
         let id = AccountId::new();
         let now = Timestamp::now();
         let event = Event::AccountCreated {
@@ -623,6 +634,25 @@ mod tests {
         let found = svc.find_by_id(&id).await.expect("find should succeed");
         assert_eq!(found.commodities(), &[commodity_id]);
         assert_eq!(found.tag_ids(), &[tag_id]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_with_acquisition_cost_for_deposit_account_returns_error(
+        pool: sqlx::SqlitePool,
+    ) {
+        let svc = Service::new(pool);
+        let result = svc
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .acquisition_cost(rust_decimal::Decimal::new(100_000, 2))
+            .call()
+            .await;
+        assert!(
+            matches!(result, Err(BcError::BadData(_))),
+            "expected BadData error, got: {result:?}"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
