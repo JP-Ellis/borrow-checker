@@ -98,7 +98,7 @@ ______________________________________________________________________
 - [x] Budget vs. actuals tracking
 - [x] Mixed-period display normalisation
 - [x] Budget views in CLI
-- [ ] Budget views in TUI _(deferred to Milestone 4)_
+- [ ] Budget views in TUI _(out of scope for Milestone 5; planned for Milestone 4 (TUI))_
 
 ______________________________________________________________________
 
