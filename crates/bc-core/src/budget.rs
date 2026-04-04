@@ -211,17 +211,27 @@ impl Engine {
 
         let env_svc = EnvelopeService::new(self.pool.clone());
         let prev_alloc = env_svc.get_allocation(envelope.id(), prev_start).await?;
-        let prev_allocated = prev_alloc.map_or(Decimal::ZERO, |a| a.amount().value());
+        let prev_allocated = prev_alloc
+            .as_ref()
+            .map_or(Decimal::ZERO, |a| a.amount().value());
 
         let prev_actuals = self
             .sum_actuals(envelope.id(), prev_start, prev_end, commodity)
             .await?;
 
+        // Base case: no allocation record and no spending in this period means there
+        // is nothing to carry forward from here or any earlier period.
+        if prev_alloc.is_none() && prev_actuals == Decimal::ZERO {
+            return Ok(Decimal::ZERO);
+        }
+
+        let prev_rollover = Box::pin(self.rollover_for(envelope, prev_start, commodity)).await?;
+
         #[expect(
             clippy::arithmetic_side_effects,
-            reason = "rollover surplus: Decimal subtraction on budget values; magnitude is bounded by allocation amounts"
+            reason = "budget arithmetic on Decimal values bounded by allocation amounts"
         )]
-        let surplus = prev_allocated - prev_actuals;
+        let surplus = prev_allocated + prev_rollover - prev_actuals;
 
         Ok(match envelope.rollover_policy() {
             bc_models::RolloverPolicy::CarryForward => surplus,
@@ -422,5 +432,152 @@ mod tests {
         assert_eq!(status.allocated, Decimal::from(500_i32));
         assert_eq!(status.actuals, Decimal::ZERO);
         assert_eq!(status.available, Decimal::from(500_i32));
+    }
+
+    /// Carry-forward rollover must accumulate across multiple periods.
+    ///
+    /// Jan: allocated=500, actuals=300 → surplus=200 carried to Feb
+    /// Feb: allocated=500, actuals=400, rollover=200 → available=300 carried to Mar
+    /// Mar: rollover must be 300, not 100 (the naive prev_allocated - prev_actuals).
+    #[sqlx::test(migrations = "./migrations")]
+    async fn carry_forward_accumulates_across_three_periods(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+        use bc_models::Posting;
+        use bc_models::PostingId;
+        use bc_models::Transaction;
+        use bc_models::TransactionId;
+        use bc_models::TransactionStatus;
+
+        use crate::account::Service as AccountService;
+        use crate::transaction::Service as TxService;
+
+        let acct_svc = AccountService::new(pool.clone());
+        let checking = acct_svc
+            .create(
+                "Checking",
+                AccountType::Asset,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create checking account");
+        let expense = acct_svc
+            .create(
+                "Groceries",
+                AccountType::Expense,
+                AccountKind::DepositAccount,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .expect("create expense account");
+
+        let env_svc = EnvelopeService::new(pool.clone());
+        let env = make_envelope(&env_svc, "Groceries", RolloverPolicy::CarryForward).await;
+
+        // Allocate $500 for January
+        env_svc
+            .allocate(
+                env.id(),
+                Date::constant(2026, 1, 1),
+                Amount::new(Decimal::from(500_i32), CommodityCode::new("AUD")),
+            )
+            .await
+            .expect("allocate Jan");
+
+        // Allocate $500 for February
+        env_svc
+            .allocate(
+                env.id(),
+                Date::constant(2026, 2, 1),
+                Amount::new(Decimal::from(500_i32), CommodityCode::new("AUD")),
+            )
+            .await
+            .expect("allocate Feb");
+
+        let tx_svc = TxService::new(pool.clone());
+
+        // January: spend $300 (surplus = 500 - 300 = 200 carried to Feb)
+        tx_svc
+            .create(
+                Transaction::builder()
+                    .id(TransactionId::new())
+                    .date(Date::constant(2026, 1, 15))
+                    .description("Jan groceries")
+                    .status(TransactionStatus::Cleared)
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(expense.clone())
+                            .amount(Amount::new(
+                                Decimal::from(300_i32),
+                                CommodityCode::new("AUD"),
+                            ))
+                            .envelope_id(env.id().clone())
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(checking.clone())
+                            .amount(Amount::new(
+                                Decimal::from(-300_i32),
+                                CommodityCode::new("AUD"),
+                            ))
+                            .build(),
+                    ])
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("create Jan transaction");
+
+        // February: spend $400 (available = 500 + 200 - 400 = 300 carried to Mar)
+        tx_svc
+            .create(
+                Transaction::builder()
+                    .id(TransactionId::new())
+                    .date(Date::constant(2026, 2, 15))
+                    .description("Feb groceries")
+                    .status(TransactionStatus::Cleared)
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(expense.clone())
+                            .amount(Amount::new(
+                                Decimal::from(400_i32),
+                                CommodityCode::new("AUD"),
+                            ))
+                            .envelope_id(env.id().clone())
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(checking.clone())
+                            .amount(Amount::new(
+                                Decimal::from(-400_i32),
+                                CommodityCode::new("AUD"),
+                            ))
+                            .build(),
+                    ])
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("create Feb transaction");
+
+        let engine = Engine::new(pool.clone());
+        let status = engine
+            .status_for(&env, Date::constant(2026, 3, 15))
+            .await
+            .expect("Mar status");
+
+        // Rollover into March must be 300, not the naive 100 (500 - 400)
+        assert_eq!(status.rollover, Decimal::from(300_i32));
+        // Mar has no allocation and no actuals, so available == rollover
+        assert_eq!(status.available, Decimal::from(300_i32));
     }
 }
