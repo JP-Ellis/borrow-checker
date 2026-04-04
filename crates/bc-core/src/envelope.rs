@@ -701,15 +701,11 @@ mod tests {
     async fn list_envelopes_returns_account_ids(pool: sqlx::SqlitePool) {
         let account_svc = account::Service::new(pool.clone());
         let account_id = account_svc
-            .create(
-                "Checking",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-            )
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("account create should succeed");
 

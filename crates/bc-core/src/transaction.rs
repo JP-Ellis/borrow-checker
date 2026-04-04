@@ -1324,27 +1324,19 @@ mod tests {
 
         let acct_svc = AccountService::new(pool.clone());
         let acct_id = acct_svc
-            .create(
-                "Checking",
-                AccountType::Asset,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-            )
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create account");
         let expense_id = acct_svc
-            .create(
-                "Food",
-                AccountType::Expense,
-                AccountKind::DepositAccount,
-                None,
-                None,
-                &[],
-                &[],
-            )
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
             .await
             .expect("create expense account");
 
