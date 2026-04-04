@@ -211,6 +211,8 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError`] on event append or database insert failure.
+    /// Returns [`BcError::BadData`] if `acquisition_date`, `acquisition_cost`, or
+    /// `depreciation_policy` is `Some` and `kind` is not [`bc_models::AccountKind::ManualAsset`].
     #[builder]
     #[inline]
     pub async fn create(
@@ -653,6 +655,66 @@ mod tests {
             matches!(result, Err(BcError::BadData(_))),
             "expected BadData error, got: {result:?}"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_with_acquisition_date_for_deposit_account_returns_error(
+        pool: sqlx::SqlitePool,
+    ) {
+        let svc = Service::new(pool);
+        let result = svc
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .acquisition_date(jiff::civil::Date::new(2024, 1, 1).expect("valid date"))
+            .call()
+            .await;
+        assert!(
+            matches!(result, Err(BcError::BadData(_))),
+            "expected BadData error, got: {result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_with_depreciation_policy_for_deposit_account_returns_error(
+        pool: sqlx::SqlitePool,
+    ) {
+        let svc = Service::new(pool);
+        let result = svc
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .depreciation_policy(&bc_models::DepreciationPolicy::StraightLine {
+                annual_rate: rust_decimal::Decimal::new(2, 1),
+            })
+            .call()
+            .await;
+        assert!(
+            matches!(result, Err(BcError::BadData(_))),
+            "expected BadData error, got: {result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_manual_asset_with_acquisition_fields_succeeds(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let result = svc
+            .create()
+            .name("House")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::ManualAsset)
+            .acquisition_date(jiff::civil::Date::new(2024, 1, 1).expect("valid date"))
+            .acquisition_cost(rust_decimal::Decimal::new(100_000, 0))
+            .depreciation_policy(&bc_models::DepreciationPolicy::StraightLine {
+                annual_rate: rust_decimal::Decimal::new(2, 1),
+            })
+            .call()
+            .await;
+        assert!(result.is_ok(), "expected Ok(AccountId), got: {result:?}");
+        let id = result.expect("create should succeed");
+        assert!(id.to_string().starts_with("account_"));
     }
 
     #[sqlx::test(migrations = "./migrations")]
