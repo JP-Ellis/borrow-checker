@@ -399,7 +399,8 @@ impl Period {
 
     /// Advances a period start date by one period length.
     #[inline]
-    fn advance(&self, date: Date) -> Date {
+    #[must_use]
+    pub fn advance(&self, date: Date) -> Date {
         match self {
             Self::Weekly => date.saturating_add(jiff::Span::new().weeks(1)),
             Self::Fortnightly { .. } => date.saturating_add(jiff::Span::new().weeks(2)),

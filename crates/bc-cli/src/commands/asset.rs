@@ -84,6 +84,12 @@ pub enum Command {
         /// Number of days in a custom repayment period (required when --frequency custom).
         #[arg(long, required_if_eq("frequency", "custom"))]
         period_days: Option<u32>,
+        /// How interest compounds (default: daily, standard AU mortgage).
+        #[arg(long, value_enum, default_value = "daily")]
+        compounding_frequency: CompoundingFrequencyArg,
+        /// Offset account IDs (may be repeated).
+        #[arg(long = "offset-account", value_name = "ACCOUNT_ID")]
+        offset_accounts: Vec<String>,
     },
     /// Display the full amortization schedule for a Receivable account.
     Amortization {
@@ -139,7 +145,7 @@ impl From<SourceArg> for ValuationSource {
     }
 }
 
-/// CLI representation of [`bc_models::RepaymentFrequency`].
+/// CLI representation of [`bc_models::Period`] repayment frequency.
 #[non_exhaustive]
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum FrequencyArg {
@@ -154,6 +160,16 @@ pub enum FrequencyArg {
     /// A custom repayment period.
     #[value(name = "custom")]
     Custom,
+}
+
+/// CLI representation of [`bc_models::CompoundingFrequency`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum CompoundingFrequencyArg {
+    /// Daily interest accrual (standard for Australian mortgages).
+    Daily,
+    /// Traditional: one compounding event per repayment period.
+    Monthly,
 }
 
 /// Executes the `asset` subcommand.
@@ -187,6 +203,8 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             frequency,
             commodity,
             period_days,
+            compounding_frequency,
+            offset_accounts,
         } => {
             set_loan_terms(
                 ctx,
@@ -198,6 +216,8 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
                 frequency,
                 commodity,
                 period_days,
+                compounding_frequency,
+                offset_accounts,
             )
             .await
         }
@@ -323,6 +343,8 @@ async fn set_loan_terms(
     frequency: FrequencyArg,
     commodity: String,
     period_days: Option<u32>,
+    compounding_frequency: CompoundingFrequencyArg,
+    offset_accounts: Vec<String>,
 ) -> CliResult<()> {
     let account_id = AccountId::from_str(&account)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID: {e}")))?;
@@ -338,11 +360,11 @@ async fn set_loan_terms(
     let start_date = jiff::civil::Date::from_str(&start)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid start date '{start}': {e}")))?;
 
-    let repayment_frequency = match frequency {
-        FrequencyArg::Weekly => bc_models::RepaymentFrequency::Weekly,
-        FrequencyArg::Fortnightly => bc_models::RepaymentFrequency::Fortnightly,
-        FrequencyArg::Monthly => bc_models::RepaymentFrequency::Monthly,
-        FrequencyArg::Quarterly => bc_models::RepaymentFrequency::Quarterly,
+    let repayment_frequency: bc_models::Period = match frequency {
+        FrequencyArg::Weekly => bc_models::Period::Weekly,
+        FrequencyArg::Fortnightly => bc_models::Period::Fortnightly { anchor: start_date },
+        FrequencyArg::Monthly => bc_models::Period::Monthly,
+        FrequencyArg::Quarterly => bc_models::Period::Quarterly,
         FrequencyArg::Custom => {
             let days = period_days.ok_or_else(|| {
                 crate::error::CliError::Arg("--period-days required when --frequency custom".into())
@@ -352,9 +374,26 @@ async fn set_loan_terms(
                     "--period-days must be at least 1 when --frequency custom".into(),
                 ));
             }
-            bc_models::RepaymentFrequency::Custom { period_days: days }
+            bc_models::Period::Custom {
+                days: Some(days),
+                weeks: None,
+                months: None,
+            }
         }
     };
+
+    let compounding = match compounding_frequency {
+        CompoundingFrequencyArg::Daily => bc_models::CompoundingFrequency::Daily,
+        CompoundingFrequencyArg::Monthly => bc_models::CompoundingFrequency::Monthly,
+    };
+
+    let offset_account_ids = offset_accounts
+        .into_iter()
+        .map(|s| {
+            s.parse::<AccountId>()
+                .map_err(|e| crate::error::CliError::Arg(format!("invalid account id '{s}': {e}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     let terms = bc_models::LoanTerms::builder()
         .account_id(account_id.clone())
@@ -363,6 +402,8 @@ async fn set_loan_terms(
         .start_date(start_date)
         .term_months(term_months)
         .repayment_frequency(repayment_frequency)
+        .compounding_frequency(compounding)
+        .offset_account_ids(offset_account_ids)
         .commodity(commodity)
         .build();
 
@@ -393,7 +434,25 @@ async fn amortization(ctx: &AppContext, account: String) -> CliResult<()> {
     let account_id = AccountId::from_str(&account)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID: {e}")))?;
 
-    let schedule = ctx.loans.amortization_schedule(&account_id).await?;
+    // Load offset balances for projection.
+    let offset_balances = {
+        let mut map = std::collections::HashMap::new();
+        if let Some(ref terms) = ctx.loans.loan_terms_for(&account_id).await? {
+            for offset_id in terms.offset_account_ids() {
+                let bal = ctx
+                    .balances
+                    .balance_for(offset_id, terms.commodity())
+                    .await?;
+                map.insert(offset_id.clone(), bal);
+            }
+        }
+        map
+    };
+
+    let schedule = ctx
+        .loans
+        .amortization_schedule(&account_id, offset_balances)
+        .await?;
 
     if ctx.json {
         return crate::output::print_json(&schedule);

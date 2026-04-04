@@ -5,50 +5,24 @@ use jiff::civil::Date;
 use rust_decimal::Decimal;
 
 use crate::AccountId;
+use crate::Period;
 
 crate::define_id!(LoanId, "loan");
 
-/// Repayment frequency for a loan account.
+/// How often interest compounds and is applied to the outstanding balance.
 ///
-/// Re-exported from the crate root as [`crate::RepaymentFrequency`].
+/// For Australian mortgages, interest is typically calculated on a daily basis
+/// and applied monthly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
-pub enum Frequency {
-    /// One payment every 7 days.
-    Weekly,
-    /// One payment every 14 days.
-    Fortnightly,
-    /// One payment per calendar month.
+pub enum CompoundingFrequency {
+    /// Interest accrues daily: `daily_rate = annual_rate / 365`.
+    /// Standard for Australian mortgages.
+    Daily,
+    /// Interest accrues once per repayment period.
+    /// Traditional textbook model.
     Monthly,
-    /// One payment per calendar quarter.
-    Quarterly,
-    /// A custom repayment period defined by an explicit number of days.
-    Custom {
-        /// Number of days between repayments.
-        period_days: u32,
-    },
-}
-
-impl Frequency {
-    /// Returns the number of payment periods per year.
-    ///
-    /// For `Custom`, this is `365 / period_days` (standard bank day-count convention).
-    #[must_use]
-    #[inline]
-    pub fn periods_per_year(self) -> Decimal {
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "dividing 365 by a positive period_days; overflow is not possible in practice for valid loan terms"
-        )]
-        match self {
-            Self::Weekly => Decimal::from(52_u32),
-            Self::Fortnightly => Decimal::from(26_u32),
-            Self::Monthly => Decimal::from(12_u32),
-            Self::Quarterly => Decimal::from(4_u32),
-            Self::Custom { period_days } => Decimal::from(365_u32) / Decimal::from(period_days),
-        }
-    }
 }
 
 /// Loan terms attached to a [`Receivable`](crate::AccountKind::Receivable) account.
@@ -56,7 +30,7 @@ impl Frequency {
 /// # Example
 ///
 /// ```
-/// use bc_models::{AccountId, LoanTerms, RepaymentFrequency};
+/// use bc_models::{AccountId, LoanTerms, Period};
 /// use rust_decimal_macros::dec;
 ///
 /// let terms = LoanTerms::builder()
@@ -65,7 +39,7 @@ impl Frequency {
 ///     .annual_rate(dec!(0.065))
 ///     .start_date(jiff::civil::date(2026, 1, 1))
 ///     .term_months(360u32)
-///     .repayment_frequency(RepaymentFrequency::Monthly)
+///     .repayment_frequency(Period::Monthly)
 ///     .commodity("AUD")
 ///     .build();
 ///
@@ -93,8 +67,17 @@ pub struct LoanTerms {
     /// Total loan term in months.
     term_months: u32,
 
-    /// How often repayments are made.
-    repayment_frequency: Frequency,
+    /// How often repayments are scheduled.
+    repayment_frequency: Period,
+
+    /// How interest accrues between repayments.
+    #[builder(default = CompoundingFrequency::Daily)]
+    compounding_frequency: CompoundingFrequency,
+
+    /// Accounts whose balances reduce the effective principal for interest
+    /// calculation. Typically a linked savings/offset account.
+    #[builder(default)]
+    offset_account_ids: Vec<AccountId>,
 
     /// Currency of this loan (e.g. `"AUD"`).
     #[builder(into)]
@@ -151,8 +134,22 @@ impl LoanTerms {
     /// Returns the repayment frequency.
     #[inline]
     #[must_use]
-    pub fn repayment_frequency(&self) -> Frequency {
-        self.repayment_frequency
+    pub fn repayment_frequency(&self) -> &Period {
+        &self.repayment_frequency
+    }
+
+    /// Returns the compounding frequency.
+    #[inline]
+    #[must_use]
+    pub fn compounding_frequency(&self) -> CompoundingFrequency {
+        self.compounding_frequency
+    }
+
+    /// Returns the offset account IDs linked to this loan.
+    #[inline]
+    #[must_use]
+    pub fn offset_account_ids(&self) -> &[AccountId] {
+        &self.offset_account_ids
     }
 
     /// Returns the commodity code (e.g. `"AUD"`).
@@ -232,21 +229,6 @@ mod tests {
     }
 
     #[test]
-    fn repayment_frequency_round_trips_via_serde() {
-        let freqs = [
-            Frequency::Weekly,
-            Frequency::Fortnightly,
-            Frequency::Monthly,
-            Frequency::Quarterly,
-        ];
-        for f in freqs {
-            let json = serde_json::to_string(&f).expect("serialise");
-            let back: Frequency = serde_json::from_str(&json).expect("deserialise");
-            assert_eq!(f, back);
-        }
-    }
-
-    #[test]
     fn amortization_row_is_serialisable() {
         use rust_decimal_macros::dec;
         let row = AmortizationRow {
@@ -262,26 +244,28 @@ mod tests {
     }
 
     #[test]
-    fn frequency_periods_per_year() {
+    fn compounding_frequency_round_trips_via_serde() {
+        for cf in [CompoundingFrequency::Daily, CompoundingFrequency::Monthly] {
+            let json = serde_json::to_string(&cf).expect("serialise");
+            let back: CompoundingFrequency = serde_json::from_str(&json).expect("deserialise");
+            assert_eq!(cf, back);
+        }
+    }
+
+    #[test]
+    fn loan_terms_builder_uses_period() {
         use rust_decimal_macros::dec;
-        assert_eq!(Frequency::Weekly.periods_per_year(), dec!(52));
-        assert_eq!(Frequency::Fortnightly.periods_per_year(), dec!(26));
-        assert_eq!(Frequency::Monthly.periods_per_year(), dec!(12));
-        assert_eq!(Frequency::Quarterly.periods_per_year(), dec!(4));
-    }
-
-    #[test]
-    fn frequency_custom_periods_per_year() {
-        let result = Frequency::Custom { period_days: 28 }.periods_per_year();
-        let expected = Decimal::from(365_u32) / Decimal::from(28_u32);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn repayment_frequency_custom_round_trips_via_serde() {
-        let f = Frequency::Custom { period_days: 28 };
-        let json = serde_json::to_string(&f).expect("serialise");
-        let back: Frequency = serde_json::from_str(&json).expect("deserialise");
-        assert_eq!(f, back);
+        let terms = LoanTerms::builder()
+            .account_id(AccountId::new())
+            .principal(dec!(100_000))
+            .annual_rate(dec!(0.065))
+            .start_date(jiff::civil::date(2026, 1, 1))
+            .term_months(360_u32)
+            .repayment_frequency(Period::Monthly)
+            .commodity("AUD")
+            .build();
+        assert_eq!(terms.term_months(), 360);
+        assert_eq!(terms.compounding_frequency(), CompoundingFrequency::Daily);
+        assert!(terms.offset_account_ids().is_empty());
     }
 }
