@@ -25,8 +25,12 @@ pub struct EnvelopeStatus {
     pub period_end: Date,
     /// Total allocated for this period (zero if no allocation record exists).
     pub allocated: Decimal,
-    /// Commodity of all monetary values in this status.
-    pub commodity: CommodityCode,
+    /// Commodity of all monetary values in this status, if the envelope has one set.
+    ///
+    /// When `None` the envelope tracks across multiple commodities and the monetary
+    /// figures (`allocated`, `actuals`, `available`) are summed without commodity
+    /// filtering.
+    pub commodity: Option<CommodityCode>,
     /// Sum of postings assigned to this envelope in the period.
     pub actuals: Decimal,
     /// Balance rolled over from the previous period (zero for `ResetToZero` policy).
@@ -61,7 +65,7 @@ impl Engine {
     pub async fn status_for(&self, envelope: &Envelope, as_of: Date) -> BcResult<EnvelopeStatus> {
         let (period_start, period_end) = envelope.period().range_containing(as_of);
 
-        let commodity = envelope.commodity().clone();
+        let commodity: Option<CommodityCode> = envelope.commodity().cloned();
 
         let env_svc = EnvelopeService::new(self.pool.clone());
         let allocation = env_svc.get_allocation(envelope.id(), period_start).await?;
@@ -70,10 +74,10 @@ impl Engine {
             .map_or(Decimal::ZERO, |a| a.amount().value());
 
         let actuals = self
-            .sum_actuals(envelope.id(), period_start, period_end, &commodity)
+            .sum_actuals(envelope.id(), period_start, period_end, commodity.as_ref())
             .await?;
         let rollover = self
-            .rollover_for(envelope, period_start, &commodity)
+            .rollover_for(envelope, period_start, commodity.as_ref())
             .await?;
         #[expect(
             clippy::arithmetic_side_effects,
@@ -114,7 +118,9 @@ impl Engine {
     /// Sums the amounts of all non-voided postings assigned to `envelope_id`
     /// with transaction date in `[period_start, period_end)`.
     ///
-    /// Only postings whose commodity matches `commodity` are included.
+    /// When `commodity` is `Some`, only postings whose commodity matches are included.
+    /// When `commodity` is `None`, all postings for the envelope are summed regardless
+    /// of commodity (multi-commodity tracking envelopes).
     ///
     /// # Errors
     ///
@@ -125,26 +131,44 @@ impl Engine {
         envelope_id: &EnvelopeId,
         period_start: Date,
         period_end: Date,
-        commodity: &CommodityCode,
+        commodity: Option<&CommodityCode>,
     ) -> BcResult<Decimal> {
         let voided_str = to_db_str(TransactionStatus::Voided)?;
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT p.amount
-             FROM postings p
-             JOIN transactions t ON t.id = p.transaction_id
-             WHERE p.envelope_id = ?
-               AND p.commodity   = ?
-               AND t.date        >= ?
-               AND t.date        <  ?
-               AND t.status      != ?",
-        )
-        .bind(envelope_id.to_string())
-        .bind(commodity.as_str())
-        .bind(period_start.to_string())
-        .bind(period_end.to_string())
-        .bind(&voided_str)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows: Vec<(String,)> = if let Some(comm) = commodity {
+            sqlx::query_as(
+                "SELECT p.amount
+                 FROM postings p
+                 JOIN transactions t ON t.id = p.transaction_id
+                 WHERE p.envelope_id = ?
+                   AND p.commodity   = ?
+                   AND t.date        >= ?
+                   AND t.date        <  ?
+                   AND t.status      != ?",
+            )
+            .bind(envelope_id.to_string())
+            .bind(comm.as_str())
+            .bind(period_start.to_string())
+            .bind(period_end.to_string())
+            .bind(&voided_str)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                "SELECT p.amount
+                 FROM postings p
+                 JOIN transactions t ON t.id = p.transaction_id
+                 WHERE p.envelope_id = ?
+                   AND t.date        >= ?
+                   AND t.date        <  ?
+                   AND t.status      != ?",
+            )
+            .bind(envelope_id.to_string())
+            .bind(period_start.to_string())
+            .bind(period_end.to_string())
+            .bind(&voided_str)
+            .fetch_all(&self.pool)
+            .await?
+        };
 
         rows.into_iter().try_fold(Decimal::ZERO, |acc, (amt_str,)| {
             let d = amt_str.parse::<Decimal>().map_err(|e| {
@@ -161,6 +185,8 @@ impl Engine {
     /// For `CarryForward`: returns `prev_allocated - prev_actuals` (can be negative).
     /// For `CapAtTarget`: returns `min(max(0, prev_allocated - prev_actuals), allocation_target)`.
     ///
+    /// When `commodity` is `None`, actuals are summed across all commodities.
+    ///
     /// # Errors
     ///
     /// Returns [`BcError`] on database or data parse failure.
@@ -169,7 +195,7 @@ impl Engine {
         &self,
         envelope: &Envelope,
         period_start: Date,
-        commodity: &CommodityCode,
+        commodity: Option<&CommodityCode>,
     ) -> BcResult<Decimal> {
         if matches!(
             envelope.rollover_policy(),
@@ -240,7 +266,6 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::envelope::CreateParams;
     use crate::envelope::Service as EnvelopeService;
 
     async fn make_envelope(
@@ -248,22 +273,18 @@ mod tests {
         name: &str,
         rollover: RolloverPolicy,
     ) -> bc_models::Envelope {
-        svc.create(CreateParams {
-            name: name.to_owned(),
-            group_id: None,
-            icon: None,
-            colour: None,
-            commodity: CommodityCode::new("AUD"),
-            allocation_target: Some(Amount::new(
+        svc.create()
+            .name(name.to_owned())
+            .commodity(CommodityCode::new("AUD"))
+            .allocation_target(Amount::new(
                 Decimal::from(500_i32),
                 CommodityCode::new("AUD"),
-            )),
-            period: Period::Monthly,
-            rollover_policy: rollover,
-            account_ids: vec![],
-        })
-        .await
-        .expect("create envelope")
+            ))
+            .period(Period::Monthly)
+            .rollover_policy(rollover)
+            .call()
+            .await
+            .expect("create envelope")
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -326,17 +347,12 @@ mod tests {
 
         let env_svc = EnvelopeService::new(pool.clone());
         let env = env_svc
-            .create(CreateParams {
-                name: "Dining".to_owned(),
-                group_id: None,
-                icon: None,
-                colour: None,
-                commodity: CommodityCode::new("USD"),
-                allocation_target: None,
-                period: Period::Monthly,
-                rollover_policy: RolloverPolicy::ResetToZero,
-                account_ids: vec![],
-            })
+            .create()
+            .name("Dining".to_owned())
+            .commodity(CommodityCode::new("USD"))
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
             .await
             .expect("create tracking envelope");
 
@@ -379,7 +395,7 @@ mod tests {
             .await
             .expect("status");
 
-        assert_eq!(status.commodity, CommodityCode::new("USD"));
+        assert_eq!(status.commodity, Some(CommodityCode::new("USD")));
         assert_eq!(status.actuals, Decimal::from(42_i32));
     }
 
