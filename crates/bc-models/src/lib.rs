@@ -115,7 +115,7 @@ pub use commodity::CommodityId;
 pub use event::EventId;
 pub use import_batch::ImportBatchId;
 pub use loan::AmortizationRow;
-pub use loan::Frequency as RepaymentFrequency;
+pub use loan::CompoundingFrequency;
 pub use loan::LoanId;
 pub use loan::LoanTerms;
 pub use loan::LoanTermsBuilder;
