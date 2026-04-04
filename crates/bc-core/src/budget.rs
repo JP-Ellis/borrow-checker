@@ -191,76 +191,78 @@ impl Engine {
     ///
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
-    async fn rollover_for(
-        &self,
-        envelope: &Envelope,
+    fn rollover_for<'a>(
+        &'a self,
+        envelope: &'a Envelope,
         period_start: Date,
-        commodity: Option<&CommodityCode>,
-    ) -> BcResult<Decimal> {
-        if matches!(
-            envelope.rollover_policy(),
-            bc_models::RolloverPolicy::ResetToZero
-        ) {
-            return Ok(Decimal::ZERO);
-        }
-
-        let prev_period_date = period_start
-            .checked_sub(jiff::Span::new().days(1_i32))
-            .map_err(|e| BcError::BadData(format!("period underflow: {e}")))?;
-        let (prev_start, prev_end) = envelope.period().range_containing(prev_period_date);
-
-        let env_svc = EnvelopeService::new(self.pool.clone());
-        let prev_alloc = env_svc.get_allocation(envelope.id(), prev_start).await?;
-        let prev_allocated = prev_alloc
-            .as_ref()
-            .map_or(Decimal::ZERO, |a| a.amount().value());
-
-        let prev_actuals = self
-            .sum_actuals(envelope.id(), prev_start, prev_end, commodity)
-            .await?;
-
-        // Base case: no allocation record and no spending in this period means there
-        // is nothing to carry forward from here or any earlier period.
-        if prev_alloc.is_none() && prev_actuals == Decimal::ZERO {
-            return Ok(Decimal::ZERO);
-        }
-
-        let prev_rollover = Box::pin(self.rollover_for(envelope, prev_start, commodity)).await?;
-
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "budget arithmetic on Decimal values bounded by allocation amounts"
-        )]
-        let surplus = prev_allocated + prev_rollover - prev_actuals;
-
-        Ok(match envelope.rollover_policy() {
-            bc_models::RolloverPolicy::CarryForward => surplus,
-            bc_models::RolloverPolicy::CapAtTarget => {
-                #[expect(
-                    clippy::expect_used,
-                    reason = "CapAtTarget envelopes are validated to have allocation_target \
-                              at creation time; Service::create() enforces this invariant"
-                )]
-                let cap = envelope
-                    .allocation_target()
-                    .expect(
-                        "CapAtTarget envelope must have allocation_target; \
-                         Service::create() validates this invariant",
-                    )
-                    .value();
-                surplus.max(Decimal::ZERO).min(cap)
+        commodity: Option<&'a CommodityCode>,
+    ) -> core::pin::Pin<Box<dyn core::future::Future<Output = BcResult<Decimal>> + Send + 'a>> {
+        Box::pin(async move {
+            if matches!(
+                envelope.rollover_policy(),
+                bc_models::RolloverPolicy::ResetToZero
+            ) {
+                return Ok(Decimal::ZERO);
             }
-            // ResetToZero is already handled by the early return above; the wildcard
-            // arm covers any future #[non_exhaustive] variants added to bc-models.
-            bc_models::RolloverPolicy::ResetToZero => Decimal::ZERO,
-            _ => {
-                tracing::warn!(
-                    policy = ?envelope.rollover_policy(),
-                    "unrecognised rollover policy variant — defaulting to zero; \
-                     add a match arm if a new RolloverPolicy variant was introduced"
-                );
-                Decimal::ZERO
+
+            let prev_period_date = period_start
+                .checked_sub(jiff::Span::new().days(1_i32))
+                .map_err(|e| BcError::BadData(format!("period underflow: {e}")))?;
+            let (prev_start, prev_end) = envelope.period().range_containing(prev_period_date);
+
+            let env_svc = EnvelopeService::new(self.pool.clone());
+            let prev_alloc = env_svc.get_allocation(envelope.id(), prev_start).await?;
+            let prev_allocated = prev_alloc
+                .as_ref()
+                .map_or(Decimal::ZERO, |a| a.amount().value());
+
+            let prev_actuals = self
+                .sum_actuals(envelope.id(), prev_start, prev_end, commodity)
+                .await?;
+
+            // Base case: no allocation record and no spending in this period means there
+            // is nothing to carry forward from here or any earlier period.
+            if prev_alloc.is_none() && prev_actuals == Decimal::ZERO {
+                return Ok(Decimal::ZERO);
             }
+
+            let prev_rollover = self.rollover_for(envelope, prev_start, commodity).await?;
+
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "budget arithmetic on Decimal values bounded by allocation amounts"
+            )]
+            let surplus = prev_allocated + prev_rollover - prev_actuals;
+
+            Ok(match envelope.rollover_policy() {
+                bc_models::RolloverPolicy::CarryForward => surplus,
+                bc_models::RolloverPolicy::CapAtTarget => {
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "CapAtTarget envelopes are validated to have allocation_target \
+                                  at creation time; Service::create() enforces this invariant"
+                    )]
+                    let cap = envelope
+                        .allocation_target()
+                        .expect(
+                            "CapAtTarget envelope must have allocation_target; \
+                             Service::create() validates this invariant",
+                        )
+                        .value();
+                    surplus.max(Decimal::ZERO).min(cap)
+                }
+                // ResetToZero is already handled by the early return above; the wildcard
+                // arm covers any future #[non_exhaustive] variants added to bc-models.
+                bc_models::RolloverPolicy::ResetToZero => Decimal::ZERO,
+                _ => {
+                    tracing::warn!(
+                        policy = ?envelope.rollover_policy(),
+                        "unrecognised rollover policy variant — defaulting to zero; \
+                         add a match arm if a new RolloverPolicy variant was introduced"
+                    );
+                    Decimal::ZERO
+                }
+            })
         })
     }
 }
