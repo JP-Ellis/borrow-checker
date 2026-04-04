@@ -653,7 +653,7 @@ impl Service {
         tracing::info!(
             account_id = %account_id,
             depreciation_id = %depr_id,
-            %amount,
+            amount = %amount_clamped,
             %commodity,
             %period_start,
             period_end = %as_of,
