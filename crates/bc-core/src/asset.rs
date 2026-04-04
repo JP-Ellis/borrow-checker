@@ -560,6 +560,10 @@ impl Service {
             }
         };
 
+        // Clamp: never record more than the remaining book value, and never go negative
+        // (e.g. from a negative annual_rate).
+        let amount_clamped = amount.min(book_val).max(Decimal::ZERO);
+
         let depr_id = DepreciationId::new();
         let now = Timestamp::now();
         let status_str = to_db_str(TransactionStatus::Cleared)?;
@@ -567,7 +571,7 @@ impl Service {
         let event = Event::DepreciationCalculated {
             id: depr_id.clone(),
             account_id: account_id.clone(),
-            amount,
+            amount: amount_clamped,
             commodity: commodity.to_owned(),
             period_start,
             period_end: as_of,
@@ -582,7 +586,7 @@ impl Service {
         )
         .bind(depr_id.to_string())
         .bind(account_id.to_string())
-        .bind(amount.to_string())
+        .bind(amount_clamped.to_string())
         .bind(commodity)
         .bind(period_start.to_string())
         .bind(as_of.to_string())
@@ -590,7 +594,7 @@ impl Service {
         .execute(&mut *db_tx)
         .await?;
 
-        // Double-entry: expense account gets +amount, asset account gets -amount.
+        // Double-entry: expense account gets +amount_clamped, asset account gets -amount_clamped.
         let tx_id = TransactionId::new();
         let event_tx = Event::TransactionCreated { id: tx_id.clone() };
         insert_event(&event_tx, &mut db_tx).await?;
@@ -608,7 +612,7 @@ impl Service {
         .execute(&mut *db_tx)
         .await?;
 
-        // Expense posting: +amount (debit)
+        // Expense posting: +amount_clamped (debit)
         let expense_posting_id = PostingId::new();
         sqlx::query(
             "INSERT INTO postings \
@@ -619,18 +623,18 @@ impl Service {
         .bind(expense_posting_id.to_string())
         .bind(tx_id.to_string())
         .bind(expense_account_id.to_string())
-        .bind(amount.to_string())
+        .bind(amount_clamped.to_string())
         .bind(commodity)
         .execute(&mut *db_tx)
         .await?;
 
-        // Asset posting: -amount (credit — asset value reduced)
+        // Asset posting: -amount_clamped (credit — asset value reduced)
         let asset_posting_id = PostingId::new();
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "negating a computed depreciation amount; overflow is not possible in practice"
         )]
-        let neg_amount = -amount;
+        let neg_amount = -amount_clamped;
         sqlx::query(
             "INSERT INTO postings \
              (id, transaction_id, account_id, amount, commodity, memo, position, \
@@ -666,6 +670,7 @@ mod tests {
     use bc_models::AccountType;
     use bc_models::ValuationSource;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use sqlx::SqlitePool;
 
@@ -875,5 +880,51 @@ mod tests {
             .await
             .expect("counterpart balance query");
         assert_eq!(counterpart_balance, dec!(-750_000));
+    }
+
+    /// Depreciation amount is clamped to `[0, book_value]`.
+    ///
+    /// A 100% annual `StraightLine` rate over 2 years computes `amount ≈ 2000`,
+    /// which exceeds the `1000` acquisition cost.  After clamping the recorded
+    /// amount must equal `1000` (the full book value), leaving book value at `0`.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn record_depreciation_clamps_to_book_value(pool: SqlitePool) {
+        let asset_id = crate::AccountService::new(pool.clone())
+            .create()
+            .name("Widget")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::ManualAsset)
+            .acquisition_date(jiff::civil::date(2020, 1, 1))
+            .acquisition_cost(dec!(1_000))
+            .depreciation_policy(&bc_models::DepreciationPolicy::StraightLine {
+                annual_rate: dec!(1.0),
+            })
+            .call()
+            .await
+            .expect("create ManualAsset account");
+
+        let expense_id = crate::AccountService::new(pool.clone())
+            .create()
+            .name("Expenses:Depreciation")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create expense account");
+
+        let svc = super::Service::new(pool.clone());
+
+        // 2-year period: StraightLine at 100%/yr × 730 days ≈ 2 × acquisition_cost.
+        // The clamp must cap this at acquisition_cost (1_000).
+        svc.record_depreciation(&asset_id, "AUD", jiff::civil::date(2022, 1, 1), &expense_id)
+            .await
+            .expect("record_depreciation should succeed even when amount exceeds book value");
+
+        let bv = svc
+            .book_value(&asset_id, "AUD")
+            .await
+            .expect("book_value query")
+            .expect("book_value should be Some after depreciation");
+        assert_eq!(bv, Decimal::ZERO);
     }
 }
