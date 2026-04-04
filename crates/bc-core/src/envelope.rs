@@ -367,11 +367,15 @@ impl Service {
 
         // Guard 2 — parent existence check.
         if let Some(pid) = parent_id {
-            self.get(pid).await.map_err(|_| {
-                BcError::InvalidInput(format!(
-                    "parent envelope '{pid}' does not exist or is archived"
-                ))
-            })?;
+            match self.get(pid).await {
+                Ok(_) => {}
+                Err(BcError::NotFound(_)) => {
+                    return Err(BcError::InvalidInput(format!(
+                        "parent envelope '{pid}' does not exist or is archived"
+                    )));
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         // Guard 3 — cycle detection via recursive CTE.
