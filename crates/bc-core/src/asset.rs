@@ -388,6 +388,8 @@ impl Service {
     ///
     /// The depreciation period runs from the last recorded depreciation end date
     /// (or `acquisition_date` if none) up to `as_of` (inclusive).
+    /// The computed depreciation amount is clamped to `[0, book_value]` before recording,
+    /// so book value cannot go negative.
     ///
     /// Atomically:
     /// 1. Appends a [`Event::DepreciationCalculated`] to the event log.
@@ -563,6 +565,15 @@ impl Service {
         // Clamp: never record more than the remaining book value, and never go negative
         // (e.g. from a negative annual_rate).
         let amount_clamped = amount.min(book_val).max(Decimal::ZERO);
+
+        if amount != amount_clamped {
+            tracing::warn!(
+                %account_id,
+                computed_amount = %amount,
+                clamped_amount = %amount_clamped,
+                "depreciation amount clamped to book value"
+            );
+        }
 
         let depr_id = DepreciationId::new();
         let now = Timestamp::now();
@@ -926,5 +937,48 @@ mod tests {
             .expect("book_value query")
             .expect("book_value should be Some after depreciation");
         assert_eq!(bv, Decimal::ZERO);
+    }
+
+    /// A negative `annual_rate` produces a negative computed amount, which must be
+    /// floored to zero by the clamp so that book value is unchanged.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn record_depreciation_zero_floors_negative_rate(pool: SqlitePool) {
+        let asset_id = crate::AccountService::new(pool.clone())
+            .create()
+            .name("Widget")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::ManualAsset)
+            .acquisition_date(jiff::civil::date(2020, 1, 1))
+            .acquisition_cost(dec!(1_000))
+            .depreciation_policy(&bc_models::DepreciationPolicy::StraightLine {
+                annual_rate: Decimal::new(-1, 1), // -0.1 = -10%
+            })
+            .call()
+            .await
+            .expect("create ManualAsset account");
+
+        let expense_id = crate::AccountService::new(pool.clone())
+            .create()
+            .name("Expenses:Depreciation")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create expense account");
+
+        let svc = super::Service::new(pool.clone());
+
+        // 1-year period: StraightLine at -10%/yr produces a negative amount.
+        // The clamp must floor this to 0, leaving book value unchanged at 1_000.
+        svc.record_depreciation(&asset_id, "AUD", jiff::civil::date(2021, 1, 1), &expense_id)
+            .await
+            .expect("record_depreciation should succeed even with a negative rate");
+
+        let bv = svc
+            .book_value(&asset_id, "AUD")
+            .await
+            .expect("book_value query")
+            .expect("book_value should be Some after depreciation");
+        assert_eq!(bv, dec!(1_000));
     }
 }
