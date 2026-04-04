@@ -347,6 +347,9 @@ impl Service {
     ///
     /// # Errors
     ///
+    /// Returns [`BcError::InvalidInput`] if `parent_id` equals `envelope_id`,
+    /// if the proposed parent does not exist or is archived, or if the move
+    /// would create a cycle in the envelope hierarchy.
     /// Returns [`BcError::NotFound`] if no active envelope with that ID exists.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
@@ -355,6 +358,46 @@ impl Service {
         envelope_id: &EnvelopeId,
         parent_id: Option<&EnvelopeId>,
     ) -> BcResult<Envelope> {
+        // Guard 1 — self-reference check.
+        if parent_id == Some(envelope_id) {
+            return Err(BcError::InvalidInput(format!(
+                "envelope '{envelope_id}' cannot be its own parent"
+            )));
+        }
+
+        // Guard 2 — parent existence check.
+        if let Some(pid) = parent_id {
+            self.get(pid).await.map_err(|_| {
+                BcError::InvalidInput(format!(
+                    "parent envelope '{pid}' does not exist or is archived"
+                ))
+            })?;
+        }
+
+        // Guard 3 — cycle detection via recursive CTE.
+        if let Some(pid) = parent_id {
+            let is_cycle: Option<(i64,)> = sqlx::query_as(
+                "WITH RECURSIVE ancestors(id) AS (
+                     SELECT ? AS id
+                     UNION ALL
+                     SELECT e.parent_id FROM envelopes e
+                     INNER JOIN ancestors a ON e.id = a.id
+                     WHERE e.parent_id IS NOT NULL
+                 )
+                 SELECT 1 FROM ancestors WHERE id = ? LIMIT 1",
+            )
+            .bind(pid.to_string())
+            .bind(envelope_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+
+            if is_cycle.is_some() {
+                return Err(BcError::InvalidInput(format!(
+                    "setting parent of '{envelope_id}' to '{pid}' would create a cycle"
+                )));
+            }
+        }
+
         let event = Event::EnvelopeMoved {
             id: envelope_id.clone(),
             parent_id: parent_id.cloned(),
@@ -1143,5 +1186,106 @@ mod tests {
         // Verify persistence.
         let fetched = svc.get(env.id()).await.expect("get");
         assert_eq!(fetched.tag_ids(), &[tag_id]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_parent_rejects_self_reference(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let env = svc
+            .create()
+            .name("Self")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create");
+
+        let result = svc.set_parent(env.id(), Some(env.id())).await;
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidInput(_))),
+            "self-reference should return InvalidInput, got: {result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_parent_rejects_nonexistent_parent(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let env = svc
+            .create()
+            .name("Child")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create");
+
+        let bogus_id = EnvelopeId::new();
+        let result = svc.set_parent(env.id(), Some(&bogus_id)).await;
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidInput(_))),
+            "nonexistent parent should return InvalidInput, got: {result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_parent_rejects_archived_parent(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let parent = svc
+            .create()
+            .name("Soon Archived")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create parent");
+        svc.archive(parent.id()).await.expect("archive parent");
+
+        let child = svc
+            .create()
+            .name("Child")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create child");
+
+        let result = svc.set_parent(child.id(), Some(parent.id())).await;
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidInput(_))),
+            "archived parent should return InvalidInput, got: {result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_parent_rejects_cycle(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let a = svc
+            .create()
+            .name("A")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create A");
+        let b = svc
+            .create()
+            .name("B")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create B");
+
+        // B is a child of A — valid.
+        svc.set_parent(b.id(), Some(a.id()))
+            .await
+            .expect("set B's parent to A should succeed");
+
+        // Now try to make A a child of B — this would create a cycle.
+        let result = svc.set_parent(a.id(), Some(b.id())).await;
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidInput(_))),
+            "cycle-creating move should return InvalidInput, got: {result:?}"
+        );
     }
 }
