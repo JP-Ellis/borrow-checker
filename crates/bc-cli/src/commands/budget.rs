@@ -1,4 +1,4 @@
-//! Budget management sub-commands: groups, envelopes, allocate, status.
+//! Budget management sub-commands: envelopes, allocate, status.
 
 use clap::Subcommand;
 use jiff::civil::Date;
@@ -20,12 +20,6 @@ pub struct Args {
 #[non_exhaustive]
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Manage envelope groups.
-    Groups {
-        /// The group operation to perform.
-        #[command(subcommand)]
-        command: GroupCommand,
-    },
     /// Manage budget envelopes.
     Envelopes {
         /// The envelope operation to perform.
@@ -52,23 +46,6 @@ pub enum Command {
         /// Date to evaluate status as of (YYYY-MM-DD). Defaults to today.
         #[arg(long)]
         as_of: Option<String>,
-    },
-}
-
-/// Available envelope group operations.
-#[non_exhaustive]
-#[derive(Debug, Subcommand)]
-pub enum GroupCommand {
-    /// List all active envelope groups.
-    List,
-    /// Create a new envelope group.
-    Create {
-        /// Display name for the group.
-        #[arg(long)]
-        name: String,
-        /// Parent group ID (optional).
-        #[arg(long)]
-        parent: Option<String>,
     },
 }
 
@@ -100,13 +77,13 @@ pub enum EnvelopeCommand {
         rollover: RolloverArg,
         /// Commodity code for this envelope (e.g. `AUD`, `USD`).
         #[arg(long)]
-        commodity: String,
+        commodity: Option<String>,
         /// Budget target amount per period.
         #[arg(long)]
         target: Option<rust_decimal::Decimal>,
-        /// Group ID to assign this envelope to.
+        /// Parent envelope ID (optional).
         #[arg(long)]
-        group: Option<String>,
+        parent: Option<String>,
         /// Display icon (emoji or name).
         #[arg(long)]
         icon: Option<String>,
@@ -119,13 +96,13 @@ pub enum EnvelopeCommand {
         /// Envelope ID to archive.
         id: String,
     },
-    /// Move an envelope to a different group, or remove it from all groups.
+    /// Move an envelope under a different parent, or remove it from all parents.
     Move {
         /// Envelope ID to move.
         id: String,
-        /// Target group ID, or omit to remove from all groups.
+        /// Target parent envelope ID, or omit to remove from all parents.
         #[arg(long)]
-        group: Option<String>,
+        parent: Option<String>,
     },
 }
 
@@ -175,7 +152,6 @@ pub enum RolloverArg {
 #[inline]
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
-        Command::Groups { command } => groups(command, ctx).await,
         Command::Envelopes { command } => envelopes(command, ctx).await,
         Command::Allocate {
             envelope,
@@ -185,70 +161,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         } => allocate(ctx, envelope, amount, commodity, period_start).await,
         Command::Status { as_of } => status(ctx, as_of).await,
     }
-}
-
-// ── Groups ────────────────────────────────────────────────────────────────────
-
-/// Dispatches envelope group sub-commands.
-async fn groups(cmd: GroupCommand, ctx: &AppContext) -> CliResult<()> {
-    match cmd {
-        GroupCommand::List => groups_list(ctx).await,
-        GroupCommand::Create { name, parent } => groups_create(ctx, name, parent).await,
-    }
-}
-
-/// Lists all active envelope groups in a table (or JSON).
-async fn groups_list(ctx: &AppContext) -> CliResult<()> {
-    let groups = ctx.envelopes.list_groups().await?;
-
-    if ctx.json {
-        return crate::output::print_json(&groups);
-    }
-
-    if groups.is_empty() {
-        #[expect(clippy::print_stdout, reason = "CLI output")]
-        {
-            println!("No envelope groups.");
-        }
-        return Ok(());
-    }
-
-    let rows: Vec<Vec<String>> = groups
-        .iter()
-        .map(|g| {
-            let parent = g.parent_id().map(ToString::to_string).unwrap_or_default();
-            vec![g.id().to_string(), g.name().to_owned(), parent]
-        })
-        .collect();
-    crate::output::print_table(&["ID", "NAME", "PARENT"], &rows);
-    Ok(())
-}
-
-/// Creates a new envelope group and prints the result.
-async fn groups_create(ctx: &AppContext, name: String, parent: Option<String>) -> CliResult<()> {
-    use core::str::FromStr as _;
-    let parent_id = parent
-        .as_deref()
-        .map(|s| {
-            bc_models::EnvelopeGroupId::from_str(s)
-                .map_err(|e| CliError::Arg(format!("invalid group ID '{s}': {e}")))
-        })
-        .transpose()?;
-
-    let group = ctx
-        .envelopes
-        .create_group(&name, parent_id.as_ref())
-        .await?;
-
-    if ctx.json {
-        return crate::output::print_json(&group);
-    }
-
-    #[expect(clippy::print_stdout, reason = "CLI output")]
-    {
-        println!("Created group: {} ({})", group.name(), group.id());
-    }
-    Ok(())
 }
 
 // ── Envelopes ─────────────────────────────────────────────────────────────────
@@ -266,7 +178,7 @@ async fn envelopes(cmd: EnvelopeCommand, ctx: &AppContext) -> CliResult<()> {
             rollover,
             commodity,
             target,
-            group,
+            parent,
             icon,
             colour,
         } => {
@@ -280,14 +192,14 @@ async fn envelopes(cmd: EnvelopeCommand, ctx: &AppContext) -> CliResult<()> {
                 rollover,
                 commodity,
                 target,
-                group,
+                parent,
                 icon,
                 colour,
             )
             .await
         }
         EnvelopeCommand::Archive { id } => envelopes_archive(ctx, id).await,
-        EnvelopeCommand::Move { id, group } => envelopes_move(ctx, id, group).await,
+        EnvelopeCommand::Move { id, parent } => envelopes_move(ctx, id, parent).await,
     }
 }
 
@@ -347,9 +259,9 @@ async fn envelopes_create(
     fy_start_month: Option<u8>,
     fy_start_day: u8,
     rollover_arg: RolloverArg,
-    commodity: String,
+    commodity: Option<String>,
     target: Option<rust_decimal::Decimal>,
-    group: Option<String>,
+    parent: Option<String>,
     icon: Option<String>,
     colour: Option<String>,
 ) -> CliResult<()> {
@@ -365,30 +277,29 @@ async fn envelopes_create(
         RolloverArg::ResetToZero => RolloverPolicy::ResetToZero,
         RolloverArg::CapAtTarget => RolloverPolicy::CapAtTarget,
     };
-    let allocation_target =
-        target.map(|amt| Amount::new(amt, CommodityCode::new(commodity.clone())));
-    let envelope_commodity = CommodityCode::new(commodity);
-    let group_id = group
+    let allocation_target = target
+        .zip(commodity.as_deref())
+        .map(|(amt, c)| Amount::new(amt, CommodityCode::new(c)));
+    let parent_id = parent
         .as_deref()
         .map(|s| {
-            bc_models::EnvelopeGroupId::from_str(s)
-                .map_err(|e| CliError::Arg(format!("invalid group ID '{s}': {e}")))
+            bc_models::EnvelopeId::from_str(s)
+                .map_err(|e| CliError::Arg(format!("invalid parent envelope ID '{s}': {e}")))
         })
         .transpose()?;
 
     let env = ctx
         .envelopes
-        .create(bc_core::EnvelopeCreateParams::new(
-            name.clone(),
-            group_id,
-            icon,
-            colour,
-            envelope_commodity,
-            allocation_target,
-            bc_period,
-            rollover_policy,
-            vec![],
-        ))
+        .create()
+        .name(name.clone())
+        .maybe_parent_id(parent_id)
+        .maybe_commodity(commodity.as_deref().map(CommodityCode::new))
+        .maybe_allocation_target(allocation_target)
+        .maybe_icon(icon)
+        .maybe_colour(colour)
+        .period(bc_period)
+        .rollover_policy(rollover_policy)
+        .call()
         .await?;
 
     if ctx.json {
@@ -420,23 +331,23 @@ async fn envelopes_archive(ctx: &AppContext, id: String) -> CliResult<()> {
     Ok(())
 }
 
-/// Moves an envelope to a different group, or removes it from all groups.
-async fn envelopes_move(ctx: &AppContext, id: String, group: Option<String>) -> CliResult<()> {
+/// Moves an envelope under a different parent, or removes it from all parents.
+async fn envelopes_move(ctx: &AppContext, id: String, parent: Option<String>) -> CliResult<()> {
     use core::str::FromStr as _;
 
-    let env_id = bc_models::EnvelopeId::from_str(&id)
+    let envelope_id = bc_models::EnvelopeId::from_str(&id)
         .map_err(|e| CliError::Arg(format!("invalid envelope ID '{id}': {e}")))?;
-    let group_id = group
+    let parent_id = parent
         .as_deref()
         .map(|s| {
-            bc_models::EnvelopeGroupId::from_str(s)
-                .map_err(|e| CliError::Arg(format!("invalid group ID '{s}': {e}")))
+            bc_models::EnvelopeId::from_str(s)
+                .map_err(|e| CliError::Arg(format!("invalid parent envelope ID '{s}': {e}")))
         })
         .transpose()?;
 
     let env = ctx
         .envelopes
-        .move_to_group(&env_id, group_id.as_ref())
+        .set_parent(&envelope_id, parent_id.as_ref())
         .await?;
 
     if ctx.json {
@@ -446,8 +357,8 @@ async fn envelopes_move(ctx: &AppContext, id: String, group: Option<String>) -> 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         match env.parent_id() {
-            Some(gid) => println!("Moved envelope {} to group {gid}", env.id()),
-            None => println!("Moved envelope {} to root (no group)", env.id()),
+            Some(pid) => println!("Moved envelope {} under parent {pid}", env.id()),
+            None => println!("Moved envelope {} to root (no parent)", env.id()),
         }
     }
     Ok(())
@@ -556,16 +467,20 @@ async fn status(ctx: &AppContext, as_of_str: Option<String>) -> CliResult<()> {
                 .checked_sub(jiff::Span::new().days(1_i32))
                 .unwrap_or(s.period_end);
             let period_str = format!("{} \u{2013} {}", s.period_start, display_end);
+            let commodity_str = s
+                .commodity
+                .as_ref()
+                .map_or("", bc_models::CommodityCode::as_str);
             let alloc_str = if s.allocated.is_zero() && s.rollover.is_zero() {
                 "\u{2014}".to_owned()
             } else {
-                format!("{} {}", s.allocated, s.commodity)
+                format!("{} {}", s.allocated, commodity_str)
             };
-            let actuals_str = format!("{} {}", s.actuals, s.commodity);
+            let actuals_str = format!("{} {}", s.actuals, commodity_str);
             let avail_str = if s.envelope.is_tracking_only() && s.rollover.is_zero() {
                 "\u{2014}".to_owned()
             } else {
-                format!("{} {}", s.available, s.commodity)
+                format!("{} {}", s.available, commodity_str)
             };
             vec![
                 s.envelope.name().to_owned(),

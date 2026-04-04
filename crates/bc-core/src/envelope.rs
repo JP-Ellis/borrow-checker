@@ -1,7 +1,5 @@
 //! Envelope and allocation service.
 
-use std::collections::HashMap;
-
 use bc_models::AccountId;
 use bc_models::Allocation;
 use bc_models::AllocationId;
@@ -9,11 +7,10 @@ use bc_models::Amount;
 use bc_models::CommodityCode;
 use bc_models::Decimal;
 use bc_models::Envelope;
-use bc_models::EnvelopeGroup;
-use bc_models::EnvelopeGroupId;
 use bc_models::EnvelopeId;
 use bc_models::Period;
 use bc_models::RolloverPolicy;
+use bc_models::TagId;
 use jiff::Timestamp;
 use jiff::civil::Date;
 use sqlx::SqlitePool;
@@ -25,26 +22,26 @@ use crate::db::to_db_str;
 use crate::events::Event;
 use crate::events::insert_event;
 
-/// Internal row type returned from the `envelopes` table, mapped by `sqlx::FromRow`.
+/// Internal row type returned from the `envelopes` table.
 ///
-/// The `account_ids` field is populated separately via a join query after the initial fetch.
+/// `account_ids` and `tag_ids` are populated separately via join queries.
 #[derive(sqlx::FromRow)]
 struct EnvelopeRow {
     /// Raw envelope ID string.
     id: String,
     /// Display name.
     name: String,
-    /// Raw parent group ID string, if this envelope is in a group.
+    /// Raw parent envelope ID string, if nested.
     parent_id: Option<String>,
     /// Optional icon identifier.
     icon: Option<String>,
     /// Optional colour code.
     colour: Option<String>,
-    /// Commodity code this envelope is denominated in.
-    commodity: String,
-    /// Decimal string for the allocation target amount; `None` = tracking-only mode.
+    /// Commodity code, or NULL if tracking across all commodities.
+    commodity: Option<String>,
+    /// Decimal string for the allocation target amount; NULL = tracking-only.
     allocation_target_amount: Option<String>,
-    /// Commodity code for the allocation target; `None` when amount is `None`.
+    /// Commodity code for the allocation target; NULL when amount is NULL.
     allocation_target_commodity: Option<String>,
     /// JSON-serialised [`Period`].
     period: String,
@@ -55,6 +52,9 @@ struct EnvelopeRow {
     /// Linked account IDs — populated after the initial query.
     #[sqlx(skip)]
     account_ids: Vec<AccountId>,
+    /// Tag IDs — populated after the initial query.
+    #[sqlx(skip)]
+    tag_ids: Vec<TagId>,
 }
 
 impl TryFrom<EnvelopeRow> for Envelope {
@@ -76,10 +76,12 @@ impl TryFrom<EnvelopeRow> for Envelope {
             .parent_id
             .as_deref()
             .map(|s| {
-                s.parse::<EnvelopeGroupId>()
+                s.parse::<EnvelopeId>()
                     .map_err(|e| BcError::BadData(format!("invalid parent_id '{s}': {e}")))
             })
             .transpose()?;
+
+        let commodity = row.commodity.as_deref().map(CommodityCode::new);
 
         let allocation_target = match (
             row.allocation_target_amount,
@@ -89,8 +91,7 @@ impl TryFrom<EnvelopeRow> for Envelope {
                 let quantity = amt_str.parse::<Decimal>().map_err(|e| {
                     BcError::BadData(format!("invalid allocation_target_amount '{amt_str}': {e}"))
                 })?;
-                let commodity = CommodityCode::new(&com_str);
-                Some(Amount::new(quantity, commodity))
+                Some(Amount::new(quantity, CommodityCode::new(&com_str)))
             }
             (None, None) => None,
             _ => {
@@ -104,14 +105,10 @@ impl TryFrom<EnvelopeRow> for Envelope {
 
         let period: Period = serde_json::from_str(&row.period)
             .map_err(|e| BcError::BadData(format!("invalid period '{}': {e}", row.period)))?;
-
         let rollover_policy = from_db_str::<RolloverPolicy>(&row.rollover_policy)?;
-
         let created_at = row.created_at.parse::<Timestamp>().map_err(|e| {
             BcError::BadData(format!("invalid created_at '{}': {e}", row.created_at))
         })?;
-
-        let commodity = CommodityCode::new(&row.commodity);
 
         Ok(Self::builder()
             .id(id)
@@ -119,96 +116,40 @@ impl TryFrom<EnvelopeRow> for Envelope {
             .maybe_parent_id(parent_id)
             .maybe_icon(row.icon)
             .maybe_colour(row.colour)
-            .commodity(commodity)
+            .maybe_commodity(commodity)
             .maybe_allocation_target(allocation_target)
             .period(period)
             .rollover_policy(rollover_policy)
             .account_ids(row.account_ids)
+            .tag_ids(row.tag_ids)
             .created_at(created_at)
             .build())
     }
 }
 
-/// Parameters for creating a new envelope.
-///
-/// Passed to [`Service::create`].
-#[non_exhaustive]
-pub struct CreateParams {
-    /// Display name for the envelope.
-    pub name: String,
-    /// Group this envelope belongs to, if any.
-    pub group_id: Option<EnvelopeGroupId>,
-    /// Optional display icon (emoji or icon name).
-    pub icon: Option<String>,
-    /// Optional display colour (e.g. `"#4CAF50"`).
-    pub colour: Option<String>,
-    /// Commodity (currency) this envelope is denominated in.
-    ///
-    /// When [`CreateParams::allocation_target`] is set, its commodity **must**
-    /// match this field or [`Service::create`] returns [`BcError::InvalidInput`].
-    pub commodity: CommodityCode,
-    /// Budget target per period. `None` = category tracking mode.
-    pub allocation_target: Option<Amount>,
-    /// Recurrence period.
-    pub period: Period,
-    /// How unspent funds roll between periods.
-    pub rollover_policy: RolloverPolicy,
-    /// Accounts linked for UI hints.
-    pub account_ids: Vec<AccountId>,
+/// Internal row type for allocation queries.
+#[derive(sqlx::FromRow)]
+struct AllocationRow {
+    /// Raw allocation ID string.
+    id: String,
+    /// Raw envelope ID string.
+    envelope_id: String,
+    /// Decimal amount string.
+    amount: String,
+    /// Commodity code string.
+    commodity: String,
+    /// ISO 8601 creation timestamp.
+    created_at: String,
 }
 
-impl CreateParams {
-    /// Creates a new [`CreateParams`] with all required and optional fields.
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - Display name for the envelope.
-    /// * `group_id` - Group this envelope belongs to, if any.
-    /// * `icon` - Optional display icon (emoji or icon name).
-    /// * `colour` - Optional display colour (e.g. `"#4CAF50"`).
-    /// * `commodity` - Commodity (currency) code for this envelope.
-    /// * `allocation_target` - Budget target per period. `None` = category tracking mode.
-    /// * `period` - Recurrence period.
-    /// * `rollover_policy` - How unspent funds roll between periods.
-    /// * `account_ids` - Accounts linked for UI hints.
-    #[inline]
-    #[must_use]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "all fields are distinct configuration values"
-    )]
-    pub fn new(
-        name: String,
-        group_id: Option<EnvelopeGroupId>,
-        icon: Option<String>,
-        colour: Option<String>,
-        commodity: CommodityCode,
-        allocation_target: Option<Amount>,
-        period: Period,
-        rollover_policy: RolloverPolicy,
-        account_ids: Vec<AccountId>,
-    ) -> Self {
-        Self {
-            name,
-            group_id,
-            icon,
-            colour,
-            commodity,
-            allocation_target,
-            period,
-            rollover_policy,
-            account_ids,
-        }
-    }
-}
-
-/// Envelope group + envelope CRUD service.
+/// Envelope CRUD and allocation service.
 #[derive(Debug, Clone)]
 pub struct Service {
     /// The SQLite connection pool.
     pool: SqlitePool,
 }
 
+#[bon::bon]
 impl Service {
     /// Creates a new [`Service`] with the given connection pool.
     #[must_use]
@@ -217,115 +158,43 @@ impl Service {
         Self { pool }
     }
 
-    // ── Group management ──────────────────────────────────────────────────
-
-    /// Creates a new envelope group.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BcError`] on event append or database insert failure.
-    #[inline]
-    pub async fn create_group(
-        &self,
-        name: &str,
-        parent_id: Option<&EnvelopeGroupId>,
-    ) -> BcResult<EnvelopeGroup> {
-        let id = EnvelopeGroupId::new();
-        let now = Timestamp::now();
-        let event = Event::EnvelopeGroupCreated {
-            id: id.clone(),
-            name: name.to_owned(),
-            parent_id: parent_id.cloned(),
-        };
-
-        let mut db_tx = self.pool.begin().await?;
-        insert_event(&event, &mut db_tx).await?;
-
-        sqlx::query(
-            "INSERT INTO envelope_groups (id, name, parent_id, created_at) VALUES (?, ?, ?, ?)",
-        )
-        .bind(id.to_string())
-        .bind(name)
-        .bind(parent_id.map(ToString::to_string))
-        .bind(now.to_string())
-        .execute(&mut *db_tx)
-        .await?;
-
-        db_tx.commit().await?;
-        tracing::info!(group_id = %id, %name, "envelope group created");
-
-        Ok(EnvelopeGroup::builder()
-            .id(id)
-            .name(name)
-            .maybe_parent_id(parent_id.cloned())
-            .created_at(now)
-            .build())
-    }
-
-    /// Lists all active (non-archived) envelope groups, ordered by name.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BcError`] on database or data parse failure.
-    #[inline]
-    pub async fn list_groups(&self) -> BcResult<Vec<EnvelopeGroup>> {
-        let rows: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
-            "SELECT id, name, parent_id, created_at \
-             FROM envelope_groups \
-             WHERE archived_at IS NULL \
-             ORDER BY name ASC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        rows.into_iter()
-            .map(|(id_str, name, parent_str, created_str)| {
-                let id = id_str
-                    .parse::<EnvelopeGroupId>()
-                    .map_err(|e| BcError::BadData(format!("invalid group id '{id_str}': {e}")))?;
-                let parent_id = parent_str
-                    .as_deref()
-                    .map(|s| {
-                        s.parse::<EnvelopeGroupId>()
-                            .map_err(|e| BcError::BadData(format!("invalid parent_id '{s}': {e}")))
-                    })
-                    .transpose()?;
-                let created_at = created_str.parse::<Timestamp>().map_err(|e| {
-                    BcError::BadData(format!("invalid created_at '{created_str}': {e}"))
-                })?;
-                Ok(EnvelopeGroup::builder()
-                    .id(id)
-                    .name(name)
-                    .maybe_parent_id(parent_id)
-                    .created_at(created_at)
-                    .build())
-            })
-            .collect()
-    }
-
-    // ── Envelope management ───────────────────────────────────────────────
+    // MARK: Envelope management
 
     /// Creates a new budget envelope.
     ///
     /// # Errors
     ///
+    /// Returns [`BcError::InvalidInput`] if `rollover_policy` is `CapAtTarget`
+    /// but `allocation_target` is `None`, or if the allocation target's commodity
+    /// does not match `commodity` when both are provided.
     /// Returns [`BcError`] on event append or database insert failure.
+    #[builder]
     #[inline]
-    pub async fn create(&self, params: CreateParams) -> BcResult<Envelope> {
-        if params.rollover_policy == RolloverPolicy::CapAtTarget
-            && params.allocation_target.is_none()
-        {
+    pub async fn create(
+        &self,
+        #[builder(into)] name: String,
+        parent_id: Option<EnvelopeId>,
+        #[builder(into)] icon: Option<String>,
+        #[builder(into)] colour: Option<String>,
+        commodity: Option<CommodityCode>,
+        allocation_target: Option<Amount>,
+        period: Period,
+        rollover_policy: RolloverPolicy,
+        #[builder(default)] account_ids: Vec<AccountId>,
+        #[builder(default)] tag_ids: Vec<TagId>,
+    ) -> BcResult<Envelope> {
+        if rollover_policy == RolloverPolicy::CapAtTarget && allocation_target.is_none() {
             return Err(BcError::InvalidInput(
                 "CapAtTarget rollover policy requires an allocation target".to_owned(),
             ));
         }
 
-        if let Some(target) = &params.allocation_target {
-            if target.commodity() != &params.commodity {
+        if let (Some(target), Some(env_commodity)) = (&allocation_target, &commodity) {
+            if target.commodity() != env_commodity {
                 return Err(BcError::InvalidInput(format!(
                     "allocation_target commodity '{}' does not match envelope commodity '{}'",
                     target.commodity(),
-                    params.commodity,
+                    env_commodity,
                 )));
             }
         }
@@ -335,20 +204,20 @@ impl Service {
 
         let event = Event::EnvelopeCreated {
             id: id.clone(),
-            name: params.name.clone(),
-            group_id: params.group_id.clone(),
-            period: params.period.clone(),
-            rollover_policy: params.rollover_policy,
-            allocation_target: params.allocation_target.clone(),
+            name: name.clone(),
+            parent_id: parent_id.clone(),
+            period: period.clone(),
+            rollover_policy,
+            allocation_target: allocation_target.clone(),
         };
 
         let mut db_tx = self.pool.begin().await?;
         insert_event(&event, &mut db_tx).await?;
 
-        let period_json = serde_json::to_string(&params.period)?;
-        let rollover_db = to_db_str(params.rollover_policy)?;
+        let period_json = serde_json::to_string(&period)?;
+        let rollover_db = to_db_str(rollover_policy)?;
         let (target_amount, target_commodity) =
-            params.allocation_target.as_ref().map_or((None, None), |a| {
+            allocation_target.as_ref().map_or((None, None), |a| {
                 (Some(a.value().to_string()), Some(a.commodity().to_string()))
             });
 
@@ -359,21 +228,21 @@ impl Service {
               period, rollover_policy, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(id.to_string())
-        .bind(&params.name)
-        .bind(params.group_id.as_ref().map(ToString::to_string))
-        .bind(&params.icon)
-        .bind(&params.colour)
-        .bind(params.commodity.as_str())
-        .bind(&target_amount)
-        .bind(&target_commodity)
-        .bind(&period_json)
-        .bind(&rollover_db)
-        .bind(now.to_string())
+        .bind(id.to_string()) //  1. id
+        .bind(&name) //  2. name
+        .bind(parent_id.as_ref().map(ToString::to_string)) //  3. parent_id
+        .bind(&icon) //  4. icon
+        .bind(&colour) //  5. colour
+        .bind(commodity.as_ref().map(CommodityCode::as_str)) //  6. commodity
+        .bind(&target_amount) //  7. allocation_target_amount
+        .bind(&target_commodity) //  8. allocation_target_commodity
+        .bind(&period_json) //  9. period
+        .bind(&rollover_db) // 10. rollover_policy
+        .bind(now.to_string()) // 11. created_at
         .execute(&mut *db_tx)
         .await?;
 
-        for account_id in &params.account_ids {
+        for account_id in &account_ids {
             sqlx::query(
                 "INSERT INTO envelope_account_links (envelope_id, account_id) VALUES (?, ?)",
             )
@@ -383,20 +252,29 @@ impl Service {
             .await?;
         }
 
+        for tag_id in &tag_ids {
+            sqlx::query("INSERT INTO envelope_tags (envelope_id, tag_id) VALUES (?, ?)")
+                .bind(id.to_string())
+                .bind(tag_id.to_string())
+                .execute(&mut *db_tx)
+                .await?;
+        }
+
         db_tx.commit().await?;
-        tracing::info!(envelope_id = %id, name = %params.name, "envelope created");
+        tracing::info!(envelope_id = %id, %name, "envelope created");
 
         Ok(Envelope::builder()
             .id(id)
-            .name(params.name)
-            .maybe_parent_id(params.group_id)
-            .maybe_icon(params.icon)
-            .maybe_colour(params.colour)
-            .commodity(params.commodity)
-            .maybe_allocation_target(params.allocation_target)
-            .period(params.period)
-            .rollover_policy(params.rollover_policy)
-            .account_ids(params.account_ids)
+            .name(name)
+            .maybe_parent_id(parent_id)
+            .maybe_icon(icon)
+            .maybe_colour(colour)
+            .maybe_commodity(commodity)
+            .maybe_allocation_target(allocation_target)
+            .period(period)
+            .rollover_policy(rollover_policy)
+            .account_ids(account_ids)
+            .tag_ids(tag_ids)
             .created_at(now)
             .build())
     }
@@ -420,40 +298,18 @@ impl Service {
         .await?;
 
         if !rows.is_empty() {
-            let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-
-            let mut builder = sqlx::QueryBuilder::new(
-                "SELECT envelope_id, account_id \
-                 FROM envelope_account_links \
-                 WHERE envelope_id IN ",
-            );
-            builder.push_tuples(ids.iter(), |mut b, id| {
-                b.push_bind(id);
-            });
-            let link_rows: Vec<(String, String)> =
-                builder.build_query_as().fetch_all(&self.pool).await?;
-
-            let mut links_map: HashMap<String, Vec<AccountId>> = HashMap::new();
-            for (envelope_id, account_id_str) in link_rows {
-                let account_id = account_id_str.parse::<AccountId>().map_err(|e| {
-                    BcError::BadData(format!("invalid account_id '{account_id_str}': {e}"))
-                })?;
-                links_map.entry(envelope_id).or_default().push(account_id);
-            }
-
-            for row in &mut rows {
-                row.account_ids = links_map.remove(&row.id).unwrap_or_default();
-            }
+            self.populate_account_ids(&mut rows).await?;
+            self.populate_tag_ids(&mut rows).await?;
         }
 
         rows.into_iter().map(Envelope::try_from).collect()
     }
 
-    /// Finds an envelope by ID.
+    /// Finds an active envelope by ID.
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::NotFound`] if no envelope with that ID exists.
+    /// Returns [`BcError::NotFound`] if no active envelope with that ID exists.
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
     pub async fn get(&self, id: &EnvelopeId) -> BcResult<Envelope> {
@@ -470,30 +326,26 @@ impl Service {
         .ok_or_else(|| BcError::NotFound(id.to_string()))?;
 
         row.account_ids = self.load_account_ids(id).await?;
+        row.tag_ids = self.load_tag_ids(id).await?;
 
         Envelope::try_from(row)
     }
 
-    /// Moves an envelope to a different group, or removes it from all groups.
-    ///
-    /// # Arguments
-    ///
-    /// * `envelope_id` - The ID of the envelope to move.
-    /// * `group_id` - The target group ID, or `None` to place the envelope at the root.
+    /// Moves an envelope to a different parent, or removes it from all parents.
     ///
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if no active envelope with that ID exists.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
-    pub async fn move_to_group(
+    pub async fn set_parent(
         &self,
         envelope_id: &EnvelopeId,
-        group_id: Option<&EnvelopeGroupId>,
+        parent_id: Option<&EnvelopeId>,
     ) -> BcResult<Envelope> {
         let event = Event::EnvelopeMoved {
             id: envelope_id.clone(),
-            group_id: group_id.cloned(),
+            parent_id: parent_id.cloned(),
         };
 
         let mut db_tx = self.pool.begin().await?;
@@ -501,7 +353,7 @@ impl Service {
 
         let result =
             sqlx::query("UPDATE envelopes SET parent_id = ? WHERE id = ? AND archived_at IS NULL")
-                .bind(group_id.map(ToString::to_string))
+                .bind(parent_id.map(ToString::to_string))
                 .bind(envelope_id.to_string())
                 .execute(&mut *db_tx)
                 .await?;
@@ -511,7 +363,7 @@ impl Service {
         }
 
         db_tx.commit().await?;
-        tracing::info!(envelope_id = %envelope_id, ?group_id, "envelope moved to group");
+        tracing::info!(envelope_id = %envelope_id, ?parent_id, "envelope parent updated");
 
         self.get(envelope_id).await
     }
@@ -539,9 +391,6 @@ impl Service {
         .await?;
 
         if result.rows_affected() == 0 {
-            // rows_affected == 0 means the UPDATE found no matching row.
-            // Returning here drops `db_tx` without committing — sqlx rolls it
-            // back implicitly, discarding the event insert above.
             return Err(BcError::NotFound(id.to_string()));
         }
 
@@ -550,19 +399,17 @@ impl Service {
         Ok(())
     }
 
-    // ── Allocation management ─────────────────────────────────────────────
+    // MARK: Allocation management
 
     /// Allocates funds to an envelope for the period starting on `period_start`.
     ///
     /// If an allocation already exists for that period, it is replaced (upsert).
-    /// Each call appends a new [`Event::EnvelopeAllocated`] regardless of whether
-    /// an existing allocation was replaced; the event log will therefore contain one
-    /// event per call rather than a tombstone for the superseded allocation.  This is
-    /// intentional: the projection table (`envelope_allocations`) is the authoritative
-    /// read model, and the event log is used for audit purposes only.
     ///
     /// # Errors
     ///
+    /// Returns [`BcError::NotFound`] if the envelope does not exist or is archived.
+    /// Returns [`BcError::InvalidInput`] if the allocation commodity does not match
+    /// the envelope's commodity (when the envelope has one set).
     /// Returns [`BcError`] on event append or database failure.
     #[inline]
     pub async fn allocate(
@@ -571,17 +418,17 @@ impl Service {
         period_start: Date,
         amount: Amount,
     ) -> BcResult<Allocation> {
-        // Validate the envelope exists and is not archived.
         let envelope = self.get(envelope_id).await?;
 
-        // Validate commodity consistency: the allocation must match the envelope's commodity.
-        if amount.commodity() != envelope.commodity() {
-            return Err(BcError::InvalidInput(format!(
-                "envelope '{}' uses commodity '{}' but the allocation amount is in '{}'",
-                envelope_id,
-                envelope.commodity(),
-                amount.commodity(),
-            )));
+        if let Some(env_commodity) = envelope.commodity() {
+            if amount.commodity() != env_commodity {
+                return Err(BcError::InvalidInput(format!(
+                    "envelope '{}' uses commodity '{}' but the allocation amount is in '{}'",
+                    envelope_id,
+                    env_commodity,
+                    amount.commodity(),
+                )));
+            }
         }
 
         let id = AllocationId::new();
@@ -597,17 +444,19 @@ impl Service {
         insert_event(&event, &mut db_tx).await?;
 
         sqlx::query(
-            "INSERT INTO envelope_allocations (id, envelope_id, period_start, amount, commodity, created_at) \
+            "INSERT INTO envelope_allocations \
+             (id, envelope_id, period_start, amount, commodity, created_at) \
              VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT (envelope_id, period_start) \
-             DO UPDATE SET id = excluded.id, amount = excluded.amount, commodity = excluded.commodity, created_at = excluded.created_at",
+             DO UPDATE SET id = excluded.id, amount = excluded.amount, \
+                           commodity = excluded.commodity, created_at = excluded.created_at",
         )
-        .bind(id.to_string())
-        .bind(envelope_id.to_string())
-        .bind(period_start.to_string())
-        .bind(amount.value().to_string())
-        .bind(amount.commodity().as_str())
-        .bind(now.to_string())
+        .bind(id.to_string()) // 1. id
+        .bind(envelope_id.to_string()) // 2. envelope_id
+        .bind(period_start.to_string()) // 3. period_start
+        .bind(amount.value().to_string()) // 4. amount
+        .bind(amount.commodity().as_str()) // 5. commodity
+        .bind(now.to_string()) // 6. created_at
         .execute(&mut *db_tx)
         .await?;
 
@@ -634,7 +483,7 @@ impl Service {
         envelope_id: &EnvelopeId,
         period_start: Date,
     ) -> BcResult<Option<Allocation>> {
-        let row: Option<(String, String, String, String, String)> = sqlx::query_as(
+        let row: Option<AllocationRow> = sqlx::query_as(
             "SELECT id, envelope_id, amount, commodity, created_at \
              FROM envelope_allocations \
              WHERE envelope_id = ? AND period_start = ?",
@@ -644,35 +493,35 @@ impl Service {
         .fetch_optional(&self.pool)
         .await?;
 
-        row.map(|(id_str, env_id_str, amt_str, com_str, created_str)| {
-            let id = id_str
+        row.map(|r| {
+            let id = r
+                .id
                 .parse::<AllocationId>()
-                .map_err(|e| BcError::BadData(format!("invalid allocation id '{id_str}': {e}")))?;
-            let env_id = env_id_str.parse::<EnvelopeId>().map_err(|e| {
-                BcError::BadData(format!("invalid envelope_id '{env_id_str}': {e}"))
+                .map_err(|e| BcError::BadData(format!("invalid allocation id '{}': {e}", r.id)))?;
+            let env_id = r.envelope_id.parse::<EnvelopeId>().map_err(|e| {
+                BcError::BadData(format!("invalid envelope_id '{}': {e}", r.envelope_id))
             })?;
-            let value = amt_str
+            let value = r
+                .amount
                 .parse::<Decimal>()
-                .map_err(|e| BcError::BadData(format!("invalid amount '{amt_str}': {e}")))?;
-            let created_at = created_str.parse::<Timestamp>().map_err(|e| {
-                BcError::BadData(format!("invalid created_at '{created_str}': {e}"))
+                .map_err(|e| BcError::BadData(format!("invalid amount '{}': {e}", r.amount)))?;
+            let created_at = r.created_at.parse::<Timestamp>().map_err(|e| {
+                BcError::BadData(format!("invalid created_at '{}': {e}", r.created_at))
             })?;
             Ok(Allocation::builder()
                 .id(id)
                 .envelope_id(env_id)
                 .period_start(period_start)
-                .amount(Amount::new(value, CommodityCode::new(com_str)))
+                .amount(Amount::new(value, CommodityCode::new(r.commodity)))
                 .created_at(created_at)
                 .build())
         })
         .transpose()
     }
 
+    // MARK: Private helpers
+
     /// Loads the account IDs linked to an envelope.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BcError`] on database or data parse failure.
     #[inline]
     async fn load_account_ids(&self, id: &EnvelopeId) -> BcResult<Vec<AccountId>> {
         let rows: Vec<(String,)> =
@@ -680,7 +529,6 @@ impl Service {
                 .bind(id.to_string())
                 .fetch_all(&self.pool)
                 .await?;
-
         rows.into_iter()
             .map(|(s,)| {
                 s.parse::<AccountId>()
@@ -688,13 +536,82 @@ impl Service {
             })
             .collect()
     }
+
+    /// Loads the tag IDs linked to an envelope.
+    #[inline]
+    async fn load_tag_ids(&self, id: &EnvelopeId) -> BcResult<Vec<TagId>> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT tag_id FROM envelope_tags WHERE envelope_id = ?")
+                .bind(id.to_string())
+                .fetch_all(&self.pool)
+                .await?;
+        rows.into_iter()
+            .map(|(s,)| {
+                s.parse::<TagId>()
+                    .map_err(|e| BcError::BadData(format!("invalid tag_id '{s}': {e}")))
+            })
+            .collect()
+    }
+
+    /// Bulk-populates `account_ids` on a slice of [`EnvelopeRow`]s via a single query.
+    #[inline]
+    async fn populate_account_ids(&self, rows: &mut [EnvelopeRow]) -> BcResult<()> {
+        use std::collections::HashMap;
+        let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT envelope_id, account_id FROM envelope_account_links WHERE envelope_id IN ",
+        );
+        builder.push_tuples(ids.iter(), |mut b, id| {
+            b.push_bind(id);
+        });
+        let link_rows: Vec<(String, String)> =
+            builder.build_query_as().fetch_all(&self.pool).await?;
+
+        let mut map: HashMap<String, Vec<AccountId>> = HashMap::new();
+        for (env_id, acct_id_str) in link_rows {
+            let acct_id = acct_id_str.parse::<AccountId>().map_err(|e| {
+                BcError::BadData(format!("invalid account_id '{acct_id_str}': {e}"))
+            })?;
+            map.entry(env_id).or_default().push(acct_id);
+        }
+        for row in rows.iter_mut() {
+            row.account_ids = map.remove(&row.id).unwrap_or_default();
+        }
+        Ok(())
+    }
+
+    /// Bulk-populates `tag_ids` on a slice of [`EnvelopeRow`]s via a single query.
+    #[inline]
+    async fn populate_tag_ids(&self, rows: &mut [EnvelopeRow]) -> BcResult<()> {
+        use std::collections::HashMap;
+        let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT envelope_id, tag_id FROM envelope_tags WHERE envelope_id IN ",
+        );
+        builder.push_tuples(ids.iter(), |mut b, id| {
+            b.push_bind(id);
+        });
+        let tag_rows: Vec<(String, String)> =
+            builder.build_query_as().fetch_all(&self.pool).await?;
+
+        let mut map: HashMap<String, Vec<TagId>> = HashMap::new();
+        for (env_id, tag_id_str) in tag_rows {
+            let tid = tag_id_str
+                .parse::<TagId>()
+                .map_err(|e| BcError::BadData(format!("invalid tag_id '{tag_id_str}': {e}")))?;
+            map.entry(env_id).or_default().push(tid);
+        }
+        for row in rows.iter_mut() {
+            row.tag_ids = map.remove(&row.id).unwrap_or_default();
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use bc_models::AccountKind;
     use bc_models::AccountType;
-    use bc_models::CommodityCode;
     use bc_models::EnvelopeId;
     use bc_models::Period;
     use bc_models::RolloverPolicy;
@@ -704,49 +621,16 @@ mod tests {
     use crate::account;
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn create_and_list_groups(pool: sqlx::SqlitePool) {
-        let svc = Service::new(pool);
-        let group = svc
-            .create_group("Food", None)
-            .await
-            .expect("create should succeed");
-        assert_eq!(group.name(), "Food");
-        assert!(group.parent_id().is_none());
-
-        let groups = svc.list_groups().await.expect("list should succeed");
-        assert_eq!(groups.len(), 1);
-        assert_eq!(
-            groups.first().expect("one group should exist").name(),
-            "Food"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn create_nested_group(pool: sqlx::SqlitePool) {
-        let svc = Service::new(pool);
-        let parent = svc.create_group("Food", None).await.expect("parent");
-        let child = svc
-            .create_group("Restaurants", Some(parent.id()))
-            .await
-            .expect("child");
-        assert_eq!(child.parent_id(), Some(parent.id()));
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
     async fn create_and_list_envelopes(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool);
-        let params = CreateParams {
-            name: "Groceries".to_owned(),
-            group_id: None,
-            icon: None,
-            colour: None,
-            commodity: CommodityCode::new("AUD"),
-            allocation_target: None,
-            period: Period::Monthly,
-            rollover_policy: RolloverPolicy::CarryForward,
-            account_ids: vec![],
-        };
-        let env = svc.create(params).await.expect("create should succeed");
+        let env = svc
+            .create()
+            .name("Groceries")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::CarryForward)
+            .call()
+            .await
+            .expect("create should succeed");
         assert_eq!(env.name(), "Groceries");
         assert!(env.is_tracking_only());
 
@@ -771,18 +655,12 @@ mod tests {
             .expect("account create should succeed");
 
         let svc = Service::new(pool);
-        let params = CreateParams {
-            name: "Groceries".to_owned(),
-            group_id: None,
-            icon: None,
-            colour: None,
-            commodity: CommodityCode::new("AUD"),
-            allocation_target: None,
-            period: Period::Monthly,
-            rollover_policy: RolloverPolicy::CarryForward,
-            account_ids: vec![account_id.clone()],
-        };
-        svc.create(params)
+        svc.create()
+            .name("Groceries")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::CarryForward)
+            .account_ids(vec![account_id.clone()])
+            .call()
             .await
             .expect("envelope create should succeed");
 
@@ -795,18 +673,13 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn list_envelopes_empty_account_ids(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool);
-        let params = CreateParams {
-            name: "Savings".to_owned(),
-            group_id: None,
-            icon: None,
-            colour: None,
-            commodity: CommodityCode::new("AUD"),
-            allocation_target: None,
-            period: Period::Monthly,
-            rollover_policy: RolloverPolicy::CarryForward,
-            account_ids: vec![],
-        };
-        svc.create(params).await.expect("create should succeed");
+        svc.create()
+            .name("Savings")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::CarryForward)
+            .call()
+            .await
+            .expect("create should succeed");
 
         let list = svc.list().await.expect("list should succeed");
         assert_eq!(list.len(), 1);
@@ -820,18 +693,14 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn archive_envelope(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool);
-        let params = CreateParams {
-            name: "Old Envelope".to_owned(),
-            group_id: None,
-            icon: None,
-            colour: None,
-            commodity: CommodityCode::new("AUD"),
-            allocation_target: None,
-            period: Period::Monthly,
-            rollover_policy: RolloverPolicy::ResetToZero,
-            account_ids: vec![],
-        };
-        let env = svc.create(params).await.expect("create");
+        let env = svc
+            .create()
+            .name("Old Envelope")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create");
         svc.archive(env.id()).await.expect("archive");
 
         let list = svc.list().await.expect("list");
@@ -859,20 +728,16 @@ mod tests {
 
         let svc = Service::new(pool);
         let env = svc
-            .create(CreateParams {
-                name: "Groceries".to_owned(),
-                group_id: None,
-                icon: None,
-                colour: None,
-                commodity: CommodityCode::new("AUD"),
-                allocation_target: Some(Amount::new(
-                    Decimal::from(500_i32),
-                    CommodityCode::new("AUD"),
-                )),
-                period: Period::Monthly,
-                rollover_policy: RolloverPolicy::CarryForward,
-                account_ids: vec![],
-            })
+            .create()
+            .name("Groceries")
+            .commodity(CommodityCode::new("AUD"))
+            .allocation_target(Amount::new(
+                Decimal::from(500_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::CarryForward)
+            .call()
             .await
             .expect("create");
 
@@ -906,17 +771,11 @@ mod tests {
 
         let svc = Service::new(pool);
         let env = svc
-            .create(CreateParams {
-                name: "Fuel".to_owned(),
-                group_id: None,
-                icon: None,
-                colour: None,
-                commodity: CommodityCode::new("AUD"),
-                allocation_target: None,
-                period: Period::Monthly,
-                rollover_policy: RolloverPolicy::ResetToZero,
-                account_ids: vec![],
-            })
+            .create()
+            .name("Fuel")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
             .await
             .expect("create");
 
@@ -978,17 +837,11 @@ mod tests {
 
         let svc = Service::new(pool);
         let env = svc
-            .create(CreateParams {
-                name: "Archived Envelope".to_owned(),
-                group_id: None,
-                icon: None,
-                colour: None,
-                commodity: CommodityCode::new("AUD"),
-                allocation_target: None,
-                period: Period::Monthly,
-                rollover_policy: RolloverPolicy::ResetToZero,
-                account_ids: vec![],
-            })
+            .create()
+            .name("Archived Envelope")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
             .await
             .expect("create");
         svc.archive(env.id()).await.expect("archive");
@@ -1017,17 +870,12 @@ mod tests {
 
         let svc = Service::new(pool);
         let env = svc
-            .create(CreateParams {
-                name: "AUD Envelope".to_owned(),
-                group_id: None,
-                icon: None,
-                colour: None,
-                commodity: CommodityCode::new("AUD"),
-                allocation_target: None,
-                period: Period::Monthly,
-                rollover_policy: RolloverPolicy::ResetToZero,
-                account_ids: vec![],
-            })
+            .create()
+            .name("AUD Envelope")
+            .commodity(CommodityCode::new("AUD"))
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
             .await
             .expect("create");
 
@@ -1047,18 +895,13 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn create_cap_at_target_without_allocation_target_is_invalid(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool);
-        let params = CreateParams {
-            name: "Savings".to_owned(),
-            group_id: None,
-            icon: None,
-            colour: None,
-            commodity: CommodityCode::new("AUD"),
-            allocation_target: None,
-            period: Period::Monthly,
-            rollover_policy: RolloverPolicy::CapAtTarget,
-            account_ids: vec![],
-        };
-        let result = svc.create(params).await;
+        let result = svc
+            .create()
+            .name("Savings")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::CapAtTarget)
+            .call()
+            .await;
         assert!(
             result.is_err(),
             "CapAtTarget without allocation_target should fail"
@@ -1066,93 +909,93 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn move_to_group_changes_parent_id(pool: sqlx::SqlitePool) {
+    async fn set_parent_changes_parent_id(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool);
 
-        // Create a group to move the envelope into.
-        let group = svc
-            .create_group("Transport", None)
+        // Create a parent envelope.
+        let parent = svc
+            .create()
+            .name("Transport")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
             .await
-            .expect("create group should succeed");
+            .expect("create parent should succeed");
 
-        // Create an envelope with no group initially.
+        // Create an envelope with no parent initially.
         let env = svc
-            .create(CreateParams {
-                name: "Fuel".to_owned(),
-                group_id: None,
-                icon: None,
-                colour: None,
-                commodity: CommodityCode::new("AUD"),
-                allocation_target: None,
-                period: Period::Monthly,
-                rollover_policy: RolloverPolicy::ResetToZero,
-                account_ids: vec![],
-            })
+            .create()
+            .name("Fuel")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .call()
             .await
             .expect("create envelope should succeed");
 
         assert!(
             env.parent_id().is_none(),
-            "envelope should start with no group"
+            "envelope should start with no parent"
         );
 
-        // Move the envelope into the group.
+        // Move the envelope under the parent.
         let moved = svc
-            .move_to_group(env.id(), Some(group.id()))
+            .set_parent(env.id(), Some(parent.id()))
             .await
-            .expect("move_to_group should succeed");
+            .expect("set_parent should succeed");
 
         assert_eq!(
             moved.parent_id(),
-            Some(group.id()),
-            "envelope should now belong to the group"
+            Some(parent.id()),
+            "envelope should now have the parent"
         );
 
         // Verify persistence by re-fetching.
         let fetched = svc.get(env.id()).await.expect("get should succeed");
         assert_eq!(
             fetched.parent_id(),
-            Some(group.id()),
+            Some(parent.id()),
             "parent_id should persist to DB"
         );
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn move_to_group_with_none_removes_group(pool: sqlx::SqlitePool) {
+    async fn set_parent_with_none_removes_parent(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool);
 
-        let group = svc.create_group("Food", None).await.expect("create group");
+        let parent = svc
+            .create()
+            .name("Food")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::CarryForward)
+            .call()
+            .await
+            .expect("create parent");
 
         let env = svc
-            .create(CreateParams {
-                name: "Groceries".to_owned(),
-                group_id: Some(group.id().clone()),
-                icon: None,
-                colour: None,
-                commodity: CommodityCode::new("AUD"),
-                allocation_target: None,
-                period: Period::Monthly,
-                rollover_policy: RolloverPolicy::CarryForward,
-                account_ids: vec![],
-            })
+            .create()
+            .name("Groceries")
+            .parent_id(parent.id().clone())
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::CarryForward)
+            .call()
             .await
             .expect("create envelope should succeed");
 
         assert_eq!(
             env.parent_id(),
-            Some(group.id()),
-            "envelope should start in the group"
+            Some(parent.id()),
+            "envelope should start with the parent"
         );
 
-        // Move to root (no group).
+        // Move to root (no parent).
         let moved = svc
-            .move_to_group(env.id(), None)
+            .set_parent(env.id(), None)
             .await
-            .expect("move_to_group should succeed");
+            .expect("set_parent should succeed");
 
         assert!(
             moved.parent_id().is_none(),
-            "envelope should now have no group"
+            "envelope should now have no parent"
         );
 
         let fetched = svc.get(env.id()).await.expect("get should succeed");
@@ -1163,12 +1006,106 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn move_to_group_nonexistent_envelope_returns_not_found(pool: sqlx::SqlitePool) {
+    async fn set_parent_nonexistent_envelope_returns_not_found(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool);
-        let result = svc.move_to_group(&EnvelopeId::new(), None).await;
+        let result = svc.set_parent(&EnvelopeId::new(), None).await;
         assert!(
             matches!(result, Err(crate::BcError::NotFound(_))),
             "unknown envelope should return NotFound"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_envelope_with_bon_builder(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let env = svc
+            .create()
+            .name("Groceries")
+            .period(bc_models::Period::Monthly)
+            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create should succeed");
+        assert_eq!(env.name(), "Groceries");
+        assert!(env.commodity().is_none());
+        assert!(env.parent_id().is_none());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_nested_envelope(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let parent = svc
+            .create()
+            .name("Health")
+            .period(bc_models::Period::Monthly)
+            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create parent");
+        let child = svc
+            .create()
+            .name("Gym")
+            .parent_id(parent.id().clone())
+            .period(bc_models::Period::Monthly)
+            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create child");
+        assert_eq!(child.parent_id(), Some(parent.id()));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_parent_moves_envelope(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let parent = svc
+            .create()
+            .name("Health")
+            .period(bc_models::Period::Monthly)
+            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create parent");
+        let child = svc
+            .create()
+            .name("Gym")
+            .period(bc_models::Period::Monthly)
+            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create child");
+        let moved = svc
+            .set_parent(child.id(), Some(parent.id()))
+            .await
+            .expect("set_parent");
+        assert_eq!(moved.parent_id(), Some(parent.id()));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_envelope_with_tag_ids(pool: sqlx::SqlitePool) {
+        use bc_models::TagId;
+        use jiff::Timestamp;
+        let tag_id = TagId::new();
+        sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, 'person:me', ?)")
+            .bind(tag_id.to_string())
+            .bind(Timestamp::now().to_string())
+            .execute(&pool)
+            .await
+            .expect("insert tag");
+
+        let svc = Service::new(pool);
+        let env = svc
+            .create()
+            .name("Gym")
+            .period(bc_models::Period::Monthly)
+            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .tag_ids(vec![tag_id.clone()])
+            .call()
+            .await
+            .expect("create");
+        assert_eq!(env.tag_ids(), core::slice::from_ref(&tag_id));
+
+        // Verify persistence.
+        let fetched = svc.get(env.id()).await.expect("get");
+        assert_eq!(fetched.tag_ids(), &[tag_id]);
     }
 }

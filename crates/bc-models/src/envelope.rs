@@ -1,15 +1,15 @@
 //! Envelope budgeting domain types.
 //!
 //! An *envelope* represents a budgeting category with an optional allocation
-//! target and rollover policy. Envelopes can be organised into [`Group`]s for
-//! hierarchical display. [`Allocation`] records the amount budgeted for a
+//! target and rollover policy. Envelopes form an arbitrary-depth tree via
+//! [`Envelope::parent_id`] — a parent envelope aggregates its children's
+//! actuals and allocations. [`Allocation`] records the amount budgeted for a
 //! specific envelope in a given period.
 //!
 //! # Re-exports
 //!
 //! The crate root re-exports these types as:
 //! - [`crate::Envelope`], [`crate::EnvelopeId`], [`crate::EnvelopeBuilder`]
-//! - [`crate::EnvelopeGroup`], [`crate::EnvelopeGroupId`], [`crate::EnvelopeGroupBuilder`]
 //! - [`crate::Allocation`], [`crate::AllocationId`], [`crate::AllocationBuilder`]
 //! - [`crate::RolloverPolicy`]
 
@@ -17,7 +17,6 @@ use jiff::Timestamp;
 use jiff::civil::Date;
 
 crate::define_id!(EnvelopeId, "envelope");
-crate::define_id!(EnvelopeGroupId, "envelope_group");
 crate::define_id!(AllocationId, "allocation");
 
 /// Determines what happens to unspent (or overspent) funds at the end of a period.
@@ -44,93 +43,12 @@ pub enum RolloverPolicy {
     CapAtTarget,
 }
 
-/// A named group that organises envelopes into a hierarchy.
-///
-/// Groups can themselves be nested via [`Group::parent_id`].
-///
-/// Re-exported from the crate root as [`crate::EnvelopeGroup`].
-///
-/// # Example
-///
-/// ```
-/// use bc_models::{EnvelopeGroup, EnvelopeGroupId};
-/// use jiff::Timestamp;
-///
-/// let group = EnvelopeGroup::builder()
-///     .id(EnvelopeGroupId::new())
-///     .name("Housing")
-///     .created_at(Timestamp::now())
-///     .build();
-///
-/// assert_eq!(group.name(), "Housing");
-/// assert!(!group.is_archived());
-/// ```
-#[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[non_exhaustive]
-pub struct Group {
-    /// Stable, opaque identifier for this group (a prefixed `UUIDv7`).
-    /// Only supply this when re-hydrating a record from storage.
-    id: EnvelopeGroupId,
-
-    /// Display name for this envelope group.
-    #[builder(into)]
-    name: String,
-
-    /// Parent group ID, or `None` if this is a root group.
-    parent_id: Option<EnvelopeGroupId>,
-
-    /// Timestamp recorded when this group was first persisted.
-    created_at: Timestamp,
-
-    /// Timestamp at which this group was archived, or `None` if still active.
-    archived_at: Option<Timestamp>,
-}
-
-impl Group {
-    /// Returns the group ID.
-    #[inline]
-    #[must_use]
-    pub fn id(&self) -> &EnvelopeGroupId {
-        &self.id
-    }
-
-    /// Returns the group name.
-    #[inline]
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns the parent group ID, if any.
-    #[inline]
-    #[must_use]
-    pub fn parent_id(&self) -> Option<&EnvelopeGroupId> {
-        self.parent_id.as_ref()
-    }
-
-    /// Returns the creation timestamp.
-    #[inline]
-    #[must_use]
-    pub fn created_at(&self) -> &Timestamp {
-        &self.created_at
-    }
-
-    /// Returns `true` if this group has been archived.
-    #[inline]
-    #[must_use]
-    pub fn is_archived(&self) -> bool {
-        self.archived_at.is_some()
-    }
-
-    /// Returns the archive timestamp, if archived.
-    #[inline]
-    #[must_use]
-    pub fn archived_at(&self) -> Option<&Timestamp> {
-        self.archived_at.as_ref()
-    }
-}
-
 /// A budgeting envelope — a named category with an optional allocation target.
+///
+/// Envelopes form an arbitrary-depth tree via [`Envelope::parent_id`]. A
+/// parent envelope aggregates its children's actuals and allocations for
+/// roll-up reporting. Leaf envelopes (no children) are the units against which
+/// postings are assigned.
 ///
 /// When [`Envelope::allocation_target`] is `None` the envelope operates in
 /// *category tracking* mode: transactions are categorised against it but no
@@ -141,13 +59,11 @@ impl Group {
 /// # Example
 ///
 /// ```
-/// use bc_models::{Envelope, EnvelopeId, RolloverPolicy, Period, CommodityCode};
+/// use bc_models::{Envelope, RolloverPolicy, Period};
 /// use jiff::Timestamp;
 ///
 /// let env = Envelope::builder()
-///     .id(EnvelopeId::new())
 ///     .name("Groceries")
-///     .commodity(CommodityCode::new("AUD"))
 ///     .period(Period::Monthly)
 ///     .rollover_policy(RolloverPolicy::CarryForward)
 ///     .created_at(Timestamp::now())
@@ -155,23 +71,27 @@ impl Group {
 ///
 /// assert_eq!(env.name(), "Groceries");
 /// assert!(env.is_tracking_only());
+/// assert!(env.commodity().is_none());
 /// ```
 #[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Envelope {
     /// Stable, opaque identifier for this envelope (a prefixed `UUIDv7`).
-    /// Only supply this when re-hydrating a record from storage.
+    ///
+    /// Auto-generated when not supplied; only set this when re-hydrating a
+    /// record from storage.
+    #[builder(default)]
     id: EnvelopeId,
 
     /// Display name for this envelope.
     #[builder(into)]
     name: String,
 
-    /// Parent group ID, or `None` if this envelope is not in any group.
+    /// Parent envelope ID, or `None` if this is a root envelope.
     ///
-    /// Named `parent_id` (rather than `group_id`) to avoid
-    /// `clippy::module_name_repetitions`.
-    parent_id: Option<EnvelopeGroupId>,
+    /// Envelopes form an arbitrary-depth tree. A parent envelope aggregates
+    /// its children's actuals and allocations for roll-up budget views.
+    parent_id: Option<EnvelopeId>,
 
     /// Optional icon identifier (e.g. an emoji or icon name).
     #[builder(into)]
@@ -181,12 +101,15 @@ pub struct Envelope {
     #[builder(into)]
     colour: Option<String>,
 
-    /// The commodity (currency) this envelope tracks.
+    /// The commodity (currency) this envelope tracks, if set.
     ///
-    /// All actuals, allocations, and rollovers for this envelope are
-    /// denominated in this commodity. When [`Envelope::allocation_target`]
-    /// is set, its commodity **must** match this field.
-    commodity: crate::money::CommodityCode,
+    /// When `Some`, actuals filtering and allocation validation are restricted
+    /// to this commodity. When `None`, the envelope tracks across commodities
+    /// and conversion is left to reporting time.
+    ///
+    /// When [`Envelope::allocation_target`] is set, its commodity **must**
+    /// match this field (enforced at service level).
+    commodity: Option<crate::money::CommodityCode>,
 
     /// Optional allocation target amount.
     ///
@@ -204,6 +127,13 @@ pub struct Envelope {
     /// Account IDs whose transactions are tracked against this envelope.
     #[builder(default)]
     account_ids: Vec<crate::AccountId>,
+
+    /// Tags applied to this envelope for cross-cutting budget views.
+    ///
+    /// These are raw [`crate::TagId`] references. Use the tag service to
+    /// resolve them to human-readable paths.
+    #[builder(default)]
+    tag_ids: Vec<crate::TagId>,
 
     /// Timestamp recorded when this envelope was first persisted.
     created_at: Timestamp,
@@ -227,10 +157,10 @@ impl Envelope {
         &self.name
     }
 
-    /// Returns the parent group ID, if any.
+    /// Returns the parent envelope ID, if any.
     #[inline]
     #[must_use]
-    pub fn parent_id(&self) -> Option<&EnvelopeGroupId> {
+    pub fn parent_id(&self) -> Option<&EnvelopeId> {
         self.parent_id.as_ref()
     }
 
@@ -248,11 +178,14 @@ impl Envelope {
         self.colour.as_deref()
     }
 
-    /// Returns the commodity this envelope is denominated in.
+    /// Returns the commodity this envelope is denominated in, if set.
+    ///
+    /// `None` means the envelope tracks across commodities; conversion is
+    /// deferred to reporting time.
     #[inline]
     #[must_use]
-    pub fn commodity(&self) -> &crate::money::CommodityCode {
-        &self.commodity
+    pub fn commodity(&self) -> Option<&crate::money::CommodityCode> {
+        self.commodity.as_ref()
     }
 
     /// Returns the allocation target, if set.
@@ -290,6 +223,13 @@ impl Envelope {
         &self.account_ids
     }
 
+    /// Returns the tag IDs applied to this envelope.
+    #[inline]
+    #[must_use]
+    pub fn tag_ids(&self) -> &[crate::TagId] {
+        &self.tag_ids
+    }
+
     /// Returns the creation timestamp.
     #[inline]
     #[must_use]
@@ -319,11 +259,10 @@ impl Envelope {
 /// # Example
 ///
 /// ```
-/// use bc_models::{Allocation, AllocationId, EnvelopeId, Amount, CommodityCode, Decimal};
+/// use bc_models::{Allocation, EnvelopeId, Amount, CommodityCode, Decimal};
 /// use jiff::{Timestamp, civil::Date};
 ///
 /// let alloc = Allocation::builder()
-///     .id(AllocationId::new())
 ///     .envelope_id(EnvelopeId::new())
 ///     .period_start(Date::constant(2024, 1, 1))
 ///     .amount(Amount::new(Decimal::from(500), CommodityCode::new("AUD")))
@@ -336,7 +275,10 @@ impl Envelope {
 #[non_exhaustive]
 pub struct Allocation {
     /// Stable, opaque identifier for this allocation (a prefixed `UUIDv7`).
-    /// Only supply this when re-hydrating a record from storage.
+    ///
+    /// Auto-generated when not supplied; only set this when re-hydrating a
+    /// record from storage.
+    #[builder(default)]
     id: AllocationId,
 
     /// The envelope this allocation applies to.
@@ -404,14 +346,6 @@ mod tests {
     }
 
     #[test]
-    fn envelope_group_id_round_trips_display_from_str() {
-        let id = EnvelopeGroupId::new();
-        let s = id.to_string();
-        let parsed: EnvelopeGroupId = s.parse().expect("should parse");
-        assert_eq!(id, parsed);
-    }
-
-    #[test]
     fn allocation_id_round_trips_display_from_str() {
         let id = AllocationId::new();
         let s = id.to_string();
@@ -430,15 +364,61 @@ mod tests {
     }
 
     #[test]
+    fn envelope_id_is_auto_generated_when_not_set() {
+        use jiff::Timestamp;
+
+        use crate::Period;
+        let env = Envelope::builder()
+            .name("Groceries")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .created_at(Timestamp::now())
+            .build();
+        // id should be auto-generated — just verify it round-trips
+        let s = env.id().to_string();
+        assert!(
+            s.starts_with("envelope_"),
+            "id should have envelope_ prefix, got {s}"
+        );
+    }
+
+    #[test]
+    fn envelope_with_no_commodity_is_valid() {
+        use jiff::Timestamp;
+
+        use crate::Period;
+        let env = Envelope::builder()
+            .name("Cash")
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .created_at(Timestamp::now())
+            .build();
+        assert!(env.commodity().is_none());
+    }
+
+    #[test]
+    fn envelope_has_parent_envelope_not_group() {
+        use jiff::Timestamp;
+
+        use crate::Period;
+        let parent_id = EnvelopeId::new();
+        let env = Envelope::builder()
+            .name("Gym")
+            .parent_id(parent_id.clone())
+            .period(Period::Monthly)
+            .rollover_policy(RolloverPolicy::ResetToZero)
+            .created_at(Timestamp::now())
+            .build();
+        assert_eq!(env.parent_id(), Some(&parent_id));
+    }
+
+    #[test]
     fn envelope_without_target_is_tracking_only() {
         use jiff::Timestamp;
 
-        use crate::CommodityCode;
         use crate::Period;
         let env = Envelope::builder()
-            .id(EnvelopeId::new())
             .name("Dining Out")
-            .commodity(CommodityCode::new("AUD"))
             .period(Period::Monthly)
             .rollover_policy(RolloverPolicy::ResetToZero)
             .created_at(Timestamp::now())
@@ -455,7 +435,6 @@ mod tests {
         use crate::Decimal;
         use crate::Period;
         let env = Envelope::builder()
-            .id(EnvelopeId::new())
             .name("Groceries")
             .commodity(CommodityCode::new("AUD"))
             .allocation_target(Amount::new(
@@ -467,5 +446,29 @@ mod tests {
             .created_at(Timestamp::now())
             .build();
         assert!(!env.is_tracking_only());
+    }
+
+    #[test]
+    fn allocation_id_is_auto_generated_when_not_set() {
+        use jiff::Timestamp;
+        use jiff::civil::Date;
+
+        use crate::Amount;
+        use crate::CommodityCode;
+        use crate::Decimal;
+        let alloc = Allocation::builder()
+            .envelope_id(EnvelopeId::new())
+            .period_start(Date::constant(2024, 1, 1))
+            .amount(Amount::new(
+                Decimal::from(500_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .created_at(Timestamp::now())
+            .build();
+        let s = alloc.id().to_string();
+        assert!(
+            s.starts_with("allocation_"),
+            "id should have allocation_ prefix, got {s}"
+        );
     }
 }

@@ -6,7 +6,6 @@ use bc_models::AccountType;
 use bc_models::AllocationId;
 use bc_models::Amount;
 use bc_models::DepreciationId;
-use bc_models::EnvelopeGroupId;
 use bc_models::EnvelopeId;
 use bc_models::EventId;
 use bc_models::LoanId;
@@ -137,24 +136,14 @@ pub enum Event {
         /// Commodity of the loan (e.g. `"AUD"`).
         commodity: String,
     },
-    /// A new envelope group was created.
-    EnvelopeGroupCreated {
-        /// The new group's ID.
-        id: EnvelopeGroupId,
-        /// Display name of the group.
-        name: String,
-        /// Parent group ID, if nested.
-        #[serde(alias = "group_id")]
-        parent_id: Option<EnvelopeGroupId>,
-    },
     /// A new budget envelope was created.
     EnvelopeCreated {
         /// The new envelope's ID.
         id: EnvelopeId,
         /// Display name.
         name: String,
-        /// Group this envelope belongs to, if any.
-        group_id: Option<EnvelopeGroupId>,
+        /// Parent envelope this envelope belongs to, if any.
+        parent_id: Option<EnvelopeId>,
         /// Recurrence period.
         period: Period,
         /// Rollover policy.
@@ -178,12 +167,12 @@ pub enum Event {
         /// The envelope's ID.
         id: EnvelopeId,
     },
-    /// An envelope was moved to a different group (or to the root).
+    /// An envelope was moved to a different parent (or to the root).
     EnvelopeMoved {
         /// The envelope's ID.
         id: EnvelopeId,
-        /// New group ID, or `None` to place at the root.
-        group_id: Option<EnvelopeGroupId>,
+        /// New parent envelope ID, or `None` to place at the root.
+        parent_id: Option<EnvelopeId>,
     },
 }
 
@@ -202,7 +191,6 @@ impl Event {
             Self::AssetValuationRecorded { .. } => "AssetValuationRecorded",
             Self::DepreciationCalculated { .. } => "DepreciationCalculated",
             Self::LoanTermsSet { .. } => "LoanTermsSet",
-            Self::EnvelopeGroupCreated { .. } => "EnvelopeGroupCreated",
             Self::EnvelopeCreated { .. } => "EnvelopeCreated",
             Self::EnvelopeAllocated { .. } => "EnvelopeAllocated",
             Self::EnvelopeArchived { .. } => "EnvelopeArchived",
@@ -228,7 +216,6 @@ impl Event {
             Self::AssetValuationRecorded { account_id, .. }
             | Self::DepreciationCalculated { account_id, .. }
             | Self::LoanTermsSet { account_id, .. } => account_id.to_string(),
-            Self::EnvelopeGroupCreated { id, .. } => id.to_string(),
             Self::EnvelopeCreated { id, .. }
             | Self::EnvelopeArchived { id }
             | Self::EnvelopeMoved { id, .. } => id.to_string(),
@@ -617,7 +604,7 @@ mod tests {
         let event = Event::EnvelopeCreated {
             id: id.clone(),
             name: "Groceries".to_owned(),
-            group_id: None,
+            parent_id: None,
             period: Period::Monthly,
             rollover_policy: RolloverPolicy::CarryForward,
             allocation_target: None,
@@ -646,14 +633,14 @@ mod tests {
             Event::EnvelopeCreated {
                 id: replayed_id,
                 name,
-                group_id,
+                parent_id,
                 period,
                 rollover_policy,
                 allocation_target,
             } => {
                 assert_eq!(replayed_id, id);
                 assert_eq!(name, "Groceries");
-                assert_eq!(group_id, None);
+                assert_eq!(parent_id, None);
                 assert_eq!(period, Period::Monthly);
                 assert_eq!(rollover_policy, RolloverPolicy::CarryForward);
                 assert_eq!(allocation_target, None);
