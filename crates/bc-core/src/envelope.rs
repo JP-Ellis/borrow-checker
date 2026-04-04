@@ -209,6 +209,11 @@ impl Service {
             period: period.clone(),
             rollover_policy,
             allocation_target: allocation_target.clone(),
+            commodity: commodity.clone(),
+            icon: icon.clone(),
+            colour: colour.clone(),
+            account_ids: account_ids.clone(),
+            tag_ids: tag_ids.clone(),
         };
 
         let mut db_tx = self.pool.begin().await?;
