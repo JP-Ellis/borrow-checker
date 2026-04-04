@@ -385,7 +385,7 @@ ______________________________________________________________________
 | 2 | Format compatibility (`bc-format-*` crates) | 1 |
 | 3 | CLI (`bc-cli`) | 1, 2 |
 | 4 | TUI (`bc-tui`) | 1, 5\* |
-| 5 | Budgeting (flat envelope hierarchy, tags, allocation, all periods) | 1 |
+| 5 | Budgeting (nested envelope hierarchy, tags, allocation, all periods) | 1 |
 | 5A | Illiquid asset tracking (valuations, depreciation, loan terms) | 1, 5 |
 | 6 | Plugin Phase 1: Importers | 2, 3 |
 | 7 | Tauri GUI (`bc-app`) | 1, 2, 5 |
