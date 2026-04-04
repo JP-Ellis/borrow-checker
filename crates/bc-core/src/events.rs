@@ -6,7 +6,7 @@ use bc_models::AccountType;
 use bc_models::DepreciationId;
 use bc_models::EventId;
 use bc_models::LoanId;
-use bc_models::RepaymentFrequency;
+use bc_models::Period;
 use bc_models::TransactionId;
 use bc_models::ValuationId;
 use bc_models::ValuationSource;
@@ -109,6 +109,10 @@ pub enum Event {
     },
     /// Loan terms were set or updated for a [`Receivable`] account.
     ///
+    /// **Note:** `compounding_frequency` and `offset_account_ids` are stored only in the
+    /// `loan_terms` and `loan_offset_accounts` projection tables, not in this event.
+    /// Event replay alone cannot recover these fields; the projection DB is canonical.
+    ///
     /// [`Receivable`]: bc_models::AccountKind::Receivable
     LoanTermsSet {
         /// Unique identifier for this loan terms record.
@@ -124,7 +128,7 @@ pub enum Event {
         /// Total term in months.
         term_months: u32,
         /// Repayment frequency.
-        repayment_frequency: RepaymentFrequency,
+        repayment_frequency: Period,
         /// Commodity of the loan (e.g. `"AUD"`).
         commodity: String,
     },
@@ -514,7 +518,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn loan_terms_set_round_trips(pool: sqlx::SqlitePool) {
         use bc_models::LoanId;
-        use bc_models::RepaymentFrequency;
+        use bc_models::Period;
         use jiff::civil::date;
         use rust_decimal_macros::dec;
 
@@ -527,7 +531,7 @@ mod tests {
             annual_rate: dec!(0.065),
             start_date: date(2026, 1, 1),
             term_months: 360,
-            repayment_frequency: RepaymentFrequency::Monthly,
+            repayment_frequency: Period::Monthly,
             commodity: "AUD".to_owned(),
         };
 

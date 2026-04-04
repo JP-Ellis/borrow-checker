@@ -10,96 +10,96 @@ exit_code: 0
     "payment_number": 1,
     "date": "2026-02-01",
     "total_payment": "1032.80",
-    "principal": "972.80",
-    "interest": "60.00",
-    "remaining_balance": "11027.20"
+    "principal": "971.65",
+    "interest": "61.15",
+    "remaining_balance": "11028.35"
   },
   {
     "payment_number": 2,
     "date": "2026-03-01",
     "total_payment": "1032.80",
-    "principal": "977.66",
-    "interest": "55.14",
-    "remaining_balance": "10049.54"
+    "principal": "982.04",
+    "interest": "50.76",
+    "remaining_balance": "10046.31"
   },
   {
     "payment_number": 3,
     "date": "2026-04-01",
     "total_payment": "1032.80",
-    "principal": "982.55",
-    "interest": "50.25",
-    "remaining_balance": "9066.99"
+    "principal": "981.61",
+    "interest": "51.19",
+    "remaining_balance": "9064.70"
   },
   {
     "payment_number": 4,
     "date": "2026-05-01",
     "total_payment": "1032.80",
-    "principal": "987.47",
-    "interest": "45.33",
-    "remaining_balance": "8079.52"
+    "principal": "988.10",
+    "interest": "44.70",
+    "remaining_balance": "8076.60"
   },
   {
     "payment_number": 5,
     "date": "2026-06-01",
     "total_payment": "1032.80",
-    "principal": "992.40",
-    "interest": "40.40",
-    "remaining_balance": "7087.12"
+    "principal": "991.64",
+    "interest": "41.16",
+    "remaining_balance": "7084.96"
   },
   {
     "payment_number": 6,
     "date": "2026-07-01",
     "total_payment": "1032.80",
-    "principal": "997.36",
-    "interest": "35.44",
-    "remaining_balance": "6089.76"
+    "principal": "997.86",
+    "interest": "34.94",
+    "remaining_balance": "6087.10"
   },
   {
     "payment_number": 7,
     "date": "2026-08-01",
     "total_payment": "1032.80",
-    "principal": "1002.35",
-    "interest": "30.45",
-    "remaining_balance": "5087.41"
+    "principal": "1001.78",
+    "interest": "31.02",
+    "remaining_balance": "5085.32"
   },
   {
     "payment_number": 8,
     "date": "2026-09-01",
     "total_payment": "1032.80",
-    "principal": "1007.36",
-    "interest": "25.44",
-    "remaining_balance": "4080.05"
+    "principal": "1006.89",
+    "interest": "25.91",
+    "remaining_balance": "4078.43"
   },
   {
     "payment_number": 9,
     "date": "2026-10-01",
     "total_payment": "1032.80",
-    "principal": "1012.40",
-    "interest": "20.40",
-    "remaining_balance": "3067.65"
+    "principal": "1012.69",
+    "interest": "20.11",
+    "remaining_balance": "3065.74"
   },
   {
     "payment_number": 10,
     "date": "2026-11-01",
     "total_payment": "1032.80",
-    "principal": "1017.46",
-    "interest": "15.34",
-    "remaining_balance": "2050.19"
+    "principal": "1017.18",
+    "interest": "15.62",
+    "remaining_balance": "2048.56"
   },
   {
     "payment_number": 11,
     "date": "2026-12-01",
     "total_payment": "1032.80",
-    "principal": "1022.55",
-    "interest": "10.25",
-    "remaining_balance": "1027.64"
+    "principal": "1022.70",
+    "interest": "10.10",
+    "remaining_balance": "1025.86"
   },
   {
     "payment_number": 12,
     "date": "2027-01-01",
-    "total_payment": "1032.78",
-    "principal": "1027.64",
-    "interest": "5.14",
+    "total_payment": "1031.09",
+    "principal": "1025.86",
+    "interest": "5.23",
     "remaining_balance": "0"
   }
 ]
