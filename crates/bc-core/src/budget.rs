@@ -434,7 +434,7 @@ mod tests {
     ///
     /// Jan: allocated=500, actuals=300 → surplus=200 carried to Feb
     /// Feb: allocated=500, actuals=400, rollover=200 → available=300 carried to Mar
-    /// Mar: rollover must be 300, not 100 (the naive prev_allocated - prev_actuals).
+    /// Mar: rollover must be 300, not 100 (the naive `prev_allocated` - `prev_actuals`).
     #[sqlx::test(migrations = "./migrations")]
     async fn carry_forward_accumulates_across_three_periods(pool: sqlx::SqlitePool) {
         use bc_models::AccountKind;
