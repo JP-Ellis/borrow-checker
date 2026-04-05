@@ -6,6 +6,7 @@
 
 /// Top-level component identifier, namespaced by screen.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Id {
     /// Chrome components — always mounted.
     Chrome(ChromeId),
@@ -19,6 +20,7 @@ pub enum Id {
 
 /// Identifiers for the permanent chrome components.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ChromeId {
     /// Tab bar across the top.
     TabBar,
@@ -30,6 +32,7 @@ pub enum ChromeId {
 
 /// Identifiers for the accounts screen components.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum AccountsId {
     /// Account tree sidebar.
     Sidebar,
@@ -41,6 +44,7 @@ pub enum AccountsId {
 
 /// Identifiers for the budget screen components.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum BudgetId {
     /// Envelope tree sidebar.
     Sidebar,
@@ -50,6 +54,7 @@ pub enum BudgetId {
 
 /// Identifiers for the reports screen components.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ReportsId {
     /// Combined report selector and output view.
     View,

@@ -43,6 +43,7 @@ impl Widget {
 }
 
 impl MockComponent for Widget {
+    #[inline]
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         let selected = match self.active_tab {
             Tab::Accounts => 0,
@@ -56,10 +57,12 @@ impl MockComponent for Widget {
         frame.render_widget(tabs, area);
     }
 
+    #[inline]
     fn query(&self, attr: Attribute) -> Option<AttrValue> {
         self.props.get(attr)
     }
 
+    #[inline]
     fn attr(&mut self, attr: Attribute, value: AttrValue) {
         // Update active tab when set externally.
         if attr == Attribute::Value {
@@ -77,6 +80,7 @@ impl MockComponent for Widget {
         self.props.set(attr, value);
     }
 
+    #[inline]
     fn state(&self) -> State {
         State::One(StateValue::Usize(match self.active_tab {
             Tab::Accounts => 0,
@@ -85,6 +89,7 @@ impl MockComponent for Widget {
         }))
     }
 
+    #[inline]
     fn perform(&mut self, _cmd: Cmd) -> CmdResult {
         CmdResult::None
     }
@@ -115,6 +120,14 @@ impl Component<Msg, NoUserEvent> for TabBar {
     )]
     fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
         match ev {
+            Event::Keyboard(KeyEvent {
+                code: Key::Char('q'),
+                ..
+            }) => Some(Msg::AppQuit),
+            Event::Keyboard(KeyEvent {
+                code: Key::Char('?'),
+                ..
+            }) => Some(Msg::HelpToggle),
             Event::Keyboard(KeyEvent {
                 code: Key::Char('1'),
                 ..

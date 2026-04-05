@@ -11,6 +11,7 @@ use crate::mode::AppMode;
 /// Cross-cutting variants are handled directly in `Model::update()`.
 /// Screen-specific variants are delegated to the active `Screen::handle()`.
 #[derive(Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Msg {
     /// Quit the application.
     AppQuit,
@@ -30,6 +31,7 @@ pub enum Msg {
 
 /// The top-level tabs.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Tab {
     /// Account tree + transaction list/detail.
     Accounts,

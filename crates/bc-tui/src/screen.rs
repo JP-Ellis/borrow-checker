@@ -10,6 +10,8 @@ use crate::mode::AppMode;
 use crate::msg::Msg;
 
 /// A human-readable description of a single key binding.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct KeyBinding {
     /// The key or key combination, e.g. `"j / ↓"`.
     pub key: String,
@@ -97,7 +99,8 @@ impl Screen for PlaceholderScreen {
 
     #[inline]
     fn initial_focus(&self) -> Id {
-        Id::Accounts(crate::id::AccountsId::Sidebar)
+        // PlaceholderScreen mounts no components — focus the always-mounted TabBar.
+        Id::Chrome(crate::id::ChromeId::TabBar)
     }
 
     #[inline]
