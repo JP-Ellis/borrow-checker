@@ -56,6 +56,56 @@ pub trait Screen {
     fn keybindings(&self, mode: &AppMode) -> Vec<KeyBinding>;
 }
 
+/// Construct the [`Screen`] implementation for the given [`Tab`].
+///
+/// Called by [`crate::app::Model::switch_tab`] to create a new screen
+/// when the user switches tabs.
+#[must_use]
+pub fn make_screen(
+    _tab: &crate::msg::Tab,
+    _ctx: std::sync::Arc<crate::context::TuiContext>,
+) -> Box<dyn Screen> {
+    // Placeholder: Phase 2–4 replace this with real screen constructors.
+    Box::new(PlaceholderScreen)
+}
+
+/// Temporary placeholder screen used until real screens are implemented.
+pub struct PlaceholderScreen;
+
+impl Screen for PlaceholderScreen {
+    #[inline]
+    fn mount(&mut self, _app: &mut Application<Id, Msg, NoUserEvent>) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    #[inline]
+    fn unmount(&mut self, _app: &mut Application<Id, Msg, NoUserEvent>) {}
+
+    #[inline]
+    fn view(
+        &mut self,
+        _app: &mut Application<Id, Msg, NoUserEvent>,
+        _frame: &mut Frame,
+        _area: Rect,
+    ) {
+    }
+
+    #[inline]
+    fn handle(&mut self, _msg: Msg) -> Option<Msg> {
+        None
+    }
+
+    #[inline]
+    fn initial_focus(&self) -> Id {
+        Id::Accounts(crate::id::AccountsId::Sidebar)
+    }
+
+    #[inline]
+    fn keybindings(&self, _mode: &AppMode) -> Vec<KeyBinding> {
+        vec![]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
