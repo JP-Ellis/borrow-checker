@@ -1,0 +1,67 @@
+#:schema https://mise.jdx.dev/schema/mise.toml.json
+
+[tools]
+"core:rust" = {
+  version    = "stable",
+  components = "llvm-tools,rustfmt,clippy",
+}
+
+"aqua:j178/prek"                 = "0.3.8"
+# Binstall ensures fast installs of cargo binaries
+"aqua:cargo-bins/cargo-binstall" = "1.17.9"
+
+"cargo:cargo-hack"     = "0.6.44"
+"cargo:cargo-llvm-cov" = "0.8.5"
+"cargo:cargo-machete"  = "0.9.1"
+"cargo:cargo-nextest"  = "0.9.123"
+
+[tasks]
+  [tasks.format]
+  description = "Check formatting (requires nightly rustfmt)"
+  run         = "cargo +nightly fmt -- --check"
+
+  [tasks."format:fix"]
+  description = "Apply formatting (requires nightly rustfmt)"
+  run         = "cargo +nightly fmt"
+
+  [tasks.lint]
+  description = "Lint with Clippy across all feature combinations"
+  run         = [
+    "cargo hack --feature-powerset --workspace --no-dev-deps clippy -- -D warnings",
+    "cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings",
+  ]
+
+  [tasks."lint:fix"]
+  description = "Auto-fix lint issues"
+  run         = "cargo clippy --workspace --all-targets --fix --allow-staged --allow-dirty"
+
+  [tasks.check]
+  description = "Run format and lint checks"
+  run         = [{ task = ":format" }, { task = ":lint" }]
+
+  [tasks."check:fix"]
+  description = "Auto-fix format and lint issues"
+  run         = [{ task = ":format:fix" }, { task = ":lint:fix" }]
+
+  [tasks."test:nextest"]
+  description = "Run unit tests across all feature combinations"
+  run         = "cargo hack --feature-powerset nextest run --workspace"
+
+  [tasks."test:docs"]
+  description = "Run doc tests"
+  run         = "cargo test --doc --workspace"
+
+  [tasks.test]
+  description = "Run all tests (unit, integration, docs)"
+  run         = [
+    { task = "test:nextest" },
+    { task = "test:docs" },
+  ]
+
+  [tasks.machete]
+  description = "Check for unused dependencies"
+  run         = "cargo machete --with-metadata"
+
+  [tasks.coverage]
+  description = "Generate LCOV coverage report"
+  run         = "cargo llvm-cov nextest --all-features --lcov --output-path coverage.lcov"

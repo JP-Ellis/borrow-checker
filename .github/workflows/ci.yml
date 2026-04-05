@@ -34,11 +34,10 @@ jobs:
     needs:
       - committed
       - prek
-      - clippy
+      - lint
       - format
       - machete
       - test
-      - test-docs
       - coverage
     runs-on: ubuntu-latest
     steps:
@@ -65,10 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
-      - uses: taiki-e/install-action@e9e8e031bcd90cdbe8ac6bb1d376f8596e587fbf  # v2.70.2
-        with:
-          tool: prek
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
       - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: ~/.cache/prek
@@ -76,47 +72,35 @@ jobs:
 
       - run: prek run --all-files
         env:
-          # Rust hooks run in the dedicated clippy/format/machete jobs below
+          # Rust hooks run in the dedicated lint/format/machete jobs below
           SKIP: cargo-clippy,cargo-fmt,cargo-machete
 
-  clippy:
-    name: Clippy
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
-        with:
-          components: clippy
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-      - uses: taiki-e/install-action@e9e8e031bcd90cdbe8ac6bb1d376f8596e587fbf  # v2.70.2
-        with:
-          tool: cargo-hack
-      - run: cargo hack --feature-powerset --workspace --no-dev-deps clippy -- -D warnings
-      - run: cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings
+      - run: mise run lint
 
   format:
     name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2  # nightly
-        with:
-          components: rustfmt
-      - run: cargo fmt --check
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
+      - run: rustup toolchain add nightly --component rustfmt --no-self-update
+      - run: mise run format
 
   machete:
     name: Machete
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-      - uses: taiki-e/install-action@e9e8e031bcd90cdbe8ac6bb1d376f8596e587fbf  # v2.70.2
-        with:
-          tool: cargo-machete
-      - run: cargo machete --with-metadata
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
+      - run: mise run machete
 
-  ## Test matrix
   test:
     name: Test (${{ matrix.os }}, ${{ matrix.toolchain }})
     if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
@@ -137,47 +121,24 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
-        with:
-          toolchain: ${{ matrix.toolchain }}
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-      - uses: taiki-e/install-action@e9e8e031bcd90cdbe8ac6bb1d376f8596e587fbf  # v2.70.2
-        with:
-          tool: cargo-hack,cargo-nextest
-      - run: cargo hack --feature-powerset nextest run --workspace
+      - name: Install beta toolchain
+        if: matrix.toolchain != 'stable'
+        run: rustup toolchain install ${{ matrix.toolchain }} --no-self-update
+      - run: mise run test
+        env:
+          RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
 
-  ## Test docs
-  test-docs:
-    name: Test docs
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
-        with:
-          components: rust-docs
-      - run: cargo doc --workspace --no-deps --document-private-items --all-features
-      - run: cargo test --doc --workspace
-
-  ## Coverage
   coverage:
     name: Coverage
     if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
-        with:
-          components: llvm-tools-preview
-
-      - name: Restore Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-
-      - uses: taiki-e/install-action@e9e8e031bcd90cdbe8ac6bb1d376f8596e587fbf  # v2.70.2
-        with:
-          tool: cargo-llvm-cov,cargo-nextest
-      - run: cargo llvm-cov nextest --all-features --lcov --output-path coverage.lcov
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - run: mise run coverage
       - uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2  # v6.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN || '' }}
