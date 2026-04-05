@@ -1,0 +1,68 @@
+package borrow-checker:sdk@0.1.0;
+
+/// Shared data types used by all plugin interfaces.
+interface types {
+    /// A calendar date.
+    record date {
+        year: s32,
+        month: u8,
+        day: u8,
+    }
+
+    /// A monetary amount in minor units to avoid floating-point imprecision.
+    ///
+    /// Example: AUD 10.50 → minor-units=1050, currency="AUD", scale=2
+    record amount {
+        /// Minor units (e.g. cents). Negative for debits.
+        minor-units: s64,
+        /// ISO 4217 currency code, e.g. "AUD".
+        currency: string,
+        /// Number of decimal places, e.g. 2 for AUD cents.
+        scale: u8,
+    }
+
+    /// A parsed transaction prior to account binding.
+    record raw-transaction {
+        date: date,
+        amount: amount,
+        balance: option<amount>,
+        payee: option<string>,
+        description: string,
+        reference: option<string>,
+    }
+
+    /// Opaque JSON blob passed through from the ImportProfile config field.
+    type import-config = string;
+
+    /// Errors produced during an import operation.
+    variant import-error {
+        invalid-config(string),
+        parse(string),
+        missing-field(string),
+        bad-value(string),
+    }
+}
+
+/// The importer interface that every importer plugin must export.
+interface importer {
+    use types.{raw-transaction, import-config, import-error};
+
+    /// Returns the stable plugin name, e.g. "csv". Must be unique across plugins.
+    name: func() -> string;
+
+    /// Stateless format sniffing — returns true if bytes look like this format.
+    detect: func(bytes: list<u8>) -> bool;
+
+    /// Parse bytes into raw transactions using the provided config JSON.
+    ///
+    /// Note: `import` is a reserved WIT keyword, so this function is named `parse`.
+    parse: func(
+        bytes: list<u8>,
+        config: import-config,
+    ) -> result<list<raw-transaction>, import-error>;
+}
+
+/// The WASM component world that every importer plugin must satisfy.
+world importer-plugin {
+    export importer;
+}
