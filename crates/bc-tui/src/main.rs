@@ -2,11 +2,5 @@
 
 #[expect(clippy::print_stdout, reason = "stub placeholder")]
 fn main() {
-    println!("BorrowChecker TUI - not yet implemented");
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {}
+    println!("stub");
 }
