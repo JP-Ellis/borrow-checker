@@ -7,6 +7,7 @@
     reason = "scaffold in progress — removed in Task 7 once the main loop wires all modules"
 )]
 
+mod app;
 mod context;
 mod id;
 mod mode;
