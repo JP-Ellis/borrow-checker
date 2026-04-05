@@ -42,8 +42,13 @@ pub mod __bindings {
     wit_bindgen::generate!({
         path: "wit",
         world: "importer-plugin",
+        pub_export_macro: true,
     });
 }
+
+// Re-export the `export!` macro for use by the #[importer] proc-macro.
+#[doc(hidden)]
+pub use __bindings::export;
 
 pub mod types;
 pub use types::Amount;
