@@ -1,7 +1,7 @@
 //! Importer registry types for the BorrowChecker import pipeline.
 //!
 //! This module provides [`Factory`], a lightweight `Clone` descriptor
-//! that associates a stable format name with two static function pointers: one for
+//! that associates a stable format name with two dynamic functions: one for
 //! format detection and one for constructing a boxed [`super::Importer`].
 //!
 //! Plugins register factories at startup; the core engine iterates them to detect
@@ -10,13 +10,21 @@
 //! Both types are re-exported from the crate root as [`crate::ImporterFactory`] and
 //! [`crate::ImporterRegistry`].
 
+use std::sync::Arc;
+
 use super::Importer;
+
+/// Type alias for the format-detection closure stored in a [`Factory`].
+type DetectFn = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
+
+/// Type alias for the importer-construction closure stored in a [`Factory`].
+type CreateFn = Arc<dyn Fn() -> Box<dyn Importer> + Send + Sync>;
 
 /// A lightweight descriptor for a single importer format.
 ///
-/// Each `Factory` bundles a stable format name with two static function
-/// pointers: one for sniffing whether a byte slice looks like the format, and one
-/// for constructing a fresh [`Box<dyn Importer>`].
+/// Each `Factory` bundles a stable format name with two dynamic functions: one for
+/// sniffing whether a byte slice looks like the format, and one for constructing a
+/// fresh [`Box<dyn Importer>`].
 ///
 /// External code must use [`Factory::new`] to construct instances; the
 /// struct's private fields prevent struct-literal construction outside this crate.
@@ -33,7 +41,7 @@ use super::Importer;
 /// struct MyImporter;
 ///
 /// impl Importer for MyImporter {
-///     fn name(&self) -> &'static str { "my-format" }
+///     fn name(&self) -> &str { "my-format" }
 ///     fn detect(&self, _bytes: &[u8]) -> bool { true }
 ///     fn import(
 ///         &self,
@@ -44,10 +52,11 @@ use super::Importer;
 ///     }
 /// }
 ///
-/// fn detect_my(_b: &[u8]) -> bool { true }
-/// fn create_my() -> Box<dyn Importer> { Box::new(MyImporter) }
-///
-/// let factory = ImporterFactory::new("my-format", detect_my, create_my);
+/// let factory = ImporterFactory::new(
+///     "my-format",
+///     |_b| true,
+///     || Box::new(MyImporter),
+/// );
 /// assert_eq!(factory.name(), "my-format");
 /// assert!(factory.detect(b"anything"));
 /// assert_eq!(factory.create().name(), "my-format");
@@ -56,17 +65,17 @@ use super::Importer;
 #[derive(Clone)]
 pub struct Factory {
     /// Stable format identifier (e.g. `"csv"`, `"ofx"`).
-    name: &'static str,
-    /// Static function pointer used to sniff whether bytes match this format.
-    detect: fn(&[u8]) -> bool,
-    /// Static function pointer that constructs a fresh boxed importer.
-    create: fn() -> Box<dyn Importer>,
+    name: String,
+    /// Function used to sniff whether bytes match this format.
+    detect: DetectFn,
+    /// Function that constructs a fresh boxed importer.
+    create: CreateFn,
 }
 
 impl core::fmt::Debug for Factory {
     /// Formats the factory, showing only the `name` field.
     ///
-    /// Function pointer addresses are unstable and convey no useful information,
+    /// The closure addresses are unstable and convey no useful information,
     /// so only `name` is included in the debug output.
     #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -93,7 +102,7 @@ impl core::fmt::Debug for Factory {
 /// struct MyImporter;
 ///
 /// impl Importer for MyImporter {
-///     fn name(&self) -> &'static str { "my-format" }
+///     fn name(&self) -> &str { "my-format" }
 ///     fn detect(&self, bytes: &[u8]) -> bool { bytes.starts_with(b"MY") }
 ///     fn import(
 ///         &self,
@@ -104,11 +113,12 @@ impl core::fmt::Debug for Factory {
 ///     }
 /// }
 ///
-/// fn detect_my(b: &[u8]) -> bool { b.starts_with(b"MY") }
-/// fn create_my() -> Box<dyn Importer> { Box::new(MyImporter) }
-///
 /// let mut registry = ImporterRegistry::new();
-/// registry.register(ImporterFactory::new("my-format", detect_my, create_my));
+/// registry.register(ImporterFactory::new(
+///     "my-format",
+///     |b| b.starts_with(b"MY"),
+///     || Box::new(MyImporter),
+/// ));
 /// assert_eq!(registry.detect_format(b"MY data"), Some("my-format"));
 /// ```
 #[non_exhaustive]
@@ -158,17 +168,15 @@ impl Registry {
     ///
     /// struct Stub;
     /// impl Importer for Stub {
-    ///     fn name(&self) -> &'static str { "stub" }
+    ///     fn name(&self) -> &str { "stub" }
     ///     fn detect(&self, _: &[u8]) -> bool { false }
     ///     fn import(&self, _: &[u8], _: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
     /// }
-    /// fn detect_stub(_: &[u8]) -> bool { false }
-    /// fn create_stub() -> Box<dyn Importer> { Box::new(Stub) }
     ///
     /// let mut registry = ImporterRegistry::new();
     /// registry
-    ///     .register(ImporterFactory::new("a", detect_stub, create_stub))
-    ///     .register(ImporterFactory::new("b", detect_stub, create_stub));
+    ///     .register(ImporterFactory::new("a", |_| false, || Box::new(Stub)))
+    ///     .register(ImporterFactory::new("b", |_| false, || Box::new(Stub)));
     /// ```
     #[inline]
     pub fn register(&mut self, factory: Factory) -> &mut Self {
@@ -186,10 +194,10 @@ impl Registry {
     ///
     /// # Returns
     ///
-    /// `Some(&'static str)` with the format name if a match is found, or `None`.
+    /// `Some(&str)` with the format name if a match is found, or `None`.
     #[inline]
     #[must_use]
-    pub fn detect_format(&self, bytes: &[u8]) -> Option<&'static str> {
+    pub fn detect_format(&self, bytes: &[u8]) -> Option<&str> {
         self.factories
             .iter()
             .find(|f| f.detect(bytes))
@@ -241,7 +249,7 @@ impl Registry {
     ///
     /// # Returns
     ///
-    /// An iterator yielding `&'static str` format names.
+    /// An iterator yielding `&str` format names.
     ///
     /// # Example
     ///
@@ -250,22 +258,20 @@ impl Registry {
     ///
     /// struct Stub;
     /// impl Importer for Stub {
-    ///     fn name(&self) -> &'static str { "stub" }
+    ///     fn name(&self) -> &str { "stub" }
     ///     fn detect(&self, _: &[u8]) -> bool { false }
     ///     fn import(&self, _: &[u8], _: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
     /// }
-    /// fn detect_stub(_: &[u8]) -> bool { false }
-    /// fn create_stub() -> Box<dyn Importer> { Box::new(Stub) }
     ///
     /// let mut registry = ImporterRegistry::new();
     /// registry
-    ///     .register(ImporterFactory::new("csv", detect_stub, create_stub))
-    ///     .register(ImporterFactory::new("ofx", detect_stub, create_stub));
+    ///     .register(ImporterFactory::new("csv", |_| false, || Box::new(Stub)))
+    ///     .register(ImporterFactory::new("ofx", |_| false, || Box::new(Stub)));
     /// let names: Vec<_> = registry.names().collect();
     /// assert_eq!(names, &["csv", "ofx"]);
     /// ```
     #[inline]
-    pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
+    pub fn names(&self) -> impl Iterator<Item = &str> + '_ {
         self.factories.iter().map(Factory::name)
     }
 }
@@ -276,14 +282,12 @@ impl Factory {
     /// # Arguments
     ///
     /// * `name` - A stable, short identifier for the format (e.g. `"csv"`).
-    /// * `detect` - A static function that returns `true` when the given bytes
-    ///   look like this format.
-    /// * `create` - A static function that constructs and returns a fresh
-    ///   [`Box<dyn Importer>`] for this format.
+    /// * `detect` - A function that returns `true` when the given bytes look like this format.
+    /// * `create` - A function that constructs and returns a fresh [`Box<dyn Importer>`].
     ///
     /// # Returns
     ///
-    /// A new [`Factory`] wrapping the provided name and function pointers.
+    /// A new [`Factory`] wrapping the provided name and functions.
     ///
     /// # Example
     ///
@@ -292,7 +296,7 @@ impl Factory {
     ///
     /// struct NullImporter;
     /// impl Importer for NullImporter {
-    ///     fn name(&self) -> &'static str { "null" }
+    ///     fn name(&self) -> &str { "null" }
     ///     fn detect(&self, _bytes: &[u8]) -> bool { false }
     ///     fn import(
     ///         &self,
@@ -303,23 +307,20 @@ impl Factory {
     ///     }
     /// }
     ///
-    /// fn detect_null(_b: &[u8]) -> bool { false }
-    /// fn create_null() -> Box<dyn Importer> { Box::new(NullImporter) }
-    ///
-    /// let factory = ImporterFactory::new("null", detect_null, create_null);
+    /// let factory = ImporterFactory::new("null", |_b| false, || Box::new(NullImporter));
     /// assert_eq!(factory.name(), "null");
     /// ```
     #[inline]
     #[must_use]
     pub fn new(
-        name: &'static str,
-        detect: fn(&[u8]) -> bool,
-        create: fn() -> Box<dyn Importer>,
+        name: impl Into<String>,
+        detect: impl Fn(&[u8]) -> bool + Send + Sync + 'static,
+        create: impl Fn() -> Box<dyn Importer> + Send + Sync + 'static,
     ) -> Self {
         Self {
-            name,
-            detect,
-            create,
+            name: name.into(),
+            detect: Arc::new(detect),
+            create: Arc::new(create),
         }
     }
 
@@ -330,13 +331,13 @@ impl Factory {
     /// The `name` supplied at construction time (e.g. `"csv"`, `"ofx"`).
     #[inline]
     #[must_use]
-    pub fn name(&self) -> &'static str {
-        self.name
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Returns `true` if `bytes` look like input this format can handle.
     ///
-    /// Delegates to the `detect` function pointer supplied at construction time.
+    /// Delegates to the `detect` function supplied at construction time.
     /// Implementations are expected to be fast and non-panicking.
     ///
     /// # Arguments
@@ -354,7 +355,7 @@ impl Factory {
 
     /// Constructs and returns a fresh boxed importer for this format.
     ///
-    /// Delegates to the `create` function pointer supplied at construction time.
+    /// Delegates to the `create` function supplied at construction time.
     /// Each call produces an independent importer instance.
     ///
     /// # Returns
