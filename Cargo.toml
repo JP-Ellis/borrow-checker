@@ -87,6 +87,9 @@ members  = [
     "json"
   ] }
   winnow                = "1.0"
+  wit-bindgen           = { version = "0.55", default-features = false, features = [
+    "macros"
+  ] }
 
   ## ----------------------------------------
   ## MARK: Lints
@@ -121,6 +124,7 @@ members  = [
     multiple_crate_versions        = "allow"  # duplicate transitive deps are unavoidable in a large workspace
     non_ascii_literal              = "allow"  # Unicode string literals are used for currency symbols and display text
     pattern_type_mismatch          = "allow"  # match ergonomics (auto-ref in patterns) is standard Rust style
+    pub_use                        = "allow"  # re-exporting types to the crate root is idiomatic for library/SDK crates
     pub_with_shorthand             = "allow"  # `pub(crate)` shorthand is preferred over `pub(in crate)`
     question_mark_used             = "allow"  # `?` for error propagation is idiomatic Rust
     ref_patterns                   = "allow"  # `ref` in patterns is occasionally needed for complex destructuring
