@@ -251,7 +251,7 @@ pub enum Error {
 /// struct CsvImporter;
 ///
 /// impl bc_core::Importer for CsvImporter {
-///     fn name(&self) -> &'static str { "csv" }
+///     fn name(&self) -> &str { "csv" }
 ///
 ///     fn detect(&self, bytes: &[u8]) -> bool {
 ///         // heuristic: first non-whitespace byte is ASCII text
@@ -269,7 +269,7 @@ pub enum Error {
 /// ```
 pub trait Importer: Send + Sync + 'static {
     /// A short, stable identifier for this importer (e.g. `"csv"`, `"ofx"`).
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
 
     /// Returns `true` if `bytes` look like input this importer can handle.
     ///
