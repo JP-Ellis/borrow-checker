@@ -14,12 +14,38 @@ publish = false
 
   [package.metadata]
     [package.metadata.cargo-machete]
-    # Stub crate — deps are forward-declared for TUI implementation
-    ignored = ["bc-core", "bc-models"]
+    # Deps are used progressively across Phase 1–4; machete can't see forward.
+    ignored = [
+      "anyhow",
+      "assert_fs",
+      "bc-core",
+      "bc-models",
+      "crossterm",
+      "pretty_assertions",
+      "ratatui-macros",
+      "tokio",
+      "tui-realm-stdlib",
+      "tuirealm",
+    ]
+
+[[bin]]
+name = "borrow-checker-tui"
+path = "src/main.rs"
 
 [dependencies]
-bc-core   = { workspace = true }
-bc-models = { workspace = true }
+anyhow           = "1"
+bc-core          = { workspace = true }
+bc-models        = { workspace = true }
+crossterm        = "0.28"
+ratatui-macros   = "0.7"
+tokio            = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tui-realm-stdlib = "3"
+tuirealm         = "3"
+
+[dev-dependencies]
+assert_fs         = { workspace = true }
+pretty_assertions = { workspace = true }
+tokio             = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true
