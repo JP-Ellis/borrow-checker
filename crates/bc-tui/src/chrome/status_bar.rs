@@ -46,6 +46,7 @@ impl Default for Widget {
 }
 
 impl MockComponent for Widget {
+    #[inline]
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         let content = self
             .props
@@ -64,18 +65,22 @@ impl MockComponent for Widget {
         );
     }
 
+    #[inline]
     fn query(&self, attr: Attribute) -> Option<AttrValue> {
         self.props.get(attr)
     }
 
+    #[inline]
     fn attr(&mut self, attr: Attribute, value: AttrValue) {
         self.props.set(attr, value);
     }
 
+    #[inline]
     fn state(&self) -> State {
         State::None
     }
 
+    #[inline]
     fn perform(&mut self, _cmd: Cmd) -> CmdResult {
         CmdResult::None
     }
@@ -107,6 +112,7 @@ impl Default for StatusBar {
 }
 
 impl Component<Msg, NoUserEvent> for StatusBar {
+    #[inline]
     fn on(&mut self, _ev: Event<NoUserEvent>) -> Option<Msg> {
         // Display-only: no events handled.
         None

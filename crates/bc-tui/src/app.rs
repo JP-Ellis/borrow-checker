@@ -20,6 +20,7 @@ use crate::msg::Tab;
 use crate::screen::Screen;
 
 /// Top-level application state.
+#[non_exhaustive]
 pub struct Model {
     /// The tui-realm component registry and event loop.
     pub app: Application<Id, Msg, NoUserEvent>,
@@ -40,6 +41,7 @@ pub struct Model {
 }
 
 impl Update<Msg> for Model {
+    #[inline]
     fn update(&mut self, msg: Option<Msg>) -> Option<Msg> {
         #[expect(
             clippy::shadow_reuse,
@@ -94,6 +96,10 @@ impl Model {
     }
 
     /// Show or hide the help overlay.
+    #[expect(
+        clippy::print_stderr,
+        reason = "focus errors logged to stderr since we are in raw terminal mode"
+    )]
     fn toggle_help(&mut self) {
         use tuirealm::AttrValue;
         use tuirealm::Attribute;
@@ -113,7 +119,7 @@ impl Model {
             reason = "best-effort attribute updates; component may not exist yet during startup"
         )]
         if currently_shown {
-            // Hide overlay.
+            // Hide overlay and restore focus to the active screen.
             self.app
                 .attr(
                     &Id::Chrome(ChromeId::HelpOverlay),
@@ -121,6 +127,10 @@ impl Model {
                     AttrValue::Flag(false),
                 )
                 .ok();
+            let focus = self.active_screen.initial_focus();
+            if let Err(e) = self.app.active(&focus) {
+                eprintln!("failed to restore focus after closing help: {e}");
+            }
         } else {
             // Build help content from active screen's keybindings, then show.
             let bindings = self.active_screen.keybindings(&self.mode);
@@ -139,6 +149,10 @@ impl Model {
                     AttrValue::Flag(true),
                 )
                 .ok();
+            // Give focus to the overlay so keyboard events reach its on() handler.
+            if let Err(e) = self.app.active(&Id::Chrome(ChromeId::HelpOverlay)) {
+                eprintln!("failed to focus help overlay: {e}");
+            }
         }
     }
 
