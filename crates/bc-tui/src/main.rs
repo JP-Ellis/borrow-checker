@@ -8,6 +8,7 @@
 )]
 
 mod app;
+mod chrome;
 mod context;
 mod id;
 mod mode;
