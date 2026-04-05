@@ -273,4 +273,24 @@ mod tests {
         assert_eq!(d.month, 3_u8);
         assert_eq!(d.day, 15_u8);
     }
+
+    #[test]
+    fn raw_transaction_new_stores_fields() {
+        let date = Date::new(2025_i32, 1_u8, 15_u8);
+        let amount = Amount::new(1050_i64, "AUD", 2_u8);
+        let tx = RawTransaction::new(
+            date.clone(),
+            amount.clone(),
+            None,
+            Some("Payee".to_owned()),
+            "Description".to_owned(),
+            None,
+        );
+        assert_eq!(tx.date, date);
+        assert_eq!(tx.amount, amount);
+        assert_eq!(tx.balance, None);
+        assert_eq!(tx.payee.as_deref(), Some("Payee"));
+        assert_eq!(tx.description, "Description");
+        assert_eq!(tx.reference, None);
+    }
 }
