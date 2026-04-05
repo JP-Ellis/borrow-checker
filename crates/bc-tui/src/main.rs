@@ -10,6 +10,7 @@
 mod id;
 mod mode;
 mod msg;
+mod screen;
 
 #[expect(clippy::print_stdout, reason = "stub placeholder")]
 fn main() {
