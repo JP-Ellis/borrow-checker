@@ -1,5 +1,7 @@
 //! The [`Screen`] trait and associated types.
 
+pub mod accounts;
+
 use tuirealm::Application;
 use tuirealm::Frame;
 use tuirealm::NoUserEvent;
@@ -64,11 +66,13 @@ pub trait Screen {
 /// when the user switches tabs.
 #[must_use]
 pub fn make_screen(
-    _tab: &crate::msg::Tab,
-    _ctx: std::sync::Arc<crate::context::TuiContext>,
+    tab: &crate::msg::Tab,
+    ctx: std::sync::Arc<crate::context::TuiContext>,
 ) -> Box<dyn Screen> {
-    // Placeholder: Phase 2–4 replace this with real screen constructors.
-    Box::new(PlaceholderScreen)
+    match tab {
+        crate::msg::Tab::Accounts => Box::new(accounts::AccountsScreen::new(ctx)),
+        crate::msg::Tab::Budget | crate::msg::Tab::Reports => Box::new(PlaceholderScreen),
+    }
 }
 
 /// Temporary placeholder screen used until real screens are implemented.
