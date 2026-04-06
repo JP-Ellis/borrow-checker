@@ -49,6 +49,8 @@ pub mod __bindings {
 // Re-export the `export!` macro for use by the #[importer] proc-macro.
 #[doc(hidden)]
 pub use __bindings::export;
+/// The `#[importer]` attribute macro — apply to `impl Importer for YourType`.
+pub use bc_sdk_macros::importer;
 
 pub mod types;
 pub use types::Amount;
