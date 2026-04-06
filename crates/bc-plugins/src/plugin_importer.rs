@@ -80,6 +80,7 @@ impl PluginImporter {
     /// # Errors
     ///
     /// Returns a wasmtime error if instantiation fails.
+    #[inline]
     fn instantiate(&self) -> wasmtime::Result<(ImporterPlugin, Store<()>)> {
         let mut store = Store::new(&self.engine, ());
         let bindings = ImporterPlugin::instantiate(&mut store, &self.component, &self.linker)?;
