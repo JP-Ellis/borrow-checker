@@ -14,10 +14,11 @@ license.workspace      = true
 # Plugin authors depend on this crate alone, not the full workspace.
 
 [dependencies]
-serde       = { workspace = true }
-serde_json  = { workspace = true }
-thiserror   = { workspace = true }
-wit-bindgen = { workspace = true }
+bc-sdk-macros = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+thiserror     = { workspace = true }
+wit-bindgen   = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

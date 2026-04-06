@@ -227,6 +227,61 @@ impl From<serde_json::Error> for ImportError {
     }
 }
 
+// These `From` impls convert bc_sdk ergonomic types → WIT-generated types.
+// They are used by the #[importer] proc-macro generated code.
+
+// These `From` impls convert bc_sdk ergonomic types → WIT-generated types.
+// They are used by the #[importer] proc-macro generated code.
+// Bring generated types into scope to avoid absolute paths (clippy::absolute_paths).
+use crate::__bindings::borrow_checker::sdk::types::Amount as WitAmount;
+use crate::__bindings::borrow_checker::sdk::types::Date as WitDate;
+use crate::__bindings::exports::borrow_checker::sdk::importer::ImportError as WitImportError;
+use crate::__bindings::exports::borrow_checker::sdk::importer::RawTransaction as WitRawTransaction;
+
+#[doc(hidden)]
+impl From<RawTransaction> for WitRawTransaction {
+    #[inline]
+    fn from(t: RawTransaction) -> Self {
+        Self {
+            date: WitDate {
+                year: t.date.year,
+                month: t.date.month,
+                day: t.date.day,
+            },
+            amount: t.amount.into(),
+            balance: t.balance.map(::core::convert::Into::into),
+            payee: t.payee,
+            description: t.description,
+            reference: t.reference,
+        }
+    }
+}
+
+#[doc(hidden)]
+impl From<Amount> for WitAmount {
+    #[inline]
+    fn from(a: Amount) -> Self {
+        Self {
+            minor_units: a.minor_units,
+            currency: a.currency,
+            scale: a.scale,
+        }
+    }
+}
+
+#[doc(hidden)]
+impl From<ImportError> for WitImportError {
+    #[inline]
+    fn from(e: ImportError) -> Self {
+        match e {
+            ImportError::InvalidConfig(s) => Self::InvalidConfig(s),
+            ImportError::Parse(s) => Self::Parse(s),
+            ImportError::MissingField(s) => Self::MissingField(s),
+            ImportError::BadValue { field, detail } => Self::BadValue(format!("{field}: {detail}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;

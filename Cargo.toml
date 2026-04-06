@@ -15,6 +15,7 @@ members  = [
   "crates/bc-otel",
   "crates/bc-plugins",
   "crates/bc-sdk",
+  "crates/bc-sdk-macros",
   "crates/bc-tui",
 ]
 
@@ -38,6 +39,7 @@ members  = [
   bc-otel             = { path = "crates/bc-otel" }
   bc-plugins          = { path = "crates/bc-plugins" }
   bc-sdk              = { path = "crates/bc-sdk" }
+  bc-sdk-macros       = { path = "crates/bc-sdk-macros" }
 
   # External — shared across crates
   assert_cmd            = "2"
@@ -63,7 +65,9 @@ members  = [
   opentelemetry_sdk     = "0.31"
   owo-colors            = "4"
   pretty_assertions     = { version = "1", features = ["unstable"] }
+  proc-macro2           = "1"
   quick-xml             = "0.39"
+  quote                 = "1"
   regex                 = "1"
   rstest                = "0.26"
   rust_decimal          = { version = "1", features = ["serde-with-str"] }
@@ -77,6 +81,7 @@ members  = [
     "runtime-tokio",
     "sqlite"
   ] }
+  syn                   = { version = "2", features = ["full"] }
   thiserror             = "2"
   tokio                 = { version = "1", features = ["full"] }
   tracing               = "0.1"
@@ -120,6 +125,7 @@ members  = [
     impl_trait_in_params           = "allow"  # `impl Trait` in fn params is idiomatic for simple bounds
     implicit_return                = "allow"  # Rust's implicit return is idiomatic; explicit `return` is reserved for early exits
     min_ident_chars                = "allow"  # single-letter names (e.g. `i`, `n`) are fine in tight scopes
+    missing_inline_in_public_items = "allow"  # proc-macro crates have public entry points that cannot be #[inline]
     missing_trait_methods          = "allow"  # partial trait implementations with provided defaults are intentional
     multiple_crate_versions        = "allow"  # duplicate transitive deps are unavoidable in a large workspace
     non_ascii_literal              = "allow"  # Unicode string literals are used for currency symbols and display text
