@@ -190,8 +190,10 @@ dependencies = [
  "bc-config",
  "bc-core",
  "bc-format-beancount",
+ "bc-format-beancount-export",
  "bc-format-csv",
  "bc-format-ledger",
+ "bc-format-ledger-export",
  "bc-format-ofx",
  "bc-models",
  "bc-otel",
@@ -258,6 +260,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bc-format-beancount-export"
+version = "0.1.0"
+dependencies = [
+ "bc-core",
+ "bc-models",
+ "jiff",
+ "pretty_assertions",
+ "rust_decimal",
+ "rust_decimal_macros",
+]
+
+[[package]]
 name = "bc-format-csv"
 version = "0.1.0"
 dependencies = [
@@ -274,6 +288,18 @@ dependencies = [
 
 [[package]]
 name = "bc-format-ledger"
+version = "0.1.0"
+dependencies = [
+ "bc-core",
+ "bc-models",
+ "jiff",
+ "pretty_assertions",
+ "rust_decimal",
+ "rust_decimal_macros",
+]
+
+[[package]]
+name = "bc-format-ledger-export"
 version = "0.1.0"
 dependencies = [
  "bc-core",
