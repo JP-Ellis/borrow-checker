@@ -77,6 +77,11 @@ pub(crate) fn wit_to_import_error(e: wt::ImportError) -> bc_core::ImportError {
         }
         wt::ImportError::Parse(s) => bc_core::ImportError::Parse(s),
         wt::ImportError::MissingField(s) => bc_core::ImportError::MissingField(s),
-        wt::ImportError::BadValue(s) => bc_core::ImportError::Parse(format!("bad value: {s}")),
+        // The WIT `bad-value` merges field and detail into one string; map to
+        // the structured `BadValue` variant so callers can still match on it.
+        wt::ImportError::BadValue(s) => bc_core::ImportError::BadValue {
+            field: "plugin".to_owned(),
+            detail: s,
+        },
     }
 }
