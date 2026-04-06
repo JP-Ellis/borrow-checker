@@ -45,7 +45,7 @@ ratatui-macros   = "0.7"
 tokio            = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tui-input        = "0.11"
 tui-realm-stdlib = "3"
-tui-tree-widget  = "0.24"
+tui-tree-widget  = "0.22"
 tuirealm         = "3"
 
 [dev-dependencies]
