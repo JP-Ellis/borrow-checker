@@ -53,8 +53,8 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     let export_data = bc_core::ExportData::new(&accounts, commodities, &transactions, tags);
 
     let exporter: Box<dyn bc_core::Exporter> = match args.format {
-        Format::Ledger => Box::new(bc_format_ledger::LedgerExporter::default()),
-        Format::Beancount => Box::new(bc_format_beancount::BeancountExporter::default()),
+        Format::Ledger => Box::new(bc_format_ledger_export::LedgerExporter::default()),
+        Format::Beancount => Box::new(bc_format_beancount_export::BeancountExporter::default()),
     };
 
     let bytes = exporter
