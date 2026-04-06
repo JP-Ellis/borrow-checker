@@ -1,10 +1,16 @@
-//! WASM host runtime and plugin ABI bridge.
+//! WASM host runtime and plugin ABI bridge for BorrowChecker.
 //!
-//! Loads `.wasm` plugin files via extism, wires up host functions,
-//! and bridges plugin calls into `bc-core`.
+//! Loads `.wasm` plugin files via the WASM Component Model (wasmtime),
+//! validates their manifests, and bridges them into `bc-core`'s
+//! [`ImporterRegistry`](bc_core::ImporterRegistry).
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {}
-}
+pub(crate) mod host;
+pub(crate) mod manifest;
+pub(crate) mod plugin_importer;
+pub(crate) mod registry;
+pub(crate) mod translate;
+
+pub use manifest::ManifestError;
+pub use manifest::PluginManifest;
+pub use registry::PluginRegistry;
+pub use registry::RegistryError;
