@@ -4,6 +4,7 @@
 //! Counterpart Account).  Tab / Shift-Tab cycle through fields; Enter submits;
 //! Esc cancels.
 
+use bc_models;
 use tui_input::Input;
 use tui_input::InputRequest;
 use tuirealm::AttrValue;
@@ -109,6 +110,36 @@ impl TxForm {
             payee: Input::default(),
             amount: Input::default(),
             account: Input::default(),
+        }
+    }
+
+    /// Create an "edit transaction" form pre-populated from an existing transaction.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - The transaction to edit; date, payee, and the first posting's
+    ///   amount and account are used to pre-populate the fields.
+    fn new_edit(tx: &bc_models::Transaction) -> Self {
+        let date_val = tx.date().to_string();
+        let payee_val = tx.payee().unwrap_or("").to_owned();
+        let (amount_val, account_val) = tx
+            .postings()
+            .first()
+            .map(|p| {
+                (
+                    format!("{} {}", p.amount().value(), p.amount().commodity()),
+                    p.account_id().to_string(),
+                )
+            })
+            .unwrap_or_default();
+
+        Self {
+            props: Props::default(),
+            focused_field: FormField::Date,
+            date: Input::new(date_val),
+            payee: Input::new(payee_val),
+            amount: Input::new(amount_val),
+            account: Input::new(account_val),
         }
     }
 
@@ -296,10 +327,6 @@ impl MockComponent for TxForm {
 /// cycle through them; Enter emits
 /// [`AccountsMsg::FormSubmitted`](crate::msg::AccountsMsg::FormSubmitted);
 /// Esc emits [`AccountsMsg::FormCancelled`](crate::msg::AccountsMsg::FormCancelled).
-///
-/// Note: edit mode (pre-populating fields from an existing transaction) is not yet
-/// implemented. A `new_edit(transaction: &Transaction)` constructor should be added
-/// before wiring `OpenEditTransaction`.
 #[non_exhaustive]
 #[derive(MockComponent)]
 pub struct TransactionForm {
@@ -318,6 +345,23 @@ impl TransactionForm {
     pub fn new_add() -> Self {
         Self {
             component: TxForm::new_add(),
+        }
+    }
+
+    /// Create a pre-populated "edit transaction" form from an existing transaction.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - The transaction to pre-populate the form from.
+    ///
+    /// # Returns
+    ///
+    /// A [`TransactionForm`] ready to be mounted, starting on the Date field.
+    #[inline]
+    #[must_use]
+    pub fn new_edit(tx: &bc_models::Transaction) -> Self {
+        Self {
+            component: TxForm::new_edit(tx),
         }
     }
 }

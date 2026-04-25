@@ -42,6 +42,10 @@ pub struct Model {
 
 impl Update<Msg> for Model {
     #[inline]
+    #[expect(
+        clippy::print_stderr,
+        reason = "focus errors logged to stderr since we are in raw terminal mode"
+    )]
     fn update(&mut self, msg: Option<Msg>) -> Option<Msg> {
         #[expect(
             clippy::shadow_reuse,
@@ -67,10 +71,6 @@ impl Update<Msg> for Model {
                 None
             }
             Msg::FocusChange(id) => {
-                #[expect(
-                    clippy::unused_result_ok,
-                    reason = "focus errors logged to stderr since we are in raw terminal mode"
-                )]
                 if let Err(e) = self.app.active(&id) {
                     eprintln!("failed to set focus: {e}");
                 }

@@ -29,6 +29,7 @@ use tuirealm::ratatui::widgets::List;
 use tuirealm::ratatui::widgets::ListItem;
 use tuirealm::ratatui::widgets::ListState;
 
+use crate::mode::AppMode;
 use crate::msg::AccountsMsg;
 use crate::msg::Msg;
 
@@ -243,6 +244,18 @@ impl Component<Msg, NoUserEvent> for TransactionList {
                 None
             }
             Event::Keyboard(KeyEvent {
+                code: Key::Right | Key::Char('l') | Key::Enter,
+                ..
+            }) => self
+                .component
+                .transactions
+                .get(self.component.selected)
+                .map(|tx| Msg::Accounts(AccountsMsg::OpenDetail(tx.id().clone()))),
+            Event::Keyboard(KeyEvent {
+                code: Key::Left | Key::Char('h'),
+                ..
+            }) => Some(Msg::Accounts(AccountsMsg::FocusSidebar)),
+            Event::Keyboard(KeyEvent {
                 code: Key::Char('a'),
                 ..
             }) => Some(Msg::Accounts(AccountsMsg::OpenAddTransaction)),
@@ -253,7 +266,11 @@ impl Component<Msg, NoUserEvent> for TransactionList {
             Event::Keyboard(KeyEvent {
                 code: Key::Char('d'),
                 ..
-            }) => Some(Msg::Accounts(AccountsMsg::VoidConfirmed)),
+            }) => Some(Msg::Accounts(AccountsMsg::VoidRequested)),
+            Event::Keyboard(KeyEvent {
+                code: Key::Char('v'),
+                ..
+            }) => Some(Msg::ModeChange(AppMode::Visual)),
             _ => None,
         }
     }

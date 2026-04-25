@@ -15,6 +15,8 @@ use tuirealm::State;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
 use tuirealm::event::Event;
+use tuirealm::event::Key;
+use tuirealm::event::KeyEvent;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::style::Style;
@@ -24,6 +26,7 @@ use tuirealm::ratatui::widgets::Borders;
 use tuirealm::ratatui::widgets::Paragraph;
 use tuirealm::ratatui::widgets::Wrap;
 
+use crate::msg::AccountsMsg;
 use crate::msg::Msg;
 
 // ─── private component ───────────────────────────────────────────────────────
@@ -178,8 +181,18 @@ impl TransactionDetail {
 
 impl Component<Msg, NoUserEvent> for TransactionDetail {
     #[inline]
-    fn on(&mut self, _ev: Event<NoUserEvent>) -> Option<Msg> {
-        None
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "Event is non-exhaustive; remaining variants all produce None"
+    )]
+    fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
+        match ev {
+            Event::Keyboard(KeyEvent {
+                code: Key::Esc | Key::Left | Key::Char('h'),
+                ..
+            }) => Some(Msg::Accounts(AccountsMsg::CloseDetail)),
+            _ => None,
+        }
     }
 }
 

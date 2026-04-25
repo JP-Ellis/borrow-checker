@@ -55,6 +55,10 @@ pub fn mount(app: &mut Application<Id, Msg, NoUserEvent>, active_tab: Tab) -> an
                 SubClause::Always,
             ),
             Sub::new(SubEventClause::Keyboard(Key::Tab.into()), SubClause::Always),
+            Sub::new(
+                SubEventClause::Keyboard(Key::BackTab.into()),
+                SubClause::Always,
+            ),
         ],
     )?;
     app.mount(
