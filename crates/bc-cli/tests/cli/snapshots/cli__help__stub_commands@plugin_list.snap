@@ -5,5 +5,5 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
+No plugins installed.
 ----- stderr -----
-plugin list: requires Milestone 6 (plugin system) — not yet implemented
