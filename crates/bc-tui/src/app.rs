@@ -66,6 +66,20 @@ impl Update<Msg> for Model {
                 self.toggle_help();
                 None
             }
+            Msg::FocusChange(id) => {
+                #[expect(
+                    clippy::unused_result_ok,
+                    reason = "focus errors logged to stderr since we are in raw terminal mode"
+                )]
+                if let Err(e) = self.app.active(&id) {
+                    eprintln!("failed to set focus: {e}");
+                }
+                None
+            }
+            Msg::Chrome(_) => {
+                // Chrome messages reserved for future use; currently no-op.
+                None
+            }
             other @ (Msg::Accounts(_) | Msg::Budget(_) | Msg::Reports(_)) => {
                 self.active_screen.handle(other)
             }
