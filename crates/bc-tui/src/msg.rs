@@ -4,6 +4,7 @@
 //! `Model::update()` handles cross-cutting variants directly and delegates
 //! screen-specific variants to `Screen::handle()`.
 
+use crate::id::Id;
 use crate::mode::AppMode;
 
 /// Top-level message type.
@@ -21,6 +22,10 @@ pub enum Msg {
     ModeChange(AppMode),
     /// Toggle the help overlay visibility.
     HelpToggle,
+    /// Move keyboard focus to the given component ID.
+    FocusChange(Id),
+    /// Chrome layer messages (reserved for future use).
+    Chrome(ChromeMsg),
     /// Accounts screen messages.
     Accounts(AccountsMsg),
     /// Budget screen messages.
@@ -54,6 +59,14 @@ impl Tab {
     }
 }
 
+/// Messages produced by the chrome layer.
+///
+/// Reserved for future chrome-specific messages. Chrome components currently
+/// emit cross-cutting [`Msg`] variants directly.
+#[derive(Debug, PartialEq)]
+#[non_exhaustive]
+pub enum ChromeMsg {}
+
 /// Messages produced by the accounts screen.
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
@@ -64,12 +77,20 @@ pub enum AccountsMsg {
     OpenAddTransaction,
     /// User wants to edit the selected transaction.
     OpenEditTransaction,
-    /// User confirmed voiding the selected transaction.
-    VoidConfirmed,
+    /// User requested to void the selected transaction (`d` key).
+    ///
+    /// No confirmation dialog is shown yet; the void is applied immediately.
+    VoidRequested,
     /// User cancelled an open form.
     FormCancelled,
     /// A transaction form was submitted successfully.
     FormSubmitted,
+    /// User pressed `l`/`→`/`Enter` on the list — open the detail panel.
+    OpenDetail(bc_models::TransactionId),
+    /// User pressed `Esc`/`h` on the detail panel — return focus to the list.
+    CloseDetail,
+    /// User pressed `h`/`←` on the list — return focus to the sidebar.
+    FocusSidebar,
 }
 
 /// Messages produced by the budget screen.
