@@ -41,6 +41,7 @@ bc-core          = { workspace = true }
 bc-models        = { workspace = true }
 crossterm        = "0.28"
 dirs             = "5"
+jiff             = { workspace = true }
 ratatui-macros   = "0.7"
 tokio            = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tui-input        = "0.11"

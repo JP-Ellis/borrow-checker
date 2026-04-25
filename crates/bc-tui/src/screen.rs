@@ -1,6 +1,7 @@
 //! The [`Screen`] trait and associated types.
 
 pub mod accounts;
+pub mod budget;
 
 use tuirealm::Application;
 use tuirealm::Frame;
@@ -71,7 +72,8 @@ pub fn make_screen(
 ) -> Box<dyn Screen> {
     match tab {
         crate::msg::Tab::Accounts => Box::new(accounts::AccountsScreen::new(ctx)),
-        crate::msg::Tab::Budget | crate::msg::Tab::Reports => Box::new(PlaceholderScreen),
+        crate::msg::Tab::Budget => Box::new(budget::BudgetScreen::new(ctx)),
+        crate::msg::Tab::Reports => Box::new(PlaceholderScreen),
     }
 }
 
