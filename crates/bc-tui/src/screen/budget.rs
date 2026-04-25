@@ -82,6 +82,7 @@ impl BudgetScreen {
     }
 
     /// Load all active envelopes from the database into `self.envelopes`.
+    #[inline]
     #[expect(
         clippy::print_stderr,
         reason = "load errors are logged to stderr since we are in raw terminal mode"
@@ -97,6 +98,7 @@ impl BudgetScreen {
     ///
     /// Returns early if no envelope is selected. On success, stores the
     /// [`EnvelopeStatus`] in `self.selected_status`.
+    #[inline]
     #[expect(
         clippy::print_stderr,
         reason = "load errors are logged to stderr since we are in raw terminal mode"
