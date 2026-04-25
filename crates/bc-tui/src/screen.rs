@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod budget;
+pub mod reports;
 
 use tuirealm::Application;
 use tuirealm::Frame;
@@ -73,45 +74,7 @@ pub fn make_screen(
     match tab {
         crate::msg::Tab::Accounts => Box::new(accounts::AccountsScreen::new(ctx)),
         crate::msg::Tab::Budget => Box::new(budget::BudgetScreen::new(ctx)),
-        crate::msg::Tab::Reports => Box::new(PlaceholderScreen),
-    }
-}
-
-/// Temporary placeholder screen used until real screens are implemented.
-pub struct PlaceholderScreen;
-
-impl Screen for PlaceholderScreen {
-    #[inline]
-    fn mount(&mut self, _app: &mut Application<Id, Msg, NoUserEvent>) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    #[inline]
-    fn unmount(&mut self, _app: &mut Application<Id, Msg, NoUserEvent>) {}
-
-    #[inline]
-    fn view(
-        &mut self,
-        _app: &mut Application<Id, Msg, NoUserEvent>,
-        _frame: &mut Frame,
-        _area: Rect,
-    ) {
-    }
-
-    #[inline]
-    fn handle(&mut self, _msg: Msg) -> Option<Msg> {
-        None
-    }
-
-    #[inline]
-    fn initial_focus(&self) -> Id {
-        // PlaceholderScreen mounts no components — focus the always-mounted TabBar.
-        Id::Chrome(crate::id::ChromeId::TabBar)
-    }
-
-    #[inline]
-    fn keybindings(&self, _mode: &AppMode) -> Vec<KeyBinding> {
-        vec![]
+        crate::msg::Tab::Reports => Box::new(reports::ReportsScreen::new(ctx)),
     }
 }
 
