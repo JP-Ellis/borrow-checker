@@ -10,6 +10,10 @@
 /// - `Visual` — `j`/`k` extend a selection; `Esc` clears it and returns to Normal.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "referenced externally as mode::AppMode; repetition is intentional"
+)]
 pub enum AppMode {
     /// Navigation and command mode (default).
     #[default]

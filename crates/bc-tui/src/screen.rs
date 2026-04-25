@@ -36,6 +36,10 @@ pub trait Screen {
     ///
     /// Called when the user switches to this tab. Should load initial data
     /// and register all components via `app.mount(...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any component fails to mount (e.g., duplicate ID).
     fn mount(&mut self, app: &mut Application<Id, Msg, NoUserEvent>) -> anyhow::Result<()>;
 
     /// Unmount this screen's components from the application.
@@ -66,7 +70,12 @@ pub trait Screen {
 ///
 /// Called by [`crate::app::Model::switch_tab`] to create a new screen
 /// when the user switches tabs.
+#[inline]
 #[must_use]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "referenced externally as screen::make_screen; repetition is intentional"
+)]
 pub fn make_screen(
     tab: &crate::msg::Tab,
     ctx: std::sync::Arc<crate::context::TuiContext>,

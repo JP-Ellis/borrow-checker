@@ -32,11 +32,15 @@ use crate::screen::Screen;
 
 /// The budget tab screen.
 ///
-/// Owns the envelope sidebar and envelope status detail panel.
+/// Owns the envelope sidebar, envelope status detail panel, and allocation form overlay.
 /// Handles [`BudgetMsg`] variants delegated from `Model::update()`.
 #[expect(
     clippy::module_name_repetitions,
     reason = "referenced externally as budget::BudgetScreen; repetition is intentional"
+)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "four independent state flags: loading, detail dirty tracking, form state — not reducible to an enum"
 )]
 #[non_exhaustive]
 pub struct BudgetScreen {
@@ -52,6 +56,10 @@ pub struct BudgetScreen {
     loading: bool,
     /// Whether the detail panel needs to be updated on the next `view()` call.
     detail_dirty: bool,
+    /// Whether the allocation form should be mounted on the next render.
+    pending_form: bool,
+    /// Whether the allocation form is currently mounted.
+    form_mounted: bool,
 }
 
 impl BudgetScreen {
@@ -68,6 +76,8 @@ impl BudgetScreen {
             selected_status: None,
             loading: false,
             detail_dirty: false,
+            pending_form: false,
+            form_mounted: false,
         }
     }
 
@@ -118,8 +128,20 @@ impl BudgetScreen {
                 self.detail_dirty = true;
                 None
             }
-            BudgetMsg::OpenAllocate => Some(Msg::ModeChange(AppMode::Insert)),
-            BudgetMsg::FormCancelled | BudgetMsg::FormSubmitted => {
+            BudgetMsg::OpenAllocate => self.selected_envelope.is_some().then(|| {
+                self.pending_form = true;
+                Msg::ModeChange(AppMode::Insert)
+            }),
+            BudgetMsg::FormCancelled => {
+                self.pending_form = false;
+                self.form_mounted = false;
+                Some(Msg::ModeChange(AppMode::Normal))
+            }
+            BudgetMsg::FormSubmitted => {
+                self.pending_form = false;
+                self.form_mounted = false;
+                self.load_status();
+                self.detail_dirty = true;
                 Some(Msg::ModeChange(AppMode::Normal))
             }
         }
@@ -161,12 +183,16 @@ impl Screen for BudgetScreen {
     fn unmount(&mut self, app: &mut Application<Id, Msg, NoUserEvent>) {
         app.umount(&Id::Budget(BudgetId::Sidebar)).ok();
         app.umount(&Id::Budget(BudgetId::Detail)).ok();
+        app.umount(&Id::Budget(BudgetId::AllocationForm)).ok();
     }
 
     /// Render the budget screen: sidebar on the left (30%), detail panel on the right (70%).
     ///
     /// If the selected envelope changed since the last render, the detail panel is
     /// re-mounted with the updated [`EnvelopeStatus`] before rendering.
+    ///
+    /// The allocation form overlay is mounted/unmounted based on `pending_form` state,
+    /// and rendered on top of the rest of the screen when `form_mounted` is true.
     #[inline]
     #[expect(
         clippy::indexing_slicing,
@@ -178,6 +204,52 @@ impl Screen for BudgetScreen {
         reason = "mount errors logged to stderr since we are in raw terminal mode"
     )]
     fn view(&mut self, app: &mut Application<Id, Msg, NoUserEvent>, frame: &mut Frame, area: Rect) {
+        // Mount or unmount the form overlay based on pending_form state.
+        if self.pending_form && !self.form_mounted {
+            let envelope_name = self
+                .selected_envelope
+                .as_ref()
+                .and_then(|id| self.envelopes.iter().find(|e| e.id() == id))
+                .map(|e| e.name().to_owned())
+                .unwrap_or_default();
+            #[expect(
+                clippy::unused_result_ok,
+                reason = "pre-unmount is best-effort; component may not be present"
+            )]
+            {
+                app.umount(&Id::Budget(BudgetId::AllocationForm)).ok();
+            }
+            match app.mount(
+                Id::Budget(BudgetId::AllocationForm),
+                Box::new(forms::AllocationForm::new(envelope_name)),
+                vec![],
+            ) {
+                Ok(()) => {
+                    #[expect(
+                        clippy::unused_result_ok,
+                        reason = "focus is best-effort; form is still visible if active() fails"
+                    )]
+                    {
+                        app.active(&Id::Budget(BudgetId::AllocationForm)).ok();
+                    }
+                    self.form_mounted = true;
+                }
+                Err(e) => {
+                    eprintln!("failed to mount allocation form: {e}");
+                    self.pending_form = false;
+                }
+            }
+        } else if !self.pending_form && self.form_mounted {
+            #[expect(
+                clippy::unused_result_ok,
+                reason = "unmount errors are non-fatal; component may already be absent"
+            )]
+            {
+                app.umount(&Id::Budget(BudgetId::AllocationForm)).ok();
+            }
+            self.form_mounted = false;
+        }
+
         if self.loading {
             frame.render_widget(
                 tuirealm::ratatui::widgets::Paragraph::new("Loading envelopes\u{2026}"),
@@ -210,6 +282,11 @@ impl Screen for BudgetScreen {
             .split(area);
         app.view(&Id::Budget(BudgetId::Sidebar), frame, h_chunks[0]);
         app.view(&Id::Budget(BudgetId::Detail), frame, h_chunks[1]);
+
+        // Render the form overlay on top if mounted.
+        if self.form_mounted {
+            app.view(&Id::Budget(BudgetId::AllocationForm), frame, area);
+        }
     }
 
     /// Handle a message destined for the budget screen.
@@ -304,7 +381,20 @@ mod tests {
     use crate::context::TuiContext;
     use crate::id::BudgetId;
     use crate::id::Id;
+    use crate::msg::BudgetMsg;
     use crate::msg::Msg;
+
+    fn make_ctx() -> Arc<TuiContext> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build rt");
+        let dir = assert_fs::TempDir::new().expect("create temp dir");
+        Arc::new(
+            rt.block_on(TuiContext::open(&dir.path().join("test.db")))
+                .expect("open ctx"),
+        )
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn mount_and_unmount_without_panic() {
@@ -325,5 +415,42 @@ mod tests {
         assert!(app.mounted(&Id::Budget(BudgetId::Detail)));
         screen.unmount(&mut app);
         assert!(!app.mounted(&Id::Budget(BudgetId::Sidebar)));
+    }
+
+    #[test]
+    fn open_allocate_without_selection_is_noop() {
+        let mut screen = BudgetScreen::new(make_ctx());
+        // No envelope selected — OpenAllocate should be a no-op.
+        let result = screen.handle(Msg::Budget(BudgetMsg::OpenAllocate));
+        pretty_assertions::assert_eq!(result, None);
+        pretty_assertions::assert_eq!(screen.pending_form, false);
+    }
+
+    #[test]
+    fn form_cancelled_returns_mode_change_normal() {
+        let mut screen = BudgetScreen::new(make_ctx());
+        screen.pending_form = true;
+        screen.form_mounted = true;
+        let result = screen.handle(Msg::Budget(BudgetMsg::FormCancelled));
+        pretty_assertions::assert_eq!(result, Some(Msg::ModeChange(AppMode::Normal)));
+        pretty_assertions::assert_eq!(screen.pending_form, false);
+        pretty_assertions::assert_eq!(screen.form_mounted, false);
+    }
+
+    #[test]
+    fn form_submitted_returns_mode_change_normal() {
+        let mut screen = BudgetScreen::new(make_ctx());
+        screen.pending_form = true;
+        screen.form_mounted = true;
+        let result = screen.handle(Msg::Budget(BudgetMsg::FormSubmitted));
+        pretty_assertions::assert_eq!(result, Some(Msg::ModeChange(AppMode::Normal)));
+        pretty_assertions::assert_eq!(screen.pending_form, false);
+        pretty_assertions::assert_eq!(screen.form_mounted, false);
+    }
+
+    #[test]
+    fn non_budget_msg_returns_none() {
+        let mut screen = BudgetScreen::new(make_ctx());
+        pretty_assertions::assert_eq!(screen.handle(Msg::AppQuit), None);
     }
 }
