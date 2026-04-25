@@ -48,6 +48,8 @@ pub struct BudgetScreen {
     selected_envelope: Option<EnvelopeId>,
     /// Budget status for the currently selected envelope.
     selected_status: Option<EnvelopeStatus>,
+    /// Whether the detail panel needs to be updated on the next `view()` call.
+    detail_dirty: bool,
 }
 
 impl BudgetScreen {
@@ -62,6 +64,7 @@ impl BudgetScreen {
             envelopes: Vec::new(),
             selected_envelope: None,
             selected_status: None,
+            detail_dirty: false,
         }
     }
 
@@ -109,6 +112,7 @@ impl BudgetScreen {
             BudgetMsg::EnvelopeSelected(id) => {
                 self.selected_envelope = Some(id);
                 self.load_status();
+                self.detail_dirty = true;
                 None
             }
             BudgetMsg::OpenAllocate => Some(Msg::ModeChange(AppMode::Insert)),
@@ -155,13 +159,31 @@ impl Screen for BudgetScreen {
     }
 
     /// Render the budget screen: sidebar on the left (30%), detail panel on the right (70%).
+    ///
+    /// If the selected envelope changed since the last render, the detail panel is
+    /// re-mounted with the updated [`EnvelopeStatus`] before rendering.
     #[inline]
     #[expect(
         clippy::indexing_slicing,
         clippy::missing_asserts_for_indexing,
         reason = "layout always returns exactly 2 chunks to match the 2 constraints"
     )]
+    #[expect(
+        clippy::unused_result_ok,
+        reason = "re-mount errors are non-fatal; best-effort detail update"
+    )]
     fn view(&mut self, app: &mut Application<Id, Msg, NoUserEvent>, frame: &mut Frame, area: Rect) {
+        if self.detail_dirty {
+            self.detail_dirty = false;
+            app.umount(&Id::Budget(BudgetId::Detail)).ok();
+            app.mount(
+                Id::Budget(BudgetId::Detail),
+                Box::new(detail::EnvelopeDetail::new(self.selected_status.clone())),
+                vec![],
+            )
+            .ok();
+        }
+
         let h_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
