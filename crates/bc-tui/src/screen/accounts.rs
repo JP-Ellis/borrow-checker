@@ -106,6 +106,7 @@ impl AccountsScreen {
     }
 
     /// Load all active accounts from the database into `self.accounts`.
+    #[inline]
     #[expect(
         clippy::print_stderr,
         reason = "load errors are logged to stderr since we are in raw terminal mode"
@@ -120,6 +121,7 @@ impl AccountsScreen {
     /// Load transactions for the selected account into `self.transactions`.
     ///
     /// If no account is selected, clears the transaction list.
+    #[inline]
     #[expect(
         clippy::print_stderr,
         reason = "load errors are logged to stderr since we are in raw terminal mode"
@@ -139,6 +141,7 @@ impl AccountsScreen {
     }
 
     /// Handle an [`AccountsMsg`], updating internal state and returning a follow-up [`Msg`] if needed.
+    #[inline]
     #[expect(
         clippy::print_stderr,
         reason = "void errors are logged to stderr since we are in raw terminal mode"
