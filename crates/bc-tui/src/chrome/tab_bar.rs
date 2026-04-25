@@ -160,3 +160,59 @@ impl Component<Msg, NoUserEvent> for TabBar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tuirealm::event::KeyModifiers;
+
+    use super::*;
+
+    fn key(code: Key) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn tab_cycles_forward_from_accounts() {
+        let mut bar = TabBar::new(Tab::Accounts);
+        let msg = bar.on(key(Key::Tab));
+        pretty_assertions::assert_eq!(msg, Some(Msg::TabSwitch(Tab::Budget)));
+    }
+
+    #[test]
+    fn backtab_cycles_backward_from_accounts() {
+        let mut bar = TabBar::new(Tab::Accounts);
+        let msg = bar.on(key(Key::BackTab));
+        pretty_assertions::assert_eq!(msg, Some(Msg::TabSwitch(Tab::Reports)));
+    }
+
+    #[test]
+    fn numeric_key_switches_to_correct_tab() {
+        let mut bar = TabBar::new(Tab::Accounts);
+        pretty_assertions::assert_eq!(
+            bar.on(key(Key::Char('2'))),
+            Some(Msg::TabSwitch(Tab::Budget)),
+        );
+        pretty_assertions::assert_eq!(
+            bar.on(key(Key::Char('3'))),
+            Some(Msg::TabSwitch(Tab::Reports)),
+        );
+    }
+
+    #[test]
+    fn tab_cycles_from_budget_after_attr_update() {
+        // After a TabSwitch to Budget is processed, attr() updates active_tab.
+        // Tab from Budget should go to Reports, not back to Budget.
+        let mut bar = TabBar::new(Tab::Accounts);
+        bar.attr(
+            Attribute::Value,
+            AttrValue::Payload(tuirealm::props::PropPayload::One(
+                tuirealm::props::PropValue::Usize(1),
+            )),
+        );
+        let msg = bar.on(key(Key::Tab));
+        pretty_assertions::assert_eq!(msg, Some(Msg::TabSwitch(Tab::Reports)));
+    }
+}
