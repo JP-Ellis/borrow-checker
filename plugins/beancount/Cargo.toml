@@ -1,0 +1,17 @@
+[package]
+name    = "bc-plugin-beancount"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bc-sdk       = { path = "../../crates/bc-sdk" }
+rust_decimal = "1"
+
+[dev-dependencies]
+pretty_assertions   = "1"
+rust_decimal_macros = "1"
