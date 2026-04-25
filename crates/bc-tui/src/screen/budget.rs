@@ -48,6 +48,8 @@ pub struct BudgetScreen {
     selected_envelope: Option<EnvelopeId>,
     /// Budget status for the currently selected envelope.
     selected_status: Option<EnvelopeStatus>,
+    /// Whether envelopes are currently being loaded from the database.
+    loading: bool,
     /// Whether the detail panel needs to be updated on the next `view()` call.
     detail_dirty: bool,
 }
@@ -64,6 +66,7 @@ impl BudgetScreen {
             envelopes: Vec::new(),
             selected_envelope: None,
             selected_status: None,
+            loading: false,
             detail_dirty: false,
         }
     }
@@ -133,7 +136,9 @@ impl Screen for BudgetScreen {
     /// Returns an error if any component fails to mount (e.g., duplicate ID).
     #[inline]
     fn mount(&mut self, app: &mut Application<Id, Msg, NoUserEvent>) -> anyhow::Result<()> {
+        self.loading = true;
         self.load_envelopes();
+        self.loading = false;
         app.mount(
             Id::Budget(BudgetId::Sidebar),
             Box::new(sidebar::EnvelopeSidebar::new(self.envelopes.clone())),
@@ -169,19 +174,34 @@ impl Screen for BudgetScreen {
         reason = "layout always returns exactly 2 chunks to match the 2 constraints"
     )]
     #[expect(
-        clippy::unused_result_ok,
-        reason = "re-mount errors are non-fatal; best-effort detail update"
+        clippy::print_stderr,
+        reason = "mount errors logged to stderr since we are in raw terminal mode"
     )]
     fn view(&mut self, app: &mut Application<Id, Msg, NoUserEvent>, frame: &mut Frame, area: Rect) {
+        if self.loading {
+            frame.render_widget(
+                tuirealm::ratatui::widgets::Paragraph::new("Loading envelopes\u{2026}"),
+                area,
+            );
+            return;
+        }
+
         if self.detail_dirty {
             self.detail_dirty = false;
-            app.umount(&Id::Budget(BudgetId::Detail)).ok();
-            app.mount(
+            #[expect(
+                clippy::unused_result_ok,
+                reason = "umount errors are non-fatal; component may already be absent"
+            )]
+            {
+                app.umount(&Id::Budget(BudgetId::Detail)).ok();
+            }
+            if let Err(e) = app.mount(
                 Id::Budget(BudgetId::Detail),
                 Box::new(detail::EnvelopeDetail::new(self.selected_status.clone())),
                 vec![],
-            )
-            .ok();
+            ) {
+                eprintln!("failed to re-mount envelope detail: {e}");
+            }
         }
 
         let h_chunks = Layout::default()

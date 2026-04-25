@@ -40,6 +40,8 @@ pub enum AccountsId {
     TransactionList,
     /// Transaction detail panel.
     TransactionDetail,
+    /// Transaction add/edit form overlay.
+    TransactionForm,
 }
 
 /// Identifiers for the budget screen components.
