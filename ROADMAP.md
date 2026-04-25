@@ -69,17 +69,17 @@ ______________________________________________________________________
 
 ## Milestone 4 — TUI
 
-**Status:** ◻️
+**Status:** ✅
 **Crate:** `bc-tui`
 **Depends on:** Milestone 1 (core views); budget/report views depend on Milestone 5
 
-- [ ] Sidebar + main panel layout (ratatui)
-- [ ] Account tree navigation (keyboard-first)
-- [ ] Transaction list + detail view
-- [ ] Vim-inspired key bindings
-- [ ] `?` help overlay
-- [ ] Budget envelope view _(requires Milestone 5)_
-- [ ] Reports view _(requires Milestone 5)_
+- [x] Sidebar + main panel layout (ratatui)
+- [x] Account tree navigation (keyboard-first)
+- [x] Transaction list + detail view
+- [x] Vim-inspired key bindings
+- [x] `?` help overlay
+- [x] Budget envelope view _(requires Milestone 5)_
+- [x] Reports view _(requires Milestone 5)_
 
 ______________________________________________________________________
 
