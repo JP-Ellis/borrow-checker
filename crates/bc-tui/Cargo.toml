@@ -33,7 +33,7 @@ publish = false
 
 [[bin]]
 name = "borrow-checker-tui"
-path = "src/main.rs"
+path = "src/bin/borrow-checker-tui.rs"
 
 [dependencies]
 anyhow           = "1"

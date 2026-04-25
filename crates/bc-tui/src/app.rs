@@ -94,12 +94,39 @@ impl Model {
         reason = "mount/focus errors are logged to stderr since we are in raw terminal mode"
     )]
     fn switch_tab(&mut self, tab: Tab) {
+        use tuirealm::AttrValue;
+        use tuirealm::Attribute;
+        use tuirealm::props::PropPayload;
+        use tuirealm::props::PropValue;
+
+        use crate::id::ChromeId;
+
         if tab == self.active_tab {
             return;
         }
         self.active_screen.unmount(&mut self.app);
         self.active_screen = crate::screen::make_screen(&tab, Arc::clone(&self.ctx));
         self.active_tab = tab;
+        // Keep TabBar's internal state in sync so Tab/BackTab cycles correctly
+        // and the highlighted tab renders correctly.
+        let tab_idx = match self.active_tab {
+            Tab::Accounts => 0,
+            Tab::Budget => 1,
+            Tab::Reports => 2,
+        };
+        #[expect(
+            clippy::unused_result_ok,
+            reason = "best-effort: tab bar may not be mounted during startup"
+        )]
+        {
+            self.app
+                .attr(
+                    &Id::Chrome(ChromeId::TabBar),
+                    Attribute::Value,
+                    AttrValue::Payload(PropPayload::One(PropValue::Usize(tab_idx))),
+                )
+                .ok();
+        }
         if let Err(e) = self.active_screen.mount(&mut self.app) {
             eprintln!("failed to mount screen: {e}");
         }

@@ -65,11 +65,19 @@ impl Tab {
 /// emit cross-cutting [`Msg`] variants directly.
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "referenced externally as msg::ChromeMsg; repetition is intentional"
+)]
 pub enum ChromeMsg {}
 
 /// Messages produced by the accounts screen.
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "referenced externally as msg::AccountsMsg; repetition is intentional"
+)]
 pub enum AccountsMsg {
     /// User selected a different account in the sidebar.
     AccountSelected(bc_models::AccountId),
@@ -96,6 +104,10 @@ pub enum AccountsMsg {
 /// Messages produced by the budget screen.
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "referenced externally as msg::BudgetMsg; repetition is intentional"
+)]
 pub enum BudgetMsg {
     /// User selected a different envelope in the sidebar.
     EnvelopeSelected(bc_models::EnvelopeId),
@@ -110,6 +122,10 @@ pub enum BudgetMsg {
 /// Messages produced by the reports screen.
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "referenced externally as msg::ReportsMsg; repetition is intentional"
+)]
 pub enum ReportsMsg {
     /// User selected a report to run.
     RunReport(ReportKind),

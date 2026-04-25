@@ -21,6 +21,10 @@ pub enum Id {
 /// Identifiers for the permanent chrome components.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "referenced externally as id::ChromeId; repetition is intentional"
+)]
 pub enum ChromeId {
     /// Tab bar across the top.
     TabBar,
@@ -33,6 +37,10 @@ pub enum ChromeId {
 /// Identifiers for the accounts screen components.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "referenced externally as id::AccountsId; repetition is intentional"
+)]
 pub enum AccountsId {
     /// Account tree sidebar.
     Sidebar,
@@ -47,16 +55,26 @@ pub enum AccountsId {
 /// Identifiers for the budget screen components.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "referenced externally as id::BudgetId; repetition is intentional"
+)]
 pub enum BudgetId {
     /// Envelope tree sidebar.
     Sidebar,
     /// Envelope status detail panel.
     Detail,
+    /// Allocation form overlay.
+    AllocationForm,
 }
 
 /// Identifiers for the reports screen components.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "referenced externally as id::ReportsId; repetition is intentional"
+)]
 pub enum ReportsId {
     /// Combined report selector and output view.
     View,

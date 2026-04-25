@@ -53,6 +53,10 @@ enum PendingForm {
     clippy::module_name_repetitions,
     reason = "referenced externally as accounts::AccountsScreen; repetition is intentional"
 )]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "five independent state flags: loading, list/detail dirty tracking, form state — not reducible to an enum"
+)]
 #[non_exhaustive]
 pub struct AccountsScreen {
     /// Shared bc-core services.
@@ -69,6 +73,10 @@ pub struct AccountsScreen {
     detail_visible: bool,
     /// Whether accounts are currently being loaded from the database.
     loading: bool,
+    /// Whether the transaction list needs to be re-mounted on the next `view()` call.
+    list_dirty: bool,
+    /// Whether the detail panel needs to be re-mounted on the next `view()` call.
+    detail_dirty: bool,
     /// Pending form action to execute on the next `view()` call.
     pending_form: PendingForm,
     /// Whether the transaction form is currently mounted.
@@ -90,6 +98,8 @@ impl AccountsScreen {
             selected_transaction: None,
             detail_visible: false,
             loading: false,
+            list_dirty: false,
+            detail_dirty: false,
             pending_form: PendingForm::None,
             form_mounted: false,
         }
@@ -138,19 +148,27 @@ impl AccountsScreen {
             AccountsMsg::AccountSelected(id) => {
                 self.selected_account = Some(id);
                 self.load_transactions();
+                self.list_dirty = true;
                 None
             }
             AccountsMsg::OpenAddTransaction => {
                 self.pending_form = PendingForm::Add;
                 Some(Msg::ModeChange(AppMode::Insert))
             }
-            AccountsMsg::OpenEditTransaction => {
+            AccountsMsg::OpenEditTransaction => self.selected_transaction.is_some().then(|| {
                 self.pending_form = PendingForm::Edit;
-                Some(Msg::ModeChange(AppMode::Insert))
-            }
-            AccountsMsg::FormCancelled | AccountsMsg::FormSubmitted => {
+                Msg::ModeChange(AppMode::Insert)
+            }),
+            AccountsMsg::FormCancelled => {
                 self.pending_form = PendingForm::None;
                 self.form_mounted = false;
+                Some(Msg::ModeChange(AppMode::Normal))
+            }
+            AccountsMsg::FormSubmitted => {
+                self.pending_form = PendingForm::None;
+                self.form_mounted = false;
+                self.load_transactions();
+                self.list_dirty = true;
                 Some(Msg::ModeChange(AppMode::Normal))
             }
             AccountsMsg::VoidRequested => {
@@ -160,12 +178,14 @@ impl AccountsScreen {
                         Err(e) => eprintln!("failed to void transaction: {e}"),
                     }
                     self.load_transactions();
+                    self.list_dirty = true;
                 }
                 None
             }
             AccountsMsg::OpenDetail(id) => {
                 self.selected_transaction = Some(id);
                 self.detail_visible = true;
+                self.detail_dirty = true;
                 Some(Msg::FocusChange(Id::Accounts(
                     AccountsId::TransactionDetail,
                 )))
@@ -237,42 +257,86 @@ impl Screen for AccountsScreen {
         clippy::missing_asserts_for_indexing,
         reason = "layout always returns exactly 2 chunks to match the 2 constraints"
     )]
+    #[expect(
+        clippy::print_stderr,
+        reason = "mount errors logged to stderr since we are in raw terminal mode"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "view() handles form overlay, dirty-flag re-mounts, and layout in one pass — splitting would obscure the rendering order"
+    )]
     fn view(&mut self, app: &mut Application<Id, Msg, NoUserEvent>, frame: &mut Frame, area: Rect) {
         // Mount or unmount the form overlay based on pending_form state.
         match &self.pending_form {
             PendingForm::Add if !self.form_mounted => {
+                // Pre-unmount guards against a stale component from a previous failed cleanup.
                 #[expect(
                     clippy::unused_result_ok,
-                    reason = "form mount is best-effort; form simply won't appear if it fails"
+                    reason = "pre-unmount is best-effort; component may not be present"
                 )]
                 {
-                    app.mount(
-                        Id::Accounts(AccountsId::TransactionForm),
-                        Box::new(forms::TransactionForm::new_add()),
-                        vec![],
-                    )
-                    .ok();
-                    app.active(&Id::Accounts(AccountsId::TransactionForm)).ok();
+                    app.umount(&Id::Accounts(AccountsId::TransactionForm)).ok();
                 }
-                self.form_mounted = true;
-            }
-            PendingForm::Edit if !self.form_mounted => {
-                if let Some(ref tx_id) = self.selected_transaction.clone() {
-                    if let Some(tx) = self.transactions.iter().find(|t| t.id() == tx_id).cloned() {
+                match app.mount(
+                    Id::Accounts(AccountsId::TransactionForm),
+                    Box::new(forms::TransactionForm::new_add()),
+                    vec![],
+                ) {
+                    Ok(()) => {
                         #[expect(
                             clippy::unused_result_ok,
-                            reason = "form mount is best-effort; form simply won't appear if it fails"
+                            reason = "focus is best-effort; form is still visible if active() fails"
                         )]
                         {
-                            app.mount(
-                                Id::Accounts(AccountsId::TransactionForm),
-                                Box::new(forms::TransactionForm::new_edit(&tx)),
-                                vec![],
-                            )
-                            .ok();
                             app.active(&Id::Accounts(AccountsId::TransactionForm)).ok();
                         }
                         self.form_mounted = true;
+                    }
+                    Err(e) => {
+                        eprintln!("failed to mount transaction form: {e}");
+                        self.pending_form = PendingForm::None;
+                    }
+                }
+            }
+            PendingForm::Edit if !self.form_mounted => {
+                let pending_tx = self
+                    .selected_transaction
+                    .as_ref()
+                    .and_then(|id| self.transactions.iter().find(|t| t.id() == id))
+                    .cloned();
+                match pending_tx {
+                    Some(tx) => {
+                        #[expect(
+                            clippy::unused_result_ok,
+                            reason = "pre-unmount is best-effort; component may not be present"
+                        )]
+                        {
+                            app.umount(&Id::Accounts(AccountsId::TransactionForm)).ok();
+                        }
+                        match app.mount(
+                            Id::Accounts(AccountsId::TransactionForm),
+                            Box::new(forms::TransactionForm::new_edit(&tx)),
+                            vec![],
+                        ) {
+                            Ok(()) => {
+                                #[expect(
+                                    clippy::unused_result_ok,
+                                    reason = "focus is best-effort; form is still visible if active() fails"
+                                )]
+                                {
+                                    app.active(&Id::Accounts(AccountsId::TransactionForm)).ok();
+                                }
+                                self.form_mounted = true;
+                            }
+                            Err(e) => {
+                                eprintln!("failed to mount transaction form: {e}");
+                                self.pending_form = PendingForm::None;
+                            }
+                        }
+                    }
+                    None => {
+                        // Transaction no longer available — abort silently.
+                        self.pending_form = PendingForm::None;
                     }
                 }
             }
@@ -295,6 +359,58 @@ impl Screen for AccountsScreen {
                 area,
             );
             return;
+        }
+
+        if self.list_dirty {
+            self.list_dirty = false;
+            #[expect(
+                clippy::unused_result_ok,
+                reason = "umount errors are non-fatal; component may already be absent"
+            )]
+            {
+                app.umount(&Id::Accounts(AccountsId::TransactionList)).ok();
+            }
+            if let Err(e) = app.mount(
+                Id::Accounts(AccountsId::TransactionList),
+                Box::new(list::TransactionList::new(self.transactions.clone())),
+                vec![],
+            ) {
+                eprintln!("failed to re-mount transaction list: {e}");
+            }
+            // Restore focus to the list after remount unless detail or form is in front.
+            if !self.detail_visible && !self.form_mounted {
+                #[expect(
+                    clippy::unused_result_ok,
+                    reason = "focus restore is best-effort after re-mount"
+                )]
+                {
+                    app.active(&Id::Accounts(AccountsId::TransactionList)).ok();
+                }
+            }
+        }
+
+        if self.detail_dirty {
+            self.detail_dirty = false;
+            let tx = self
+                .selected_transaction
+                .as_ref()
+                .and_then(|id| self.transactions.iter().find(|t| t.id() == id))
+                .cloned();
+            #[expect(
+                clippy::unused_result_ok,
+                reason = "umount errors are non-fatal; component may already be absent"
+            )]
+            {
+                app.umount(&Id::Accounts(AccountsId::TransactionDetail))
+                    .ok();
+            }
+            if let Err(e) = app.mount(
+                Id::Accounts(AccountsId::TransactionDetail),
+                Box::new(detail::TransactionDetail::new(tx)),
+                vec![],
+            ) {
+                eprintln!("failed to re-mount transaction detail: {e}");
+            }
         }
 
         let h_chunks = Layout::default()
@@ -464,5 +580,85 @@ mod tests {
         });
         // DB is empty on first open, so accounts should be empty.
         pretty_assertions::assert_eq!(screen.accounts.len(), 0);
+    }
+
+    #[test]
+    fn open_edit_with_no_selection_does_not_enter_insert_mode() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build rt");
+        let dir = assert_fs::TempDir::new().expect("create temp dir");
+        let ctx = Arc::new(
+            rt.block_on(TuiContext::open(&dir.path().join("test.db")))
+                .expect("open ctx"),
+        );
+        let mut screen = AccountsScreen::new(ctx);
+        // No transaction selected — edit should be a no-op.
+        let result = screen.handle(Msg::Accounts(AccountsMsg::OpenEditTransaction));
+        pretty_assertions::assert_eq!(result, None);
+    }
+
+    #[test]
+    fn open_add_returns_mode_change_insert() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build rt");
+        let dir = assert_fs::TempDir::new().expect("create temp dir");
+        let ctx = Arc::new(
+            rt.block_on(TuiContext::open(&dir.path().join("test.db")))
+                .expect("open ctx"),
+        );
+        let mut screen = AccountsScreen::new(ctx);
+        let result = screen.handle(Msg::Accounts(AccountsMsg::OpenAddTransaction));
+        pretty_assertions::assert_eq!(result, Some(Msg::ModeChange(AppMode::Insert)));
+    }
+
+    #[test]
+    fn form_cancelled_returns_mode_change_normal() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build rt");
+        let dir = assert_fs::TempDir::new().expect("create temp dir");
+        let ctx = Arc::new(
+            rt.block_on(TuiContext::open(&dir.path().join("test.db")))
+                .expect("open ctx"),
+        );
+        let mut screen = AccountsScreen::new(ctx);
+        let result = screen.handle(Msg::Accounts(AccountsMsg::FormCancelled));
+        pretty_assertions::assert_eq!(result, Some(Msg::ModeChange(AppMode::Normal)));
+    }
+
+    #[test]
+    fn form_submitted_returns_mode_change_normal() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build rt");
+        let dir = assert_fs::TempDir::new().expect("create temp dir");
+        let ctx = Arc::new(
+            rt.block_on(TuiContext::open(&dir.path().join("test.db")))
+                .expect("open ctx"),
+        );
+        let mut screen = AccountsScreen::new(ctx);
+        let result = screen.handle(Msg::Accounts(AccountsMsg::FormSubmitted));
+        pretty_assertions::assert_eq!(result, Some(Msg::ModeChange(AppMode::Normal)));
+    }
+
+    #[test]
+    fn non_accounts_msg_returns_none() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build rt");
+        let dir = assert_fs::TempDir::new().expect("create temp dir");
+        let ctx = Arc::new(
+            rt.block_on(TuiContext::open(&dir.path().join("test.db")))
+                .expect("open ctx"),
+        );
+        let mut screen = AccountsScreen::new(ctx);
+        pretty_assertions::assert_eq!(screen.handle(Msg::AppQuit), None);
     }
 }
