@@ -635,6 +635,31 @@ impl Service {
             .collect()
     }
 
+    /// Lists all non-voided transactions that have at least one posting for the
+    /// given account, ordered by date descending.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - Only transactions with a posting referencing this account
+    ///   are returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or data parse failure.
+    #[inline]
+    pub async fn list_for_account(&self, account_id: &AccountId) -> BcResult<Vec<Transaction>> {
+        let all = self.list().await?;
+        let id_str = account_id.to_string();
+        Ok(all
+            .into_iter()
+            .filter(|tx| {
+                tx.postings()
+                    .iter()
+                    .any(|p| p.account_id().to_string() == id_str)
+            })
+            .collect())
+    }
+
     /// Amends an existing transaction, replacing its projection row and all postings atomically.
     ///
     /// The event append, projection UPDATE, posting DELETE/INSERT, and tag DELETE/INSERT
