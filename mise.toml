@@ -6,14 +6,14 @@
   components = "llvm-tools,rustfmt,clippy",
 }
 
-"aqua:j178/prek"                 = "0.3.8"
 # Binstall ensures fast installs of cargo binaries
-"aqua:cargo-bins/cargo-binstall" = "1.17.9"
+"aqua:cargo-bins/cargo-binstall" = "1"
 
-"cargo:cargo-hack"     = "0.6.44"
-"cargo:cargo-llvm-cov" = "0.8.5"
-"cargo:cargo-machete"  = "0.9.1"
-"cargo:cargo-nextest"  = "0.9.123"
+"cargo:prek"           = "0.3"
+"cargo:cargo-hack"     = "0.6"
+"cargo:cargo-llvm-cov" = "0.8"
+"cargo:cargo-machete"  = "0.9"
+"cargo:cargo-nextest"  = "0.9"
 
 [tasks]
   [tasks.format]
