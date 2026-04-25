@@ -11,6 +11,8 @@ use tuirealm::State;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
 use tuirealm::event::Event;
+use tuirealm::event::Key;
+use tuirealm::event::KeyEvent;
 use tuirealm::props::BorderType;
 use tuirealm::props::Color;
 use tuirealm::props::Style;
@@ -82,7 +84,7 @@ impl MockComponent for Widget {
             Paragraph::new(content)
                 .block(
                     Block::default()
-                        .title(" Help — press any key to close ")
+                        .title(" Help — Esc to close ")
                         .borders(Borders::ALL)
                         .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::Cyan)),
@@ -118,9 +120,14 @@ impl MockComponent for Widget {
     clippy::indexing_slicing,
     reason = "layout always returns exactly 3 chunks matching the 3 constraints"
 )]
+#[expect(
+    clippy::integer_division,
+    clippy::integer_division_remainder_used,
+    reason = "integer division by 2 for symmetric padding is intentional; no precision loss matters here"
+)]
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let pad_y = 100_u16.saturating_sub(percent_y).wrapping_div(2);
-    let pad_x = 100_u16.saturating_sub(percent_x).wrapping_div(2);
+    let pad_y = 100_u16.saturating_sub(percent_y) / 2;
+    let pad_x = 100_u16.saturating_sub(percent_x) / 2;
     let vert = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -141,6 +148,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 /// Tui-realm component wrapper for the help overlay widget.
 #[derive(MockComponent)]
+#[non_exhaustive]
 pub struct HelpOverlay {
     /// Inner raw widget.
     component: Widget,
@@ -171,9 +179,16 @@ impl Component<Msg, NoUserEvent> for HelpOverlay {
         reason = "Event is non-exhaustive; all non-keyboard variants are no-ops"
     )]
     fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
-        // Any key while the overlay is visible closes it.
+        // Only Esc (or ?) closes the overlay. Other keys fall through so that
+        // global TabBar subscriptions (q, 1/2/3, Tab) can still fire.
         match ev {
-            Event::Keyboard(_) => Some(Msg::HelpToggle),
+            Event::Keyboard(
+                KeyEvent { code: Key::Esc, .. }
+                | KeyEvent {
+                    code: Key::Char('?'),
+                    ..
+                },
+            ) => Some(Msg::HelpToggle),
             _ => None,
         }
     }

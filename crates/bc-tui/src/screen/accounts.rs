@@ -33,6 +33,18 @@ use crate::msg::Msg;
 use crate::screen::KeyBinding;
 use crate::screen::Screen;
 
+/// Which form overlay, if any, should be mounted on the next render.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum PendingForm {
+    /// No pending form action.
+    #[default]
+    None,
+    /// Mount the "add transaction" form.
+    Add,
+    /// Mount the "edit transaction" form pre-filled with the selected transaction.
+    Edit,
+}
+
 /// The accounts tab screen.
 ///
 /// Owns the account sidebar, transaction list, and transaction detail panel.
@@ -55,6 +67,12 @@ pub struct AccountsScreen {
     selected_transaction: Option<TransactionId>,
     /// Whether the detail panel is currently visible.
     detail_visible: bool,
+    /// Whether accounts are currently being loaded from the database.
+    loading: bool,
+    /// Pending form action to execute on the next `view()` call.
+    pending_form: PendingForm,
+    /// Whether the transaction form is currently mounted.
+    form_mounted: bool,
 }
 
 impl AccountsScreen {
@@ -71,6 +89,9 @@ impl AccountsScreen {
             selected_account: None,
             selected_transaction: None,
             detail_visible: false,
+            loading: false,
+            pending_form: PendingForm::None,
+            form_mounted: false,
         }
     }
 
@@ -98,13 +119,11 @@ impl AccountsScreen {
             self.transactions = Vec::new();
             return;
         };
-        match self.ctx.block_on(self.ctx.transactions.list()) {
-            Ok(all) => {
-                self.transactions = all
-                    .into_iter()
-                    .filter(|tx| tx.postings().iter().any(|p| p.account_id() == &account_id))
-                    .collect();
-            }
+        match self
+            .ctx
+            .block_on(self.ctx.transactions.list_for_account(&account_id))
+        {
+            Ok(txns) => self.transactions = txns,
             Err(e) => eprintln!("failed to load transactions: {e}"),
         }
     }
@@ -121,13 +140,20 @@ impl AccountsScreen {
                 self.load_transactions();
                 None
             }
-            AccountsMsg::OpenAddTransaction | AccountsMsg::OpenEditTransaction => {
+            AccountsMsg::OpenAddTransaction => {
+                self.pending_form = PendingForm::Add;
+                Some(Msg::ModeChange(AppMode::Insert))
+            }
+            AccountsMsg::OpenEditTransaction => {
+                self.pending_form = PendingForm::Edit;
                 Some(Msg::ModeChange(AppMode::Insert))
             }
             AccountsMsg::FormCancelled | AccountsMsg::FormSubmitted => {
+                self.pending_form = PendingForm::None;
+                self.form_mounted = false;
                 Some(Msg::ModeChange(AppMode::Normal))
             }
-            AccountsMsg::VoidConfirmed => {
+            AccountsMsg::VoidRequested => {
                 if let Some(id) = self.selected_transaction.clone() {
                     match self.ctx.block_on(self.ctx.transactions.void(&id)) {
                         Ok(()) => {}
@@ -137,6 +163,18 @@ impl AccountsScreen {
                 }
                 None
             }
+            AccountsMsg::OpenDetail(id) => {
+                self.selected_transaction = Some(id);
+                self.detail_visible = true;
+                Some(Msg::FocusChange(Id::Accounts(
+                    AccountsId::TransactionDetail,
+                )))
+            }
+            AccountsMsg::CloseDetail => {
+                self.detail_visible = false;
+                Some(Msg::FocusChange(Id::Accounts(AccountsId::TransactionList)))
+            }
+            AccountsMsg::FocusSidebar => Some(Msg::FocusChange(Id::Accounts(AccountsId::Sidebar))),
         }
     }
 }
@@ -151,7 +189,9 @@ impl Screen for AccountsScreen {
     /// Returns an error if any component fails to mount (e.g., duplicate ID).
     #[inline]
     fn mount(&mut self, app: &mut Application<Id, Msg, NoUserEvent>) -> anyhow::Result<()> {
+        self.loading = true;
         self.load_accounts();
+        self.loading = false;
         app.mount(
             Id::Accounts(AccountsId::Sidebar),
             Box::new(sidebar::AccountSidebar::new(self.accounts.clone())),
@@ -181,12 +221,16 @@ impl Screen for AccountsScreen {
         app.umount(&Id::Accounts(AccountsId::TransactionList)).ok();
         app.umount(&Id::Accounts(AccountsId::TransactionDetail))
             .ok();
+        app.umount(&Id::Accounts(AccountsId::TransactionForm)).ok();
     }
 
     /// Render the accounts screen: sidebar on the left (25%), transaction list on the right (75%).
     ///
     /// When `detail_visible` is true, the right panel is split vertically between the
     /// transaction list and the detail panel.
+    ///
+    /// Form overlays are mounted/unmounted here based on `pending_form` state, and
+    /// rendered on top of the rest of the screen when `form_mounted` is true.
     #[inline]
     #[expect(
         clippy::indexing_slicing,
@@ -194,6 +238,65 @@ impl Screen for AccountsScreen {
         reason = "layout always returns exactly 2 chunks to match the 2 constraints"
     )]
     fn view(&mut self, app: &mut Application<Id, Msg, NoUserEvent>, frame: &mut Frame, area: Rect) {
+        // Mount or unmount the form overlay based on pending_form state.
+        match &self.pending_form {
+            PendingForm::Add if !self.form_mounted => {
+                #[expect(
+                    clippy::unused_result_ok,
+                    reason = "form mount is best-effort; form simply won't appear if it fails"
+                )]
+                {
+                    app.mount(
+                        Id::Accounts(AccountsId::TransactionForm),
+                        Box::new(forms::TransactionForm::new_add()),
+                        vec![],
+                    )
+                    .ok();
+                    app.active(&Id::Accounts(AccountsId::TransactionForm)).ok();
+                }
+                self.form_mounted = true;
+            }
+            PendingForm::Edit if !self.form_mounted => {
+                if let Some(ref tx_id) = self.selected_transaction.clone() {
+                    if let Some(tx) = self.transactions.iter().find(|t| t.id() == tx_id).cloned() {
+                        #[expect(
+                            clippy::unused_result_ok,
+                            reason = "form mount is best-effort; form simply won't appear if it fails"
+                        )]
+                        {
+                            app.mount(
+                                Id::Accounts(AccountsId::TransactionForm),
+                                Box::new(forms::TransactionForm::new_edit(&tx)),
+                                vec![],
+                            )
+                            .ok();
+                            app.active(&Id::Accounts(AccountsId::TransactionForm)).ok();
+                        }
+                        self.form_mounted = true;
+                    }
+                }
+            }
+            PendingForm::None if self.form_mounted => {
+                #[expect(
+                    clippy::unused_result_ok,
+                    reason = "unmount errors are non-fatal; component may already be absent"
+                )]
+                {
+                    app.umount(&Id::Accounts(AccountsId::TransactionForm)).ok();
+                }
+                self.form_mounted = false;
+            }
+            PendingForm::None | PendingForm::Add | PendingForm::Edit => {}
+        }
+
+        if self.loading {
+            frame.render_widget(
+                tuirealm::ratatui::widgets::Paragraph::new("Loading accounts\u{2026}"),
+                area,
+            );
+            return;
+        }
+
         let h_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
@@ -220,6 +323,11 @@ impl Screen for AccountsScreen {
                 frame,
                 h_chunks[1],
             );
+        }
+
+        // Render the form overlay on top if mounted.
+        if self.form_mounted {
+            app.view(&Id::Accounts(AccountsId::TransactionForm), frame, area);
         }
     }
 
@@ -265,8 +373,13 @@ impl Screen for AccountsScreen {
                     mode: AppMode::Normal,
                 },
                 KeyBinding {
-                    key: "Enter".into(),
-                    action: "Select account".into(),
+                    key: "l / Enter".into(),
+                    action: "Open detail panel".into(),
+                    mode: AppMode::Normal,
+                },
+                KeyBinding {
+                    key: "h / ←".into(),
+                    action: "Focus sidebar".into(),
                     mode: AppMode::Normal,
                 },
                 KeyBinding {
@@ -280,13 +393,8 @@ impl Screen for AccountsScreen {
                     mode: AppMode::Normal,
                 },
                 KeyBinding {
-                    key: "x".into(),
-                    action: "Void transaction".into(),
-                    mode: AppMode::Normal,
-                },
-                KeyBinding {
                     key: "d".into(),
-                    action: "Toggle detail panel".into(),
+                    action: "Void transaction".into(),
                     mode: AppMode::Normal,
                 },
                 KeyBinding {

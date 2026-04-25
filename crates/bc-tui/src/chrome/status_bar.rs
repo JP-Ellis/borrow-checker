@@ -88,6 +88,7 @@ impl MockComponent for Widget {
 
 /// Tui-realm component wrapper for the status bar widget.
 #[derive(MockComponent)]
+#[non_exhaustive]
 pub struct StatusBar {
     /// Inner raw widget.
     component: Widget,

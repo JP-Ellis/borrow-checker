@@ -51,9 +51,7 @@ tuirealm         = "3"
 
 [dev-dependencies]
 assert_fs         = { workspace = true }
-jiff              = { workspace = true }
 pretty_assertions = { workspace = true }
-tokio             = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

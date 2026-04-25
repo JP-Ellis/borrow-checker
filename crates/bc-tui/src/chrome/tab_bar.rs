@@ -97,6 +97,7 @@ impl MockComponent for Widget {
 
 /// Tui-realm component wrapper for the tab bar widget.
 #[derive(MockComponent)]
+#[non_exhaustive]
 pub struct TabBar {
     /// Inner raw widget.
     component: Widget,
@@ -114,6 +115,7 @@ impl TabBar {
 }
 
 impl Component<Msg, NoUserEvent> for TabBar {
+    #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "Event is non-exhaustive; remaining variants all produce None"
@@ -147,6 +149,13 @@ impl Component<Msg, NoUserEvent> for TabBar {
                     Tab::Reports => Tab::Accounts,
                 }))
             }
+            Event::Keyboard(KeyEvent {
+                code: Key::BackTab, ..
+            }) => Some(Msg::TabSwitch(match self.component.active_tab {
+                Tab::Accounts => Tab::Reports,
+                Tab::Budget => Tab::Accounts,
+                Tab::Reports => Tab::Budget,
+            })),
             _ => None,
         }
     }
