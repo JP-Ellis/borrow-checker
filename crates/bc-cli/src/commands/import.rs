@@ -25,20 +25,6 @@ pub struct Args {
     pub file: PathBuf,
 }
 
-/// Builds an [`bc_core::ImporterRegistry`] pre-loaded with all built-in format importers.
-///
-/// Registers CSV, Ledger, Beancount, and OFX importers. Plugin-provided importers
-/// are not included here — they will be injected by the plugin host in Milestone 6.
-fn default_registry() -> bc_core::ImporterRegistry {
-    let mut registry = bc_core::ImporterRegistry::new();
-    registry
-        .register(bc_format_csv::importer_factory())
-        .register(bc_format_ledger::importer_factory())
-        .register(bc_format_beancount::importer_factory())
-        .register(bc_format_ofx::importer_factory());
-    registry
-}
-
 /// Executes the `import` subcommand.
 ///
 /// # Errors
@@ -71,13 +57,15 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     let bytes = std::fs::read(&args.file).map_err(crate::error::CliError::Io)?;
 
     // Create the importer.
-    let registry = default_registry();
-    let importer = registry.create_for_name(&profile.importer).ok_or_else(|| {
-        crate::error::CliError::Arg(format!(
-            "unknown importer '{}' for profile '{}'",
-            profile.importer, profile.name
-        ))
-    })?;
+    let importer = ctx
+        .importers
+        .create_for_name(&profile.importer)
+        .ok_or_else(|| {
+            crate::error::CliError::Arg(format!(
+                "unknown importer '{}' for profile '{}'",
+                profile.importer, profile.name
+            ))
+        })?;
 
     // Parse the file.
     let raw_txs = importer
