@@ -353,6 +353,7 @@ dependencies = [
  "bc-models",
  "crossterm 0.28.1",
  "dirs",
+ "jiff",
  "pretty_assertions",
  "ratatui-macros",
  "tokio",
