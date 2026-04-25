@@ -11,8 +11,6 @@ use tuirealm::State;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
 use tuirealm::event::Event;
-use tuirealm::event::Key;
-use tuirealm::event::KeyEvent;
 use tuirealm::props::BorderType;
 use tuirealm::props::Color;
 use tuirealm::props::Style;
@@ -84,7 +82,7 @@ impl MockComponent for Widget {
             Paragraph::new(content)
                 .block(
                     Block::default()
-                        .title(" Help — Esc to close ")
+                        .title(" Help — press any key to close ")
                         .borders(Borders::ALL)
                         .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::Cyan)),
@@ -179,17 +177,44 @@ impl Component<Msg, NoUserEvent> for HelpOverlay {
         reason = "Event is non-exhaustive; all non-keyboard variants are no-ops"
     )]
     fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
-        // Only Esc (or ?) closes the overlay. Other keys fall through so that
-        // global TabBar subscriptions (q, 1/2/3, Tab) can still fire.
         match ev {
-            Event::Keyboard(
-                KeyEvent { code: Key::Esc, .. }
-                | KeyEvent {
-                    code: Key::Char('?'),
-                    ..
-                },
-            ) => Some(Msg::HelpToggle),
+            Event::Keyboard(_) => Some(Msg::HelpToggle),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tuirealm::event::Key;
+    use tuirealm::event::KeyEvent;
+    use tuirealm::event::KeyModifiers;
+
+    use super::*;
+
+    fn key_event(code: Key) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn esc_closes_overlay() {
+        let mut overlay = HelpOverlay::new();
+        pretty_assertions::assert_eq!(overlay.on(key_event(Key::Esc)), Some(Msg::HelpToggle));
+    }
+
+    #[test]
+    fn question_mark_closes_overlay() {
+        let mut overlay = HelpOverlay::new();
+        pretty_assertions::assert_eq!(overlay.on(key_event(Key::Char('?'))), Some(Msg::HelpToggle));
+    }
+
+    #[test]
+    fn any_key_closes_overlay() {
+        let mut overlay = HelpOverlay::new();
+        pretty_assertions::assert_eq!(overlay.on(key_event(Key::Char('j'))), Some(Msg::HelpToggle));
+        pretty_assertions::assert_eq!(overlay.on(key_event(Key::Enter)), Some(Msg::HelpToggle));
     }
 }

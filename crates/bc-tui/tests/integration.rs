@@ -1,29 +1,104 @@
 //! Integration tests for the borrow-checker TUI.
 //!
-//! Smoke tests that verify basic initialization and components work
-//! without panicking. Note: `Model` requires a real terminal which cannot
-//! be used in tests, so tests focus on lower-level components and databases.
+//! Verifies that `TuiContext::open` succeeds and that each top-level screen
+//! can be mounted and unmounted against a real (temporary) SQLite database.
 
 #[cfg(test)]
 mod tests {
-    use pretty_assertions::assert_eq;
+    use core::time::Duration;
+    use std::sync::Arc;
 
-    /// Verify app initializes with a real database without panicking.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn app_initializes_with_empty_database() {
-        let _dir = assert_fs::TempDir::new().expect("create temp dir");
-        // Placeholder assertion — Model requires a terminal bridge and cannot
-        // be constructed in tests. Once the TUI layer is testable, verify
-        // that TuiContext::open succeeds and constructs all services.
-        assert_eq!(1_i32 + 1_i32, 2_i32);
+    use bc_tui::context::TuiContext;
+    use bc_tui::id::AccountsId;
+    use bc_tui::id::BudgetId;
+    use bc_tui::id::Id;
+    use bc_tui::id::ReportsId;
+    use bc_tui::msg::Msg;
+    use bc_tui::screen::Screen as _;
+    use bc_tui::screen::accounts::AccountsScreen;
+    use bc_tui::screen::budget::BudgetScreen;
+    use bc_tui::screen::reports::ReportsScreen;
+    use tuirealm::Application;
+    use tuirealm::EventListenerCfg;
+    use tuirealm::NoUserEvent;
+
+    fn make_app() -> Application<Id, Msg, NoUserEvent> {
+        Application::init(EventListenerCfg::default().poll_timeout(Duration::from_millis(10)))
     }
 
-    /// Verify the second placeholder test for future integration work.
     #[tokio::test(flavor = "multi_thread")]
-    async fn app_quit_message_sets_quit_flag() {
-        let _dir = assert_fs::TempDir::new().expect("create temp dir");
-        // Placeholder assertion — replace once Model is testable via dependency injection
-        // or a test harness that doesn't require a terminal bridge.
-        assert_eq!(1_i32 + 1_i32, 2_i32);
+    async fn context_opens_with_empty_database() {
+        let dir = assert_fs::TempDir::new().expect("create temp dir");
+        TuiContext::open(&dir.path().join("test.db"))
+            .await
+            .expect("TuiContext::open should succeed on a fresh database");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn accounts_screen_mounts_and_unmounts() {
+        let dir = assert_fs::TempDir::new().expect("create temp dir");
+        let ctx = Arc::new(
+            TuiContext::open(&dir.path().join("test.db"))
+                .await
+                .expect("open ctx"),
+        );
+        let mut app = make_app();
+        let mut screen = AccountsScreen::new(Arc::clone(&ctx));
+        tokio::task::block_in_place(|| {
+            screen.mount(&mut app).expect("mount");
+        });
+        pretty_assertions::assert_eq!(app.mounted(&Id::Accounts(AccountsId::Sidebar)), true);
+        pretty_assertions::assert_eq!(
+            app.mounted(&Id::Accounts(AccountsId::TransactionList)),
+            true
+        );
+        pretty_assertions::assert_eq!(
+            app.mounted(&Id::Accounts(AccountsId::TransactionDetail)),
+            true
+        );
+        screen.unmount(&mut app);
+        pretty_assertions::assert_eq!(app.mounted(&Id::Accounts(AccountsId::Sidebar)), false);
+        pretty_assertions::assert_eq!(
+            app.mounted(&Id::Accounts(AccountsId::TransactionList)),
+            false
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn budget_screen_mounts_and_unmounts() {
+        let dir = assert_fs::TempDir::new().expect("create temp dir");
+        let ctx = Arc::new(
+            TuiContext::open(&dir.path().join("test.db"))
+                .await
+                .expect("open ctx"),
+        );
+        let mut app = make_app();
+        let mut screen = BudgetScreen::new(Arc::clone(&ctx));
+        tokio::task::block_in_place(|| {
+            screen.mount(&mut app).expect("mount");
+        });
+        pretty_assertions::assert_eq!(app.mounted(&Id::Budget(BudgetId::Sidebar)), true);
+        pretty_assertions::assert_eq!(app.mounted(&Id::Budget(BudgetId::Detail)), true);
+        screen.unmount(&mut app);
+        pretty_assertions::assert_eq!(app.mounted(&Id::Budget(BudgetId::Sidebar)), false);
+        pretty_assertions::assert_eq!(app.mounted(&Id::Budget(BudgetId::Detail)), false);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reports_screen_mounts_and_unmounts() {
+        let dir = assert_fs::TempDir::new().expect("create temp dir");
+        let ctx = Arc::new(
+            TuiContext::open(&dir.path().join("test.db"))
+                .await
+                .expect("open ctx"),
+        );
+        let mut app = make_app();
+        let mut screen = ReportsScreen::new(Arc::clone(&ctx));
+        tokio::task::block_in_place(|| {
+            screen.mount(&mut app).expect("mount");
+        });
+        pretty_assertions::assert_eq!(app.mounted(&Id::Reports(ReportsId::View)), true);
+        screen.unmount(&mut app);
+        pretty_assertions::assert_eq!(app.mounted(&Id::Reports(ReportsId::View)), false);
     }
 }

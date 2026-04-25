@@ -14,6 +14,10 @@ use tokio::runtime::Handle;
 /// Constructed once in `main()` before the TUI starts, then shared across
 /// all screens via `Arc<TuiContext>`.
 #[expect(
+    clippy::module_name_repetitions,
+    reason = "referenced externally as context::TuiContext; repetition is intentional"
+)]
+#[expect(
     clippy::partial_pub_fields,
     reason = "handle is intentionally private to prevent external use of the runtime"
 )]
@@ -45,6 +49,7 @@ impl TuiContext {
     /// # Errors
     ///
     /// Returns an error if the database cannot be opened or migrations fail.
+    #[inline]
     pub async fn open(db_path: &Path) -> bc_core::BcResult<Self> {
         let pool = bc_core::open_db_at(db_path).await?;
         Ok(Self {

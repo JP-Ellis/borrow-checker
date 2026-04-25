@@ -649,14 +649,9 @@ impl Service {
     #[inline]
     pub async fn list_for_account(&self, account_id: &AccountId) -> BcResult<Vec<Transaction>> {
         let all = self.list().await?;
-        let id_str = account_id.to_string();
         Ok(all
             .into_iter()
-            .filter(|tx| {
-                tx.postings()
-                    .iter()
-                    .any(|p| p.account_id().to_string() == id_str)
-            })
+            .filter(|tx| tx.postings().iter().any(|p| p.account_id() == account_id))
             .collect())
     }
 
