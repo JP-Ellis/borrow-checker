@@ -107,6 +107,9 @@ struct RawSettings {
     display_commodity: String,
     /// Optional override for the database file path.
     db_path: Option<String>,
+    /// Ordered list of additional plugin directories (from config file).
+    #[serde(default)]
+    plugin_dirs: Vec<String>,
     /// CLI-specific settings from the `[cli]` section.
     cli: RawCliSection,
 }
@@ -137,6 +140,12 @@ pub struct Settings {
     /// When `None`, callers should fall back to [`default_db_path`].
     #[serde(default)]
     db_path: Option<std::path::PathBuf>,
+    /// Ordered plugin search directories (user-configured, XDG data home, sidecar).
+    ///
+    /// Directories are checked in order; a plugin found in an earlier directory
+    /// takes precedence over the same-named plugin in a later one.
+    #[serde(default)]
+    plugin_dirs: Vec<std::path::PathBuf>,
     /// CLI-specific settings from the `[cli]` section.
     #[serde(default)]
     cli: CliSection,
@@ -169,6 +178,7 @@ impl Settings {
             .set_default("fortnightly_anchor", Option::<String>::None)?
             .set_default("display_commodity", "AUD")?
             .set_default("db_path", Option::<String>::None)?
+            .set_default("plugin_dirs", Vec::<String>::new())?
             .set_default("cli.json", false)?
             .set_default("cli.log", Option::<String>::None)?;
 
@@ -215,6 +225,30 @@ impl Settings {
 
         let db_path = raw.db_path.map(std::path::PathBuf::from);
 
+        // Plugin dirs: BC_PLUGIN_DIR env var → user config dirs → XDG data home
+        let mut plugin_dirs: Vec<std::path::PathBuf> = Vec::new();
+
+        // 1. BC_PLUGIN_DIR env var override (single dir, highest priority)
+        if let Ok(dir) = std::env::var("BC_PLUGIN_DIR") {
+            let p = std::path::PathBuf::from(dir);
+            if p.is_absolute() {
+                plugin_dirs.push(p);
+            }
+        }
+
+        // 2. User-configured dirs from config file
+        for dir in &raw.plugin_dirs {
+            plugin_dirs.push(std::path::PathBuf::from(dir));
+        }
+
+        // 3. XDG data home: ~/.local/share/borrow-checker/plugins/
+        if let Some(dirs) = directories::BaseDirs::new() {
+            let xdg_data = dirs.data_dir().join("borrow-checker").join("plugins");
+            if !plugin_dirs.contains(&xdg_data) {
+                plugin_dirs.push(xdg_data);
+            }
+        }
+
         let cli = CliSection {
             json: raw.cli.json,
             log: raw.cli.log,
@@ -226,6 +260,7 @@ impl Settings {
             fortnightly_anchor,
             display_commodity: CommodityCode::new(raw.display_commodity),
             db_path,
+            plugin_dirs,
             cli,
         })
     }
@@ -268,6 +303,16 @@ impl Settings {
         self.db_path.as_deref()
     }
 
+    /// Returns the ordered list of plugin search directories.
+    ///
+    /// Callers (typically the CLI) may append additional directories such as the
+    /// binary sidecar directory before passing the list to `PluginRegistry::load`.
+    #[inline]
+    #[must_use]
+    pub fn plugin_paths(&self) -> &[std::path::PathBuf] {
+        &self.plugin_dirs
+    }
+
     /// Returns the CLI-specific settings from the `[cli]` config section.
     #[inline]
     #[must_use]
@@ -285,6 +330,7 @@ impl Default for Settings {
             fortnightly_anchor: None,
             display_commodity: CommodityCode::new("AUD"),
             db_path: None,
+            plugin_dirs: Vec::new(),
             cli: CliSection::default(),
         }
     }
@@ -345,6 +391,7 @@ mod tests {
             fortnightly_anchor: None,
             display_commodity: "AUD".to_owned(),
             db_path: None,
+            plugin_dirs: Vec::new(),
             cli: RawCliSection {
                 json: false,
                 log: None,

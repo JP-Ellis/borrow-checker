@@ -54,7 +54,7 @@ async fn main() {
     }
 
     let json = cli.global.json || settings.cli().json();
-    let ctx = match AppContext::open(&db_path, json).await {
+    let ctx = match AppContext::open(&db_path, json, &settings).await {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("error: {e}");
