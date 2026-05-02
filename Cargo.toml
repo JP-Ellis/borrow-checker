@@ -95,26 +95,6 @@ members  = [
   # Opt-out approach: all groups are enabled at warn, then individual lints that
   # don't fit the project are explicitly allowed.
 
-    [workspace.lints.rust]
-    # See https://doc.rust-lang.org/rustc/lints/groups.html
-    # and `rustc -W help` for the full list of built-in lints
-
-    deprecated-safe                            = "warn"
-    future-incompatible                        = "warn"
-    keyword-idents                             = "warn"
-    let-underscore                             = "warn"
-    missing_docs                               = "warn"
-    nonstandard-style                          = "warn"
-    refining-impl-trait                        = "warn"
-    unknown-or-malformed-diagnostic-attributes = "warn"
-    unused                                     = "warn"
-    warnings                                   = "warn"
-
-    [workspace.lints.rustdoc]
-    # See: https://doc.rust-lang.org/rustdoc/lints.html
-    missing-crate-level-docs = "warn"
-    private-doc-tests        = "warn"
-
     [workspace.lints.clippy]
     # Enable all groups at lower priority so individual lints can override
     cargo       = { level = "warn", priority = -1 }
@@ -154,3 +134,23 @@ members  = [
     # Known upstream issues — revisit when fixed
     # https://github.com/rust-lang/rust-clippy/issues/14056
     panic_in_result_fn = "allow"
+
+    [workspace.lints.rust]
+    # See https://doc.rust-lang.org/rustc/lints/groups.html
+    # and `rustc -W help` for the full list of built-in lints
+
+    deprecated-safe                            = "warn"
+    future-incompatible                        = "warn"
+    keyword-idents                             = "warn"
+    let-underscore                             = "warn"
+    missing_docs                               = "warn"
+    nonstandard-style                          = "warn"
+    refining-impl-trait                        = "warn"
+    unknown-or-malformed-diagnostic-attributes = "warn"
+    unused                                     = "warn"
+    warnings                                   = "warn"
+
+    [workspace.lints.rustdoc]
+    # See: https://doc.rust-lang.org/rustdoc/lints.html
+    missing-crate-level-docs = "warn"
+    private-doc-tests        = "warn"
