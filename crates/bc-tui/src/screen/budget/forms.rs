@@ -188,7 +188,9 @@ impl Component<Msg, NoUserEvent> for AllocationForm {
         match ev {
             Event::Keyboard(KeyEvent {
                 code: Key::Enter, ..
-            }) => Some(Msg::Budget(BudgetMsg::FormSubmitted)),
+            }) => Some(Msg::Budget(BudgetMsg::FormSubmitted {
+                amount: self.component.amount.value().to_owned(),
+            })),
             Event::Keyboard(KeyEvent { code: Key::Esc, .. }) => {
                 Some(Msg::Budget(BudgetMsg::FormCancelled))
             }
@@ -244,6 +246,11 @@ mod tests {
     fn form_enter_emits_form_submitted() {
         let mut form = AllocationForm::new("Groceries");
         let msg = form.on(enter_event());
-        assert_eq!(msg, Some(Msg::Budget(BudgetMsg::FormSubmitted)));
+        assert_eq!(
+            msg,
+            Some(Msg::Budget(BudgetMsg::FormSubmitted {
+                amount: String::new(),
+            }))
+        );
     }
 }

@@ -49,7 +49,8 @@ pub fn run(ctx: Arc<TuiContext>) -> anyhow::Result<()> {
 
     let mut initial_screen = make_screen(&initial_tab, Arc::clone(&ctx));
     initial_screen.mount(&mut app)?;
-    app.active(&initial_screen.initial_focus())?;
+    let initial_focus = initial_screen.initial_focus();
+    app.active(&initial_focus)?;
 
     let terminal = tuirealm::terminal::TerminalBridge::init_crossterm()?;
     let mut model = Model {
@@ -61,6 +62,7 @@ pub fn run(ctx: Arc<TuiContext>) -> anyhow::Result<()> {
         redraw: true,
         terminal,
         ctx,
+        last_focus: initial_focus,
     };
 
     while !model.quit {

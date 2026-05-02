@@ -140,6 +140,112 @@ impl AccountsScreen {
         }
     }
 
+    /// Parse form field strings and create or amend a transaction via bc-core.
+    ///
+    /// If `is_edit` is `true`, the currently selected transaction is amended; otherwise
+    /// a new transaction is created. Errors are logged to stderr — no attempt is made
+    /// to surface them in the UI.
+    #[inline]
+    #[expect(
+        clippy::print_stderr,
+        reason = "form errors are logged to stderr since we are in raw terminal mode"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "negating a Decimal value to produce the debit posting; overflow is not a concern for financial amounts"
+    )]
+    fn save_transaction(
+        &mut self,
+        date_str: &str,
+        payee: &str,
+        amount_str: &str,
+        account_str: &str,
+        is_edit: bool,
+    ) {
+        let date = match date_str.parse::<jiff::civil::Date>() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("invalid date '{date_str}': {e}");
+                return;
+            }
+        };
+        let Some((value_str, commodity_str)) = amount_str.rsplit_once(' ') else {
+            eprintln!("invalid amount '{amount_str}': expected 'VALUE COMMODITY'");
+            return;
+        };
+        let value = match value_str.parse::<bc_models::Decimal>() {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("invalid amount value '{value_str}': {e}");
+                return;
+            }
+        };
+        let commodity = bc_models::CommodityCode::new(commodity_str);
+        let counterpart_id = match account_str.parse::<bc_models::AccountId>() {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("invalid account id '{account_str}': {e}");
+                return;
+            }
+        };
+        let Some(ref account_id) = self.selected_account else {
+            eprintln!("no account selected");
+            return;
+        };
+        let debit = bc_models::Posting::builder()
+            .id(bc_models::PostingId::new())
+            .account_id(account_id.clone())
+            .amount(bc_models::Amount::new(-value, commodity.clone()))
+            .build();
+        let credit = bc_models::Posting::builder()
+            .id(bc_models::PostingId::new())
+            .account_id(counterpart_id)
+            .amount(bc_models::Amount::new(value, commodity))
+            .build();
+        let maybe_payee: Option<String> = if payee.is_empty() {
+            None
+        } else {
+            Some(payee.to_owned())
+        };
+        if is_edit {
+            let Some(ref tx_id) = self.selected_transaction else {
+                eprintln!("no transaction selected for edit");
+                return;
+            };
+            let Some(existing) = self.transactions.iter().find(|t| t.id() == tx_id).cloned() else {
+                eprintln!("selected transaction not found in cache");
+                return;
+            };
+            let updated = bc_models::Transaction::builder()
+                .id(tx_id.clone())
+                .date(date)
+                .maybe_payee(maybe_payee)
+                .description("")
+                .postings(vec![debit, credit])
+                .status(bc_models::TransactionStatus::Cleared)
+                .created_at(*existing.created_at())
+                .build();
+            match self.ctx.block_on(self.ctx.transactions.amend(updated)) {
+                Ok(()) => {}
+                Err(e) => eprintln!("failed to amend transaction: {e}"),
+            }
+        } else {
+            let new_tx = bc_models::Transaction::builder()
+                .id(bc_models::TransactionId::new())
+                .date(date)
+                .maybe_payee(maybe_payee)
+                .description("")
+                .postings(vec![debit, credit])
+                .status(bc_models::TransactionStatus::Cleared)
+                .created_at(jiff::Timestamp::now())
+                .build();
+            match self.ctx.block_on(self.ctx.transactions.create(new_tx)) {
+                Ok(_id) => {}
+                Err(e) => eprintln!("failed to create transaction: {e}"),
+            }
+        }
+    }
+
     /// Handle an [`AccountsMsg`], updating internal state and returning a follow-up [`Msg`] if needed.
     #[inline]
     #[expect(
@@ -150,6 +256,8 @@ impl AccountsScreen {
         match msg {
             AccountsMsg::AccountSelected(id) => {
                 self.selected_account = Some(id);
+                self.selected_transaction = None;
+                self.detail_visible = false;
                 self.load_transactions();
                 self.list_dirty = true;
                 None
@@ -158,31 +266,37 @@ impl AccountsScreen {
                 self.pending_form = PendingForm::Add;
                 Some(Msg::ModeChange(AppMode::Insert))
             }
-            AccountsMsg::OpenEditTransaction => self.selected_transaction.is_some().then(|| {
+            AccountsMsg::OpenEditTransaction(id) => {
+                self.selected_transaction = Some(id);
                 self.pending_form = PendingForm::Edit;
-                Msg::ModeChange(AppMode::Insert)
-            }),
+                Some(Msg::ModeChange(AppMode::Insert))
+            }
             AccountsMsg::FormCancelled => {
                 self.pending_form = PendingForm::None;
-                self.form_mounted = false;
+                // form_mounted stays true — view() will unmount and clear it
                 Some(Msg::ModeChange(AppMode::Normal))
             }
-            AccountsMsg::FormSubmitted => {
+            AccountsMsg::FormSubmitted {
+                date,
+                payee,
+                amount,
+                account,
+            } => {
+                let is_edit = self.pending_form == PendingForm::Edit;
                 self.pending_form = PendingForm::None;
-                self.form_mounted = false;
+                // form_mounted stays true — view() will unmount and clear it
+                self.save_transaction(&date, &payee, &amount, &account, is_edit);
                 self.load_transactions();
                 self.list_dirty = true;
                 Some(Msg::ModeChange(AppMode::Normal))
             }
-            AccountsMsg::VoidRequested => {
-                if let Some(id) = self.selected_transaction.clone() {
-                    match self.ctx.block_on(self.ctx.transactions.void(&id)) {
-                        Ok(()) => {}
-                        Err(e) => eprintln!("failed to void transaction: {e}"),
-                    }
-                    self.load_transactions();
-                    self.list_dirty = true;
+            AccountsMsg::VoidRequested(id) => {
+                match self.ctx.block_on(self.ctx.transactions.void(&id)) {
+                    Ok(()) => {}
+                    Err(e) => eprintln!("failed to void transaction: {e}"),
                 }
+                self.load_transactions();
+                self.list_dirty = true;
                 None
             }
             AccountsMsg::OpenDetail(id) => {
@@ -586,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn open_edit_with_no_selection_does_not_enter_insert_mode() {
+    fn open_edit_returns_mode_change_insert() {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -597,9 +711,10 @@ mod tests {
                 .expect("open ctx"),
         );
         let mut screen = AccountsScreen::new(ctx);
-        // No transaction selected — edit should be a no-op.
-        let result = screen.handle(Msg::Accounts(AccountsMsg::OpenEditTransaction));
-        pretty_assertions::assert_eq!(result, None);
+        // The transaction ID is now passed in the message; always enters Insert mode.
+        let id = bc_models::TransactionId::new();
+        let result = screen.handle(Msg::Accounts(AccountsMsg::OpenEditTransaction(id)));
+        pretty_assertions::assert_eq!(result, Some(Msg::ModeChange(AppMode::Insert)));
     }
 
     #[test]
@@ -646,7 +761,13 @@ mod tests {
                 .expect("open ctx"),
         );
         let mut screen = AccountsScreen::new(ctx);
-        let result = screen.handle(Msg::Accounts(AccountsMsg::FormSubmitted));
+        // Invalid field values are logged to stderr; the mode change still returns.
+        let result = screen.handle(Msg::Accounts(AccountsMsg::FormSubmitted {
+            date: String::new(),
+            payee: String::new(),
+            amount: String::new(),
+            account: String::new(),
+        }));
         pretty_assertions::assert_eq!(result, Some(Msg::ModeChange(AppMode::Normal)));
     }
 

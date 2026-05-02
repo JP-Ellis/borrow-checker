@@ -15,6 +15,8 @@ use tuirealm::SubClause;
 use tuirealm::SubEventClause;
 use tuirealm::event::Key;
 
+use crate::id::AccountsId;
+use crate::id::BudgetId;
 use crate::id::ChromeId;
 use crate::id::Id;
 use crate::msg::Msg;
@@ -54,10 +56,27 @@ pub fn mount(app: &mut Application<Id, Msg, NoUserEvent>, active_tab: Tab) -> an
                 SubEventClause::Keyboard(Key::Char('3').into()),
                 SubClause::Always,
             ),
-            Sub::new(SubEventClause::Keyboard(Key::Tab.into()), SubClause::Always),
+            Sub::new(
+                SubEventClause::Keyboard(Key::Tab.into()),
+                SubClause::And(
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
+                        Id::Accounts(AccountsId::TransactionForm),
+                    )))),
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(Id::Budget(
+                        BudgetId::AllocationForm,
+                    ))))),
+                ),
+            ),
             Sub::new(
                 SubEventClause::Keyboard(Key::BackTab.into()),
-                SubClause::Always,
+                SubClause::And(
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
+                        Id::Accounts(AccountsId::TransactionForm),
+                    )))),
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(Id::Budget(
+                        BudgetId::AllocationForm,
+                    ))))),
+                ),
             ),
         ],
     )?;

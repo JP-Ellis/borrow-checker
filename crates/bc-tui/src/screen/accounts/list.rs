@@ -262,11 +262,19 @@ impl Component<Msg, NoUserEvent> for TransactionList {
             Event::Keyboard(KeyEvent {
                 code: Key::Char('e'),
                 ..
-            }) => Some(Msg::Accounts(AccountsMsg::OpenEditTransaction)),
+            }) => self
+                .component
+                .transactions
+                .get(self.component.selected)
+                .map(|tx| Msg::Accounts(AccountsMsg::OpenEditTransaction(tx.id().clone()))),
             Event::Keyboard(KeyEvent {
                 code: Key::Char('d'),
                 ..
-            }) => Some(Msg::Accounts(AccountsMsg::VoidRequested)),
+            }) => self
+                .component
+                .transactions
+                .get(self.component.selected)
+                .map(|tx| Msg::Accounts(AccountsMsg::VoidRequested(tx.id().clone()))),
             Event::Keyboard(KeyEvent {
                 code: Key::Char('v'),
                 ..
