@@ -33,7 +33,7 @@ use tuirealm::ratatui::widgets::Paragraph;
 use crate::msg::BudgetMsg;
 use crate::msg::Msg;
 
-// ─── private component ───────────────────────────────────────────────────────
+// MARK: private component
 
 /// Raw widget that renders the allocation form.
 struct AllocForm {
@@ -145,7 +145,7 @@ impl MockComponent for AllocForm {
     }
 }
 
-// ─── public wrapper ──────────────────────────────────────────────────────────
+// MARK: public wrapper
 
 /// Tui-realm component wrapper for the allocation form overlay.
 ///
@@ -212,7 +212,7 @@ impl Component<Msg, NoUserEvent> for AllocationForm {
     }
 }
 
-// ─── tests ───────────────────────────────────────────────────────────────────
+// MARK: tests
 
 #[cfg(test)]
 mod tests {

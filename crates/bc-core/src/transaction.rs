@@ -638,6 +638,10 @@ impl Service {
     /// Lists all non-voided transactions that have at least one posting for the
     /// given account, ordered by date descending.
     ///
+    /// Issues four targeted queries against SQLite (transactions, tx-tags, postings,
+    /// posting-tags), each scoped to the given account via a subquery, so only the
+    /// relevant rows are fetched rather than the full table.
+    ///
     /// # Arguments
     ///
     /// * `account_id` - Only transactions with a posting referencing this account
@@ -647,12 +651,164 @@ impl Service {
     ///
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
-    pub async fn list_for_account(&self, account_id: &AccountId) -> BcResult<Vec<Transaction>> {
-        let all = self.list().await?;
-        Ok(all
+    #[expect(
+        clippy::too_many_lines,
+        reason = "loading transactions with postings, cost, and tags for a specific account inherently requires several queries and field mappings"
+    )]
+    pub async fn list_for_account(
+        &self,
+        account_id: &AccountId,
+    ) -> BcResult<impl Iterator<Item = Transaction>> {
+        let voided_str = to_db_str(TransactionStatus::Voided)?;
+        let account_id_str = account_id.to_string();
+
+        let tx_rows: Vec<(String, String, Option<String>, String, String, String)> =
+            sqlx::query_as(
+                "SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
+                 FROM transactions t \
+                 WHERE t.status != ? \
+                 AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
+                 ORDER BY t.date DESC",
+            )
+            .bind(&voided_str)
+            .bind(&account_id_str)
+            .fetch_all(&self.pool)
+            .await?;
+
+        if tx_rows.is_empty() {
+            return Ok(vec![].into_iter());
+        }
+
+        let tx_tag_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT tt.transaction_id, tt.tag_id \
+             FROM transaction_tags tt \
+             JOIN transactions t ON tt.transaction_id = t.id \
+             WHERE t.status != ? \
+             AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
+        )
+        .bind(&voided_str)
+        .bind(&account_id_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut tx_tags_map: HashMap<String, Vec<TagId>> = HashMap::new();
+        for (tx_id_str, tag_id_str) in tx_tag_rows {
+            let tid = tag_id_str
+                .parse::<TagId>()
+                .map_err(|e| BcError::BadData(format!("invalid tag_id '{tag_id_str}': {e}")))?;
+            tx_tags_map.entry(tx_id_str).or_default().push(tid);
+        }
+
+        let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
+            "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.memo, \
+                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
+                    p.envelope_id \
+             FROM postings p \
+             JOIN transactions t ON p.transaction_id = t.id \
+             WHERE t.status != ? \
+             AND p.transaction_id IN \
+                 (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
+             ORDER BY p.transaction_id, p.position ASC",
+        )
+        .bind(&voided_str)
+        .bind(&account_id_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let posting_tag_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT pt.posting_id, pt.tag_id \
+             FROM posting_tags pt \
+             JOIN postings p ON pt.posting_id = p.id \
+             JOIN transactions t ON p.transaction_id = t.id \
+             WHERE t.status != ? \
+             AND p.transaction_id IN \
+                 (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
+        )
+        .bind(&voided_str)
+        .bind(&account_id_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut posting_tags_map: HashMap<String, Vec<TagId>> = HashMap::new();
+        for (posting_id, tag_id_str) in posting_tag_rows {
+            let tid = tag_id_str
+                .parse::<TagId>()
+                .map_err(|e| BcError::BadData(format!("invalid tag_id '{tag_id_str}': {e}")))?;
+            posting_tags_map.entry(posting_id).or_default().push(tid);
+        }
+
+        let mut postings_by_tx: HashMap<String, Vec<Posting>> = HashMap::new();
+        for row in posting_rows {
+            let pid = row.id;
+            let tx_id_str = row.transaction_id;
+            let posting_id = pid
+                .parse::<PostingId>()
+                .map_err(|e| BcError::BadData(format!("invalid posting id '{pid}': {e}")))?;
+            let acc_id = row.account_id.parse::<AccountId>().map_err(|e| {
+                BcError::BadData(format!("invalid account id '{}': {e}", row.account_id))
+            })?;
+            let value = row
+                .amount
+                .parse::<Decimal>()
+                .map_err(|e| BcError::BadData(format!("invalid amount '{}': {e}", row.amount)))?;
+            let amount = Amount::new(value, CommodityCode::new(row.commodity));
+            let cost = parse_cost(
+                row.cost_total_value,
+                row.cost_total_commodity,
+                row.cost_date,
+                row.cost_label,
+            )?;
+            let env_id = row
+                .envelope_id
+                .as_deref()
+                .map(|s| {
+                    s.parse::<bc_models::EnvelopeId>()
+                        .map_err(|e| BcError::BadData(format!("invalid envelope_id '{s}': {e}")))
+                })
+                .transpose()?;
+            let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
+            let posting = Posting::builder()
+                .id(posting_id)
+                .account_id(acc_id)
+                .amount(amount)
+                .maybe_cost(cost)
+                .maybe_memo(row.memo)
+                .tag_ids(p_tag_ids)
+                .maybe_envelope_id(env_id)
+                .build();
+            postings_by_tx.entry(tx_id_str).or_default().push(posting);
+        }
+
+        tx_rows
             .into_iter()
-            .filter(|tx| tx.postings().iter().any(|p| p.account_id() == account_id))
-            .collect())
+            .map(
+                |(id_str, date_str, payee, description, status_str, created_at_str)| {
+                    let tx_id = id_str
+                        .parse::<TransactionId>()
+                        .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
+                    let date = date_str
+                        .parse::<jiff::civil::Date>()
+                        .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
+                    let status = from_db_str::<TransactionStatus>(&status_str)?;
+                    let created_at = created_at_str.parse::<Timestamp>().map_err(|e| {
+                        BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
+                    })?;
+                    let tag_ids = tx_tags_map.remove(&id_str).unwrap_or_default();
+                    let postings = postings_by_tx.remove(&id_str).unwrap_or_default();
+                    Ok(Transaction::builder()
+                        .id(tx_id)
+                        .date(date)
+                        .maybe_payee(payee)
+                        .description(description)
+                        .postings(postings)
+                        .status(status)
+                        .tag_ids(tag_ids)
+                        .created_at(created_at)
+                        .build())
+                },
+            )
+            .collect::<BcResult<Vec<_>>>()
+            .map(IntoIterator::into_iter)
     }
 
     /// Amends an existing transaction, replacing its projection row and all postings atomically.

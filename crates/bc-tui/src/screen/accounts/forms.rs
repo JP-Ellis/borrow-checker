@@ -35,7 +35,7 @@ use tuirealm::ratatui::widgets::Paragraph;
 use crate::msg::AccountsMsg;
 use crate::msg::Msg;
 
-// ─── field enum ──────────────────────────────────────────────────────────────
+// MARK: field enum
 
 /// Which form field currently has focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +82,7 @@ impl FormField {
     }
 }
 
-// ─── private component ───────────────────────────────────────────────────────
+// MARK: private component
 
 /// Raw widget that renders the transaction add/edit form.
 struct TxForm {
@@ -319,7 +319,7 @@ impl MockComponent for TxForm {
     }
 }
 
-// ─── public wrapper ──────────────────────────────────────────────────────────
+// MARK: public wrapper
 
 /// Tui-realm component wrapper for the transaction add/edit form overlay.
 ///
@@ -417,7 +417,7 @@ impl Component<Msg, NoUserEvent> for TransactionForm {
     }
 }
 
-// ─── tests ───────────────────────────────────────────────────────────────────
+// MARK: tests
 
 #[cfg(test)]
 mod tests {

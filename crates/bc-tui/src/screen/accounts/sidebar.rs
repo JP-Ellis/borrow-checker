@@ -42,7 +42,7 @@ use tuirealm::ratatui::widgets::ListItem;
 use crate::msg::AccountsMsg;
 use crate::msg::Msg;
 
-// ─── helper ──────────────────────────────────────────────────────────────────
+// MARK: helper
 
 /// Recursively build a [`TreeItem`] for `account` and all of its descendants
 /// found in `all`.
@@ -109,7 +109,7 @@ fn has_children(id: &AccountId, all: &[Account]) -> bool {
     all.iter().any(|a| a.parent_id() == Some(id))
 }
 
-// ─── private component ───────────────────────────────────────────────────────
+// MARK: private component
 
 /// Raw widget that renders the account tree sidebar.
 ///
@@ -318,7 +318,7 @@ impl MockComponent for Sidebar {
     }
 }
 
-// ─── public wrapper ──────────────────────────────────────────────────────────
+// MARK: public wrapper
 
 /// Tui-realm component wrapper for the account tree sidebar widget.
 ///
@@ -405,7 +405,7 @@ impl Component<Msg, NoUserEvent> for AccountSidebar {
     }
 }
 
-// ─── tests ───────────────────────────────────────────────────────────────────
+// MARK: tests
 
 #[cfg(test)]
 mod tests {
