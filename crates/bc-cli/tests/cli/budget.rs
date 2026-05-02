@@ -196,10 +196,9 @@ fn move_envelope_to_root_clears_parent() {
     let moved_json: serde_json::Value =
         serde_json::from_slice(&move_out.stdout).expect("valid JSON");
     assert!(
-        moved_json.get("parent_id").is_none()
-            || moved_json
-                .get("parent_id")
-                .is_some_and(serde_json::Value::is_null),
+        moved_json
+            .get("parent_id")
+            .is_none_or(serde_json::Value::is_null),
         "parent_id should be absent or null after moving to root, got: {moved_json:?}"
     );
 }
