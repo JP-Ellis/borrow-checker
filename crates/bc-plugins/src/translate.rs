@@ -77,11 +77,28 @@ pub(crate) fn wit_to_import_error(e: wt::ImportError) -> bc_core::ImportError {
         }
         wt::ImportError::Parse(s) => bc_core::ImportError::Parse(s),
         wt::ImportError::MissingField(s) => bc_core::ImportError::MissingField(s),
-        // The WIT `bad-value` merges field and detail into one string; map to
-        // the structured `BadValue` variant so callers can still match on it.
-        wt::ImportError::BadValue(s) => bc_core::ImportError::BadValue {
-            field: "plugin".to_owned(),
-            detail: s,
-        },
+        // The WIT `bad-value` merges field+detail into one string. Rather than
+        // reconstruct a fake BadValue with field="plugin", map to Parse so
+        // callers are not misled when matching on the field name.
+        wt::ImportError::BadValue(s) => bc_core::ImportError::Parse(format!("bad value: {s}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::bindings::borrow_checker::sdk::types as wt;
+
+    #[test]
+    fn bad_value_wit_error_maps_to_parse_not_false_bad_value() {
+        // The WIT boundary flattens BadValue { field, detail } into a single string.
+        // On the host side, we must not reconstruct a fake BadValue with field="plugin"
+        // — that misleads callers who match on the field name.
+        let wit_err = wt::ImportError::BadValue("amount: not a number".to_owned());
+        let bc_err = wit_to_import_error(wit_err);
+        assert!(
+            matches!(bc_err, bc_core::ImportError::Parse(_)),
+            "bad-value WIT error should map to Parse, not BadValue{{field=plugin}}; got: {bc_err:?}"
+        );
     }
 }

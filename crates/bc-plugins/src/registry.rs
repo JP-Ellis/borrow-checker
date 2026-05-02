@@ -12,6 +12,7 @@ use std::sync::Arc;
 use bc_core::Importer as _;
 use wasmtime::component::Linker;
 
+use crate::host::HostCtx;
 use crate::manifest::ManifestError;
 use crate::manifest::PluginManifest;
 use crate::plugin_importer::PluginImporter;
@@ -28,12 +29,13 @@ pub enum RegistryError {
 /// Discovers and loads WASM importer plugins from one or more directories.
 ///
 /// Call [`PluginRegistry::load`] with a list of search paths, then call
-/// [`into_importer_registry`](Self::into_importer_registry) to produce a
+/// [`build_importer_registry`](Self::build_importer_registry) to produce a
 /// [`bc_core::ImporterRegistry`] pre-populated with all loaded plugins.
+/// Individual plugin metadata is accessible via [`plugins`](Self::plugins).
 #[non_exhaustive]
 pub struct PluginRegistry {
-    /// Successfully loaded plugin importers.
-    importers: Vec<PluginImporter>,
+    /// Successfully loaded plugin importers, wrapped in `Arc` for sharing.
+    importers: Vec<Arc<PluginImporter>>,
 }
 
 impl PluginRegistry {
@@ -59,8 +61,11 @@ impl PluginRegistry {
     /// Returns [`RegistryError`] if the wasmtime engine cannot be created.
     #[inline]
     pub fn load(paths: &[PathBuf]) -> Result<Self, RegistryError> {
-        let engine = wasmtime::Engine::default();
-        let linker: Linker<()> = Linker::new(&engine);
+        let engine = wasmtime::Engine::new(&wasmtime::Config::default())
+            .map_err(|e| RegistryError::Engine(e.to_string()))?;
+        let mut linker: Linker<HostCtx> = Linker::new(&engine);
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+            .map_err(|e| RegistryError::Engine(format!("failed to add WASI to linker: {e}")))?;
 
         let mut importers = Vec::new();
         let mut seen_names: HashSet<String> = HashSet::new();
@@ -94,21 +99,36 @@ impl PluginRegistry {
         self.importers.is_empty()
     }
 
-    /// Consumes this registry and returns a [`bc_core::ImporterRegistry`]
-    /// pre-populated with all loaded plugin importers.
+    /// Returns an iterator over the loaded [`PluginImporter`] instances.
+    ///
+    /// Each item carries the full manifest metadata (`name`, `version`,
+    /// `sdk_abi`, `source_path`) as well as the compiled WASM component.
+    ///
+    /// # Returns
+    ///
+    /// An iterator of `&Arc<PluginImporter>`.
+    #[inline]
+    pub fn plugins(&self) -> impl Iterator<Item = &Arc<PluginImporter>> {
+        self.importers.iter()
+    }
+
+    /// Builds a [`bc_core::ImporterRegistry`] pre-populated with all loaded
+    /// plugin importers without consuming `self`.
+    ///
+    /// This is the preferred method when you need to retain access to plugin
+    /// metadata (via [`plugins`](Self::plugins)) after building the registry.
     ///
     /// # Returns
     ///
     /// A [`bc_core::ImporterRegistry`] with one factory per loaded plugin.
     #[inline]
     #[must_use]
-    pub fn into_importer_registry(self) -> bc_core::ImporterRegistry {
+    pub fn build_importer_registry(&self) -> bc_core::ImporterRegistry {
         let mut registry = bc_core::ImporterRegistry::new();
-        for importer in self.importers {
-            let name = importer.name().to_owned();
-            let importer_arc = Arc::new(importer);
-            let detect_imp = Arc::clone(&importer_arc);
-            let create_imp = Arc::clone(&importer_arc);
+        for importer_arc in &self.importers {
+            let name = importer_arc.name().to_owned();
+            let detect_imp = Arc::clone(importer_arc);
+            let create_imp = Arc::clone(importer_arc);
             registry.register(bc_core::ImporterFactory::new(
                 name,
                 move |bytes| detect_imp.detect(bytes),
@@ -116,6 +136,21 @@ impl PluginRegistry {
             ));
         }
         registry
+    }
+
+    /// Consumes this registry and returns a [`bc_core::ImporterRegistry`]
+    /// pre-populated with all loaded plugin importers.
+    ///
+    /// For new code, prefer [`build_importer_registry`](Self::build_importer_registry)
+    /// which does not consume `self` and allows continued access to plugin metadata.
+    ///
+    /// # Returns
+    ///
+    /// A [`bc_core::ImporterRegistry`] with one factory per loaded plugin.
+    #[inline]
+    #[must_use]
+    pub fn into_importer_registry(self) -> bc_core::ImporterRegistry {
+        self.build_importer_registry()
     }
 }
 
@@ -150,8 +185,8 @@ impl bc_core::Importer for PluginImporterRef {
 fn load_from_dir(
     dir: &Path,
     engine: &wasmtime::Engine,
-    linker: &Linker<()>,
-    importers: &mut Vec<PluginImporter>,
+    linker: &Linker<HostCtx>,
+    importers: &mut Vec<Arc<PluginImporter>>,
     seen_names: &mut HashSet<String>,
 ) {
     let entries = match std::fs::read_dir(dir) {
@@ -226,13 +261,17 @@ fn load_from_dir(
 
         let name = manifest.name.clone();
         let version = manifest.version.clone();
+        let sdk_abi = manifest.sdk_abi;
         seen_names.insert(manifest.name);
-        importers.push(PluginImporter::new(
+        importers.push(Arc::new(PluginImporter::new(
             name.clone(),
+            version.clone(),
+            sdk_abi,
+            path.clone(),
             engine.clone(),
             component,
             linker.clone(),
-        ));
-        tracing::info!(name, version, "loaded plugin");
+        )));
+        tracing::info!(name, version, sdk_abi, "loaded plugin");
     }
 }
