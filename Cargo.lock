@@ -348,6 +348,7 @@ name = "bc-sdk"
 version = "0.1.0"
 dependencies = [
  "bc-sdk-macros",
+ "pretty_assertions",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

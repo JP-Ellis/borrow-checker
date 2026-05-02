@@ -10,9 +10,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bc_core::Importer as _;
+use wasmtime::Store;
 use wasmtime::component::Linker;
 
 use crate::host::HostCtx;
+use crate::host::ImporterPlugin;
 use crate::manifest::ManifestError;
 use crate::manifest::PluginManifest;
 use crate::plugin_importer::PluginImporter;
@@ -181,6 +183,24 @@ impl bc_core::Importer for PluginImporterRef {
     }
 }
 
+/// Instantiates a component briefly to call its exported `name()` function.
+///
+/// Used during plugin load to verify the component's self-reported name against
+/// the sidecar manifest. A temporary `Store` is created and discarded after the call.
+///
+/// # Errors
+///
+/// Returns a wasmtime error if instantiation or the `name()` call fails.
+fn query_plugin_name(
+    engine: &wasmtime::Engine,
+    component: &wasmtime::component::Component,
+    linker: &Linker<HostCtx>,
+) -> wasmtime::Result<String> {
+    let mut store = Store::new(engine, HostCtx::new());
+    let bindings = ImporterPlugin::instantiate(&mut store, component, linker)?;
+    bindings.borrow_checker_sdk_importer().call_name(&mut store)
+}
+
 /// Scans a single directory for `*.wasm` + `*.toml` pairs and appends loaded plugins.
 fn load_from_dir(
     dir: &Path,
@@ -258,6 +278,24 @@ fn load_from_dir(
                 continue;
             }
         };
+
+        // Cross-check: manifest name must match the component's self-reported name.
+        match query_plugin_name(engine, &component, linker) {
+            Err(e) => {
+                tracing::warn!(wasm = %path.display(), error = %e, "plugin name() failed at load, skipping");
+                continue;
+            }
+            Ok(n) if n != manifest.name => {
+                tracing::warn!(
+                    wasm = %path.display(),
+                    manifest_name = manifest.name,
+                    plugin_name = n,
+                    "plugin name() does not match manifest, skipping"
+                );
+                continue;
+            }
+            Ok(_) => {}
+        }
 
         let name = manifest.name.clone();
         let version = manifest.version.clone();

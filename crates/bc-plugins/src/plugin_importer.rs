@@ -178,8 +178,9 @@ impl bc_core::Importer for PluginImporter {
             .call_parse(&mut store, bytes, &config_json)
             .map_err(|e| bc_core::ImportError::Parse(format!("plugin call failed: {e}")))?;
 
-        result
-            .map(|txs| txs.into_iter().map(wit_to_raw_transaction).collect())
-            .map_err(wit_to_import_error)
+        let txs = result.map_err(wit_to_import_error)?;
+        txs.into_iter()
+            .map(wit_to_raw_transaction)
+            .collect::<Result<Vec<_>, _>>()
     }
 }

@@ -283,7 +283,8 @@ fn parse_date(s: &str) -> Result<bc_sdk::Date, String> {
     let year: i32 = s[0..4].parse().map_err(|_| format!("bad year in '{s}'"))?;
     let month: u8 = s[5..7].parse().map_err(|_| format!("bad month in '{s}'"))?;
     let day: u8 = s[8..10].parse().map_err(|_| format!("bad day in '{s}'"))?;
-    Ok(bc_sdk::Date::new(year, month, day))
+    bc_sdk::Date::try_new(year, month, day)
+        .map_err(|e| format!("invalid date in '{s}': {e}"))
 }
 
 #[cfg(test)]
