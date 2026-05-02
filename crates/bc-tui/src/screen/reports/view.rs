@@ -38,7 +38,7 @@ use crate::msg::Msg;
 use crate::msg::ReportKind;
 use crate::msg::ReportsMsg;
 
-// ─── constants ────────────────────────────────────────────────────────────────
+// MARK: constants
 
 /// The available reports, paired with their display label and [`ReportKind`].
 const REPORTS: &[(&str, ReportKind)] = &[
@@ -47,7 +47,7 @@ const REPORTS: &[(&str, ReportKind)] = &[
     ("Budget Summary", ReportKind::BudgetSummary),
 ];
 
-// ─── view state ───────────────────────────────────────────────────────────────
+// MARK: view state
 
 /// The current display mode of the [`ReportViewWidget`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -59,7 +59,7 @@ enum ViewState {
     Viewing,
 }
 
-// ─── private component ───────────────────────────────────────────────────────
+// MARK: private component
 
 /// Raw widget that renders either the report selector or report output.
 struct ReportViewWidget {
@@ -217,7 +217,7 @@ impl MockComponent for ReportViewWidget {
     }
 }
 
-// ─── public wrapper ──────────────────────────────────────────────────────────
+// MARK: public wrapper
 
 /// Tui-realm component wrapper for the report selector/output view widget.
 ///
@@ -320,7 +320,7 @@ impl Component<Msg, NoUserEvent> for ReportView {
     }
 }
 
-// ─── tests ───────────────────────────────────────────────────────────────────
+// MARK: tests
 
 #[cfg(test)]
 mod tests {

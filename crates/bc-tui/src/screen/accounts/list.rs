@@ -33,7 +33,7 @@ use crate::mode::AppMode;
 use crate::msg::AccountsMsg;
 use crate::msg::Msg;
 
-// ─── private component ───────────────────────────────────────────────────────
+// MARK: private component
 
 /// Raw widget that renders the transaction list.
 struct TxList {
@@ -175,7 +175,7 @@ impl MockComponent for TxList {
     }
 }
 
-// ─── public wrapper ──────────────────────────────────────────────────────────
+// MARK: public wrapper
 
 /// Tui-realm component wrapper for the transaction list widget.
 ///
@@ -284,7 +284,7 @@ impl Component<Msg, NoUserEvent> for TransactionList {
     }
 }
 
-// ─── tests ───────────────────────────────────────────────────────────────────
+// MARK: tests
 
 #[cfg(test)]
 mod tests {

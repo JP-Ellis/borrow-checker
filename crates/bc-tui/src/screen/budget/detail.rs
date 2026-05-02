@@ -26,7 +26,7 @@ use tuirealm::ratatui::widgets::Wrap;
 
 use crate::msg::Msg;
 
-// ─── private component ───────────────────────────────────────────────────────
+// MARK: private component
 
 /// Raw widget that renders the envelope status detail panel.
 struct Detail {
@@ -173,7 +173,7 @@ impl MockComponent for Detail {
     }
 }
 
-// ─── public wrapper ──────────────────────────────────────────────────────────
+// MARK: public wrapper
 
 /// Tui-realm component wrapper for the envelope status detail panel widget.
 #[expect(

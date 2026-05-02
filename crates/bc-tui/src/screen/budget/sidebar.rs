@@ -42,7 +42,7 @@ use tuirealm::ratatui::widgets::ListItem;
 use crate::msg::BudgetMsg;
 use crate::msg::Msg;
 
-// ─── helper ──────────────────────────────────────────────────────────────────
+// MARK: helper
 
 /// Recursively build a [`TreeItem`] for `envelope` and all of its descendants
 /// found in `all`.
@@ -109,7 +109,7 @@ fn has_children(id: &EnvelopeId, all: &[Envelope]) -> bool {
     all.iter().any(|e| e.parent_id() == Some(id))
 }
 
-// ─── private component ───────────────────────────────────────────────────────
+// MARK: private component
 
 /// Raw widget that renders the envelope tree sidebar.
 ///
@@ -318,7 +318,7 @@ impl MockComponent for Sidebar {
     }
 }
 
-// ─── public wrapper ──────────────────────────────────────────────────────────
+// MARK: public wrapper
 
 /// Tui-realm component wrapper for the envelope tree sidebar widget.
 ///
@@ -410,7 +410,7 @@ impl Component<Msg, NoUserEvent> for EnvelopeSidebar {
     }
 }
 
-// ─── tests ───────────────────────────────────────────────────────────────────
+// MARK: tests
 
 #[cfg(test)]
 mod tests {

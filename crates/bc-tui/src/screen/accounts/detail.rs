@@ -29,7 +29,7 @@ use tuirealm::ratatui::widgets::Wrap;
 use crate::msg::AccountsMsg;
 use crate::msg::Msg;
 
-// ─── private component ───────────────────────────────────────────────────────
+// MARK: private component
 
 /// Raw widget that renders the transaction detail panel.
 struct TxDetail {
@@ -145,7 +145,7 @@ impl MockComponent for TxDetail {
     }
 }
 
-// ─── public wrapper ──────────────────────────────────────────────────────────
+// MARK: public wrapper
 
 /// Tui-realm component wrapper for the transaction detail panel widget.
 #[expect(
