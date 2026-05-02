@@ -135,7 +135,7 @@ impl AccountsScreen {
             .ctx
             .block_on(self.ctx.transactions.list_for_account(&account_id))
         {
-            Ok(txns) => self.transactions = txns,
+            Ok(txns) => self.transactions = txns.collect(),
             Err(e) => eprintln!("failed to load transactions: {e}"),
         }
     }
