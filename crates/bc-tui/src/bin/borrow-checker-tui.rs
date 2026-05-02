@@ -6,12 +6,21 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[expect(
+    clippy::print_stderr,
+    reason = "directory creation warning is printed to stderr before the TUI starts"
+)]
 fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
 
     let db_path = db_path_from_args();
+    if let Some(parent) = db_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("warning: could not create database directory: {e}");
+        }
+    }
     let ctx = Arc::new(rt.block_on(bc_tui::context::TuiContext::open(&db_path))?);
     bc_tui::run(ctx)
 }
