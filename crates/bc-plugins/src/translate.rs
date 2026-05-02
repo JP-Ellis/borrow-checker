@@ -19,30 +19,34 @@ use crate::host::bindings::borrow_checker::sdk::types as wt;
 ///
 /// A [`bc_core::RawTransaction`] with all fields mapped.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the date values are out of range. Plugin-returned dates are
-/// expected to be valid; an invalid date indicates a plugin bug.
-#[must_use]
+/// Returns an [`bc_core::ImportError`] if the plugin returned an invalid calendar date.
 #[expect(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
-    clippy::expect_used,
-    reason = "valid calendar dates fit in i16/i8; plugin bug produces a panic"
+    reason = "valid calendar dates fit in i16/i8; invalid values are caught by jiff"
 )]
-pub(crate) fn wit_to_raw_transaction(t: wt::RawTransaction) -> bc_core::RawTransaction {
+pub(crate) fn wit_to_raw_transaction(
+    t: wt::RawTransaction,
+) -> Result<bc_core::RawTransaction, bc_core::ImportError> {
     let date = jiff::civil::Date::new(t.date.year as i16, t.date.month as i8, t.date.day as i8)
-        .expect("plugin returned an invalid date");
+        .map_err(|e| {
+            bc_core::ImportError::Parse(format!(
+                "plugin returned invalid date {}-{:02}-{:02}: {e}",
+                t.date.year, t.date.month, t.date.day
+            ))
+        })?;
 
-    bc_core::RawTransaction::new(
+    Ok(bc_core::RawTransaction::new(
         date,
         wit_to_amount(t.amount),
         t.balance.map(wit_to_amount),
         t.payee,
         t.description,
         t.reference,
-    )
+    ))
 }
 
 /// Converts a WIT-generated `Amount` to a [`bc_models::Amount`].

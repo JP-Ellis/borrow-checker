@@ -34,6 +34,59 @@ impl Date {
     pub fn new(year: i32, month: u8, day: u8) -> Self {
         Self { year, month, day }
     }
+
+    /// Creates a new [`Date`], returning an error if the values are out of range.
+    ///
+    /// Validates that `month` is 1–12 and `day` is valid for the given month and year
+    /// (including leap-year handling for February).
+    ///
+    /// # Arguments
+    ///
+    /// * `year` - Full year, e.g. `2025`.
+    /// * `month` - Month 1–12.
+    /// * `day` - Day 1–31.
+    ///
+    /// # Returns
+    ///
+    /// A new [`Date`] with the given fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`String`] error message if `month` or `day` is out of range.
+    #[inline]
+    pub fn try_new(year: i32, month: u8, day: u8) -> Result<Self, String> {
+        if month == 0 || month > 12 {
+            return Err(format!("month {month} is out of range (must be 1–12)"));
+        }
+        let max_day = days_in_month(year, month);
+        if day == 0 || day > max_day {
+            return Err(format!(
+                "day {day} is out of range for {year}-{month:02} (max {max_day})"
+            ));
+        }
+        Ok(Self { year, month, day })
+    }
+}
+
+/// Returns the number of days in the given month for the given year.
+#[inline]
+#[expect(
+    clippy::integer_division_remainder_used,
+    reason = "Gregorian leap-year rule requires modulo arithmetic"
+)]
+fn days_in_month(year: i32, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
 }
 
 /// A monetary amount represented in minor units to avoid floating-point imprecision.
@@ -324,6 +377,25 @@ mod tests {
         assert_eq!(d.year, 2025_i32);
         assert_eq!(d.month, 3_u8);
         assert_eq!(d.day, 15_u8);
+    }
+
+    #[test]
+    fn date_try_new_accepts_valid_dates() {
+        assert!(Date::try_new(2025, 1, 1).is_ok());
+        assert!(Date::try_new(2025, 12, 31).is_ok());
+        assert!(Date::try_new(2024, 2, 29).is_ok()); // 2024 is a leap year
+        assert!(Date::try_new(2025, 2, 28).is_ok());
+    }
+
+    #[test]
+    fn date_try_new_rejects_invalid_dates() {
+        assert!(Date::try_new(2025, 0, 15).is_err()); // month 0
+        assert!(Date::try_new(2025, 13, 15).is_err()); // month 13
+        assert!(Date::try_new(2025, 1, 0).is_err()); // day 0
+        assert!(Date::try_new(2025, 1, 32).is_err()); // day 32
+        assert!(Date::try_new(2025, 4, 31).is_err()); // April has 30 days
+        assert!(Date::try_new(2025, 2, 29).is_err()); // 2025 is not a leap year
+        assert!(Date::try_new(2025, 2, 31).is_err()); // February never has 31 days
     }
 
     #[test]
