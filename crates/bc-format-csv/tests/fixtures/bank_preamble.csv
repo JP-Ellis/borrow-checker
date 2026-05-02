@@ -1,8 +1,0 @@
-"Account Name:","Smart Access"
-"Account Number:","123-456 78901234"
-"Available Funds:","$4,900.00"
-"Date Range:","01/01/2025 to 31/01/2025"
-
-Date,Description,Debit,Credit,Balance
-15/01/2025,"Woolworths",50.00,,4950.00
-16/01/2025,"Salary",,3000.00,7950.00

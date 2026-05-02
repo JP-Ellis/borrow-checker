@@ -7,18 +7,15 @@ members  = [
   "crates/bc-cli",
   "crates/bc-config",
   "crates/bc-core",
-  "crates/bc-format-beancount",
   "crates/bc-format-beancount-export",
-  "crates/bc-format-csv",
-  "crates/bc-format-ledger",
   "crates/bc-format-ledger-export",
-  "crates/bc-format-ofx",
   "crates/bc-models",
   "crates/bc-otel",
   "crates/bc-plugins",
   "crates/bc-sdk",
   "crates/bc-sdk-macros",
   "crates/bc-tui",
+  "xtask",
 ]
 
   [workspace.package]
@@ -33,12 +30,8 @@ members  = [
   # Internal crates — reference as `bc-models.workspace = true` in member Cargo.tomls
   bc-config                  = { path = "crates/bc-config" }
   bc-core                    = { path = "crates/bc-core" }
-  bc-format-beancount        = { path = "crates/bc-format-beancount" }
   bc-format-beancount-export = { path = "crates/bc-format-beancount-export" }
-  bc-format-csv              = { path = "crates/bc-format-csv" }
-  bc-format-ledger           = { path = "crates/bc-format-ledger" }
   bc-format-ledger-export    = { path = "crates/bc-format-ledger-export" }
-  bc-format-ofx              = { path = "crates/bc-format-ofx" }
   bc-models                  = { path = "crates/bc-models" }
   bc-otel                    = { path = "crates/bc-otel" }
   bc-plugins                 = { path = "crates/bc-plugins" }
@@ -103,6 +96,7 @@ members  = [
     "runtime",
     "std",
   ] }
+  wasmtime-wasi         = { version = "41" }
   winnow                = "1.0"
   wit-bindgen           = { version = "0.55", default-features = false, features = [
     "macros"

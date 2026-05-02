@@ -33,7 +33,7 @@
 // Generate all guest WIT bindings from the wit/ directory.
 // This module is re-exported as `__bindings` for use by bc-sdk-macros.
 #[doc(hidden)]
-#[allow(
+#[expect(
     warnings,
     clippy::all,
     reason = "generated code from wit-bindgen may not conform to workspace lint rules"
