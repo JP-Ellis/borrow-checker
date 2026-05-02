@@ -83,16 +83,25 @@ pub enum AccountsMsg {
     AccountSelected(bc_models::AccountId),
     /// User wants to add a new transaction.
     OpenAddTransaction,
-    /// User wants to edit the selected transaction.
-    OpenEditTransaction,
-    /// User requested to void the selected transaction (`d` key).
+    /// User wants to edit the currently highlighted transaction.
+    OpenEditTransaction(bc_models::TransactionId),
+    /// User requested to void the currently highlighted transaction (`d` key).
     ///
     /// No confirmation dialog is shown yet; the void is applied immediately.
-    VoidRequested,
+    VoidRequested(bc_models::TransactionId),
     /// User cancelled an open form.
     FormCancelled,
     /// A transaction form was submitted successfully.
-    FormSubmitted,
+    FormSubmitted {
+        /// Date string in YYYY-MM-DD format.
+        date: String,
+        /// Payee name (may be empty).
+        payee: String,
+        /// Amount string in "VALUE COMMODITY" format, e.g. "42.50 AUD".
+        amount: String,
+        /// Counterpart account ID string.
+        account: String,
+    },
     /// User pressed `l`/`→`/`Enter` on the list — open the detail panel.
     OpenDetail(bc_models::TransactionId),
     /// User pressed `Esc`/`h` on the detail panel — return focus to the list.
@@ -116,7 +125,10 @@ pub enum BudgetMsg {
     /// User cancelled an open form.
     FormCancelled,
     /// An allocation form was submitted successfully.
-    FormSubmitted,
+    FormSubmitted {
+        /// Amount string in "VALUE COMMODITY" format, e.g. "600.00 AUD".
+        amount: String,
+    },
 }
 
 /// Messages produced by the reports screen.

@@ -38,6 +38,8 @@ pub struct Model {
     pub terminal: TerminalBridge<CrosstermTerminalAdapter>,
     /// Shared bc-core services.
     pub ctx: Arc<TuiContext>,
+    /// The last explicitly-set focus target, restored when the help overlay closes.
+    pub last_focus: Id,
 }
 
 impl Update<Msg> for Model {
@@ -71,6 +73,7 @@ impl Update<Msg> for Model {
                 None
             }
             Msg::FocusChange(id) => {
+                self.last_focus = id.clone();
                 if let Err(e) = self.app.active(&id) {
                     eprintln!("failed to set focus: {e}");
                 }
@@ -131,6 +134,7 @@ impl Model {
             eprintln!("failed to mount screen: {e}");
         }
         let focus = self.active_screen.initial_focus();
+        self.last_focus = focus.clone();
         if let Err(e) = self.app.active(&focus) {
             eprintln!("failed to set focus: {e}");
         }
@@ -160,7 +164,7 @@ impl Model {
             reason = "best-effort attribute updates; component may not exist yet during startup"
         )]
         if currently_shown {
-            // Hide overlay and restore focus to the active screen.
+            // Hide overlay and restore focus to the last explicitly-set target.
             self.app
                 .attr(
                     &Id::Chrome(ChromeId::HelpOverlay),
@@ -168,8 +172,7 @@ impl Model {
                     AttrValue::Flag(false),
                 )
                 .ok();
-            let focus = self.active_screen.initial_focus();
-            if let Err(e) = self.app.active(&focus) {
+            if let Err(e) = self.app.active(&self.last_focus) {
                 eprintln!("failed to restore focus after closing help: {e}");
             }
         } else {

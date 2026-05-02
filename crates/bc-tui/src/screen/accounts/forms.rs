@@ -386,7 +386,12 @@ impl Component<Msg, NoUserEvent> for TransactionForm {
             }
             Event::Keyboard(KeyEvent {
                 code: Key::Enter, ..
-            }) => Some(Msg::Accounts(AccountsMsg::FormSubmitted)),
+            }) => Some(Msg::Accounts(AccountsMsg::FormSubmitted {
+                date: self.component.date.value().to_owned(),
+                payee: self.component.payee.value().to_owned(),
+                amount: self.component.amount.value().to_owned(),
+                account: self.component.account.value().to_owned(),
+            })),
             Event::Keyboard(KeyEvent { code: Key::Esc, .. }) => {
                 Some(Msg::Accounts(AccountsMsg::FormCancelled))
             }

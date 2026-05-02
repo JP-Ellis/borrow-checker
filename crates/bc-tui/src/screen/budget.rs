@@ -120,6 +120,42 @@ impl BudgetScreen {
         }
     }
 
+    /// Parse the amount string and allocate funds to the selected envelope.
+    ///
+    /// Errors are logged to stderr — no attempt is made to surface them in the UI.
+    #[inline]
+    #[expect(
+        clippy::print_stderr,
+        reason = "allocation errors are logged to stderr since we are in raw terminal mode"
+    )]
+    fn allocate_to_envelope(&mut self, amount_str: &str) {
+        let Some((value_str, commodity_str)) = amount_str.rsplit_once(' ') else {
+            eprintln!("invalid amount '{amount_str}': expected 'VALUE COMMODITY'");
+            return;
+        };
+        let value = match value_str.parse::<bc_models::Decimal>() {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("invalid amount value '{value_str}': {e}");
+                return;
+            }
+        };
+        let commodity = bc_models::CommodityCode::new(commodity_str);
+        let amount = bc_models::Amount::new(value, commodity);
+        let Some(ref envelope_id) = self.selected_envelope else {
+            eprintln!("no envelope selected");
+            return;
+        };
+        let today = jiff::Zoned::now().date();
+        match self
+            .ctx
+            .block_on(self.ctx.envelopes.allocate(envelope_id, today, amount))
+        {
+            Ok(_) => {}
+            Err(e) => eprintln!("failed to allocate: {e}"),
+        }
+    }
+
     /// Handle a [`BudgetMsg`], updating internal state and returning a follow-up [`Msg`] if needed.
     #[inline]
     fn handle_budget_msg(&mut self, msg: BudgetMsg) -> Option<Msg> {
@@ -136,12 +172,13 @@ impl BudgetScreen {
             }),
             BudgetMsg::FormCancelled => {
                 self.pending_form = false;
-                self.form_mounted = false;
+                // form_mounted stays true — view() will unmount and clear it
                 Some(Msg::ModeChange(AppMode::Normal))
             }
-            BudgetMsg::FormSubmitted => {
+            BudgetMsg::FormSubmitted { amount } => {
                 self.pending_form = false;
-                self.form_mounted = false;
+                // form_mounted stays true — view() will unmount and clear it
+                self.allocate_to_envelope(&amount);
                 self.load_status();
                 self.detail_dirty = true;
                 Some(Msg::ModeChange(AppMode::Normal))
@@ -436,7 +473,8 @@ mod tests {
         let result = screen.handle(Msg::Budget(BudgetMsg::FormCancelled));
         pretty_assertions::assert_eq!(result, Some(Msg::ModeChange(AppMode::Normal)));
         pretty_assertions::assert_eq!(screen.pending_form, false);
-        pretty_assertions::assert_eq!(screen.form_mounted, false);
+        // form_mounted is NOT cleared by handle(); view() does that on the next render.
+        pretty_assertions::assert_eq!(screen.form_mounted, true);
     }
 
     #[test]
@@ -444,10 +482,14 @@ mod tests {
         let mut screen = BudgetScreen::new(make_ctx());
         screen.pending_form = true;
         screen.form_mounted = true;
-        let result = screen.handle(Msg::Budget(BudgetMsg::FormSubmitted));
+        // Invalid amount — allocate_to_envelope logs to stderr and returns early.
+        let result = screen.handle(Msg::Budget(BudgetMsg::FormSubmitted {
+            amount: String::new(),
+        }));
         pretty_assertions::assert_eq!(result, Some(Msg::ModeChange(AppMode::Normal)));
         pretty_assertions::assert_eq!(screen.pending_form, false);
-        pretty_assertions::assert_eq!(screen.form_mounted, false);
+        // form_mounted is NOT cleared by handle(); view() does that on the next render.
+        pretty_assertions::assert_eq!(screen.form_mounted, true);
     }
 
     #[test]
