@@ -10,6 +10,7 @@ use wasmtime::Store;
 use wasmtime::component::Component;
 use wasmtime::component::Linker;
 
+use crate::host::HostCtx;
 use crate::host::ImporterPlugin;
 use crate::translate::wit_to_import_error;
 use crate::translate::wit_to_raw_transaction;
@@ -21,15 +22,21 @@ use crate::translate::wit_to_raw_transaction;
 /// `import` creates a fresh `Store` and instantiates the component
 /// independently, so concurrent calls are safe.
 #[non_exhaustive]
-pub(crate) struct PluginImporter {
+pub struct PluginImporter {
     /// The stable plugin name read from the manifest.
     name: String,
+    /// Semver plugin version string from the manifest (informational).
+    version: String,
+    /// Integer ABI version the plugin was compiled against.
+    sdk_abi: u32,
+    /// Filesystem path to the `.wasm` file that was loaded.
+    source_path: std::path::PathBuf,
     /// Shared wasmtime engine (internally Arc-backed).
     engine: wasmtime::Engine,
     /// The compiled WASM component.
     component: Arc<Component>,
     /// Pre-configured linker for instantiating the component.
-    linker: Arc<Linker<()>>,
+    linker: Arc<Linker<HostCtx>>,
 }
 
 impl core::fmt::Debug for PluginImporter {
@@ -43,11 +50,14 @@ impl core::fmt::Debug for PluginImporter {
 }
 
 impl PluginImporter {
-    /// Creates a new [`PluginImporter`] from a compiled component.
+    /// Creates a new [`PluginImporter`] from a compiled component and manifest metadata.
     ///
     /// # Arguments
     ///
     /// * `name` - The stable plugin name (from the manifest).
+    /// * `version` - The semver version string (from the manifest).
+    /// * `sdk_abi` - The integer ABI version the plugin was compiled against.
+    /// * `source_path` - Filesystem path to the `.wasm` file.
     /// * `engine` - The shared wasmtime engine.
     /// * `component` - The compiled WASM component.
     /// * `linker` - The pre-configured component linker.
@@ -59,16 +69,55 @@ impl PluginImporter {
     #[must_use]
     pub(crate) fn new(
         name: String,
+        version: String,
+        sdk_abi: u32,
+        source_path: std::path::PathBuf,
         engine: wasmtime::Engine,
         component: Component,
-        linker: Linker<()>,
+        linker: Linker<HostCtx>,
     ) -> Self {
         Self {
             name,
+            version,
+            sdk_abi,
+            source_path,
             engine,
             component: Arc::new(component),
             linker: Arc::new(linker),
         }
+    }
+
+    /// Returns the semver version string from the plugin manifest.
+    ///
+    /// # Returns
+    ///
+    /// The version string (e.g. `"1.2.3"`).
+    #[inline]
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Returns the integer ABI version the plugin was compiled against.
+    ///
+    /// # Returns
+    ///
+    /// The ABI version number.
+    #[inline]
+    #[must_use]
+    pub fn sdk_abi(&self) -> u32 {
+        self.sdk_abi
+    }
+
+    /// Returns the filesystem path to the `.wasm` file that was loaded.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the source path.
+    #[inline]
+    #[must_use]
+    pub fn source_path(&self) -> &std::path::Path {
+        &self.source_path
     }
 
     /// Instantiates the component with a fresh store.
@@ -81,8 +130,8 @@ impl PluginImporter {
     ///
     /// Returns a wasmtime error if instantiation fails.
     #[inline]
-    fn instantiate(&self) -> wasmtime::Result<(ImporterPlugin, Store<()>)> {
-        let mut store = Store::new(&self.engine, ());
+    fn instantiate(&self) -> wasmtime::Result<(ImporterPlugin, Store<HostCtx>)> {
+        let mut store = Store::new(&self.engine, HostCtx::new());
         let bindings = ImporterPlugin::instantiate(&mut store, &self.component, &self.linker)?;
         Ok((bindings, store))
     }
@@ -100,7 +149,10 @@ impl bc_core::Importer for PluginImporter {
             Ok((bindings, mut store)) => bindings
                 .borrow_checker_sdk_importer()
                 .call_detect(&mut store, bytes)
-                .unwrap_or(false),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(plugin = %self.name, error = %e, "plugin detect() trapped");
+                    false
+                }),
             Err(e) => {
                 tracing::warn!(plugin = %self.name, error = %e, "plugin detect() failed to instantiate");
                 false

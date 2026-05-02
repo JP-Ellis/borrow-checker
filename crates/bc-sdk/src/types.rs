@@ -229,9 +229,6 @@ impl From<serde_json::Error> for ImportError {
 
 // These `From` impls convert bc_sdk ergonomic types → WIT-generated types.
 // They are used by the #[importer] proc-macro generated code.
-
-// These `From` impls convert bc_sdk ergonomic types → WIT-generated types.
-// They are used by the #[importer] proc-macro generated code.
 // Bring generated types into scope to avoid absolute paths (clippy::absolute_paths).
 use crate::__bindings::borrow_checker::sdk::types::Amount as WitAmount;
 use crate::__bindings::borrow_checker::sdk::types::Date as WitDate;

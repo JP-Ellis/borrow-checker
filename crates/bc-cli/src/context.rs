@@ -5,6 +5,8 @@
 pub struct AppContext {
     /// Whether to emit JSON instead of human-readable output.
     pub json: bool,
+    /// Raw plugin registry — retains manifest metadata for `plugin list`.
+    pub plugin_registry: bc_plugins::PluginRegistry,
     /// Loaded importer plugins (WASM + any native adapters).
     pub importers: bc_core::ImporterRegistry,
     /// Account service.
@@ -62,12 +64,13 @@ impl AppContext {
             }
         }
 
-        let importers = bc_plugins::PluginRegistry::load(&plugin_paths)
-            .map_err(|e| bc_core::BcError::InvalidInput(e.to_string()))?
-            .into_importer_registry();
+        let plugin_registry = bc_plugins::PluginRegistry::load(&plugin_paths)
+            .map_err(|e| bc_core::BcError::InvalidInput(e.to_string()))?;
+        let importers = plugin_registry.build_importer_registry();
 
         Ok(Self {
             json,
+            plugin_registry,
             importers,
             accounts: bc_core::AccountService::new(pool.clone()),
             transactions: bc_core::TransactionService::new(pool.clone()),

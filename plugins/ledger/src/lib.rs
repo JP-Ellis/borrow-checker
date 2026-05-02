@@ -107,7 +107,7 @@ impl bc_sdk::Importer for LedgerImporter {
 
             // Emit one RawTransaction per Ledger transaction using the first posting's amount.
             if let Some(first) = postings.first() {
-                let amount = decimal_to_amount(first.value, first.commodity.as_str());
+                let amount = decimal_to_amount(first.value, first.commodity.as_str())?;
                 let payee = if tx.payee.is_empty() {
                     None
                 } else {
@@ -142,13 +142,33 @@ impl bc_sdk::Importer for LedgerImporter {
 /// # Returns
 ///
 /// A [`bc_sdk::Amount`] with `minor_units`, `currency`, and `scale` set.
+///
+/// # Errors
+///
+/// Returns [`ImportError::Parse`] if the decimal mantissa does not fit in an
+/// `i64` (i.e. the value is too large to represent as minor units).
 #[inline]
-fn decimal_to_amount(value: Decimal, currency: impl Into<String>) -> Amount {
-    let scale = value.scale();
+fn decimal_to_amount(
+    value: Decimal,
+    currency: impl Into<String>,
+) -> Result<Amount, ImportError> {
     // Decimal::mantissa() is already the unscaled integer (minor units).
     // For 50.00: mantissa=5000, scale=2 → minor_units=5000 (correct: 50.00 AUD = 5000 cents)
-    let minor_units = i64::try_from(value.mantissa()).unwrap_or(i64::MAX);
-    Amount::new(minor_units, currency, scale.min(255) as u8)
+    let minor_units = i64::try_from(value.mantissa()).map_err(|_| {
+        ImportError::Parse(format!(
+            "amount mantissa overflows i64: {value} is too large to represent"
+        ))
+    })?;
+    // rust_decimal caps scale at 28, well within u8::MAX (255); try_from makes
+    // this invariant explicit and returns an error if it ever breaks.
+    let scale = u8::try_from(value.scale()).map_err(|_| {
+        ImportError::Parse(format!(
+            "decimal scale {} exceeds u8 maximum ({})",
+            value.scale(),
+            u8::MAX
+        ))
+    })?;
+    Ok(Amount::new(minor_units, currency, scale))
 }
 
 /// Resolves elided posting amounts.

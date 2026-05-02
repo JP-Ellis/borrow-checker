@@ -115,6 +115,7 @@ struct RawSettings {
 }
 
 /// Validated application-wide settings.
+#[non_exhaustive]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     /// Financial year start month (1-based, 1–12).
@@ -225,11 +226,11 @@ impl Settings {
 
         let db_path = raw.db_path.map(std::path::PathBuf::from);
 
-        // Plugin dirs: BC_PLUGIN_DIR env var → user config dirs → XDG data home
+        // Plugin dirs: BORROW_CHECKER_PLUGIN_DIR env var → user config dirs → XDG data home
         let mut plugin_dirs: Vec<std::path::PathBuf> = Vec::new();
 
-        // 1. BC_PLUGIN_DIR env var override (single dir, highest priority)
-        if let Ok(dir) = std::env::var("BC_PLUGIN_DIR") {
+        // 1. BORROW_CHECKER_PLUGIN_DIR env var override (single dir, highest priority)
+        if let Ok(dir) = std::env::var("BORROW_CHECKER_PLUGIN_DIR") {
             let p = std::path::PathBuf::from(dir);
             if p.is_absolute() {
                 plugin_dirs.push(p);

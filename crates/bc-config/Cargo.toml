@@ -19,7 +19,9 @@ serde       = { workspace = true }
 thiserror   = { workspace = true }
 
 [dev-dependencies]
+assert_fs         = { workspace = true }
 pretty_assertions = { workspace = true }
+tempfile          = { workspace = true }
 
 [lints]
 workspace = true

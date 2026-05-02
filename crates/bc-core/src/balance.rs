@@ -135,7 +135,6 @@ mod tests {
     use bc_models::AccountKind;
     use bc_models::AccountType;
     use pretty_assertions::assert_eq;
-    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
     use super::*;

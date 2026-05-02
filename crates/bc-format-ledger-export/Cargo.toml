@@ -20,9 +20,5 @@ bc-models    = { workspace = true }
 jiff         = { workspace = true }
 rust_decimal = { workspace = true }
 
-[dev-dependencies]
-pretty_assertions   = { workspace = true }
-rust_decimal_macros = { workspace = true }
-
 [lints]
 workspace = true
