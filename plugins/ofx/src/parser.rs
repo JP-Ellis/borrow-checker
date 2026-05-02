@@ -298,7 +298,8 @@ fn parse_ofx_date(s: &str) -> Result<bc_sdk::Date, String> {
     let day: u8 = ymd[6..8]
         .parse()
         .map_err(|_| format!("bad day in OFX date '{s}'"))?;
-    Ok(bc_sdk::Date::new(year, month, day))
+    bc_sdk::Date::try_new(year, month, day)
+        .map_err(|e| format!("invalid OFX date '{s}': {e}"))
 }
 
 #[cfg(test)]
