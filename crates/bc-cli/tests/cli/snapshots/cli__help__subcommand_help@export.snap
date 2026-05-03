@@ -19,22 +19,22 @@ Options:
 
       --json
           Emit machine-readable JSON instead of human-readable output
-
+          
           [env: BC_JSON=]
 
       --db-path <DB_PATH>
           Path to the SQLite database file.
-
+          
           Overrides the `db_path` config file setting and the platform default. The `BC_DB_PATH` environment variable is also honoured via the config layer rather than directly by this flag.
 
   -v, --verbose...
           Increase log verbosity.
-
+          
           Pass once for info (`-v`), twice for debug (`-vv`), three times for trace (`-vvv`). Use `RUST_LOG` for fine-grained per-crate control.
 
   -q, --quiet...
           Decrease log verbosity.
-
+          
           Pass once for error-only output (`-q`). Use `RUST_LOG` for fine-grained per-crate control.
 
   -h, --help
