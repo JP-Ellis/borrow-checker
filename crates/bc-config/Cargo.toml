@@ -17,6 +17,7 @@ directories = { workspace = true }
 jiff        = { workspace = true }
 serde       = { workspace = true }
 thiserror   = { workspace = true }
+tracing     = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

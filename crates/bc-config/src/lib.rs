@@ -184,8 +184,11 @@ impl Settings {
             .set_default("cli.log", Option::<String>::None)?;
 
         for path in user_config_paths() {
+            tracing::debug!(path = %path.display(), "config: adding source");
             builder = builder.add_source(config::File::from(path).required(false));
         }
+        tracing::debug!("config: adding source borrow-checker.toml (local)");
+        tracing::debug!("config: adding source BC_* environment variables");
         builder = builder
             .add_source(config::File::with_name("borrow-checker").required(false))
             .add_source(config::Environment::with_prefix("BC").separator("_"));
@@ -209,6 +212,12 @@ impl Settings {
                 raw.financial_year_start_day
             )));
         }
+        tracing::debug!(
+            financial_year_start_month = raw.financial_year_start_month,
+            financial_year_start_day = raw.financial_year_start_day,
+            "config: financial year"
+        );
+
         let fortnightly_anchor = raw
             .fortnightly_anchor
             .map(|s| {
@@ -217,43 +226,56 @@ impl Settings {
                 })
             })
             .transpose()?;
+        tracing::debug!(fortnightly_anchor = ?fortnightly_anchor, "config: fortnightly_anchor");
 
         if raw.display_commodity.is_empty() {
             return Err(ConfigError::Validation(
                 "display_commodity must not be empty".into(),
             ));
         }
+        tracing::debug!(display_commodity = %raw.display_commodity, "config: display_commodity");
 
         let db_path = raw.db_path.map(std::path::PathBuf::from);
+        tracing::debug!(db_path = ?db_path, "config: db_path");
 
         // Plugin dirs: BORROW_CHECKER_PLUGIN_DIR env var → user config dirs → XDG data home
         let mut plugin_dirs: Vec<std::path::PathBuf> = Vec::new();
 
         // 1. BORROW_CHECKER_PLUGIN_DIR env var override (single dir, highest priority)
         if let Ok(dir) = std::env::var("BORROW_CHECKER_PLUGIN_DIR") {
-            let p = std::path::PathBuf::from(dir);
+            let p = std::path::PathBuf::from(&dir);
             if p.is_absolute() {
+                tracing::debug!(dir = %p.display(), "plugin path: BORROW_CHECKER_PLUGIN_DIR override");
                 plugin_dirs.push(p);
+            } else {
+                tracing::debug!(
+                    dir,
+                    "plugin path: BORROW_CHECKER_PLUGIN_DIR ignored (not absolute)"
+                );
             }
         }
 
         // 2. User-configured dirs from config file
         for dir in &raw.plugin_dirs {
-            plugin_dirs.push(std::path::PathBuf::from(dir));
+            let p = std::path::PathBuf::from(dir);
+            tracing::debug!(dir = %p.display(), "plugin path: from config file");
+            plugin_dirs.push(p);
         }
 
         // 3. XDG data home: ~/.local/share/borrow-checker/plugins/
         if let Some(dirs) = directories::BaseDirs::new() {
             let xdg_data = dirs.data_dir().join("borrow-checker").join("plugins");
             if !plugin_dirs.contains(&xdg_data) {
+                tracing::debug!(dir = %xdg_data.display(), "plugin path: XDG data home default");
                 plugin_dirs.push(xdg_data);
             }
         }
 
         let cli = CliSection {
             json: raw.cli.json,
-            log: raw.cli.log,
+            log: raw.cli.log.clone(),
         };
+        tracing::debug!(cli.json = cli.json, cli.log = ?cli.log, "config: cli section");
 
         Ok(Self {
             financial_year_start_month: raw.financial_year_start_month,
