@@ -45,6 +45,7 @@ bc-config          = { workspace = true }
 bc-core            = { workspace = true }
 bc-models          = { workspace = true }
 bc-otel            = { workspace = true }
+clap               = { workspace = true }
 crossterm          = "0.28"
 jiff               = { workspace = true }
 ratatui-macros     = "0.7"
