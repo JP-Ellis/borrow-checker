@@ -1,8 +1,0 @@
----
-source: crates/bc-cli/tests/cli/export.rs
-expression: output
----
-success: true
-exit_code: 0
------ stdout -----
------ stderr -----

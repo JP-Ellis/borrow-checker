@@ -86,14 +86,19 @@ fn is_compatible_host(host: &str, min: &str) -> bool {
 }
 
 /// The `[plugin]` section of a sidecar manifest `.toml`.
+///
+/// All fields are cross-checked at load time against the component's own
+/// exported functions (`name()`, `sdk_abi()`). A mismatch causes the plugin to
+/// be rejected, preventing a tampered manifest from bypassing version checks.
 #[non_exhaustive]
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct PluginManifest {
-    /// Stable plugin name (e.g. `"csv"`). Must match `Importer::name()`.
+    /// Stable plugin name (e.g. `"csv"`). Must match the component's `name()`.
     pub name: String,
     /// Semver plugin version (informational only).
     pub version: String,
-    /// Integer ABI version the plugin was compiled against.
+    /// Integer ABI version the plugin was compiled against. Must match the
+    /// component's `sdk_abi()` at runtime.
     pub sdk_abi: u32,
     /// Minimum BorrowChecker version required (informational only).
     pub min_host: String,

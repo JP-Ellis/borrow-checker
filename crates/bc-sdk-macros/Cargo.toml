@@ -18,5 +18,9 @@ proc-macro2 = { workspace = true }
 quote       = { workspace = true }
 syn         = { workspace = true }
 
+[dev-dependencies]
+bc-sdk            = { workspace = true }
+pretty_assertions = { workspace = true }
+
 [lints]
 workspace = true

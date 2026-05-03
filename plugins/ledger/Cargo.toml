@@ -3,6 +3,11 @@ name    = "bc-plugin-ledger"
 version = "0.1.0"
 edition = "2024"
 
+  [package.metadata.bc-plugin]
+  name     = "ledger"
+  sdk_abi  = 1
+  min_host = "0.1.0"
+
 [workspace]
 
 [lib]

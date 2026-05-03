@@ -1,5 +1,0 @@
-[plugin]
-name     = "csv"
-version  = "0.1.0"
-sdk_abi  = 1
-min_host = "0.1.0"
