@@ -72,4 +72,5 @@
 
   [tasks."build-plugins"]
   description = "Compile WASM importer plugins and stage them under target/plugins/"
+  shell       = "bash -c"
   run         = "plugins/scripts/build.sh"
