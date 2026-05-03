@@ -38,23 +38,58 @@ pub fn mount(app: &mut Application<Id, Msg, NoUserEvent>, active_tab: Tab) -> an
         vec![
             Sub::new(
                 SubEventClause::Keyboard(Key::Char('q').into()),
-                SubClause::Always,
+                SubClause::And(
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
+                        Id::Accounts(AccountsId::TransactionForm),
+                    )))),
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(Id::Budget(
+                        BudgetId::AllocationForm,
+                    ))))),
+                ),
             ),
             Sub::new(
                 SubEventClause::Keyboard(Key::Char('?').into()),
-                SubClause::Always,
+                SubClause::And(
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
+                        Id::Accounts(AccountsId::TransactionForm),
+                    )))),
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(Id::Budget(
+                        BudgetId::AllocationForm,
+                    ))))),
+                ),
             ),
             Sub::new(
                 SubEventClause::Keyboard(Key::Char('1').into()),
-                SubClause::Always,
+                SubClause::And(
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
+                        Id::Accounts(AccountsId::TransactionForm),
+                    )))),
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(Id::Budget(
+                        BudgetId::AllocationForm,
+                    ))))),
+                ),
             ),
             Sub::new(
                 SubEventClause::Keyboard(Key::Char('2').into()),
-                SubClause::Always,
+                SubClause::And(
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
+                        Id::Accounts(AccountsId::TransactionForm),
+                    )))),
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(Id::Budget(
+                        BudgetId::AllocationForm,
+                    ))))),
+                ),
             ),
             Sub::new(
                 SubEventClause::Keyboard(Key::Char('3').into()),
-                SubClause::Always,
+                SubClause::And(
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
+                        Id::Accounts(AccountsId::TransactionForm),
+                    )))),
+                    Box::new(SubClause::Not(Box::new(SubClause::IsMounted(Id::Budget(
+                        BudgetId::AllocationForm,
+                    ))))),
+                ),
             ),
             Sub::new(
                 SubEventClause::Keyboard(Key::Tab.into()),
