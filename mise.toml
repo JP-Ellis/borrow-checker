@@ -4,6 +4,7 @@
 "core:rust" = {
   version    = "stable",
   components = "llvm-tools,rustfmt,clippy",
+  targets    = "wasm32-wasip2",
 }
 
 # Binstall ensures fast installs of cargo binaries
