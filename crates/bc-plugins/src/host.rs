@@ -3,9 +3,10 @@
 //! The `bindgen!` macro reads the WIT files at compile time and generates
 //! Rust types for calling into importer plugins.
 
+/// Wasmtime-generated bindings for the `borrow-checker` WIT world.
 #[expect(
-    clippy::all,
-    clippy::restriction,
+    clippy::integer_division_remainder_used,
+    clippy::missing_asserts_for_indexing,
     reason = "generated code from wasmtime bindgen may not conform to workspace lint rules"
 )]
 pub(crate) mod bindings {
