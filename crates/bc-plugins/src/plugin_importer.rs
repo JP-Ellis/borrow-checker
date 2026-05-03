@@ -131,7 +131,7 @@ impl PluginImporter {
     /// Returns a wasmtime error if instantiation fails.
     #[inline]
     fn instantiate(&self) -> wasmtime::Result<(BcPlugin, Store<HostCtx>)> {
-        let mut store = Store::new(&self.engine, HostCtx::new());
+        let mut store = Store::new(&self.engine, HostCtx::new(&self.name));
         let bindings = BcPlugin::instantiate(&mut store, &self.component, &self.linker)?;
         Ok((bindings, store))
     }

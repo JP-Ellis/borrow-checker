@@ -72,7 +72,32 @@ interface importer {
 interface exporter {
 }
 
+/// Log severity levels, matching the tracing crate conventions.
+interface logger {
+    /// Log severity level.
+    enum log-level {
+        trace,
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    /// A single structured log field (key-value pair).
+    record log-field {
+        /// The field name.
+        key: string,
+        /// The field value formatted as a string.
+        value: string,
+    }
+
+    /// Emit a structured log entry. The host routes it through its tracing
+    /// subscriber, attributed to the calling plugin via `target = "bc::plugin"`.
+    log: func(level: log-level, message: string, fields: list<log-field>);
+}
+
 /// The WASM component world that every BorrowChecker plugin must satisfy.
 world borrow-checker {
-    export importer;
+    import logger;    // host provides: plugin logging
+    export importer;  // plugin provides: import capability
 }
