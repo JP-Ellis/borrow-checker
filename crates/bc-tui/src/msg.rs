@@ -69,7 +69,15 @@ impl Tab {
     clippy::module_name_repetitions,
     reason = "referenced externally as msg::ChromeMsg; repetition is intentional"
 )]
-pub enum ChromeMsg {}
+pub enum ChromeMsg {
+    /// Request a terminal redraw without changing application state.
+    ///
+    /// Emitted by navigation handlers that update internal component state
+    /// (selection index, scroll offset) but produce no domain message.
+    /// `Model::update()` sets `self.redraw = true` for every message it
+    /// processes, so receiving this variant is sufficient to trigger a frame.
+    Redraw,
+}
 
 /// Messages produced by the accounts screen.
 #[derive(Debug, PartialEq)]
