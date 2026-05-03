@@ -58,6 +58,12 @@ pub const SDK_ABI: u32 = 1;
 /// The `#[importer]` attribute macro — apply to `impl Importer for YourType`.
 pub use bc_sdk_macros::importer;
 
+/// Structured logging macros for plugin authors.
+///
+/// These macros route log entries through the host's `tracing` subscriber at
+/// runtime. The host attributes them to `target = "bc::plugin"`.
+pub mod log;
+
 pub mod types;
 pub use types::Amount;
 pub use types::Date;
