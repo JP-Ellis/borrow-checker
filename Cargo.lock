@@ -340,7 +340,6 @@ name = "bc-sdk-macros"
 version = "0.1.0"
 dependencies = [
  "bc-sdk",
- "pretty_assertions",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
