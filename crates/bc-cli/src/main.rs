@@ -25,7 +25,7 @@ async fn main() {
     let cli = crate::cli::Cli::parse();
 
     // Load config — non-fatal; fall back to defaults on error.
-    let settings = bc_config::Settings::load().unwrap_or_else(|e| {
+    let mut settings = bc_config::Settings::load().unwrap_or_else(|e| {
         #[expect(
             clippy::print_stderr,
             reason = "CLI binary: warning to stderr on config load failure"
@@ -39,22 +39,12 @@ async fn main() {
     let _otel_guard =
         logging::setup_tracing(cli.global.verbose, cli.global.quiet, settings.cli().log());
 
-    let db_path = cli
-        .global
-        .db_path
-        .clone()
-        .or_else(|| settings.db_path().map(std::path::Path::to_path_buf))
-        .unwrap_or_else(bc_config::default_db_path);
-
-    if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("error: cannot create database directory: {e}");
-            std::process::exit(1_i32);
-        }
+    if let Some(db_path) = cli.global.db_path.clone() {
+        settings.set_db_path(db_path);
     }
 
     let json = cli.global.json || settings.cli().json();
-    let ctx = match AppContext::open(&db_path, json, &settings).await {
+    let ctx = match AppContext::open(&settings, json).await {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("error: {e}");
