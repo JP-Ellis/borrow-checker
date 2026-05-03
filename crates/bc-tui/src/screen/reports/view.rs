@@ -283,14 +283,14 @@ impl Component<Msg, NoUserEvent> for ReportView {
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Down));
-                None
+                Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
             }
             Event::Keyboard(KeyEvent {
                 code: Key::Up | Key::Char('k'),
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Up));
-                None
+                Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
             }
             Event::Keyboard(KeyEvent {
                 code: Key::Enter, ..
@@ -376,5 +376,37 @@ mod tests {
         assert_eq!(w.view_state, ViewState::Viewing);
         w.perform(Cmd::Move(Direction::Down));
         assert_eq!(w.scroll_offset, 1);
+    }
+
+    #[test]
+    fn j_key_emits_redraw_when_selecting() {
+        let mut view = ReportView::new();
+        let result = view.on(Event::Keyboard(KeyEvent {
+            code: Key::Char('j'),
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
+        assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
+    }
+
+    #[test]
+    fn k_key_emits_redraw_when_selecting() {
+        let mut view = ReportView::new();
+        let result = view.on(Event::Keyboard(KeyEvent {
+            code: Key::Char('k'),
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
+        assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
+    }
+
+    #[test]
+    fn j_key_emits_redraw_when_viewing() {
+        let mut view = ReportView::new();
+        // Force into viewing state.
+        view.component.set_output("test output".to_owned());
+        let result = view.on(Event::Keyboard(KeyEvent {
+            code: Key::Char('j'),
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
+        assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
     }
 }
