@@ -7,7 +7,7 @@ use serde::Serialize;
 /// An explicit date range used to scope a budget query.
 ///
 /// All frontends (TUI, CLI, future GUI) build a `BudgetWindow` from these
-/// constructors and pass it to [`bc_core::BudgetEngine::status_for_window`].
+/// constructors and pass it to `bc_core::BudgetEngine::status_for_window`.
 /// The calendar arithmetic lives here so it is never duplicated across
 /// presentation layers.
 ///
