@@ -60,6 +60,10 @@ pub struct BudgetScreen {
     pending_form: bool,
     /// Whether the allocation form is currently mounted.
     form_mounted: bool,
+    /// Ordered list of period presets built when an envelope is selected.
+    window_presets: Vec<bc_models::BudgetWindow>,
+    /// Index into `window_presets` for the currently displayed period.
+    selected_window_idx: usize,
 }
 
 impl BudgetScreen {
@@ -78,6 +82,8 @@ impl BudgetScreen {
             detail_dirty: false,
             pending_form: false,
             form_mounted: false,
+            window_presets: Vec::new(),
+            selected_window_idx: 0,
         }
     }
 
@@ -92,6 +98,18 @@ impl BudgetScreen {
             Ok(envelopes) => self.envelopes = envelopes,
             Err(e) => eprintln!("failed to load envelopes: {e}"),
         }
+    }
+
+    /// Returns the currently active [`bc_models::BudgetWindow`].
+    ///
+    /// Falls back to last month when no presets are loaded.
+    #[inline]
+    fn selected_window(&self) -> bc_models::BudgetWindow {
+        let today = jiff::Zoned::now().date();
+        self.window_presets
+            .get(self.selected_window_idx)
+            .cloned()
+            .unwrap_or_else(|| bc_models::BudgetWindow::last_month(today))
     }
 
     /// Load the budget status for the currently selected envelope.
@@ -110,10 +128,10 @@ impl BudgetScreen {
         let Some(envelope) = self.envelopes.iter().find(|e| e.id() == id).cloned() else {
             return;
         };
-        let today = jiff::Zoned::now().date();
+        let window = self.selected_window();
         match self
             .ctx
-            .block_on(self.ctx.budget.status_for(&envelope, today))
+            .block_on(self.ctx.budget.status_for_window(&envelope, window))
         {
             Ok(status) => self.selected_status = Some(status),
             Err(e) => eprintln!("failed to load envelope status: {e}"),
@@ -162,7 +180,17 @@ impl BudgetScreen {
         match msg {
             BudgetMsg::EnvelopeSelected(id) => {
                 self.selected_envelope = Some(id);
+                let today = jiff::Zoned::now().date();
+                self.window_presets = bc_models::BudgetWindow::standard_presets(today);
+                self.selected_window_idx = 0;
                 self.load_status();
+                // Fallback to "Last Month" (index 1) when the current month has no data.
+                if let Some(ref s) = self.selected_status {
+                    if s.allocated.is_zero() && s.actuals.is_zero() {
+                        self.selected_window_idx = 1;
+                        self.load_status();
+                    }
+                }
                 self.detail_dirty = true;
                 None
             }
@@ -182,6 +210,33 @@ impl BudgetScreen {
                 self.load_status();
                 self.detail_dirty = true;
                 Some(Msg::ModeChange(AppMode::Normal))
+            }
+            BudgetMsg::PeriodPrev => {
+                if !self.window_presets.is_empty() {
+                    self.selected_window_idx = self
+                        .selected_window_idx
+                        .checked_sub(1)
+                        .unwrap_or_else(|| self.window_presets.len().saturating_sub(1));
+                    self.load_status();
+                    self.detail_dirty = true;
+                }
+                None
+            }
+            BudgetMsg::PeriodNext => {
+                if !self.window_presets.is_empty() {
+                    #[expect(
+                        clippy::arithmetic_side_effects,
+                        clippy::integer_division_remainder_used,
+                        reason = "modulo wraps within bounds; presets.len() is non-zero"
+                    )]
+                    {
+                        self.selected_window_idx =
+                            (self.selected_window_idx + 1) % self.window_presets.len();
+                    }
+                    self.load_status();
+                    self.detail_dirty = true;
+                }
+                None
             }
         }
     }
@@ -377,6 +432,11 @@ impl Screen for BudgetScreen {
                 KeyBinding {
                     key: "a".into(),
                     action: "Allocate funds".into(),
+                    mode: AppMode::Normal,
+                },
+                KeyBinding {
+                    key: "[ / ]".into(),
+                    action: "Previous / next period".into(),
                     mode: AppMode::Normal,
                 },
             ],
