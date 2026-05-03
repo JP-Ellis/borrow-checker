@@ -1,11 +1,12 @@
 ---
 source: crates/bc-tui/tests/snapshot_tests.rs
+assertion_line: 145
 expression: output
 ---
 ╭ Transactions ────────────────────────────────────────────╮
-│2026-01-10  Supermarket           —                       │
-│2026-01-01  Landlord              —                       │
-│2026-01-15  Café                  —                       │
+│2026-01-10  Supermarket                            —      │
+│2026-01-01  Landlord                               —      │
+│2026-01-15  Café                                   —      │
 │                                                          │
 │                                                          │
 │                                                          │
