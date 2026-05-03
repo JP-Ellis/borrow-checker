@@ -8,6 +8,23 @@ use std::path::PathBuf;
 use bc_models::CommodityCode;
 use jiff::civil::Date;
 
+/// Returns the user-local plugin directory.
+///
+/// This is the XDG data home equivalent: `~/.local/share/borrow-checker/plugins/`
+/// on Linux/macOS (or the platform equivalent via the `directories` crate).
+///
+/// All frontends (CLI, TUI, GUI) should use this function when installing
+/// or removing plugins so the install location is consistent.
+///
+/// # Returns
+///
+/// `Some(path)` if the home directory can be determined, `None` otherwise.
+#[inline]
+#[must_use]
+pub fn user_plugin_dir() -> Option<std::path::PathBuf> {
+    directories::BaseDirs::new().map(|b| b.data_dir().join("borrow-checker").join("plugins"))
+}
+
 /// Returns the platform-appropriate default database path.
 ///
 /// Priority:

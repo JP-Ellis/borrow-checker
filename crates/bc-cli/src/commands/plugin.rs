@@ -1,7 +1,5 @@
 //! Plugin management sub-commands.
 
-use std::path::PathBuf;
-
 use bc_core::Importer as _;
 use clap::Subcommand;
 
@@ -23,11 +21,11 @@ pub struct Args {
 pub enum Command {
     /// List installed plugins.
     List,
-    /// Install a plugin from a `.wasm` file.
+    /// Install a plugin from a `.wasm` file or an https:// URL.
     Install {
-        /// Path to the `.wasm` file to install.
-        #[arg(value_name = "PATH")]
-        source: PathBuf,
+        /// Path to a local `.wasm` file, or an `http(s)://` URL.
+        #[arg(value_name = "SOURCE")]
+        source: String,
     },
     /// Remove an installed plugin by name.
     Remove {
@@ -53,6 +51,11 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         Command::Install { source } => install(&source, ctx),
         Command::Remove { name } => remove(&name),
     }
+}
+
+/// Returns `true` if `source` looks like an HTTP(S) URL.
+fn is_url(source: &str) -> bool {
+    source.starts_with("http://") || source.starts_with("https://")
 }
 
 /// Lists all loaded plugins, emitting their name, ABI, and source path.
@@ -92,26 +95,7 @@ fn list(ctx: &AppContext) -> CliResult<()> {
     Ok(())
 }
 
-/// Resolves the user plugin directory (XDG data home).
-///
-/// # Returns
-///
-/// The path to `~/.local/share/borrow-checker/plugins/` (or the platform
-/// equivalent).
-///
-/// # Errors
-///
-/// Returns [`crate::error::CliError::Arg`] if the home directory cannot be
-/// determined.
-fn user_plugin_dir() -> CliResult<PathBuf> {
-    directories::BaseDirs::new()
-        .map(|b| b.data_dir().join("borrow-checker").join("plugins"))
-        .ok_or_else(|| {
-            crate::error::CliError::Arg("cannot determine user data directory".to_owned())
-        })
-}
-
-/// Copies a `.wasm` plugin into `dest_dir`, using the plugin's self-reported name.
+/// Copies a `.wasm` plugin into `dest_dir`, naming it by its self-reported plugin name.
 ///
 /// The destination filename is derived from the plugin's `name()` export
 /// (e.g. `"ledger"` → `ledger.wasm`), not from the source filename. This
@@ -138,17 +122,13 @@ fn install_to_dir(source: &std::path::Path, dest_dir: &std::path::Path) -> CliRe
         ));
     }
 
-    // Probe the WASM to get the canonical plugin name and validate ABI.
-    let metadata = bc_plugins::query_metadata(source)
-        .map_err(|e| crate::error::CliError::Arg(format!("invalid plugin: {e}")))?;
-    let plugin_name = metadata.name;
+    let meta = bc_plugins::query_metadata(source)
+        .map_err(|e| crate::error::CliError::Arg(format!("cannot read plugin metadata: {e}")))?;
+    let plugin_name = meta.name;
 
     std::fs::create_dir_all(dest_dir).map_err(crate::error::CliError::Io)?;
 
-    // Use the queried name as the destination stem so `plugin remove <name>` can
-    // find the file regardless of what the source filename was called.
     let wasm_dest = dest_dir.join(format!("{plugin_name}.wasm"));
-
     std::fs::copy(source, &wasm_dest).map_err(crate::error::CliError::Io)?;
 
     Ok(plugin_name)
@@ -175,14 +155,60 @@ fn remove_from_dir(name: &str, dest_dir: &std::path::Path) -> CliResult<()> {
     }
 
     std::fs::remove_file(&wasm_path).map_err(crate::error::CliError::Io)?;
-
     Ok(())
 }
 
-/// Copies a `.wasm` plugin into the user plugin directory.
-fn install(source: &std::path::Path, ctx: &AppContext) -> CliResult<()> {
-    let dest_dir = user_plugin_dir()?;
-    let plugin_name = install_to_dir(source, &dest_dir)?;
+/// Downloads a URL to a temp file and returns the temp file path.
+///
+/// # Arguments
+///
+/// * `url` - The HTTP(S) URL to download from.
+///
+/// # Returns
+///
+/// A named temporary file containing the downloaded bytes.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError`] if the temporary file cannot be created,
+/// the HTTP request fails, or writing the response body fails.
+fn download_to_temp(url: &str) -> CliResult<tempfile::NamedTempFile> {
+    let mut tmp = tempfile::Builder::new()
+        .suffix(".wasm")
+        .tempfile()
+        .map_err(crate::error::CliError::Io)?;
+
+    let bytes = reqwest::blocking::get(url)
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::bytes)
+        .map_err(|e| crate::error::CliError::Arg(format!("download failed: {e}")))?;
+
+    std::io::Write::write_all(&mut tmp, &bytes).map_err(crate::error::CliError::Io)?;
+    Ok(tmp)
+}
+
+/// Installs a plugin from a local file path or https:// URL.
+///
+/// # Arguments
+///
+/// * `source` - A local filesystem path to a `.wasm` file, or an `http(s)://` URL.
+/// * `ctx` - The application context, used to determine output mode.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError`] if the user data directory cannot be
+/// determined, the download fails (for URLs), or the file cannot be installed.
+fn install(source: &str, ctx: &AppContext) -> CliResult<()> {
+    let dest_dir = bc_config::user_plugin_dir().ok_or_else(|| {
+        crate::error::CliError::Arg("cannot determine user data directory".to_owned())
+    })?;
+
+    let plugin_name = if is_url(source) {
+        let tmp = download_to_temp(source)?;
+        install_to_dir(tmp.path(), &dest_dir)?
+    } else {
+        install_to_dir(std::path::Path::new(source), &dest_dir)?
+    };
 
     let wasm_dest = dest_dir.join(format!("{plugin_name}.wasm"));
 
@@ -203,8 +229,19 @@ fn install(source: &std::path::Path, ctx: &AppContext) -> CliResult<()> {
 }
 
 /// Removes a plugin by name from the user plugin directory.
+///
+/// # Arguments
+///
+/// * `name` - The plugin name to remove.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError`] if the user data directory cannot be
+/// determined or the plugin is not found.
 fn remove(name: &str) -> CliResult<()> {
-    let dest_dir = user_plugin_dir()?;
+    let dest_dir = bc_config::user_plugin_dir().ok_or_else(|| {
+        crate::error::CliError::Arg("cannot determine user data directory".to_owned())
+    })?;
     remove_from_dir(name, &dest_dir)?;
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
@@ -219,6 +256,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn is_url_recognises_http_and_https() {
+        assert!(is_url("http://example.com/plugin.wasm"));
+        assert!(is_url("https://example.com/plugin.wasm"));
+        assert!(!is_url("/local/path/plugin.wasm"));
+        assert!(!is_url("relative/plugin.wasm"));
+        assert!(!is_url("plugin.wasm"));
+    }
+
+    #[test]
     fn remove_from_dir_returns_not_found_for_missing_plugin() {
         let dest_dir = tempfile::tempdir().expect("tempdir");
         let result = remove_from_dir("nonexistent", dest_dir.path());
@@ -229,12 +275,12 @@ mod tests {
     }
 
     #[test]
-    fn install_to_dir_rejects_non_wasm() {
+    fn install_to_dir_rejects_non_wasm_extension() {
         let src_dir = tempfile::tempdir().expect("tempdir");
-        let not_wasm = src_dir.path().join("plugin.txt");
-        std::fs::write(&not_wasm, b"text").expect("write");
+        let bad = src_dir.path().join("plugin.txt");
+        std::fs::write(&bad, b"not wasm").expect("write");
         let dest_dir = tempfile::tempdir().expect("tempdir");
-        let result = install_to_dir(&not_wasm, dest_dir.path());
-        assert!(result.is_err(), "non-wasm file must be rejected");
+        let result = install_to_dir(&bad, dest_dir.path());
+        assert!(result.is_err(), "non-.wasm source must be rejected");
     }
 }
