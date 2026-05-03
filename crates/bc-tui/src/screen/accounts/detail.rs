@@ -3,6 +3,7 @@
 //! Displays full details of a single selected transaction (read-only),
 //! or a placeholder when no transaction is selected.
 
+use bc_models::Account;
 use bc_models::Transaction;
 use tuirealm::AttrValue;
 use tuirealm::Attribute;
@@ -37,9 +38,28 @@ struct TxDetail {
     props: Props,
     /// Transaction to display, if any.
     transaction: Option<Transaction>,
+    /// All accounts — used to resolve posting account IDs to human-readable names.
+    accounts: Vec<Account>,
 }
 
 impl TxDetail {
+    /// Resolve an account ID to a display name, falling back to the raw ID string.
+    ///
+    /// # Arguments
+    ///
+    /// * `id`       - The account ID to look up.
+    /// * `accounts` - The flat list of all accounts.
+    ///
+    /// # Returns
+    ///
+    /// The account's `name` if found; otherwise the ID formatted as a string.
+    fn account_name(id: &bc_models::AccountId, accounts: &[Account]) -> String {
+        accounts
+            .iter()
+            .find(|a| a.id() == id)
+            .map_or_else(|| id.to_string(), |a| a.name().to_owned())
+    }
+
     /// Format a transaction as a multi-line string.
     ///
     /// If no transaction is set, returns the placeholder text.
@@ -79,7 +99,11 @@ impl TxDetail {
                             posting.amount().value(),
                             posting.amount().commodity()
                         );
-                        lines.push(format!("  {}  {}", posting.account_id(), amount_str));
+                        lines.push(format!(
+                            "  {}  {}",
+                            Self::account_name(posting.account_id(), &self.accounts),
+                            amount_str
+                        ));
 
                         // Envelope (optional)
                         if let Some(env_id) = posting.envelope_id() {
@@ -161,13 +185,23 @@ pub struct TransactionDetail {
 
 impl TransactionDetail {
     /// Create a new `TransactionDetail` showing the given transaction, or empty if `None`.
+    ///
+    /// # Arguments
+    ///
+    /// * `transaction` - The transaction to display, or `None` for an empty panel.
+    /// * `accounts`    - All accounts, used to resolve posting account IDs to names.
+    ///
+    /// # Returns
+    ///
+    /// A new `TransactionDetail` ready to be mounted.
     #[inline]
     #[must_use]
-    pub fn new(transaction: Option<Transaction>) -> Self {
+    pub fn new(transaction: Option<Transaction>, accounts: Vec<Account>) -> Self {
         Self {
             component: TxDetail {
                 props: Props::default(),
                 transaction,
+                accounts,
             },
         }
     }
@@ -198,6 +232,19 @@ impl Component<Msg, NoUserEvent> for TransactionDetail {
 
 #[cfg(test)]
 mod tests {
+    use bc_models::Account;
+    use bc_models::AccountId;
+    use bc_models::AccountType;
+    use bc_models::Amount;
+    use bc_models::CommodityCode;
+    use bc_models::Decimal;
+    use bc_models::Posting;
+    use bc_models::PostingId;
+    use bc_models::Transaction;
+    use bc_models::TransactionId;
+    use bc_models::TransactionStatus;
+    use jiff::Timestamp;
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -207,9 +254,51 @@ mod tests {
         let detail = TxDetail {
             props: Props::default(),
             transaction: None,
+            accounts: vec![],
+        };
+        assert_eq!(
+            detail.render_content(),
+            "Select a transaction to see details."
+        );
+    }
+
+    #[test]
+    fn render_content_resolves_account_name() {
+        let acc_id = AccountId::new();
+        let account = Account::builder()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .id(acc_id.clone())
+            .build();
+
+        let posting = Posting::builder()
+            .id(PostingId::new())
+            .account_id(acc_id)
+            .amount(Amount::new(
+                Decimal::from(100_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .build();
+
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 5, 1))
+            .description("Test")
+            .status(TransactionStatus::Cleared)
+            .postings(vec![posting])
+            .created_at(Timestamp::now())
+            .build();
+
+        let detail = TxDetail {
+            props: Props::default(),
+            transaction: Some(tx),
+            accounts: vec![account],
         };
 
         let content = detail.render_content();
-        assert_eq!(content, "Select a transaction to see details.");
+        assert!(
+            content.contains("Checking"),
+            "expected account name 'Checking' in: {content}"
+        );
     }
 }

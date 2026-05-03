@@ -390,7 +390,7 @@ impl Screen for AccountsScreen {
         )?;
         app.mount(
             Id::Accounts(AccountsId::TransactionDetail),
-            Box::new(detail::TransactionDetail::new(None)),
+            Box::new(detail::TransactionDetail::new(None, self.accounts.clone())),
             vec![],
         )?;
         Ok(())
@@ -577,7 +577,7 @@ impl Screen for AccountsScreen {
             }
             if let Err(e) = app.mount(
                 Id::Accounts(AccountsId::TransactionDetail),
-                Box::new(detail::TransactionDetail::new(tx)),
+                Box::new(detail::TransactionDetail::new(tx, self.accounts.clone())),
                 vec![],
             ) {
                 eprintln!("failed to re-mount transaction detail: {e}");
