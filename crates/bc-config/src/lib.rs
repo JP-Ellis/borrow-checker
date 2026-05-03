@@ -336,6 +336,18 @@ impl Settings {
         &self.plugin_dirs
     }
 
+    /// Overrides the database path at runtime (e.g. from a CLI flag).
+    ///
+    /// This takes precedence over any value loaded from the config file.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Absolute path to the SQLite database file.
+    #[inline]
+    pub fn set_db_path(&mut self, path: std::path::PathBuf) {
+        self.db_path = Some(path);
+    }
+
     /// Returns the CLI-specific settings from the `[cli]` config section.
     #[inline]
     #[must_use]

@@ -28,43 +28,37 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    /// Opens the SQLite database at `db_path` (creating it and its parent
-    /// directories if they do not exist), loads plugins from the configured
-    /// search paths, and initialises all core services.
+    /// Opens the SQLite database (creating it and its parent directories if
+    /// they do not exist), loads plugins from the configured search paths, and
+    /// initialises all core services.
+    ///
+    /// The database path is resolved from `settings.db_path()`, falling back
+    /// to [`bc_config::default_db_path`] when no path is configured.
     ///
     /// # Arguments
     ///
-    /// * `db_path` - Path to the SQLite database file.
+    /// * `settings` - Application settings (database path, plugin search paths).
     /// * `json` - Whether commands should emit JSON output.
-    /// * `settings` - Application settings (used to resolve plugin search paths).
     ///
     /// # Errors
     ///
-    /// Returns [`bc_core::BcError`] if the database cannot be opened,
-    /// migrations fail, or the plugin registry cannot initialise.
+    /// Returns [`bc_core::BcError`] if the database directory cannot be
+    /// created, the database cannot be opened, migrations fail, or the plugin
+    /// registry cannot initialise.
     #[inline]
-    pub async fn open(
-        db_path: &std::path::Path,
-        json: bool,
-        settings: &bc_config::Settings,
-    ) -> bc_core::BcResult<Self> {
-        let pool = bc_core::open_db_at(db_path).await?;
+    pub async fn open(settings: &bc_config::Settings, json: bool) -> bc_core::BcResult<Self> {
+        let db_path = settings
+            .db_path()
+            .map_or_else(bc_config::default_db_path, std::path::Path::to_path_buf);
 
-        // Build plugin search paths: config dirs + binary sidecar dir.
-        let mut plugin_paths = settings.plugin_paths().to_vec();
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(sidecar) = exe
-                .parent()
-                .and_then(|p| p.parent())
-                .map(|p| p.join("share").join("borrow-checker").join("plugins"))
-            {
-                if !plugin_paths.contains(&sidecar) {
-                    plugin_paths.push(sidecar);
-                }
-            }
+        if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| bc_core::BcError::InvalidInput(e.to_string()))?;
         }
 
-        let plugin_registry = bc_plugins::PluginRegistry::load(&plugin_paths)
+        let pool = bc_core::open_db_at(&db_path).await?;
+
+        let plugin_registry = bc_plugins::PluginRegistry::load(settings.plugin_paths())
             .map_err(|e| bc_core::BcError::InvalidInput(e.to_string()))?;
         let importers = plugin_registry.build_importer_registry();
 
