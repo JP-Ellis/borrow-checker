@@ -21,23 +21,32 @@ use crate::host::bindings::borrow_checker::sdk::types as wt;
 ///
 /// # Errors
 ///
-/// Returns an [`bc_core::ImportError`] if the plugin returned an invalid calendar date.
-#[expect(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "valid calendar dates fit in i16/i8; invalid values are caught by jiff"
-)]
+/// Returns an [`bc_core::ImportError`] if the plugin returned an invalid calendar date,
+/// or if any date field is out of range for the target integer type.
 pub(crate) fn wit_to_raw_transaction(
     t: wt::RawTransaction,
 ) -> Result<bc_core::RawTransaction, bc_core::ImportError> {
-    let date = jiff::civil::Date::new(t.date.year as i16, t.date.month as i8, t.date.day as i8)
-        .map_err(|e| {
-            bc_core::ImportError::Parse(format!(
-                "plugin returned invalid date {}-{:02}-{:02}: {e}",
-                t.date.year, t.date.month, t.date.day
-            ))
-        })?;
+    let year = i16::try_from(t.date.year).map_err(|_e| {
+        bc_core::ImportError::Parse(format!(
+            "plugin returned year out of range: {}",
+            t.date.year
+        ))
+    })?;
+    let month = i8::try_from(t.date.month).map_err(|_e| {
+        bc_core::ImportError::Parse(format!(
+            "plugin returned month out of range: {}",
+            t.date.month
+        ))
+    })?;
+    let day = i8::try_from(t.date.day).map_err(|_e| {
+        bc_core::ImportError::Parse(format!("plugin returned day out of range: {}", t.date.day))
+    })?;
+    let date = jiff::civil::Date::new(year, month, day).map_err(|e| {
+        bc_core::ImportError::Parse(format!(
+            "plugin returned invalid date {}-{:02}-{:02}: {e}",
+            t.date.year, t.date.month, t.date.day
+        ))
+    })?;
 
     Ok(bc_core::RawTransaction::new(
         date,
@@ -92,6 +101,54 @@ pub(crate) fn wit_to_import_error(e: wt::ImportError) -> bc_core::ImportError {
 mod tests {
     use super::*;
     use crate::host::bindings::borrow_checker::sdk::types as wt;
+
+    #[test]
+    fn wit_to_raw_transaction_rejects_out_of_range_month() {
+        let t = wt::RawTransaction {
+            date: wt::Date {
+                year: 2025_i32,
+                month: 99_u8,
+                day: 1_u8,
+            },
+            amount: wt::Amount {
+                minor_units: 1000_i64,
+                currency: "AUD".to_owned(),
+                scale: 2_u8,
+            },
+            balance: None,
+            payee: None,
+            description: "test".to_owned(),
+            reference: None,
+        };
+        assert!(
+            wit_to_raw_transaction(t).is_err(),
+            "month 99 should fail date construction"
+        );
+    }
+
+    #[test]
+    fn wit_to_raw_transaction_rejects_out_of_range_day() {
+        let t = wt::RawTransaction {
+            date: wt::Date {
+                year: 2025_i32,
+                month: 2_u8,
+                day: 30_u8,
+            },
+            amount: wt::Amount {
+                minor_units: 0_i64,
+                currency: "AUD".to_owned(),
+                scale: 2_u8,
+            },
+            balance: None,
+            payee: None,
+            description: "test".to_owned(),
+            reference: None,
+        };
+        assert!(
+            wit_to_raw_transaction(t).is_err(),
+            "Feb 30 should fail date construction"
+        );
+    }
 
     #[test]
     fn bad_value_wit_error_maps_to_parse_not_false_bad_value() {
