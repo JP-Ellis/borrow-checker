@@ -14,30 +14,35 @@ rust_decimal_macros = "1"
 tokio              = { version = "1", features = ["rt-multi-thread", "macros"] }
 ---
 
-// Seed a SQLite database with realistic test fixture data for manual QA.
+// Seed a SQLite database with a realistic 6-month dataset for manual QA.
 //
-// This script produces the same dataset as `crates/bc-tui/tests/common/mod.rs`.
+// Creates a full account hierarchy, envelope budget structure with allocations,
+// and ~75 transactions covering Nov 2025 – Apr 2026.
 //
 // Usage:
-//   cargo +nightly -Zscript scripts/seed-test-db.rs [--db-path <PATH>] [--force]
+//   cargo +nightly -Zscript scripts/seed-test-db [--db-path <PATH>] [--force]
 
 use std::path::PathBuf;
 
 use bc_core::AccountService;
+use bc_core::EnvelopeService;
 use bc_core::TransactionService;
+use bc_models::AccountId;
 use bc_models::AccountKind;
 use bc_models::AccountType;
 use bc_models::Amount;
 use bc_models::CommodityCode;
 use bc_models::Decimal;
+use bc_models::Period;
 use bc_models::Posting;
 use bc_models::PostingId;
+use bc_models::RolloverPolicy;
 use bc_models::Transaction;
 use bc_models::TransactionId;
 use bc_models::TransactionStatus;
 use clap::Parser;
 use jiff::Timestamp;
-use jiff::civil::date;
+use jiff::civil::Date;
 use rust_decimal_macros::dec;
 
 #[derive(Parser)]
@@ -54,6 +59,18 @@ struct Args {
 
 fn aud(value: Decimal) -> Amount {
     Amount::new(value, CommodityCode::new("AUD"))
+}
+
+fn date(year: i16, month: i8, day: i8) -> Date {
+    Date::constant(year, month, day)
+}
+
+fn posting(account_id: &AccountId, amount: Amount) -> Posting {
+    Posting::builder()
+        .id(PostingId::new())
+        .account_id(account_id.clone())
+        .amount(amount)
+        .build()
 }
 
 #[tokio::main]
@@ -73,15 +90,63 @@ async fn main() -> anyhow::Result<()> {
 
     let pool = bc_core::open_db_at(&args.db_path).await?;
     let accounts = AccountService::new(pool.clone());
+    let envelopes = EnvelopeService::new(pool.clone());
     let transactions = TransactionService::new(pool.clone());
 
-    // --- Accounts -----------------------------------------------------------
+    // =========================================================================
+    // ACCOUNTS (20 total: 5 root + 15 leaf)
+    // =========================================================================
+
+    // --- Root accounts -------------------------------------------------------
+
+    let assets_id = accounts
+        .create()
+        .name("Assets")
+        .account_type(AccountType::Asset)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let liabilities_id = accounts
+        .create()
+        .name("Liabilities")
+        .account_type(AccountType::Liability)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let equity_id = accounts
+        .create()
+        .name("Equity")
+        .account_type(AccountType::Equity)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let income_id = accounts
+        .create()
+        .name("Income")
+        .account_type(AccountType::Income)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let expenses_id = accounts
+        .create()
+        .name("Expenses")
+        .account_type(AccountType::Expense)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    // --- Asset leaf accounts -------------------------------------------------
 
     let checking_id = accounts
         .create()
         .name("Checking")
         .account_type(AccountType::Asset)
         .kind(AccountKind::DepositAccount)
+        .parent_id(&assets_id)
         .call()
         .await?;
 
@@ -90,22 +155,58 @@ async fn main() -> anyhow::Result<()> {
         .name("Savings")
         .account_type(AccountType::Asset)
         .kind(AccountKind::DepositAccount)
+        .parent_id(&assets_id)
         .call()
         .await?;
+
+    let car_id = accounts
+        .create()
+        .name("Car")
+        .account_type(AccountType::Asset)
+        .kind(AccountKind::ManualAsset)
+        .parent_id(&assets_id)
+        .call()
+        .await?;
+
+    // --- Liability leaf accounts ---------------------------------------------
 
     let credit_card_id = accounts
         .create()
         .name("CreditCard")
         .account_type(AccountType::Liability)
         .kind(AccountKind::DepositAccount)
+        .parent_id(&liabilities_id)
         .call()
         .await?;
+
+    let car_loan_id = accounts
+        .create()
+        .name("CarLoan")
+        .account_type(AccountType::Liability)
+        .kind(AccountKind::DepositAccount)
+        .parent_id(&liabilities_id)
+        .call()
+        .await?;
+
+    // --- Equity leaf accounts ------------------------------------------------
+
+    let opening_balance_id = accounts
+        .create()
+        .name("OpeningBalance")
+        .account_type(AccountType::Equity)
+        .kind(AccountKind::DepositAccount)
+        .parent_id(&equity_id)
+        .call()
+        .await?;
+
+    // --- Income leaf accounts ------------------------------------------------
 
     let salary_id = accounts
         .create()
         .name("Salary")
         .account_type(AccountType::Income)
         .kind(AccountKind::DepositAccount)
+        .parent_id(&income_id)
         .call()
         .await?;
 
@@ -114,14 +215,27 @@ async fn main() -> anyhow::Result<()> {
         .name("Interest")
         .account_type(AccountType::Income)
         .kind(AccountKind::DepositAccount)
+        .parent_id(&income_id)
         .call()
         .await?;
+
+    let freelance_id = accounts
+        .create()
+        .name("Freelance")
+        .account_type(AccountType::Income)
+        .kind(AccountKind::DepositAccount)
+        .parent_id(&income_id)
+        .call()
+        .await?;
+
+    // --- Expense leaf accounts -----------------------------------------------
 
     let groceries_id = accounts
         .create()
         .name("Groceries")
         .account_type(AccountType::Expense)
         .kind(AccountKind::DepositAccount)
+        .parent_id(&expenses_id)
         .call()
         .await?;
 
@@ -130,6 +244,7 @@ async fn main() -> anyhow::Result<()> {
         .name("Dining")
         .account_type(AccountType::Expense)
         .kind(AccountKind::DepositAccount)
+        .parent_id(&expenses_id)
         .call()
         .await?;
 
@@ -138,6 +253,7 @@ async fn main() -> anyhow::Result<()> {
         .name("Utilities")
         .account_type(AccountType::Expense)
         .kind(AccountKind::DepositAccount)
+        .parent_id(&expenses_id)
         .call()
         .await?;
 
@@ -146,6 +262,7 @@ async fn main() -> anyhow::Result<()> {
         .name("Transport")
         .account_type(AccountType::Expense)
         .kind(AccountKind::DepositAccount)
+        .parent_id(&expenses_id)
         .call()
         .await?;
 
@@ -154,678 +271,1632 @@ async fn main() -> anyhow::Result<()> {
         .name("Subscriptions")
         .account_type(AccountType::Expense)
         .kind(AccountKind::DepositAccount)
+        .parent_id(&expenses_id)
         .call()
         .await?;
 
-    // --- Transactions -------------------------------------------------------
+    let healthcare_id = accounts
+        .create()
+        .name("Healthcare")
+        .account_type(AccountType::Expense)
+        .kind(AccountKind::DepositAccount)
+        .parent_id(&expenses_id)
+        .call()
+        .await?;
 
-    // 1. Paycheck — January (Cleared)
-    transactions
+    let entertainment_id = accounts
+        .create()
+        .name("Entertainment")
+        .account_type(AccountType::Expense)
+        .kind(AccountKind::DepositAccount)
+        .parent_id(&expenses_id)
+        .call()
+        .await?;
+
+    // Silence unused-variable warnings for root accounts only used as parents.
+    let _ = &income_id;
+    let _ = &liabilities_id;
+    let _ = &equity_id;
+    let _ = &car_id;
+
+    // =========================================================================
+    // ENVELOPES (10 total: 3 root + 7 leaf)
+    // =========================================================================
+
+    // --- Root envelopes ------------------------------------------------------
+
+    let living_env = envelopes
+        .create()
+        .name("Living")
+        .period(Period::Monthly)
+        .rollover_policy(RolloverPolicy::ResetToZero)
+        .call()
+        .await?;
+
+    let discretionary_env = envelopes
+        .create()
+        .name("Discretionary")
+        .period(Period::Monthly)
+        .rollover_policy(RolloverPolicy::ResetToZero)
+        .call()
+        .await?;
+
+    let health_env = envelopes
+        .create()
+        .name("Health")
+        .period(Period::Monthly)
+        .rollover_policy(RolloverPolicy::ResetToZero)
+        .call()
+        .await?;
+
+    // --- Living leaf envelopes -----------------------------------------------
+
+    let groceries_env = envelopes
+        .create()
+        .name("Groceries")
+        .parent_id(living_env.id().clone())
+        .period(Period::Monthly)
+        .rollover_policy(RolloverPolicy::ResetToZero)
+        .call()
+        .await?;
+
+    let utilities_env = envelopes
+        .create()
+        .name("Utilities")
+        .parent_id(living_env.id().clone())
+        .period(Period::Monthly)
+        .rollover_policy(RolloverPolicy::ResetToZero)
+        .call()
+        .await?;
+
+    let transport_env = envelopes
+        .create()
+        .name("Transport")
+        .parent_id(living_env.id().clone())
+        .period(Period::Monthly)
+        .rollover_policy(RolloverPolicy::ResetToZero)
+        .call()
+        .await?;
+
+    // --- Discretionary leaf envelopes ----------------------------------------
+
+    let dining_env = envelopes
+        .create()
+        .name("Dining")
+        .parent_id(discretionary_env.id().clone())
+        .period(Period::Monthly)
+        .rollover_policy(RolloverPolicy::ResetToZero)
+        .call()
+        .await?;
+
+    let entertainment_env = envelopes
+        .create()
+        .name("Entertainment")
+        .parent_id(discretionary_env.id().clone())
+        .period(Period::Monthly)
+        .rollover_policy(RolloverPolicy::ResetToZero)
+        .call()
+        .await?;
+
+    let subscriptions_env = envelopes
+        .create()
+        .name("Subscriptions")
+        .parent_id(discretionary_env.id().clone())
+        .period(Period::Monthly)
+        .rollover_policy(RolloverPolicy::ResetToZero)
+        .call()
+        .await?;
+
+    // --- Health leaf envelopes -----------------------------------------------
+
+    let healthcare_env = envelopes
+        .create()
+        .name("Healthcare")
+        .parent_id(health_env.id().clone())
+        .period(Period::Monthly)
+        .rollover_policy(RolloverPolicy::ResetToZero)
+        .call()
+        .await?;
+
+    // Silence unused-variable warnings for root envelopes only used as parents.
+    let _ = &living_env;
+    let _ = &discretionary_env;
+    let _ = &health_env;
+
+    // =========================================================================
+    // ALLOCATIONS (42 total: 7 leaf envelopes × 6 months)
+    // =========================================================================
+
+    // Monthly allocation amounts:
+    //   Groceries:     600/mo
+    //   Utilities:     350/mo
+    //   Transport:     200/mo
+    //   Dining:        300/mo
+    //   Entertainment: 150/mo
+    //   Subscriptions:  60/mo
+    //   Healthcare:    200/mo
+
+    let months: [(i16, i8); 6] = [
+        (2025, 11),
+        (2025, 12),
+        (2026, 1),
+        (2026, 2),
+        (2026, 3),
+        (2026, 4),
+    ];
+
+    for (year, month) in months {
+        let period_start = date(year, month, 1);
+        envelopes
+            .allocate(groceries_env.id(), period_start, aud(dec!(600.00)))
+            .await?;
+        envelopes
+            .allocate(utilities_env.id(), period_start, aud(dec!(350.00)))
+            .await?;
+        envelopes
+            .allocate(transport_env.id(), period_start, aud(dec!(200.00)))
+            .await?;
+        envelopes
+            .allocate(dining_env.id(), period_start, aud(dec!(300.00)))
+            .await?;
+        envelopes
+            .allocate(entertainment_env.id(), period_start, aud(dec!(150.00)))
+            .await?;
+        envelopes
+            .allocate(subscriptions_env.id(), period_start, aud(dec!(60.00)))
+            .await?;
+        envelopes
+            .allocate(healthcare_env.id(), period_start, aud(dec!(200.00)))
+            .await?;
+    }
+
+    // =========================================================================
+    // TRANSACTIONS (~75 total across Nov 2025 – Apr 2026)
+    // =========================================================================
+
+    // Helper macro to reduce boilerplate for simple two-posting transactions.
+    macro_rules! txn {
+        ($date:expr, $payee:expr, $desc:expr, $status:expr,
+         $debit_acct:expr, $debit_amt:expr,
+         $credit_acct:expr, $credit_amt:expr) => {
+            transactions
+                .create(
+                    Transaction::builder()
+                        .id(TransactionId::new())
+                        .date($date)
+                        .payee($payee)
+                        .description($desc)
+                        .status($status)
+                        .created_at(Timestamp::now())
+                        .postings(vec![
+                            posting($debit_acct, aud($debit_amt)),
+                            posting($credit_acct, aud($credit_amt)),
+                        ])
+                        .build(),
+                )
+                .await?
+        };
+    }
+
+    // -------------------------------------------------------------------------
+    // Opening balances (Nov 1, 2025)
+    // -------------------------------------------------------------------------
+
+    // Checking: 3500 opening balance
+    txn!(
+        date(2025, 11, 1),
+        "Opening Balance",
+        "Checking opening balance",
+        TransactionStatus::Cleared,
+        &checking_id,
+        dec!(3500.00),
+        &opening_balance_id,
+        dec!(-3500.00)
+    );
+
+    // Savings: 8000 opening balance
+    txn!(
+        date(2025, 11, 1),
+        "Opening Balance",
+        "Savings opening balance",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(8000.00),
+        &opening_balance_id,
+        dec!(-8000.00)
+    );
+
+    // CreditCard liability: -450 opening balance (liability has credit balance)
+    txn!(
+        date(2025, 11, 1),
+        "Opening Balance",
+        "Credit card opening balance",
+        TransactionStatus::Cleared,
+        &opening_balance_id,
+        dec!(450.00),
+        &credit_card_id,
+        dec!(-450.00)
+    );
+
+    // CarLoan liability: -12000 opening balance
+    txn!(
+        date(2025, 11, 1),
+        "Opening Balance",
+        "Car loan opening balance",
+        TransactionStatus::Cleared,
+        &opening_balance_id,
+        dec!(12000.00),
+        &car_loan_id,
+        dec!(-12000.00)
+    );
+
+    // -------------------------------------------------------------------------
+    // November 2025
+    // -------------------------------------------------------------------------
+
+    // Nov 5: Freelance income
+    txn!(
+        date(2025, 11, 5),
+        "Client A",
+        "November freelance payment",
+        TransactionStatus::Cleared,
+        &checking_id,
+        dec!(800.00),
+        &freelance_id,
+        dec!(-800.00)
+    );
+
+    // Nov 15: Paycheck
+    txn!(
+        date(2025, 11, 15),
+        "Employer Ltd",
+        "November paycheck",
+        TransactionStatus::Cleared,
+        &checking_id,
+        dec!(5200.00),
+        &salary_id,
+        dec!(-5200.00)
+    );
+
+    // Nov 20: Credit card payment
+    txn!(
+        date(2025, 11, 20),
+        "Visa",
+        "November credit card payment",
+        TransactionStatus::Cleared,
+        &credit_card_id,
+        dec!(800.00),
+        &checking_id,
+        dec!(-800.00)
+    );
+
+    // Nov 25: Savings transfer
+    txn!(
+        date(2025, 11, 25),
+        "Transfer",
+        "November savings transfer",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(1000.00),
+        &checking_id,
+        dec!(-1000.00)
+    );
+
+    // Nov 30: Savings interest
+    txn!(
+        date(2025, 11, 30),
+        "Bank",
+        "November savings interest",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(9.50),
+        &interest_id,
+        dec!(-9.50)
+    );
+
+    // Nov 1: Car loan repayment
+    txn!(
+        date(2025, 11, 1),
+        "Car Finance",
+        "November car loan repayment",
+        TransactionStatus::Cleared,
+        &car_loan_id,
+        dec!(350.00),
+        &checking_id,
+        dec!(-350.00)
+    );
+
+    // Nov 3: Woolworths groceries
+    txn!(
+        date(2025, 11, 3),
+        "Woolworths",
+        "November groceries",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(140.00),
+        &credit_card_id,
+        dec!(-140.00)
+    );
+
+    // Nov 14: Coles groceries
+    txn!(
+        date(2025, 11, 14),
+        "Coles",
+        "November fortnightly groceries",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(110.00),
+        &credit_card_id,
+        dec!(-110.00)
+    );
+
+    // Nov 22: IGA top-up
+    txn!(
+        date(2025, 11, 22),
+        "IGA",
+        "November grocery top-up",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(55.00),
+        &credit_card_id,
+        dec!(-55.00)
+    );
+
+    // Nov 8: Restaurant dining
+    txn!(
+        date(2025, 11, 8),
+        "The Local Bistro",
+        "November dinner",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(85.00),
+        &credit_card_id,
+        dec!(-85.00)
+    );
+
+    // Nov 20: Café coffee
+    txn!(
+        date(2025, 11, 20),
+        "The Coffee Club",
+        "November coffee",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(18.50),
+        &credit_card_id,
+        dec!(-18.50)
+    );
+
+    // Nov 12: AGL electricity
+    txn!(
+        date(2025, 11, 12),
+        "AGL Energy",
+        "November electricity bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(210.00),
+        &checking_id,
+        dec!(-210.00)
+    );
+
+    // Nov 12: Telstra internet
+    txn!(
+        date(2025, 11, 12),
+        "Telstra",
+        "November internet bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(89.00),
+        &checking_id,
+        dec!(-89.00)
+    );
+
+    // Nov 28: Origin Energy gas bill (November extra)
+    txn!(
+        date(2025, 11, 28),
+        "Origin Energy",
+        "November gas bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(130.00),
+        &checking_id,
+        dec!(-130.00)
+    );
+
+    // Nov 18: Opal card transit
+    txn!(
+        date(2025, 11, 18),
+        "Opal Card",
+        "November transit top-up",
+        TransactionStatus::Cleared,
+        &transport_id,
+        dec!(50.00),
+        &checking_id,
+        dec!(-50.00)
+    );
+
+    // Nov 3: Netflix streaming
+    txn!(
+        date(2025, 11, 3),
+        "Netflix",
+        "November streaming subscription",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(22.99),
+        &credit_card_id,
+        dec!(-22.99)
+    );
+
+    // Nov 3: Spotify music
+    txn!(
+        date(2025, 11, 3),
+        "Spotify",
+        "November music subscription",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(12.99),
+        &credit_card_id,
+        dec!(-12.99)
+    );
+
+    // Nov 10: iCloud storage
+    txn!(
+        date(2025, 11, 10),
+        "iCloud",
+        "November cloud storage",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(4.49),
+        &credit_card_id,
+        dec!(-4.49)
+    );
+
+    // -------------------------------------------------------------------------
+    // December 2025
+    // -------------------------------------------------------------------------
+
+    // Dec 15: Paycheck
+    txn!(
+        date(2025, 12, 15),
+        "Employer Ltd",
+        "December paycheck",
+        TransactionStatus::Cleared,
+        &checking_id,
+        dec!(5200.00),
+        &salary_id,
+        dec!(-5200.00)
+    );
+
+    // Dec 20: Credit card payment
+    txn!(
+        date(2025, 12, 20),
+        "Visa",
+        "December credit card payment",
+        TransactionStatus::Cleared,
+        &credit_card_id,
+        dec!(800.00),
+        &checking_id,
+        dec!(-800.00)
+    );
+
+    // Dec 25: Savings transfer
+    txn!(
+        date(2025, 12, 25),
+        "Transfer",
+        "December savings transfer",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(1000.00),
+        &checking_id,
+        dec!(-1000.00)
+    );
+
+    // Dec 31: Savings interest
+    txn!(
+        date(2025, 12, 31),
+        "Bank",
+        "December savings interest",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(10.00),
+        &interest_id,
+        dec!(-10.00)
+    );
+
+    // Dec 1: Car loan repayment
+    txn!(
+        date(2025, 12, 1),
+        "Car Finance",
+        "December car loan repayment",
+        TransactionStatus::Cleared,
+        &car_loan_id,
+        dec!(350.00),
+        &checking_id,
+        dec!(-350.00)
+    );
+
+    // Dec 3: Woolworths groceries
+    txn!(
+        date(2025, 12, 3),
+        "Woolworths",
+        "December groceries",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(140.00),
+        &credit_card_id,
+        dec!(-140.00)
+    );
+
+    // Dec 14: Coles groceries
+    txn!(
+        date(2025, 12, 14),
+        "Coles",
+        "December fortnightly groceries",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(110.00),
+        &credit_card_id,
+        dec!(-110.00)
+    );
+
+    // Dec 22: IGA top-up
+    txn!(
+        date(2025, 12, 22),
+        "IGA",
+        "December grocery top-up",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(55.00),
+        &credit_card_id,
+        dec!(-55.00)
+    );
+
+    // Dec 8: Restaurant dining
+    txn!(
+        date(2025, 12, 8),
+        "The Local Bistro",
+        "December dinner",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(85.00),
+        &credit_card_id,
+        dec!(-85.00)
+    );
+
+    // Dec 20: Café coffee
+    txn!(
+        date(2025, 12, 20),
+        "The Coffee Club",
+        "December coffee",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(18.50),
+        &credit_card_id,
+        dec!(-18.50)
+    );
+
+    // Dec 22: Christmas dinner (December extra)
+    txn!(
+        date(2025, 12, 22),
+        "Fine Dining Co",
+        "Christmas dinner",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(210.00),
+        &credit_card_id,
+        dec!(-210.00)
+    );
+
+    // Dec 31: NYE dinner (December extra)
+    txn!(
+        date(2025, 12, 31),
+        "NYE Restaurant",
+        "New Year's Eve dinner",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(175.00),
+        &credit_card_id,
+        dec!(-175.00)
+    );
+
+    // Dec 12: AGL electricity
+    txn!(
+        date(2025, 12, 12),
+        "AGL Energy",
+        "December electricity bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(210.00),
+        &checking_id,
+        dec!(-210.00)
+    );
+
+    // Dec 12: Telstra internet
+    txn!(
+        date(2025, 12, 12),
+        "Telstra",
+        "December internet bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(89.00),
+        &checking_id,
+        dec!(-89.00)
+    );
+
+    // Dec 18: Opal card transit
+    txn!(
+        date(2025, 12, 18),
+        "Opal Card",
+        "December transit top-up",
+        TransactionStatus::Cleared,
+        &transport_id,
+        dec!(50.00),
+        &checking_id,
+        dec!(-50.00)
+    );
+
+    // Dec 3: Netflix streaming
+    txn!(
+        date(2025, 12, 3),
+        "Netflix",
+        "December streaming subscription",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(22.99),
+        &credit_card_id,
+        dec!(-22.99)
+    );
+
+    // Dec 3: Spotify music
+    txn!(
+        date(2025, 12, 3),
+        "Spotify",
+        "December music subscription",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(12.99),
+        &credit_card_id,
+        dec!(-12.99)
+    );
+
+    // Dec 10: iCloud storage
+    txn!(
+        date(2025, 12, 10),
+        "iCloud",
+        "December cloud storage",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(4.49),
+        &credit_card_id,
+        dec!(-4.49)
+    );
+
+    // Dec 15: Cinema (December extra)
+    txn!(
+        date(2025, 12, 15),
+        "Event Cinemas",
+        "December cinema",
+        TransactionStatus::Cleared,
+        &entertainment_id,
+        dec!(45.00),
+        &credit_card_id,
+        dec!(-45.00)
+    );
+
+    // Dec 20: Concert (December extra)
+    txn!(
+        date(2025, 12, 20),
+        "Live Nation",
+        "December concert",
+        TransactionStatus::Cleared,
+        &entertainment_id,
+        dec!(120.00),
+        &credit_card_id,
+        dec!(-120.00)
+    );
+
+    // -------------------------------------------------------------------------
+    // January 2026
+    // -------------------------------------------------------------------------
+
+    // Jan 15: Paycheck
+    txn!(
+        date(2026, 1, 15),
+        "Employer Ltd",
+        "January paycheck",
+        TransactionStatus::Cleared,
+        &checking_id,
+        dec!(5200.00),
+        &salary_id,
+        dec!(-5200.00)
+    );
+
+    // Jan 20: Credit card payment
+    txn!(
+        date(2026, 1, 20),
+        "Visa",
+        "January credit card payment",
+        TransactionStatus::Cleared,
+        &credit_card_id,
+        dec!(800.00),
+        &checking_id,
+        dec!(-800.00)
+    );
+
+    // Jan 25: Savings transfer
+    txn!(
+        date(2026, 1, 25),
+        "Transfer",
+        "January savings transfer",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(1000.00),
+        &checking_id,
+        dec!(-1000.00)
+    );
+
+    // Jan 31: Savings interest
+    txn!(
+        date(2026, 1, 31),
+        "Bank",
+        "January savings interest",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(10.50),
+        &interest_id,
+        dec!(-10.50)
+    );
+
+    // Jan 1: Car loan repayment
+    txn!(
+        date(2026, 1, 1),
+        "Car Finance",
+        "January car loan repayment",
+        TransactionStatus::Cleared,
+        &car_loan_id,
+        dec!(350.00),
+        &checking_id,
+        dec!(-350.00)
+    );
+
+    // Jan 3: Woolworths groceries (increased to 190 for January)
+    txn!(
+        date(2026, 1, 3),
+        "Woolworths",
+        "January groceries",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(190.00),
+        &credit_card_id,
+        dec!(-190.00)
+    );
+
+    // Jan 14: Coles groceries
+    txn!(
+        date(2026, 1, 14),
+        "Coles",
+        "January fortnightly groceries",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(110.00),
+        &credit_card_id,
+        dec!(-110.00)
+    );
+
+    // Jan 22: IGA top-up
+    txn!(
+        date(2026, 1, 22),
+        "IGA",
+        "January grocery top-up",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(55.00),
+        &credit_card_id,
+        dec!(-55.00)
+    );
+
+    // Jan 28: Harris Farm (January extra)
+    txn!(
+        date(2026, 1, 28),
+        "Harris Farm",
+        "January organic groceries",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(80.00),
+        &credit_card_id,
+        dec!(-80.00)
+    );
+
+    // Jan 8: Restaurant dining
+    txn!(
+        date(2026, 1, 8),
+        "The Local Bistro",
+        "January dinner",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(85.00),
+        &credit_card_id,
+        dec!(-85.00)
+    );
+
+    // Jan 20: Café coffee
+    txn!(
+        date(2026, 1, 20),
+        "The Coffee Club",
+        "January coffee",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(18.50),
+        &credit_card_id,
+        dec!(-18.50)
+    );
+
+    // Jan 12: AGL electricity
+    txn!(
+        date(2026, 1, 12),
+        "AGL Energy",
+        "January electricity bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(210.00),
+        &checking_id,
+        dec!(-210.00)
+    );
+
+    // Jan 12: Telstra internet
+    txn!(
+        date(2026, 1, 12),
+        "Telstra",
+        "January internet bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(89.00),
+        &checking_id,
+        dec!(-89.00)
+    );
+
+    // Jan 18: Opal card transit
+    txn!(
+        date(2026, 1, 18),
+        "Opal Card",
+        "January transit top-up",
+        TransactionStatus::Cleared,
+        &transport_id,
+        dec!(50.00),
+        &checking_id,
+        dec!(-50.00)
+    );
+
+    // Jan 3: Netflix streaming
+    txn!(
+        date(2026, 1, 3),
+        "Netflix",
+        "January streaming subscription",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(22.99),
+        &credit_card_id,
+        dec!(-22.99)
+    );
+
+    // Jan 3: Spotify music
+    txn!(
+        date(2026, 1, 3),
+        "Spotify",
+        "January music subscription",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(12.99),
+        &credit_card_id,
+        dec!(-12.99)
+    );
+
+    // Jan 10: iCloud storage
+    txn!(
+        date(2026, 1, 10),
+        "iCloud",
+        "January cloud storage",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(4.49),
+        &credit_card_id,
+        dec!(-4.49)
+    );
+
+    // Jan 10: GP visit (January extra)
+    txn!(
+        date(2026, 1, 10),
+        "City Medical Centre",
+        "January GP visit",
+        TransactionStatus::Cleared,
+        &healthcare_id,
+        dec!(85.00),
+        &credit_card_id,
+        dec!(-85.00)
+    );
+
+    // Jan 11: Pharmacy (January extra)
+    txn!(
+        date(2026, 1, 11),
+        "Chemist Warehouse",
+        "January pharmacy",
+        TransactionStatus::Cleared,
+        &healthcare_id,
+        dec!(32.50),
+        &credit_card_id,
+        dec!(-32.50)
+    );
+
+    // Voided transaction: Jan 15 duplicate paycheck
+    let voided_jan_paycheck = transactions
         .create(
             Transaction::builder()
                 .id(TransactionId::new())
                 .date(date(2026, 1, 15))
                 .payee("Employer Ltd")
-                .description("January paycheck")
-                .status(TransactionStatus::Cleared)
+                .description("January paycheck — duplicate (to be voided)")
+                .status(TransactionStatus::Pending)
                 .created_at(Timestamp::now())
                 .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(checking_id.clone())
-                        .amount(aud(dec!(5000.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(salary_id.clone())
-                        .amount(aud(dec!(-5000.00)))
-                        .build(),
+                    posting(&checking_id, aud(dec!(5200.00))),
+                    posting(&salary_id, aud(dec!(-5200.00))),
                 ])
                 .build(),
         )
         .await?;
+    transactions.void(&voided_jan_paycheck).await?;
 
-    // 2. Paycheck — February (Cleared)
-    transactions
+    // -------------------------------------------------------------------------
+    // February 2026
+    // -------------------------------------------------------------------------
+
+    // Feb 15: Paycheck
+    txn!(
+        date(2026, 2, 15),
+        "Employer Ltd",
+        "February paycheck",
+        TransactionStatus::Cleared,
+        &checking_id,
+        dec!(5200.00),
+        &salary_id,
+        dec!(-5200.00)
+    );
+
+    // Feb 20: Credit card payment
+    txn!(
+        date(2026, 2, 20),
+        "Visa",
+        "February credit card payment",
+        TransactionStatus::Cleared,
+        &credit_card_id,
+        dec!(800.00),
+        &checking_id,
+        dec!(-800.00)
+    );
+
+    // Feb 25: Savings transfer
+    txn!(
+        date(2026, 2, 25),
+        "Transfer",
+        "February savings transfer",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(1000.00),
+        &checking_id,
+        dec!(-1000.00)
+    );
+
+    // Feb 28: Savings interest
+    txn!(
+        date(2026, 2, 28),
+        "Bank",
+        "February savings interest",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(11.00),
+        &interest_id,
+        dec!(-11.00)
+    );
+
+    // Feb 1: Car loan repayment
+    txn!(
+        date(2026, 2, 1),
+        "Car Finance",
+        "February car loan repayment",
+        TransactionStatus::Cleared,
+        &car_loan_id,
+        dec!(350.00),
+        &checking_id,
+        dec!(-350.00)
+    );
+
+    // Feb 3: Woolworths groceries
+    txn!(
+        date(2026, 2, 3),
+        "Woolworths",
+        "February groceries",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(140.00),
+        &credit_card_id,
+        dec!(-140.00)
+    );
+
+    // Feb 14: Coles groceries
+    txn!(
+        date(2026, 2, 14),
+        "Coles",
+        "February fortnightly groceries",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(110.00),
+        &credit_card_id,
+        dec!(-110.00)
+    );
+
+    // Feb 22: IGA top-up
+    txn!(
+        date(2026, 2, 22),
+        "IGA",
+        "February grocery top-up",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(55.00),
+        &credit_card_id,
+        dec!(-55.00)
+    );
+
+    // Feb 8: Restaurant dining
+    txn!(
+        date(2026, 2, 8),
+        "The Local Bistro",
+        "February dinner",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(85.00),
+        &credit_card_id,
+        dec!(-85.00)
+    );
+
+    // Feb 20: Café coffee
+    txn!(
+        date(2026, 2, 20),
+        "The Coffee Club",
+        "February coffee",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(18.50),
+        &credit_card_id,
+        dec!(-18.50)
+    );
+
+    // Feb 12: AGL electricity
+    txn!(
+        date(2026, 2, 12),
+        "AGL Energy",
+        "February electricity bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(210.00),
+        &checking_id,
+        dec!(-210.00)
+    );
+
+    // Feb 12: Telstra internet
+    txn!(
+        date(2026, 2, 12),
+        "Telstra",
+        "February internet bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(89.00),
+        &checking_id,
+        dec!(-89.00)
+    );
+
+    // Feb 5: BP petrol (February extra)
+    txn!(
+        date(2026, 2, 5),
+        "BP Service Station",
+        "February petrol",
+        TransactionStatus::Cleared,
+        &transport_id,
+        dec!(85.00),
+        &credit_card_id,
+        dec!(-85.00)
+    );
+
+    // Feb 18: Opal card transit
+    txn!(
+        date(2026, 2, 18),
+        "Opal Card",
+        "February transit top-up",
+        TransactionStatus::Cleared,
+        &transport_id,
+        dec!(50.00),
+        &checking_id,
+        dec!(-50.00)
+    );
+
+    // Feb 3: Netflix streaming
+    txn!(
+        date(2026, 2, 3),
+        "Netflix",
+        "February streaming subscription",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(22.99),
+        &credit_card_id,
+        dec!(-22.99)
+    );
+
+    // Feb 3: Spotify music
+    txn!(
+        date(2026, 2, 3),
+        "Spotify",
+        "February music subscription",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(12.99),
+        &credit_card_id,
+        dec!(-12.99)
+    );
+
+    // Feb 10: iCloud storage
+    txn!(
+        date(2026, 2, 10),
+        "iCloud",
+        "February cloud storage",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(4.49),
+        &credit_card_id,
+        dec!(-4.49)
+    );
+
+    // Feb 20: Freelance income (February extra)
+    txn!(
+        date(2026, 2, 20),
+        "Client B",
+        "February freelance payment",
+        TransactionStatus::Cleared,
+        &checking_id,
+        dec!(1200.00),
+        &freelance_id,
+        dec!(-1200.00)
+    );
+
+    // Voided transaction: Feb 3 duplicate Woolworths
+    let voided_feb_woolworths = transactions
         .create(
             Transaction::builder()
                 .id(TransactionId::new())
-                .date(date(2026, 2, 15))
-                .payee("Employer Ltd")
-                .description("February paycheck")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(checking_id.clone())
-                        .amount(aud(dec!(5000.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(salary_id.clone())
-                        .amount(aud(dec!(-5000.00)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
-
-    // 3. Credit card payment — checking → credit card liability (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 20))
-                .payee("Visa")
-                .description("Credit card payment")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(800.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(checking_id.clone())
-                        .amount(aud(dec!(-800.00)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
-
-    // 4. Grocery purchase #1 (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 5))
+                .date(date(2026, 2, 3))
                 .payee("Woolworths")
-                .description("Weekly groceries")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(groceries_id.clone())
-                        .amount(aud(dec!(120.50)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-120.50)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
-
-    // 5. Grocery purchase #2 (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 2, 3))
-                .payee("Coles")
-                .description("Fortnightly groceries")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(groceries_id.clone())
-                        .amount(aud(dec!(95.80)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-95.80)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
-
-    // 6. Dining #1 (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 8))
-                .payee("The Local Bistro")
-                .description("Dinner with friends")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(dining_id.clone())
-                        .amount(aud(dec!(75.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-75.00)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
-
-    // 7. Dining #2 (Pending)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 2, 10))
-                .payee("Sushi Train")
-                .description("Lunch")
+                .description("February groceries — duplicate (to be voided)")
                 .status(TransactionStatus::Pending)
                 .created_at(Timestamp::now())
                 .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(dining_id.clone())
-                        .amount(aud(dec!(42.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-42.00)))
-                        .build(),
+                    posting(&groceries_id, aud(dec!(140.00))),
+                    posting(&credit_card_id, aud(dec!(-140.00))),
                 ])
                 .build(),
         )
         .await?;
+    transactions.void(&voided_feb_woolworths).await?;
 
-    // 8. Dining #3 (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 2, 20))
-                .payee("Pizza Palace")
-                .description("Family dinner")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(dining_id.clone())
-                        .amount(aud(dec!(88.50)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-88.50)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // -------------------------------------------------------------------------
+    // March 2026
+    // -------------------------------------------------------------------------
 
-    // 9. Utilities — electricity (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 12))
-                .payee("AGL Energy")
-                .description("January electricity bill")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(utilities_id.clone())
-                        .amount(aud(dec!(210.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(checking_id.clone())
-                        .amount(aud(dec!(-210.00)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 15: Paycheck
+    txn!(
+        date(2026, 3, 15),
+        "Employer Ltd",
+        "March paycheck",
+        TransactionStatus::Cleared,
+        &checking_id,
+        dec!(5200.00),
+        &salary_id,
+        dec!(-5200.00)
+    );
 
-    // 10. Utilities — internet (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 2, 12))
-                .payee("Telstra")
-                .description("February internet bill")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(utilities_id.clone())
-                        .amount(aud(dec!(89.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(checking_id.clone())
-                        .amount(aud(dec!(-89.00)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 20: Credit card payment
+    txn!(
+        date(2026, 3, 20),
+        "Visa",
+        "March credit card payment",
+        TransactionStatus::Cleared,
+        &credit_card_id,
+        dec!(800.00),
+        &checking_id,
+        dec!(-800.00)
+    );
 
-    // 11. Transport — transit top-up (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 18))
-                .payee("Opal Card")
-                .description("Monthly transit top-up")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(transport_id.clone())
-                        .amount(aud(dec!(50.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(checking_id.clone())
-                        .amount(aud(dec!(-50.00)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 25: Savings transfer (increased to 1200 for March)
+    txn!(
+        date(2026, 3, 25),
+        "Transfer",
+        "March savings transfer",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(1200.00),
+        &checking_id,
+        dec!(-1200.00)
+    );
 
-    // 12. Transport — ride share (Pending)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 2, 18))
-                .payee("Uber")
-                .description("Ride to airport")
-                .status(TransactionStatus::Pending)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(transport_id.clone())
-                        .amount(aud(dec!(35.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-35.00)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 31: Savings interest
+    txn!(
+        date(2026, 3, 31),
+        "Bank",
+        "March savings interest",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(11.50),
+        &interest_id,
+        dec!(-11.50)
+    );
 
-    // 13. Subscription — streaming (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 3))
-                .payee("Netflix")
-                .description("January streaming subscription")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(subscriptions_id.clone())
-                        .amount(aud(dec!(22.99)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-22.99)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 1: Car loan repayment
+    txn!(
+        date(2026, 3, 1),
+        "Car Finance",
+        "March car loan repayment",
+        TransactionStatus::Cleared,
+        &car_loan_id,
+        dec!(350.00),
+        &checking_id,
+        dec!(-350.00)
+    );
 
-    // 14. Subscription — music (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 2, 3))
-                .payee("Spotify")
-                .description("February music subscription")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(subscriptions_id.clone())
-                        .amount(aud(dec!(12.99)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-12.99)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 3: Woolworths groceries
+    txn!(
+        date(2026, 3, 3),
+        "Woolworths",
+        "March groceries",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(140.00),
+        &credit_card_id,
+        dec!(-140.00)
+    );
 
-    // 15. Savings transfer — January (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 25))
-                .description("Monthly savings transfer")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(savings_id.clone())
-                        .amount(aud(dec!(1000.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(checking_id.clone())
-                        .amount(aud(dec!(-1000.00)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 14: Coles groceries
+    txn!(
+        date(2026, 3, 14),
+        "Coles",
+        "March fortnightly groceries",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(110.00),
+        &credit_card_id,
+        dec!(-110.00)
+    );
 
-    // 16. Interest income — January (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 31))
-                .payee("Bank")
-                .description("January savings interest")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(savings_id.clone())
-                        .amount(aud(dec!(8.75)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(interest_id.clone())
-                        .amount(aud(dec!(-8.75)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 22: IGA top-up
+    txn!(
+        date(2026, 3, 22),
+        "IGA",
+        "March grocery top-up",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(55.00),
+        &credit_card_id,
+        dec!(-55.00)
+    );
 
-    // 17. Extra grocery run (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 22))
-                .payee("IGA")
-                .description("Top-up groceries")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(groceries_id.clone())
-                        .amount(aud(dec!(45.30)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-45.30)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 8: Restaurant dining
+    txn!(
+        date(2026, 3, 8),
+        "The Local Bistro",
+        "March dinner",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(85.00),
+        &credit_card_id,
+        dec!(-85.00)
+    );
 
-    // 18. Dining — coffee (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 28))
-                .payee("The Coffee Club")
-                .description("Morning coffee")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(dining_id.clone())
-                        .amount(aud(dec!(6.50)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-6.50)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 20: Café coffee
+    txn!(
+        date(2026, 3, 20),
+        "The Coffee Club",
+        "March coffee",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(18.50),
+        &credit_card_id,
+        dec!(-18.50)
+    );
 
-    // 19. Transport — petrol (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 2, 5))
-                .payee("BP Service Station")
-                .description("Petrol fill-up")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(transport_id.clone())
-                        .amount(aud(dec!(85.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-85.00)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 12: AGL electricity
+    txn!(
+        date(2026, 3, 12),
+        "AGL Energy",
+        "March electricity bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(210.00),
+        &checking_id,
+        dec!(-210.00)
+    );
 
-    // 20. Utilities — gas bill (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 2, 14))
-                .payee("Origin Energy")
-                .description("February gas bill")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(utilities_id.clone())
-                        .amount(aud(dec!(130.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(checking_id.clone())
-                        .amount(aud(dec!(-130.00)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 12: Telstra internet
+    txn!(
+        date(2026, 3, 12),
+        "Telstra",
+        "March internet bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(89.00),
+        &checking_id,
+        dec!(-89.00)
+    );
 
-    // 21. Subscription — cloud storage (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 10))
-                .payee("iCloud")
-                .description("iCloud storage subscription")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(subscriptions_id.clone())
-                        .amount(aud(dec!(4.49)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-4.49)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 28: Origin Energy gas bill (March extra, same as November)
+    txn!(
+        date(2026, 3, 28),
+        "Origin Energy",
+        "March gas bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(130.00),
+        &checking_id,
+        dec!(-130.00)
+    );
 
-    // 22. Savings transfer — February (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 2, 25))
-                .description("February savings transfer")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(savings_id.clone())
-                        .amount(aud(dec!(1200.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(checking_id.clone())
-                        .amount(aud(dec!(-1200.00)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 18: Opal card transit
+    txn!(
+        date(2026, 3, 18),
+        "Opal Card",
+        "March transit top-up",
+        TransactionStatus::Cleared,
+        &transport_id,
+        dec!(50.00),
+        &checking_id,
+        dec!(-50.00)
+    );
 
-    // 23. Interest income — February (Cleared)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 2, 28))
-                .payee("Bank")
-                .description("February savings interest")
-                .status(TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(savings_id.clone())
-                        .amount(aud(dec!(12.50)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(interest_id.clone())
-                        .amount(aud(dec!(-12.50)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 3: Netflix streaming
+    txn!(
+        date(2026, 3, 3),
+        "Netflix",
+        "March streaming subscription",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(22.99),
+        &credit_card_id,
+        dec!(-22.99)
+    );
 
-    // 24. Grocery purchase — pending (Pending)
-    transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 2, 27))
-                .payee("Harris Farm")
-                .description("Organic groceries")
-                .status(TransactionStatus::Pending)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(groceries_id.clone())
-                        .amount(aud(dec!(67.20)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(credit_card_id.clone())
-                        .amount(aud(dec!(-67.20)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 3: Spotify music
+    txn!(
+        date(2026, 3, 3),
+        "Spotify",
+        "March music subscription",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(12.99),
+        &credit_card_id,
+        dec!(-12.99)
+    );
 
-    // 25. Voided transaction — duplicate entry that gets voided.
-    let voided_id = transactions
-        .create(
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 15))
-                .payee("Employer Ltd")
-                .description("Duplicate paycheck — to be voided")
-                .status(TransactionStatus::Pending)
-                .created_at(Timestamp::now())
-                .postings(vec![
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(checking_id.clone())
-                        .amount(aud(dec!(5000.00)))
-                        .build(),
-                    Posting::builder()
-                        .id(PostingId::new())
-                        .account_id(salary_id.clone())
-                        .amount(aud(dec!(-5000.00)))
-                        .build(),
-                ])
-                .build(),
-        )
-        .await?;
+    // Mar 10: iCloud storage
+    txn!(
+        date(2026, 3, 10),
+        "iCloud",
+        "March cloud storage",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(4.49),
+        &credit_card_id,
+        dec!(-4.49)
+    );
 
-    transactions.void(&voided_id).await?;
+    // -------------------------------------------------------------------------
+    // April 2026 (last month — some transactions Pending)
+    // -------------------------------------------------------------------------
 
-    // --- Summary ------------------------------------------------------------
+    // Apr 15: Paycheck
+    txn!(
+        date(2026, 4, 15),
+        "Employer Ltd",
+        "April paycheck",
+        TransactionStatus::Cleared,
+        &checking_id,
+        dec!(5200.00),
+        &salary_id,
+        dec!(-5200.00)
+    );
+
+    // Apr 20: Credit card payment
+    txn!(
+        date(2026, 4, 20),
+        "Visa",
+        "April credit card payment",
+        TransactionStatus::Cleared,
+        &credit_card_id,
+        dec!(800.00),
+        &checking_id,
+        dec!(-800.00)
+    );
+
+    // Apr 25: Savings transfer
+    txn!(
+        date(2026, 4, 25),
+        "Transfer",
+        "April savings transfer",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(1000.00),
+        &checking_id,
+        dec!(-1000.00)
+    );
+
+    // Apr 30: Savings interest
+    txn!(
+        date(2026, 4, 30),
+        "Bank",
+        "April savings interest",
+        TransactionStatus::Cleared,
+        &savings_id,
+        dec!(12.00),
+        &interest_id,
+        dec!(-12.00)
+    );
+
+    // Apr 1: Car loan repayment
+    txn!(
+        date(2026, 4, 1),
+        "Car Finance",
+        "April car loan repayment",
+        TransactionStatus::Cleared,
+        &car_loan_id,
+        dec!(350.00),
+        &checking_id,
+        dec!(-350.00)
+    );
+
+    // Apr 3: Woolworths groceries (Pending — last grocery shop 1)
+    txn!(
+        date(2026, 4, 3),
+        "Woolworths",
+        "April groceries",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(140.00),
+        &credit_card_id,
+        dec!(-140.00)
+    );
+
+    // Apr 14: Coles groceries (Pending — last grocery shop 2)
+    txn!(
+        date(2026, 4, 14),
+        "Coles",
+        "April fortnightly groceries",
+        TransactionStatus::Pending,
+        &groceries_id,
+        dec!(110.00),
+        &credit_card_id,
+        dec!(-110.00)
+    );
+
+    // Apr 22: IGA top-up
+    txn!(
+        date(2026, 4, 22),
+        "IGA",
+        "April grocery top-up",
+        TransactionStatus::Cleared,
+        &groceries_id,
+        dec!(55.00),
+        &credit_card_id,
+        dec!(-55.00)
+    );
+
+    // Apr 8: Restaurant dining (Pending — last dining entry)
+    txn!(
+        date(2026, 4, 8),
+        "The Local Bistro",
+        "April dinner",
+        TransactionStatus::Pending,
+        &dining_id,
+        dec!(85.00),
+        &credit_card_id,
+        dec!(-85.00)
+    );
+
+    // Apr 20: Café coffee
+    txn!(
+        date(2026, 4, 20),
+        "The Coffee Club",
+        "April coffee",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(18.50),
+        &credit_card_id,
+        dec!(-18.50)
+    );
+
+    // Apr 12: AGL electricity
+    txn!(
+        date(2026, 4, 12),
+        "AGL Energy",
+        "April electricity bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(210.00),
+        &checking_id,
+        dec!(-210.00)
+    );
+
+    // Apr 12: Telstra internet
+    txn!(
+        date(2026, 4, 12),
+        "Telstra",
+        "April internet bill",
+        TransactionStatus::Cleared,
+        &utilities_id,
+        dec!(89.00),
+        &checking_id,
+        dec!(-89.00)
+    );
+
+    // Apr 18: Opal card transit
+    txn!(
+        date(2026, 4, 18),
+        "Opal Card",
+        "April transit top-up",
+        TransactionStatus::Cleared,
+        &transport_id,
+        dec!(50.00),
+        &checking_id,
+        dec!(-50.00)
+    );
+
+    // Apr 3: Netflix streaming (Pending — subscription renewal)
+    txn!(
+        date(2026, 4, 3),
+        "Netflix",
+        "April streaming subscription",
+        TransactionStatus::Pending,
+        &subscriptions_id,
+        dec!(22.99),
+        &credit_card_id,
+        dec!(-22.99)
+    );
+
+    // Apr 3: Spotify music
+    txn!(
+        date(2026, 4, 3),
+        "Spotify",
+        "April music subscription",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(12.99),
+        &credit_card_id,
+        dec!(-12.99)
+    );
+
+    // Apr 10: iCloud storage
+    txn!(
+        date(2026, 4, 10),
+        "iCloud",
+        "April cloud storage",
+        TransactionStatus::Cleared,
+        &subscriptions_id,
+        dec!(4.49),
+        &credit_card_id,
+        dec!(-4.49)
+    );
+
+    // =========================================================================
+    // SUMMARY
+    // =========================================================================
 
     println!("Created database at {}", args.db_path.display());
-    println!("Accounts created: 10");
-    println!("Transactions created: 25 (22 cleared, 2 pending, 1 voided)");
-    println!();
-    println!("Accounts:");
-    println!("  [asset]     Assets:Checking");
-    println!("  [asset]     Assets:Savings");
-    println!("  [liability] Liabilities:CreditCard");
-    println!("  [income]    Income:Salary");
-    println!("  [income]    Income:Interest");
-    println!("  [expense]   Expenses:Groceries");
-    println!("  [expense]   Expenses:Dining");
-    println!("  [expense]   Expenses:Utilities");
-    println!("  [expense]   Expenses:Transport");
-    println!("  [expense]   Expenses:Subscriptions");
+    println!("Accounts:     20 (5 root + 15 leaf)");
+    println!("Envelopes:    10 (3 root + 7 leaf)");
+    println!("Allocations:  42 (7 leaf envelopes × 6 months)");
+    println!("Transactions: ~75 (cleared, pending, voided across Nov 2025–Apr 2026)");
 
     Ok(())
 }
