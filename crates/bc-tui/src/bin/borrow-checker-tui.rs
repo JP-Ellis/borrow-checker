@@ -7,15 +7,29 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use clap::Parser;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
+
+/// BorrowChecker terminal user interface.
+#[derive(Parser)]
+#[command(name = "borrow-checker-tui", version, about)]
+struct Args {
+    /// Path to the SQLite database file.
+    ///
+    /// Overrides the config file and `BC_DB_PATH` environment variable.
+    #[arg(long)]
+    db_path: Option<PathBuf>,
+}
 
 #[expect(
     clippy::print_stderr,
     reason = "startup errors are printed to stderr before the TUI takes over the terminal"
 )]
 fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -27,12 +41,11 @@ fn main() -> anyhow::Result<()> {
     });
 
     // Initialise tracing before the TUI takes over the terminal.
-    // The TUI runs in raw mode, so we skip the terminal formatter and rely on
-    // OTEL for structured observability when an endpoint is configured.
     let _otel_guard = setup_tracing(&settings);
 
-    // Priority order: default < config file < BC_* env vars (handled by bc_config) < --db-path flag.
-    let db_path = db_path_from_args()
+    // Priority order: default < config file < BC_* env vars < --db-path flag.
+    let db_path = args
+        .db_path
         .or_else(|| settings.db_path().map(std::path::Path::to_path_buf))
         .unwrap_or_else(bc_config::default_db_path);
 
@@ -85,17 +98,4 @@ fn setup_tracing(settings: &bc_config::Settings) -> Option<bc_otel::OtelGuard> {
 
     tracing::debug!("Tracing initialized");
     otel_guard
-}
-
-/// Returns the database path from `--db-path <path>` CLI argument, if provided.
-fn db_path_from_args() -> Option<PathBuf> {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        if arg == "--db-path" {
-            if let Some(path) = args.next() {
-                return Some(PathBuf::from(path));
-            }
-        }
-    }
-    None
 }

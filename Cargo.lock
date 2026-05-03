@@ -353,6 +353,7 @@ dependencies = [
  "bc-core",
  "bc-models",
  "bc-otel",
+ "clap",
  "crossterm 0.28.1",
  "insta",
  "jiff",
