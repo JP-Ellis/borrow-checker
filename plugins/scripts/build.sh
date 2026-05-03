@@ -48,21 +48,7 @@ for name in "${PLUGINS[@]}"; do
 
   # Generate sidecar manifest from [package.metadata.bc-plugin] in Cargo.toml.
   toml_dest="$PLUGINS_OUT/${name}.toml"
-  python3 - "$manifest" "$toml_dest" <<'EOF'
-import sys, tomllib
-manifest_path, out_path = sys.argv[1], sys.argv[2]
-with open(manifest_path, "rb") as f:
-    data = tomllib.load(f)
-pkg = data["package"]
-plugin = pkg["metadata"]["bc-plugin"]
-with open(out_path, "w") as f:
-    f.write(f"""[plugin]
-name     = "{plugin['name']}"
-version  = "{pkg['version']}"
-sdk_abi  = {plugin['sdk_abi']}
-min_host = "{plugin['min_host']}"
-""")
-EOF
+  jaq '{plugin: .package.metadata."bc-plugin"}' "$manifest" --to toml >"$toml_dest"
   echo "    toml  → $toml_dest"
 done
 
