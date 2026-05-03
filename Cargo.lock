@@ -219,8 +219,6 @@ dependencies = [
  "assert_fs",
  "bc-config",
  "bc-core",
- "bc-format-beancount-export",
- "bc-format-ledger-export",
  "bc-models",
  "bc-otel",
  "bc-plugins",
@@ -228,9 +226,12 @@ dependencies = [
  "clap_complete",
  "comfy-table",
  "directories",
+ "insta",
  "jiff",
  "owo-colors",
  "pretty_assertions",
+ "regex",
+ "rstest",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -245,14 +246,12 @@ dependencies = [
 name = "bc-config"
 version = "0.1.0"
 dependencies = [
- "assert_fs",
  "bc-models",
  "config",
  "directories",
  "jiff",
  "pretty_assertions",
  "serde",
- "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -270,29 +269,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "tempfile",
  "thiserror 2.0.18",
  "tracing",
-]
-
-[[package]]
-name = "bc-format-beancount-export"
-version = "0.1.0"
-dependencies = [
- "bc-core",
- "bc-models",
- "jiff",
- "rust_decimal",
-]
-
-[[package]]
-name = "bc-format-ledger-export"
-version = "0.1.0"
-dependencies = [
- "bc-core",
- "bc-models",
- "jiff",
- "rust_decimal",
 ]
 
 [[package]]
@@ -309,7 +287,6 @@ dependencies = [
  "rusty-money",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -321,6 +298,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -333,9 +311,11 @@ dependencies = [
  "bc-core",
  "bc-models",
  "jiff",
+ "pretty_assertions",
  "rust_decimal",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "toml 0.8.23",
  "tracing",
@@ -359,6 +339,8 @@ dependencies = [
 name = "bc-sdk-macros"
 version = "0.1.0"
 dependencies = [
+ "bc-sdk",
+ "pretty_assertions",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -1330,6 +1312,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
 
 [[package]]
+name = "futures-timer"
+version = "3.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f288b0a4f20f9a56b5d1da57e2227c661b7b16168e2f72365f57b63326e29b24"
+
+[[package]]
 name = "futures-util"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1401,6 +1389,12 @@ dependencies = [
  "indexmap",
  "stable_deref_trait",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "globset"
@@ -2732,6 +2726,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "relative-path"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba39f3699c378cd8970968dcbff9c43159ea4cfbd88d43c00b22f2ef10a435d2"
+
+[[package]]
 name = "rend"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2824,6 +2824,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstest"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5a3193c063baaa2a95a33f03035c8a72b83d97a54916055ba22d35ed3839d49"
+dependencies = [
+ "futures-timer",
+ "futures-util",
+ "rstest_macros",
+]
+
+[[package]]
+name = "rstest_macros"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c845311f0ff7951c5506121a9ad75aec44d083c31583b2ea5a30bcb0b0abba0"
+dependencies = [
+ "cfg-if",
+ "glob",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "relative-path",
+ "rustc_version",
+ "syn 2.0.117",
+ "unicode-ident",
+]
+
+[[package]]
 name = "rust_decimal"
 version = "1.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2855,6 +2884,15 @@ name = "rustc-hash"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
+
+[[package]]
+name = "rustc_version"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
+dependencies = [
+ "semver",
+]
 
 [[package]]
 name = "rustix"
@@ -4981,10 +5019,6 @@ checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
 ]
-
-[[package]]
-name = "xtask"
-version = "0.1.0"
 
 [[package]]
 name = "yansi"

@@ -381,21 +381,21 @@ mod tests {
 
     #[test]
     fn date_try_new_accepts_valid_dates() {
-        assert!(Date::try_new(2025, 1, 1).is_ok());
-        assert!(Date::try_new(2025, 12, 31).is_ok());
-        assert!(Date::try_new(2024, 2, 29).is_ok()); // 2024 is a leap year
-        assert!(Date::try_new(2025, 2, 28).is_ok());
+        Date::try_new(2025, 1, 1).expect("2025-01-01 is valid");
+        Date::try_new(2025, 12, 31).expect("2025-12-31 is valid");
+        Date::try_new(2024, 2, 29).expect("2024-02-29 is valid (leap year)");
+        Date::try_new(2025, 2, 28).expect("2025-02-28 is valid");
     }
 
     #[test]
     fn date_try_new_rejects_invalid_dates() {
-        assert!(Date::try_new(2025, 0, 15).is_err()); // month 0
-        assert!(Date::try_new(2025, 13, 15).is_err()); // month 13
-        assert!(Date::try_new(2025, 1, 0).is_err()); // day 0
-        assert!(Date::try_new(2025, 1, 32).is_err()); // day 32
-        assert!(Date::try_new(2025, 4, 31).is_err()); // April has 30 days
-        assert!(Date::try_new(2025, 2, 29).is_err()); // 2025 is not a leap year
-        assert!(Date::try_new(2025, 2, 31).is_err()); // February never has 31 days
+        Date::try_new(2025, 0, 15).expect_err("month 0 is invalid");
+        Date::try_new(2025, 13, 15).expect_err("month 13 is invalid");
+        Date::try_new(2025, 1, 0).expect_err("day 0 is invalid");
+        Date::try_new(2025, 1, 32).expect_err("day 32 is invalid");
+        Date::try_new(2025, 4, 31).expect_err("April has 30 days");
+        Date::try_new(2025, 2, 29).expect_err("2025 is not a leap year");
+        Date::try_new(2025, 2, 31).expect_err("February never has 31 days");
     }
 
     #[test]

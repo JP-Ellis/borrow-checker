@@ -201,6 +201,27 @@ fn query_plugin_name(
     bindings.borrow_checker_sdk_importer().call_name(&mut store)
 }
 
+/// Instantiates a component briefly to call its exported `sdk_abi()` function.
+///
+/// Used during plugin load to verify the component's self-reported ABI version
+/// matches the sidecar manifest. Prevents a tampered manifest from bypassing
+/// the ABI compatibility check. A temporary `Store` is created and discarded.
+///
+/// # Errors
+///
+/// Returns a wasmtime error if instantiation or the `sdk_abi()` call fails.
+fn query_plugin_abi(
+    engine: &wasmtime::Engine,
+    component: &wasmtime::component::Component,
+    linker: &Linker<HostCtx>,
+) -> wasmtime::Result<u32> {
+    let mut store = Store::new(engine, HostCtx::new());
+    let bindings = ImporterPlugin::instantiate(&mut store, component, linker)?;
+    bindings
+        .borrow_checker_sdk_importer()
+        .call_sdk_abi(&mut store)
+}
+
 /// Scans a single directory for `*.wasm` + `*.toml` pairs and appends loaded plugins.
 fn load_from_dir(
     dir: &Path,
@@ -212,11 +233,7 @@ fn load_from_dir(
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
-            tracing::debug!(
-                dir = %dir.display(),
-                error = %e,
-                "plugin dir not accessible, skipping"
-            );
+            tracing::debug!(dir = %dir.display(), error = %e, "plugin dir not accessible, skipping");
             return;
         }
     };
@@ -226,90 +243,95 @@ fn load_from_dir(
         if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
             continue;
         }
-
-        let toml_path = path.with_extension("toml");
-        let manifest = match PluginManifest::load(&toml_path) {
-            Ok(m) => m,
-            Err(ManifestError::Io { .. }) => {
-                tracing::warn!(
-                    wasm = %path.display(),
-                    "no sidecar manifest found, skipping plugin"
-                );
-                continue;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    wasm = %path.display(),
-                    error = %e,
-                    "invalid plugin manifest, skipping"
-                );
-                continue;
-            }
-        };
-
-        if seen_names.contains(&manifest.name) {
-            tracing::debug!(
-                name = manifest.name,
-                "duplicate plugin name, earlier path takes precedence"
-            );
-            continue;
+        if let Some(imp) = try_load_plugin(&path, engine, linker, seen_names) {
+            let name = imp.name().to_owned();
+            let version = imp.version().to_owned();
+            let sdk_abi = imp.sdk_abi();
+            seen_names.insert(name.clone());
+            importers.push(Arc::new(imp));
+            tracing::info!(name, version, sdk_abi, "loaded plugin");
         }
-
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!(
-                    wasm = %path.display(),
-                    error = %e,
-                    "cannot read plugin file, skipping"
-                );
-                continue;
-            }
-        };
-
-        let component = match wasmtime::component::Component::new(engine, &bytes) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(
-                    wasm = %path.display(),
-                    error = %e,
-                    "plugin compilation failed, skipping"
-                );
-                continue;
-            }
-        };
-
-        // Cross-check: manifest name must match the component's self-reported name.
-        match query_plugin_name(engine, &component, linker) {
-            Err(e) => {
-                tracing::warn!(wasm = %path.display(), error = %e, "plugin name() failed at load, skipping");
-                continue;
-            }
-            Ok(n) if n != manifest.name => {
-                tracing::warn!(
-                    wasm = %path.display(),
-                    manifest_name = manifest.name,
-                    plugin_name = n,
-                    "plugin name() does not match manifest, skipping"
-                );
-                continue;
-            }
-            Ok(_) => {}
-        }
-
-        let name = manifest.name.clone();
-        let version = manifest.version.clone();
-        let sdk_abi = manifest.sdk_abi;
-        seen_names.insert(manifest.name);
-        importers.push(Arc::new(PluginImporter::new(
-            name.clone(),
-            version.clone(),
-            sdk_abi,
-            path.clone(),
-            engine.clone(),
-            component,
-            linker.clone(),
-        )));
-        tracing::info!(name, version, sdk_abi, "loaded plugin");
     }
+}
+
+/// Attempts to load a single `*.wasm` plugin, returning `None` (with a warning) on failure.
+///
+/// Validates: sidecar manifest exists and is compatible, WASM bytes compile,
+/// component's `name()` matches the manifest, component's `sdk_abi()` matches the manifest.
+fn try_load_plugin(
+    path: &Path,
+    engine: &wasmtime::Engine,
+    linker: &Linker<HostCtx>,
+    seen_names: &HashSet<String>,
+) -> Option<PluginImporter> {
+    let toml_path = path.with_extension("toml");
+    let manifest = match PluginManifest::load(&toml_path) {
+        Ok(m) => m,
+        Err(ManifestError::Io { .. }) => {
+            tracing::warn!(wasm = %path.display(), "no sidecar manifest found, skipping plugin");
+            return None;
+        }
+        Err(e) => {
+            tracing::warn!(wasm = %path.display(), error = %e, "invalid plugin manifest, skipping");
+            return None;
+        }
+    };
+
+    if seen_names.contains(&manifest.name) {
+        tracing::debug!(
+            name = manifest.name,
+            "duplicate plugin name, earlier path takes precedence"
+        );
+        return None;
+    }
+
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(wasm = %path.display(), error = %e, "cannot read plugin file, skipping");
+            return None;
+        }
+    };
+
+    let component = match wasmtime::component::Component::new(engine, &bytes) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(wasm = %path.display(), error = %e, "plugin compilation failed, skipping");
+            return None;
+        }
+    };
+
+    match query_plugin_name(engine, &component, linker) {
+        Err(e) => {
+            tracing::warn!(wasm = %path.display(), error = %e, "plugin name() failed at load, skipping");
+            return None;
+        }
+        Ok(n) if n != manifest.name => {
+            tracing::warn!(wasm = %path.display(), manifest_name = manifest.name, plugin_name = n, "plugin name() does not match manifest, skipping");
+            return None;
+        }
+        Ok(_) => {}
+    }
+
+    match query_plugin_abi(engine, &component, linker) {
+        Err(e) => {
+            tracing::warn!(wasm = %path.display(), error = %e, "plugin sdk_abi() failed at load, skipping");
+            return None;
+        }
+        Ok(abi) if abi != manifest.sdk_abi => {
+            tracing::warn!(wasm = %path.display(), manifest_abi = manifest.sdk_abi, component_abi = abi, "plugin sdk_abi() does not match manifest, skipping");
+            return None;
+        }
+        Ok(_) => {}
+    }
+
+    Some(PluginImporter::new(
+        manifest.name,
+        manifest.version,
+        manifest.sdk_abi,
+        path.to_owned(),
+        engine.clone(),
+        component,
+        linker.clone(),
+    ))
 }
