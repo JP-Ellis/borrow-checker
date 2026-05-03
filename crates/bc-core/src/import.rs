@@ -245,6 +245,15 @@ pub enum Error {
 /// Implementors are expected to be `Send + Sync + 'static` so they can be
 /// stored in `Arc<dyn Importer>` and used across async tasks.
 ///
+/// ## Compatibility invariant
+///
+/// This trait is intentionally parallel to [`bc_sdk::Importer`] in method
+/// shape. If you change either trait's method signatures (names, parameter
+/// types, return types), you must update the other and update the translation
+/// layer in `bc_plugins::translate`. The two traits use different types
+/// (`bc_core` domain types vs. `bc_sdk` WIT wire types) and cannot share a
+/// definition; `bc_plugins::translate` is the authoritative bridge.
+///
 /// # Example
 ///
 /// ```rust,ignore

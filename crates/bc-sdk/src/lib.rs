@@ -80,6 +80,14 @@ pub use types::RawTransaction;
 ///
 /// The implementing type must also implement [`Default`] so the generated
 /// export glue can instantiate it without arguments.
+///
+/// ## Compatibility invariant
+///
+/// This trait is intentionally parallel to `bc_core::Importer` in method
+/// shape. If you change either trait's method signatures, you must update the
+/// other and update the translation layer in `bc_plugins::translate`. The two
+/// traits use different types (`bc_sdk` WIT wire types vs. `bc_core` domain
+/// types); `bc_plugins::translate` is the authoritative bridge.
 pub trait Importer: Default {
     /// A short, stable identifier for this importer (e.g. `"csv"`, `"ofx"`).
     fn name(&self) -> &str;
