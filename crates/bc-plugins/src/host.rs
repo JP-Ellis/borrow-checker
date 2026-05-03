@@ -40,6 +40,7 @@ impl HostCtx {
     ///
     /// * `plugin_name` - The name of the plugin, attached to all log entries
     ///   emitted by the plugin via the `logger` WIT import.
+    #[inline]
     pub(crate) fn new(plugin_name: impl Into<String>) -> Self {
         let mut wasi = WasiCtxBuilder::new();
         Self {
@@ -51,6 +52,7 @@ impl HostCtx {
 }
 
 impl WasiView for HostCtx {
+    #[inline]
     fn ctx(&mut self) -> WasiCtxView<'_> {
         WasiCtxView {
             ctx: &mut self.wasi,
