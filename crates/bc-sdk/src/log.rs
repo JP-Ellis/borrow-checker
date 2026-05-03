@@ -7,7 +7,7 @@
 //!
 //! ```rust,ignore
 //! bc_sdk::warn!("multiple commodities"; dropped = count, kept = first_currency);
-//! bc_sdk::debug!("parsed transaction"; date = %date, amount = amount);
+//! bc_sdk::debug!("parsed transaction"; date = date, amount = amount);
 //! ```
 
 use crate::__bindings::borrow_checker::sdk::logger::LogField;
@@ -55,7 +55,7 @@ macro_rules! trace {
 /// Emits a `DEBUG`-level log entry.
 ///
 /// ```rust,ignore
-/// bc_sdk::debug!("parsed transaction"; date = %date, amount = amount);
+/// bc_sdk::debug!("parsed transaction"; date = date, amount = amount);
 /// ```
 #[macro_export]
 macro_rules! debug {
