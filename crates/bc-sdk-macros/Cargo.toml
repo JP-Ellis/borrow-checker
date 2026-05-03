@@ -2,7 +2,7 @@
 
 [package]
 name        = "bc-sdk-macros"
-description = "Proc-macro support for bc-sdk — the #[importer] attribute macro"
+description = "Proc-macro support for bc-sdk"
 
 version.workspace      = true
 edition.workspace      = true
@@ -19,8 +19,7 @@ quote       = { workspace = true }
 syn         = { workspace = true }
 
 [dev-dependencies]
-bc-sdk            = { workspace = true }
-pretty_assertions = { workspace = true }
+bc-sdk = { workspace = true }
 
 [lints]
 workspace = true
