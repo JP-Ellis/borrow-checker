@@ -55,7 +55,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     }
 }
 
-/// Lists all loaded plugins, emitting their name, version, ABI, and source path.
+/// Lists all loaded plugins, emitting their name, ABI, and source path.
 fn list(ctx: &AppContext) -> CliResult<()> {
     if ctx.json {
         let plugins: Vec<serde_json::Value> = ctx
@@ -64,7 +64,6 @@ fn list(ctx: &AppContext) -> CliResult<()> {
             .map(|p| {
                 serde_json::json!({
                     "name": p.name(),
-                    "version": p.version(),
                     "sdk_abi": p.sdk_abi(),
                     "source_path": p.source_path().display().to_string(),
                 })
@@ -84,9 +83,8 @@ fn list(ctx: &AppContext) -> CliResult<()> {
     #[expect(clippy::print_stdout, reason = "CLI output")]
     for p in ctx.plugin_registry.plugins() {
         println!(
-            "{}  {}  (ABI v{})  {}",
+            "{}  (ABI v{})  {}",
             p.name(),
-            p.version(),
             p.sdk_abi(),
             p.source_path().display()
         );
@@ -113,12 +111,11 @@ fn user_plugin_dir() -> CliResult<PathBuf> {
         })
 }
 
-/// Copies a `.wasm` plugin and its sidecar manifest into `dest_dir`.
+/// Copies a `.wasm` plugin into `dest_dir`, using the plugin's self-reported name.
 ///
-/// The destination filename is derived from the plugin's manifest `name` field
-/// (e.g. `"ledger"` → `ledger.wasm` + `ledger.toml`), not from the source
-/// filename. This ensures `plugin install` and `plugin remove` use consistent
-/// naming.
+/// The destination filename is derived from the plugin's `name()` export
+/// (e.g. `"ledger"` → `ledger.wasm`), not from the source filename. This
+/// ensures `plugin install` and `plugin remove` use consistent naming.
 ///
 /// # Arguments
 ///
@@ -127,12 +124,12 @@ fn user_plugin_dir() -> CliResult<PathBuf> {
 ///
 /// # Returns
 ///
-/// The canonical plugin name from the manifest.
+/// The canonical plugin name from the WASM component.
 ///
 /// # Errors
 ///
 /// Returns [`crate::error::CliError`] if the source is not a `.wasm` file, the
-/// sidecar manifest is missing or invalid, the directory cannot be created, or
+/// plugin metadata cannot be queried, the directory cannot be created, or
 /// any file copy fails.
 fn install_to_dir(source: &std::path::Path, dest_dir: &std::path::Path) -> CliResult<String> {
     if source.extension().and_then(|e| e.to_str()) != Some("wasm") {
@@ -141,28 +138,18 @@ fn install_to_dir(source: &std::path::Path, dest_dir: &std::path::Path) -> CliRe
         ));
     }
 
-    let manifest_path = source.with_extension("toml");
-    if !manifest_path.exists() {
-        return Err(crate::error::CliError::Arg(format!(
-            "sidecar manifest not found: {}",
-            manifest_path.display()
-        )));
-    }
-
-    // Load the manifest first to get the canonical plugin name and validate ABI.
-    let manifest = bc_plugins::PluginManifest::load(&manifest_path)
-        .map_err(|e| crate::error::CliError::Arg(format!("invalid plugin manifest: {e}")))?;
-    let plugin_name = manifest.name;
+    // Probe the WASM to get the canonical plugin name and validate ABI.
+    let metadata = bc_plugins::query_metadata(source)
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid plugin: {e}")))?;
+    let plugin_name = metadata.name;
 
     std::fs::create_dir_all(dest_dir).map_err(crate::error::CliError::Io)?;
 
-    // Use the manifest name as the destination stem so `plugin remove <name>` can
-    // find the files regardless of what the source filename was called.
+    // Use the queried name as the destination stem so `plugin remove <name>` can
+    // find the file regardless of what the source filename was called.
     let wasm_dest = dest_dir.join(format!("{plugin_name}.wasm"));
-    let toml_dest = dest_dir.join(format!("{plugin_name}.toml"));
 
     std::fs::copy(source, &wasm_dest).map_err(crate::error::CliError::Io)?;
-    std::fs::copy(&manifest_path, &toml_dest).map_err(crate::error::CliError::Io)?;
 
     Ok(plugin_name)
 }
@@ -171,16 +158,15 @@ fn install_to_dir(source: &std::path::Path, dest_dir: &std::path::Path) -> CliRe
 ///
 /// # Arguments
 ///
-/// * `name` - The manifest name of the plugin to remove (e.g. `"ledger"`).
+/// * `name` - The plugin name to remove (e.g. `"ledger"`).
 /// * `dest_dir` - The plugin directory to remove from.
 ///
 /// # Errors
 ///
-/// Returns [`crate::error::CliError`] if the plugin is not found or the files
+/// Returns [`crate::error::CliError`] if the plugin is not found or the file
 /// cannot be deleted.
 fn remove_from_dir(name: &str, dest_dir: &std::path::Path) -> CliResult<()> {
     let wasm_path = dest_dir.join(format!("{name}.wasm"));
-    let toml_path = dest_dir.join(format!("{name}.toml"));
 
     if !wasm_path.exists() {
         return Err(crate::error::CliError::Core(bc_core::BcError::NotFound(
@@ -189,14 +175,11 @@ fn remove_from_dir(name: &str, dest_dir: &std::path::Path) -> CliResult<()> {
     }
 
     std::fs::remove_file(&wasm_path).map_err(crate::error::CliError::Io)?;
-    if toml_path.exists() {
-        std::fs::remove_file(&toml_path).map_err(crate::error::CliError::Io)?;
-    }
 
     Ok(())
 }
 
-/// Copies a `.wasm` plugin and its sidecar manifest into the user plugin directory.
+/// Copies a `.wasm` plugin into the user plugin directory.
 fn install(source: &std::path::Path, ctx: &AppContext) -> CliResult<()> {
     let dest_dir = user_plugin_dir()?;
     let plugin_name = install_to_dir(source, &dest_dir)?;
@@ -233,86 +216,7 @@ fn remove(name: &str) -> CliResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use pretty_assertions::assert_eq;
-
     use super::*;
-
-    /// Creates a minimal valid plugin manifest TOML string with the given name.
-    fn manifest_toml(name: &str) -> String {
-        format!(
-            "[plugin]\nname = \"{name}\"\nversion = \"0.1.0\"\nsdk_abi = 1\nmin_host = \"0.1.0\"\n"
-        )
-    }
-
-    #[test]
-    fn install_to_dir_uses_manifest_name_not_source_filename() {
-        // Source file is named differently from the manifest's plugin name.
-        let src_dir = tempfile::tempdir().expect("tempdir");
-        let wasm_src = src_dir.path().join("bc_plugin_ledger.wasm");
-        std::fs::write(&wasm_src, b"wasm").expect("write wasm");
-        std::fs::write(
-            src_dir.path().join("bc_plugin_ledger.toml"),
-            manifest_toml("ledger"),
-        )
-        .expect("write toml");
-
-        let dest_dir = tempfile::tempdir().expect("tempdir");
-        let name = install_to_dir(&wasm_src, dest_dir.path()).expect("install");
-
-        assert_eq!(name, "ledger");
-        assert!(
-            dest_dir.path().join("ledger.wasm").exists(),
-            "ledger.wasm must exist"
-        );
-        assert!(
-            dest_dir.path().join("ledger.toml").exists(),
-            "ledger.toml must exist"
-        );
-        assert!(
-            !dest_dir.path().join("bc_plugin_ledger.wasm").exists(),
-            "source filename must not be used"
-        );
-    }
-
-    #[test]
-    fn install_to_dir_then_remove_from_dir_round_trips() {
-        let src_dir = tempfile::tempdir().expect("tempdir");
-        let wasm_src = src_dir.path().join("bc_plugin_csv.wasm");
-        std::fs::write(&wasm_src, b"wasm").expect("write wasm");
-        std::fs::write(
-            src_dir.path().join("bc_plugin_csv.toml"),
-            manifest_toml("csv"),
-        )
-        .expect("write toml");
-
-        let dest_dir = tempfile::tempdir().expect("tempdir");
-        install_to_dir(&wasm_src, dest_dir.path()).expect("install");
-        remove_from_dir("csv", dest_dir.path()).expect("remove");
-
-        assert!(
-            !dest_dir.path().join("csv.wasm").exists(),
-            "csv.wasm must be removed"
-        );
-    }
-
-    #[test]
-    fn install_to_dir_propagates_manifest_error() {
-        let src_dir = tempfile::tempdir().expect("tempdir");
-        let wasm_src = src_dir.path().join("bad.wasm");
-        std::fs::write(&wasm_src, b"wasm").expect("write wasm");
-        std::fs::write(
-            src_dir.path().join("bad.toml"),
-            "[plugin]\nname = \"bad\"\nversion = \"0.1.0\"\nsdk_abi = 99\nmin_host = \"0.1.0\"\n",
-        )
-        .expect("write toml");
-
-        let dest_dir = tempfile::tempdir().expect("tempdir");
-        let result = install_to_dir(&wasm_src, dest_dir.path());
-        assert!(
-            result.is_err(),
-            "unsupported ABI manifest must return an error"
-        );
-    }
 
     #[test]
     fn remove_from_dir_returns_not_found_for_missing_plugin() {
@@ -322,5 +226,15 @@ mod tests {
             result.is_err(),
             "removing absent plugin must return an error"
         );
+    }
+
+    #[test]
+    fn install_to_dir_rejects_non_wasm() {
+        let src_dir = tempfile::tempdir().expect("tempdir");
+        let not_wasm = src_dir.path().join("plugin.txt");
+        std::fs::write(&not_wasm, b"text").expect("write");
+        let dest_dir = tempfile::tempdir().expect("tempdir");
+        let result = install_to_dir(&not_wasm, dest_dir.path());
+        assert!(result.is_err(), "non-wasm file must be rejected");
     }
 }
