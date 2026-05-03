@@ -404,6 +404,14 @@ impl Component<Msg, NoUserEvent> for EnvelopeSidebar {
                 code: Key::Char('a'),
                 ..
             }) => Some(Msg::Budget(BudgetMsg::OpenAllocate)),
+            Event::Keyboard(KeyEvent {
+                code: Key::Char('['),
+                ..
+            }) => Some(Msg::Budget(BudgetMsg::PeriodPrev)),
+            Event::Keyboard(KeyEvent {
+                code: Key::Char(']'),
+                ..
+            }) => Some(Msg::Budget(BudgetMsg::PeriodNext)),
             _ => None,
         }
     }
@@ -529,6 +537,26 @@ mod tests {
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
         assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
+    }
+
+    #[test]
+    fn bracket_key_emits_period_prev() {
+        let mut sidebar = EnvelopeSidebar::new(vec![]);
+        let result = sidebar.on(Event::Keyboard(KeyEvent {
+            code: Key::Char('['),
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
+        assert_eq!(result, Some(Msg::Budget(BudgetMsg::PeriodPrev)));
+    }
+
+    #[test]
+    fn close_bracket_key_emits_period_next() {
+        let mut sidebar = EnvelopeSidebar::new(vec![]);
+        let result = sidebar.on(Event::Keyboard(KeyEvent {
+            code: Key::Char(']'),
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
+        assert_eq!(result, Some(Msg::Budget(BudgetMsg::PeriodNext)));
     }
 
     #[test]
