@@ -1,0 +1,831 @@
+#!/usr/bin/env -S cargo +nightly -Zscript
+---
+[package]
+edition = "2024"
+
+[dependencies]
+anyhow             = "1"
+bc-core            = { path = "../crates/bc-core" }
+bc-models          = { path = "../crates/bc-models" }
+clap               = { version = "4", features = ["derive"] }
+jiff               = { version = "0.2", features = ["serde"] }
+rust_decimal       = { version = "1", features = ["serde-with-str"] }
+rust_decimal_macros = "1"
+tokio              = { version = "1", features = ["rt-multi-thread", "macros"] }
+---
+
+// Seed a SQLite database with realistic test fixture data for manual QA.
+//
+// This script produces the same dataset as `crates/bc-tui/tests/common/mod.rs`.
+//
+// Usage:
+//   cargo +nightly -Zscript scripts/seed-test-db.rs [--db-path <PATH>] [--force]
+
+use std::path::PathBuf;
+
+use bc_core::AccountService;
+use bc_core::TransactionService;
+use bc_models::AccountKind;
+use bc_models::AccountType;
+use bc_models::Amount;
+use bc_models::CommodityCode;
+use bc_models::Decimal;
+use bc_models::Posting;
+use bc_models::PostingId;
+use bc_models::Transaction;
+use bc_models::TransactionId;
+use bc_models::TransactionStatus;
+use clap::Parser;
+use jiff::Timestamp;
+use jiff::civil::date;
+use rust_decimal_macros::dec;
+
+#[derive(Parser)]
+#[command(name = "seed-test-db", about = "Seed a SQLite database with realistic test fixture data")]
+struct Args {
+    // Path where the database file will be written.
+    #[arg(long, default_value = "./borrow-checker-test.db")]
+    db_path: PathBuf,
+
+    // Overwrite the database file if it already exists.
+    #[arg(long)]
+    force: bool,
+}
+
+fn aud(value: Decimal) -> Amount {
+    Amount::new(value, CommodityCode::new("AUD"))
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+
+    if args.db_path.exists() && !args.force {
+        anyhow::bail!(
+            "database already exists at '{}'. Use --force to overwrite.",
+            args.db_path.display()
+        );
+    }
+
+    if args.db_path.exists() && args.force {
+        std::fs::remove_file(&args.db_path)?;
+    }
+
+    let pool = bc_core::open_db_at(&args.db_path).await?;
+    let accounts = AccountService::new(pool.clone());
+    let transactions = TransactionService::new(pool.clone());
+
+    // --- Accounts -----------------------------------------------------------
+
+    let checking_id = accounts
+        .create()
+        .name("Checking")
+        .account_type(AccountType::Asset)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let savings_id = accounts
+        .create()
+        .name("Savings")
+        .account_type(AccountType::Asset)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let credit_card_id = accounts
+        .create()
+        .name("CreditCard")
+        .account_type(AccountType::Liability)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let salary_id = accounts
+        .create()
+        .name("Salary")
+        .account_type(AccountType::Income)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let interest_id = accounts
+        .create()
+        .name("Interest")
+        .account_type(AccountType::Income)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let groceries_id = accounts
+        .create()
+        .name("Groceries")
+        .account_type(AccountType::Expense)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let dining_id = accounts
+        .create()
+        .name("Dining")
+        .account_type(AccountType::Expense)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let utilities_id = accounts
+        .create()
+        .name("Utilities")
+        .account_type(AccountType::Expense)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let transport_id = accounts
+        .create()
+        .name("Transport")
+        .account_type(AccountType::Expense)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    let subscriptions_id = accounts
+        .create()
+        .name("Subscriptions")
+        .account_type(AccountType::Expense)
+        .kind(AccountKind::DepositAccount)
+        .call()
+        .await?;
+
+    // --- Transactions -------------------------------------------------------
+
+    // 1. Paycheck — January (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 15))
+                .payee("Employer Ltd")
+                .description("January paycheck")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking_id.clone())
+                        .amount(aud(dec!(5000.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(salary_id.clone())
+                        .amount(aud(dec!(-5000.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 2. Paycheck — February (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 2, 15))
+                .payee("Employer Ltd")
+                .description("February paycheck")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking_id.clone())
+                        .amount(aud(dec!(5000.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(salary_id.clone())
+                        .amount(aud(dec!(-5000.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 3. Credit card payment — checking → credit card liability (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 20))
+                .payee("Visa")
+                .description("Credit card payment")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(800.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking_id.clone())
+                        .amount(aud(dec!(-800.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 4. Grocery purchase #1 (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 5))
+                .payee("Woolworths")
+                .description("Weekly groceries")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(groceries_id.clone())
+                        .amount(aud(dec!(120.50)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-120.50)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 5. Grocery purchase #2 (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 2, 3))
+                .payee("Coles")
+                .description("Fortnightly groceries")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(groceries_id.clone())
+                        .amount(aud(dec!(95.80)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-95.80)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 6. Dining #1 (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 8))
+                .payee("The Local Bistro")
+                .description("Dinner with friends")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(dining_id.clone())
+                        .amount(aud(dec!(75.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-75.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 7. Dining #2 (Pending)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 2, 10))
+                .payee("Sushi Train")
+                .description("Lunch")
+                .status(TransactionStatus::Pending)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(dining_id.clone())
+                        .amount(aud(dec!(42.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-42.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 8. Dining #3 (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 2, 20))
+                .payee("Pizza Palace")
+                .description("Family dinner")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(dining_id.clone())
+                        .amount(aud(dec!(88.50)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-88.50)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 9. Utilities — electricity (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 12))
+                .payee("AGL Energy")
+                .description("January electricity bill")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(utilities_id.clone())
+                        .amount(aud(dec!(210.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking_id.clone())
+                        .amount(aud(dec!(-210.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 10. Utilities — internet (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 2, 12))
+                .payee("Telstra")
+                .description("February internet bill")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(utilities_id.clone())
+                        .amount(aud(dec!(89.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking_id.clone())
+                        .amount(aud(dec!(-89.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 11. Transport — transit top-up (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 18))
+                .payee("Opal Card")
+                .description("Monthly transit top-up")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(transport_id.clone())
+                        .amount(aud(dec!(50.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking_id.clone())
+                        .amount(aud(dec!(-50.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 12. Transport — ride share (Pending)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 2, 18))
+                .payee("Uber")
+                .description("Ride to airport")
+                .status(TransactionStatus::Pending)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(transport_id.clone())
+                        .amount(aud(dec!(35.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-35.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 13. Subscription — streaming (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 3))
+                .payee("Netflix")
+                .description("January streaming subscription")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(subscriptions_id.clone())
+                        .amount(aud(dec!(22.99)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-22.99)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 14. Subscription — music (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 2, 3))
+                .payee("Spotify")
+                .description("February music subscription")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(subscriptions_id.clone())
+                        .amount(aud(dec!(12.99)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-12.99)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 15. Savings transfer — January (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 25))
+                .description("Monthly savings transfer")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(savings_id.clone())
+                        .amount(aud(dec!(1000.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking_id.clone())
+                        .amount(aud(dec!(-1000.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 16. Interest income — January (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 31))
+                .payee("Bank")
+                .description("January savings interest")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(savings_id.clone())
+                        .amount(aud(dec!(8.75)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(interest_id.clone())
+                        .amount(aud(dec!(-8.75)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 17. Extra grocery run (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 22))
+                .payee("IGA")
+                .description("Top-up groceries")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(groceries_id.clone())
+                        .amount(aud(dec!(45.30)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-45.30)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 18. Dining — coffee (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 28))
+                .payee("The Coffee Club")
+                .description("Morning coffee")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(dining_id.clone())
+                        .amount(aud(dec!(6.50)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-6.50)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 19. Transport — petrol (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 2, 5))
+                .payee("BP Service Station")
+                .description("Petrol fill-up")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(transport_id.clone())
+                        .amount(aud(dec!(85.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-85.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 20. Utilities — gas bill (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 2, 14))
+                .payee("Origin Energy")
+                .description("February gas bill")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(utilities_id.clone())
+                        .amount(aud(dec!(130.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking_id.clone())
+                        .amount(aud(dec!(-130.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 21. Subscription — cloud storage (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 10))
+                .payee("iCloud")
+                .description("iCloud storage subscription")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(subscriptions_id.clone())
+                        .amount(aud(dec!(4.49)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-4.49)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 22. Savings transfer — February (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 2, 25))
+                .description("February savings transfer")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(savings_id.clone())
+                        .amount(aud(dec!(1200.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking_id.clone())
+                        .amount(aud(dec!(-1200.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 23. Interest income — February (Cleared)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 2, 28))
+                .payee("Bank")
+                .description("February savings interest")
+                .status(TransactionStatus::Cleared)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(savings_id.clone())
+                        .amount(aud(dec!(12.50)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(interest_id.clone())
+                        .amount(aud(dec!(-12.50)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 24. Grocery purchase — pending (Pending)
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 2, 27))
+                .payee("Harris Farm")
+                .description("Organic groceries")
+                .status(TransactionStatus::Pending)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(groceries_id.clone())
+                        .amount(aud(dec!(67.20)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(credit_card_id.clone())
+                        .amount(aud(dec!(-67.20)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    // 25. Voided transaction — duplicate entry that gets voided.
+    let voided_id = transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 1, 15))
+                .payee("Employer Ltd")
+                .description("Duplicate paycheck — to be voided")
+                .status(TransactionStatus::Pending)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking_id.clone())
+                        .amount(aud(dec!(5000.00)))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(salary_id.clone())
+                        .amount(aud(dec!(-5000.00)))
+                        .build(),
+                ])
+                .build(),
+        )
+        .await?;
+
+    transactions.void(&voided_id).await?;
+
+    // --- Summary ------------------------------------------------------------
+
+    println!("Created database at {}", args.db_path.display());
+    println!("Accounts created: 10");
+    println!("Transactions created: 25 (22 cleared, 2 pending, 1 voided)");
+    println!();
+    println!("Accounts:");
+    println!("  [asset]     Assets:Checking");
+    println!("  [asset]     Assets:Savings");
+    println!("  [liability] Liabilities:CreditCard");
+    println!("  [income]    Income:Salary");
+    println!("  [income]    Income:Interest");
+    println!("  [expense]   Expenses:Groceries");
+    println!("  [expense]   Expenses:Dining");
+    println!("  [expense]   Expenses:Utilities");
+    println!("  [expense]   Expenses:Transport");
+    println!("  [expense]   Expenses:Subscriptions");
+
+    Ok(())
+}
