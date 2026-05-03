@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/export.rs
+expression: output
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: export to 'ledger' is not yet available; native exporters have been removed and plugin-based export will be added in a future milestone

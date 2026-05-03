@@ -46,9 +46,10 @@ for name in "${PLUGINS[@]}"; do
   fi
   echo "    wasm  → $wasm_dest"
 
-  # Generate sidecar manifest from [package.metadata.bc-plugin] in Cargo.toml.
+  # Generate sidecar manifest from [package.metadata.bc-plugin] in Cargo.toml,
+  # merging in the package version so PluginManifest.version is populated.
   toml_dest="$PLUGINS_OUT/${name}.toml"
-  jaq '{plugin: .package.metadata."bc-plugin"}' "$manifest" --to toml >"$toml_dest"
+  jaq '{plugin: (.package.metadata."bc-plugin" + {version: .package.version})}' "$manifest" --to toml >"$toml_dest"
   echo "    toml  → $toml_dest"
 done
 
