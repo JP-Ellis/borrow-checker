@@ -3,6 +3,8 @@
 //! Verifies that `TuiContext::open` succeeds and that each top-level screen
 //! can be mounted and unmounted against a real (temporary) SQLite database.
 
+mod common;
+
 #[cfg(test)]
 mod tests {
     use core::time::Duration;
@@ -100,5 +102,14 @@ mod tests {
         pretty_assertions::assert_eq!(app.mounted(&Id::Reports(ReportsId::View)), true);
         screen.unmount(&mut app);
         pretty_assertions::assert_eq!(app.mounted(&Id::Reports(ReportsId::View)), false);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn seeded_database_has_accounts_and_transactions() {
+        let (ctx, _dir) = super::common::seeded_context().await.expect("seed context");
+        let accounts = ctx.accounts.list_active().await.expect("list accounts");
+        pretty_assertions::assert_eq!(accounts.len() >= 10, true);
+        let txns = ctx.transactions.list().await.expect("list transactions");
+        pretty_assertions::assert_eq!(txns.len() >= 20, true);
     }
 }
