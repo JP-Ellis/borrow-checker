@@ -52,13 +52,17 @@ type CreateFn = Arc<dyn Fn() -> Box<dyn Importer> + Send + Sync>;
 ///     }
 /// }
 ///
-/// let factory = ImporterFactory::new(
-///     "my-format",
-///     |_b| true,
-///     || Box::new(MyImporter),
-/// );
+/// fn detect_my_format(bytes: &[u8]) -> bool {
+///     bytes.starts_with(b"MY")
+/// }
+///
+/// fn make_my_importer() -> Box<dyn Importer> {
+///     Box::new(MyImporter)
+/// }
+///
+/// let factory = ImporterFactory::new("my-format", detect_my_format, make_my_importer);
 /// assert_eq!(factory.name(), "my-format");
-/// assert!(factory.detect(b"anything"));
+/// assert!(factory.detect(b"MY-data"));
 /// assert_eq!(factory.create().name(), "my-format");
 /// ```
 #[non_exhaustive]
@@ -113,12 +117,16 @@ impl core::fmt::Debug for Factory {
 ///     }
 /// }
 ///
+/// fn detect_my_format(bytes: &[u8]) -> bool {
+///     bytes.starts_with(b"MY")
+/// }
+///
+/// fn make_my_importer() -> Box<dyn Importer> {
+///     Box::new(MyImporter)
+/// }
+///
 /// let mut registry = ImporterRegistry::new();
-/// registry.register(ImporterFactory::new(
-///     "my-format",
-///     |b| b.starts_with(b"MY"),
-///     || Box::new(MyImporter),
-/// ));
+/// registry.register(ImporterFactory::new("my-format", detect_my_format, make_my_importer));
 /// assert_eq!(registry.detect_format(b"MY data"), Some("my-format"));
 /// ```
 #[non_exhaustive]
@@ -173,10 +181,13 @@ impl Registry {
     ///     fn import(&self, _: &[u8], _: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
     /// }
     ///
+    /// fn never_detect(_bytes: &[u8]) -> bool { false }
+    /// fn make_stub() -> Box<dyn Importer> { Box::new(Stub) }
+    ///
     /// let mut registry = ImporterRegistry::new();
     /// registry
-    ///     .register(ImporterFactory::new("a", |_| false, || Box::new(Stub)))
-    ///     .register(ImporterFactory::new("b", |_| false, || Box::new(Stub)));
+    ///     .register(ImporterFactory::new("a", never_detect, make_stub))
+    ///     .register(ImporterFactory::new("b", never_detect, make_stub));
     /// ```
     #[inline]
     pub fn register(&mut self, factory: Factory) -> &mut Self {
@@ -263,10 +274,13 @@ impl Registry {
     ///     fn import(&self, _: &[u8], _: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
     /// }
     ///
+    /// fn never_detect(_bytes: &[u8]) -> bool { false }
+    /// fn make_stub() -> Box<dyn Importer> { Box::new(Stub) }
+    ///
     /// let mut registry = ImporterRegistry::new();
     /// registry
-    ///     .register(ImporterFactory::new("csv", |_| false, || Box::new(Stub)))
-    ///     .register(ImporterFactory::new("ofx", |_| false, || Box::new(Stub)));
+    ///     .register(ImporterFactory::new("csv", never_detect, make_stub))
+    ///     .register(ImporterFactory::new("ofx", never_detect, make_stub));
     /// let names: Vec<_> = registry.names().collect();
     /// assert_eq!(names, &["csv", "ofx"]);
     /// ```
@@ -307,7 +321,10 @@ impl Factory {
     ///     }
     /// }
     ///
-    /// let factory = ImporterFactory::new("null", |_b| false, || Box::new(NullImporter));
+    /// fn never_detect(_bytes: &[u8]) -> bool { false }
+    /// fn make_null() -> Box<dyn Importer> { Box::new(NullImporter) }
+    ///
+    /// let factory = ImporterFactory::new("null", never_detect, make_null);
     /// assert_eq!(factory.name(), "null");
     /// ```
     #[inline]
