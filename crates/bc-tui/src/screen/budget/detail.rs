@@ -112,6 +112,7 @@ impl Detail {
     ///
     /// Returns the placeholder text when no status is set.
     #[inline]
+    #[must_use]
     fn render_lines(&self) -> Text<'static> {
         let Some(s) = &self.status else {
             return Text::from("Select an envelope to see budget status.".to_owned());
