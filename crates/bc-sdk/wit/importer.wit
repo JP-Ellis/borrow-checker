@@ -48,10 +48,6 @@ interface importer {
     use types.{raw-transaction, import-config, import-error};
 
     /// Returns the SDK ABI version this plugin was compiled against.
-    ///
-    /// The host validates this against the sidecar manifest at load time.
-    /// Returning a value inconsistent with the manifest causes the plugin to be
-    /// rejected, preventing a tampered manifest from bypassing version checks.
     sdk-abi: func() -> u32;
 
     /// Returns the stable plugin name, e.g. "csv". Must be unique across plugins.
@@ -69,7 +65,14 @@ interface importer {
     ) -> result<list<raw-transaction>, import-error>;
 }
 
-/// The WASM component world that every importer plugin must satisfy.
-world importer-plugin {
+/// The exporter interface that exporter plugins will export.
+///
+/// Not yet part of any world — will be added to `world borrow-checker` in a
+/// future milestone once export plugin support is introduced.
+interface exporter {
+}
+
+/// The WASM component world that every BorrowChecker plugin must satisfy.
+world borrow-checker {
     export importer;
 }

@@ -10,8 +10,8 @@ use wasmtime::Store;
 use wasmtime::component::Component;
 use wasmtime::component::Linker;
 
+use crate::host::BcPlugin;
 use crate::host::HostCtx;
-use crate::host::ImporterPlugin;
 use crate::translate::wit_to_import_error;
 use crate::translate::wit_to_raw_transaction;
 
@@ -130,9 +130,9 @@ impl PluginImporter {
     ///
     /// Returns a wasmtime error if instantiation fails.
     #[inline]
-    fn instantiate(&self) -> wasmtime::Result<(ImporterPlugin, Store<HostCtx>)> {
+    fn instantiate(&self) -> wasmtime::Result<(BcPlugin, Store<HostCtx>)> {
         let mut store = Store::new(&self.engine, HostCtx::new());
-        let bindings = ImporterPlugin::instantiate(&mut store, &self.component, &self.linker)?;
+        let bindings = BcPlugin::instantiate(&mut store, &self.component, &self.linker)?;
         Ok((bindings, store))
     }
 }
