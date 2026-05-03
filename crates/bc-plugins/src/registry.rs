@@ -15,6 +15,7 @@ use wasmtime::component::Linker;
 
 use crate::host::BcPlugin;
 use crate::host::HostCtx;
+use crate::host::bindings;
 use crate::manifest::ManifestError;
 use crate::manifest::PluginManifest;
 use crate::plugin_importer::PluginImporter;
@@ -68,6 +69,13 @@ impl PluginRegistry {
         let mut linker: Linker<HostCtx> = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
             .map_err(|e| RegistryError::Engine(format!("failed to add WASI to linker: {e}")))?;
+
+        // Add host imports (logger interface).
+        bindings::borrow_checker::sdk::logger::add_to_linker::<
+            HostCtx,
+            wasmtime::component::HasSelf<HostCtx>,
+        >(&mut linker, |ctx| ctx)
+        .map_err(|e| RegistryError::Engine(format!("failed to add host imports to linker: {e}")))?;
 
         let mut importers = Vec::new();
         let mut seen_names: HashSet<String> = HashSet::new();
@@ -196,7 +204,7 @@ fn query_plugin_name(
     component: &wasmtime::component::Component,
     linker: &Linker<HostCtx>,
 ) -> wasmtime::Result<String> {
-    let mut store = Store::new(engine, HostCtx::new());
+    let mut store = Store::new(engine, HostCtx::new("__probe__"));
     let bindings = BcPlugin::instantiate(&mut store, component, linker)?;
     bindings.borrow_checker_sdk_importer().call_name(&mut store)
 }
@@ -215,7 +223,7 @@ fn query_plugin_abi(
     component: &wasmtime::component::Component,
     linker: &Linker<HostCtx>,
 ) -> wasmtime::Result<u32> {
-    let mut store = Store::new(engine, HostCtx::new());
+    let mut store = Store::new(engine, HostCtx::new("__probe__"));
     let bindings = BcPlugin::instantiate(&mut store, component, linker)?;
     bindings
         .borrow_checker_sdk_importer()
