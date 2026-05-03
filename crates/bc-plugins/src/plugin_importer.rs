@@ -23,10 +23,8 @@ use crate::translate::wit_to_raw_transaction;
 /// independently, so concurrent calls are safe.
 #[non_exhaustive]
 pub struct PluginImporter {
-    /// The stable plugin name read from the manifest.
+    /// The stable plugin name queried from the WASM component.
     name: String,
-    /// Semver plugin version string from the manifest (informational).
-    version: String,
     /// Integer ABI version the plugin was compiled against.
     sdk_abi: u32,
     /// Filesystem path to the `.wasm` file that was loaded.
@@ -50,12 +48,11 @@ impl core::fmt::Debug for PluginImporter {
 }
 
 impl PluginImporter {
-    /// Creates a new [`PluginImporter`] from a compiled component and manifest metadata.
+    /// Creates a new [`PluginImporter`] from a compiled component and queried metadata.
     ///
     /// # Arguments
     ///
-    /// * `name` - The stable plugin name (from the manifest).
-    /// * `version` - The semver version string (from the manifest).
+    /// * `name` - The stable plugin name (queried from the WASM component).
     /// * `sdk_abi` - The integer ABI version the plugin was compiled against.
     /// * `source_path` - Filesystem path to the `.wasm` file.
     /// * `engine` - The shared wasmtime engine.
@@ -69,7 +66,6 @@ impl PluginImporter {
     #[must_use]
     pub(crate) fn new(
         name: String,
-        version: String,
         sdk_abi: u32,
         source_path: std::path::PathBuf,
         engine: wasmtime::Engine,
@@ -78,24 +74,12 @@ impl PluginImporter {
     ) -> Self {
         Self {
             name,
-            version,
             sdk_abi,
             source_path,
             engine,
             component: Arc::new(component),
             linker: Arc::new(linker),
         }
-    }
-
-    /// Returns the semver version string from the plugin manifest.
-    ///
-    /// # Returns
-    ///
-    /// The version string (e.g. `"1.2.3"`).
-    #[inline]
-    #[must_use]
-    pub fn version(&self) -> &str {
-        &self.version
     }
 
     /// Returns the integer ABI version the plugin was compiled against.

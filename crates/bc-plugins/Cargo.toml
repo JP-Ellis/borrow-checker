@@ -15,17 +15,14 @@ bc-core       = { workspace = true }
 bc-models     = { workspace = true }
 jiff          = { workspace = true }
 rust_decimal  = { workspace = true }
-serde         = { workspace = true }
 serde_json    = { workspace = true }
 thiserror     = { workspace = true }
-toml          = { workspace = true }
 tracing       = { workspace = true }
 wasmtime      = { workspace = true }
 wasmtime-wasi = "41"
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
-tempfile          = { workspace = true }
 
 [lints]
 workspace = true
