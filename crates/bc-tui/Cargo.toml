@@ -25,6 +25,7 @@ publish = false
       "crossterm",
       "pretty_assertions",
       "ratatui-macros",
+      "rust_decimal",
       "tokio",
       "tracing",
       "tracing-subscriber",
@@ -59,8 +60,11 @@ tui-tree-widget    = "0.22"
 tuirealm           = "3"
 
 [dev-dependencies]
-assert_fs         = { workspace = true }
-pretty_assertions = { workspace = true }
+assert_fs           = { workspace = true }
+insta               = { version = "1", features = ["filters"] }
+pretty_assertions   = { workspace = true }
+rust_decimal        = { workspace = true }
+rust_decimal_macros = { workspace = true }
 
 [lints]
 workspace = true
