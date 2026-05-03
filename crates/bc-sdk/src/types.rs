@@ -1,7 +1,13 @@
-//! Ergonomic SDK types that mirror the WIT interface.
+//! WIT wire types for the BorrowChecker plugin SDK.
 //!
-//! These types are the public API for plugin authors. They are distinct from
-//! `bc-models` types — `bc-sdk` has no workspace dependencies.
+//! These types are a simplified, WASM-portable representation of the domain
+//! types in `bc_core` / `bc_models`. They are intentionally different: dates
+//! are plain `{year, month, day}` integers; amounts use minor units rather
+//! than `rust_decimal::Decimal`. The conversion layer in `bc_plugins::translate`
+//! bridges between these wire types and the host's domain types.
+//!
+//! If you change a type here, verify that `bc_plugins::translate` still compiles
+//! and produces correct values.
 
 use serde::de::DeserializeOwned;
 
