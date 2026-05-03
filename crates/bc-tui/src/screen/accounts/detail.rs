@@ -53,6 +53,7 @@ impl TxDetail {
     /// # Returns
     ///
     /// The account's `name` if found; otherwise the ID formatted as a string.
+    #[inline]
     fn account_name(id: &bc_models::AccountId, accounts: &[Account]) -> String {
         accounts
             .iter()
@@ -297,8 +298,8 @@ mod tests {
 
         let content = detail.render_content();
         assert!(
-            content.contains("Checking"),
-            "expected account name 'Checking' in: {content}"
+            content.contains("  Checking  100 AUD"),
+            "expected posting line '  Checking  100 AUD' in: {content}"
         );
     }
 }
