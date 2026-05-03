@@ -80,7 +80,8 @@ impl Update<Msg> for Model {
                 None
             }
             Msg::Chrome(_) => {
-                // Chrome messages reserved for future use; currently no-op.
+                // `self.redraw = true` above handles Chrome::Redraw unconditionally;
+                // no additional action is needed per-variant.
                 None
             }
             other @ (Msg::Accounts(_) | Msg::Budget(_) | Msg::Reports(_)) => {
