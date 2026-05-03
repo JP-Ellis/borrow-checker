@@ -92,6 +92,7 @@ macro_rules! define_id {
 }
 
 mod account;
+mod budget_window;
 mod commodity;
 mod envelope;
 mod event;
@@ -110,6 +111,7 @@ pub use account::AccountId;
 pub use account::Kind as AccountKind;
 pub use account::Type as AccountType;
 pub use account::ValidationError as AccountValidationError;
+pub use budget_window::BudgetWindow;
 pub use commodity::Commodity;
 pub use commodity::CommodityBuilder;
 pub use commodity::CommodityId;
