@@ -145,7 +145,13 @@ impl AccountsScreen {
             .block_on(self.ctx.transactions.list_for_account(&account_id))
         {
             Ok(txns) => self.transactions = txns.collect(),
-            Err(e) => eprintln!("failed to load transactions: {e}"),
+            Err(e) => {
+                eprintln!("failed to load transactions: {e}");
+                self.transactions = Vec::new();
+                self.current_balance = bc_models::Decimal::ZERO;
+                self.current_commodity = String::new();
+                return;
+            }
         }
 
         // Determine the primary commodity from the loaded transactions.
@@ -153,7 +159,7 @@ impl AccountsScreen {
             .transactions
             .iter()
             .flat_map(|t| t.postings().iter())
-            .find(|p| Some(p.account_id()) == self.selected_account.as_ref())
+            .find(|p| p.account_id() == &account_id)
             .map(|p| p.amount().commodity().as_str().to_owned())
             .unwrap_or_default();
 
