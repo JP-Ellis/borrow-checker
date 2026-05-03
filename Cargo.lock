@@ -253,6 +253,7 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
