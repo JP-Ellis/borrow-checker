@@ -61,6 +61,10 @@ members  = [
   quick-xml             = "0.39"
   quote                 = "1"
   regex                 = "1"
+  reqwest               = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "rustls-tls"
+  ] }
   rstest                = "0.26"
   rust_decimal          = { version = "1", features = ["serde-with-str"] }
   rust_decimal_macros   = "1"
