@@ -41,7 +41,7 @@
 pub mod __bindings {
     wit_bindgen::generate!({
         path: "wit",
-        world: "importer-plugin",
+        world: "borrow-checker",
         pub_export_macro: true,
     });
 }
@@ -53,7 +53,7 @@ pub use __bindings::export;
 /// SDK ABI version this crate implements.
 ///
 /// Plugins embed this value via the `#[bc_sdk::importer]` macro so the host
-/// can cross-check the WASM binary against the sidecar manifest at load time.
+/// can cross-check the WASM binary at load time.
 pub const SDK_ABI: u32 = 1;
 /// The `#[importer]` attribute macro — apply to `impl Importer for YourType`.
 pub use bc_sdk_macros::importer;
