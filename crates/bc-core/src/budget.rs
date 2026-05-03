@@ -70,6 +70,13 @@ impl Engine {
     /// # Errors
     ///
     /// Returns [`BcError`] on database or data parse failure.
+    ///
+    /// # Notes
+    ///
+    /// `window` is expected to be a sub-span of the envelope's natural period containing
+    /// `window.start`. If `window` spans multiple natural periods, allocation pro-rating
+    /// will be based solely on the period containing `window.start`, and actuals will
+    /// include all transactions in the window regardless of period boundaries.
     #[inline]
     pub async fn status_for_window(
         &self,
@@ -87,6 +94,7 @@ impl Engine {
 
         // Pro-rate the allocation to the window duration.
         let window_days = window.days();
+        debug_assert!(window_days >= 0, "BudgetWindow has end before start");
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "Date - Date returns a Span; get_days() is safe for any realistic period"
@@ -95,10 +103,10 @@ impl Engine {
 
         #[expect(
             clippy::arithmetic_side_effects,
-            reason = "pro-rating multiplication on Decimal; precision loss is acceptable for budget display"
+            reason = "Decimal / and * panic on overflow/divide-by-zero; guarded by period_days != 0 check and bounded financial amounts"
         )]
         let allocated = if period_days == 0 {
-            full_allocated
+            Decimal::ZERO
         } else {
             let ratio = Decimal::from(window_days) / Decimal::from(period_days);
             (full_allocated * ratio).round_dp(2)
@@ -620,9 +628,6 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn status_for_window_matches_full_natural_period(pool: sqlx::SqlitePool) {
-        use bc_models::Amount;
-        use bc_models::CommodityCode;
-        use bc_models::Decimal;
         use jiff::civil::date;
 
         let env_svc = EnvelopeService::new(pool.clone());
@@ -656,9 +661,6 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn status_for_window_prorates_half_month(pool: sqlx::SqlitePool) {
-        use bc_models::Amount;
-        use bc_models::CommodityCode;
-        use bc_models::Decimal;
         use jiff::civil::date;
 
         let env_svc = EnvelopeService::new(pool.clone());
