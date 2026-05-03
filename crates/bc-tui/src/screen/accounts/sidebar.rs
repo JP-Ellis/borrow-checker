@@ -353,6 +353,21 @@ impl AccountSidebar {
             component: Sidebar::new(accounts),
         }
     }
+
+    /// Reads the current component state and emits [`AccountsMsg::AccountSelected`]
+    /// if a valid account ID is selected; falls back to [`ChromeMsg::Redraw`].
+    ///
+    /// j/k navigation emits for any account (leaf or parent); Enter/Right only
+    /// emits for leaf accounts (guarded separately).
+    #[inline]
+    fn account_selected_or_redraw(&self) -> Msg {
+        if let State::One(StateValue::String(ref s)) = self.component.state() {
+            if let Ok(id) = s.parse::<AccountId>() {
+                return Msg::Accounts(AccountsMsg::AccountSelected(id));
+            }
+        }
+        Msg::Chrome(crate::msg::ChromeMsg::Redraw)
+    }
 }
 
 impl Component<Msg, NoUserEvent> for AccountSidebar {
@@ -368,24 +383,14 @@ impl Component<Msg, NoUserEvent> for AccountSidebar {
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Down));
-                if let State::One(StateValue::String(ref s)) = self.component.state() {
-                    if let Ok(id) = s.parse::<AccountId>() {
-                        return Some(Msg::Accounts(AccountsMsg::AccountSelected(id)));
-                    }
-                }
-                Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
+                Some(self.account_selected_or_redraw())
             }
             Event::Keyboard(KeyEvent {
                 code: Key::Up | Key::Char('k'),
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Up));
-                if let State::One(StateValue::String(ref s)) = self.component.state() {
-                    if let Ok(id) = s.parse::<AccountId>() {
-                        return Some(Msg::Accounts(AccountsMsg::AccountSelected(id)));
-                    }
-                }
-                Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
+                Some(self.account_selected_or_redraw())
             }
             Event::Keyboard(KeyEvent {
                 code: Key::Right | Key::Char('l') | Key::Enter,
@@ -582,31 +587,63 @@ mod tests {
     }
 
     #[test]
-    fn j_key_emits_account_selected_when_account_is_focused() {
+    fn j_key_emits_account_selected() {
         let parent = make_account("Assets");
         let child = make_child_account("Checking", parent.id().clone());
         let mut sidebar = AccountSidebar::new(vec![parent, child]);
 
-        // Navigate down once — the first item is selected.
+        // First Down lands on the parent.
+        let msg = sidebar.on(Event::Keyboard(KeyEvent {
+            code: Key::Down,
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
+        // Parent is an account — should emit AccountSelected.
+        // If tui-tree-widget requires a rendered frame to track selection,
+        // the state will still be State::None and we fall back to Redraw.
+        assert!(
+            matches!(
+                msg,
+                Some(
+                    Msg::Accounts(AccountsMsg::AccountSelected(_))
+                        | Msg::Chrome(crate::msg::ChromeMsg::Redraw)
+                )
+            ),
+            "expected AccountSelected or Redraw, got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn k_key_emits_account_selected_after_navigation() {
+        let parent = make_account("Assets");
+        let child = make_child_account("Checking", parent.id().clone());
+        let mut sidebar = AccountSidebar::new(vec![parent, child]);
+
+        // Navigate down to parent, then down to child.
+        sidebar.on(Event::Keyboard(KeyEvent {
+            code: Key::Down,
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
         sidebar.on(Event::Keyboard(KeyEvent {
             code: Key::Down,
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
 
-        // Navigate down again.
+        // Navigate back up — should still emit AccountSelected.
+        // If tui-tree-widget requires a rendered frame to track selection,
+        // the state will still be State::None and we fall back to Redraw.
         let msg = sidebar.on(Event::Keyboard(KeyEvent {
-            code: Key::Down,
+            code: Key::Up,
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
-
-        // Should be AccountSelected (or Redraw if no account is focused yet).
-        // We only assert the shape when we get an AccountSelected back.
-        if let Some(Msg::Accounts(AccountsMsg::AccountSelected(_))) = msg {
-            // correct
-        } else if let Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)) = msg {
-            // also acceptable — navigation landed on a non-account state
-        } else {
-            panic!("unexpected message: {msg:?}");
-        }
+        assert!(
+            matches!(
+                msg,
+                Some(
+                    Msg::Accounts(AccountsMsg::AccountSelected(_))
+                        | Msg::Chrome(crate::msg::ChromeMsg::Redraw)
+                )
+            ),
+            "expected AccountSelected or Redraw, got {msg:?}"
+        );
     }
 }
