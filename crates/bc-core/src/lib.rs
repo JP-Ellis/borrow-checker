@@ -25,6 +25,7 @@ pub(crate) mod transaction;
 pub use account::Service as AccountService;
 pub use asset::Service as AssetService;
 pub use balance::Engine as BalanceEngine;
+pub use bc_models::BudgetWindow;
 pub use budget::Engine as BudgetEngine;
 pub use budget::EnvelopeStatus;
 pub use db::open_db;
