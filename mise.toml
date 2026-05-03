@@ -14,6 +14,7 @@
 "cargo:cargo-llvm-cov" = "0.8"
 "cargo:cargo-machete"  = "0.9"
 "cargo:cargo-nextest"  = "0.9"
+"cargo:jaq"            = "3"
 
 [tasks]
   [tasks.format]
@@ -65,3 +66,7 @@
   [tasks.coverage]
   description = "Generate LCOV coverage report"
   run         = "cargo llvm-cov nextest --all-features --lcov --output-path coverage.lcov"
+
+  [tasks."build-plugins"]
+  description = "Compile WASM importer plugins and stage them under target/plugins/"
+  run         = "plugins/scripts/build.sh"

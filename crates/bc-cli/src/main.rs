@@ -67,7 +67,7 @@ async fn main() {
         Commands::Asset(args) => commands::asset::execute(args, &ctx).await,
         Commands::Transaction(args) => commands::transaction::execute(args, &ctx).await,
         Commands::Import(args) => commands::import::execute(args, &ctx).await,
-        Commands::Export(args) => commands::export::execute(args, &ctx).await,
+        Commands::Export(args) => commands::export::execute(&args, &ctx),
         Commands::Report(args) => commands::report::execute(args, &ctx).await,
         Commands::Budget(args) => commands::budget::execute(args, &ctx).await,
         Commands::Plugin(args) => commands::plugin::execute(args, &ctx).await,

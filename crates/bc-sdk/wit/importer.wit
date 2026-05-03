@@ -47,6 +47,13 @@ interface types {
 interface importer {
     use types.{raw-transaction, import-config, import-error};
 
+    /// Returns the SDK ABI version this plugin was compiled against.
+    ///
+    /// The host validates this against the sidecar manifest at load time.
+    /// Returning a value inconsistent with the manifest causes the plugin to be
+    /// rejected, preventing a tampered manifest from bypassing version checks.
+    sdk-abi: func() -> u32;
+
     /// Returns the stable plugin name, e.g. "csv". Must be unique across plugins.
     name: func() -> string;
 

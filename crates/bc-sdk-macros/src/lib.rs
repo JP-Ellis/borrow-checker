@@ -68,6 +68,10 @@ fn generate_importer_export(item_impl: &ItemImpl) -> syn::Result<TokenStream2> {
         impl ::bc_sdk::__bindings::exports::borrow_checker::sdk::importer::Guest
             for #export_struct
         {
+            fn sdk_abi() -> u32 {
+                ::bc_sdk::SDK_ABI
+            }
+
             fn name() -> ::std::string::String {
                 <#self_ty as ::bc_sdk::Importer>::name(
                     &<#self_ty as ::std::default::Default>::default()
