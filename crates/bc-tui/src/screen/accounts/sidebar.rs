@@ -368,22 +368,22 @@ impl Component<Msg, NoUserEvent> for AccountSidebar {
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Down));
-                None
+                Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
             }
             Event::Keyboard(KeyEvent {
                 code: Key::Up | Key::Char('k'),
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Up));
-                None
+                Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
             }
             Event::Keyboard(KeyEvent {
                 code: Key::Right | Key::Char('l') | Key::Enter,
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Right));
-                // Emit a selection message only when a leaf node is confirmed.
-                // Pressing right/Enter on a parent node expands the subtree instead.
+                // Emit AccountSelected only when a leaf node is confirmed.
+                // Expanding a parent node still emits Redraw so the tree updates.
                 if let State::One(StateValue::String(ref s)) = self.component.state() {
                     if let Ok(id) = s.parse::<AccountId>() {
                         if !has_children(&id, &self.component.accounts) {
@@ -391,14 +391,14 @@ impl Component<Msg, NoUserEvent> for AccountSidebar {
                         }
                     }
                 }
-                None
+                Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
             }
             Event::Keyboard(KeyEvent {
                 code: Key::Left | Key::Char('h'),
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Left));
-                None
+                Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
             }
             _ => None,
         }
@@ -484,13 +484,53 @@ mod tests {
     }
 
     #[test]
-    fn account_sidebar_right_on_empty_tree_returns_none() {
+    fn account_sidebar_right_on_empty_tree_emits_redraw() {
         let mut sidebar = AccountSidebar::new(vec![]);
         let result = sidebar.on(Event::Keyboard(KeyEvent {
             code: Key::Right,
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
-        assert_eq!(result, None);
+        assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
+    }
+
+    #[test]
+    fn j_key_emits_redraw() {
+        let mut sidebar = AccountSidebar::new(vec![]);
+        let result = sidebar.on(Event::Keyboard(KeyEvent {
+            code: Key::Char('j'),
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
+        assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
+    }
+
+    #[test]
+    fn down_arrow_emits_redraw() {
+        let mut sidebar = AccountSidebar::new(vec![]);
+        let result = sidebar.on(Event::Keyboard(KeyEvent {
+            code: Key::Down,
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
+        assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
+    }
+
+    #[test]
+    fn k_key_emits_redraw() {
+        let mut sidebar = AccountSidebar::new(vec![]);
+        let result = sidebar.on(Event::Keyboard(KeyEvent {
+            code: Key::Char('k'),
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
+        assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
+    }
+
+    #[test]
+    fn h_key_emits_redraw() {
+        let mut sidebar = AccountSidebar::new(vec![]);
+        let result = sidebar.on(Event::Keyboard(KeyEvent {
+            code: Key::Char('h'),
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
+        assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
     }
 
     #[test]
