@@ -23,7 +23,9 @@ pub struct EnvelopeStatus {
     pub period_start: Date,
     /// Period end date (exclusive).
     pub period_end: Date,
-    /// Total allocated for this period (zero if no allocation record exists).
+    /// The viewing window for which this status was computed.
+    pub window: bc_models::BudgetWindow,
+    /// Allocated amount, pro-rated to the window duration.
     pub allocated: Decimal,
     /// Commodity of all monetary values in this status, if the envelope has one set.
     ///
@@ -54,34 +56,64 @@ impl Engine {
         Self { pool }
     }
 
-    /// Computes the budget status for `envelope` as of `as_of`.
+    /// Computes the budget status for `envelope` over an explicit [`bc_models::BudgetWindow`].
     ///
-    /// The period is determined by `envelope.period().range_containing(as_of)`.
+    /// The allocation is pro-rated: `prorated = allocation × (window_days / natural_period_days)`.
+    /// Actuals are summed only within `[window.start, window.end)`.
+    /// Rollover is computed from the natural period boundary (unchanged).
+    ///
+    /// # Arguments
+    ///
+    /// * `envelope` - The envelope to compute status for.
+    /// * `window`   - The date range to query.
     ///
     /// # Errors
     ///
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
-    pub async fn status_for(&self, envelope: &Envelope, as_of: Date) -> BcResult<EnvelopeStatus> {
-        let (period_start, period_end) = envelope.period().range_containing(as_of);
-
+    pub async fn status_for_window(
+        &self,
+        envelope: &Envelope,
+        window: bc_models::BudgetWindow,
+    ) -> BcResult<EnvelopeStatus> {
+        let (period_start, period_end) = envelope.period().range_containing(window.start);
         let commodity: Option<CommodityCode> = envelope.commodity().cloned();
 
         let env_svc = EnvelopeService::new(self.pool.clone());
         let allocation = env_svc.get_allocation(envelope.id(), period_start).await?;
-        let allocated = allocation
+        let full_allocated = allocation
             .as_ref()
             .map_or(Decimal::ZERO, |a| a.amount().value());
 
+        // Pro-rate the allocation to the window duration.
+        let window_days = window.days();
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "Date - Date returns a Span; get_days() is safe for any realistic period"
+        )]
+        let period_days = i64::from((period_end - period_start).get_days());
+
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "pro-rating multiplication on Decimal; precision loss is acceptable for budget display"
+        )]
+        let allocated = if period_days == 0 {
+            full_allocated
+        } else {
+            let ratio = Decimal::from(window_days) / Decimal::from(period_days);
+            (full_allocated * ratio).round_dp(2)
+        };
+
         let actuals = self
-            .sum_actuals(envelope.id(), period_start, period_end, commodity.as_ref())
+            .sum_actuals(envelope.id(), window.start, window.end, commodity.as_ref())
             .await?;
         let rollover = self
             .rollover_for(envelope, period_start, commodity.as_ref())
             .await?;
+
         #[expect(
             clippy::arithmetic_side_effects,
-            reason = "budget arithmetic on Decimal values; overflow is handled via checked_add in sum_actuals"
+            reason = "budget arithmetic on Decimal values; overflow handled via checked_add in sum_actuals"
         )]
         let available = allocated + rollover - actuals;
 
@@ -89,12 +121,29 @@ impl Engine {
             envelope: envelope.clone(),
             period_start,
             period_end,
+            window,
             allocated,
             commodity,
             actuals,
             rollover,
             available,
         })
+    }
+
+    /// Computes the budget status for `envelope` as of `as_of`.
+    ///
+    /// The period is determined by `envelope.period().range_containing(as_of)`.
+    /// Delegates to [`Engine::status_for_window`] with the full natural period as the window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or data parse failure.
+    #[inline]
+    pub async fn status_for(&self, envelope: &Envelope, as_of: Date) -> BcResult<EnvelopeStatus> {
+        let (start, end) = envelope.period().range_containing(as_of);
+        let label = format!("{start} \u{2013} {end}");
+        self.status_for_window(envelope, bc_models::BudgetWindow::custom(start, end, label))
+            .await
     }
 
     /// Computes budget status for multiple envelopes as of `as_of`.
@@ -567,5 +616,74 @@ mod tests {
         assert_eq!(status.rollover, Decimal::from(300_i32));
         // Mar has no allocation and no actuals, so available == rollover
         assert_eq!(status.available, Decimal::from(300_i32));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn status_for_window_matches_full_natural_period(pool: sqlx::SqlitePool) {
+        use bc_models::Amount;
+        use bc_models::CommodityCode;
+        use bc_models::Decimal;
+        use jiff::civil::date;
+
+        let env_svc = EnvelopeService::new(pool.clone());
+        let engine = Engine::new(pool.clone());
+        let env = make_envelope(&env_svc, "Groceries", RolloverPolicy::ResetToZero).await;
+
+        env_svc
+            .allocate(
+                env.id(),
+                date(2026, 3, 1),
+                Amount::new(Decimal::from(600_i32), CommodityCode::new("AUD")),
+            )
+            .await
+            .expect("allocate");
+
+        // Window equals the full natural period — should match status_for
+        let full_window =
+            bc_models::BudgetWindow::custom(date(2026, 3, 1), date(2026, 4, 1), "March 2026");
+        let ws = engine
+            .status_for_window(&env, full_window)
+            .await
+            .expect("window status");
+        let ts = engine
+            .status_for(&env, date(2026, 3, 15))
+            .await
+            .expect("regular status");
+
+        assert_eq!(ws.allocated, ts.allocated);
+        assert_eq!(ws.actuals, ts.actuals);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn status_for_window_prorates_half_month(pool: sqlx::SqlitePool) {
+        use bc_models::Amount;
+        use bc_models::CommodityCode;
+        use bc_models::Decimal;
+        use jiff::civil::date;
+
+        let env_svc = EnvelopeService::new(pool.clone());
+        let engine = Engine::new(pool.clone());
+        let env = make_envelope(&env_svc, "Groceries", RolloverPolicy::ResetToZero).await;
+
+        // Allocate $600 for April 2026 (30-day month)
+        env_svc
+            .allocate(
+                env.id(),
+                date(2026, 4, 1),
+                Amount::new(Decimal::from(600_i32), CommodityCode::new("AUD")),
+            )
+            .await
+            .expect("allocate");
+
+        // Query only the first 15 days of April → expect ~$300 (15/30 * 600)
+        let half_window =
+            bc_models::BudgetWindow::custom(date(2026, 4, 1), date(2026, 4, 16), "Apr 1–15");
+        let ws = engine
+            .status_for_window(&env, half_window)
+            .await
+            .expect("window status");
+
+        // 15 days out of 30 → 300
+        assert_eq!(ws.allocated, Decimal::from(300_i32));
     }
 }
