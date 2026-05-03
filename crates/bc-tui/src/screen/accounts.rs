@@ -81,6 +81,10 @@ pub struct AccountsScreen {
     pending_form: PendingForm,
     /// Whether the transaction form is currently mounted.
     form_mounted: bool,
+    /// Current balance for the selected account (in `current_commodity`).
+    current_balance: bc_models::Decimal,
+    /// Commodity code for `current_balance` (empty when no account is selected).
+    current_commodity: String,
 }
 
 impl AccountsScreen {
@@ -102,6 +106,8 @@ impl AccountsScreen {
             detail_dirty: false,
             pending_form: PendingForm::None,
             form_mounted: false,
+            current_balance: bc_models::Decimal::ZERO,
+            current_commodity: String::new(),
         }
     }
 
@@ -121,6 +127,7 @@ impl AccountsScreen {
     /// Load transactions for the selected account into `self.transactions`.
     ///
     /// If no account is selected, clears the transaction list.
+    /// After loading transactions, also loads the current balance for the primary commodity.
     #[inline]
     #[expect(
         clippy::print_stderr,
@@ -129,6 +136,8 @@ impl AccountsScreen {
     fn load_transactions(&mut self) {
         let Some(account_id) = self.selected_account.clone() else {
             self.transactions = Vec::new();
+            self.current_balance = bc_models::Decimal::ZERO;
+            self.current_commodity = String::new();
             return;
         };
         match self
@@ -137,6 +146,35 @@ impl AccountsScreen {
         {
             Ok(txns) => self.transactions = txns.collect(),
             Err(e) => eprintln!("failed to load transactions: {e}"),
+        }
+
+        // Determine the primary commodity from the loaded transactions.
+        let commodity = self
+            .transactions
+            .iter()
+            .flat_map(|t| t.postings().iter())
+            .find(|p| Some(p.account_id()) == self.selected_account.as_ref())
+            .map(|p| p.amount().commodity().as_str().to_owned())
+            .unwrap_or_default();
+
+        if commodity.is_empty() {
+            self.current_balance = bc_models::Decimal::ZERO;
+            self.current_commodity = String::new();
+        } else {
+            match self
+                .ctx
+                .block_on(self.ctx.balances.balance_for(&account_id, &commodity))
+            {
+                Ok(bal) => {
+                    self.current_balance = bal;
+                    self.current_commodity = commodity;
+                }
+                Err(e) => {
+                    eprintln!("failed to load balance: {e}");
+                    self.current_balance = bc_models::Decimal::ZERO;
+                    self.current_commodity = String::new();
+                }
+            }
         }
     }
 
@@ -496,9 +534,9 @@ impl Screen for AccountsScreen {
                 Id::Accounts(AccountsId::TransactionList),
                 Box::new(list::TransactionList::new(
                     self.transactions.clone(),
-                    None,
-                    bc_models::Decimal::ZERO,
-                    String::new(),
+                    self.selected_account.clone(),
+                    self.current_balance,
+                    self.current_commodity.clone(),
                 )),
                 vec![],
             ) {
