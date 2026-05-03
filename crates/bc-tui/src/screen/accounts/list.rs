@@ -1,7 +1,7 @@
 //! Transaction list component.
 //!
 //! Renders a scrollable list of transactions for the currently selected account.
-//! Navigation emits nothing; action keys emit [`crate::msg::AccountsMsg`] variants.
+//! Navigation (`j`/`k`, Up/Down) emits [`crate::msg::ChromeMsg::Redraw`]; action keys emit [`crate::msg::AccountsMsg`] variants.
 
 use bc_models::Transaction;
 use tuirealm::AttrValue;
@@ -234,14 +234,14 @@ impl Component<Msg, NoUserEvent> for TransactionList {
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Down));
-                None
+                Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
             }
             Event::Keyboard(KeyEvent {
                 code: Key::Up | Key::Char('k'),
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Up));
-                None
+                Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
             }
             Event::Keyboard(KeyEvent {
                 code: Key::Right | Key::Char('l') | Key::Enter,
@@ -341,5 +341,25 @@ mod tests {
         }
 
         assert_eq!(list.selected, 1);
+    }
+
+    #[test]
+    fn j_key_emits_redraw() {
+        let mut list = TransactionList::new(vec![]);
+        let result = list.on(Event::Keyboard(KeyEvent {
+            code: Key::Char('j'),
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
+        assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
+    }
+
+    #[test]
+    fn k_key_emits_redraw() {
+        let mut list = TransactionList::new(vec![]);
+        let result = list.on(Event::Keyboard(KeyEvent {
+            code: Key::Char('k'),
+            modifiers: tuirealm::event::KeyModifiers::NONE,
+        }));
+        assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
     }
 }
