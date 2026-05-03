@@ -137,6 +137,10 @@ pub enum BudgetMsg {
         /// Amount string in "VALUE COMMODITY" format, e.g. "600.00 AUD".
         amount: String,
     },
+    /// User pressed `[` — cycle to the previous time-period preset.
+    PeriodPrev,
+    /// User pressed `]` — cycle to the next time-period preset.
+    PeriodNext,
 }
 
 /// Messages produced by the reports screen.
