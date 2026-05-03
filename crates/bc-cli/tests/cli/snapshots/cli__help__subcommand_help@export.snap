@@ -11,11 +11,7 @@ Usage: borrow-checker export [OPTIONS] --format <FORMAT>
 
 Options:
       --format <FORMAT>
-          Output format
-
-          Possible values:
-          - ledger:    Ledger journal format
-          - beancount: Beancount journal format
+          Output format (e.g. `ledger`, `beancount`). Must match a loaded exporter plugin name
 
       --json
           Emit machine-readable JSON instead of human-readable output
@@ -26,6 +22,9 @@ Options:
           Path to the SQLite database file.
           
           Overrides the `db_path` config file setting and the platform default. The `BC_DB_PATH` environment variable is also honoured via the config layer rather than directly by this flag.
+
+  -o, --output <OUTPUT>
+          Path to write the output file. Omit to write to stdout
 
   -v, --verbose...
           Increase log verbosity.

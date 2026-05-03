@@ -6,4 +6,4 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: export to 'ledger' is not yet available; native exporters have been removed and plugin-based export will be added in a future milestone
+error: export to 'ledger' is not yet available; exporter plugins will be added in a future milestone
