@@ -336,7 +336,12 @@ impl Screen for AccountsScreen {
         )?;
         app.mount(
             Id::Accounts(AccountsId::TransactionList),
-            Box::new(list::TransactionList::new(vec![])),
+            Box::new(list::TransactionList::new(
+                vec![],
+                None,
+                bc_models::Decimal::ZERO,
+                String::new(),
+            )),
             vec![],
         )?;
         app.mount(
@@ -489,7 +494,12 @@ impl Screen for AccountsScreen {
             }
             if let Err(e) = app.mount(
                 Id::Accounts(AccountsId::TransactionList),
-                Box::new(list::TransactionList::new(self.transactions.clone())),
+                Box::new(list::TransactionList::new(
+                    self.transactions.clone(),
+                    None,
+                    bc_models::Decimal::ZERO,
+                    String::new(),
+                )),
                 vec![],
             ) {
                 eprintln!("failed to re-mount transaction list: {e}");
