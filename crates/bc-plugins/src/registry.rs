@@ -13,8 +13,8 @@ use bc_core::Importer as _;
 use wasmtime::Store;
 use wasmtime::component::Linker;
 
+use crate::host::BcPlugin;
 use crate::host::HostCtx;
-use crate::host::ImporterPlugin;
 use crate::manifest::ManifestError;
 use crate::manifest::PluginManifest;
 use crate::plugin_importer::PluginImporter;
@@ -197,7 +197,7 @@ fn query_plugin_name(
     linker: &Linker<HostCtx>,
 ) -> wasmtime::Result<String> {
     let mut store = Store::new(engine, HostCtx::new());
-    let bindings = ImporterPlugin::instantiate(&mut store, component, linker)?;
+    let bindings = BcPlugin::instantiate(&mut store, component, linker)?;
     bindings.borrow_checker_sdk_importer().call_name(&mut store)
 }
 
@@ -216,7 +216,7 @@ fn query_plugin_abi(
     linker: &Linker<HostCtx>,
 ) -> wasmtime::Result<u32> {
     let mut store = Store::new(engine, HostCtx::new());
-    let bindings = ImporterPlugin::instantiate(&mut store, component, linker)?;
+    let bindings = BcPlugin::instantiate(&mut store, component, linker)?;
     bindings
         .borrow_checker_sdk_importer()
         .call_sdk_abi(&mut store)

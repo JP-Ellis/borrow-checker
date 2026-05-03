@@ -11,11 +11,12 @@
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         path: "../bc-sdk/wit",
-        world: "importer-plugin",
+        world: "borrow-checker",
     });
 }
 
-pub(crate) use bindings::ImporterPlugin;
+/// Type alias for the wasmtime-generated `BorrowChecker` world bindings.
+pub(crate) type BcPlugin = bindings::BorrowChecker;
 use wasmtime_wasi::ResourceTable;
 use wasmtime_wasi::WasiCtx;
 use wasmtime_wasi::WasiCtxBuilder;
