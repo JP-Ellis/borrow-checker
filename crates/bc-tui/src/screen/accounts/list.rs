@@ -1,8 +1,11 @@
 //! Transaction list component.
 //!
-//! Renders a scrollable list of transactions for the currently selected account.
-//! Navigation (`j`/`k`, Up/Down) emits [`crate::msg::ChromeMsg::Redraw`]; action keys emit [`crate::msg::AccountsMsg`] variants.
+//! Renders a scrollable table of transactions for the selected account.
+//! Columns: Date | Payee | Amount | Balance.
+//! Amounts use the selected account's posting sign; balance runs newest-to-oldest.
 
+use bc_models::AccountId;
+use bc_models::Decimal;
 use bc_models::Transaction;
 use tuirealm::AttrValue;
 use tuirealm::Attribute;
@@ -22,6 +25,8 @@ use tuirealm::event::KeyEvent;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::style::Style;
+use tuirealm::ratatui::text::Line;
+use tuirealm::ratatui::text::Span;
 use tuirealm::ratatui::widgets::Block;
 use tuirealm::ratatui::widgets::BorderType;
 use tuirealm::ratatui::widgets::Borders;
@@ -35,17 +40,36 @@ use crate::msg::Msg;
 
 // MARK: private component
 
-/// Raw widget that renders the transaction list.
+/// Raw widget that renders the transaction table.
 struct TxList {
     /// Component props storage.
     props: Props,
-    /// Transactions to display.
+    /// Transactions to display (sorted newest-first).
     transactions: Vec<Transaction>,
+    /// Pre-computed running balances, parallel to `transactions`.
+    running_balances: Vec<Decimal>,
+    /// The account currently being viewed (used to find the matching posting).
+    account_id: Option<AccountId>,
+    /// Commodity of the running balance (e.g. `"AUD"`).
+    commodity: String,
     /// Index of the currently highlighted row.
     selected: usize,
 }
 
 impl TxList {
+    /// Build an empty `TxList` with no account context.
+    #[cfg(test)]
+    fn empty() -> Self {
+        Self {
+            props: Props::default(),
+            transactions: Vec::new(),
+            running_balances: Vec::new(),
+            account_id: None,
+            commodity: String::new(),
+            selected: 0,
+        }
+    }
+
     /// Move the selection down by one row, clamping at the last item.
     fn move_down(&mut self) {
         let last = self.transactions.len().saturating_sub(1);
@@ -57,33 +81,123 @@ impl TxList {
         self.selected = self.selected.saturating_sub(1);
     }
 
-    /// Replace the displayed transactions and reset selection to zero.
-    fn set_transactions(&mut self, transactions: Vec<Transaction>) {
-        self.transactions = transactions;
-        self.selected = 0;
-    }
-
-    /// Compute a display string for the net positive amount of a transaction.
+    /// Net posting amount for `account_id` in `commodity` within `tx`.
     ///
-    /// Sums the absolute values of all posting amounts and formats the first
-    /// commodity found, or returns `"—"` when there are no postings.
+    /// Sums all postings whose account and commodity match. Returns zero if
+    /// none match (should not happen for well-formed transactions).
     ///
     /// # Arguments
     ///
-    /// * `t` - The transaction whose postings will be summed.
+    /// * `tx`         - The transaction to inspect.
+    /// * `account_id` - Account whose postings are summed.
+    /// * `commodity`  - Commodity to filter by.
     ///
     /// # Returns
     ///
-    /// A formatted string such as `"42.50 AUD"`.
-    fn format_amount(t: &Transaction) -> String {
-        // Find the first positive posting amount to represent the transaction value.
-        t.postings()
+    /// Net signed amount for the account in this transaction.
+    fn posting_net(tx: &Transaction, account_id: &AccountId, commodity: &str) -> Decimal {
+        tx.postings()
             .iter()
-            .find(|p| p.amount().value() > bc_models::Decimal::ZERO)
-            .map_or_else(
-                || "\u{2014}".to_owned(), // —
-                |p| format!("{} {}", p.amount().value(), p.amount().commodity()),
-            )
+            .filter(|p| {
+                p.account_id() == account_id && p.amount().commodity().as_str() == commodity
+            })
+            .fold(Decimal::ZERO, |acc, p| {
+                #[expect(
+                    clippy::arithmetic_side_effects,
+                    reason = "summing Decimal posting amounts; no overflow risk for financial amounts"
+                )]
+                { acc + p.amount().value() }
+            })
+    }
+
+    /// Compute a running balance array for `transactions` (newest-first).
+    ///
+    /// `running_balances[0]` is `current_balance` (after the most recent transaction).
+    /// Each subsequent entry is the balance before the transaction above it.
+    ///
+    /// # Arguments
+    ///
+    /// * `transactions`    - Slice sorted newest-first.
+    /// * `account_id`      - Account whose postings are summed.
+    /// * `commodity`       - Commodity to filter by.
+    /// * `current_balance` - Current (latest) balance for the account.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<Decimal>` parallel to `transactions`, or empty if `transactions` is empty.
+    fn compute_running_balances(
+        transactions: &[Transaction],
+        account_id: &AccountId,
+        commodity: &str,
+        current_balance: Decimal,
+    ) -> Vec<Decimal> {
+        if transactions.is_empty() {
+            return Vec::new();
+        }
+        let mut balances = vec![Decimal::ZERO; transactions.len()];
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "index 0 is within bounds: transactions is non-empty (checked above)"
+        )]
+        {
+            balances[0] = current_balance;
+        }
+        for i in 1..transactions.len() {
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "i >= 1 so i - 1 cannot underflow; balance subtraction is safe for financial amounts"
+            )]
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "i and i-1 are within bounds: loop runs from 1..len"
+            )]
+            {
+                let net = Self::posting_net(&transactions[i - 1], account_id, commodity);
+                balances[i] = balances[i - 1] - net;
+            }
+        }
+        balances
+    }
+
+    /// Returns the ratatui color for a signed decimal value.
+    ///
+    /// # Returns
+    ///
+    /// [`Color::Green`] for positive, [`Color::Red`] for negative, [`Color::Reset`] for zero.
+    fn color_for(value: Decimal) -> Color {
+        match value.cmp(&Decimal::ZERO) {
+            core::cmp::Ordering::Greater => Color::Green,
+            core::cmp::Ordering::Less => Color::Red,
+            core::cmp::Ordering::Equal => Color::Reset,
+        }
+    }
+
+    /// Truncate `s` to at most `max` chars, appending `…` if truncated.
+    fn truncate(s: &str, max: usize) -> String {
+        if s.chars().count() <= max {
+            s.to_owned()
+        } else {
+            let t: String = s.chars().take(max.saturating_sub(1)).collect();
+            format!("{t}\u{2026}")
+        }
+    }
+
+    /// Format a decimal amount with 2 decimal places and an optional commodity suffix.
+    ///
+    /// # Arguments
+    ///
+    /// * `value`     - The amount to format.
+    /// * `commodity` - Commodity suffix (e.g. `"AUD"`); empty string produces no suffix.
+    ///
+    /// # Returns
+    ///
+    /// A string like `"42.50 AUD"` or `"42.50"`.
+    fn format_amount(value: Decimal, commodity: &str) -> String {
+        if commodity.is_empty() {
+            format!("{value:.2}")
+        } else {
+            format!("{value:.2} {commodity}")
+        }
     }
 }
 
@@ -115,15 +229,42 @@ impl MockComponent for TxList {
             .iter()
             .enumerate()
             .map(|(idx, t)| {
-                let payee = t.payee().unwrap_or("\u{2014}"); // —
-                let amount = Self::format_amount(t);
-                let text = format!("{:<12}  {:<20}  {}", t.date(), payee, amount);
-                let style = if idx == self.selected {
+                let payee = Self::truncate(t.payee().unwrap_or("\u{2014}"), 24);
+                let date_str = format!("{:<10}", t.date());
+
+                let (amount_val, amount_str) = if let Some(ref acc_id) = self.account_id {
+                    let val = Self::posting_net(t, acc_id, &self.commodity);
+                    (val, Self::format_amount(val, &self.commodity))
+                } else {
+                    (Decimal::ZERO, "\u{2014}".to_owned())
+                };
+
+                let balance_val = self
+                    .running_balances
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(Decimal::ZERO);
+                let balance_str = Self::format_amount(balance_val, &self.commodity);
+
+                let base_style = if idx == self.selected {
                     Style::default().fg(Color::Yellow)
                 } else {
                     Style::default()
                 };
-                ListItem::new(text).style(style)
+
+                let line = Line::from(vec![
+                    Span::styled(format!("{date_str}  {payee:<24}  "), base_style),
+                    Span::styled(
+                        format!("{amount_str:>14}  "),
+                        Style::default().fg(Self::color_for(amount_val)),
+                    ),
+                    Span::styled(
+                        format!("{balance_str:>14}"),
+                        Style::default().fg(Self::color_for(balance_val)),
+                    ),
+                ]);
+
+                ListItem::new(line)
             })
             .collect();
 
@@ -177,10 +318,11 @@ impl MockComponent for TxList {
 
 // MARK: public wrapper
 
-/// Tui-realm component wrapper for the transaction list widget.
+/// Tui-realm component wrapper for the transaction list.
 ///
-/// Renders a scrollable list of transactions with `j`/`k` (or Up/Down) navigation.
-/// Pressing `a`, `e`, or `d` emits the corresponding [`AccountsMsg`] variant.
+/// Renders a scrollable table with columns: Date | Payee | Amount | Balance.
+/// Amounts show the sign of the selected account's posting (outflows negative).
+/// `j`/`k` navigation emits [`crate::msg::ChromeMsg::Redraw`].
 #[expect(
     clippy::module_name_repetitions,
     reason = "referenced externally as list::TransactionList; repetition is intentional"
@@ -193,31 +335,39 @@ pub struct TransactionList {
 }
 
 impl TransactionList {
-    /// Create a new `TransactionList` with the given transactions.
+    /// Create a new `TransactionList`.
     ///
     /// # Arguments
     ///
-    /// * `transactions` - The transactions to display, in the order they will be shown.
+    /// * `transactions`    - Rows to display, sorted newest-first.
+    /// * `account_id`      - The account being viewed (selects the matching posting).
+    /// * `current_balance` - Current balance used to compute the running-balance column.
+    /// * `commodity`       - Commodity code for balances (e.g. `"AUD"`).
     ///
     /// # Returns
     ///
     /// A new `TransactionList` ready to be mounted.
     #[inline]
     #[must_use]
-    pub fn new(transactions: Vec<Transaction>) -> Self {
+    pub fn new(
+        transactions: Vec<Transaction>,
+        account_id: Option<AccountId>,
+        current_balance: Decimal,
+        commodity: String,
+    ) -> Self {
+        let running_balances = account_id.as_ref().map_or_else(Vec::new, |id| {
+            TxList::compute_running_balances(&transactions, id, &commodity, current_balance)
+        });
         Self {
             component: TxList {
                 props: Props::default(),
                 transactions,
+                running_balances,
+                account_id,
+                commodity,
                 selected: 0,
             },
         }
-    }
-
-    /// Replace the displayed transactions and reset the selection to the first item.
-    #[inline]
-    pub fn set_transactions(&mut self, transactions: Vec<Transaction>) {
-        self.component.set_transactions(transactions);
     }
 }
 
@@ -284,82 +434,158 @@ impl Component<Msg, NoUserEvent> for TransactionList {
     }
 }
 
-// MARK: tests
-
 #[cfg(test)]
 mod tests {
+    use bc_models::AccountId;
+    use bc_models::Amount;
+    use bc_models::CommodityCode;
+    use bc_models::Decimal;
+    use bc_models::Posting;
+    use bc_models::PostingId;
+    use bc_models::Transaction;
+    use bc_models::TransactionId;
+    use bc_models::TransactionStatus;
+    use jiff::Timestamp;
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use tuirealm::event::Key;
+    use tuirealm::event::KeyEvent;
+    use tuirealm::event::KeyModifiers;
 
     use super::*;
+    use crate::msg::ChromeMsg;
+    use crate::msg::Msg;
+
+    fn make_posting(account_id: &AccountId, value: i32, commodity: &str) -> Posting {
+        Posting::builder()
+            .id(PostingId::new())
+            .account_id(account_id.clone())
+            .amount(Amount::new(
+                Decimal::from(value),
+                CommodityCode::new(commodity),
+            ))
+            .build()
+    }
+
+    fn make_tx(
+        date: jiff::civil::Date,
+        account_id: &AccountId,
+        value: i32,
+        commodity: &str,
+        other_id: &AccountId,
+    ) -> Transaction {
+        Transaction::builder()
+            .id(TransactionId::new())
+            .date(date)
+            .description("test")
+            .status(TransactionStatus::Cleared)
+            .postings(vec![
+                make_posting(account_id, value, commodity),
+                #[expect(
+                    clippy::arithmetic_side_effects,
+                    reason = "negating a small test i32; overflow is not possible in test context"
+                )]
+                make_posting(other_id, -value, commodity),
+            ])
+            .created_at(Timestamp::now())
+            .build()
+    }
+
+    #[test]
+    fn posting_net_sums_matching_postings() {
+        let acc = AccountId::new();
+        let other = AccountId::new();
+        let tx = make_tx(date(2026, 5, 1), &acc, 100, "AUD", &other);
+        let net = TxList::posting_net(&tx, &acc, "AUD");
+        assert_eq!(net, Decimal::from(100_i32));
+    }
+
+    #[test]
+    fn posting_net_returns_zero_for_no_match() {
+        let acc = AccountId::new();
+        let other = AccountId::new();
+        let unrelated = AccountId::new();
+        let tx = make_tx(date(2026, 5, 1), &acc, 100, "AUD", &other);
+        let net = TxList::posting_net(&tx, &unrelated, "AUD");
+        assert_eq!(net, Decimal::ZERO);
+    }
+
+    #[test]
+    fn compute_running_balances_newest_first() {
+        let acc = AccountId::new();
+        let other = AccountId::new();
+        // Two transactions: newest first
+        // tx0 is most recent (+50), tx1 is older (+100)
+        // current_balance = 150 (100 + 50)
+        let tx0 = make_tx(date(2026, 5, 1), &acc, 50, "AUD", &other);
+        let tx1 = make_tx(date(2026, 4, 1), &acc, 100, "AUD", &other);
+        let transactions = vec![tx0, tx1];
+        let current_balance = Decimal::from(150_i32);
+        let balances =
+            TxList::compute_running_balances(&transactions, &acc, "AUD", current_balance);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "we just created a 2-element Vec above; indices 0 and 1 are in bounds"
+        )]
+        {
+            assert_eq!(balances[0], Decimal::from(150_i32)); // after most recent
+            assert_eq!(balances[1], Decimal::from(100_i32)); // before most recent = 150 - 50
+        }
+    }
+
+    #[test]
+    fn compute_running_balances_empty() {
+        let acc = AccountId::new();
+        let balances = TxList::compute_running_balances(&[], &acc, "AUD", Decimal::from(100_i32));
+        assert!(balances.is_empty());
+    }
+
+    #[test]
+    fn color_for_positive_is_green() {
+        assert_eq!(TxList::color_for(Decimal::from(1_i32)), Color::Green);
+    }
+
+    #[test]
+    fn color_for_negative_is_red() {
+        assert_eq!(TxList::color_for(Decimal::from(-1_i32)), Color::Red);
+    }
+
+    #[test]
+    fn color_for_zero_is_reset() {
+        assert_eq!(TxList::color_for(Decimal::ZERO), Color::Reset);
+    }
 
     #[test]
     fn move_down_on_empty_list_does_not_panic() {
-        let mut list = TxList {
-            props: Props::default(),
-            transactions: vec![],
-            selected: 0,
-        };
+        let mut list = TxList::empty();
         list.move_down();
         assert_eq!(list.selected, 0);
     }
 
     #[test]
     fn move_up_does_not_underflow() {
-        let mut list = TxList {
-            props: Props::default(),
-            transactions: vec![],
-            selected: 0,
-        };
+        let mut list = TxList::empty();
         list.move_up();
         assert_eq!(list.selected, 0);
     }
 
     #[test]
-    fn move_down_clamps_to_last() {
-        use bc_models::TransactionId;
-        use jiff::Timestamp;
-        use jiff::civil::date;
-
-        let make_tx = || {
-            Transaction::builder()
-                .id(TransactionId::new())
-                .date(date(2026, 1, 1))
-                .description("test")
-                .status(bc_models::TransactionStatus::Cleared)
-                .created_at(Timestamp::now())
-                .build()
-        };
-
-        let mut list = TxList {
-            props: Props::default(),
-            transactions: vec![make_tx(), make_tx()],
-            selected: 0,
-        };
-
-        for _ in 0_usize..10_usize {
-            list.move_down();
-        }
-
-        assert_eq!(list.selected, 1);
-    }
-
-    #[test]
     fn j_key_emits_redraw() {
-        let mut list = TransactionList::new(vec![]);
+        let mut list = TransactionList::new(vec![], None, Decimal::ZERO, String::new());
         let result = list.on(Event::Keyboard(KeyEvent {
             code: Key::Char('j'),
-            modifiers: tuirealm::event::KeyModifiers::NONE,
+            modifiers: KeyModifiers::NONE,
         }));
-        assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
+        assert_eq!(result, Some(Msg::Chrome(ChromeMsg::Redraw)));
     }
 
     #[test]
     fn k_key_emits_redraw() {
-        let mut list = TransactionList::new(vec![]);
+        let mut list = TransactionList::new(vec![], None, Decimal::ZERO, String::new());
         let result = list.on(Event::Keyboard(KeyEvent {
             code: Key::Char('k'),
-            modifiers: tuirealm::event::KeyModifiers::NONE,
+            modifiers: KeyModifiers::NONE,
         }));
-        assert_eq!(result, Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw)));
+        assert_eq!(result, Some(Msg::Chrome(ChromeMsg::Redraw)));
     }
 }

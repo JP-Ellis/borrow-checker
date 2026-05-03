@@ -119,7 +119,8 @@ mod tests {
     /// Snapshot: `TransactionList` rendered with no transactions.
     #[test]
     fn transaction_list_empty() {
-        let mut component = TransactionList::new(vec![]);
+        let mut component =
+            TransactionList::new(vec![], None, bc_models::Decimal::ZERO, String::new());
         let output = render(&mut component, 60, 15);
         insta::assert_snapshot!(output);
     }
@@ -135,7 +136,8 @@ mod tests {
             make_transaction("Rent", "Landlord", (2026, 1, 1)),
             make_transaction("Coffee", "Café", (2026, 1, 15)),
         ];
-        let mut component = TransactionList::new(txns);
+        let mut component =
+            TransactionList::new(txns, None, bc_models::Decimal::ZERO, String::new());
         let output = render(&mut component, 60, 15);
         insta::with_settings!({
             filters => [("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", "<uuid>")]
