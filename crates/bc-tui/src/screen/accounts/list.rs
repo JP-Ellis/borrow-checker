@@ -570,6 +570,21 @@ mod tests {
     }
 
     #[test]
+    fn move_down_clamps_to_last() {
+        let acc = AccountId::new();
+        let other = AccountId::new();
+        let tx0 = make_tx(date(2026, 5, 1), &acc, 50, "AUD", &other);
+        let tx1 = make_tx(date(2026, 4, 1), &acc, 100, "AUD", &other);
+        let mut list = TxList::empty();
+        list.transactions = vec![tx0, tx1];
+
+        for _ in 0_usize..10_usize {
+            list.move_down();
+        }
+        assert_eq!(list.selected, 1);
+    }
+
+    #[test]
     fn j_key_emits_redraw() {
         let mut list = TransactionList::new(vec![], None, Decimal::ZERO, String::new());
         let result = list.on(Event::Keyboard(KeyEvent {
