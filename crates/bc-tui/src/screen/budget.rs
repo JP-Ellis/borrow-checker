@@ -557,4 +557,42 @@ mod tests {
         let mut screen = BudgetScreen::new(make_ctx());
         pretty_assertions::assert_eq!(screen.handle(Msg::AppQuit), None);
     }
+
+    #[test]
+    fn period_prev_wraps_to_last() {
+        let mut screen = BudgetScreen::new(make_ctx());
+        let date = jiff::civil::date(2026, 5, 1);
+        screen.window_presets = vec![
+            bc_models::BudgetWindow::last_month(date),
+            bc_models::BudgetWindow::this_month(date),
+        ];
+        screen.selected_window_idx = 0;
+        screen.handle(Msg::Budget(BudgetMsg::PeriodPrev));
+        pretty_assertions::assert_eq!(screen.selected_window_idx, 1);
+        pretty_assertions::assert_eq!(screen.detail_dirty, true);
+    }
+
+    #[test]
+    fn period_next_wraps_to_first() {
+        let mut screen = BudgetScreen::new(make_ctx());
+        let date = jiff::civil::date(2026, 5, 1);
+        screen.window_presets = vec![
+            bc_models::BudgetWindow::last_month(date),
+            bc_models::BudgetWindow::this_month(date),
+        ];
+        screen.selected_window_idx = 1;
+        screen.handle(Msg::Budget(BudgetMsg::PeriodNext));
+        pretty_assertions::assert_eq!(screen.selected_window_idx, 0);
+        pretty_assertions::assert_eq!(screen.detail_dirty, true);
+    }
+
+    #[test]
+    fn period_prev_next_noop_when_no_presets() {
+        let mut screen = BudgetScreen::new(make_ctx());
+        // window_presets is empty by default
+        screen.handle(Msg::Budget(BudgetMsg::PeriodPrev));
+        screen.handle(Msg::Budget(BudgetMsg::PeriodNext));
+        pretty_assertions::assert_eq!(screen.selected_window_idx, 0);
+        pretty_assertions::assert_eq!(screen.detail_dirty, false);
+    }
 }
