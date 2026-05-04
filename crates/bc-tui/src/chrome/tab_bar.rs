@@ -65,17 +65,16 @@ impl MockComponent for Widget {
     #[inline]
     fn attr(&mut self, attr: Attribute, value: AttrValue) {
         // Update active tab when set externally.
-        if attr == Attribute::Value {
-            if let AttrValue::Payload(tuirealm::props::PropPayload::One(
+        if attr == Attribute::Value
+            && let AttrValue::Payload(tuirealm::props::PropPayload::One(
                 tuirealm::props::PropValue::Usize(idx),
             )) = &value
-            {
-                self.active_tab = match idx {
-                    0 => Tab::Accounts,
-                    1 => Tab::Budget,
-                    _ => Tab::Reports,
-                };
-            }
+        {
+            self.active_tab = match idx {
+                0 => Tab::Accounts,
+                1 => Tab::Budget,
+                _ => Tab::Reports,
+            };
         }
         self.props.set(attr, value);
     }

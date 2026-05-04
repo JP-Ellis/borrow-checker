@@ -418,10 +418,10 @@ fn user_config_paths() -> Vec<PathBuf> {
     if let Some(xdg) = xdg_path {
         paths.push(xdg);
     }
-    if let Some(native) = native_path {
-        if !paths.contains(&native) {
-            paths.push(native);
-        }
+    if let Some(native) = native_path
+        && !paths.contains(&native)
+    {
+        paths.push(native);
     }
     paths
 }

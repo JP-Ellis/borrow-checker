@@ -384,12 +384,11 @@ impl Component<Msg, NoUserEvent> for EnvelopeSidebar {
             }) => {
                 self.component.perform(Cmd::Move(Direction::Right));
                 // Emit EnvelopeSelected only when a leaf node is confirmed.
-                if let State::One(StateValue::String(ref s)) = self.component.state() {
-                    if let Ok(id) = s.parse::<EnvelopeId>() {
-                        if !has_children(&id, &self.component.envelopes) {
-                            return Some(Msg::Budget(BudgetMsg::EnvelopeSelected(id)));
-                        }
-                    }
+                if let State::One(StateValue::String(ref s)) = self.component.state()
+                    && let Ok(id) = s.parse::<EnvelopeId>()
+                    && !has_children(&id, &self.component.envelopes)
+                {
+                    return Some(Msg::Budget(BudgetMsg::EnvelopeSelected(id)));
                 }
                 Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
             }

@@ -46,10 +46,10 @@ fn main() -> anyhow::Result<()> {
     // Priority order: default < config file < BC_* env vars < --db-path flag.
     let db_path = args.db_path.unwrap_or_else(|| settings.db_path());
 
-    if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("warning: could not create database directory: {e}");
-        }
+    if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty())
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("warning: could not create database directory: {e}");
     }
 
     let ctx = Arc::new(rt.block_on(bc_tui::context::TuiContext::open(&db_path))?);
