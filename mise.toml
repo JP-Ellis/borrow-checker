@@ -28,10 +28,7 @@
 
   [tasks.lint]
   description = "Lint with Clippy across all feature combinations"
-  run         = [
-    "cargo hack --feature-powerset --workspace --no-dev-deps clippy -- -D warnings",
-    "cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings",
-  ]
+  run         = "cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings"
 
   [tasks."lint:fix"]
   description = "Auto-fix lint issues"

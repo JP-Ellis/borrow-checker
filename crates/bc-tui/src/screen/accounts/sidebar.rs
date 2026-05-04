@@ -359,10 +359,10 @@ impl AccountSidebar {
     /// the `AccountNavigated` variant so the screen does not steal focus.
     #[inline]
     fn account_navigated_or_redraw(&self) -> Msg {
-        if let State::One(StateValue::String(ref s)) = self.component.state() {
-            if let Ok(id) = s.parse::<AccountId>() {
-                return Msg::Accounts(AccountsMsg::AccountNavigated(id));
-            }
+        if let State::One(StateValue::String(ref s)) = self.component.state()
+            && let Ok(id) = s.parse::<AccountId>()
+        {
+            return Msg::Accounts(AccountsMsg::AccountNavigated(id));
         }
         Msg::Chrome(crate::msg::ChromeMsg::Redraw)
     }
@@ -397,12 +397,11 @@ impl Component<Msg, NoUserEvent> for AccountSidebar {
                 self.component.perform(Cmd::Move(Direction::Right));
                 // Emit AccountSelected only when a leaf node is confirmed.
                 // Expanding a parent node still emits Redraw so the tree updates.
-                if let State::One(StateValue::String(ref s)) = self.component.state() {
-                    if let Ok(id) = s.parse::<AccountId>() {
-                        if !has_children(&id, &self.component.accounts) {
-                            return Some(Msg::Accounts(AccountsMsg::AccountSelected(id)));
-                        }
-                    }
+                if let State::One(StateValue::String(ref s)) = self.component.state()
+                    && let Ok(id) = s.parse::<AccountId>()
+                    && !has_children(&id, &self.component.accounts)
+                {
+                    return Some(Msg::Accounts(AccountsMsg::AccountSelected(id)));
                 }
                 Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
             }

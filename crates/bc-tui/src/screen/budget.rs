@@ -188,11 +188,12 @@ impl BudgetScreen {
                 self.selected_window_idx = 0;
                 self.load_status();
                 // Fallback to "Last Month" (index 1) when the current month has no data.
-                if let Some(ref s) = self.selected_status {
-                    if s.allocated.is_zero() && s.actuals.is_zero() {
-                        self.selected_window_idx = 1;
-                        self.load_status();
-                    }
+                if let Some(ref s) = self.selected_status
+                    && s.allocated.is_zero()
+                    && s.actuals.is_zero()
+                {
+                    self.selected_window_idx = 1;
+                    self.load_status();
                 }
                 self.detail_dirty = true;
                 self.focus_detail_after_dirty = true;

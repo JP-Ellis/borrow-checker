@@ -93,15 +93,15 @@ async fn validate_envelope_postings(postings: &[Posting], pool: &SqlitePool) -> 
         };
         let envelope = env_svc.get(env_id).await?;
         // Only validate commodity when the envelope has one set.
-        if let Some(env_commodity) = envelope.commodity() {
-            if posting.amount().commodity() != env_commodity {
-                return Err(BcError::InvalidInput(format!(
-                    "posting commodity '{}' does not match envelope '{}' commodity '{}'",
-                    posting.amount().commodity(),
-                    env_id,
-                    env_commodity,
-                )));
-            }
+        if let Some(env_commodity) = envelope.commodity()
+            && posting.amount().commodity() != env_commodity
+        {
+            return Err(BcError::InvalidInput(format!(
+                "posting commodity '{}' does not match envelope '{}' commodity '{}'",
+                posting.amount().commodity(),
+                env_id,
+                env_commodity,
+            )));
         }
     }
     Ok(())

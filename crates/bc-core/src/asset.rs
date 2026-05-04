@@ -207,64 +207,64 @@ impl Service {
 
         // If a counterpart account is supplied and the change is non-zero, insert a
         // double-entry transaction to record the unrealised gain/loss.
-        if let Some(cpt_id) = counterpart_id {
-            if !change.is_zero() {
-                let tx_id = TransactionId::new();
-                let status_str = to_db_str(TransactionStatus::Cleared)?;
+        if let Some(cpt_id) = counterpart_id
+            && !change.is_zero()
+        {
+            let tx_id = TransactionId::new();
+            let status_str = to_db_str(TransactionStatus::Cleared)?;
 
-                let event_tx = Event::TransactionCreated { id: tx_id.clone() };
-                insert_event(&event_tx, &mut tx).await?;
+            let event_tx = Event::TransactionCreated { id: tx_id.clone() };
+            insert_event(&event_tx, &mut tx).await?;
 
-                sqlx::query(
-                    "INSERT INTO transactions \
+            sqlx::query(
+                "INSERT INTO transactions \
                      (id, date, payee, description, status, created_at) \
                      VALUES (?, ?, NULL, ?, ?, ?)",
-                )
-                .bind(tx_id.to_string())
-                .bind(recorded_at.to_string())
-                .bind("Asset valuation recorded")
-                .bind(&status_str)
-                .bind(now.to_string())
-                .execute(&mut *tx)
-                .await?;
+            )
+            .bind(tx_id.to_string())
+            .bind(recorded_at.to_string())
+            .bind("Asset valuation recorded")
+            .bind(&status_str)
+            .bind(now.to_string())
+            .execute(&mut *tx)
+            .await?;
 
-                // Asset posting: +change
-                let asset_posting_id = PostingId::new();
-                sqlx::query(
-                    "INSERT INTO postings \
-                     (id, transaction_id, account_id, amount, commodity, memo, position, \
-                      cost_total_value, cost_total_commodity, cost_date, cost_label) \
-                     VALUES (?, ?, ?, ?, ?, NULL, 0, NULL, NULL, NULL, NULL)",
-                )
-                .bind(asset_posting_id.to_string())
-                .bind(tx_id.to_string())
-                .bind(account_id.to_string())
-                .bind(change.to_string())
-                .bind(commodity)
-                .execute(&mut *tx)
-                .await?;
+            // Asset posting: +change
+            let asset_posting_id = PostingId::new();
+            sqlx::query(
+                "INSERT INTO postings \
+                (id, transaction_id, account_id, amount, commodity, memo, position, \
+                cost_total_value, cost_total_commodity, cost_date, cost_label) \
+                VALUES (?, ?, ?, ?, ?, NULL, 0, NULL, NULL, NULL, NULL)",
+            )
+            .bind(asset_posting_id.to_string())
+            .bind(tx_id.to_string())
+            .bind(account_id.to_string())
+            .bind(change.to_string())
+            .bind(commodity)
+            .execute(&mut *tx)
+            .await?;
 
-                // Counterpart posting: -change
-                let counterpart_posting_id = PostingId::new();
-                #[expect(
-                    clippy::arithmetic_side_effects,
-                    reason = "negating a well-bounded delta value; overflow is not possible in practice"
-                )]
-                let neg_change = -change;
-                sqlx::query(
-                    "INSERT INTO postings \
-                     (id, transaction_id, account_id, amount, commodity, memo, position, \
-                      cost_total_value, cost_total_commodity, cost_date, cost_label) \
-                     VALUES (?, ?, ?, ?, ?, NULL, 1, NULL, NULL, NULL, NULL)",
-                )
-                .bind(counterpart_posting_id.to_string())
-                .bind(tx_id.to_string())
-                .bind(cpt_id.to_string())
-                .bind(neg_change.to_string())
-                .bind(commodity)
-                .execute(&mut *tx)
-                .await?;
-            }
+            // Counterpart posting: -change
+            let counterpart_posting_id = PostingId::new();
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "negating a well-bounded delta value; overflow is not possible in practice"
+            )]
+            let neg_change = -change;
+            sqlx::query(
+                "INSERT INTO postings \
+                (id, transaction_id, account_id, amount, commodity, memo, position, \
+                cost_total_value, cost_total_commodity, cost_date, cost_label) \
+                VALUES (?, ?, ?, ?, ?, NULL, 1, NULL, NULL, NULL, NULL)",
+            )
+            .bind(counterpart_posting_id.to_string())
+            .bind(tx_id.to_string())
+            .bind(cpt_id.to_string())
+            .bind(neg_change.to_string())
+            .bind(commodity)
+            .execute(&mut *tx)
+            .await?;
         }
 
         tx.commit().await?;

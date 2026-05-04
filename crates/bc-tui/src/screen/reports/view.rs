@@ -164,11 +164,11 @@ impl MockComponent for ReportViewWidget {
 
     #[inline]
     fn attr(&mut self, attr: Attribute, value: AttrValue) {
-        if attr == Attribute::Text {
-            if let AttrValue::String(s) = value {
-                self.set_output(s);
-                return;
-            }
+        if attr == Attribute::Text
+            && let AttrValue::String(s) = value
+        {
+            self.set_output(s);
+            return;
         }
         self.props.set(attr, value);
     }
