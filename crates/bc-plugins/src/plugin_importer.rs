@@ -12,8 +12,6 @@ use wasmtime::component::Linker;
 
 use crate::host::BcPlugin;
 use crate::host::HostCtx;
-use crate::translate::wit_to_import_error;
-use crate::translate::wit_to_raw_transaction;
 
 /// Wraps a loaded WASM importer component and implements [`bc_core::Importer`].
 ///
@@ -162,9 +160,9 @@ impl bc_core::Importer for PluginImporter {
             .call_parse(&mut store, bytes, &config_json)
             .map_err(|e| bc_core::ImportError::Parse(format!("plugin call failed: {e}")))?;
 
-        let txs = result.map_err(wit_to_import_error)?;
+        let txs = result.map_err(bc_core::ImportError::from)?;
         txs.into_iter()
-            .map(wit_to_raw_transaction)
+            .map(bc_core::RawTransaction::try_from)
             .collect::<Result<Vec<_>, _>>()
     }
 }
