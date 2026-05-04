@@ -56,7 +56,7 @@ tokio              = { workspace = true, features = [
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 tui-input          = "0.11"
-tui-realm-stdlib   = "3"
+tui-realm-stdlib   = "4"
 tui-tree-widget    = "0.24"
 tuirealm           = "3"
 
