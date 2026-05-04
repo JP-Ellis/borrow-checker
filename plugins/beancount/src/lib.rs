@@ -93,6 +93,22 @@ impl bc_sdk::Importer for BeancountImporter {
             // commodity is used for `RawTransaction::amount`; the rest are dropped.
             // This is a known limitation of the single-commodity `RawTransaction` model.
 
+            // Warn when the transaction has postings in multiple commodities.
+            // Only the first posting's commodity is used for `RawTransaction::amount`;
+            // additional postings are dropped — a known limitation of the single-commodity model.
+            let has_multiple_commodities = tx.postings.iter().any(|p| p.currency != first.currency);
+            if has_multiple_commodities {
+                let dropped: Vec<&str> = tx.postings[1..]
+                    .iter()
+                    .map(|p| p.currency.as_str())
+                    .collect();
+                bc_sdk::warn!(
+                    "transaction has multiple commodities; only first is used";
+                    kept = first.currency,
+                    dropped = format!("{dropped:?}")
+                );
+            }
+
             let amount = decimal_to_amount(first.amount, &first.currency)?;
 
             raw_txs.push(RawTransaction::new(
