@@ -57,15 +57,15 @@ impl core::fmt::Debug for OtelGuard {
 impl Drop for OtelGuard {
     #[inline]
     fn drop(&mut self) {
-        if let Some(provider) = self.otel_provider.take() {
-            if let Err(e) = provider.shutdown() {
-                #[expect(
-                    clippy::print_stderr,
-                    reason = "last-resort shutdown error: no logger available at drop time"
-                )]
-                {
-                    eprintln!("bc-otel: failed to flush telemetry on shutdown: {e}");
-                }
+        if let Some(provider) = self.otel_provider.take()
+            && let Err(e) = provider.shutdown()
+        {
+            #[expect(
+                clippy::print_stderr,
+                reason = "last-resort shutdown error: no logger available at drop time"
+            )]
+            {
+                eprintln!("bc-otel: failed to flush telemetry on shutdown: {e}");
             }
         }
     }

@@ -196,14 +196,14 @@ impl Service {
             ));
         }
 
-        if let (Some(target), Some(env_commodity)) = (&allocation_target, &commodity) {
-            if target.commodity() != env_commodity {
-                return Err(BcError::InvalidInput(format!(
-                    "allocation_target commodity '{}' does not match envelope commodity '{}'",
-                    target.commodity(),
-                    env_commodity,
-                )));
-            }
+        if let (Some(target), Some(env_commodity)) = (&allocation_target, &commodity)
+            && target.commodity() != env_commodity
+        {
+            return Err(BcError::InvalidInput(format!(
+                "allocation_target commodity '{}' does not match envelope commodity '{}'",
+                target.commodity(),
+                env_commodity,
+            )));
         }
 
         let id = EnvelopeId::new();
@@ -479,15 +479,15 @@ impl Service {
     ) -> BcResult<Allocation> {
         let envelope = self.get(envelope_id).await?;
 
-        if let Some(env_commodity) = envelope.commodity() {
-            if amount.commodity() != env_commodity {
-                return Err(BcError::InvalidInput(format!(
-                    "envelope '{}' uses commodity '{}' but the allocation amount is in '{}'",
-                    envelope_id,
-                    env_commodity,
-                    amount.commodity(),
-                )));
-            }
+        if let Some(env_commodity) = envelope.commodity()
+            && amount.commodity() != env_commodity
+        {
+            return Err(BcError::InvalidInput(format!(
+                "envelope '{}' uses commodity '{}' but the allocation amount is in '{}'",
+                envelope_id,
+                env_commodity,
+                amount.commodity(),
+            )));
         }
 
         let id = AllocationId::new();
