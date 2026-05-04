@@ -19,7 +19,7 @@ serde_json    = { workspace = true }
 thiserror     = { workspace = true }
 tracing       = { workspace = true }
 wasmtime      = { workspace = true }
-wasmtime-wasi = "41"
+wasmtime-wasi = "44"
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
