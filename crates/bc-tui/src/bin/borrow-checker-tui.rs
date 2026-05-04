@@ -44,10 +44,7 @@ fn main() -> anyhow::Result<()> {
     let _otel_guard = setup_tracing(&settings);
 
     // Priority order: default < config file < BC_* env vars < --db-path flag.
-    let db_path = args
-        .db_path
-        .or_else(|| settings.db_path().map(std::path::Path::to_path_buf))
-        .unwrap_or_else(bc_config::default_db_path);
+    let db_path = args.db_path.unwrap_or_else(|| settings.db_path());
 
     if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         if let Err(e) = std::fs::create_dir_all(parent) {
