@@ -389,7 +389,7 @@ dependencies = [
  "tui-input",
  "tui-realm-stdlib",
  "tui-tree-widget",
- "tuirealm",
+ "tuirealm 3.3.0",
 ]
 
 [[package]]
@@ -2228,6 +2228,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bde5057d6143cc94e861d90f591b9303d6716c6b9602309150bd068853c10899"
 dependencies = [
  "hashbrown 0.16.1",
+ "portable-atomic",
  "thiserror 2.0.18",
 ]
 
@@ -2513,6 +2514,15 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
+]
+
+[[package]]
+name = "num_threads"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -3132,6 +3142,17 @@ dependencies = [
  "unicode-segmentation",
  "unicode-truncate 1.1.0",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "ratatui"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1ce67fb8ba4446454d1c8dbaeda0557ff5e94d39d5e5ed7f10a65eb4c8266bc"
+dependencies = [
+ "instability",
+ "ratatui-core",
+ "ratatui-widgets",
 ]
 
 [[package]]
@@ -4327,8 +4348,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
+ "libc",
  "num-conv",
+ "num_threads",
  "powerfmt",
+ "serde_core",
  "time-core",
 ]
 
@@ -4657,18 +4681,18 @@ version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5d1733c47f1a217b7deff18730ff7ca4ecafc5771368f715ab072d679a36114"
 dependencies = [
- "ratatui",
+ "ratatui 0.29.0",
  "unicode-width 0.2.0",
 ]
 
 [[package]]
 name = "tui-realm-stdlib"
-version = "3.1.0"
+version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "333d8b8da2b3479a68fdf4bd2621f888fa869501d6c5c72bac940d0eeb19b083"
+checksum = "1d2fd2ea3ea191daa2e22773d7dee9c7d6a33efc95204afcd319c60da57ee13b"
 dependencies = [
  "textwrap",
- "tuirealm",
+ "tuirealm 4.1.0",
  "unicode-width 0.2.0",
 ]
 
@@ -4693,9 +4717,22 @@ dependencies = [
  "crossterm 0.29.0",
  "dyn-clone",
  "lazy-regex",
- "ratatui",
+ "ratatui 0.29.0",
  "thiserror 2.0.18",
  "tuirealm_derive",
+]
+
+[[package]]
+name = "tuirealm"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f7d70af0dff16882cfeb423cbec374055e941ac25b205a31f9f5607e831ebac"
+dependencies = [
+ "bitflags",
+ "dyn-clone",
+ "lazy-regex",
+ "ratatui 0.30.0",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
