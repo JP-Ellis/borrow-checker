@@ -55,7 +55,7 @@ enum PendingForm {
 )]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "five independent state flags: loading, list/detail dirty tracking, form state — not reducible to an enum"
+    reason = "six independent state flags: loading, list/detail dirty tracking, focus-restore, form state — not reducible to an enum"
 )]
 #[non_exhaustive]
 pub struct AccountsScreen {
@@ -81,6 +81,8 @@ pub struct AccountsScreen {
     pending_form: PendingForm,
     /// Whether the transaction form is currently mounted.
     form_mounted: bool,
+    /// Whether to move keyboard focus to the transaction list after the next list remount.
+    focus_list_after_dirty: bool,
     /// Current balance for the selected account (in `current_commodity`).
     current_balance: bc_models::Decimal,
     /// Commodity code for `current_balance` (empty when no account is selected).
@@ -106,6 +108,7 @@ impl AccountsScreen {
             detail_dirty: false,
             pending_form: PendingForm::None,
             form_mounted: false,
+            focus_list_after_dirty: false,
             current_balance: bc_models::Decimal::ZERO,
             current_commodity: String::new(),
         }
@@ -142,7 +145,7 @@ impl AccountsScreen {
         };
         match self
             .ctx
-            .block_on(self.ctx.transactions.list_for_account(&account_id))
+            .block_on(self.ctx.transactions.list_for_account_tree(&account_id))
         {
             Ok(txns) => self.transactions = txns.collect(),
             Err(e) => {
@@ -304,6 +307,16 @@ impl AccountsScreen {
                 self.detail_visible = false;
                 self.load_transactions();
                 self.list_dirty = true;
+                self.focus_list_after_dirty = true;
+                None
+            }
+            AccountsMsg::AccountNavigated(id) => {
+                self.selected_account = Some(id);
+                self.selected_transaction = None;
+                self.detail_visible = false;
+                self.load_transactions();
+                self.list_dirty = true;
+                self.focus_list_after_dirty = false;
                 None
             }
             AccountsMsg::OpenAddTransaction => {
@@ -548,8 +561,10 @@ impl Screen for AccountsScreen {
             ) {
                 eprintln!("failed to re-mount transaction list: {e}");
             }
-            // Restore focus to the list after remount unless detail or form is in front.
-            if !self.detail_visible && !self.form_mounted {
+            // Restore focus to the list after remount only when AccountSelected triggered
+            // the dirty flag (not j/k navigation, which keeps focus on the sidebar).
+            if self.focus_list_after_dirty && !self.detail_visible && !self.form_mounted {
+                self.focus_list_after_dirty = false;
                 #[expect(
                     clippy::unused_result_ok,
                     reason = "focus restore is best-effort after re-mount"
