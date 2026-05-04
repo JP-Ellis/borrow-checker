@@ -1,20 +1,20 @@
 //! Status bar chrome component — display-only bottom bar.
 
-use tuirealm::AttrValue;
-use tuirealm::Attribute;
-use tuirealm::Component;
-use tuirealm::Frame;
-use tuirealm::MockComponent;
-use tuirealm::NoUserEvent;
-use tuirealm::Props;
-use tuirealm::State;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
+use tuirealm::component::AppComponent;
+use tuirealm::component::Component;
 use tuirealm::event::Event;
+use tuirealm::event::NoUserEvent;
+use tuirealm::props::AttrValue;
+use tuirealm::props::Attribute;
 use tuirealm::props::Color;
+use tuirealm::props::Props;
 use tuirealm::props::Style;
+use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::widgets::Paragraph;
+use tuirealm::state::State;
 
 use crate::msg::Msg;
 
@@ -45,12 +45,13 @@ impl Default for Widget {
     }
 }
 
-impl MockComponent for Widget {
+impl Component for Widget {
     #[inline]
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         let content = self
             .props
             .get(Attribute::Text)
+            .cloned()
             .and_then(|v| {
                 if let AttrValue::String(s) = v {
                     Some(s)
@@ -66,8 +67,8 @@ impl MockComponent for Widget {
     }
 
     #[inline]
-    fn query(&self, attr: Attribute) -> Option<AttrValue> {
-        self.props.get(attr)
+    fn query(&self, attr: Attribute) -> Option<tuirealm::props::QueryResult<'_>> {
+        self.props.get_for_query(attr)
     }
 
     #[inline]
@@ -82,12 +83,12 @@ impl MockComponent for Widget {
 
     #[inline]
     fn perform(&mut self, _cmd: Cmd) -> CmdResult {
-        CmdResult::None
+        CmdResult::NoChange
     }
 }
 
 /// Tui-realm component wrapper for the status bar widget.
-#[derive(MockComponent)]
+#[derive(Component)]
 #[non_exhaustive]
 pub struct StatusBar {
     /// Inner raw widget.
@@ -112,9 +113,9 @@ impl Default for StatusBar {
     }
 }
 
-impl Component<Msg, NoUserEvent> for StatusBar {
+impl AppComponent<Msg, NoUserEvent> for StatusBar {
     #[inline]
-    fn on(&mut self, _ev: Event<NoUserEvent>) -> Option<Msg> {
+    fn on(&mut self, _ev: &Event<NoUserEvent>) -> Option<Msg> {
         // Display-only: no events handled.
         None
     }

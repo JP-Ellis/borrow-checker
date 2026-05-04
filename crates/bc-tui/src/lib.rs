@@ -20,11 +20,12 @@ use chrome::mount as mount_chrome;
 use context::TuiContext;
 use msg::Tab;
 use screen::make_screen;
-use tuirealm::Application;
-use tuirealm::EventListenerCfg;
-use tuirealm::NoUserEvent;
-use tuirealm::PollStrategy;
-use tuirealm::Update as _;
+use tuirealm::application::Application;
+use tuirealm::application::PollStrategy;
+use tuirealm::event::NoUserEvent;
+use tuirealm::listener::EventListenerCfg;
+use tuirealm::terminal::CrosstermTerminalAdapter;
+use tuirealm::terminal::TerminalAdapter as _;
 
 /// Initialise the terminal, run the main event loop, then restore the terminal.
 ///
@@ -39,9 +40,7 @@ use tuirealm::Update as _;
 #[inline]
 pub fn run(ctx: Arc<TuiContext>) -> anyhow::Result<()> {
     let mut app: Application<id::Id, msg::Msg, NoUserEvent> = Application::init(
-        EventListenerCfg::default()
-            .crossterm_input_listener(Duration::from_millis(20), 3)
-            .poll_timeout(Duration::from_millis(10)),
+        EventListenerCfg::default().crossterm_input_listener(Duration::from_millis(20), 3),
     );
 
     let initial_tab = Tab::Accounts;
@@ -52,7 +51,10 @@ pub fn run(ctx: Arc<TuiContext>) -> anyhow::Result<()> {
     let initial_focus = initial_screen.initial_focus();
     app.active(&initial_focus)?;
 
-    let terminal = tuirealm::terminal::TerminalBridge::init_crossterm()?;
+    let mut terminal = CrosstermTerminalAdapter::new()?;
+    terminal.enable_raw_mode()?;
+    terminal.enter_alternate_screen()?;
+
     let mut model = Model {
         app,
         active_screen: initial_screen,
@@ -66,7 +68,10 @@ pub fn run(ctx: Arc<TuiContext>) -> anyhow::Result<()> {
     };
 
     while !model.quit {
-        match model.app.tick(PollStrategy::Once) {
+        match model
+            .app
+            .tick(PollStrategy::Once(Duration::from_millis(10)))
+        {
             Err(e) => {
                 model.terminal.restore()?;
                 anyhow::bail!("tui-realm tick error: {e}");

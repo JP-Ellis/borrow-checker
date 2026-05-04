@@ -7,19 +7,18 @@
 use bc_models;
 use tui_input::Input;
 use tui_input::InputRequest;
-use tuirealm::AttrValue;
-use tuirealm::Attribute;
-use tuirealm::Component;
-use tuirealm::Frame;
-use tuirealm::MockComponent;
-use tuirealm::NoUserEvent;
-use tuirealm::Props;
-use tuirealm::State;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
+use tuirealm::component::AppComponent;
+use tuirealm::component::Component;
 use tuirealm::event::Event;
 use tuirealm::event::Key;
 use tuirealm::event::KeyEvent;
+use tuirealm::event::NoUserEvent;
+use tuirealm::props::AttrValue;
+use tuirealm::props::Attribute;
+use tuirealm::props::Props;
+use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Constraint;
 use tuirealm::ratatui::layout::Direction;
 use tuirealm::ratatui::layout::Layout;
@@ -31,6 +30,7 @@ use tuirealm::ratatui::widgets::BorderType;
 use tuirealm::ratatui::widgets::Borders;
 use tuirealm::ratatui::widgets::Clear;
 use tuirealm::ratatui::widgets::Paragraph;
+use tuirealm::state::State;
 
 use crate::msg::AccountsMsg;
 use crate::msg::Msg;
@@ -282,7 +282,7 @@ impl TxForm {
     }
 }
 
-impl MockComponent for TxForm {
+impl Component for TxForm {
     #[inline]
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         let popup = Self::popup_rect(area);
@@ -299,8 +299,8 @@ impl MockComponent for TxForm {
     }
 
     #[inline]
-    fn query(&self, attr: Attribute) -> Option<AttrValue> {
-        self.props.get(attr)
+    fn query(&self, attr: Attribute) -> Option<tuirealm::props::QueryResult<'_>> {
+        self.props.get_for_query(attr)
     }
 
     #[inline]
@@ -315,7 +315,7 @@ impl MockComponent for TxForm {
 
     #[inline]
     fn perform(&mut self, _cmd: Cmd) -> CmdResult {
-        CmdResult::None
+        CmdResult::NoChange
     }
 }
 
@@ -328,7 +328,7 @@ impl MockComponent for TxForm {
 /// [`AccountsMsg::FormSubmitted`](crate::msg::AccountsMsg::FormSubmitted);
 /// Esc emits [`AccountsMsg::FormCancelled`](crate::msg::AccountsMsg::FormCancelled).
 #[non_exhaustive]
-#[derive(MockComponent)]
+#[derive(Component)]
 pub struct TransactionForm {
     /// Inner raw widget.
     component: TxForm,
@@ -366,13 +366,13 @@ impl TransactionForm {
     }
 }
 
-impl Component<Msg, NoUserEvent> for TransactionForm {
+impl AppComponent<Msg, NoUserEvent> for TransactionForm {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "Event is non-exhaustive; all non-keyboard variants return None"
     )]
-    fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
             Event::Keyboard(KeyEvent { code: Key::Tab, .. }) => {
                 self.component.focused_field = self.component.focused_field.next();
@@ -400,7 +400,7 @@ impl Component<Msg, NoUserEvent> for TransactionForm {
             }) => {
                 self.component
                     .active_input_mut()
-                    .handle(InputRequest::InsertChar(c));
+                    .handle(InputRequest::InsertChar(*c));
                 None
             }
             Event::Keyboard(KeyEvent {
@@ -447,17 +447,17 @@ mod tests {
         // Start at Date.
         assert_eq!(form.component.focused_field, FormField::Date);
 
-        form.on(tab_event());
+        form.on(&tab_event());
         assert_eq!(form.component.focused_field, FormField::Payee);
 
-        form.on(tab_event());
+        form.on(&tab_event());
         assert_eq!(form.component.focused_field, FormField::Amount);
 
-        form.on(tab_event());
+        form.on(&tab_event());
         assert_eq!(form.component.focused_field, FormField::Account);
 
         // Wraps back to Date.
-        form.on(tab_event());
+        form.on(&tab_event());
         assert_eq!(form.component.focused_field, FormField::Date);
     }
 
@@ -467,7 +467,7 @@ mod tests {
 
         // From Date, back_tab wraps to Account.
         assert_eq!(form.component.focused_field, FormField::Date);
-        form.on(back_tab_event());
+        form.on(&back_tab_event());
         assert_eq!(form.component.focused_field, FormField::Account);
     }
 }

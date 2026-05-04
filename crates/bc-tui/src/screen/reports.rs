@@ -7,11 +7,11 @@ pub mod view;
 
 use std::sync::Arc;
 
-use tuirealm::Application;
-use tuirealm::AttrValue;
-use tuirealm::Attribute;
-use tuirealm::Frame;
-use tuirealm::NoUserEvent;
+use tuirealm::application::Application;
+use tuirealm::event::NoUserEvent;
+use tuirealm::props::AttrValue;
+use tuirealm::props::Attribute;
+use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 
 use crate::context::TuiContext;
@@ -316,12 +316,12 @@ impl Screen for ReportsScreen {
 
 #[cfg(test)]
 mod tests {
-    use core::time::Duration;
+
     use std::sync::Arc;
 
-    use tuirealm::Application;
-    use tuirealm::EventListenerCfg;
-    use tuirealm::NoUserEvent;
+    use tuirealm::application::Application;
+    use tuirealm::event::NoUserEvent;
+    use tuirealm::listener::EventListenerCfg;
 
     use super::*;
     use crate::context::TuiContext;
@@ -338,7 +338,7 @@ mod tests {
                 .expect("open test ctx"),
         );
         let mut app: Application<Id, Msg, NoUserEvent> =
-            Application::init(EventListenerCfg::default().poll_timeout(Duration::from_millis(10)));
+            Application::init(EventListenerCfg::default());
         let mut screen = ReportsScreen::new(ctx);
         tokio::task::block_in_place(|| {
             screen.mount(&mut app).expect("mount");

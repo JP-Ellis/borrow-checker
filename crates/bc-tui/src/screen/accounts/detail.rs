@@ -5,19 +5,18 @@
 
 use bc_models::Account;
 use bc_models::Transaction;
-use tuirealm::AttrValue;
-use tuirealm::Attribute;
-use tuirealm::Component;
-use tuirealm::Frame;
-use tuirealm::MockComponent;
-use tuirealm::NoUserEvent;
-use tuirealm::Props;
-use tuirealm::State;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
+use tuirealm::component::AppComponent;
+use tuirealm::component::Component;
 use tuirealm::event::Event;
 use tuirealm::event::Key;
 use tuirealm::event::KeyEvent;
+use tuirealm::event::NoUserEvent;
+use tuirealm::props::AttrValue;
+use tuirealm::props::Attribute;
+use tuirealm::props::Props;
+use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::style::Style;
@@ -26,6 +25,7 @@ use tuirealm::ratatui::widgets::BorderType;
 use tuirealm::ratatui::widgets::Borders;
 use tuirealm::ratatui::widgets::Paragraph;
 use tuirealm::ratatui::widgets::Wrap;
+use tuirealm::state::State;
 
 use crate::msg::AccountsMsg;
 use crate::msg::Msg;
@@ -119,12 +119,13 @@ impl TxDetail {
     }
 }
 
-impl MockComponent for TxDetail {
+impl Component for TxDetail {
     #[inline]
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         let focused = self
             .props
             .get(Attribute::Focus)
+            .cloned()
             .and_then(|v| {
                 if let AttrValue::Flag(b) = v {
                     Some(b)
@@ -150,8 +151,8 @@ impl MockComponent for TxDetail {
     }
 
     #[inline]
-    fn query(&self, attr: Attribute) -> Option<AttrValue> {
-        self.props.get(attr)
+    fn query(&self, attr: Attribute) -> Option<tuirealm::props::QueryResult<'_>> {
+        self.props.get_for_query(attr)
     }
 
     #[inline]
@@ -166,7 +167,7 @@ impl MockComponent for TxDetail {
 
     #[inline]
     fn perform(&mut self, _cmd: Cmd) -> CmdResult {
-        CmdResult::None
+        CmdResult::NoChange
     }
 }
 
@@ -178,7 +179,7 @@ impl MockComponent for TxDetail {
     reason = "referenced externally as detail::TransactionDetail; repetition is intentional"
 )]
 #[non_exhaustive]
-#[derive(MockComponent)]
+#[derive(Component)]
 pub struct TransactionDetail {
     /// Inner raw widget.
     component: TxDetail,
@@ -214,13 +215,13 @@ impl TransactionDetail {
     }
 }
 
-impl Component<Msg, NoUserEvent> for TransactionDetail {
+impl AppComponent<Msg, NoUserEvent> for TransactionDetail {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "Event is non-exhaustive; remaining variants all produce None"
     )]
-    fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
             Event::Keyboard(KeyEvent {
                 code: Key::Esc | Key::Left | Key::Char('h'),

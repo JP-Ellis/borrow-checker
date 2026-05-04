@@ -1,23 +1,23 @@
 //! Tab bar chrome component — renders the top navigation tabs.
 
-use tuirealm::AttrValue;
-use tuirealm::Attribute;
-use tuirealm::Component;
-use tuirealm::Frame;
-use tuirealm::MockComponent;
-use tuirealm::NoUserEvent;
-use tuirealm::Props;
-use tuirealm::State;
-use tuirealm::StateValue;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
+use tuirealm::component::AppComponent;
+use tuirealm::component::Component;
 use tuirealm::event::Event;
 use tuirealm::event::Key;
 use tuirealm::event::KeyEvent;
+use tuirealm::event::NoUserEvent;
+use tuirealm::props::AttrValue;
+use tuirealm::props::Attribute;
 use tuirealm::props::Color;
+use tuirealm::props::Props;
 use tuirealm::props::Style;
+use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::widgets::Tabs;
+use tuirealm::state::State;
+use tuirealm::state::StateValue;
 
 use crate::msg::Msg;
 use crate::msg::Tab;
@@ -42,7 +42,7 @@ impl Widget {
     }
 }
 
-impl MockComponent for Widget {
+impl Component for Widget {
     #[inline]
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         let selected = match self.active_tab {
@@ -58,15 +58,15 @@ impl MockComponent for Widget {
     }
 
     #[inline]
-    fn query(&self, attr: Attribute) -> Option<AttrValue> {
-        self.props.get(attr)
+    fn query(&self, attr: Attribute) -> Option<tuirealm::props::QueryResult<'_>> {
+        self.props.get_for_query(attr)
     }
 
     #[inline]
     fn attr(&mut self, attr: Attribute, value: AttrValue) {
         // Update active tab when set externally.
         if attr == Attribute::Value
-            && let AttrValue::Payload(tuirealm::props::PropPayload::One(
+            && let AttrValue::Payload(tuirealm::props::PropPayload::Single(
                 tuirealm::props::PropValue::Usize(idx),
             )) = &value
         {
@@ -81,7 +81,7 @@ impl MockComponent for Widget {
 
     #[inline]
     fn state(&self) -> State {
-        State::One(StateValue::Usize(match self.active_tab {
+        State::Single(StateValue::Usize(match self.active_tab {
             Tab::Accounts => 0,
             Tab::Budget => 1,
             Tab::Reports => 2,
@@ -90,12 +90,12 @@ impl MockComponent for Widget {
 
     #[inline]
     fn perform(&mut self, _cmd: Cmd) -> CmdResult {
-        CmdResult::None
+        CmdResult::NoChange
     }
 }
 
 /// Tui-realm component wrapper for the tab bar widget.
-#[derive(MockComponent)]
+#[derive(Component)]
 #[non_exhaustive]
 pub struct TabBar {
     /// Inner raw widget.
@@ -113,13 +113,13 @@ impl TabBar {
     }
 }
 
-impl Component<Msg, NoUserEvent> for TabBar {
+impl AppComponent<Msg, NoUserEvent> for TabBar {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "Event is non-exhaustive; remaining variants all produce None"
     )]
-    fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
             Event::Keyboard(KeyEvent {
                 code: Key::Char('q'),
@@ -176,14 +176,14 @@ mod tests {
     #[test]
     fn tab_cycles_forward_from_accounts() {
         let mut bar = TabBar::new(Tab::Accounts);
-        let msg = bar.on(key(Key::Tab));
+        let msg = bar.on(&key(Key::Tab));
         pretty_assertions::assert_eq!(msg, Some(Msg::TabSwitch(Tab::Budget)));
     }
 
     #[test]
     fn backtab_cycles_backward_from_accounts() {
         let mut bar = TabBar::new(Tab::Accounts);
-        let msg = bar.on(key(Key::BackTab));
+        let msg = bar.on(&key(Key::BackTab));
         pretty_assertions::assert_eq!(msg, Some(Msg::TabSwitch(Tab::Reports)));
     }
 
@@ -191,11 +191,11 @@ mod tests {
     fn numeric_key_switches_to_correct_tab() {
         let mut bar = TabBar::new(Tab::Accounts);
         pretty_assertions::assert_eq!(
-            bar.on(key(Key::Char('2'))),
+            bar.on(&key(Key::Char('2'))),
             Some(Msg::TabSwitch(Tab::Budget)),
         );
         pretty_assertions::assert_eq!(
-            bar.on(key(Key::Char('3'))),
+            bar.on(&key(Key::Char('3'))),
             Some(Msg::TabSwitch(Tab::Reports)),
         );
     }
@@ -207,11 +207,11 @@ mod tests {
         let mut bar = TabBar::new(Tab::Accounts);
         bar.attr(
             Attribute::Value,
-            AttrValue::Payload(tuirealm::props::PropPayload::One(
+            AttrValue::Payload(tuirealm::props::PropPayload::Single(
                 tuirealm::props::PropValue::Usize(1),
             )),
         );
-        let msg = bar.on(key(Key::Tab));
+        let msg = bar.on(&key(Key::Tab));
         pretty_assertions::assert_eq!(msg, Some(Msg::TabSwitch(Tab::Reports)));
     }
 }
