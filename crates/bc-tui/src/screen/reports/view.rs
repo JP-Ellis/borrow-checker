@@ -8,20 +8,19 @@
 //! - `Selecting` → `Viewing`: triggered by `app.attr(…, Attribute::Text, AttrValue::String(s))`.
 //! - `Viewing` → `Selecting`: triggered by the `Esc` key.
 
-use tuirealm::AttrValue;
-use tuirealm::Attribute;
-use tuirealm::Component;
-use tuirealm::Frame;
-use tuirealm::MockComponent;
-use tuirealm::NoUserEvent;
-use tuirealm::Props;
-use tuirealm::State;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
 use tuirealm::command::Direction;
+use tuirealm::component::AppComponent;
+use tuirealm::component::Component;
 use tuirealm::event::Event;
 use tuirealm::event::Key;
 use tuirealm::event::KeyEvent;
+use tuirealm::event::NoUserEvent;
+use tuirealm::props::AttrValue;
+use tuirealm::props::Attribute;
+use tuirealm::props::Props;
+use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::style::Style;
@@ -33,6 +32,7 @@ use tuirealm::ratatui::widgets::ListItem;
 use tuirealm::ratatui::widgets::ListState;
 use tuirealm::ratatui::widgets::Paragraph;
 use tuirealm::ratatui::widgets::Wrap;
+use tuirealm::state::State;
 
 use crate::msg::Msg;
 use crate::msg::ReportKind;
@@ -94,6 +94,7 @@ impl ReportViewWidget {
         let focused = self
             .props
             .get(Attribute::Focus)
+            .cloned()
             .and_then(|v| {
                 if let AttrValue::Flag(b) = v {
                     Some(b)
@@ -107,7 +108,7 @@ impl ReportViewWidget {
     }
 }
 
-impl MockComponent for ReportViewWidget {
+impl Component for ReportViewWidget {
     #[inline]
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         let border_color = self.border_color();
@@ -158,8 +159,8 @@ impl MockComponent for ReportViewWidget {
     }
 
     #[inline]
-    fn query(&self, attr: Attribute) -> Option<AttrValue> {
-        self.props.get(attr)
+    fn query(&self, attr: Attribute) -> Option<tuirealm::props::QueryResult<'_>> {
+        self.props.get_for_query(attr)
     }
 
     #[inline]
@@ -181,7 +182,7 @@ impl MockComponent for ReportViewWidget {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "Cmd is non-exhaustive; all other variants return CmdResult::None"
+        reason = "Cmd is non-exhaustive; all other variants return CmdResult::NoChange"
     )]
     fn perform(&mut self, cmd: Cmd) -> CmdResult {
         match cmd {
@@ -212,7 +213,7 @@ impl MockComponent for ReportViewWidget {
                 self.view_state = ViewState::Selecting;
                 CmdResult::Changed(self.state())
             }
-            _ => CmdResult::None,
+            _ => CmdResult::NoChange,
         }
     }
 }
@@ -236,7 +237,7 @@ impl MockComponent for ReportViewWidget {
     reason = "referenced externally as view::ReportView; repetition is intentional"
 )]
 #[non_exhaustive]
-#[derive(MockComponent)]
+#[derive(Component)]
 pub struct ReportView {
     /// Inner raw widget.
     component: ReportViewWidget,
@@ -270,13 +271,13 @@ impl Default for ReportView {
     }
 }
 
-impl Component<Msg, NoUserEvent> for ReportView {
+impl AppComponent<Msg, NoUserEvent> for ReportView {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "Event is non-exhaustive; remaining variants all produce None"
     )]
-    fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
             Event::Keyboard(KeyEvent {
                 code: Key::Down | Key::Char('j'),
@@ -381,7 +382,7 @@ mod tests {
     #[test]
     fn j_key_emits_redraw_when_selecting() {
         let mut view = ReportView::new();
-        let result = view.on(Event::Keyboard(KeyEvent {
+        let result = view.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('j'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
@@ -391,7 +392,7 @@ mod tests {
     #[test]
     fn k_key_emits_redraw_when_selecting() {
         let mut view = ReportView::new();
-        let result = view.on(Event::Keyboard(KeyEvent {
+        let result = view.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('k'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
@@ -403,7 +404,7 @@ mod tests {
         let mut view = ReportView::new();
         // Force into viewing state.
         view.component.set_output("test output".to_owned());
-        let result = view.on(Event::Keyboard(KeyEvent {
+        let result = view.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('j'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
