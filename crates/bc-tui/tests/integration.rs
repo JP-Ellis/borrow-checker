@@ -7,7 +7,7 @@ mod common;
 
 #[cfg(test)]
 mod tests {
-    use core::time::Duration;
+
     use std::sync::Arc;
 
     use bc_tui::context::TuiContext;
@@ -20,12 +20,12 @@ mod tests {
     use bc_tui::screen::accounts::AccountsScreen;
     use bc_tui::screen::budget::BudgetScreen;
     use bc_tui::screen::reports::ReportsScreen;
-    use tuirealm::Application;
-    use tuirealm::EventListenerCfg;
-    use tuirealm::NoUserEvent;
+    use tuirealm::application::Application;
+    use tuirealm::event::NoUserEvent;
+    use tuirealm::listener::EventListenerCfg;
 
     fn make_app() -> Application<Id, Msg, NoUserEvent> {
-        Application::init(EventListenerCfg::default().poll_timeout(Duration::from_millis(10)))
+        Application::init(EventListenerCfg::default())
     }
 
     #[tokio::test(flavor = "multi_thread")]

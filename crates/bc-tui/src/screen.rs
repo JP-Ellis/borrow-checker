@@ -4,9 +4,9 @@ pub mod accounts;
 pub mod budget;
 pub mod reports;
 
-use tuirealm::Application;
-use tuirealm::Frame;
-use tuirealm::NoUserEvent;
+use tuirealm::application::Application;
+use tuirealm::event::NoUserEvent;
+use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 
 use crate::id::Id;

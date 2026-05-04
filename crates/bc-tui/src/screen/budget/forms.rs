@@ -5,19 +5,18 @@
 
 use tui_input::Input;
 use tui_input::InputRequest;
-use tuirealm::AttrValue;
-use tuirealm::Attribute;
-use tuirealm::Component;
-use tuirealm::Frame;
-use tuirealm::MockComponent;
-use tuirealm::NoUserEvent;
-use tuirealm::Props;
-use tuirealm::State;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
+use tuirealm::component::AppComponent;
+use tuirealm::component::Component;
 use tuirealm::event::Event;
 use tuirealm::event::Key;
 use tuirealm::event::KeyEvent;
+use tuirealm::event::NoUserEvent;
+use tuirealm::props::AttrValue;
+use tuirealm::props::Attribute;
+use tuirealm::props::Props;
+use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Constraint;
 use tuirealm::ratatui::layout::Direction;
 use tuirealm::ratatui::layout::Layout;
@@ -29,6 +28,7 @@ use tuirealm::ratatui::widgets::BorderType;
 use tuirealm::ratatui::widgets::Borders;
 use tuirealm::ratatui::widgets::Clear;
 use tuirealm::ratatui::widgets::Paragraph;
+use tuirealm::state::State;
 
 use crate::msg::BudgetMsg;
 use crate::msg::Msg;
@@ -96,7 +96,7 @@ impl AllocForm {
     }
 }
 
-impl MockComponent for AllocForm {
+impl Component for AllocForm {
     #[inline]
     #[expect(
         clippy::indexing_slicing,
@@ -125,8 +125,8 @@ impl MockComponent for AllocForm {
     }
 
     #[inline]
-    fn query(&self, attr: Attribute) -> Option<AttrValue> {
-        self.props.get(attr)
+    fn query(&self, attr: Attribute) -> Option<tuirealm::props::QueryResult<'_>> {
+        self.props.get_for_query(attr)
     }
 
     #[inline]
@@ -141,7 +141,7 @@ impl MockComponent for AllocForm {
 
     #[inline]
     fn perform(&mut self, _cmd: Cmd) -> CmdResult {
-        CmdResult::None
+        CmdResult::NoChange
     }
 }
 
@@ -153,7 +153,7 @@ impl MockComponent for AllocForm {
 /// Enter emits [`BudgetMsg::FormSubmitted`](crate::msg::BudgetMsg::FormSubmitted);
 /// Esc emits [`BudgetMsg::FormCancelled`](crate::msg::BudgetMsg::FormCancelled).
 #[non_exhaustive]
-#[derive(MockComponent)]
+#[derive(Component)]
 pub struct AllocationForm {
     /// Inner raw widget.
     component: AllocForm,
@@ -178,13 +178,13 @@ impl AllocationForm {
     }
 }
 
-impl Component<Msg, NoUserEvent> for AllocationForm {
+impl AppComponent<Msg, NoUserEvent> for AllocationForm {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "Event is non-exhaustive; all non-keyboard variants return None"
     )]
-    fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
             Event::Keyboard(KeyEvent {
                 code: Key::Enter, ..
@@ -197,7 +197,7 @@ impl Component<Msg, NoUserEvent> for AllocationForm {
             Event::Keyboard(KeyEvent {
                 code: Key::Char(c), ..
             }) => {
-                self.component.amount.handle(InputRequest::InsertChar(c));
+                self.component.amount.handle(InputRequest::InsertChar(*c));
                 None
             }
             Event::Keyboard(KeyEvent {
@@ -238,14 +238,14 @@ mod tests {
     #[test]
     fn form_esc_emits_form_cancelled() {
         let mut form = AllocationForm::new("Groceries");
-        let msg = form.on(esc_event());
+        let msg = form.on(&esc_event());
         assert_eq!(msg, Some(Msg::Budget(BudgetMsg::FormCancelled)));
     }
 
     #[test]
     fn form_enter_emits_form_submitted() {
         let mut form = AllocationForm::new("Groceries");
-        let msg = form.on(enter_event());
+        let msg = form.on(&enter_event());
         assert_eq!(
             msg,
             Some(Msg::Budget(BudgetMsg::FormSubmitted {

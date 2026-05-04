@@ -4,17 +4,16 @@
 //! or a placeholder when no envelope is selected.
 
 use bc_core::EnvelopeStatus;
-use tuirealm::AttrValue;
-use tuirealm::Attribute;
-use tuirealm::Component;
-use tuirealm::Frame;
-use tuirealm::MockComponent;
-use tuirealm::NoUserEvent;
-use tuirealm::Props;
-use tuirealm::State;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
+use tuirealm::component::AppComponent;
+use tuirealm::component::Component;
 use tuirealm::event::Event;
+use tuirealm::event::NoUserEvent;
+use tuirealm::props::AttrValue;
+use tuirealm::props::Attribute;
+use tuirealm::props::Props;
+use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::style::Style;
@@ -26,6 +25,7 @@ use tuirealm::ratatui::widgets::BorderType;
 use tuirealm::ratatui::widgets::Borders;
 use tuirealm::ratatui::widgets::Paragraph;
 use tuirealm::ratatui::widgets::Wrap;
+use tuirealm::state::State;
 
 use crate::msg::Msg;
 
@@ -198,12 +198,13 @@ impl Detail {
     }
 }
 
-impl MockComponent for Detail {
+impl Component for Detail {
     #[inline]
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         let focused = self
             .props
             .get(Attribute::Focus)
+            .cloned()
             .and_then(|v| {
                 if let AttrValue::Flag(b) = v {
                     Some(b)
@@ -229,8 +230,8 @@ impl MockComponent for Detail {
     }
 
     #[inline]
-    fn query(&self, attr: Attribute) -> Option<AttrValue> {
-        self.props.get(attr)
+    fn query(&self, attr: Attribute) -> Option<tuirealm::props::QueryResult<'_>> {
+        self.props.get_for_query(attr)
     }
 
     #[inline]
@@ -245,7 +246,7 @@ impl MockComponent for Detail {
 
     #[inline]
     fn perform(&mut self, _cmd: Cmd) -> CmdResult {
-        CmdResult::None
+        CmdResult::NoChange
     }
 }
 
@@ -257,7 +258,7 @@ impl MockComponent for Detail {
     reason = "referenced externally as detail::EnvelopeDetail; repetition is intentional"
 )]
 #[non_exhaustive]
-#[derive(MockComponent)]
+#[derive(Component)]
 pub struct EnvelopeDetail {
     /// Inner raw widget.
     component: Detail,
@@ -295,13 +296,13 @@ impl EnvelopeDetail {
     }
 }
 
-impl Component<Msg, NoUserEvent> for EnvelopeDetail {
+impl AppComponent<Msg, NoUserEvent> for EnvelopeDetail {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "Event is non-exhaustive; remaining variants all produce None"
     )]
-    fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         use tuirealm::event::Key;
         use tuirealm::event::KeyEvent;
         match ev {

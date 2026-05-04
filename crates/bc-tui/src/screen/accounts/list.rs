@@ -7,21 +7,19 @@
 use bc_models::AccountId;
 use bc_models::Decimal;
 use bc_models::Transaction;
-use tuirealm::AttrValue;
-use tuirealm::Attribute;
-use tuirealm::Component;
-use tuirealm::Frame;
-use tuirealm::MockComponent;
-use tuirealm::NoUserEvent;
-use tuirealm::Props;
-use tuirealm::State;
-use tuirealm::StateValue;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
 use tuirealm::command::Direction;
+use tuirealm::component::AppComponent;
+use tuirealm::component::Component;
 use tuirealm::event::Event;
 use tuirealm::event::Key;
 use tuirealm::event::KeyEvent;
+use tuirealm::event::NoUserEvent;
+use tuirealm::props::AttrValue;
+use tuirealm::props::Attribute;
+use tuirealm::props::Props;
+use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::style::Style;
@@ -33,6 +31,8 @@ use tuirealm::ratatui::widgets::Borders;
 use tuirealm::ratatui::widgets::List;
 use tuirealm::ratatui::widgets::ListItem;
 use tuirealm::ratatui::widgets::ListState;
+use tuirealm::state::State;
+use tuirealm::state::StateValue;
 
 use crate::mode::AppMode;
 use crate::msg::AccountsMsg;
@@ -201,12 +201,13 @@ impl TxList {
     }
 }
 
-impl MockComponent for TxList {
+impl Component for TxList {
     #[inline]
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         let focused = self
             .props
             .get(Attribute::Focus)
+            .cloned()
             .and_then(|v| {
                 if let AttrValue::Flag(b) = v {
                     Some(b)
@@ -280,8 +281,8 @@ impl MockComponent for TxList {
     }
 
     #[inline]
-    fn query(&self, attr: Attribute) -> Option<AttrValue> {
-        self.props.get(attr)
+    fn query(&self, attr: Attribute) -> Option<tuirealm::props::QueryResult<'_>> {
+        self.props.get_for_query(attr)
     }
 
     #[inline]
@@ -292,7 +293,7 @@ impl MockComponent for TxList {
     #[inline]
     fn state(&self) -> State {
         match self.transactions.get(self.selected) {
-            Some(t) => State::One(StateValue::String(t.id().to_string())),
+            Some(t) => State::Single(StateValue::String(t.id().to_string())),
             None => State::None,
         }
     }
@@ -300,7 +301,7 @@ impl MockComponent for TxList {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "Cmd is non-exhaustive; all other variants return CmdResult::None"
+        reason = "Cmd is non-exhaustive; all other variants return CmdResult::NoChange"
     )]
     fn perform(&mut self, cmd: Cmd) -> CmdResult {
         match cmd {
@@ -310,7 +311,7 @@ impl MockComponent for TxList {
             Cmd::Move(Direction::Up) => {
                 self.move_up();
             }
-            _ => return CmdResult::None,
+            _ => return CmdResult::NoChange,
         }
         CmdResult::Changed(self.state())
     }
@@ -328,7 +329,7 @@ impl MockComponent for TxList {
     reason = "referenced externally as list::TransactionList; repetition is intentional"
 )]
 #[non_exhaustive]
-#[derive(MockComponent)]
+#[derive(Component)]
 pub struct TransactionList {
     /// Inner raw widget.
     component: TxList,
@@ -371,13 +372,13 @@ impl TransactionList {
     }
 }
 
-impl Component<Msg, NoUserEvent> for TransactionList {
+impl AppComponent<Msg, NoUserEvent> for TransactionList {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "Event is non-exhaustive; remaining variants all produce None"
     )]
-    fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
             Event::Keyboard(KeyEvent {
                 code: Key::Down | Key::Char('j'),
@@ -587,7 +588,7 @@ mod tests {
     #[test]
     fn j_key_emits_redraw() {
         let mut list = TransactionList::new(vec![], None, Decimal::ZERO, String::new());
-        let result = list.on(Event::Keyboard(KeyEvent {
+        let result = list.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('j'),
             modifiers: KeyModifiers::NONE,
         }));
@@ -597,7 +598,7 @@ mod tests {
     #[test]
     fn k_key_emits_redraw() {
         let mut list = TransactionList::new(vec![], None, Decimal::ZERO, String::new());
-        let result = list.on(Event::Keyboard(KeyEvent {
+        let result = list.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('k'),
             modifiers: KeyModifiers::NONE,
         }));
