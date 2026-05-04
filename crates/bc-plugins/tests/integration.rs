@@ -10,6 +10,13 @@ mod tests {
     use bc_plugins::PluginRegistry;
     use pretty_assertions::assert_eq;
 
+    /// Returns the directory containing compiled plugin WASM artifacts.
+    ///
+    /// **Prerequisite:** Plugin WASMs must be built before running these tests.
+    /// Run `mise run build-plugins` (or `cargo xtask build-plugins`) from the
+    /// workspace root to compile all plugin crates to `target/plugins/`.
+    ///
+    /// To point at a custom directory, set `BORROW_CHECKER_PLUGIN_DIR`.
     fn get_plugin_dir() -> PathBuf {
         if let Ok(val) = env::var("BORROW_CHECKER_PLUGIN_DIR") {
             PathBuf::from(val)
