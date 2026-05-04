@@ -297,8 +297,32 @@ impl EnvelopeDetail {
 
 impl Component<Msg, NoUserEvent> for EnvelopeDetail {
     #[inline]
-    fn on(&mut self, _ev: Event<NoUserEvent>) -> Option<Msg> {
-        None
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "Event is non-exhaustive; remaining variants all produce None"
+    )]
+    fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
+        use tuirealm::event::Key;
+        use tuirealm::event::KeyEvent;
+        match ev {
+            Event::Keyboard(KeyEvent {
+                code: Key::Left | Key::Char('h') | Key::Esc,
+                ..
+            }) => Some(Msg::Budget(crate::msg::BudgetMsg::FocusSidebar)),
+            Event::Keyboard(KeyEvent {
+                code: Key::Char('['),
+                ..
+            }) => Some(Msg::Budget(crate::msg::BudgetMsg::PeriodPrev)),
+            Event::Keyboard(KeyEvent {
+                code: Key::Char(']'),
+                ..
+            }) => Some(Msg::Budget(crate::msg::BudgetMsg::PeriodNext)),
+            Event::Keyboard(KeyEvent {
+                code: Key::Char('a'),
+                ..
+            }) => Some(Msg::Budget(crate::msg::BudgetMsg::OpenAllocate)),
+            _ => None,
+        }
     }
 }
 

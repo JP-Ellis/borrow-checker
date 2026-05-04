@@ -40,7 +40,7 @@ use crate::screen::Screen;
 )]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "four independent state flags: loading, detail dirty tracking, form state — not reducible to an enum"
+    reason = "five independent state flags: loading, detail dirty tracking, focus-restore, form state — not reducible to an enum"
 )]
 #[non_exhaustive]
 pub struct BudgetScreen {
@@ -60,6 +60,8 @@ pub struct BudgetScreen {
     pending_form: bool,
     /// Whether the allocation form is currently mounted.
     form_mounted: bool,
+    /// Whether to move keyboard focus to the detail panel after the next detail remount.
+    focus_detail_after_dirty: bool,
     /// Ordered list of period presets built when an envelope is selected.
     window_presets: Vec<bc_models::BudgetWindow>,
     /// Index into `window_presets` for the currently displayed period.
@@ -82,6 +84,7 @@ impl BudgetScreen {
             detail_dirty: false,
             pending_form: false,
             form_mounted: false,
+            focus_detail_after_dirty: false,
             window_presets: Vec::new(),
             selected_window_idx: 0,
         }
@@ -192,6 +195,7 @@ impl BudgetScreen {
                     }
                 }
                 self.detail_dirty = true;
+                self.focus_detail_after_dirty = true;
                 None
             }
             BudgetMsg::OpenAllocate => self.selected_envelope.is_some().then(|| {
@@ -238,6 +242,7 @@ impl BudgetScreen {
                 }
                 None
             }
+            BudgetMsg::FocusSidebar => Some(Msg::FocusChange(Id::Budget(BudgetId::Sidebar))),
         }
     }
 }
@@ -367,6 +372,17 @@ impl Screen for BudgetScreen {
                 vec![],
             ) {
                 eprintln!("failed to re-mount envelope detail: {e}");
+            }
+        }
+
+        if self.focus_detail_after_dirty && !self.form_mounted {
+            self.focus_detail_after_dirty = false;
+            #[expect(
+                clippy::unused_result_ok,
+                reason = "focus restore is best-effort after re-mount"
+            )]
+            {
+                app.active(&Id::Budget(BudgetId::Detail)).ok();
             }
         }
 

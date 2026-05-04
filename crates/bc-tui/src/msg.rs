@@ -89,6 +89,9 @@ pub enum ChromeMsg {
 pub enum AccountsMsg {
     /// User selected a different account in the sidebar.
     AccountSelected(bc_models::AccountId),
+    /// User navigated (j/k) to a different account in the sidebar — updates the
+    /// transaction list without moving keyboard focus away from the sidebar.
+    AccountNavigated(bc_models::AccountId),
     /// User wants to add a new transaction.
     OpenAddTransaction,
     /// User wants to edit the currently highlighted transaction.
@@ -141,6 +144,8 @@ pub enum BudgetMsg {
     PeriodPrev,
     /// User pressed `]` — cycle to the next time-period preset.
     PeriodNext,
+    /// User pressed `h`/`←`/`Esc` on the detail panel — return focus to the sidebar.
+    FocusSidebar,
 }
 
 /// Messages produced by the reports screen.

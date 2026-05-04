@@ -354,16 +354,14 @@ impl AccountSidebar {
         }
     }
 
-    /// Reads the current component state and emits [`AccountsMsg::AccountSelected`]
-    /// if a valid account ID is selected; falls back to [`ChromeMsg::Redraw`].
-    ///
-    /// j/k navigation emits for any account (leaf or parent); Enter/Right only
-    /// emits for leaf accounts (guarded separately).
+    /// Reads the current state and emits [`AccountsMsg::AccountNavigated`]
+    /// for j/k navigation — same as `account_selected_or_redraw` but uses
+    /// the `AccountNavigated` variant so the screen does not steal focus.
     #[inline]
-    fn account_selected_or_redraw(&self) -> Msg {
+    fn account_navigated_or_redraw(&self) -> Msg {
         if let State::One(StateValue::String(ref s)) = self.component.state() {
             if let Ok(id) = s.parse::<AccountId>() {
-                return Msg::Accounts(AccountsMsg::AccountSelected(id));
+                return Msg::Accounts(AccountsMsg::AccountNavigated(id));
             }
         }
         Msg::Chrome(crate::msg::ChromeMsg::Redraw)
@@ -383,14 +381,14 @@ impl Component<Msg, NoUserEvent> for AccountSidebar {
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Down));
-                Some(self.account_selected_or_redraw())
+                Some(self.account_navigated_or_redraw())
             }
             Event::Keyboard(KeyEvent {
                 code: Key::Up | Key::Char('k'),
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Up));
-                Some(self.account_selected_or_redraw())
+                Some(self.account_navigated_or_redraw())
             }
             Event::Keyboard(KeyEvent {
                 code: Key::Right | Key::Char('l') | Key::Enter,
@@ -587,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn j_key_emits_account_selected() {
+    fn j_key_emits_account_navigated() {
         let parent = make_account("Assets");
         let child = make_child_account("Checking", parent.id().clone());
         let mut sidebar = AccountSidebar::new(vec![parent, child]);
@@ -597,23 +595,23 @@ mod tests {
             code: Key::Down,
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
-        // Parent is an account — should emit AccountSelected.
+        // Parent is an account — should emit AccountNavigated.
         // If tui-tree-widget requires a rendered frame to track selection,
         // the state will still be State::None and we fall back to Redraw.
         assert!(
             matches!(
                 msg,
                 Some(
-                    Msg::Accounts(AccountsMsg::AccountSelected(_))
+                    Msg::Accounts(AccountsMsg::AccountNavigated(_))
                         | Msg::Chrome(crate::msg::ChromeMsg::Redraw)
                 )
             ),
-            "expected AccountSelected or Redraw, got {msg:?}"
+            "expected AccountNavigated or Redraw, got {msg:?}"
         );
     }
 
     #[test]
-    fn k_key_emits_account_selected_after_navigation() {
+    fn k_key_emits_account_navigated_after_navigation() {
         let parent = make_account("Assets");
         let child = make_child_account("Checking", parent.id().clone());
         let mut sidebar = AccountSidebar::new(vec![parent, child]);
@@ -628,7 +626,7 @@ mod tests {
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
 
-        // Navigate back up — should still emit AccountSelected.
+        // Navigate back up — should still emit AccountNavigated.
         // If tui-tree-widget requires a rendered frame to track selection,
         // the state will still be State::None and we fall back to Redraw.
         let msg = sidebar.on(Event::Keyboard(KeyEvent {
@@ -639,11 +637,11 @@ mod tests {
             matches!(
                 msg,
                 Some(
-                    Msg::Accounts(AccountsMsg::AccountSelected(_))
+                    Msg::Accounts(AccountsMsg::AccountNavigated(_))
                         | Msg::Chrome(crate::msg::ChromeMsg::Redraw)
                 )
             ),
-            "expected AccountSelected or Redraw, got {msg:?}"
+            "expected AccountNavigated or Redraw, got {msg:?}"
         );
     }
 }

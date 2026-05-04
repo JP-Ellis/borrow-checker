@@ -535,6 +535,35 @@ async fn main() -> anyhow::Result<()> {
         };
     }
 
+    // Macro for expense transactions that assigns the debit posting to an envelope.
+    macro_rules! txn_env {
+        ($date:expr, $payee:expr, $desc:expr, $status:expr,
+         $debit_acct:expr, $debit_amt:expr, $envelope:expr,
+         $credit_acct:expr, $credit_amt:expr) => {
+            transactions
+                .create(
+                    Transaction::builder()
+                        .id(TransactionId::new())
+                        .date($date)
+                        .payee($payee)
+                        .description($desc)
+                        .status($status)
+                        .created_at(Timestamp::now())
+                        .postings(vec![
+                            Posting::builder()
+                                .id(PostingId::new())
+                                .account_id($debit_acct.clone())
+                                .amount(aud($debit_amt))
+                                .envelope_id($envelope.id().clone())
+                                .build(),
+                            posting($credit_acct, aud($credit_amt)),
+                        ])
+                        .build(),
+                )
+                .await?
+        };
+    }
+
     // -------------------------------------------------------------------------
     // Opening balances (6 months ago, day 1)
     // -------------------------------------------------------------------------
@@ -664,145 +693,157 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Day 3: Woolworths groceries
-    txn!(
+    txn_env!(
         month_day(6, 3),
         "Woolworths",
         "November groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(140.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-140.00)
     );
 
     // Day 14: Coles groceries
-    txn!(
+    txn_env!(
         month_day(6, 14),
         "Coles",
         "November fortnightly groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(110.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-110.00)
     );
 
     // Day 22: IGA top-up
-    txn!(
+    txn_env!(
         month_day(6, 22),
         "IGA",
         "November grocery top-up",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(55.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-55.00)
     );
 
     // Day 8: Restaurant dining
-    txn!(
+    txn_env!(
         month_day(6, 8),
         "The Local Bistro",
         "November dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(85.00),
+        &dining_env,
         &credit_card_id,
         dec!(-85.00)
     );
 
     // Day 20: Café coffee
-    txn!(
+    txn_env!(
         month_day(6, 20),
         "The Coffee Club",
         "November coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(18.50),
+        &dining_env,
         &credit_card_id,
         dec!(-18.50)
     );
 
     // Day 12: AGL electricity
-    txn!(
+    txn_env!(
         month_day(6, 12),
         "AGL Energy",
         "November electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(210.00),
+        &utilities_env,
         &checking_id,
         dec!(-210.00)
     );
 
     // Day 12: Telstra internet (drinking water)
-    txn!(
+    txn_env!(
         month_day(6, 12),
         "Telstra",
         "November internet bill",
         TransactionStatus::Cleared,
         &drinking_water_id,
         dec!(89.00),
+        &utilities_env,
         &checking_id,
         dec!(-89.00)
     );
 
     // Day 28: Origin Energy gas bill (sewer)
-    txn!(
+    txn_env!(
         month_day(6, 28),
         "Origin Energy",
         "November gas bill",
         TransactionStatus::Cleared,
         &sewer_id,
         dec!(130.00),
+        &utilities_env,
         &checking_id,
         dec!(-130.00)
     );
 
     // Day 18: Opal card transit
-    txn!(
+    txn_env!(
         month_day(6, 18),
         "Opal Card",
         "November transit top-up",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(50.00),
+        &transport_env,
         &checking_id,
         dec!(-50.00)
     );
 
     // Day 3: Netflix streaming
-    txn!(
+    txn_env!(
         month_day(6, 3),
         "Netflix",
         "November streaming subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(22.99),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-22.99)
     );
 
     // Day 3: Spotify music
-    txn!(
+    txn_env!(
         month_day(6, 3),
         "Spotify",
         "November music subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(12.99),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-12.99)
     );
 
     // Day 10: iCloud storage
-    txn!(
+    txn_env!(
         month_day(6, 10),
         "iCloud",
         "November cloud storage",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(4.49),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-4.49)
     );
@@ -872,181 +913,196 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Day 3: Woolworths groceries
-    txn!(
+    txn_env!(
         month_day(5, 3),
         "Woolworths",
         "December groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(140.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-140.00)
     );
 
     // Day 14: Coles groceries
-    txn!(
+    txn_env!(
         month_day(5, 14),
         "Coles",
         "December fortnightly groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(110.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-110.00)
     );
 
     // Day 22: IGA top-up
-    txn!(
+    txn_env!(
         month_day(5, 22),
         "IGA",
         "December grocery top-up",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(55.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-55.00)
     );
 
     // Day 8: Restaurant dining
-    txn!(
+    txn_env!(
         month_day(5, 8),
         "The Local Bistro",
         "December dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(85.00),
+        &dining_env,
         &credit_card_id,
         dec!(-85.00)
     );
 
     // Day 20: Café coffee
-    txn!(
+    txn_env!(
         month_day(5, 20),
         "The Coffee Club",
         "December coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(18.50),
+        &dining_env,
         &credit_card_id,
         dec!(-18.50)
     );
 
     // Day 22: Christmas dinner (extra)
-    txn!(
+    txn_env!(
         month_day(5, 22),
         "Fine Dining Co",
         "Christmas dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(210.00),
+        &dining_env,
         &credit_card_id,
         dec!(-210.00)
     );
 
     // Day 31: NYE dinner (extra)
-    txn!(
+    txn_env!(
         month_day(5, 31),
         "NYE Restaurant",
         "New Year's Eve dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(175.00),
+        &dining_env,
         &credit_card_id,
         dec!(-175.00)
     );
 
     // Day 12: AGL electricity
-    txn!(
+    txn_env!(
         month_day(5, 12),
         "AGL Energy",
         "December electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(210.00),
+        &utilities_env,
         &checking_id,
         dec!(-210.00)
     );
 
     // Day 12: Telstra internet (drinking water)
-    txn!(
+    txn_env!(
         month_day(5, 12),
         "Telstra",
         "December internet bill",
         TransactionStatus::Cleared,
         &drinking_water_id,
         dec!(89.00),
+        &utilities_env,
         &checking_id,
         dec!(-89.00)
     );
 
     // Day 18: Opal card transit
-    txn!(
+    txn_env!(
         month_day(5, 18),
         "Opal Card",
         "December transit top-up",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(50.00),
+        &transport_env,
         &checking_id,
         dec!(-50.00)
     );
 
     // Day 3: Netflix streaming
-    txn!(
+    txn_env!(
         month_day(5, 3),
         "Netflix",
         "December streaming subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(22.99),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-22.99)
     );
 
     // Day 3: Spotify music
-    txn!(
+    txn_env!(
         month_day(5, 3),
         "Spotify",
         "December music subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(12.99),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-12.99)
     );
 
     // Day 10: iCloud storage
-    txn!(
+    txn_env!(
         month_day(5, 10),
         "iCloud",
         "December cloud storage",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(4.49),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-4.49)
     );
 
     // Day 15: Cinema (extra)
-    txn!(
+    txn_env!(
         month_day(5, 15),
         "Event Cinemas",
         "December cinema",
         TransactionStatus::Cleared,
         &entertainment_id,
         dec!(45.00),
+        &entertainment_env,
         &credit_card_id,
         dec!(-45.00)
     );
 
     // Day 20: Concert (extra)
-    txn!(
+    txn_env!(
         month_day(5, 20),
         "Live Nation",
         "December concert",
         TransactionStatus::Cleared,
         &entertainment_id,
         dec!(120.00),
+        &entertainment_env,
         &credit_card_id,
         dec!(-120.00)
     );
@@ -1116,169 +1172,183 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Day 3: Woolworths groceries (increased to 190 for January)
-    txn!(
+    txn_env!(
         month_day(4, 3),
         "Woolworths",
         "January groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(190.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-190.00)
     );
 
     // Day 14: Coles groceries
-    txn!(
+    txn_env!(
         month_day(4, 14),
         "Coles",
         "January fortnightly groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(110.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-110.00)
     );
 
     // Day 22: IGA top-up
-    txn!(
+    txn_env!(
         month_day(4, 22),
         "IGA",
         "January grocery top-up",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(55.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-55.00)
     );
 
     // Day 28: Harris Farm (extra)
-    txn!(
+    txn_env!(
         month_day(4, 28),
         "Harris Farm",
         "January organic groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(80.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-80.00)
     );
 
     // Day 8: Restaurant dining
-    txn!(
+    txn_env!(
         month_day(4, 8),
         "The Local Bistro",
         "January dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(85.00),
+        &dining_env,
         &credit_card_id,
         dec!(-85.00)
     );
 
     // Day 20: Café coffee
-    txn!(
+    txn_env!(
         month_day(4, 20),
         "The Coffee Club",
         "January coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(18.50),
+        &dining_env,
         &credit_card_id,
         dec!(-18.50)
     );
 
     // Day 12: AGL electricity
-    txn!(
+    txn_env!(
         month_day(4, 12),
         "AGL Energy",
         "January electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(210.00),
+        &utilities_env,
         &checking_id,
         dec!(-210.00)
     );
 
     // Day 12: Telstra internet (drinking water)
-    txn!(
+    txn_env!(
         month_day(4, 12),
         "Telstra",
         "January internet bill",
         TransactionStatus::Cleared,
         &drinking_water_id,
         dec!(89.00),
+        &utilities_env,
         &checking_id,
         dec!(-89.00)
     );
 
     // Day 18: Opal card transit
-    txn!(
+    txn_env!(
         month_day(4, 18),
         "Opal Card",
         "January transit top-up",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(50.00),
+        &transport_env,
         &checking_id,
         dec!(-50.00)
     );
 
     // Day 3: Netflix streaming
-    txn!(
+    txn_env!(
         month_day(4, 3),
         "Netflix",
         "January streaming subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(22.99),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-22.99)
     );
 
     // Day 3: Spotify music
-    txn!(
+    txn_env!(
         month_day(4, 3),
         "Spotify",
         "January music subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(12.99),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-12.99)
     );
 
     // Day 10: iCloud storage
-    txn!(
+    txn_env!(
         month_day(4, 10),
         "iCloud",
         "January cloud storage",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(4.49),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-4.49)
     );
 
     // Day 10: GP visit (extra)
-    txn!(
+    txn_env!(
         month_day(4, 10),
         "City Medical Centre",
         "January GP visit",
         TransactionStatus::Cleared,
         &healthcare_id,
         dec!(85.00),
+        &healthcare_env,
         &credit_card_id,
         dec!(-85.00)
     );
 
     // Day 11: Pharmacy (extra)
-    txn!(
+    txn_env!(
         month_day(4, 11),
         "Chemist Warehouse",
         "January pharmacy",
         TransactionStatus::Cleared,
         &healthcare_id,
         dec!(32.50),
+        &healthcare_env,
         &credit_card_id,
         dec!(-32.50)
     );
@@ -1367,145 +1437,157 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Day 3: Woolworths groceries
-    txn!(
+    txn_env!(
         month_day(3, 3),
         "Woolworths",
         "February groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(140.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-140.00)
     );
 
     // Day 14: Coles groceries
-    txn!(
+    txn_env!(
         month_day(3, 14),
         "Coles",
         "February fortnightly groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(110.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-110.00)
     );
 
     // Day 22: IGA top-up
-    txn!(
+    txn_env!(
         month_day(3, 22),
         "IGA",
         "February grocery top-up",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(55.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-55.00)
     );
 
     // Day 8: Restaurant dining
-    txn!(
+    txn_env!(
         month_day(3, 8),
         "The Local Bistro",
         "February dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(85.00),
+        &dining_env,
         &credit_card_id,
         dec!(-85.00)
     );
 
     // Day 20: Café coffee
-    txn!(
+    txn_env!(
         month_day(3, 20),
         "The Coffee Club",
         "February coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(18.50),
+        &dining_env,
         &credit_card_id,
         dec!(-18.50)
     );
 
     // Day 12: AGL electricity
-    txn!(
+    txn_env!(
         month_day(3, 12),
         "AGL Energy",
         "February electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(210.00),
+        &utilities_env,
         &checking_id,
         dec!(-210.00)
     );
 
     // Day 12: Telstra internet (drinking water)
-    txn!(
+    txn_env!(
         month_day(3, 12),
         "Telstra",
         "February internet bill",
         TransactionStatus::Cleared,
         &drinking_water_id,
         dec!(89.00),
+        &utilities_env,
         &checking_id,
         dec!(-89.00)
     );
 
     // Day 5: BP petrol (extra)
-    txn!(
+    txn_env!(
         month_day(3, 5),
         "BP Service Station",
         "February petrol",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(85.00),
+        &transport_env,
         &credit_card_id,
         dec!(-85.00)
     );
 
     // Day 18: Opal card transit
-    txn!(
+    txn_env!(
         month_day(3, 18),
         "Opal Card",
         "February transit top-up",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(50.00),
+        &transport_env,
         &checking_id,
         dec!(-50.00)
     );
 
     // Day 3: Netflix streaming
-    txn!(
+    txn_env!(
         month_day(3, 3),
         "Netflix",
         "February streaming subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(22.99),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-22.99)
     );
 
     // Day 3: Spotify music
-    txn!(
+    txn_env!(
         month_day(3, 3),
         "Spotify",
         "February music subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(12.99),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-12.99)
     );
 
     // Day 10: iCloud storage
-    txn!(
+    txn_env!(
         month_day(3, 10),
         "iCloud",
         "February cloud storage",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(4.49),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-4.49)
     );
@@ -1606,145 +1688,157 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Day 3: Woolworths groceries
-    txn!(
+    txn_env!(
         month_day(2, 3),
         "Woolworths",
         "March groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(140.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-140.00)
     );
 
     // Day 14: Coles groceries
-    txn!(
+    txn_env!(
         month_day(2, 14),
         "Coles",
         "March fortnightly groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(110.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-110.00)
     );
 
     // Day 22: IGA top-up
-    txn!(
+    txn_env!(
         month_day(2, 22),
         "IGA",
         "March grocery top-up",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(55.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-55.00)
     );
 
     // Day 8: Restaurant dining
-    txn!(
+    txn_env!(
         month_day(2, 8),
         "The Local Bistro",
         "March dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(85.00),
+        &dining_env,
         &credit_card_id,
         dec!(-85.00)
     );
 
     // Day 20: Café coffee
-    txn!(
+    txn_env!(
         month_day(2, 20),
         "The Coffee Club",
         "March coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(18.50),
+        &dining_env,
         &credit_card_id,
         dec!(-18.50)
     );
 
     // Day 12: AGL electricity
-    txn!(
+    txn_env!(
         month_day(2, 12),
         "AGL Energy",
         "March electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(210.00),
+        &utilities_env,
         &checking_id,
         dec!(-210.00)
     );
 
     // Day 12: Telstra internet (drinking water)
-    txn!(
+    txn_env!(
         month_day(2, 12),
         "Telstra",
         "March internet bill",
         TransactionStatus::Cleared,
         &drinking_water_id,
         dec!(89.00),
+        &utilities_env,
         &checking_id,
         dec!(-89.00)
     );
 
     // Day 28: Origin Energy gas bill (extra, sewer)
-    txn!(
+    txn_env!(
         month_day(2, 28),
         "Origin Energy",
         "March gas bill",
         TransactionStatus::Cleared,
         &sewer_id,
         dec!(130.00),
+        &utilities_env,
         &checking_id,
         dec!(-130.00)
     );
 
     // Day 18: Opal card transit
-    txn!(
+    txn_env!(
         month_day(2, 18),
         "Opal Card",
         "March transit top-up",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(50.00),
+        &transport_env,
         &checking_id,
         dec!(-50.00)
     );
 
     // Day 3: Netflix streaming
-    txn!(
+    txn_env!(
         month_day(2, 3),
         "Netflix",
         "March streaming subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(22.99),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-22.99)
     );
 
     // Day 3: Spotify music
-    txn!(
+    txn_env!(
         month_day(2, 3),
         "Spotify",
         "March music subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(12.99),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-12.99)
     );
 
     // Day 10: iCloud storage
-    txn!(
+    txn_env!(
         month_day(2, 10),
         "iCloud",
         "March cloud storage",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(4.49),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-4.49)
     );
@@ -1814,133 +1908,144 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Day 3: Woolworths groceries (Pending — last grocery shop 1)
-    txn!(
+    txn_env!(
         month_day(1, 3),
         "Woolworths",
         "April groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(140.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-140.00)
     );
 
     // Day 14: Coles groceries (Pending — last grocery shop 2)
-    txn!(
+    txn_env!(
         month_day(1, 14),
         "Coles",
         "April fortnightly groceries",
         TransactionStatus::Pending,
         &groceries_id,
         dec!(110.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-110.00)
     );
 
     // Day 22: IGA top-up
-    txn!(
+    txn_env!(
         month_day(1, 22),
         "IGA",
         "April grocery top-up",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(55.00),
+        &groceries_env,
         &credit_card_id,
         dec!(-55.00)
     );
 
     // Day 8: Restaurant dining (Pending — last dining entry)
-    txn!(
+    txn_env!(
         month_day(1, 8),
         "The Local Bistro",
         "April dinner",
         TransactionStatus::Pending,
         &dining_id,
         dec!(85.00),
+        &dining_env,
         &credit_card_id,
         dec!(-85.00)
     );
 
     // Day 20: Café coffee
-    txn!(
+    txn_env!(
         month_day(1, 20),
         "The Coffee Club",
         "April coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(18.50),
+        &dining_env,
         &credit_card_id,
         dec!(-18.50)
     );
 
     // Day 12: AGL electricity
-    txn!(
+    txn_env!(
         month_day(1, 12),
         "AGL Energy",
         "April electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(210.00),
+        &utilities_env,
         &checking_id,
         dec!(-210.00)
     );
 
     // Day 12: Telstra internet (drinking water)
-    txn!(
+    txn_env!(
         month_day(1, 12),
         "Telstra",
         "April internet bill",
         TransactionStatus::Cleared,
         &drinking_water_id,
         dec!(89.00),
+        &utilities_env,
         &checking_id,
         dec!(-89.00)
     );
 
     // Day 18: Opal card transit
-    txn!(
+    txn_env!(
         month_day(1, 18),
         "Opal Card",
         "April transit top-up",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(50.00),
+        &transport_env,
         &checking_id,
         dec!(-50.00)
     );
 
     // Day 3: Netflix streaming (Pending — subscription renewal)
-    txn!(
+    txn_env!(
         month_day(1, 3),
         "Netflix",
         "April streaming subscription",
         TransactionStatus::Pending,
         &subscriptions_id,
         dec!(22.99),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-22.99)
     );
 
     // Day 3: Spotify music
-    txn!(
+    txn_env!(
         month_day(1, 3),
         "Spotify",
         "April music subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(12.99),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-12.99)
     );
 
     // Day 10: iCloud storage
-    txn!(
+    txn_env!(
         month_day(1, 10),
         "iCloud",
         "April cloud storage",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(4.49),
+        &subscriptions_env,
         &credit_card_id,
         dec!(-4.49)
     );
@@ -1960,24 +2065,38 @@ async fn main() -> anyhow::Result<()> {
         dec!(-5200)
     );
 
-    txn!(
+    txn_env!(
         month_day(0, 3),
         "Supermarket",
         "Groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(95),
+        &groceries_env,
         &checking_id,
         dec!(-95)
     );
 
-    txn!(
+    txn_env!(
+        month_day(0, 4),
+        "The Coffee Club",
+        "Coffee",
+        TransactionStatus::Cleared,
+        &dining_id,
+        dec!(6.50),
+        &dining_env,
+        &credit_card_id,
+        dec!(-6.50)
+    );
+
+    txn_env!(
         month_day(0, 2),
         "Power Company",
         "Electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(120),
+        &utilities_env,
         &checking_id,
         dec!(-120)
     );
@@ -1988,10 +2107,10 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Done.");
     println!("Created database at {}", args.db_path.display());
-    println!("Accounts:     24 (5 root + 19 leaf, including nested utilities)");
+    println!("Accounts:     24 (5 root + 19 leaf)");
     println!("Envelopes:    10 (3 root + 7 leaf)");
     println!("Allocations:  49 (7 leaf envelopes × 7 months)");
-    println!("Transactions: ~78 (cleared, pending, voided across 6 historical months + current month)");
+    println!("Transactions: ~79 (cleared, pending, voided across 6 historical months + current month)");
 
     Ok(())
 }
