@@ -58,7 +58,7 @@ tracing-subscriber = { workspace = true }
 tui-input          = "0.11"
 tui-realm-stdlib   = "3"
 tui-tree-widget    = "0.24"
-tuirealm           = "3"
+tuirealm           = "4"
 
 [dev-dependencies]
 assert_fs           = { workspace = true }
