@@ -32,8 +32,7 @@ impl AppContext {
     /// they do not exist), loads plugins from the configured search paths, and
     /// initialises all core services.
     ///
-    /// The database path is resolved from `settings.db_path()`, falling back
-    /// to [`bc_config::default_db_path`] when no path is configured.
+    /// The database path is resolved via [`bc_config::Settings::db_path`].
     ///
     /// # Arguments
     ///
@@ -47,9 +46,7 @@ impl AppContext {
     /// registry cannot initialise.
     #[inline]
     pub async fn open(settings: &bc_config::Settings, json: bool) -> bc_core::BcResult<Self> {
-        let db_path = settings
-            .db_path()
-            .map_or_else(bc_config::default_db_path, std::path::Path::to_path_buf);
+        let db_path = settings.db_path();
 
         if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)

@@ -155,7 +155,7 @@ pub struct Settings {
     display_commodity: CommodityCode,
     /// Database file path override from the config file.
     ///
-    /// When `None`, callers should fall back to [`default_db_path`].
+    /// When `None`, [`Settings::db_path`] falls back to [`default_db_path`].
     #[serde(default)]
     db_path: Option<std::path::PathBuf>,
     /// Ordered plugin search directories (user-configured, XDG data home, sidecar).
@@ -333,14 +333,14 @@ impl Settings {
         &self.display_commodity
     }
 
-    /// Returns the configured database path, if set in the config file.
+    /// Returns the resolved database path.
     ///
-    /// Returns `None` when not configured; callers should fall back to
-    /// [`default_db_path`] in that case.
+    /// If a path was explicitly configured or set via [`Self::set_db_path`],
+    /// that value is returned; otherwise falls back to [`default_db_path`].
     #[inline]
     #[must_use]
-    pub fn db_path(&self) -> Option<&std::path::Path> {
-        self.db_path.as_deref()
+    pub fn db_path(&self) -> std::path::PathBuf {
+        self.db_path.clone().unwrap_or_else(default_db_path)
     }
 
     /// Returns the ordered list of plugin search directories.

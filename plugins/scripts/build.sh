@@ -13,6 +13,9 @@ WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PLUGINS_OUT="$WORKSPACE_ROOT/target/plugins"
 PLUGINS=(csv ledger beancount ofx)
 
+# Ensure the wasm32-wasip2 target is installed (idempotent).
+rustup target add wasm32-wasip2
+
 mkdir -p "$PLUGINS_OUT"
 
 if command -v wasm-opt &>/dev/null && wasm-opt --version &>/dev/null 2>&1; then
