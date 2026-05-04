@@ -15,7 +15,7 @@
 ///
 /// # Arguments
 ///
-/// * `component` - Any type implementing [`tuirealm::MockComponent`].
+/// * `component` - Any type implementing [`tuirealm::component::Component`].
 /// * `width`     - Terminal width in columns.
 /// * `height`    - Terminal height in rows.
 ///
@@ -23,11 +23,7 @@
 ///
 /// A `String` where each line corresponds to one row of the rendered buffer,
 /// joined by `'\n'`.
-#[expect(
-    clippy::expect_used,
-    reason = "test helper: panicking on terminal/draw failure is correct behaviour in tests"
-)]
-fn render<C: tuirealm::MockComponent>(component: &mut C, width: u16, height: u16) -> String {
+fn render<C: tuirealm::component::Component>(component: &mut C, width: u16, height: u16) -> String {
     use tuirealm::ratatui::Terminal;
     use tuirealm::ratatui::backend::TestBackend;
     use tuirealm::ratatui::layout::Position;

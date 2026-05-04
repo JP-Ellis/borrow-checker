@@ -1,19 +1,18 @@
 //! Help overlay chrome component — floating popup shown on `?`.
 
-use tuirealm::AttrValue;
-use tuirealm::Attribute;
-use tuirealm::Component;
-use tuirealm::Frame;
-use tuirealm::MockComponent;
-use tuirealm::NoUserEvent;
-use tuirealm::Props;
-use tuirealm::State;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
+use tuirealm::component::AppComponent;
+use tuirealm::component::Component;
 use tuirealm::event::Event;
+use tuirealm::event::NoUserEvent;
+use tuirealm::props::AttrValue;
+use tuirealm::props::Attribute;
 use tuirealm::props::BorderType;
 use tuirealm::props::Color;
+use tuirealm::props::Props;
 use tuirealm::props::Style;
+use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Constraint;
 use tuirealm::ratatui::layout::Direction;
 use tuirealm::ratatui::layout::Layout;
@@ -23,6 +22,7 @@ use tuirealm::ratatui::widgets::Borders;
 use tuirealm::ratatui::widgets::Clear;
 use tuirealm::ratatui::widgets::Paragraph;
 use tuirealm::ratatui::widgets::Wrap;
+use tuirealm::state::State;
 
 use crate::msg::Msg;
 
@@ -50,13 +50,13 @@ impl Default for Widget {
     }
 }
 
-impl MockComponent for Widget {
+impl Component for Widget {
     #[inline]
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         let visible = self
             .props
             .get(Attribute::Display)
-            .is_some_and(|v| matches!(v, AttrValue::Flag(true)));
+            .is_some_and(|v| matches!(*v, AttrValue::Flag(true)));
 
         if !visible {
             return;
@@ -65,6 +65,7 @@ impl MockComponent for Widget {
         let content = self
             .props
             .get(Attribute::Text)
+            .cloned()
             .and_then(|v| {
                 if let AttrValue::String(s) = v {
                     Some(s)
@@ -93,8 +94,8 @@ impl MockComponent for Widget {
     }
 
     #[inline]
-    fn query(&self, attr: Attribute) -> Option<AttrValue> {
-        self.props.get(attr)
+    fn query(&self, attr: Attribute) -> Option<tuirealm::props::QueryResult<'_>> {
+        self.props.get_for_query(attr)
     }
 
     #[inline]
@@ -109,7 +110,7 @@ impl MockComponent for Widget {
 
     #[inline]
     fn perform(&mut self, _cmd: Cmd) -> CmdResult {
-        CmdResult::None
+        CmdResult::NoChange
     }
 }
 
@@ -145,7 +146,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 /// Tui-realm component wrapper for the help overlay widget.
-#[derive(MockComponent)]
+#[derive(Component)]
 #[non_exhaustive]
 pub struct HelpOverlay {
     /// Inner raw widget.
@@ -170,13 +171,13 @@ impl Default for HelpOverlay {
     }
 }
 
-impl Component<Msg, NoUserEvent> for HelpOverlay {
+impl AppComponent<Msg, NoUserEvent> for HelpOverlay {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "Event is non-exhaustive; all non-keyboard variants are no-ops"
     )]
-    fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
             Event::Keyboard(_) => Some(Msg::HelpToggle),
             _ => None,
@@ -202,19 +203,25 @@ mod tests {
     #[test]
     fn esc_closes_overlay() {
         let mut overlay = HelpOverlay::new();
-        pretty_assertions::assert_eq!(overlay.on(key_event(Key::Esc)), Some(Msg::HelpToggle));
+        pretty_assertions::assert_eq!(overlay.on(&key_event(Key::Esc)), Some(Msg::HelpToggle));
     }
 
     #[test]
     fn question_mark_closes_overlay() {
         let mut overlay = HelpOverlay::new();
-        pretty_assertions::assert_eq!(overlay.on(key_event(Key::Char('?'))), Some(Msg::HelpToggle));
+        pretty_assertions::assert_eq!(
+            overlay.on(&key_event(Key::Char('?'))),
+            Some(Msg::HelpToggle)
+        );
     }
 
     #[test]
     fn any_key_closes_overlay() {
         let mut overlay = HelpOverlay::new();
-        pretty_assertions::assert_eq!(overlay.on(key_event(Key::Char('j'))), Some(Msg::HelpToggle));
-        pretty_assertions::assert_eq!(overlay.on(key_event(Key::Enter)), Some(Msg::HelpToggle));
+        pretty_assertions::assert_eq!(
+            overlay.on(&key_event(Key::Char('j'))),
+            Some(Msg::HelpToggle)
+        );
+        pretty_assertions::assert_eq!(overlay.on(&key_event(Key::Enter)), Some(Msg::HelpToggle));
     }
 }

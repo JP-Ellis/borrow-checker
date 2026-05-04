@@ -13,21 +13,19 @@ use bc_models::EnvelopeId;
 use tui_tree_widget::Flattened;
 use tui_tree_widget::TreeItem;
 use tui_tree_widget::TreeState;
-use tuirealm::AttrValue;
-use tuirealm::Attribute;
-use tuirealm::Component;
-use tuirealm::Frame;
-use tuirealm::MockComponent;
-use tuirealm::NoUserEvent;
-use tuirealm::Props;
-use tuirealm::State;
-use tuirealm::StateValue;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
 use tuirealm::command::Direction;
+use tuirealm::component::AppComponent;
+use tuirealm::component::Component;
 use tuirealm::event::Event;
 use tuirealm::event::Key;
 use tuirealm::event::KeyEvent;
+use tuirealm::event::NoUserEvent;
+use tuirealm::props::AttrValue;
+use tuirealm::props::Attribute;
+use tuirealm::props::Props;
+use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::style::Style;
@@ -38,6 +36,8 @@ use tuirealm::ratatui::widgets::BorderType;
 use tuirealm::ratatui::widgets::Borders;
 use tuirealm::ratatui::widgets::List;
 use tuirealm::ratatui::widgets::ListItem;
+use tuirealm::state::State;
+use tuirealm::state::StateValue;
 
 use crate::msg::BudgetMsg;
 use crate::msg::Msg;
@@ -205,6 +205,7 @@ impl Sidebar {
         let focused = self
             .props
             .get(Attribute::Focus)
+            .cloned()
             .and_then(|v| {
                 if let AttrValue::Flag(b) = v {
                     Some(b)
@@ -266,15 +267,15 @@ impl Sidebar {
     }
 }
 
-impl MockComponent for Sidebar {
+impl Component for Sidebar {
     #[inline]
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         self.render_tree(frame, area);
     }
 
     #[inline]
-    fn query(&self, attr: Attribute) -> Option<AttrValue> {
-        self.props.get(attr)
+    fn query(&self, attr: Attribute) -> Option<tuirealm::props::QueryResult<'_>> {
+        self.props.get_for_query(attr)
     }
 
     #[inline]
@@ -286,7 +287,7 @@ impl MockComponent for Sidebar {
     fn state(&self) -> State {
         let selected = self.tree_state.selected();
         match selected.last() {
-            Some(id) => State::One(StateValue::String(id.to_string())),
+            Some(id) => State::Single(StateValue::String(id.to_string())),
             None => State::None,
         }
     }
@@ -294,7 +295,7 @@ impl MockComponent for Sidebar {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "Cmd is non-exhaustive; all other variants return CmdResult::None"
+        reason = "Cmd is non-exhaustive; all other variants return CmdResult::NoChange"
     )]
     fn perform(&mut self, cmd: Cmd) -> CmdResult {
         match cmd {
@@ -312,7 +313,7 @@ impl MockComponent for Sidebar {
             Cmd::Move(Direction::Right) => {
                 self.tree_state.key_right();
             }
-            _ => return CmdResult::None,
+            _ => return CmdResult::NoChange,
         }
         CmdResult::Changed(self.state())
     }
@@ -331,7 +332,7 @@ impl MockComponent for Sidebar {
     reason = "referenced externally as sidebar::EnvelopeSidebar; repetition is intentional"
 )]
 #[non_exhaustive]
-#[derive(MockComponent)]
+#[derive(Component)]
 pub struct EnvelopeSidebar {
     /// Inner raw widget.
     component: Sidebar,
@@ -356,13 +357,13 @@ impl EnvelopeSidebar {
     }
 }
 
-impl Component<Msg, NoUserEvent> for EnvelopeSidebar {
+impl AppComponent<Msg, NoUserEvent> for EnvelopeSidebar {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "Event is non-exhaustive; remaining variants all produce None"
     )]
-    fn on(&mut self, ev: Event<NoUserEvent>) -> Option<Msg> {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
             Event::Keyboard(KeyEvent {
                 code: Key::Down | Key::Char('j'),
@@ -384,7 +385,7 @@ impl Component<Msg, NoUserEvent> for EnvelopeSidebar {
             }) => {
                 self.component.perform(Cmd::Move(Direction::Right));
                 // Emit EnvelopeSelected only when a leaf node is confirmed.
-                if let State::One(StateValue::String(ref s)) = self.component.state()
+                if let State::Single(StateValue::String(ref s)) = self.component.state()
                     && let Ok(id) = s.parse::<EnvelopeId>()
                     && !has_children(&id, &self.component.envelopes)
                 {
@@ -458,8 +459,11 @@ mod tests {
     fn perform_move_down_on_empty_tree_does_not_panic() {
         let mut sidebar = Sidebar::new(vec![]);
         let result = sidebar.perform(Cmd::Move(Direction::Down));
-        // Either Changed(State::None) or CmdResult::None are acceptable.
-        assert!(matches!(result, CmdResult::Changed(_) | CmdResult::None));
+        // Either Changed(State::None) or CmdResult::NoChange are acceptable.
+        assert!(matches!(
+            result,
+            CmdResult::Changed(_) | CmdResult::NoChange
+        ));
     }
 
     #[test]
@@ -488,20 +492,20 @@ mod tests {
     fn perform_unknown_cmd_returns_none() {
         let mut sidebar = Sidebar::new(vec![]);
         let result = sidebar.perform(Cmd::None);
-        assert_eq!(result, CmdResult::None);
+        assert_eq!(result, CmdResult::NoChange);
     }
 
     #[test]
     fn envelope_sidebar_on_unknown_event_returns_none() {
         let mut sidebar = EnvelopeSidebar::new(vec![]);
-        let result = sidebar.on(Event::None);
+        let result = sidebar.on(&Event::None);
         assert_eq!(result, None);
     }
 
     #[test]
     fn envelope_sidebar_right_on_empty_tree_emits_redraw() {
         let mut sidebar = EnvelopeSidebar::new(vec![]);
-        let result = sidebar.on(Event::Keyboard(KeyEvent {
+        let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Right,
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
@@ -511,7 +515,7 @@ mod tests {
     #[test]
     fn j_key_emits_redraw() {
         let mut sidebar = EnvelopeSidebar::new(vec![]);
-        let result = sidebar.on(Event::Keyboard(KeyEvent {
+        let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('j'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
@@ -521,7 +525,7 @@ mod tests {
     #[test]
     fn k_key_emits_redraw() {
         let mut sidebar = EnvelopeSidebar::new(vec![]);
-        let result = sidebar.on(Event::Keyboard(KeyEvent {
+        let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('k'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
@@ -531,7 +535,7 @@ mod tests {
     #[test]
     fn h_key_emits_redraw() {
         let mut sidebar = EnvelopeSidebar::new(vec![]);
-        let result = sidebar.on(Event::Keyboard(KeyEvent {
+        let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('h'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
@@ -541,7 +545,7 @@ mod tests {
     #[test]
     fn bracket_key_emits_period_prev() {
         let mut sidebar = EnvelopeSidebar::new(vec![]);
-        let result = sidebar.on(Event::Keyboard(KeyEvent {
+        let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('['),
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
@@ -551,7 +555,7 @@ mod tests {
     #[test]
     fn close_bracket_key_emits_period_next() {
         let mut sidebar = EnvelopeSidebar::new(vec![]);
-        let result = sidebar.on(Event::Keyboard(KeyEvent {
+        let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char(']'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
@@ -561,7 +565,7 @@ mod tests {
     #[test]
     fn envelope_sidebar_a_key_emits_open_allocate() {
         let mut sidebar = EnvelopeSidebar::new(vec![]);
-        let result = sidebar.on(Event::Keyboard(KeyEvent {
+        let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('a'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
@@ -578,17 +582,17 @@ mod tests {
         // After Sidebar::new the first root is already opened, so we navigate
         // down once to move selection to the first visible item (Food root),
         // then down again to land on the child (Groceries).
-        sidebar.on(Event::Keyboard(KeyEvent {
+        sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Down,
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
-        sidebar.on(Event::Keyboard(KeyEvent {
+        sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Down,
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
 
         // Press Enter — if Groceries is now selected it should emit EnvelopeSelected.
-        let msg = sidebar.on(Event::Keyboard(KeyEvent {
+        let msg = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Enter,
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));

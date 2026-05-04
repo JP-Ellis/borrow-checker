@@ -1,16 +1,15 @@
 //! Application model and top-level message handler.
 //!
 //! [`Model`] owns the tui-realm [`Application`], the active [`Screen`],
-//! and all cross-cutting state. It implements [`Update<Msg>`] which is
-//! called by the tui-realm event loop for each message.
+//! and all cross-cutting state. The [`Model::update`] method is called by
+//! the tui-realm event loop for each message.
 
 use std::sync::Arc;
 
-use tuirealm::Application;
-use tuirealm::NoUserEvent;
-use tuirealm::Update;
+use tuirealm::application::Application;
+use tuirealm::event::NoUserEvent;
 use tuirealm::terminal::CrosstermTerminalAdapter;
-use tuirealm::terminal::TerminalBridge;
+use tuirealm::terminal::TerminalAdapter as _;
 
 use crate::context::TuiContext;
 use crate::id::Id;
@@ -34,21 +33,22 @@ pub struct Model {
     pub quit: bool,
     /// When `true`, the terminal is redrawn on the next loop iteration.
     pub redraw: bool,
-    /// The terminal bridge used to draw frames.
-    pub terminal: TerminalBridge<CrosstermTerminalAdapter>,
+    /// The terminal adapter used to draw frames.
+    pub terminal: CrosstermTerminalAdapter,
     /// Shared bc-core services.
     pub ctx: Arc<TuiContext>,
     /// The last explicitly-set focus target, restored when the help overlay closes.
     pub last_focus: Id,
 }
 
-impl Update<Msg> for Model {
+impl Model {
+    /// Process one message, returning an optional follow-up message.
     #[inline]
     #[expect(
         clippy::print_stderr,
         reason = "focus errors logged to stderr since we are in raw terminal mode"
     )]
-    fn update(&mut self, msg: Option<Msg>) -> Option<Msg> {
+    pub(crate) fn update(&mut self, msg: Option<Msg>) -> Option<Msg> {
         #[expect(
             clippy::shadow_reuse,
             reason = "idiomatic destructuring of Option parameter via ?"
@@ -89,17 +89,15 @@ impl Update<Msg> for Model {
             }
         }
     }
-}
 
-impl Model {
     /// Switch to a different tab, unmounting the old screen and mounting the new one.
     #[expect(
         clippy::print_stderr,
         reason = "mount/focus errors are logged to stderr since we are in raw terminal mode"
     )]
     fn switch_tab(&mut self, tab: Tab) {
-        use tuirealm::AttrValue;
-        use tuirealm::Attribute;
+        use tuirealm::props::AttrValue;
+        use tuirealm::props::Attribute;
         use tuirealm::props::PropPayload;
         use tuirealm::props::PropValue;
 
@@ -127,7 +125,7 @@ impl Model {
                 .attr(
                     &Id::Chrome(ChromeId::TabBar),
                     Attribute::Value,
-                    AttrValue::Payload(PropPayload::One(PropValue::Usize(tab_idx))),
+                    AttrValue::Payload(PropPayload::Single(PropValue::Usize(tab_idx))),
                 )
                 .ok();
         }
@@ -147,8 +145,8 @@ impl Model {
         reason = "focus errors logged to stderr since we are in raw terminal mode"
     )]
     fn toggle_help(&mut self) {
-        use tuirealm::AttrValue;
-        use tuirealm::Attribute;
+        use tuirealm::props::AttrValue;
+        use tuirealm::props::Attribute;
 
         use crate::id::ChromeId;
 
@@ -158,7 +156,7 @@ impl Model {
             .query(&Id::Chrome(ChromeId::HelpOverlay), Attribute::Display)
             .ok()
             .flatten()
-            .is_some_and(|v| matches!(v, AttrValue::Flag(true)));
+            .is_some_and(|v| v == tuirealm::props::AttrValue::Flag(true));
 
         #[expect(
             clippy::unused_result_ok,
@@ -223,7 +221,6 @@ impl Model {
         let screen = &mut self.active_screen;
 
         self.terminal
-            .raw_mut()
             .draw(|frame| {
                 let area = frame.area();
                 let chunks = Layout::default()

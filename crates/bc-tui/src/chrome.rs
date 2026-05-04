@@ -8,12 +8,12 @@ pub mod help_overlay;
 pub mod status_bar;
 pub mod tab_bar;
 
-use tuirealm::Application;
-use tuirealm::NoUserEvent;
-use tuirealm::Sub;
-use tuirealm::SubClause;
-use tuirealm::SubEventClause;
+use tuirealm::application::Application;
 use tuirealm::event::Key;
+use tuirealm::event::NoUserEvent;
+use tuirealm::subscription::EventClause;
+use tuirealm::subscription::Sub;
+use tuirealm::subscription::SubClause;
 
 use crate::id::AccountsId;
 use crate::id::BudgetId;
@@ -37,7 +37,7 @@ pub fn mount(app: &mut Application<Id, Msg, NoUserEvent>, active_tab: Tab) -> an
         Box::new(tab_bar::TabBar::new(active_tab)),
         vec![
             Sub::new(
-                SubEventClause::Keyboard(Key::Char('q').into()),
+                EventClause::Keyboard(Key::Char('q').into()),
                 SubClause::And(
                     Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
                         Id::Accounts(AccountsId::TransactionForm),
@@ -48,7 +48,7 @@ pub fn mount(app: &mut Application<Id, Msg, NoUserEvent>, active_tab: Tab) -> an
                 ),
             ),
             Sub::new(
-                SubEventClause::Keyboard(Key::Char('?').into()),
+                EventClause::Keyboard(Key::Char('?').into()),
                 SubClause::And(
                     Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
                         Id::Accounts(AccountsId::TransactionForm),
@@ -59,7 +59,7 @@ pub fn mount(app: &mut Application<Id, Msg, NoUserEvent>, active_tab: Tab) -> an
                 ),
             ),
             Sub::new(
-                SubEventClause::Keyboard(Key::Char('1').into()),
+                EventClause::Keyboard(Key::Char('1').into()),
                 SubClause::And(
                     Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
                         Id::Accounts(AccountsId::TransactionForm),
@@ -70,7 +70,7 @@ pub fn mount(app: &mut Application<Id, Msg, NoUserEvent>, active_tab: Tab) -> an
                 ),
             ),
             Sub::new(
-                SubEventClause::Keyboard(Key::Char('2').into()),
+                EventClause::Keyboard(Key::Char('2').into()),
                 SubClause::And(
                     Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
                         Id::Accounts(AccountsId::TransactionForm),
@@ -81,7 +81,7 @@ pub fn mount(app: &mut Application<Id, Msg, NoUserEvent>, active_tab: Tab) -> an
                 ),
             ),
             Sub::new(
-                SubEventClause::Keyboard(Key::Char('3').into()),
+                EventClause::Keyboard(Key::Char('3').into()),
                 SubClause::And(
                     Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
                         Id::Accounts(AccountsId::TransactionForm),
@@ -92,7 +92,7 @@ pub fn mount(app: &mut Application<Id, Msg, NoUserEvent>, active_tab: Tab) -> an
                 ),
             ),
             Sub::new(
-                SubEventClause::Keyboard(Key::Tab.into()),
+                EventClause::Keyboard(Key::Tab.into()),
                 SubClause::And(
                     Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
                         Id::Accounts(AccountsId::TransactionForm),
@@ -103,7 +103,7 @@ pub fn mount(app: &mut Application<Id, Msg, NoUserEvent>, active_tab: Tab) -> an
                 ),
             ),
             Sub::new(
-                SubEventClause::Keyboard(Key::BackTab.into()),
+                EventClause::Keyboard(Key::BackTab.into()),
                 SubClause::And(
                     Box::new(SubClause::Not(Box::new(SubClause::IsMounted(
                         Id::Accounts(AccountsId::TransactionForm),
