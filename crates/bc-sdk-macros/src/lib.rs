@@ -110,3 +110,37 @@ fn generate_importer_export(item_impl: &ItemImpl) -> syn::Result<TokenStream2> {
 
     Ok(expanded)
 }
+
+#[cfg(test)]
+mod tests {
+    use syn::parse_str;
+
+    use super::*;
+
+    #[test]
+    fn trait_impl_generates_without_error() {
+        let item: ItemImpl = parse_str(
+            "impl Importer for MyPlugin {
+                fn name(&self) -> &str { \"my-plugin\" }
+                fn detect(&self, _: &[u8]) -> bool { false }
+                fn import(&self, _: &[u8], _: ImportConfig)
+                    -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+            }",
+        )
+        .expect("test input is valid syn");
+        assert!(
+            generate_importer_export(&item).is_ok(),
+            "trait impl should generate export glue successfully"
+        );
+    }
+
+    #[test]
+    fn non_trait_impl_returns_error() {
+        let item: ItemImpl = parse_str("impl MyPlugin { fn name(&self) -> &str { \"x\" } }")
+            .expect("test input is valid syn");
+        assert!(
+            generate_importer_export(&item).is_err(),
+            "bare impl (no trait) should return a syn error"
+        );
+    }
+}
