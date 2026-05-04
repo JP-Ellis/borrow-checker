@@ -18,7 +18,7 @@ members  = [
   [workspace.package]
   version      = "0.1.0"
   edition      = "2024"
-  rust-version = "1.85"
+  rust-version = "1.93"
   homepage     = "https://github.com/JP-Ellis/borrow-checker"
   repository   = "https://github.com/JP-Ellis/borrow-checker"
   license      = "MIT"
@@ -89,13 +89,13 @@ members  = [
     "fmt",
     "json"
   ] }
-  wasmtime              = { version = "41", default-features = false, features = [
+  wasmtime              = { version = "44", default-features = false, features = [
     "component-model",
     "cranelift",
     "runtime",
     "std",
   ] }
-  wasmtime-wasi         = { version = "41" }
+  wasmtime-wasi         = { version = "44" }
   winnow                = "1.0"
   wit-bindgen           = { version = "0.57", default-features = false, features = [
     "macros"
