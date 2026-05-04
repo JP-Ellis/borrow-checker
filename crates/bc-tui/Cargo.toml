@@ -62,7 +62,7 @@ tuirealm           = "3"
 
 [dev-dependencies]
 assert_fs           = { workspace = true }
-insta               = { version = "1", features = ["filters"] }
+insta               = { version = "=1.47.2", features = ["filters"] }
 pretty_assertions   = { workspace = true }
 rust_decimal        = { workspace = true }
 rust_decimal_macros = { workspace = true }

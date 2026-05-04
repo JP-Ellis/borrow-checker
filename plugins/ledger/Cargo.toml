@@ -18,5 +18,5 @@ bc-sdk       = { path = "../../crates/bc-sdk" }
 rust_decimal = "1"
 
 [dev-dependencies]
-pretty_assertions   = "1"
-rust_decimal_macros = "1"
+pretty_assertions   = "=1.4.1"
+rust_decimal_macros = "=1.40.0"
