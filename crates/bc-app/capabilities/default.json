@@ -1,0 +1,7 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema/acl/capability.schema.json",
+  "identifier": "default",
+  "description": "Default capability set for the borrow-checker app",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
