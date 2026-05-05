@@ -21,6 +21,7 @@ env:
   RUST_BACKTRACE: '1'
   FORCE_COLOR: '1'
   NEXTEST_PROFILE: ci
+  MISE_CARGO_BINSTALL_ONLY: 'true'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
