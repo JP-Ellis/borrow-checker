@@ -190,6 +190,7 @@ mod tests {
     use tuirealm::event::Key;
     use tuirealm::event::KeyEvent;
     use tuirealm::event::KeyModifiers;
+    use tuirealm::props::Attribute;
 
     use super::*;
 
@@ -223,5 +224,42 @@ mod tests {
             Some(Msg::HelpToggle)
         );
         pretty_assertions::assert_eq!(overlay.on(&key_event(Key::Enter)), Some(Msg::HelpToggle));
+    }
+
+    /// Verify the `Attribute::Display` flag round-trips correctly through
+    /// tuirealm v4's `QueryResult` API.
+    ///
+    /// `toggle_help` in `app.rs` compares the query result against
+    /// `AttrValue::Flag(true)` to decide whether the overlay is currently
+    /// shown; this test ensures that comparison works as expected.
+    #[test]
+    fn display_attribute_round_trips_via_query() {
+        let mut widget = Widget::new();
+
+        // Newly created overlay is hidden.
+        pretty_assertions::assert_eq!(
+            widget
+                .query(Attribute::Display)
+                .is_some_and(|v| v == AttrValue::Flag(false)),
+            true
+        );
+
+        // Open (simulate toggle_help setting Display = true).
+        widget.attr(Attribute::Display, AttrValue::Flag(true));
+        pretty_assertions::assert_eq!(
+            widget
+                .query(Attribute::Display)
+                .is_some_and(|v| v == AttrValue::Flag(true)),
+            true
+        );
+
+        // Close (simulate toggle_help setting Display = false).
+        widget.attr(Attribute::Display, AttrValue::Flag(false));
+        pretty_assertions::assert_eq!(
+            widget
+                .query(Attribute::Display)
+                .is_some_and(|v| v == AttrValue::Flag(true)),
+            false
+        );
     }
 }
