@@ -4,9 +4,8 @@
 # For each plugin:
 #   1. Compile to wasm32-wasip2 via cargo.
 #   2. Optionally optimise with wasm-opt -O2.
-#   3. Generate a sidecar manifest from [package.metadata.bc-plugin] in Cargo.toml.
 #
-# Requires: cargo, python3 (3.11+ for tomllib), optionally wasm-opt.
+# Requires: cargo, optionally wasm-opt.
 set -euo pipefail
 
 WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -48,12 +47,6 @@ for name in "${PLUGINS[@]}"; do
     cp "$wasm_src" "$wasm_dest"
   fi
   echo "    wasm  → $wasm_dest"
-
-  # Generate sidecar manifest from [package.metadata.bc-plugin] in Cargo.toml,
-  # merging in the package version so PluginManifest.version is populated.
-  toml_dest="$PLUGINS_OUT/${name}.toml"
-  jaq '{plugin: (.package.metadata."bc-plugin" + {version: .package.version})}' "$manifest" --to toml >"$toml_dest"
-  echo "    toml  → $toml_dest"
 done
 
 echo "Done. Plugins staged in $PLUGINS_OUT"

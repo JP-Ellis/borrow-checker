@@ -221,19 +221,7 @@ ______________________________________________________________________
 - **`bc-sdk`**: Standalone crate published to crates.io. Plugin authors depend on this, compile to `wasm32-wasip1`, and distribute a single `.wasm` file.
 - **Plugin discovery**: `~/.config/borrow-checker/plugins/` (configurable). A `plugins.toml` manifest lists enabled plugins and their configuration.
 
-### 6.2 Plugin Manifest
-
-Every plugin embeds or ships a sidecar manifest:
-
-```toml
-[plugin]
-name        = "commbank-au"
-version     = "1.2.0"
-sdk_abi     = 2           # ABI version compiled against
-min_host    = "0.5.0"     # minimum BorrowChecker version required
-```
-
-### 6.3 ABI Versioning
+### 6.2 ABI Versioning
 
 The SDK uses a **single integer ABI version**, separate from semver. Only breaking changes increment it; additive changes use capability negotiation (plugins query at runtime whether a host function exists).
 
@@ -247,7 +235,7 @@ The SDK uses a **single integer ABI version**, separate from semver. Only breaki
 
 During the grace period the host loads deprecated-ABI plugins via a compatibility shim and warns the user at startup with a link to the migration guide.
 
-### 6.4 Plugin Phases
+### 6.3 Plugin Phases
 
 **Phase 1 — Importers (Milestone 6, critical)**
 
