@@ -70,10 +70,9 @@ pub fn run(ctx: Arc<TuiContext>) -> anyhow::Result<()> {
     while !model.quit {
         match model
             .app
-            .tick(PollStrategy::Once(Duration::from_millis(10)))
+            .tick(PollStrategy::Once(Duration::from_millis(20)))
         {
             Err(e) => {
-                model.terminal.restore()?;
                 anyhow::bail!("tui-realm tick error: {e}");
             }
             Ok(messages) if !messages.is_empty() => {
