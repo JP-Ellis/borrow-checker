@@ -1,3 +1,5 @@
+#:tombi toml-version = "v1.0.0"
+
 # Project name — not a Rust identifier, should not need backticks in docs
 doc-valid-idents = ["..", "BorrowChecker", "SQLite"]
 
@@ -10,12 +12,12 @@ allow-panic-in-tests  = true
 allow-print-in-tests  = true
 allow-unwrap-in-tests = false  # Prefer .expect("reason") over .unwrap() even in tests
 
-# Prefer macros from the `pretty_assertions` crate
 disallowed-macros = [
-  "std::assert_eq",
-  "std::assert_matches::assert_matches",
-  "std::assert_matches::debug_assert_matches",
-  "std::assert_ne",
+  { path = "std::assert_eq", replacement = "pretty_assertions::assert_eq" },
+  { path = "std::assert_ne", replacement = "pretty_assertions::assert_ne" },
+  # assert_matches is nightly-only, hence the `allow-invalid` to avoid errors in stable builds
+  { path = "std::assert_matches::assert_matches", replacement = "pretty_assertions::assert_matches", allow-invalid = true },
+  { path = "std::assert_matches::debug_assert_matches", replacement = "pretty_assertions::debug_assert_matches", allow-invalid = true },
 ]
 
 # Prefer semi-colons inside blocks _except_ for single-line blocks
