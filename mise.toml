@@ -4,17 +4,20 @@
 "core:rust" = {
   version    = "stable",
   components = "llvm-tools,rustfmt,clippy",
-  targets    = "wasm32-wasip2",
+  # wasm32-wasip2: plugin system (Wasmtime); wasm32-unknown-unknown: Leptos frontend (Tauri webview)
+  targets    = "wasm32-wasip2,wasm32-unknown-unknown",
 }
 
 # Binstall ensures fast installs of cargo binaries
 "aqua:cargo-bins/cargo-binstall" = "1.18"
 
-"cargo:prek"           = "0.3"
 "cargo:cargo-hack"     = "0.6"
 "cargo:cargo-llvm-cov" = "0.8"
 "cargo:cargo-machete"  = "0.9"
 "cargo:cargo-nextest"  = "0.9"
+"cargo:prek"           = "0.3"
+"cargo:tauri-cli"      = "2"
+"cargo:trunk"          = "0.21"
 
 [tasks]
   [tasks.format]
