@@ -8,7 +8,7 @@
 }
 
 # Binstall ensures fast installs of cargo binaries
-"aqua:cargo-bins/cargo-binstall" = "1"
+"aqua:cargo-bins/cargo-binstall" = "1.18"
 
 "cargo:prek"           = "0.3"
 "cargo:cargo-hack"     = "0.6"
