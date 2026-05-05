@@ -40,6 +40,7 @@ jobs:
       - machete
       - test
       - coverage
+      - wasm-purity
     runs-on: ubuntu-latest
     steps:
       - name: Failed
@@ -136,3 +137,17 @@ jobs:
       - uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2  # v6.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN || '' }}
+
+  wasm-purity:
+    name: WASM purity (bc-ipc + bc-ui)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
+      - name: Add wasm32-unknown-unknown target
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - name: Check bc-ipc WASM purity
+        run: cargo check -p bc-ipc --target wasm32-unknown-unknown
+      - name: Check bc-ui WASM compilation
+        run: cargo check -p bc-ui --target wasm32-unknown-unknown --features csr
