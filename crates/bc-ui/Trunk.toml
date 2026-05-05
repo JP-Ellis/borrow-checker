@@ -1,0 +1,10 @@
+[build]
+target = "./index.html"
+
+[watch]
+ignore = ["../../crates/bc-app"]
+
+[serve]
+port        = 1420
+open        = false
+ws_protocol = "ws"

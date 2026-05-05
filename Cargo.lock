@@ -475,6 +475,7 @@ dependencies = [
  "leptos",
  "leptos_router",
  "leptos_router_macro",
+ "pretty_assertions",
  "tauri-sys",
 ]
 

@@ -34,5 +34,8 @@ tauri-sys                = { git = "https://github.com/JonasKruckenberg/tauri-sy
   "core"
 ] }
 
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
 [lints]
 workspace = true

@@ -1,0 +1,330 @@
+/* BorrowChecker design tokens.
+   Source: docs/gui/design-system.md
+   NEVER use raw hex values in components — reference these variables only. */
+
+:root {
+  /* Surfaces */
+  --bc-bg: #f6f4ef;
+  --bc-surface: #fffefb;
+  --bc-surface-alt: #f1eee7;
+  --bc-surface-hi: #e8e4da;
+
+  /* Borders */
+  --bc-border: #e2ded3;
+  --bc-border-strong: #cfc9bc;
+
+  /* Ink */
+  --bc-ink: #1b1b1a;
+  --bc-ink-soft: #4d4a43;
+  --bc-ink-mute: #857f71;
+  --bc-ink-dim: #b6b0a0;
+
+  /* Accent */
+  --bc-accent: #c2410c;
+  --bc-accent-soft: rgb(194 65 12 / 15%);
+
+  /* Syntax colours */
+  --bc-keyword: #c2410c;
+  --bc-string: #3f7a2c;
+  --bc-number: #9a6b00;
+  --bc-type: #1f6fb0;
+  --bc-fn: #7e3fa8;
+  --bc-comment: #9c9384;
+
+  /* Semantic */
+  --bc-good: #3f7a2c;
+  --bc-good-soft: #e7efde;
+  --bc-bad: #b53049;
+  --bc-bad-soft: #f6e1e5;
+  --bc-warn: #9a6b00;
+  --bc-warn-soft: #f4ecd8;
+
+  /* Typography */
+  --bc-font-mono: "Fira Code", monospace;
+  --bc-font-sans: "Inter Tight", sans-serif;
+
+  /* Spacing scale — 4px base */
+  --bc-space-1: 4px;
+  --bc-space-2: 6px;
+  --bc-space-3: 8px;
+  --bc-space-4: 10px;
+  --bc-space-5: 12px;
+  --bc-space-6: 14px;
+  --bc-space-7: 18px;
+  --bc-space-8: 22px;
+  --bc-space-9: 28px;
+
+  /* Radius */
+  --bc-radius-tag: 3px;
+  --bc-radius-kbd: 4px;
+  --bc-radius-tab: 5px;
+  --bc-radius-control: 6px;
+  --bc-radius-card: 8px;
+  --bc-radius-pill: 99px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bc-bg: #0e0f14;
+    --bc-surface: #15171f;
+    --bc-surface-alt: #1b1e28;
+    --bc-surface-hi: #252834;
+
+    --bc-border: #272a36;
+    --bc-border-strong: #383c4a;
+
+    --bc-ink: #e8eaee;
+    --bc-ink-soft: #a6adbc;
+    --bc-ink-mute: #6b7180;
+    --bc-ink-dim: #4a4f5c;
+
+    --bc-keyword: #c2410c;
+    --bc-string: #9dd17a;
+    --bc-number: #e0c674;
+    --bc-type: #7bb7e0;
+    --bc-fn: #c792ea;
+    --bc-comment: #6b7180;
+
+    --bc-good: #52c58a;
+    --bc-good-soft: #1e2c24;
+    --bc-bad: #e5536f;
+    --bc-bad-soft: #2c1a20;
+    --bc-warn: #e0b05a;
+    --bc-warn-soft: #2c2517;
+  }
+}
+
+/* Base reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bc-bg);
+  color: var(--bc-ink);
+  font-family: var(--bc-font-sans);
+  font-size: 13.5px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Shell */
+.console-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.top-bar {
+  height: 52px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-5);
+  padding: 0 var(--bc-space-7);
+  background: var(--bc-surface);
+  border-bottom: 1px solid var(--bc-border);
+}
+
+.top-bar__logo {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+  flex-shrink: 0;
+}
+
+.top-bar__logo-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--bc-radius-tab);
+  background: var(--bc-accent);
+  color: #fff;
+  font-family: var(--bc-font-mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.top-bar__wordmark {
+  font-family: var(--bc-font-mono);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--bc-ink);
+}
+
+.top-bar__hyphen {
+  color: var(--bc-ink-dim);
+}
+
+.top-bar__nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+}
+
+.top-bar__tab {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 var(--bc-space-4);
+  border-radius: var(--bc-radius-tab);
+  font-family: var(--bc-font-mono);
+  font-size: 12px;
+  color: var(--bc-ink-soft);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+
+.top-bar__tab:hover {
+  background: var(--bc-surface-hi);
+  color: var(--bc-ink);
+}
+
+.top-bar__tab--active {
+  background: var(--bc-surface-alt);
+  border-bottom-color: var(--bc-accent);
+  color: var(--bc-ink);
+  font-weight: 600;
+}
+
+.top-bar__search {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 280px;
+  height: 30px;
+  padding: 0 var(--bc-space-3);
+  background: var(--bc-surface-alt);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.top-bar__search-prompt {
+  font-family: var(--bc-font-mono);
+  font-size: 11.5px;
+  color: var(--bc-ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.top-bar__kbd {
+  font-family: var(--bc-font-mono);
+  font-size: 10.5px;
+  padding: 2px 6px;
+  border-radius: var(--bc-radius-kbd);
+  background: var(--bc-surface);
+  border: 1px solid var(--bc-border);
+  color: var(--bc-ink-mute);
+  flex-shrink: 0;
+}
+
+.top-bar__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--bc-surface-hi);
+  font-family: var(--bc-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--bc-ink);
+  flex-shrink: 0;
+}
+
+.console-main {
+  flex: 1;
+  overflow: auto;
+}
+
+.page {
+  padding: var(--bc-space-7);
+  font-family: var(--bc-font-mono);
+  font-size: 11.5px;
+  color: var(--bc-ink-mute);
+}
+
+/* Num */
+.num {
+  font-family: var(--bc-font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+}
+
+.num--positive {
+  color: var(--bc-good);
+}
+
+.num--negative {
+  color: var(--bc-bad);
+}
+
+.num--neutral {
+  color: var(--bc-ink);
+}
+
+/* TagToken */
+.tag-token {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--bc-font-mono);
+  font-size: 10.5px;
+  padding: 1px 4px;
+  border-radius: var(--bc-radius-tag);
+}
+
+/* StatusPill */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--bc-radius-pill);
+  font-family: var(--bc-font-mono);
+  font-size: 11.5px;
+}
+
+.status-pill__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-pill--good {
+  background: var(--bc-good-soft);
+  color: var(--bc-good);
+}
+
+.status-pill--good .status-pill__dot {
+  background: var(--bc-good);
+}
+
+.status-pill--warn {
+  background: var(--bc-warn-soft);
+  color: var(--bc-warn);
+}
+
+.status-pill--warn .status-pill__dot {
+  background: var(--bc-warn);
+}
+
+.status-pill--bad {
+  background: var(--bc-bad-soft);
+  color: var(--bc-bad);
+}
+
+.status-pill--bad .status-pill__dot {
+  background: var(--bc-bad);
+}
