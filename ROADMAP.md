@@ -130,17 +130,17 @@ ______________________________________________________________________
 
 ## Milestone 6 — Plugin System Phase 1: Importers
 
-**Status:** ◻️
+**Status:** ✅
 **Crates:** `bc-plugins`, `bc-sdk`
 
-- [ ] WASM host runtime (extism / wasmtime)
-- [ ] Plugin manifest schema (name, version, sdk_abi, min_host)
-- [ ] Plugin discovery (`~/.config/borrow-checker/plugins/`, `plugins.toml`)
-- [ ] ABI versioning scheme (integer ABI v1, capability negotiation)
-- [ ] Grace-period deprecation policy (N+2 rule, startup warnings)
-- [ ] `Importer` plugin interface + host bridge
-- [ ] `bc-sdk` v1 published to crates.io
-- [ ] Example importer plugin (generic CSV)
+- [x] WASM host runtime (extism / wasmtime)
+- [x] Plugin manifest schema (name, version, sdk_abi, min_host)
+- [x] Plugin discovery (`~/.config/borrow-checker/plugins/`, `plugins.toml`)
+- [x] ABI versioning scheme (integer ABI v1, capability negotiation)
+- [x] Grace-period deprecation policy (N+2 rule, startup warnings)
+- [x] `Importer` plugin interface + host bridge
+- [x] `bc-sdk` v1 published to crates.io
+- [x] Example importer plugin (generic CSV)
 
 ______________________________________________________________________
 
