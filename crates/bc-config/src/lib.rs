@@ -158,7 +158,7 @@ pub struct Settings {
     /// When `None`, [`Settings::db_path`] falls back to [`default_db_path`].
     #[serde(default)]
     db_path: Option<std::path::PathBuf>,
-    /// Ordered plugin search directories (user-configured, XDG data home, sidecar).
+    /// Ordered plugin search directories (user-configured, XDG data home).
     ///
     /// Directories are checked in order; a plugin found in an earlier directory
     /// takes precedence over the same-named plugin in a later one.
@@ -345,8 +345,8 @@ impl Settings {
 
     /// Returns the ordered list of plugin search directories.
     ///
-    /// Callers (typically the CLI) may append additional directories such as the
-    /// binary sidecar directory before passing the list to `PluginRegistry::load`.
+    /// Callers (typically the CLI) may append additional directories before
+    /// passing the list to `PluginRegistry::load`.
     #[inline]
     #[must_use]
     pub fn plugin_paths(&self) -> &[std::path::PathBuf] {

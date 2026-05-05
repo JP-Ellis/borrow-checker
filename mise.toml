@@ -15,7 +15,6 @@
 "cargo:cargo-llvm-cov" = "0.8"
 "cargo:cargo-machete"  = "0.9"
 "cargo:cargo-nextest"  = "0.9"
-"cargo:jaq"            = "3"
 
 [tasks]
   [tasks.format]
