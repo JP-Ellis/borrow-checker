@@ -1,0 +1,24 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[package]
+name        = "bc-ipc"
+description = "BorrowChecker IPC types — shared between bc-app (native) and bc-ui (WASM)"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
+
+publish = false
+
+[dependencies]
+serde     = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+serde_json        = { workspace = true }
+
+[lints]
+workspace = true

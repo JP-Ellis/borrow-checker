@@ -1,0 +1,44 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[package]
+name        = "bc-ui"
+description = "BorrowChecker WASM frontend (Leptos 0.8)"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
+
+publish = false
+
+  [package.metadata.cargo-machete]
+  # WASM-only crate; machete can't track wasm-target deps or leptos proc-macro usage
+  ignored = [
+    "bc-ipc",
+    "console_error_panic_hook",
+    "leptos",
+    "leptos_router",
+    "leptos_router_macro",
+    "tauri-sys",
+  ]
+
+[dependencies]
+bc-ipc                   = { workspace = true }
+console_error_panic_hook = "0.1"
+leptos                   = { version = "0.8", default-features = false }
+leptos_router            = { version = "0.8", default-features = false }
+leptos_router_macro      = "0.8"
+
+# tauri-sys is not on crates.io; requires `esbuild` installed globally.
+# Install: `npm install -g esbuild`  (or `brew install esbuild` on macOS)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tauri-sys = { git = "https://github.com/JonasKruckenberg/tauri-sys", branch = "v2", features = [
+  "core"
+] }
+
+[features]
+csr = ["leptos/csr"]
+
+[lints]
+workspace = true
