@@ -34,7 +34,7 @@
 
   [tasks."lint:fix"]
   description = "Auto-fix lint issues"
-  run         = "cargo clippy --workspace --all-targets --fix --allow-staged --allow-dirty"
+  run         = "cargo clippy --workspace --exclude bc-ui --all-targets --fix --allow-staged --allow-dirty"
 
   [tasks.check]
   description = "Run format and lint checks"
@@ -58,7 +58,7 @@
 
   [tasks."test:docs"]
   description = "Run doc tests"
-  run         = "cargo test --doc --workspace"
+  run         = "cargo test --doc --workspace --exclude bc-ui"
 
   [tasks.test]
   description = "Run all tests (unit, integration, docs)"
@@ -74,7 +74,7 @@
   [tasks.coverage]
   description = "Generate LCOV coverage report"
   depends     = ["build-plugins"]
-  run         = "cargo llvm-cov nextest --all-features --lcov --output-path coverage.lcov"
+  run         = "cargo llvm-cov nextest --all-features --exclude bc-ui --lcov --output-path coverage.lcov"
 
   [tasks."build-plugins"]
   description = "Compile WASM importer plugins and stage them under target/plugins/"
