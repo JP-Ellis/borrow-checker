@@ -1,6 +1,13 @@
 //! Inline tag badge component.
+#![expect(
+    clippy::mod_module_files,
+    reason = "mod.rs collocates source with its SCSS module file"
+)]
 
 use leptos::prelude::*;
+use stylance::import_style;
+
+import_style!(style, "tag_token.module.scss");
 
 /// Returns the inline background style for a [`TagToken`] at 12% alpha of
 /// the given CSS custom property tone.
@@ -30,9 +37,9 @@ pub fn TagToken(
     tone_var: String,
 ) -> impl IntoView {
     let bg = tag_background_style(&tone_var);
-    let style = format!("{bg}; color: var({tone_var})");
+    let inline_style = format!("{bg}; color: var({tone_var})");
     view! {
-        <span class="tag-token" style=style>
+        <span class=style::tag style=inline_style>
             {label}
         </span>
     }

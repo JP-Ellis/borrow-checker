@@ -98,7 +98,6 @@ target
 ## MARK: Visual Studio Code
 ########################################
 .vscode/*
-!.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
@@ -230,3 +229,6 @@ Temporary Items
 ################################################################################
 ## Project-specific overrides
 ################################################################################
+
+# Stylance-generated CSS bundle (rebuilt by build.rs on each cargo build)
+/crates/bc-ui/style/

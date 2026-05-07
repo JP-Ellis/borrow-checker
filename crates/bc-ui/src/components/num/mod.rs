@@ -1,8 +1,15 @@
 //! Monetary value component.
+#![expect(
+    clippy::mod_module_files,
+    reason = "mod.rs collocates source with its SCSS module file"
+)]
 
 use core::cmp::Ordering;
 
 use leptos::prelude::*;
+use stylance::import_style;
+
+import_style!(style, "num.module.scss");
 
 /// Formats `i64` cents as a display string.
 ///
@@ -54,13 +61,14 @@ pub fn Num(
     /// Amount in integer cents. Positive = credit; negative = debit.
     cents: i64,
 ) -> impl IntoView {
-    let colour_class = match cents.cmp(&0) {
-        Ordering::Greater => "num num--positive",
-        Ordering::Less => "num num--negative",
-        Ordering::Equal => "num num--neutral",
+    let tone = match cents.cmp(&0) {
+        Ordering::Greater => style::positive,
+        Ordering::Less => style::negative,
+        Ordering::Equal => style::neutral,
     };
+    let class = format!("{} {}", style::num, tone);
 
-    view! { <span class=colour_class>{format_monetary(cents)}</span> }
+    view! { <span class=class>{format_monetary(cents)}</span> }
 }
 
 #[cfg(test)]

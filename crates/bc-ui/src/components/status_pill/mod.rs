@@ -1,10 +1,16 @@
 //! Status indicator pill component.
+#![expect(
+    clippy::mod_module_files,
+    reason = "mod.rs collocates source with its SCSS module file"
+)]
 
 use leptos::prelude::*;
+use stylance::import_style;
+
+import_style!(style, "status_pill.module.scss");
 
 /// Semantic tone for a [`StatusPill`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(dead_code, reason = "to be used in future status pill implementations")]
 pub enum Tone {
     /// Reconciled, on track, cleared, synced.
     Good,
@@ -18,11 +24,11 @@ impl Tone {
     /// Returns the BEM modifier suffix used in the CSS class.
     #[must_use]
     #[inline]
-    pub fn css_modifier(self) -> &'static str {
+    pub fn css_class(self) -> &'static str {
         match self {
-            Self::Good => "good",
-            Self::Warn => "warn",
-            Self::Bad => "bad",
+            Self::Good => style::good,
+            Self::Warn => style::warn,
+            Self::Bad => style::bad,
         }
     }
 }
@@ -40,10 +46,10 @@ pub fn StatusPill(
     /// Semantic colour tone.
     tone: Tone,
 ) -> impl IntoView {
-    let class = format!("status-pill status-pill--{}", tone.css_modifier());
+    let class = format!("{} {}", style::pill, tone.css_class());
     view! {
         <span class=class>
-            <span class="status-pill__dot"></span>
+            <span class=style::dot></span>
             {label}
         </span>
     }
@@ -51,22 +57,12 @@ pub fn StatusPill(
 
 #[cfg(test)]
 mod tests {
-    use pretty_assertions::assert_eq;
-
     use super::Tone;
 
     #[test]
-    fn good_modifier() {
-        assert_eq!(Tone::Good.css_modifier(), "good");
-    }
-
-    #[test]
-    fn warn_modifier() {
-        assert_eq!(Tone::Warn.css_modifier(), "warn");
-    }
-
-    #[test]
-    fn bad_modifier() {
-        assert_eq!(Tone::Bad.css_modifier(), "bad");
+    fn tones_have_distinct_classes() {
+        assert_ne!(Tone::Good.css_class(), Tone::Warn.css_class());
+        assert_ne!(Tone::Warn.css_class(), Tone::Bad.css_class());
+        assert_ne!(Tone::Good.css_class(), Tone::Bad.css_class());
     }
 }

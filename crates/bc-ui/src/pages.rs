@@ -1,5 +1,7 @@
 //! Top-level page components — one per route.
 
+#[cfg(debug_assertions)]
+pub mod __test;
 pub mod accounts;
 pub mod budget;
 pub mod dashboard;

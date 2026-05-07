@@ -20,8 +20,13 @@ publish = false
     "leptos",
     "leptos_router",
     "leptos_router_macro",
+    "stylance",
     "tauri-sys",
   ]
+
+  [package.metadata.stylance]
+  output_file = "./style/bundle.css"
+  folders     = ["./src/"]
 
 [dependencies]
 bc-ipc                   = { workspace = true }
@@ -29,6 +34,7 @@ console_error_panic_hook = "0.1"
 leptos                   = { version = "0.8", features = ["csr"] }
 leptos_router            = { version = "0.8", default-features = false }
 leptos_router_macro      = "0.8"
+stylance                 = "0.8"
 # tauri-sys is not on crates.io; requires `esbuild` (provided via mise).
 tauri-sys                = { git = "https://github.com/JonasKruckenberg/tauri-sys", branch = "v2", features = [
   "core"
