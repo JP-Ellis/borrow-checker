@@ -1,3 +1,5 @@
+//! Serialisable error types returned by Tauri commands.
+
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
@@ -11,16 +13,16 @@ use thiserror::Error;
 ///
 /// ```rust
 /// use bc_ipc::BcError;
-/// let e = BcError::NotFound("account-001".to_string());
+/// let e = BcError::NotFound("account-001".to_owned());
 /// assert_eq!(e.to_string(), "not found: account-001");
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Error)]
 #[non_exhaustive]
 #[expect(
-    clippy::module_name_repetitions,
-    reason = "IPC error type is exported as `bc_ipc::BcError`; the `Error` suffix is required for clarity at call sites across the Tauri boundary"
+    clippy::error_impl_error,
+    reason = "named `Error` internally; re-exported as `BcError` at the crate root following workspace convention"
 )]
-pub enum BcError {
+pub enum Error {
     /// A requested resource could not be found.
     #[error("not found: {0}")]
     NotFound(String),
@@ -42,35 +44,35 @@ mod tests {
 
     #[test]
     fn not_found_display() {
-        let e = BcError::NotFound("account-001".to_owned());
+        let e = Error::NotFound("account-001".to_owned());
         assert_eq!(e.to_string(), "not found: account-001");
     }
 
     #[test]
     fn validation_display() {
-        let e = BcError::Validation("amount must be positive".to_owned());
+        let e = Error::Validation("amount must be positive".to_owned());
         assert_eq!(e.to_string(), "validation error: amount must be positive");
     }
 
     #[test]
     fn serde_roundtrip_not_found() {
-        let e = BcError::NotFound("x".to_owned());
+        let e = Error::NotFound("x".to_owned());
         let json = serde_json::to_string(&e).expect("serialises");
-        let e2: BcError = serde_json::from_str(&json).expect("deserialises");
+        let e2: Error = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(e, e2);
     }
 
     #[test]
     fn serde_roundtrip_internal() {
-        let e = BcError::Internal("db exploded".to_owned());
+        let e = Error::Internal("db exploded".to_owned());
         let json = serde_json::to_string(&e).expect("serialises");
-        let e2: BcError = serde_json::from_str(&json).expect("deserialises");
+        let e2: Error = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(e, e2);
     }
 
     #[test]
     fn is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<BcError>();
+        assert_send_sync::<Error>();
     }
 }

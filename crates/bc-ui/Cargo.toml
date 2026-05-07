@@ -13,7 +13,7 @@ license.workspace      = true
 publish = false
 
   [package.metadata.cargo-machete]
-  # WASM-only crate; machete can't track wasm-target deps or leptos proc-macro usage
+  # Temporary stub — these dependencies will be used once the crate is fully implemented
   ignored = [
     "bc-ipc",
     "console_error_panic_hook",

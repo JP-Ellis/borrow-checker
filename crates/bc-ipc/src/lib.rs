@@ -12,7 +12,6 @@
 //! - All types implement `Send + Sync`, `Serialize`, `Deserialize`, `Clone`,
 //!   `Debug`
 
-/// Serialisable error types returned by Tauri commands.
-pub mod error;
+mod error;
 
-pub use error::BcError;
+pub use error::Error as BcError;

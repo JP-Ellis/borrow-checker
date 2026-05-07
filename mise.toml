@@ -28,37 +28,58 @@
   description = "Apply formatting (requires nightly rustfmt)"
   run         = "cargo +nightly fmt"
 
+  [tasks."lint:native"]
+  description = "Lint with Clippy on native target (fast, pre-commit)"
+  run         = "cargo clippy --all-targets -- -D warnings"
+
+  [tasks."lint:wasm"]
+  description = "Lint with Clippy on wasm32-unknown-unknown target (fast, pre-commit)"
+  run         = "cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings"
+
   [tasks.lint]
-  description = "Lint with Clippy across all feature combinations"
-  run         = "cargo hack --feature-powerset --workspace --exclude bc-ui clippy --all-targets -- -D warnings"
+  description = "Lint with Clippy on all targets (fast, pre-commit)"
+  run         = [{ task = "lint:native" }, { task = "lint:wasm" }]
+
+  [tasks."lint:hack:native"]
+  description = "Lint with Clippy across all feature combinations on native target (thorough, CI)"
+  run         = "cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings"
+
+  [tasks."lint:hack:wasm"]
+  description = "Lint with Clippy across all feature combinations on wasm32-unknown-unknown target (thorough, CI)"
+  run         = "cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown -- -D warnings"
+
+  [tasks."lint:hack"]
+  description = "Lint with Clippy across all feature combinations on all targets (thorough, CI)"
+  run         = [{ task = "lint:hack:native" }, { task = "lint:hack:wasm" }]
+
+  [tasks."lint:fix:native"]
+  description = "Auto-fix lint issues across all feature combinations on native target"
+  run         = "cargo hack --feature-powerset --workspace clippy --all-targets --fix --allow-staged --allow-dirty -- -D warnings"
+
+  [tasks."lint:fix:wasm"]
+  description = "Auto-fix lint issues across all feature combinations on wasm32-unknown-unknown target"
+  run         = "cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings"
 
   [tasks."lint:fix"]
-  description = "Auto-fix lint issues"
-  run         = "cargo clippy --workspace --exclude bc-ui --all-targets --fix --allow-staged --allow-dirty"
+  description = "Auto-fix lint issues across all feature combinations on all targets"
+  run         = [{ task = "lint:fix:native" }, { task = "lint:fix:wasm" }]
 
   [tasks.check]
   description = "Run format and lint checks"
-  run         = [{ task = ":format" }, { task = ":lint" }]
+  run         = [{ task = "format" }, { task = "lint" }]
 
   [tasks."check:fix"]
   description = "Auto-fix format and lint issues"
-  run         = [{ task = ":format:fix" }, { task = ":lint:fix" }]
+  run         = [{ task = "format:fix" }, { task = "lint:fix" }]
 
   [tasks."test:nextest"]
   description = "Run unit tests across all feature combinations"
   depends     = ["build-plugins"]
-  run         = "cargo hack --feature-powerset nextest run --workspace --exclude bc-ui"
-
-  [tasks."check:wasm"]
-  description = "Verify bc-ipc and bc-ui compile to wasm32-unknown-unknown"
-  run         = [
-    "cargo check -p bc-ipc --target wasm32-unknown-unknown",
-    "cargo check -p bc-ui  --target wasm32-unknown-unknown --features csr",
-  ]
+  run         = "cargo hack --feature-powerset --workspace --exclude bc-ui nextest run"
 
   [tasks."test:docs"]
   description = "Run doc tests"
-  run         = "cargo test --doc --workspace --exclude bc-ui"
+  run         = "cargo test --doc --workspace"
 
   [tasks.test]
   description = "Run all tests (unit, integration, docs)"
@@ -74,7 +95,7 @@
   [tasks.coverage]
   description = "Generate LCOV coverage report"
   depends     = ["build-plugins"]
-  run         = "cargo llvm-cov nextest --all-features --exclude bc-ui --lcov --output-path coverage.lcov"
+  run         = "cargo llvm-cov nextest --all-features --lcov --output-path coverage.lcov"
 
   [tasks."build-plugins"]
   description = "Compile WASM importer plugins and stage them under target/plugins/"
