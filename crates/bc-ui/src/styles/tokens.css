@@ -4,40 +4,40 @@
 
 :root {
   /* Surfaces */
-  --bc-bg: #f6f4ef;
-  --bc-surface: #fffefb;
-  --bc-surface-alt: #f1eee7;
-  --bc-surface-hi: #e8e4da;
+  --bc-bg: oklch(0.9673 0.0070 88.64deg);
+  --bc-surface: oklch(0.9970 0.0041 91.45deg);
+  --bc-surface-alt: oklch(0.9495 0.0099 87.47deg);
+  --bc-surface-hi: oklch(0.9192 0.0141 88.69deg);
 
   /* Borders */
-  --bc-border: #e2ded3;
-  --bc-border-strong: #cfc9bc;
+  --bc-border: oklch(0.9007 0.0154 90.24deg);
+  --bc-border-strong: oklch(0.8371 0.0190 86.16deg);
 
   /* Ink */
-  --bc-ink: #1b1b1a;
-  --bc-ink-soft: #4d4a43;
-  --bc-ink-mute: #857f71;
-  --bc-ink-dim: #b6b0a0;
+  --bc-ink: oklch(0.2217 0.0019 106.55deg);
+  --bc-ink-soft: oklch(0.4097 0.0121 87.54deg);
+  --bc-ink-mute: oklch(0.5977 0.0219 87.56deg);
+  --bc-ink-dim: oklch(0.7577 0.0234 89.83deg);
 
   /* Accent */
-  --bc-accent: #c2410c;
-  --bc-accent-soft: rgb(194 65 12 / 15%);
+  --bc-accent: oklch(0.5534 0.1739 38.40deg);
+  --bc-accent-soft: oklch(0.5534 0.1739 38.40deg / 15%);
 
   /* Syntax colours */
-  --bc-keyword: #c2410c;
-  --bc-string: #3f7a2c;
-  --bc-number: #9a6b00;
-  --bc-type: #1f6fb0;
-  --bc-fn: #7e3fa8;
-  --bc-comment: #9c9384;
+  --bc-keyword: oklch(0.5534 0.1739 38.40deg);
+  --bc-string: oklch(0.5215 0.1273 138.85deg);
+  --bc-number: oklch(0.5622 0.1171 78.34deg);
+  --bc-type: oklch(0.5278 0.1265 248.09deg);
+  --bc-fn: oklch(0.4963 0.1667 309.25deg);
+  --bc-comment: oklch(0.6667 0.0241 80.64deg);
 
   /* Semantic */
-  --bc-good: #3f7a2c;
-  --bc-good-soft: #e7efde;
-  --bc-bad: #b53049;
-  --bc-bad-soft: #f6e1e5;
-  --bc-warn: #9a6b00;
-  --bc-warn-soft: #f4ecd8;
+  --bc-good: oklch(0.5215 0.1273 138.85deg);
+  --bc-good-soft: oklch(0.9415 0.0241 127.59deg);
+  --bc-bad: oklch(0.5202 0.1687 14.80deg);
+  --bc-bad-soft: oklch(0.9278 0.0236 4.50deg);
+  --bc-warn: oklch(0.5622 0.1171 78.34deg);
+  --bc-warn-soft: oklch(0.9440 0.0278 88.75deg);
 
   /* Typography */
   --bc-font-mono: "Fira Code", monospace;
@@ -65,32 +65,32 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bc-bg: #0e0f14;
-    --bc-surface: #15171f;
-    --bc-surface-alt: #1b1e28;
-    --bc-surface-hi: #252834;
+    --bc-bg: oklch(0.1697 0.0105 276.32deg);
+    --bc-surface: oklch(0.2063 0.0162 273.93deg);
+    --bc-surface-alt: oklch(0.2366 0.0198 271.79deg);
+    --bc-surface-hi: oklch(0.2791 0.0226 273.89deg);
 
-    --bc-border: #272a36;
-    --bc-border-strong: #383c4a;
+    --bc-border: oklch(0.2873 0.0224 273.94deg);
+    --bc-border-strong: oklch(0.3581 0.0249 272.58deg);
 
-    --bc-ink: #e8eaee;
-    --bc-ink-soft: #a6adbc;
-    --bc-ink-mute: #6b7180;
-    --bc-ink-dim: #4a4f5c;
+    --bc-ink: oklch(0.9367 0.0058 264.53deg);
+    --bc-ink-soft: oklch(0.7468 0.0229 265.71deg);
+    --bc-ink-mute: oklch(0.5488 0.0244 268.24deg);
+    --bc-ink-dim: oklch(0.4280 0.0225 268.77deg);
 
-    --bc-keyword: #c2410c;
-    --bc-string: #9dd17a;
-    --bc-number: #e0c674;
-    --bc-type: #7bb7e0;
-    --bc-fn: #c792ea;
-    --bc-comment: #6b7180;
+    --bc-keyword: oklch(0.5534 0.1739 38.40deg);
+    --bc-string: oklch(0.8040 0.1280 133.72deg);
+    --bc-number: oklch(0.8311 0.1062 92.34deg);
+    --bc-type: oklch(0.7538 0.0858 239.26deg);
+    --bc-fn: oklch(0.7427 0.1348 311.06deg);
+    --bc-comment: oklch(0.5488 0.0244 268.24deg);
 
-    --bc-good: #52c58a;
-    --bc-good-soft: #1e2c24;
-    --bc-bad: #e5536f;
-    --bc-bad-soft: #2c1a20;
-    --bc-warn: #e0b05a;
-    --bc-warn-soft: #2c2517;
+    --bc-good: oklch(0.7419 0.1360 158.01deg);
+    --bc-good-soft: oklch(0.2775 0.0241 159.29deg);
+    --bc-bad: oklch(0.6443 0.1811 12.31deg);
+    --bc-bad-soft: oklch(0.2437 0.0303 357.98deg);
+    --bc-warn: oklch(0.7840 0.1179 80.19deg);
+    --bc-warn-soft: oklch(0.2681 0.0262 84.19deg);
   }
 }
 
@@ -145,7 +145,7 @@ body {
   height: 24px;
   border-radius: var(--bc-radius-tab);
   background: var(--bc-accent);
-  color: #fff;
+  color: oklch(1 0 0);
   font-family: var(--bc-font-mono);
   font-size: 13px;
   font-weight: 600;

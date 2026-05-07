@@ -1,4 +1,5 @@
-//! Shell components: [`ConsoleShell`] wrapper, [`top_bar::TopBar`], and [`palette::CommandPalette`].
+//! Shell components: [`ConsoleShell`] wrapper and [`top_bar::TopBar`].
+//! The [`palette`] module contains a [`palette::CommandPalette`] stub wired up in Phase 2.
 
 pub mod palette;
 pub mod top_bar;
