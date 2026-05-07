@@ -26,7 +26,7 @@ publish = false
 [dependencies]
 bc-ipc                   = { workspace = true }
 console_error_panic_hook = "0.1"
-leptos                   = { version = "0.8", default-features = false }
+leptos                   = { version = "0.8", features = ["csr"] }
 leptos_router            = { version = "0.8", default-features = false }
 leptos_router_macro      = "0.8"
 
@@ -36,9 +36,6 @@ leptos_router_macro      = "0.8"
 tauri-sys = { git = "https://github.com/JonasKruckenberg/tauri-sys", branch = "v2", features = [
   "core"
 ] }
-
-[features]
-csr = ["leptos/csr"]
 
 [lints]
 workspace = true
