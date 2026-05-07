@@ -29,7 +29,7 @@
 
   [tasks."lint:native"]
   description = "Lint with Clippy on native target (fast, pre-commit)"
-  run         = "cargo clippy --all-targets -- -D warnings"
+  run         = "cargo clippy --workspace --exclude bc-ui --all-targets -- -D warnings"
 
   [tasks."lint:wasm"]
   description = "Lint with Clippy on wasm32-unknown-unknown target (fast, pre-commit)"
@@ -41,7 +41,7 @@
 
   [tasks."lint:hack:native"]
   description = "Lint with Clippy across all feature combinations on native target (thorough, CI)"
-  run         = "cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings"
+  run         = "cargo hack --feature-powerset --workspace --exclude bc-ui clippy --all-targets -- -D warnings"
 
   [tasks."lint:hack:wasm"]
   description = "Lint with Clippy across all feature combinations on wasm32-unknown-unknown target (thorough, CI)"
@@ -53,7 +53,7 @@
 
   [tasks."lint:fix:native"]
   description = "Auto-fix lint issues across all feature combinations on native target"
-  run         = "cargo hack --feature-powerset --workspace clippy --all-targets --fix --allow-staged --allow-dirty -- -D warnings"
+  run         = "cargo hack --feature-powerset --workspace --exclude bc-ui clippy --all-targets --fix --allow-staged --allow-dirty -- -D warnings"
 
   [tasks."lint:fix:wasm"]
   description = "Auto-fix lint issues across all feature combinations on wasm32-unknown-unknown target"
