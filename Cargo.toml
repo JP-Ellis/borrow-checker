@@ -7,12 +7,14 @@ members  = [
   "crates/bc-cli",
   "crates/bc-config",
   "crates/bc-core",
+  "crates/bc-ipc",
   "crates/bc-models",
   "crates/bc-otel",
   "crates/bc-plugins",
   "crates/bc-sdk",
   "crates/bc-sdk-macros",
   "crates/bc-tui",
+  "crates/bc-ui",
 ]
 
   [workspace.package]
@@ -27,11 +29,13 @@ members  = [
   # Internal crates — reference as `bc-models.workspace = true` in member Cargo.tomls
   bc-config     = { path = "crates/bc-config" }
   bc-core       = { path = "crates/bc-core" }
+  bc-ipc        = { path = "crates/bc-ipc" }
   bc-models     = { path = "crates/bc-models" }
   bc-otel       = { path = "crates/bc-otel" }
   bc-plugins    = { path = "crates/bc-plugins" }
   bc-sdk        = { path = "crates/bc-sdk" }
   bc-sdk-macros = { path = "crates/bc-sdk-macros" }
+  bc-ui         = { path = "crates/bc-ui" }
 
   # External — shared across crates
   assert_cmd            = "2"
