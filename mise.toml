@@ -18,6 +18,7 @@
 "cargo:prek"           = "0.3"
 "cargo:tauri-cli"      = "2"
 "cargo:trunk"          = "0.21"
+"npm:esbuild"          = "0.28"
 
 [tasks]
   [tasks.format]
