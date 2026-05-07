@@ -1,5 +1,3 @@
-#:schema https://mise.jdx.dev/schema/mise.toml.json
-
 [tools]
 "core:rust" = {
   version    = "stable",
