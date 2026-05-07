@@ -19,9 +19,7 @@ pub fn ConsoleShell(
     view! {
         <div class="console-shell">
             <TopBar />
-            <main class="console-main">
-                {children()}
-            </main>
+            <main class="console-main">{children()}</main>
         </div>
     }
 }

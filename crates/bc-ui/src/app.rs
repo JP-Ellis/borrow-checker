@@ -26,13 +26,13 @@ pub fn App() -> impl IntoView {
         <Router>
             <ConsoleShell>
                 <Routes fallback=|| view! { <p class="not-found">"page not found"</p> }>
-                    <Route path=path!("/")             view=Dashboard />
-                    <Route path=path!("/accounts")     view=Accounts />
+                    <Route path=path!("/") view=Dashboard />
+                    <Route path=path!("/accounts") view=Accounts />
                     <Route path=path!("/accounts/:id") view=Accounts />
-                    <Route path=path!("/budget")       view=Budget />
-                    <Route path=path!("/reports")      view=Reports />
-                    <Route path=path!("/plugins")      view=Plugins />
-                    <Route path=path!("/settings")     view=Settings />
+                    <Route path=path!("/budget") view=Budget />
+                    <Route path=path!("/reports") view=Reports />
+                    <Route path=path!("/plugins") view=Plugins />
+                    <Route path=path!("/settings") view=Settings />
                 </Routes>
             </ConsoleShell>
         </Router>

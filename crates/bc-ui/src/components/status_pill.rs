@@ -4,13 +4,13 @@ use leptos::prelude::*;
 
 /// Semantic tone for a [`StatusPill`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(dead_code, reason = "to be used in future status pill implementations")]
 pub enum Tone {
     /// Reconciled, on track, cleared, synced.
     Good,
     /// Pending, unallocated, needs attention.
     Warn,
     /// Overspent, failed, negative delta, error.
-    #[expect(dead_code, reason = "used in Phase 2 IPC error display")]
     Bad,
 }
 

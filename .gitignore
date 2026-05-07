@@ -5,6 +5,7 @@
 /.superpowers/
 /.worktrees/
 /docs/superpowers/
+coverage.lcov
 
 ################################################################################
 ## Standard Templates

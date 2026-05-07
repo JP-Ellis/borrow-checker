@@ -10,10 +10,13 @@
 "aqua:cargo-bins/cargo-binstall" = "1.18"
 
 "cargo:cargo-hack"     = "0.6"
+"cargo:cargo-leptos"   = "0.3"
 "cargo:cargo-llvm-cov" = "0.8"
 "cargo:cargo-machete"  = "0.9"
 "cargo:cargo-nextest"  = "0.9"
+"cargo:leptosfmt"      = "0.1"
 "cargo:prek"           = "0.3"
+"cargo:stylance-cli"   = "0.8"
 "cargo:tauri-cli"      = "2"
 "cargo:trunk"          = "0.21"
 "npm:esbuild"          = "0.28"
@@ -21,15 +24,21 @@
 [tasks]
   [tasks.format]
   description = "Check formatting (requires nightly rustfmt)"
-  run         = "cargo +nightly fmt -- --check"
+  run         = [
+    "cargo +nightly fmt --check",
+    "leptosfmt --check crates/",
+  ]
 
   [tasks."format:fix"]
   description = "Apply formatting (requires nightly rustfmt)"
-  run         = "cargo +nightly fmt"
+  run         = [
+    "cargo +nightly fmt",
+    "leptosfmt crates/",
+  ]
 
   [tasks."lint:native"]
   description = "Lint with Clippy on native target (fast, pre-commit)"
-  run         = "cargo clippy --workspace --exclude bc-ui --all-targets -- -D warnings"
+  run         = "cargo clippy --workspace --all-targets -- -D warnings"
 
   [tasks."lint:wasm"]
   description = "Lint with Clippy on wasm32-unknown-unknown target (fast, pre-commit)"
@@ -41,7 +50,7 @@
 
   [tasks."lint:hack:native"]
   description = "Lint with Clippy across all feature combinations on native target (thorough, CI)"
-  run         = "cargo hack --feature-powerset --workspace --exclude bc-ui clippy --all-targets -- -D warnings"
+  run         = "cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings"
 
   [tasks."lint:hack:wasm"]
   description = "Lint with Clippy across all feature combinations on wasm32-unknown-unknown target (thorough, CI)"
@@ -53,7 +62,7 @@
 
   [tasks."lint:fix:native"]
   description = "Auto-fix lint issues across all feature combinations on native target"
-  run         = "cargo hack --feature-powerset --workspace --exclude bc-ui clippy --all-targets --fix --allow-staged --allow-dirty -- -D warnings"
+  run         = "cargo hack --feature-powerset --workspace clippy --all-targets --fix --allow-staged --allow-dirty -- -D warnings"
 
   [tasks."lint:fix:wasm"]
   description = "Auto-fix lint issues across all feature combinations on wasm32-unknown-unknown target"
@@ -74,7 +83,7 @@
   [tasks."test:nextest"]
   description = "Run unit tests across all feature combinations"
   depends     = ["build-plugins"]
-  run         = "cargo hack --feature-powerset --workspace --exclude bc-ui nextest run"
+  run         = "cargo hack --feature-powerset --workspace nextest run"
 
   [tasks."test:docs"]
   description = "Run doc tests"

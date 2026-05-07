@@ -31,7 +31,11 @@ pub fn TagToken(
 ) -> impl IntoView {
     let bg = tag_background_style(&tone_var);
     let style = format!("{bg}; color: var({tone_var})");
-    view! { <span class="tag-token" style=style>{label}</span> }
+    view! {
+        <span class="tag-token" style=style>
+            {label}
+        </span>
+    }
 }
 
 #[cfg(test)]
