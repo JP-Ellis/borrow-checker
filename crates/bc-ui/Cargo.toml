@@ -29,11 +29,9 @@ console_error_panic_hook = "0.1"
 leptos                   = { version = "0.8", features = ["csr"] }
 leptos_router            = { version = "0.8", default-features = false }
 leptos_router_macro      = "0.8"
-
 # tauri-sys is not on crates.io; requires `esbuild` installed globally.
 # Install: `npm install -g esbuild`  (or `brew install esbuild` on macOS)
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-tauri-sys = { git = "https://github.com/JonasKruckenberg/tauri-sys", branch = "v2", features = [
+tauri-sys                = { git = "https://github.com/JonasKruckenberg/tauri-sys", branch = "v2", features = [
   "core"
 ] }
 
