@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-      - run: mise run lint
+      - run: mise run lint:hack
 
   format:
     name: Format
