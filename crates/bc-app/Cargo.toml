@@ -25,7 +25,7 @@ serde     = { workspace = true }
 tauri     = { version = "2", features = ["wry"] }
 
 [build-dependencies]
-tauri-build = { version = "2" }
+tauri-build = { version = "2", features = [] }
 
 [lints]
 workspace = true
