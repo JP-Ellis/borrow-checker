@@ -27,3 +27,9 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running borrow-checker");
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_compiles() {}
+}
