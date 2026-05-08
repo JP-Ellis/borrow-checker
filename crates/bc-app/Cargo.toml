@@ -2,7 +2,7 @@
 
 [package]
 name        = "bc-app"
-description = "BorrowChecker desktop GUI (Tauri v2)"
+description = "BorrowChecker desktop GUI"
 
 version.workspace      = true
 edition.workspace      = true

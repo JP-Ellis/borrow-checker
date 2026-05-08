@@ -1,0 +1,24 @@
+product-name = "borrow-checker"
+version      = "0.1.0"
+identifier   = "me.jpellis.borrow-checker"
+
+[build]
+# Run trunk from bc-ui so it picks up its Trunk.toml (port 1420, watch ignores, etc.)
+before-dev-command   = "cd ../bc-ui && trunk serve"
+before-build-command = "cd ../bc-ui && trunk build --no-default-features --features csr"
+dev-url              = "http://localhost:1420"
+frontend-dist        = "../bc-ui/dist"
+
+[app]
+with-global-tauri = true
+
+  [[app.windows]]
+  title     = "borrow-checker"
+  width     = 1280
+  height    = 800
+  resizable = true
+
+[bundle]
+active  = false
+targets = "all"
+icon    = []
