@@ -17,9 +17,15 @@ all other required tools declared in `mise.toml`.
 mise run dev:app
 ```
 
-This starts Trunk in watch mode (serving the Leptos frontend at `http://localhost:1420`)
-and launches the Tauri application window against that dev server. Changes to
-`crates/bc-ui/` are recompiled automatically by Trunk.
+This starts two processes inside `crates/bc-ui/`:
+
+- **`stylance --watch`** (background) — watches `*.module.scss` files and regenerates
+  `style/bundle.css` on each change, enabling CSS-only hot-reload without a full WASM
+  rebuild.
+- **`trunk serve`** (foreground) — compiles the Leptos WASM bundle, watches for Rust
+  source changes, and hot-reloads the Tauri webview on `http://localhost:1420`.
+
+Tauri launches the application window once the dev server is ready.
 
 ## Building a release bundle
 
