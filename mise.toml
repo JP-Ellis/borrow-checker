@@ -1,3 +1,5 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
 [tools]
 "core:rust" = {
   version    = "stable",
@@ -40,8 +42,13 @@
   description = "Lint with Clippy on native target (fast, pre-commit)"
   run         = "cargo clippy --workspace --all-targets -- -D warnings"
 
+  [tasks."install:wasm-targets"]
+  description = "Install required WASM targets (no-op if already present)"
+  run         = "rustup target add wasm32-wasip2 wasm32-unknown-unknown"
+
   [tasks."lint:wasm"]
   description = "Lint with Clippy on wasm32-unknown-unknown target (fast, pre-commit)"
+  depends     = ["install:wasm-targets"]
   run         = "cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings"
 
   [tasks.lint]
@@ -54,6 +61,7 @@
 
   [tasks."lint:hack:wasm"]
   description = "Lint with Clippy across all feature combinations on wasm32-unknown-unknown target (thorough, CI)"
+  depends     = ["install:wasm-targets"]
   run         = "cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown -- -D warnings"
 
   [tasks."lint:hack"]
@@ -66,6 +74,7 @@
 
   [tasks."lint:fix:wasm"]
   description = "Auto-fix lint issues across all feature combinations on wasm32-unknown-unknown target"
+  depends     = ["install:wasm-targets"]
   run         = "cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings"
 
   [tasks."lint:fix"]
@@ -107,5 +116,6 @@
 
   [tasks."build-plugins"]
   description = "Compile WASM importer plugins and stage them under target/plugins/"
+  depends     = ["install:wasm-targets"]
   shell       = "bash -c"
   run         = "plugins/scripts/build.sh"
