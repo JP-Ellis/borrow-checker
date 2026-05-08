@@ -45,7 +45,7 @@ hooks = [{ id = "biome-check" }]
 # TOML formatting (tombi replaces taplo)
 [[repos]]
 repo  = "https://github.com/tombi-toml/tombi-pre-commit"
-rev   = "v0.9.9"
+rev   = "v0.9.26"
 hooks = [
   { id = "tombi-format", exclude = '(^|/)Cargo\.lock$' },
   { id = "tombi-lint" },

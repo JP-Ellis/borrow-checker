@@ -1,0 +1,12 @@
+# NOTE: incomplete, unconfirmed if working
+product-name = "borrow-checker"
+identifier   = "com.borrowchecker.app"
+
+[build]
+dev-url              = "http://localhost:1420"
+before-dev-command   = "trunk serve"
+before-build-command = "trunk build"
+frontend-dist        = "dist/"
+
+[app]
+with-global-tauri = false
