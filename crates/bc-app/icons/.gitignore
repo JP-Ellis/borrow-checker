@@ -1,0 +1,5 @@
+# All icons are generated from icon.svg via `mise run gen:icons`.
+# Only the SVG source is committed.
+*
+!.gitignore
+!icon.svg

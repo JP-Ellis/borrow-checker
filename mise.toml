@@ -120,12 +120,19 @@
   shell       = "bash -c"
   run         = "plugins/scripts/build.sh"
 
+  [tasks."gen:icons"]
+  description = "Generate icon set (PNG, ICO, ICNS) from icons/icon.svg"
+  dir         = "crates/bc-app"
+  run         = "cargo tauri icon icons/icon.svg --output icons/"
+
   [tasks."dev:app"]
   description = "Run the desktop GUI in development mode (Tauri + Trunk hot-reload)"
   dir         = "crates/bc-app"
+  depends     = ["gen:icons"]
   run         = "cargo tauri dev"
 
   [tasks."build:app"]
   description = "Build a release bundle of the desktop GUI"
   dir         = "crates/bc-app"
+  depends     = ["gen:icons"]
   run         = "cargo tauri build"

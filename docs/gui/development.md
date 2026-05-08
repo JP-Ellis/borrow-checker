@@ -47,12 +47,19 @@ Schemas used for IDE completion. They are regenerated automatically by
 `cargo build -p bc-app` whenever `build.rs` runs. See
 [`crates/bc-app/gen/README.md`](../../crates/bc-app/gen/README.md) for details.
 
+## Regenerating icons
+
+`crates/bc-app/icons/icon.svg` is the source of truth for the app icon. All
+derived formats (PNG sizes, ICO, ICNS) are generated artefacts and gitignored.
+They are regenerated automatically as a dependency of `dev:app` and
+`build:app`, or can be run explicitly:
+
+```sh
+mise run gen:icons
+```
+
 ## Notes
 
-- `crates/bc-app/icons/icon.png` is required at compile time by
-  `tauri::generate_context!()` even when the bundle icon list is empty. The
-  placeholder ships with the repo so the crate builds without a full asset
-  pipeline.
 - The `crates/bc-ui/Trunk.toml` fixes the dev server port at **1420** and
   tells Trunk to ignore changes under `crates/bc-app/` to avoid recompile
   loops.
