@@ -2,7 +2,7 @@
 
 [package]
 name        = "bc-app"
-description = "BorrowChecker desktop GUI (Tauri)"
+description = "BorrowChecker desktop GUI"
 
 version.workspace      = true
 edition.workspace      = true
@@ -12,17 +12,20 @@ license.workspace      = true
 
 publish = false
 
-# Full Tauri wiring (tauri-build, build.rs, tauri.conf.json, frontend) added in Milestone 7.
-# Plain binary here so the workspace compiles without Tauri system dependencies.
-
-  [package.metadata]
-    [package.metadata.cargo-machete]
-    # Stub crate — deps are forward-declared for future work
-    ignored = ["bc-core", "bc-models"]
+  [package.metadata.cargo-machete]
+  # Phase 2 IPC commands will use these deps; forward-declared to avoid churn.
+  # tauri-build is a build-dep used by build.rs (machete can't detect build.rs usage).
+  ignored = ["bc-core", "bc-ipc", "bc-models", "serde", "tauri-build"]
 
 [dependencies]
 bc-core   = { workspace = true }
+bc-ipc    = { workspace = true }
 bc-models = { workspace = true }
+serde     = { workspace = true }
+tauri     = { version = "2", features = ["config-toml", "wry"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = ["config-toml"] }
 
 [lints]
 workspace = true

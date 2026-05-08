@@ -2,7 +2,7 @@
 target = "./index.html"
 
 [watch]
-ignore = ["../../crates/bc-app"]
+ignore = ["../bc-app"]
 
 [serve]
 port        = 1420
