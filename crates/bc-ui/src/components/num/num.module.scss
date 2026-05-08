@@ -1,0 +1,17 @@
+.num {
+  font-family: var(--bc-font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+}
+
+.positive {
+  color: var(--bc-good);
+}
+
+.negative {
+  color: var(--bc-bad);
+}
+
+.neutral {
+  color: var(--bc-ink);
+}
