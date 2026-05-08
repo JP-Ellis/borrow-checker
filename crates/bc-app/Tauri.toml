@@ -5,9 +5,9 @@ identifier   = "me.jpellis.borrow-checker"
 [build]
 # Run trunk from bc-ui so it picks up its Trunk.toml (port 1420, watch ignores, etc.)
 before-dev-command   = "cd bc-ui; stylance --watch . & trunk serve"
-before-build-command = "cd bc-ui; stylance . && trunk build --no-default-features --features csr"
+before-build-command = "cd bc-ui; stylance . && trunk build --release"
 dev-url              = "http://localhost:1420"
-frontend-dist        = "bc-ui/dist"
+frontend-dist        = "../bc-ui/dist"
 
 [app]
 with-global-tauri = true

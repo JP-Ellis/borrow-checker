@@ -22,10 +22,10 @@ bc-core   = { workspace = true }
 bc-ipc    = { workspace = true }
 bc-models = { workspace = true }
 serde     = { workspace = true }
-tauri     = { version = "2", features = ["wry"] }
+tauri     = { version = "2", features = ["config-toml", "wry"] }
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = ["config-toml"] }
 
 [lints]
 workspace = true
