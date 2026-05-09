@@ -62,7 +62,15 @@ jobs:
 
       - name: Run Playwright web suite
         working-directory: e2e/web
-        run: aubx playwright test
+        run: aubx playwright test --update-snapshots
+
+      - name: Upload snapshot baselines (Linux only)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: playwright-snapshots-linux
+          path: e2e/web/tests/**/*-snapshots/
+          retention-days: 7
 
       - name: Upload Playwright report on failure
         if: failure()
@@ -108,6 +116,9 @@ jobs:
           echo "tauri-webdriver is not yet on crates.io."
           echo "See https://github.com/danielraffel/tauri-webdriver for install instructions."
           echo "Update this step once a stable install path is available."
+
+      - name: Generate app icons
+        run: mise run gen:icons
 
       - name: Build Tauri debug binary
         working-directory: crates/bc-app
