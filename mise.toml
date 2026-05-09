@@ -42,7 +42,7 @@ config_roots = [
 "npm:sass"             = "1"
 
 [tasks]
-# === Development ===
+# MARK: Development
 
   [tasks."dev:app"]
   description = "Run the desktop GUI in development mode (Tauri + Trunk hot-reload)"
@@ -56,7 +56,7 @@ config_roots = [
   dir         = "crates/bc-app"
   run         = "cargo tauri build"
 
-  # === Testing ===
+  # MARK: Testing
 
   [tasks.test]
   description = "Run all unit and doc tests"
@@ -107,7 +107,7 @@ config_roots = [
   depends     = ["//crates/bc-app:gen:icons"]
   run         = "cargo test --doc --workspace"
 
-  # === Quality ===
+  # MARK: Quality
 
   [tasks.check]
   description = "Run format and lint checks"
@@ -117,7 +117,7 @@ config_roots = [
   description = "Auto-fix format and lint issues"
   run         = [{ task = "format:fix" }, { task = "lint:fix" }]
 
-  # === Formatting ===
+  # MARK: Formatting
 
   [tasks.format]
   description = "Check formatting (requires nightly rustfmt)"
@@ -133,7 +133,7 @@ config_roots = [
     "leptosfmt crates/",
   ]
 
-  # === Linting ===
+  # MARK: Linting
 
   [tasks.lint]
   description = "Lint with Clippy on all targets (fast, pre-commit)"
@@ -177,7 +177,7 @@ config_roots = [
   depends     = ["install:wasm-targets"]
   run         = "cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings"
 
-  # === Utilities ===
+  # MARK: Utilities
 
   [tasks.machete]
   description = "Check for unused dependencies"
@@ -188,7 +188,7 @@ config_roots = [
   depends     = ["build-plugins", "//crates/bc-app:gen:icons"]
   run         = "cargo llvm-cov nextest --all-features --lcov --output-path coverage.lcov"
 
-  # === Internal ===
+  # MARK: Internal
 
   [tasks."install:wasm-targets"]
   description = "Install required WASM targets (no-op if already present)"
