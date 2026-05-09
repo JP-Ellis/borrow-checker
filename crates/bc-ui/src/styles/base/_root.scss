@@ -1,0 +1,17 @@
+@use '../mixins/focus';
+
+@layer base {
+  html {
+    color-scheme: light dark;
+    font-family: var(--bc-font-sans);
+    font-size: var(--bc-text-body);
+    line-height: 1.5;
+    color: var(--bc-ink);
+    background: var(--bc-bg);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    @include focus.focus-ring;
+  }
+}

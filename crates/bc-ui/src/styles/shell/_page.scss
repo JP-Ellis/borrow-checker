@@ -1,0 +1,13 @@
+@layer shell {
+  .console-main {
+    flex: 1;
+    overflow: auto;
+  }
+
+  .page {
+    padding: var(--bc-space-7);
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-data);
+    color: var(--bc-ink-mute);
+  }
+}

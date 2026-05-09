@@ -22,6 +22,7 @@
 "cargo:tauri-cli"      = "2"
 "cargo:trunk"          = "0.21"
 "npm:esbuild"          = "0.28"
+"npm:sass"             = "1"
 
 [tasks]
   [tasks.format]
