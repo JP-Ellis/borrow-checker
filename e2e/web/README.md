@@ -6,34 +6,34 @@ Tauri binary — Tauri IPC is stubbed.
 ## Prerequisites
 
 - `mise install` (installs `trunk`, `stylance-cli`, Rust)
-- `npm install` (in this directory)
-- `npx playwright install --with-deps` (downloads Chromium, Firefox, WebKit)
+- `aube install` (in this directory)
+- `aubx playwright install --with-deps` (downloads Chromium, Firefox, WebKit)
 
 ## Running
 
 ```sh
 # Run all tests
-npx playwright test
+aubx playwright test
 
 # Run a specific file
-npx playwright test tests/visual/root.spec.ts
+aubx playwright test tests/visual/root.spec.ts
 
 # Open interactive UI mode
-npx playwright test --ui
+aubx playwright test --ui
 
-# Update screenshot baselines (run on Linux to match CI baseline)
-npx playwright test --update-snapshots
+# Update screenshot baselines (run on Linux to match CI baselines)
+aubx playwright test --update-snapshots
 ```
 
 ## Screenshot baselines
 
 Baselines are stored next to each spec file in auto-named `*-snapshots/`
-directories. They are generated on Linux (the CI runner) so that font
-rendering is consistent across runs. If you update snapshots locally on macOS
-or Windows, minor rendering differences may cause CI failures.
+directories. They are generated on Linux so that font rendering is consistent
+across runs. If you update snapshots locally on macOS or Windows, minor
+rendering differences may cause CI failures.
 
-To regenerate all baselines from CI, push a branch and trigger the
-`e2e-web` job manually with `--update-snapshots`.
+To regenerate all baselines, run `aubx playwright test --update-snapshots`
+on a Linux machine and commit the updated snapshot files.
 
 ## IPC stub
 

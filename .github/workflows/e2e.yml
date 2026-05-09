@@ -66,7 +66,7 @@ jobs:
 
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: playwright-report-${{ matrix.os }}
           path: e2e/web/playwright-report/
@@ -100,9 +100,6 @@ jobs:
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
 
-      - name: Install tauri-driver
-        run: cargo install tauri-driver
-
       # macOS: tauri-webdriver is experimental — update this step when a stable
       # cargo install path is published. Until then, the macOS job is best-effort.
       - name: Install tauri-webdriver (macOS, experimental)
@@ -128,7 +125,7 @@ jobs:
 
       - name: Upload WebdriverIO logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: wdio-logs-${{ matrix.os }}
           path: e2e/native/logs/

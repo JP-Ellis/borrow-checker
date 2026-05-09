@@ -23,7 +23,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # tools. Pre-warm the cache at image-build time so the first container run is
 # fast. The live repo is mounted at /repo at runtime; mise reads its mise.toml
 # from there and finds the already-cached tool versions.
-RUN curl https://mise.run | sh
+#
+# Install a pinned mise binary directly instead of piping a remote script into sh.
+ARG MISE_VERSION=v2026.5.4
+RUN curl -fsSL "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+    -o /usr/local/bin/mise \
+    && chmod +x /usr/local/bin/mise
 ENV PATH="/root/.local/bin:/root/.local/share/mise/shims:${PATH}"
 
 COPY mise.toml /tmp/mise.toml

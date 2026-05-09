@@ -3,7 +3,21 @@ import { execSync }                  from 'node:child_process';
 import { resolve }                   from 'node:path';
 import type { Options }              from '@wdio/types';
 
-let tauriDriver: ChildProcess;
+let tauriDriver: ChildProcess | undefined;
+
+async function waitForDriver(port: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://localhost:${port}/status`);
+      if (res.ok) return;
+    } catch {
+      // not ready yet
+    }
+    await new Promise<void>(r => setTimeout(r, 100));
+  }
+  throw new Error(`tauri-driver did not become ready within ${timeoutMs}ms`);
+}
 
 const APPLICATION =
   process.env['TAURI_BINARY'] ?? resolve(__dirname, '../../target/debug/bc-app');
@@ -47,10 +61,10 @@ export const config: Options.Testrunner = {
       stdio: [null, process.stdout, process.stderr],
     });
 
-    await new Promise<void>(resolve => setTimeout(resolve, 2_000));
+    await waitForDriver(4444, 15_000);
   },
 
   async onComplete() {
-    tauriDriver.kill();
+    tauriDriver?.kill();
   },
 };

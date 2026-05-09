@@ -166,7 +166,7 @@
       -e CARGO_TARGET_DIR=/repo/target-linux \
       -e TAURI_BINARY=/repo/target-linux/debug/bc-app \
       bc-e2e-native \
-      bash -c "npm install --no-package-lock && xvfb-run -a npx wdio run wdio.conf.ts"
+      bash -c "aube install && xvfb-run -a aubx wdio run wdio.conf.ts"
   """
 
   [tasks."test:e2e"]
