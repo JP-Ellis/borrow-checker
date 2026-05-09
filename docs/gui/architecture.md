@@ -60,6 +60,14 @@ Output goes to `crates/bc-ui/dist/`.
 mise run check:wasm
 ```
 
+### CSS Build Pipeline
+
+Global styles compile from `crates/bc-ui/src/styles/main.scss` via Trunk's built-in SCSS support (requires `sass` on PATH, provided by `npm:sass` in `mise.toml`). Trunk emits a single compiled CSS file linked from `index.html`.
+
+Component `.module.scss` files are processed separately by `stylance-cli`, which generates hash-scoped class names and bundles output into `style/bundle.css`. Both outputs are linked from `index.html`; they are independent pipelines.
+
+In dev mode, `stylance --watch` and `trunk serve` run concurrently (see `Tauri.toml`). Trunk's file watcher handles hot-reload for `main.scss` changes; Stylance's watcher handles module changes.
+
 ## Command Conventions
 
 - Names: `snake_case` verb-noun — `list_accounts`, `get_dashboard_summary`

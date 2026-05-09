@@ -78,20 +78,37 @@ No optimistic updates in M7.
 
 ## CSS Conventions
 
-`crates/bc-ui/src/styles/tokens.css` defines all `--bc-*` custom properties. Higher-level
-styles consume these tokens and make only the minimum changes needed — never hard-code raw
-values that already exist as a token.
-
-Each component that needs scoped styles owns a `<name>.module.scss` file imported via
-[`stylance`](https://github.com/basro/stylance-rs). Stylance generates unique class hashes, so
-SCSS classes inside a module should use short, expressive names — no need for deep BEM
-hierarchies to prevent collisions:
+Component styles live in a `.module.scss` file co-located with the Rust source. Stylance compiles these to hash-scoped classes, so class names can be short and descriptive without BEM nesting.
 
 ```scss
-/* accounts_list.module.scss */
-.row          { ... }  /* scoped — no clash risk with another component's .row */
-.row-selected { ... }
+// components/my_widget/my_widget.module.scss
+.container { … }
+.label     { … }
 ```
+
+### Using @use
+
+Import shared SCSS when the component needs breakpoints or mixins. Never hard-code pixel values for breakpoints or copy-paste the focus-ring style.
+
+```scss
+@use '../../styles/tokens/breakpoints' as bp;
+@use '../../styles/mixins/focus';
+@use '../../styles/mixins/responsive';
+
+.container {
+  @include responsive.respond-above(bp.$bp-lg) {
+    padding: var(--bc-space-6);
+  }
+}
+
+.action:focus-visible {
+  @include focus.focus-ring;
+}
+```
+
+### Design token reference
+
+Always reference `var(--bc-*)` custom properties for colours, spacing, radii, and typography. Never hard-code colour values or pixel sizes that exist in the token system. Token definitions live in `crates/bc-ui/src/styles/tokens/`.
 
 ## Clippy in WASM Context
 
