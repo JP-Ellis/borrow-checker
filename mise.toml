@@ -20,6 +20,7 @@
 "cargo:prek"           = "0.3"
 "cargo:stylance-cli"   = "0.8"
 "cargo:tauri-cli"      = "2"
+"cargo:tauri-driver"   = "2"
 "cargo:trunk"          = "0.21"
 "npm:esbuild"          = "0.28"
 "npm:sass"             = "1"
@@ -141,3 +142,17 @@
   dir         = "crates/bc-app"
   depends     = ["gen:icons"]
   run         = "cargo tauri build"
+
+  [tasks."test:e2e:web"]
+  description = "Run Playwright web E2E tests (trunk serve, port 1420)"
+  dir         = "e2e/web"
+  run         = "aubx playwright test"
+
+  [tasks."test:e2e:native"]
+  description = "Run WebdriverIO native E2E tests (tauri-driver; builds debug binary)"
+  dir         = "e2e/native"
+  run         = "aubx wdio run wdio.conf.ts"
+
+  [tasks."test:e2e"]
+  description = "Run all E2E tests (web + native)"
+  run         = [{ task = "test:e2e:web" }, { task = "test:e2e:native" }]
