@@ -1,23 +1,25 @@
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Tauri system build deps (mirrors ubuntu-latest CI), WebKitWebDriver,
 # and Xvfb so the Tauri window has a display to render into.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    pkg-config \
-    libwebkit2gtk-4.1-dev \
-    libssl-dev \
-    libxdo-dev \
-    libayatana-appindicator3-dev \
-    librsvg2-dev \
-    webkit2gtk-driver \
-    xvfb \
-    curl \
-    ca-certificates \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+RUN \
+  apt-get update && \
+  apt-get install -y --no-install-recommends \
+  build-essential \
+  pkg-config \
+  libwebkit2gtk-4.1-dev \
+  libssl-dev \
+  libxdo-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  webkit2gtk-driver \
+  xvfb \
+  curl \
+  ca-certificates \
+  git && \
+  rm -rf /var/lib/apt/lists/*
 
 # mise manages Rust, tauri-cli, tauri-driver, Node.js, and all other project
 # tools. Pre-warm the cache at image-build time so the first container run is
@@ -27,11 +29,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install a pinned mise binary directly instead of piping a remote script into sh.
 ARG MISE_VERSION=v2026.5.4
 RUN curl -fsSL "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
-    -o /usr/local/bin/mise \
-    && chmod +x /usr/local/bin/mise
+  -o /usr/local/bin/mise \
+  && chmod +x /usr/local/bin/mise
 ENV PATH="/root/.local/bin:/root/.local/share/mise/shims:${PATH}"
 
-COPY mise.toml /tmp/mise.toml
-RUN cd /tmp && mise install --yes
+WORKDIR /build
+COPY mise.toml .
+RUN mise install --yes
 
 WORKDIR /repo
