@@ -1,0 +1,8 @@
+[tasks."gen:icons"]
+description = "Generate icon set (PNG, ICO, ICNS) from icons/icon.svg"
+run         = "cargo tauri icon icons/icon.svg --output icons/"
+
+[tasks."build:debug"]
+description = "Build Tauri debug binary (used by native E2E tests)"
+depends     = [":gen:icons", "//:install:wasm-targets"]
+run         = "cargo tauri build --debug"

@@ -1,0 +1,3 @@
+[tasks."gen:styles"]
+description = "Generate stylance CSS bundle"
+run         = "stylance ."

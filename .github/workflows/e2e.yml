@@ -48,24 +48,8 @@ jobs:
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
 
-      - name: Install WASM targets
-        run: mise run install:wasm-targets
-
-      - name: Generate stylance CSS bundle
-        working-directory: crates/bc-ui
-        run: stylance .
-
-      - name: Install npm dependencies
-        working-directory: e2e/web
-        run: aube install
-
-      - name: Install Playwright browsers
-        working-directory: e2e/web
-        run: aubx playwright install --with-deps
-
       - name: Run Playwright web suite
-        working-directory: e2e/web
-        run: aubx playwright test --update-snapshots
+        run: mise run test:e2e:web:update
 
       - name: Upload snapshot baselines (Linux only)
         if: runner.os == 'Linux'
@@ -120,25 +104,8 @@ jobs:
           echo "See https://github.com/danielraffel/tauri-webdriver for install instructions."
           echo "Update this step once a stable install path is available."
 
-      - name: Install WASM targets
-        run: mise run install:wasm-targets
-
-      - name: Generate app icons
-        run: mise run gen:icons
-
-      - name: Build Tauri debug binary
-        working-directory: crates/bc-app
-        run: cargo tauri build --debug
-
-      - name: Install npm dependencies
-        working-directory: e2e/native
-        run: aube install
-
       - name: Run WebdriverIO native suite
-        working-directory: e2e/native
-        env:
-          SKIP_BUILD: '1'
-        run: aubx wdio run wdio.conf.ts
+        run: mise run test:e2e:native
 
       - name: Upload WebdriverIO logs on failure
         if: failure()
