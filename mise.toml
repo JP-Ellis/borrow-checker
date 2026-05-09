@@ -153,6 +153,19 @@
   dir         = "e2e/native"
   run         = "aubx wdio run wdio.conf.ts"
 
+  [tasks."test:e2e:native:linux"]
+  description = "Run native E2E tests in a Linux container (matches CI; works on macOS)"
+  run         = """
+    docker build -t bc-e2e-native -f e2e/native/Containerfile .
+    docker run --rm \
+      -v "{{config_root}}:/repo" \
+      -w /repo/e2e/native \
+      -e CARGO_TARGET_DIR=/repo/target-linux \
+      -e TAURI_BINARY=/repo/target-linux/debug/bc-app \
+      bc-e2e-native \
+      bash -c "npm install --no-package-lock && xvfb-run -a npx wdio run wdio.conf.ts"
+  """
+
   [tasks."test:e2e"]
   description = "Run all E2E tests (web + native)"
   run         = [{ task = "test:e2e:web" }, { task = "test:e2e:native" }]

@@ -1,0 +1,32 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Tauri system build deps (mirrors ubuntu-latest CI), WebKitWebDriver,
+# and Xvfb so the Tauri window has a display to render into.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    libwebkit2gtk-4.1-dev \
+    libssl-dev \
+    libxdo-dev \
+    libayatana-appindicator3-dev \
+    librsvg2-dev \
+    webkit2gtk-driver \
+    xvfb \
+    curl \
+    ca-certificates \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# mise manages Rust, tauri-cli, tauri-driver, Node.js, and all other project
+# tools. Pre-warm the cache at image-build time so the first container run is
+# fast. The live repo is mounted at /repo at runtime; mise reads its mise.toml
+# from there and finds the already-cached tool versions.
+RUN curl https://mise.run | sh
+ENV PATH="/root/.local/bin:/root/.local/share/mise/shims:${PATH}"
+
+COPY mise.toml /tmp/mise.toml
+RUN cd /tmp && mise install --yes
+
+WORKDIR /repo

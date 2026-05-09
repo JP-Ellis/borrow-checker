@@ -5,7 +5,8 @@ import type { Options }              from '@wdio/types';
 
 let tauriDriver: ChildProcess;
 
-const APPLICATION = resolve(__dirname, '../../target/debug/bc-app');
+const APPLICATION =
+  process.env['TAURI_BINARY'] ?? resolve(__dirname, '../../target/debug/bc-app');
 const APP_CRATE   = resolve(__dirname, '../../crates/bc-app');
 
 export const config: Options.Testrunner = {
