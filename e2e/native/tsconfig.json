@@ -8,6 +8,7 @@
     "types": ["node", "mocha", "@wdio/globals/types"]
   },
   "ts-node": {
-    "transpileOnly": true
+    "transpileOnly": true,
+    "esm": true
   }
 }
