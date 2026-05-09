@@ -1,8 +1,10 @@
+// To add breakpoints: @use '../../styles/tokens/breakpoints' as bp;
+
 .tag {
   display: inline-flex;
   align-items: center;
   font-family: var(--bc-font-mono);
-  font-size: 10.5px;
-  padding: 1px 4px;
+  font-size: var(--bc-text-caption);
+  padding: 1px var(--bc-space-1);
   border-radius: var(--bc-radius-tag);
 }
