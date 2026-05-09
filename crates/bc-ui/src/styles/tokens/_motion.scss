@@ -1,0 +1,10 @@
+@layer tokens {
+  :root {
+    --bc-ease-default:  cubic-bezier(0.2, 0.7, 0.3, 1);
+    --bc-ease-in:       cubic-bezier(0.4, 0, 1, 1);
+    --bc-ease-out:      cubic-bezier(0, 0, 0.2, 1);
+    --bc-duration-fast: 120ms;
+    --bc-duration:      200ms;
+    --bc-duration-slow: 350ms;
+  }
+}
