@@ -5,7 +5,7 @@
     "moduleResolution": "Node",
     "strict": true,
     "esModuleInterop": true,
-    "types": ["node", "@wdio/globals/types"]
+    "types": ["node", "mocha", "@wdio/globals/types"]
   },
   "ts-node": {
     "transpileOnly": true
