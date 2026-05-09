@@ -5,24 +5,23 @@ Tauri binary — Tauri IPC is stubbed.
 
 ## Prerequisites
 
-- `mise install` (installs `trunk`, `stylance-cli`, Rust)
-- `aube install` (in this directory)
-- `aubx playwright install --with-deps` (downloads Chromium, Firefox, WebKit)
+- `mise install` from the repo root (installs Rust, trunk, stylance-cli, and all
+  other project tools)
 
 ## Running
 
 ```sh
 # Run all tests
-aubx playwright test
+mise run test:e2e:web
 
-# Run a specific file
-aubx playwright test tests/visual/root.spec.ts
+# Or run directly from this directory (same effect)
+mise run test
 
 # Open interactive UI mode
 aubx playwright test --ui
 
 # Update screenshot baselines (run on Linux to match CI baselines)
-aubx playwright test --update-snapshots
+mise run test:e2e:web:update
 ```
 
 ## Screenshot baselines
@@ -32,8 +31,8 @@ directories. They are generated on Linux so that font rendering is consistent
 across runs. If you update snapshots locally on macOS or Windows, minor
 rendering differences may cause CI failures.
 
-To regenerate all baselines, run `aubx playwright test --update-snapshots`
-on a Linux machine and commit the updated snapshot files.
+To regenerate all baselines, run `mise run test:e2e:web:update` on a Linux
+machine and commit the updated snapshot files.
 
 ## IPC stub
 
@@ -44,6 +43,7 @@ navigating to add per-test handlers.
 
 ## Stylance bundle
 
-`trunk serve` does not run stylance. If `crates/bc-ui/style/bundle.css` does
-not exist (e.g. fresh checkout), run `stylance .` from `crates/bc-ui/` first.
-In CI this is handled by the `e2e-web` job before starting Playwright.
+`trunk serve` does not run stylance. The `test` mise task depends on
+`//crates/bc-ui:gen:styles`, so the bundle is always generated before Playwright
+starts. On a fresh checkout, you can also run `stylance .` from `crates/bc-ui/`
+manually.

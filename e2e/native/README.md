@@ -5,13 +5,8 @@ the platform's WebDriver server.
 
 ## Prerequisites
 
-### All platforms
-
-```sh
-cargo install tauri-driver
-npm install                              # in this directory
-cd ../../crates/bc-app && cargo tauri build --debug
-```
+- `mise install` from the repo root (installs Rust, tauri-cli, tauri-driver, and
+  all other project tools)
 
 ### Linux
 
@@ -37,14 +32,17 @@ best-effort and the CI job runs with `continue-on-error: true`.
 ## Running
 
 ```sh
-# Run all tests (builds binary automatically)
-npx wdio run wdio.conf.ts
+# Run all tests (builds the debug binary automatically via mise deps)
+mise run test:e2e:native
 
-# Skip the build step if the binary is already up-to-date
-SKIP_BUILD=1 npx wdio run wdio.conf.ts
+# Or run directly from this directory (same effect)
+mise run test
+```
 
-# Run a single spec
-SKIP_BUILD=1 npx wdio run wdio.conf.ts --spec tests/flows/smoke.spec.ts
+To skip the Tauri build when the binary is already up-to-date:
+
+```sh
+SKIP_BUILD=1 aubx wdio run wdio.conf.ts
 ```
 
 ## Adding flow tests
