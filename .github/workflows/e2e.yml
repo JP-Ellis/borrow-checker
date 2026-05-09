@@ -48,6 +48,9 @@ jobs:
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
 
+      - name: Install WASM targets
+        run: mise run install:wasm-targets
+
       - name: Generate stylance CSS bundle
         working-directory: crates/bc-ui
         run: stylance .
@@ -116,6 +119,9 @@ jobs:
           echo "tauri-webdriver is not yet on crates.io."
           echo "See https://github.com/danielraffel/tauri-webdriver for install instructions."
           echo "Update this step once a stable install path is available."
+
+      - name: Install WASM targets
+        run: mise run install:wasm-targets
 
       - name: Generate app icons
         run: mise run gen:icons
