@@ -1,5 +1,4 @@
-import { browser, $ } from '@wdio/globals';
-import { expect }      from '@wdio/globals';
+import { browser, $, expect } from '@wdio/globals';
 
 describe('Smoke — app launches and shell renders', () => {
   it('window title is "borrow-checker"', async () => {
