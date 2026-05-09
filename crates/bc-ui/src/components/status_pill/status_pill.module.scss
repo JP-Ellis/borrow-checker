@@ -1,11 +1,13 @@
+// To add breakpoints: @use '../../styles/tokens/breakpoints' as bp;
+
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: var(--bc-space-3);
+  padding: var(--bc-space-1) var(--bc-space-3);
   border-radius: var(--bc-radius-pill);
   font-family: var(--bc-font-mono);
-  font-size: 11.5px;
+  font-size: var(--bc-text-data);
 }
 
 .dot {
@@ -18,26 +20,20 @@
 .good {
   background: var(--bc-good-soft);
   color: var(--bc-good);
-}
 
-.good .dot {
-  background: var(--bc-good);
+  .dot { background: var(--bc-good); }
 }
 
 .warn {
   background: var(--bc-warn-soft);
   color: var(--bc-warn);
-}
 
-.warn .dot {
-  background: var(--bc-warn);
+  .dot { background: var(--bc-warn); }
 }
 
 .bad {
   background: var(--bc-bad-soft);
   color: var(--bc-bad);
-}
 
-.bad .dot {
-  background: var(--bc-bad);
+  .dot { background: var(--bc-bad); }
 }
