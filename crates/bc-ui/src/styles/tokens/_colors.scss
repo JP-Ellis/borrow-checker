@@ -16,25 +16,29 @@
     --bc-bad:     var(--_bc-bad);
     --bc-warn:    var(--_bc-warn);
 
-    // ── Derived surface tokens (recompute when --_bc-bg changes) ────────────
+    // ── Derived surface tokens ───────────────────────────────────────────────
+    // surface is always slightly lighter than bg (works in both modes).
+    // surface-alt/hi are darker than bg in light mode; overridden to lighter in dark mode.
     --bc-surface:     oklch(from var(--_bc-bg) calc(l + 0.03) calc(c * 0.6) h);
     --bc-surface-alt: oklch(from var(--_bc-bg) calc(l - 0.02) c h);
     --bc-surface-hi:  oklch(from var(--_bc-bg) calc(l - 0.05) c h);
 
-    // ── Derived ink tokens (recompute when --_bc-ink changes) ───────────────
-    --bc-ink-soft: oklch(from var(--_bc-ink) calc(l + 0.19) calc(c * 5) h);
-    --bc-ink-mute: oklch(from var(--_bc-ink) calc(l + 0.38) calc(c * 10) h);
-    --bc-ink-dim:  oklch(from var(--_bc-ink) calc(l + 0.54) calc(c * 12) h);
+    // ── Derived ink tokens ───────────────────────────────────────────────────
+    // color-mix interpolates toward bg regardless of theme direction.
+    --bc-ink-soft: color-mix(in oklch, var(--_bc-ink) 75%, var(--_bc-bg));
+    --bc-ink-mute: color-mix(in oklch, var(--_bc-ink) 50%, var(--_bc-bg));
+    --bc-ink-dim:  color-mix(in oklch, var(--_bc-ink) 30%, var(--_bc-bg));
 
     // ── Derived border tokens ────────────────────────────────────────────────
-    --bc-border:        oklch(from var(--_bc-ink) calc(l + 0.68) calc(c * 8) h);
-    --bc-border-strong: oklch(from var(--_bc-ink) calc(l + 0.62) calc(c * 10) h);
+    --bc-border:        color-mix(in oklch, var(--_bc-ink) 10%, var(--_bc-bg));
+    --bc-border-strong: color-mix(in oklch, var(--_bc-ink) 18%, var(--_bc-bg));
 
     // ── Derived accent + semantic soft tokens ────────────────────────────────
-    --bc-accent-soft: oklch(from var(--_bc-accent) l c h / 15%);
-    --bc-good-soft:   oklch(from var(--_bc-good) calc(l + 0.42) calc(c * 0.19) h);
-    --bc-bad-soft:    oklch(from var(--_bc-bad)  calc(l + 0.41) calc(c * 0.14) h);
-    --bc-warn-soft:   oklch(from var(--_bc-warn) calc(l + 0.38) calc(c * 0.24) h);
+    // color-mix toward bg gives a light tint in light mode, dark tint in dark mode.
+    --bc-accent-soft: color-mix(in oklch, var(--_bc-accent) 12%, var(--_bc-bg));
+    --bc-good-soft:   color-mix(in oklch, var(--_bc-good)   12%, var(--_bc-bg));
+    --bc-bad-soft:    color-mix(in oklch, var(--_bc-bad)    12%, var(--_bc-bg));
+    --bc-warn-soft:   color-mix(in oklch, var(--_bc-warn)   12%, var(--_bc-bg));
 
     // ── Syntax colours (explicit — not derivable from three raw tokens) ──────
     --bc-keyword: var(--_bc-accent);
@@ -54,6 +58,10 @@
       --_bc-good: oklch(0.7419 0.1360 158.01deg);
       --_bc-bad:  oklch(0.6443 0.1811 12.31deg);
       --_bc-warn: oklch(0.7840 0.1179 80.19deg);
+
+      // In dark mode elevation = lighter than bg; override the subtract-from-l defaults.
+      --bc-surface-alt: oklch(from var(--_bc-bg) calc(l + 0.07) c h);
+      --bc-surface-hi:  oklch(from var(--_bc-bg) calc(l + 0.11) c h);
 
       // Syntax colours shift in dark (explicit overrides required)
       --bc-string:  oklch(0.8040 0.1280 133.72deg);
@@ -87,6 +95,9 @@
     --_bc-good:   oklch(0.7419 0.1360 158.01deg);
     --_bc-bad:    oklch(0.6443 0.1811 12.31deg);
     --_bc-warn:   oklch(0.7840 0.1179 80.19deg);
+
+    --bc-surface-alt: oklch(from var(--_bc-bg) calc(l + 0.07) c h);
+    --bc-surface-hi:  oklch(from var(--_bc-bg) calc(l + 0.11) c h);
 
     --bc-string:  oklch(0.8040 0.1280 133.72deg);
     --bc-number:  oklch(0.8311 0.1062 92.34deg);
