@@ -24,6 +24,6 @@ export default defineConfig({
     url: 'http://localhost:1420',
     cwd: '../../crates/bc-ui',
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    timeout: 300_000,
   },
 });

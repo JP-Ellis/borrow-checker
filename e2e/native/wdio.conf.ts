@@ -1,7 +1,10 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { execSync }                  from 'node:child_process';
-import { resolve }                   from 'node:path';
+import { dirname, resolve }          from 'node:path';
+import { fileURLToPath }             from 'node:url';
 import type { Options }              from '@wdio/types';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let tauriDriver: ChildProcess | undefined;
 
