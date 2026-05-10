@@ -1,0 +1,9 @@
+[tasks.setup]
+description = "Install npm dependencies"
+run         = "aube install"
+
+[tasks.test]
+description = "Run WebdriverIO native E2E tests"
+depends     = [":setup", "//crates/bc-app:build:debug"]
+env         = { SKIP_BUILD = "1" }
+run         = "aubx wdio run wdio.conf.ts"

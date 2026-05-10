@@ -1,0 +1,16 @@
+[tasks.setup]
+description = "Install npm dependencies and Playwright browsers"
+run         = [
+  "aube install",
+  "aubx playwright install --with-deps",
+]
+
+[tasks.test]
+description = "Run Playwright web E2E tests"
+depends     = [":setup", "//:install:wasm-targets", "//crates/bc-ui:gen:styles"]
+run         = "aubx playwright test"
+
+[tasks."test:update"]
+description = "Run Playwright web E2E tests, updating snapshot baselines"
+depends     = [":setup", "//:install:wasm-targets", "//crates/bc-ui:gen:styles"]
+run         = "aubx playwright test --update-snapshots"

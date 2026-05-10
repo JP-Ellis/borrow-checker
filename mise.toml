@@ -1,5 +1,18 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 
+experimental_monorepo_root = true
+
+[settings]
+experimental = true
+
+[monorepo]
+config_roots = [
+  "crates/bc-app",
+  "crates/bc-ui",
+  "e2e/web",
+  "e2e/native",
+]
+
 [tools]
 "core:rust" = {
   version    = "stable",
@@ -11,6 +24,9 @@
 # Binstall ensures fast installs of cargo binaries
 "aqua:cargo-bins/cargo-binstall" = "1.18"
 
+# JS package manager (aube) and runner (aubx)
+"github:endevco/aube" = "1.9"
+
 "cargo:cargo-hack"     = "0.6"
 "cargo:cargo-leptos"   = "0.3"
 "cargo:cargo-llvm-cov" = "0.8"
@@ -20,11 +36,89 @@
 "cargo:prek"           = "0.3"
 "cargo:stylance-cli"   = "0.8"
 "cargo:tauri-cli"      = "2"
+"cargo:tauri-driver"   = "2"
 "cargo:trunk"          = "0.21"
 "npm:esbuild"          = "0.28"
 "npm:sass"             = "1"
 
 [tasks]
+# MARK: Development
+
+  [tasks."dev:app"]
+  description = "Run the desktop GUI in development mode (Tauri + Trunk hot-reload)"
+  depends     = ["//crates/bc-app:gen:icons"]
+  dir         = "crates/bc-app"
+  run         = "cargo tauri dev"
+
+  [tasks."build:app"]
+  description = "Build a release bundle of the desktop GUI"
+  depends     = ["//crates/bc-app:gen:icons"]
+  dir         = "crates/bc-app"
+  run         = "cargo tauri build"
+
+  # MARK: Testing
+
+  [tasks.test]
+  description = "Run all unit and doc tests"
+  run         = [
+    { task = "test:unit" },
+    { task = "test:docs" },
+  ]
+
+  [tasks."test:e2e"]
+  description = "Run all E2E tests (web + native)"
+  run         = [
+    { task = "test:e2e:web" },
+    { task = "test:e2e:native" },
+  ]
+
+  [tasks."test:e2e:web"]
+  description = "Run Playwright web E2E tests (trunk serve, port 1420)"
+  depends     = ["//e2e/web:test"]
+
+  [tasks."test:e2e:web:update"]
+  description = "Run Playwright web E2E tests, updating snapshot baselines"
+  depends     = ["//e2e/web:test:update"]
+
+  [tasks."test:e2e:native"]
+  description = "Run WebdriverIO native E2E tests (tauri-driver)"
+  depends     = ["//e2e/native:test"]
+
+  [tasks."test:e2e:native:linux"]
+  description = "Run native E2E tests in a Linux container (matches CI; works on macOS)"
+  run         = """
+    docker build -t bc-e2e-native -f e2e/native/Containerfile .
+    docker run --rm \
+      -v "{{config_root}}:/repo" \
+      -w /repo/e2e/native \
+      -e CARGO_TARGET_DIR=/repo/target-linux \
+      -e TAURI_BINARY=/repo/target-linux/debug/bc-app \
+      bc-e2e-native \
+      bash -c "aube install && xvfb-run -a aubx wdio run wdio.conf.ts"
+  """
+
+  [tasks."test:unit"]
+  description = "Run unit tests across all feature combinations"
+  depends     = ["build-plugins", "//crates/bc-app:gen:icons"]
+  run         = "cargo hack --feature-powerset --workspace nextest run"
+
+  [tasks."test:docs"]
+  description = "Run doc tests"
+  depends     = ["//crates/bc-app:gen:icons"]
+  run         = "cargo test --doc --workspace"
+
+  # MARK: Quality
+
+  [tasks.check]
+  description = "Run format and lint checks"
+  run         = [{ task = "format" }, { task = "lint" }]
+
+  [tasks."check:fix"]
+  description = "Auto-fix format and lint issues"
+  run         = [{ task = "format:fix" }, { task = "lint:fix" }]
+
+  # MARK: Formatting
+
   [tasks.format]
   description = "Check formatting (requires nightly rustfmt)"
   run         = [
@@ -39,27 +133,33 @@
     "leptosfmt crates/",
   ]
 
+  # MARK: Linting
+
+  [tasks.lint]
+  description = "Lint with Clippy on all targets (fast, pre-commit)"
+  run         = [{ task = "lint:native" }, { task = "lint:wasm" }]
+
+  [tasks."lint:fix"]
+  description = "Auto-fix lint issues across all feature combinations on all targets"
+  run         = [{ task = "lint:fix:native" }, { task = "lint:fix:wasm" }]
+
   [tasks."lint:native"]
   description = "Lint with Clippy on native target (fast, pre-commit)"
-  depends     = ["gen:icons"]
+  depends     = ["//crates/bc-app:gen:icons"]
   run         = "cargo clippy --workspace --all-targets -- -D warnings"
-
-  [tasks."install:wasm-targets"]
-  description = "Install required WASM targets (no-op if already present)"
-  run         = "rustup target add wasm32-wasip2 wasm32-unknown-unknown"
 
   [tasks."lint:wasm"]
   description = "Lint with Clippy on wasm32-unknown-unknown target (fast, pre-commit)"
   depends     = ["install:wasm-targets"]
   run         = "cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings"
 
-  [tasks.lint]
-  description = "Lint with Clippy on all targets (fast, pre-commit)"
-  run         = [{ task = "lint:native" }, { task = "lint:wasm" }]
+  [tasks."lint:hack"]
+  description = "Lint with Clippy across all feature combinations on all targets (thorough, CI)"
+  run         = [{ task = "lint:hack:native" }, { task = "lint:hack:wasm" }]
 
   [tasks."lint:hack:native"]
   description = "Lint with Clippy across all feature combinations on native target (thorough, CI)"
-  depends     = ["gen:icons"]
+  depends     = ["//crates/bc-app:gen:icons"]
   run         = "cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings"
 
   [tasks."lint:hack:wasm"]
@@ -67,13 +167,9 @@
   depends     = ["install:wasm-targets"]
   run         = "cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown -- -D warnings"
 
-  [tasks."lint:hack"]
-  description = "Lint with Clippy across all feature combinations on all targets (thorough, CI)"
-  run         = [{ task = "lint:hack:native" }, { task = "lint:hack:wasm" }]
-
   [tasks."lint:fix:native"]
   description = "Auto-fix lint issues across all feature combinations on native target"
-  depends     = ["gen:icons"]
+  depends     = ["//crates/bc-app:gen:icons"]
   run         = "cargo hack --feature-powerset --workspace clippy --all-targets --fix --allow-staged --allow-dirty -- -D warnings"
 
   [tasks."lint:fix:wasm"]
@@ -81,34 +177,7 @@
   depends     = ["install:wasm-targets"]
   run         = "cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings"
 
-  [tasks."lint:fix"]
-  description = "Auto-fix lint issues across all feature combinations on all targets"
-  run         = [{ task = "lint:fix:native" }, { task = "lint:fix:wasm" }]
-
-  [tasks.check]
-  description = "Run format and lint checks"
-  run         = [{ task = "format" }, { task = "lint" }]
-
-  [tasks."check:fix"]
-  description = "Auto-fix format and lint issues"
-  run         = [{ task = "format:fix" }, { task = "lint:fix" }]
-
-  [tasks."test:nextest"]
-  description = "Run unit tests across all feature combinations"
-  depends     = ["build-plugins", "gen:icons"]
-  run         = "cargo hack --feature-powerset --workspace nextest run"
-
-  [tasks."test:docs"]
-  description = "Run doc tests"
-  depends     = ["gen:icons"]
-  run         = "cargo test --doc --workspace"
-
-  [tasks.test]
-  description = "Run all tests (unit, integration, docs)"
-  run         = [
-    { task = "test:nextest" },
-    { task = "test:docs" },
-  ]
+  # MARK: Utilities
 
   [tasks.machete]
   description = "Check for unused dependencies"
@@ -116,28 +185,17 @@
 
   [tasks.coverage]
   description = "Generate LCOV coverage report"
-  depends     = ["build-plugins", "gen:icons"]
+  depends     = ["build-plugins", "//crates/bc-app:gen:icons"]
   run         = "cargo llvm-cov nextest --all-features --lcov --output-path coverage.lcov"
+
+  # MARK: Internal
+
+  [tasks."install:wasm-targets"]
+  description = "Install required WASM targets (no-op if already present)"
+  run         = "rustup target add wasm32-wasip2 wasm32-unknown-unknown"
 
   [tasks."build-plugins"]
   description = "Compile WASM importer plugins and stage them under target/plugins/"
   depends     = ["install:wasm-targets"]
   shell       = "bash -c"
   run         = "plugins/scripts/build.sh"
-
-  [tasks."gen:icons"]
-  description = "Generate icon set (PNG, ICO, ICNS) from icons/icon.svg"
-  dir         = "crates/bc-app"
-  run         = "cargo tauri icon icons/icon.svg --output icons/"
-
-  [tasks."dev:app"]
-  description = "Run the desktop GUI in development mode (Tauri + Trunk hot-reload)"
-  dir         = "crates/bc-app"
-  depends     = ["gen:icons"]
-  run         = "cargo tauri dev"
-
-  [tasks."build:app"]
-  description = "Build a release bundle of the desktop GUI"
-  dir         = "crates/bc-app"
-  depends     = ["gen:icons"]
-  run         = "cargo tauri build"
