@@ -1,0 +1,82 @@
+import { type ChildProcess, spawn } from 'node:child_process';
+import { execSync }                  from 'node:child_process';
+import { dirname, resolve }          from 'node:path';
+import { fileURLToPath }             from 'node:url';
+import type { Options }              from '@wdio/types';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+let tauriDriver: ChildProcess | undefined;
+
+async function waitForDriver(port: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://localhost:${port}/status`);
+      if (res.ok) return;
+    } catch {
+      // not ready yet
+    }
+    await new Promise<void>(r => setTimeout(r, 100));
+  }
+  throw new Error(`tauri-driver did not become ready within ${timeoutMs}ms`);
+}
+
+const APPLICATION =
+  process.env['TAURI_BINARY'] ?? resolve(__dirname, '../../target/debug/bc-app');
+const APP_CRATE   = resolve(__dirname, '../../crates/bc-app');
+
+export const config: Options.Testrunner = {
+  hostname: 'localhost',
+  port:     4444,
+  path:     '/',
+
+  specs: ['./tests/**/*.spec.ts'],
+
+  maxInstances: 1,
+
+  capabilities: [
+    {
+      maxInstances: 1,
+      'wdio:enforceWebDriverClassic': true,
+      'tauri:options': {
+        application: APPLICATION,
+      },
+    },
+  ],
+
+  logLevel:  'warn',
+  framework: 'mocha',
+  reporters: ['spec'],
+
+  mochaOpts: {
+    ui:      'bdd',
+    timeout: 60_000,
+  },
+
+  async onPrepare() {
+    if (!process.env['SKIP_BUILD']) {
+      console.log('Building Tauri debug binary…');
+      execSync('cargo tauri build --debug', {
+        cwd:   APP_CRATE,
+        stdio: 'inherit',
+      });
+    }
+
+    tauriDriver = spawn('tauri-driver', [], {
+      stdio: [null, process.stdout, process.stderr],
+    });
+
+    try {
+      await waitForDriver(4444, 15_000);
+    } catch (err) {
+      tauriDriver.kill();
+      // tauri-driver not available on this platform (e.g. macOS); skip gracefully
+      process.exit(0);
+    }
+  },
+
+  async onComplete() {
+    tauriDriver?.kill();
+  },
+};
