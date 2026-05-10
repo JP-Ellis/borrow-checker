@@ -27,6 +27,10 @@ const APPLICATION =
 const APP_CRATE   = resolve(__dirname, '../../crates/bc-app');
 
 export const config: Options.Testrunner = {
+  hostname: 'localhost',
+  port:     4444,
+  path:     '/',
+
   specs: ['./tests/**/*.spec.ts'],
 
   maxInstances: 1,
