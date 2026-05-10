@@ -7,11 +7,11 @@ settings:
 
 time:
   '@playwright/test@1.59.1': 2026-04-01T17:59:00.155000Z
-  '@types/node@22.19.18': 2026-05-07T22:22:01.221000Z
+  '@types/node@24.12.3': 2026-05-07T22:21:56.254000Z
   fsevents@2.3.2: 2021-02-05T14:46:33.925000Z
   playwright-core@1.59.1: 2026-04-01T17:58:55.514000Z
   playwright@1.59.1: 2026-04-01T17:58:48.894000Z
-  undici-types@6.21.0: 2024-11-13T13:37:09.135000Z
+  undici-types@7.16.0: 2025-09-09T17:07:27.610000Z
 
 importers:
 
@@ -21,8 +21,8 @@ importers:
         specifier: ^1.52.0
         version: 1.59.1
       '@types/node':
-        specifier: ^22.0.0
-        version: 22.19.18
+        specifier: ^24.0.0
+        version: 24.12.3
 
 packages:
 
@@ -31,8 +31,8 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  '@types/node@22.19.18':
-    resolution: {integrity: sha512-9v00a+dn2yWVsYDEunWC4g/TcRKVq3r8N5FuZp7u0SGrPvdN9c2yXI9bBuf5Fl0hNCb+QTIePTn5pJs2pwBOQQ==}
+  '@types/node@24.12.3':
+    resolution: {integrity: sha512-8oljBDGun9cIsZRJR6fkihn0TSXJI0UDOOhncYaERq6M0JMDoPLxyscwruJcb4GKS6dvK/d8xebYBg27h/duaQ==}
 
   fsevents@2.3.2:
     resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
@@ -50,8 +50,8 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  undici-types@6.21.0:
-    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+  undici-types@7.16.0:
+    resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
 
 snapshots:
 
@@ -59,9 +59,9 @@ snapshots:
     dependencies:
       playwright: 1.59.1
 
-  '@types/node@22.19.18':
+  '@types/node@24.12.3':
     dependencies:
-      undici-types: 6.21.0
+      undici-types: 7.16.0
 
   fsevents@2.3.2: {}
 
@@ -73,4 +73,4 @@ snapshots:
     optionalDependencies:
       fsevents: 2.3.2
 
-  undici-types@6.21.0: {}
+  undici-types@7.16.0: {}
