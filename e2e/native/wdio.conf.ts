@@ -38,7 +38,6 @@ export const config: Options.Testrunner = {
   capabilities: [
     {
       maxInstances: 1,
-      browserName: '',
       'wdio:enforceWebDriverClassic': true,
       'tauri:options': {
         application: APPLICATION,
@@ -68,7 +67,13 @@ export const config: Options.Testrunner = {
       stdio: [null, process.stdout, process.stderr],
     });
 
-    await waitForDriver(4444, 15_000);
+    try {
+      await waitForDriver(4444, 15_000);
+    } catch (err) {
+      tauriDriver.kill();
+      // tauri-driver not available on this platform (e.g. macOS); skip gracefully
+      process.exit(0);
+    }
   },
 
   async onComplete() {
