@@ -53,7 +53,7 @@ jobs:
 
       - name: Upload snapshot baselines (Linux only)
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: playwright-snapshots-linux
           path: e2e/web/tests/**/*-snapshots/
@@ -61,7 +61,7 @@ jobs:
 
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: playwright-report-${{ matrix.os }}
           path: e2e/web/playwright-report/
@@ -109,7 +109,7 @@ jobs:
 
       - name: Upload WebdriverIO logs on failure
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: wdio-logs-${{ matrix.os }}
           path: e2e/native/logs/
