@@ -105,7 +105,7 @@ jobs:
           echo "Update this step once a stable install path is available."
 
       - name: Run WebdriverIO native suite
-        run: mise run test:e2e:native
+        run: ${{ runner.os == 'Linux' && 'xvfb-run -a' || '' }} mise run test:e2e:native
 
       - name: Upload WebdriverIO logs on failure
         if: failure()
