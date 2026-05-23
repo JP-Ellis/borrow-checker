@@ -48,7 +48,7 @@ impl Filter {
 ///
 /// # Arguments
 ///
-/// * `transactions` - Static slice of all transactions for this account.
+/// * `transactions` - Reactive signal of all transactions for this account.
 /// * `viewing_account_id` - The account whose page is currently shown.
 #[component]
 #[expect(
@@ -60,8 +60,8 @@ impl Filter {
     reason = "Leptos view! macro expands verbosely; logic is straightforward"
 )]
 pub fn TransactionRegister(
-    /// Static transaction slice.
-    transactions: &'static [Transaction],
+    /// Reactive transaction list for this account.
+    transactions: Signal<Vec<Transaction>>,
     /// Account ID being viewed (determines headline amounts).
     #[prop(into)]
     viewing_account_id: String,
@@ -76,7 +76,8 @@ pub fn TransactionRegister(
 
     let filtered = Memo::new(move |_| {
         transactions
-            .iter()
+            .get()
+            .into_iter()
             .filter(|tx| match active_filter.get() {
                 Filter::Pending => tx.status == TxStatus::Pending,
                 // TODO: filter by missing envelope_id once the field is available on postings

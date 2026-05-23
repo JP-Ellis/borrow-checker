@@ -1,7 +1,5 @@
 //! QA page for [`super::TransactionRow`].
 
-use std::sync::LazyLock;
-
 use bc_ipc::AuditEntry;
 use bc_ipc::Money;
 use bc_ipc::Posting;
@@ -11,8 +9,8 @@ use leptos::prelude::*;
 
 use super::TransactionRow;
 
-/// Simple cleared transaction for QA display.
-static TX_SIMPLE: LazyLock<Transaction> = LazyLock::new(|| {
+/// Returns a simple cleared transaction for QA display.
+fn tx_simple() -> Transaction {
     Transaction::new(
         "tx-coles-qa",
         "2026-04-30",
@@ -39,10 +37,10 @@ static TX_SIMPLE: LazyLock<Transaction> = LazyLock::new(|| {
             "from commbank-au.wasm@1.4.2",
         )],
     )
-});
+}
 
-/// Multi-posting salary transaction for QA display.
-static TX_MULTI_POSTING: LazyLock<Transaction> = LazyLock::new(|| {
+/// Returns a multi-posting salary transaction for QA display.
+fn tx_multi_posting() -> Transaction {
     Transaction::new(
         "tx-salary-qa",
         "2026-04-30",
@@ -69,7 +67,7 @@ static TX_MULTI_POSTING: LazyLock<Transaction> = LazyLock::new(|| {
             "from commbank-au.wasm@1.4.2",
         )],
     )
-});
+}
 
 /// Renders [`TransactionRow`] in collapsed, selected, and expanded states.
 #[component]
@@ -82,7 +80,7 @@ pub fn TransactionRowQa() -> impl IntoView {
                     "collapsed, unselected"
                 </p>
                 <TransactionRow
-                    tx=&*TX_SIMPLE
+                    tx=tx_simple()
                     viewing_account_id="cb-smart-access"
                     selected=Signal::derive(|| false)
                     expanded=Signal::derive(|| false)
@@ -95,7 +93,7 @@ pub fn TransactionRowQa() -> impl IntoView {
                     "collapsed, selected (keyboard focus)"
                 </p>
                 <TransactionRow
-                    tx=&*TX_SIMPLE
+                    tx=tx_simple()
                     viewing_account_id="cb-smart-access"
                     selected=Signal::derive(|| true)
                     expanded=Signal::derive(|| false)
@@ -108,7 +106,7 @@ pub fn TransactionRowQa() -> impl IntoView {
                     "expanded with detail panel (multi-posting salary)"
                 </p>
                 <TransactionRow
-                    tx=&*TX_MULTI_POSTING
+                    tx=tx_multi_posting()
                     viewing_account_id="cb-smart-access"
                     selected=Signal::derive(|| true)
                     expanded=Signal::derive(|| true)

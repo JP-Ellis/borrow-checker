@@ -49,73 +49,91 @@ pub fn format_balance_short(balance: &Money) -> String {
 ///
 /// # Arguments
 ///
-/// * `nodes` - All account nodes (flat slice; hierarchy via `parent_id`).
+/// * `nodes` - All account nodes (flat vec; hierarchy via `parent_id`).
 /// * `selected_id` - Currently selected account ID (derived from route).
 /// * `collapsed` - Whether the sidebar is in dot-rail mode.
 #[component]
 pub fn AccountSidebar(
     /// All account nodes.
-    nodes: &'static [AccountNode],
+    nodes: Vec<AccountNode>,
     /// Currently selected account ID.
     selected_id: Signal<Option<String>>,
     /// Whether the sidebar is collapsed to dot-rail.
     collapsed: ReadSignal<bool>,
 ) -> impl IntoView {
-    let assets: Vec<&AccountNode> = nodes
+    let assets: Vec<AccountNode> = nodes
         .iter()
         .filter(|n| matches!(n.account_type, AccountType::Asset) && n.parent_id.is_none())
+        .cloned()
         .collect();
-    let liabilities: Vec<&AccountNode> = nodes
+    let liabilities: Vec<AccountNode> = nodes
         .iter()
         .filter(|n| matches!(n.account_type, AccountType::Liability) && n.parent_id.is_none())
+        .cloned()
         .collect();
+
+    // Use StoredValue so the vecs can be retrieved from reactive closures
+    // (Leptos Show/fallback children require Fn, not FnOnce).
+    let stored_nodes = StoredValue::new(nodes);
+    let stored_assets = StoredValue::new(assets);
+    let stored_liabilities = StoredValue::new(liabilities);
 
     view! {
         <nav class=style::nav aria-label="account navigation">
-            <Show when=move || collapsed.get()>
+            <Show
+                when=move || collapsed.get()
+                fallback=move || {
+                    view! {
+                        <div class=style::tree>
+                            <SidebarSection
+                                label="assets"
+                                nodes=stored_nodes.get_value()
+                                roots=stored_assets.get_value()
+                                selected_id=selected_id
+                            />
+                            <SidebarSection
+                                label="liabilities"
+                                nodes=stored_nodes.get_value()
+                                roots=stored_liabilities.get_value()
+                                selected_id=selected_id
+                            />
+                        </div>
+                    }
+                }
+            >
                 <div class=style::rail>
-                    {nodes
-                        .iter()
-                        .map(|node| {
-                            let id = node.id.as_str();
-                            let is_active = Signal::derive(move || {
-                                selected_id.get().as_deref() == Some(id)
-                            });
-                            view! {
-                                <A
-                                    href=format!("/accounts/{id}")
-                                    attr:class=move || {
-                                        if is_active.get() {
-                                            format!("{} {}", style::dot, style::dot_active)
-                                        } else {
-                                            style::dot.to_owned()
+                    {move || {
+                        stored_nodes
+                            .with_value(|all_nodes| {
+                                all_nodes
+                                    .iter()
+                                    .map(|node| {
+                                        let id = node.id.clone();
+                                        let title = node.name.clone();
+                                        let is_active = Signal::derive(move || {
+                                            selected_id.get().as_deref() == Some(id.as_str())
+                                        });
+                                        let href = format!("/accounts/{}", node.id);
+                                        view! {
+                                            <A
+                                                href=href
+                                                attr:class=move || {
+                                                    if is_active.get() {
+                                                        format!("{} {}", style::dot, style::dot_active)
+                                                    } else {
+                                                        style::dot.to_owned()
+                                                    }
+                                                }
+                                                attr:title=title.clone()
+                                                attr:aria-label=title
+                                            >
+                                                ""
+                                            </A>
                                         }
-                                    }
-                                    attr:title=node.name.clone()
-                                    attr:aria-label=node.name.clone()
-                                >
-                                    ""
-                                </A>
-                            }
-                        })
-                        .collect::<Vec<_>>()}
-                </div>
-            </Show>
-
-            <Show when=move || !collapsed.get()>
-                <div class=style::tree>
-                    <SidebarSection
-                        label="assets"
-                        nodes=nodes
-                        roots=assets.clone()
-                        selected_id=selected_id
-                    />
-                    <SidebarSection
-                        label="liabilities"
-                        nodes=nodes
-                        roots=liabilities.clone()
-                        selected_id=selected_id
-                    />
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                    }}
                 </div>
             </Show>
         </nav>
@@ -127,10 +145,10 @@ pub fn AccountSidebar(
 fn SidebarSection(
     /// Section label shown as eyebrow.
     label: &'static str,
-    /// Full node slice (needed to find children).
-    nodes: &'static [AccountNode],
+    /// Full node vec (needed to find children).
+    nodes: Vec<AccountNode>,
     /// Top-level nodes for this section.
-    roots: Vec<&'static AccountNode>,
+    roots: Vec<AccountNode>,
     /// Currently selected account ID.
     selected_id: Signal<Option<String>>,
 ) -> impl IntoView {
@@ -140,12 +158,13 @@ fn SidebarSection(
             {roots
                 .into_iter()
                 .map(|root| {
-                    let children: Vec<&AccountNode> = nodes
+                    let children: Vec<AccountNode> = nodes
                         .iter()
                         .filter(|n| n.parent_id.as_deref() == Some(root.id.as_str()))
+                        .cloned()
                         .collect();
                     view! {
-                        <SidebarRow node=root selected_id=selected_id indent=false />
+                        <SidebarRow node=root.clone() selected_id=selected_id indent=false />
                         {children
                             .into_iter()
                             .map(|child| {
@@ -165,24 +184,25 @@ fn SidebarSection(
 #[component]
 fn SidebarRow(
     /// Account node to render.
-    node: &'static AccountNode,
+    node: AccountNode,
     /// Currently selected account ID.
     selected_id: Signal<Option<String>>,
     /// Whether this row is indented (child account).
     indent: bool,
 ) -> impl IntoView {
-    let id = node.id.as_str();
+    let id = node.id.clone();
     let balance = format_balance_short(&node.balance);
-    let is_active = Signal::derive(move || selected_id.get().as_deref() == Some(id));
+    let is_active = Signal::derive(move || selected_id.get().as_deref() == Some(id.as_str()));
     let balance_class = if node.balance.minor_units < 0 {
         style::bal_neg
     } else {
         style::bal
     };
+    let href = format!("/accounts/{}", node.id);
 
     view! {
         <A
-            href=format!("/accounts/{id}")
+            href=href
             attr:class=move || {
                 let mut cls = vec![style::row];
                 if indent {
