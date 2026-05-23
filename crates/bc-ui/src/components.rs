@@ -4,5 +4,8 @@
 //! atoms — resist inventing alternatives.
 
 pub mod num;
+pub mod sparkline;
+pub mod stat_card;
 pub mod status_pill;
 pub mod tag_token;
+pub mod toml_view;

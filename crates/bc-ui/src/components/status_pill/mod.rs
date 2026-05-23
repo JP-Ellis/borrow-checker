@@ -1,8 +1,4 @@
 //! Status indicator pill component.
-#![expect(
-    clippy::mod_module_files,
-    reason = "mod.rs collocates source with its SCSS module file"
-)]
 
 use leptos::prelude::*;
 use stylance::import_style;
@@ -21,7 +17,7 @@ pub enum Tone {
 }
 
 impl Tone {
-    /// Returns the BEM modifier suffix used in the CSS class.
+    /// Returns the CSS class for the pill background and text colour.
     #[must_use]
     #[inline]
     pub fn css_class(self) -> &'static str {
@@ -54,6 +50,9 @@ pub fn StatusPill(
         </span>
     }
 }
+
+#[cfg(debug_assertions)]
+pub mod qa;
 
 #[cfg(test)]
 mod tests {

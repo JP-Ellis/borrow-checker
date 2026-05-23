@@ -6,12 +6,33 @@
 //!
 //! # Type conventions
 //!
-//! - Monetary amounts use `i64` cents — never `f64`
+//! - Monetary amounts use [`Money`] — a currency-aware minor-unit value
 //! - IDs use `String` — newtype IDs serialise to their string representation
 //! - All public enums carry `#[non_exhaustive]` for forward compatibility
 //! - All types implement `Send + Sync`, `Serialize`, `Deserialize`, `Clone`,
 //!   `Debug`
 
+mod accounts;
+mod currency;
 mod error;
+mod money;
 
+pub use accounts::AccountNode;
+pub use accounts::AccountType;
+pub use accounts::AuditEntry;
+pub use accounts::Posting;
+pub use accounts::Transaction;
+pub use accounts::TxStatus;
+pub use currency::AUD;
+pub use currency::BTC;
+pub use currency::Currency;
+pub use currency::ETH;
+pub use currency::EUR;
+pub use currency::GBP;
+pub use currency::INR;
+pub use currency::JPY;
+pub use currency::KRW;
+pub use currency::USD;
+pub use currency::currency_from_code;
 pub use error::Error as BcError;
+pub use money::Money;

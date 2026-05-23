@@ -1,8 +1,4 @@
 //! Inline tag badge component.
-#![expect(
-    clippy::mod_module_files,
-    reason = "mod.rs collocates source with its SCSS module file"
-)]
 
 use leptos::prelude::*;
 use stylance::import_style;
@@ -44,6 +40,9 @@ pub fn TagToken(
         </span>
     }
 }
+
+#[cfg(debug_assertions)]
+pub mod qa;
 
 #[cfg(test)]
 mod tests {

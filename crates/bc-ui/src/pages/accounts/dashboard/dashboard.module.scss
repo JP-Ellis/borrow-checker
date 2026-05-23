@@ -1,0 +1,180 @@
+.dashboard {
+  position: relative;
+  padding: var(--bc-space-7) var(--bc-space-7) var(--bc-space-6);
+  background: var(--bc-surface);
+  border-bottom: 1px solid var(--bc-border);
+}
+
+.header_row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bc-space-3);
+  margin-bottom: var(--bc-space-2);
+}
+
+.actions {
+  display: flex;
+  gap: var(--bc-space-2);
+  flex-shrink: 0;
+}
+
+/* MARK: Wide — three inline buttons */
+
+.actions_inline {
+  display: none;
+  gap: var(--bc-space-2);
+
+  @media (min-width: #{bp.$bp-sm}) { display: flex; }
+}
+
+/* MARK: Narrow — toggle button + popover */
+
+.actions_toggle {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  padding: var(--bc-space-2) var(--bc-space-3);
+  border: 1px solid var(--bc-border-strong);
+  border-radius: var(--bc-radius-control);
+  background: var(--bc-surface-accent);
+  color: var(--bc-ink-soft);
+  cursor: pointer;
+
+  @media (min-width: #{bp.$bp-sm}) { display: none; }
+
+  &:hover { color: var(--bc-ink); }
+  &:focus-visible { @include focus.focus-ring(2px); }
+}
+
+/* position-anchor set inline per-instance; anchor() resolves against it */
+.actions_menu {
+  position: fixed;
+  inset: unset;
+  top: anchor(bottom);
+  right: anchor(right);
+  margin-top: var(--bc-space-1);
+  position-try-fallbacks: --bc-actions-above;
+  padding: var(--bc-space-2);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-card);
+  background: var(--bc-surface);
+  flex-direction: column;
+  gap: var(--bc-space-1);
+  min-width: 160px;
+  box-shadow: var(--bc-shadow-card);
+
+  &:popover-open { display: flex; }
+}
+
+@position-try --bc-actions-above {
+  top: unset;
+  bottom: anchor(top);
+  margin-top: 0;
+  margin-bottom: var(--bc-space-1);
+}
+
+.action_btn {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  padding: var(--bc-space-2) var(--bc-space-4);
+  border: 1px solid var(--bc-border-strong);
+  border-radius: var(--bc-radius-control);
+  background: var(--bc-surface-accent);
+  color: var(--bc-ink-soft);
+  cursor: pointer;
+
+  &:focus-visible { @include focus.focus-ring(2px); }
+}
+
+.action_primary {
+  background: var(--bc-accent);
+  border-color: var(--bc-accent);
+  color: white;
+}
+
+.kbd {
+  font-size: var(--bc-text-eyebrow);
+  background: rgba(0 0 0 / 0.12);
+  padding: 0 var(--bc-space-1);
+  border-radius: var(--bc-radius-kbd);
+}
+
+.breadcrumb {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-type);
+}
+
+.title_row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--bc-space-3);
+  margin-bottom: var(--bc-space-2);
+}
+
+.name_group {
+  display: flex;
+  align-items: baseline;
+  gap: var(--bc-space-3);
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.meta_group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--bc-space-2);
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
+.acct_name {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-page-title);
+  font-weight: 500;
+  color: var(--bc-ink);
+}
+
+.mask {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink-dim);
+}
+
+.reconciled {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  background: color-mix(in oklch, var(--bc-good) 12%, var(--bc-bg));
+  color: var(--bc-good);
+  padding: 1px var(--bc-space-2);
+  border-radius: var(--bc-radius-tag);
+  white-space: nowrap;
+}
+
+.balance_row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--bc-space-4);
+  margin-bottom: var(--bc-space-6);
+}
+
+.balance {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-display);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.015em;
+  color: var(--bc-ink);
+}
+
+.balance_meta {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-comment);
+}
+
+.stat_row {
+  margin-bottom: var(--bc-space-6);
+}

@@ -1,0 +1,68 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-2);
+}
+
+.title {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink-soft);
+}
+
+.hover_info {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  line-height: 1.2;
+  color: var(--bc-ink-mute);
+  height: 1.2em;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.income  { color: var(--bc-good); }
+.expense { color: var(--bc-bad); }
+
+.svg_wrap {
+  position: relative;
+  width: 100%;
+  cursor: crosshair;
+}
+
+.svg {
+  display: block;
+  width: 100%;
+  height: 52px; /* must equal Rust constant H in sparkline/mod.rs */
+  overflow: visible;
+}
+
+/* Endpoint and hover dots — HTML so they stay circular at any SVG x-scale.
+   Two separate rules because Stylance hashes each class independently;
+   group selectors do not match after hashing. */
+.dot_good {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  background-color: var(--bc-good);
+}
+
+.dot_bad {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  background-color: var(--bc-bad);
+}
+
+.axis {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-ink-soft);
+}
