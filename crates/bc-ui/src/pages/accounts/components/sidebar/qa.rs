@@ -2,7 +2,7 @@
 
 use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
-use bc_ipc::Money;
+use bc_ipc::Amount;
 use leptos::prelude::*;
 
 use super::AccountSidebar;
@@ -14,7 +14,7 @@ fn sample_accounts() -> Vec<AccountNode> {
             "cb-smart-access",
             "Smart Access",
             Some("4421"),
-            Money::new(421_842, "AUD"),
+            Amount::new(421_842, "AUD"),
             Some("commbank"),
             AccountType::Asset,
             vec![
@@ -26,7 +26,7 @@ fn sample_accounts() -> Vec<AccountNode> {
             "commbank",
             "CommBank",
             None::<&str>,
-            Money::new(6_421_000, "AUD"),
+            Amount::new(6_421_000, "AUD"),
             None::<&str>,
             AccountType::Asset,
             vec![],
@@ -35,7 +35,7 @@ fn sample_accounts() -> Vec<AccountNode> {
             "amex-platinum",
             "Amex Platinum",
             Some("9001"),
-            Money::new(-244_000, "AUD"),
+            Amount::new(-244_000, "AUD"),
             None::<&str>,
             AccountType::Liability,
             vec!["type:credit".to_owned()],

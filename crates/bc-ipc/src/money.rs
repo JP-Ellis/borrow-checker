@@ -16,15 +16,15 @@ use serde::Serialize;
 /// # Example
 ///
 /// ```
-/// use bc_ipc::Money;
+/// use bc_ipc::Amount;
 ///
-/// let price = Money::new(-123_456, "AUD");  // −$1,234.56 AUD
+/// let price = Amount::new(-123_456, "AUD");  // −$1,234.56 AUD
 /// assert_eq!(price.minor_units, -123_456);
 /// assert_eq!(price.currency_code, "AUD");
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub struct Money {
+pub struct Amount {
     /// Amount in the currency's smallest unit (cents, satoshis, etc.).
     /// Positive = credit; negative = debit.
     pub minor_units: i64,
@@ -32,8 +32,8 @@ pub struct Money {
     pub currency_code: String,
 }
 
-impl Money {
-    /// Creates a new [`Money`] value.
+impl Amount {
+    /// Creates a new [`Amount`] value.
     #[must_use]
     #[inline]
     pub fn new(minor_units: i64, currency_code: impl Into<String>) -> Self {

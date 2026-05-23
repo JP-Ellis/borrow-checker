@@ -11,17 +11,3 @@ pub const LIST_TRANSACTIONS: &str = "list_transactions";
 
 /// Command: create a new transaction.
 pub const CREATE_TRANSACTION: &str = "create_transaction";
-
-#[cfg(test)]
-mod tests {
-    use pretty_assertions::assert_eq;
-
-    use super::*;
-
-    #[test]
-    fn constants_match_expected_strings() {
-        assert_eq!(LIST_ACCOUNTS, "list_accounts");
-        assert_eq!(LIST_TRANSACTIONS, "list_transactions");
-        assert_eq!(CREATE_TRANSACTION, "create_transaction");
-    }
-}

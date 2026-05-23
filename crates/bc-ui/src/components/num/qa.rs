@@ -1,6 +1,6 @@
 //! QA page for [`super::Num`] and [`super::format_amount`].
 
-use bc_ipc::Money;
+use bc_ipc::Amount;
 use leptos::prelude::*;
 
 use super::Num;
@@ -23,7 +23,7 @@ fn Row(
     /// Row label shown in the left column.
     label: &'static str,
     /// Monetary value to display.
-    money: Money,
+    money: Amount,
 ) -> impl IntoView {
     view! {
         <tr>
@@ -75,66 +75,66 @@ pub fn NumQa() -> impl IntoView {
         <div style="display:flex;flex-direction:column;gap:32px;padding:24px;max-width:640px">
 
             <Section title="USD $" subtitle="2 decimals · Western grouping">
-                <Row label="positive" money=Money::new(128_456, "USD") />
-                <Row label="zero" money=Money::new(0, "USD") />
-                <Row label="negative" money=Money::new(-128_456, "USD") />
-                <Row label="one cent" money=Money::new(1, "USD") />
-                <Row label="minus one cent" money=Money::new(-1, "USD") />
-                <Row label="large" money=Money::new(100_000_000, "USD") />
-                <Row label="large negative" money=Money::new(-100_000_000, "USD") />
+                <Row label="positive" money=Amount::new(128_456, "USD") />
+                <Row label="zero" money=Amount::new(0, "USD") />
+                <Row label="negative" money=Amount::new(-128_456, "USD") />
+                <Row label="one cent" money=Amount::new(1, "USD") />
+                <Row label="minus one cent" money=Amount::new(-1, "USD") />
+                <Row label="large" money=Amount::new(100_000_000, "USD") />
+                <Row label="large negative" money=Amount::new(-100_000_000, "USD") />
             </Section>
 
             <Section
                 title="AUD A$ · EUR € · GBP £"
                 subtitle="2 decimals · Western grouping · different symbols"
             >
-                <Row label="AUD positive" money=Money::new(910_000, "AUD") />
-                <Row label="AUD negative" money=Money::new(-690_000, "AUD") />
-                <Row label="EUR positive" money=Money::new(910_000, "EUR") />
-                <Row label="EUR negative" money=Money::new(-690_000, "EUR") />
-                <Row label="GBP positive" money=Money::new(910_000, "GBP") />
-                <Row label="GBP negative" money=Money::new(-690_000, "GBP") />
+                <Row label="AUD positive" money=Amount::new(910_000, "AUD") />
+                <Row label="AUD negative" money=Amount::new(-690_000, "AUD") />
+                <Row label="EUR positive" money=Amount::new(910_000, "EUR") />
+                <Row label="EUR negative" money=Amount::new(-690_000, "EUR") />
+                <Row label="GBP positive" money=Amount::new(910_000, "GBP") />
+                <Row label="GBP negative" money=Amount::new(-690_000, "GBP") />
             </Section>
 
             <Section
                 title="JPY ¥ · KRW ₩"
                 subtitle="0 decimal places — no fractional part rendered"
             >
-                <Row label="JPY positive" money=Money::new(9_100, "JPY") />
-                <Row label="JPY zero" money=Money::new(0, "JPY") />
-                <Row label="JPY negative" money=Money::new(-9_100, "JPY") />
-                <Row label="JPY large" money=Money::new(1_000_000, "JPY") />
-                <Row label="KRW positive" money=Money::new(910_000, "KRW") />
-                <Row label="KRW negative" money=Money::new(-910_000, "KRW") />
+                <Row label="JPY positive" money=Amount::new(9_100, "JPY") />
+                <Row label="JPY zero" money=Amount::new(0, "JPY") />
+                <Row label="JPY negative" money=Amount::new(-9_100, "JPY") />
+                <Row label="JPY large" money=Amount::new(1_000_000, "JPY") />
+                <Row label="KRW positive" money=Amount::new(910_000, "KRW") />
+                <Row label="KRW negative" money=Amount::new(-910_000, "KRW") />
             </Section>
 
             <Section title="INR ₹" subtitle="2 decimals · South Asian grouping (1,23,456)">
-                <Row label="hundreds" money=Money::new(45_600, "INR") />
-                <Row label="thousands" money=Money::new(123_400, "INR") />
-                <Row label="lakhs" money=Money::new(12_345_600, "INR") />
-                <Row label="crores" money=Money::new(1_234_567_800, "INR") />
-                <Row label="negative" money=Money::new(-1_234_567_800, "INR") />
+                <Row label="hundreds" money=Amount::new(45_600, "INR") />
+                <Row label="thousands" money=Amount::new(123_400, "INR") />
+                <Row label="lakhs" money=Amount::new(12_345_600, "INR") />
+                <Row label="crores" money=Amount::new(1_234_567_800, "INR") />
+                <Row label="negative" money=Amount::new(-1_234_567_800, "INR") />
             </Section>
 
             <Section
                 title="BTC ₿"
                 subtitle="8 decimal places — minor unit is satoshi (10⁻⁸ BTC)"
             >
-                <Row label="one satoshi" money=Money::new(1, "BTC") />
-                <Row label="one thousand sat" money=Money::new(1_000, "BTC") />
-                <Row label="one bitcoin" money=Money::new(100_000_000, "BTC") />
-                <Row label="mixed" money=Money::new(123_456_789, "BTC") />
-                <Row label="negative" money=Money::new(-50_000_000, "BTC") />
+                <Row label="one satoshi" money=Amount::new(1, "BTC") />
+                <Row label="one thousand sat" money=Amount::new(1_000, "BTC") />
+                <Row label="one bitcoin" money=Amount::new(100_000_000, "BTC") />
+                <Row label="mixed" money=Amount::new(123_456_789, "BTC") />
+                <Row label="negative" money=Amount::new(-50_000_000, "BTC") />
             </Section>
 
             <Section
                 title="ETH"
                 subtitle="9 decimal places · symbol after · minor unit is nanoether"
             >
-                <Row label="one nanoether" money=Money::new(1, "ETH") />
-                <Row label="one ETH" money=Money::new(1_000_000_000, "ETH") />
-                <Row label="mixed" money=Money::new(1_234_567_891, "ETH") />
-                <Row label="negative" money=Money::new(-500_000_000, "ETH") />
+                <Row label="one nanoether" money=Amount::new(1, "ETH") />
+                <Row label="one ETH" money=Amount::new(1_000_000_000, "ETH") />
+                <Row label="mixed" money=Amount::new(1_234_567_891, "ETH") />
+                <Row label="negative" money=Amount::new(-500_000_000, "ETH") />
             </Section>
 
         </div>

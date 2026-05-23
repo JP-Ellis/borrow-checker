@@ -1,6 +1,6 @@
 //! Dashboard — net worth, cashflow, accounts summary, budget health.
 
-use bc_ipc::Money;
+use bc_ipc::Amount;
 use leptos::prelude::*;
 
 use crate::components::num::Num;
@@ -16,7 +16,7 @@ pub fn Dashboard() -> impl IntoView {
             <p>"dashboard — coming in phase 2"</p>
             // Primitive components rendered with neutral/placeholder values so
             // they are live in the WASM binary and visually testable in Phase 1.
-            <Num money=Money::new(0, "USD") />
+            <Num money=Amount::new(0, "USD") />
             <TagToken label="example:tag".to_owned() />
             <StatusPill label="ok".to_owned() tone=Tone::Good />
         </div>
