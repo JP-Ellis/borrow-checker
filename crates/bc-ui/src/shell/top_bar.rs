@@ -61,6 +61,7 @@ pub fn TopBar() -> impl IntoView {
                                         "top-bar__tab"
                                     }
                                 }
+                                attr:data-testid=(href == "/accounts").then_some("nav-accounts")
                             >
                                 {name}
                             </A>

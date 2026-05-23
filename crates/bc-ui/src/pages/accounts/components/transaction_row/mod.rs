@@ -36,7 +36,7 @@ import_style!(style, "row.module.scss");
 )]
 pub fn TransactionRow(
     /// The transaction.
-    tx: &'static Transaction,
+    tx: Transaction,
     /// Account ID currently being viewed (for context-relative amount).
     #[prop(into)]
     viewing_account_id: String,
@@ -49,7 +49,7 @@ pub fn TransactionRow(
 ) -> impl IntoView {
     let date = format_date_display(&tx.date);
     let initial = payee_initial(&tx.payee).to_string();
-    let amount = headline_amount(tx, &viewing_account_id);
+    let amount = headline_amount(&tx, &viewing_account_id);
     let currency = bc_ipc::currency_from_code(&amount.currency_code).unwrap_or(&bc_ipc::USD);
     let amount_str = crate::components::num::format_amount(amount.minor_units, currency);
     let amt_class = match amount.minor_units.cmp(&0) {
@@ -68,6 +68,7 @@ pub fn TransactionRow(
         .find(|p| p.account_id != viewing_account_id.as_str())
         .map_or_else(|| "—".to_owned(), |p| p.account_path.clone());
 
+    let payee = tx.payee.clone();
     let tags: Vec<String> = tx.tags.clone();
     let tags_mobile = tags.clone();
 
@@ -101,7 +102,7 @@ pub fn TransactionRow(
                 <span class=style::avatar aria-hidden="true">
                     {initial}
                 </span>
-                <span class=style::payee>{tx.payee.clone()}</span>
+                <span class=style::payee>{payee}</span>
                 <div class=style::inline_tags>
                     {tags.into_iter().map(|t| view! { <TagToken label=t /> }).collect::<Vec<_>>()}
                 </div>
@@ -119,7 +120,7 @@ pub fn TransactionRow(
                 {move || if expanded.get() { "↓" } else { "›" }}
             </span>
         </div>
-        {move || expanded.get().then(|| view! { <TransactionDetail tx=tx /> })}
+        {move || expanded.get().then(|| view! { <TransactionDetail tx=tx.clone() /> })}
     }
 }
 
@@ -130,10 +131,14 @@ pub fn TransactionRow(
 #[component]
 fn TransactionDetail(
     /// The transaction to render.
-    tx: &'static Transaction,
+    tx: Transaction,
 ) -> impl IntoView {
     let show_audit = RwSignal::new(false);
     let detail_ref = NodeRef::<leptos::html::Div>::new();
+
+    // Store the transaction in a StoredValue so reactive closures can access it
+    // multiple times without consuming it (FnMut-compatible).
+    let stored_tx = StoredValue::new(tx);
 
     Effect::new(move |_| {
         if let Some(el) = detail_ref.get() {
@@ -154,25 +159,50 @@ fn TransactionDetail(
         }
     };
 
+    // Extract all display data from the stored transaction into StoredValues.
+    // StoredValue<T> is Copy, which allows reactive closures (Fn) to read
+    // the data repeatedly without consuming it.
+    let tx_id = StoredValue::new(stored_tx.with_value(|t| t.id.clone()));
+    let tx_date = StoredValue::new(stored_tx.with_value(|t| t.date.clone()));
+    let tx_payee = StoredValue::new(stored_tx.with_value(|t| t.payee.clone()));
+    let tx_status = StoredValue::new(stored_tx.with_value(|t| t.status.label().to_owned()));
+    let stored_tags = StoredValue::new(stored_tx.with_value(|t| t.tags.clone()));
+    let tx_has_tags = stored_tx.with_value(|t| !t.tags.is_empty());
+    let stored_audit = StoredValue::new(stored_tx.with_value(|t| {
+        t.audit
+            .iter()
+            .map(|e| (e.time.clone(), e.kind.clone(), e.message.clone()))
+            .collect::<Vec<_>>()
+    }));
+    let stored_postings = StoredValue::new(stored_tx.with_value(|t| {
+        t.postings
+            .iter()
+            .map(|p| (p.account_path.clone(), p.amount.clone(), p.note.clone()))
+            .collect::<Vec<_>>()
+    }));
+
     view! {
         <div class=style::detail node_ref=detail_ref on:keydown=on_action_key tabindex="-1">
             <div class=style::data_panel>
                 {move || {
                     if show_audit.get() {
                         view! {
-                            <TomlArraySection comment=tx.id.clone()>"audit_log"</TomlArraySection>
-                            {tx
-                                .audit
-                                .iter()
-                                .map(|e| {
-                                    let msg = e.message.clone();
-                                    view! {
-                                        <TomlAuditEntry time=e.time.clone() kind=e.kind.clone()>
-                                            {msg}
-                                        </TomlAuditEntry>
-                                    }
-                                })
-                                .collect::<Vec<_>>()}
+                            <TomlArraySection comment=tx_id
+                                .get_value()>"audit_log"</TomlArraySection>
+                            {stored_audit
+                                .with_value(|entries| {
+                                    entries
+                                        .iter()
+                                        .map(|(time, kind, msg)| {
+                                            let msg = msg.clone();
+                                            view! {
+                                                <TomlAuditEntry time=time.clone() kind=kind.clone()>
+                                                    {msg}
+                                                </TomlAuditEntry>
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                })}
                         }
                             .into_any()
                     } else {
@@ -181,30 +211,30 @@ fn TransactionDetail(
                             <TomlKv>
                                 <KvKey slot>"id"</KvKey>
                                 <KvValue slot kind=KvKind::Str>
-                                    {tx.id.clone()}
+                                    {tx_id.get_value()}
                                 </KvValue>
                             </TomlKv>
                             <TomlKv>
                                 <KvKey slot>"date"</KvKey>
                                 <KvValue slot kind=KvKind::Date>
-                                    {tx.date.clone()}
+                                    {tx_date.get_value()}
                                 </KvValue>
                             </TomlKv>
                             <TomlKv>
                                 <KvKey slot>"payee"</KvKey>
                                 <KvValue slot kind=KvKind::Str>
-                                    {tx.payee.clone()}
+                                    {tx_payee.get_value()}
                                 </KvValue>
                             </TomlKv>
                             <TomlKv>
                                 <KvKey slot>"status"</KvKey>
                                 <KvValue slot kind=KvKind::Keyword>
-                                    {tx.status.label().to_owned()}
+                                    {tx_status.get_value()}
                                 </KvValue>
                             </TomlKv>
-                            {(!tx.tags.is_empty())
+                            {tx_has_tags
                                 .then(|| {
-                                    let tags = tx.tags.clone();
+                                    let tags = stored_tags.get_value();
                                     view! {
                                         <TomlKv>
                                             <KvKey slot>"tags"</KvKey>
@@ -213,27 +243,29 @@ fn TransactionDetail(
                                     }
                                 })}
                             <TomlArraySection>"postings"</TomlArraySection>
-                            {tx
-                                .postings
-                                .iter()
-                                .map(|p| {
-                                    let account_path = p.account_path.clone();
-                                    let amount = p.amount.clone();
-                                    if let Some(note) = p.note.clone() {
-                                        view! {
-                                            <TomlPosting amount=amount.clone() note=note>
-                                                {account_path}
-                                            </TomlPosting>
-                                        }
-                                            .into_any()
-                                    } else {
-                                        view! {
-                                            <TomlPosting amount=amount>{account_path}</TomlPosting>
-                                        }
-                                            .into_any()
-                                    }
-                                })
-                                .collect::<Vec<_>>()}
+                            {stored_postings
+                                .with_value(|items| {
+                                    items
+                                        .iter()
+                                        .map(|(account_path, amount, note)| {
+                                            let account_path = account_path.clone();
+                                            let amount = amount.clone();
+                                            if let Some(note) = note.clone() {
+                                                view! {
+                                                    <TomlPosting amount=amount.clone() note=note>
+                                                        {account_path}
+                                                    </TomlPosting>
+                                                }
+                                                    .into_any()
+                                            } else {
+                                                view! {
+                                                    <TomlPosting amount=amount>{account_path}</TomlPosting>
+                                                }
+                                                    .into_any()
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                })}
                         }
                             .into_any()
                     }

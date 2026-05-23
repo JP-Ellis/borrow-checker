@@ -2,14 +2,13 @@
 
 mod types;
 
-pub use bc_ipc::AccountNode;
-pub use bc_ipc::Transaction;
-pub use types::ACCOUNTS;
-pub use types::TRANSACTIONS;
-
 pub(crate) mod components;
 pub(crate) mod dashboard;
 
+use bc_ipc::Money;
+use bc_ipc::NewPosting;
+use bc_ipc::NewTransaction;
+use bc_ipc::TxStatus;
 use components::sidebar::AccountSidebar;
 use components::sticky_bar::StickyAccountBar;
 use components::transaction_register::TransactionRegister;
@@ -23,6 +22,10 @@ import_style!(style, "accounts.module.scss");
 
 /// Accounts page — sidebar + scrollable account dashboard and register.
 #[component]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Leptos view! macro expands verbosely; logic is straightforward"
+)]
 pub fn Accounts() -> impl IntoView {
     // MARK: Route param
     let params = use_params_map();
@@ -31,10 +34,6 @@ pub fn Accounts() -> impl IntoView {
     // MARK: Sidebar state
     let sidebar_collapsed = {
         // Initialise collapsed on narrow viewports (≤ 480px, matching $bp-sm).
-        // A full hamburger drawer for very narrow screens is deferred pending
-        // device testing; the dot-rail handles 480px–desktop widths.
-        // TODO(mobile): implement hamburger drawer fallback for sub-480px if dot-rail
-        // proves too small on actual devices.
         let narrow = web_sys::window()
             .and_then(|w| w.inner_width().ok())
             .and_then(|v| v.as_f64())
@@ -48,21 +47,52 @@ pub fn Accounts() -> impl IntoView {
     // MARK: Scroll detection
     let main_ref = NodeRef::<leptos::html::Div>::new();
     let dashboard_scrolled = RwSignal::new(false);
-
     let on_scroll = move |_: web_sys::Event| {
         if let Some(el) = main_ref.get() {
             dashboard_scrolled.set(el.scroll_top() > 180_i32);
         }
     };
 
-    // MARK: Selected account
-    let selected_node = Signal::derive(move || {
-        let id = selected_id.get()?;
-        ACCOUNTS.iter().find(|a| a.id == id).cloned()
+    // MARK: Live data — accounts
+    // LocalResource is required because bc_ipc::client futures are not Send
+    // (they use js_sys::futures::JsFuture internally).
+    let accounts_resource = LocalResource::new(bc_ipc::client::list_accounts);
+
+    // MARK: Live data — transactions (re-fetches when selected account changes)
+    let transactions_resource = LocalResource::new(move || async move {
+        match selected_id.get() {
+            Some(ref id) => bc_ipc::client::list_transactions(id).await,
+            None => Ok(vec![]),
+        }
     });
 
-    let accounts: &'static [AccountNode] = &ACCOUNTS;
-    let transactions: &'static [Transaction] = &TRANSACTIONS;
+    // Derive a flat signal from the resource for TransactionRegister.
+    let transactions_signal = Signal::derive(move || {
+        transactions_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+    });
+
+    // Derive selected node as a Signal so StickyAccountBar can receive it.
+    let selected_node = Signal::derive(move || {
+        let id = selected_id.get()?;
+        let accounts = accounts_resource.get()?.ok()?;
+        accounts.into_iter().find(|a| a.id == id)
+    });
+
+    // MARK: Create transaction action
+    let create_tx = Action::new_unsync(|tx: &NewTransaction| {
+        let tx = tx.clone();
+        async move { bc_ipc::client::create_transaction(&tx).await }
+    });
+
+    // Refetch transactions after a successful create.
+    Effect::new(move |_| {
+        if create_tx.value().with(|v| matches!(v, Some(Ok(_)))) {
+            transactions_resource.refetch();
+        }
+    });
 
     view! {
         <div class=style::shell>
@@ -74,11 +104,26 @@ pub fn Accounts() -> impl IntoView {
                     style::sidebar.to_owned()
                 }
             }>
-                <AccountSidebar
-                    nodes=accounts
-                    selected_id=selected_id
-                    collapsed=sidebar_collapsed.read_only()
-                />
+                {move || match accounts_resource.get() {
+                    None => {
+                        view! { <div class=style::empty_state>"Loading accounts…"</div> }
+                            .into_any()
+                    }
+                    Some(Err(e)) => {
+                        view! { <div class=style::empty_state>{format!("Error: {e}")}</div> }
+                            .into_any()
+                    }
+                    Some(Ok(accounts)) => {
+                        view! {
+                            <AccountSidebar
+                                nodes=accounts
+                                selected_id=selected_id
+                                collapsed=sidebar_collapsed.read_only()
+                            />
+                        }
+                            .into_any()
+                    }
+                }}
                 <button
                     class=style::sidebar_toggle
                     on:click=toggle_sidebar
@@ -93,7 +138,6 @@ pub fn Accounts() -> impl IntoView {
                 <StickyAccountBar node=selected_node visible=dashboard_scrolled.read_only() />
 
                 {move || match selected_node.get() {
-                    Some(node) => view! { <AccountDashboard node=node /> }.into_any(),
                     None => {
                         view! {
                             <div class=style::empty_state>
@@ -102,23 +146,61 @@ pub fn Accounts() -> impl IntoView {
                         }
                             .into_any()
                     }
-                }}
+                    Some(node) => {
+                        let offset_id = accounts_resource
+                            .get()
+                            .and_then(Result::ok)
+                            .and_then(|accounts| {
+                                accounts
+                                    .into_iter()
+                                    .find(|a| {
+                                        matches!(a.account_type, bc_ipc::AccountType::Expense)
+                                    })
+                                    .map(|a| a.id)
+                            })
+                            .unwrap_or_default();
+                        let debit_id = node.id.clone();
 
-                {move || {
-                    selected_node
-                        .get()
-                        .map(|node| {
-                            // TODO: TRANSACTIONS is a global static not keyed by account ID.
-                            // When IPC is wired up, replace with a Resource parameterised by
-                            // node.id using the Resource + Suspense pattern from
-                            // component-standards.md.
-                            view! {
-                                <TransactionRegister
-                                    transactions=transactions
-                                    viewing_account_id=node.id.clone()
-                                />
-                            }
-                        })
+                        view! {
+                            <AccountDashboard node=node.clone() />
+
+                            // TODO(ipc): replace with real add-transaction form
+                            <button
+                                data-testid="add-test-transaction"
+                                on:click=move |_| {
+                                    create_tx
+                                        .dispatch(
+                                            NewTransaction::new(
+                                                "2026-05-23",
+                                                "Test Payee",
+                                                TxStatus::Pending,
+                                                vec![],
+                                                vec![
+                                                    NewPosting::new(
+                                                        debit_id.clone(),
+                                                        Money::new(-1_000, "AUD"),
+                                                        None::<&str>,
+                                                    ),
+                                                    NewPosting::new(
+                                                        offset_id.clone(),
+                                                        Money::new(1_000, "AUD"),
+                                                        None::<&str>,
+                                                    ),
+                                                ],
+                                            ),
+                                        );
+                                }
+                            >
+                                "Add Test Transaction"
+                            </button>
+
+                            <TransactionRegister
+                                transactions=transactions_signal
+                                viewing_account_id=node.id.clone()
+                            />
+                        }
+                            .into_any()
+                    }
                 }}
             </div>
         </div>
