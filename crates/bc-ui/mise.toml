@@ -1,3 +1,5 @@
 [tasks."gen:styles"]
 description = "Generate stylance CSS bundle"
+sources     = ["src/**/*.module.scss", "Cargo.toml"]
+outputs     = ["style/bundle.scss"]
 run         = "stylance ."

@@ -13,7 +13,7 @@ ______________________________________________________________________
 ## Where to Find Things
 
 | Concern | File |
-|---------|------|
+| ---------------------------------------------------- | -------------------------------------------------- |
 | Colour tokens (light + dark + syntax + semantic) | `crates/bc-ui/src/styles/tokens/_colors.scss` |
 | Spacing scale | `crates/bc-ui/src/styles/tokens/_spacing.scss` |
 | Type ramp + radius | `crates/bc-ui/src/styles/tokens/_typography.scss` |
@@ -45,7 +45,7 @@ These patterns are the design target for components not yet built. Implement the
 
 **Transaction row** — date (mono, mute, ISO format), description (sans), category tag (TagToken), amount (Num). Expandable inline for split transactions.
 
-**Envelope row** — envelope name (sans), allocated/spent bar (full-width, `--bc-accent` fill, `--bc-surface-hi` track, 3px height), remaining amount (Num, right-aligned). Tree indent via `--bc-space-4` per level.
+**Envelope row** — envelope name (sans), allocated/spent bar (full-width, `--bc-accent` fill, `--bc-surface-accent` track, 3px height), remaining amount (Num, right-aligned). Tree indent via `--bc-space-4` per level.
 
 ### Cards and KPI Tiles
 
