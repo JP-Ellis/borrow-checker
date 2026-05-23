@@ -5,6 +5,27 @@
 
 pub mod commands;
 
+use tauri::Manager as _;
+
+/// Application state held in Tauri's managed-state system.
+///
+/// Pre-built services share the underlying SQLite pool via internal cloning.
+/// Stored here rather than a raw pool so `bc-app` need not name `sqlx` types.
+#[expect(
+    dead_code,
+    reason = "fields are accessed by command handlers added in Task 5"
+)]
+#[expect(
+    clippy::field_scoped_visibility_modifiers,
+    reason = "fields are crate-internal; getters add no value for an app-internal state bag"
+)]
+pub(crate) struct AppState {
+    /// Account projection service.
+    pub(crate) accounts: bc_core::AccountService,
+    /// Transaction service.
+    pub(crate) transactions: bc_core::TransactionService,
+}
+
 /// Initialise and run the Tauri application.
 ///
 /// # Panics
@@ -22,8 +43,23 @@ pub mod commands;
 #[inline]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![])
-        .setup(|_app| Ok(()))
+        .invoke_handler(tauri::generate_handler![
+            // MARK: accounts — see bc_ipc::commands for canonical name strings
+            commands::accounts::list_accounts,
+            commands::accounts::list_transactions,
+            commands::accounts::create_transaction,
+        ])
+        .setup(|app| {
+            let db_path = std::env::var("BC_DB_PATH")
+                .map_or_else(|_| bc_config::default_db_path(), std::path::PathBuf::from);
+
+            let pool = tauri::async_runtime::block_on(bc_core::open_db_at(&db_path))?;
+            app.manage(AppState {
+                accounts: bc_core::AccountService::new(pool.clone()),
+                transactions: bc_core::TransactionService::new(pool),
+            });
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running borrow-checker");
 }
