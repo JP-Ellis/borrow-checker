@@ -12,10 +12,6 @@ use tauri::Manager as _;
 /// Pre-built services share the underlying SQLite pool via internal cloning.
 /// Stored here rather than a raw pool so `bc-app` need not name `sqlx` types.
 #[expect(
-    dead_code,
-    reason = "fields are accessed by command handlers added in Task 5"
-)]
-#[expect(
     clippy::field_scoped_visibility_modifiers,
     reason = "fields are crate-internal; getters add no value for an app-internal state bag"
 )]
