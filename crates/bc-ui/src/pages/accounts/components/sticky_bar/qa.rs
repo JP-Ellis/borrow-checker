@@ -2,7 +2,7 @@
 
 use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
-use bc_ipc::Money;
+use bc_ipc::Amount;
 use leptos::prelude::*;
 
 use super::StickyAccountBar;
@@ -13,7 +13,7 @@ fn sample_node() -> AccountNode {
         "cb-smart-access",
         "Smart Access",
         Some("4421"),
-        Money::new(421_842, "AUD"),
+        Amount::new(421_842, "AUD"),
         Some("commbank"),
         AccountType::Asset,
         vec![],

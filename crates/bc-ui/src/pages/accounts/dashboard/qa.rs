@@ -2,7 +2,7 @@
 
 use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
-use bc_ipc::Money;
+use bc_ipc::Amount;
 use leptos::prelude::*;
 
 use super::AccountDashboard;
@@ -13,7 +13,7 @@ fn asset_node() -> AccountNode {
         "cb-smart-access",
         "Smart Access",
         Some("4421"),
-        Money::new(421_842, "AUD"),
+        Amount::new(421_842, "AUD"),
         Some("commbank"),
         AccountType::Asset,
         vec![
@@ -29,7 +29,7 @@ fn liability_node() -> AccountNode {
         "amex-platinum",
         "Amex Platinum",
         Some("9001"),
-        Money::new(-244_000, "AUD"),
+        Amount::new(-244_000, "AUD"),
         None::<&str>,
         AccountType::Liability,
         vec!["type:credit".to_owned()],
@@ -42,7 +42,7 @@ fn no_mask_node() -> AccountNode {
         "macquarie",
         "Macquarie",
         None::<&str>,
-        Money::new(14_210_000, "AUD"),
+        Amount::new(14_210_000, "AUD"),
         None::<&str>,
         AccountType::Asset,
         vec![],

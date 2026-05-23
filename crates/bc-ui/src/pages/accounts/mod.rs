@@ -5,7 +5,7 @@ mod types;
 pub(crate) mod components;
 pub(crate) mod dashboard;
 
-use bc_ipc::Money;
+use bc_ipc::Amount;
 use bc_ipc::NewPosting;
 use bc_ipc::NewTransaction;
 use bc_ipc::TxStatus;
@@ -27,13 +27,11 @@ import_style!(style, "accounts.module.scss");
     reason = "Leptos view! macro expands verbosely; logic is straightforward"
 )]
 pub fn Accounts() -> impl IntoView {
-    // MARK: Route param
     let params = use_params_map();
     let selected_id = Signal::derive(move || params.with(|p| p.get("id")));
 
-    // MARK: Sidebar state
+    // Initialise collapsed on narrow viewports (≤ 480px, matching $bp-sm).
     let sidebar_collapsed = {
-        // Initialise collapsed on narrow viewports (≤ 480px, matching $bp-sm).
         let narrow = web_sys::window()
             .and_then(|w| w.inner_width().ok())
             .and_then(|v| v.as_f64())
@@ -44,7 +42,6 @@ pub fn Accounts() -> impl IntoView {
         sidebar_collapsed.update(|c| *c = !*c);
     };
 
-    // MARK: Scroll detection
     let main_ref = NodeRef::<leptos::html::Div>::new();
     let dashboard_scrolled = RwSignal::new(false);
     let on_scroll = move |_: web_sys::Event| {
@@ -53,12 +50,15 @@ pub fn Accounts() -> impl IntoView {
         }
     };
 
-    // MARK: Live data — accounts
+    // MARK: Live data
     // LocalResource is required because bc_ipc::client futures are not Send
     // (they use js_sys::futures::JsFuture internally).
     let accounts_resource = LocalResource::new(bc_ipc::client::list_accounts);
 
-    // MARK: Live data — transactions (re-fetches when selected account changes)
+    // Re-fetches whenever the selected account changes.
+    // Note: `LocalResource::new` requires `Fn() -> Future`, which async closures
+    // (`async move ||`) do not satisfy when they capture from the environment;
+    // the `move || async move {}` form is required here.
     let transactions_resource = LocalResource::new(move || async move {
         match selected_id.get() {
             Some(ref id) => bc_ipc::client::list_transactions(id).await,
@@ -81,7 +81,6 @@ pub fn Accounts() -> impl IntoView {
         accounts.into_iter().find(|a| a.id == id)
     });
 
-    // MARK: Create transaction action
     let create_tx = Action::new_unsync(|tx: &NewTransaction| {
         let tx = tx.clone();
         async move { bc_ipc::client::create_transaction(&tx).await }
@@ -178,12 +177,12 @@ pub fn Accounts() -> impl IntoView {
                                                 vec![
                                                     NewPosting::new(
                                                         debit_id.clone(),
-                                                        Money::new(-1_000, "AUD"),
+                                                        Amount::new(-1_000, "AUD"),
                                                         None::<&str>,
                                                     ),
                                                     NewPosting::new(
                                                         offset_id.clone(),
-                                                        Money::new(1_000, "AUD"),
+                                                        Amount::new(1_000, "AUD"),
                                                         None::<&str>,
                                                     ),
                                                 ],

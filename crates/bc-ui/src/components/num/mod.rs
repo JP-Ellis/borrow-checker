@@ -2,8 +2,8 @@
 
 use core::cmp::Ordering;
 
+use bc_ipc::Amount;
 pub use bc_ipc::Currency;
-use bc_ipc::Money;
 pub use bc_ipc::USD;
 pub use bc_ipc::currency_from_code;
 use leptos::prelude::*;
@@ -161,7 +161,7 @@ pub fn format_amount(minor_units: i64, currency: &Currency) -> String {
 )]
 pub fn Num(
     /// Monetary value (amount + currency code).
-    money: Money,
+    money: Amount,
 ) -> impl IntoView {
     let currency = currency_from_code(&money.currency_code).unwrap_or_else(|| {
         #[cfg(debug_assertions)]

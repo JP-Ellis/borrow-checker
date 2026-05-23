@@ -1,7 +1,7 @@
 //! QA page for [`super::TransactionRow`].
 
+use bc_ipc::Amount;
 use bc_ipc::AuditEntry;
-use bc_ipc::Money;
 use bc_ipc::Posting;
 use bc_ipc::Transaction;
 use bc_ipc::TxStatus;
@@ -21,13 +21,13 @@ fn tx_simple() -> Transaction {
             Posting::new(
                 "cb-smart-access",
                 "Assets :: Smart Access",
-                Money::new(-8_420, "AUD"),
+                Amount::new(-8_420, "AUD"),
                 None::<&str>,
             ),
             Posting::new(
                 "groceries",
                 "Expenses :: Groceries",
-                Money::new(8_420, "AUD"),
+                Amount::new(8_420, "AUD"),
                 None::<&str>,
             ),
         ],
@@ -51,13 +51,13 @@ fn tx_multi_posting() -> Transaction {
             Posting::new(
                 "income-salary",
                 "Income :: Salary",
-                Money::new(-846_154, "AUD"),
+                Amount::new(-846_154, "AUD"),
                 Some("gross pay"),
             ),
             Posting::new(
                 "cb-smart-access",
                 "Assets :: Smart Access",
-                Money::new(428_055, "AUD"),
+                Amount::new(428_055, "AUD"),
                 Some("take-home"),
             ),
         ],

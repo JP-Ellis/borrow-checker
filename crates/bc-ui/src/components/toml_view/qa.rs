@@ -67,16 +67,16 @@ pub fn TomlViewQa() -> impl IntoView {
                 </p>
                 <div style="padding:16px;background:var(--bc-surface-accent);border-radius:6px">
                     <TomlArraySection>"postings"</TomlArraySection>
-                    <TomlPosting amount=bc_ipc::Money::new(-846_154, "AUD") note="gross pay">
+                    <TomlPosting amount=bc_ipc::Amount::new(-846_154, "AUD") note="gross pay">
                         "Income :: Salary"
                     </TomlPosting>
-                    <TomlPosting amount=bc_ipc::Money::new(327_692, "AUD") note="PAYG">
+                    <TomlPosting amount=bc_ipc::Amount::new(327_692, "AUD") note="PAYG">
                         "Liabilities :: Tax Withheld"
                     </TomlPosting>
-                    <TomlPosting amount=bc_ipc::Money::new(90_407, "AUD") note="11.5% SGC">
+                    <TomlPosting amount=bc_ipc::Amount::new(90_407, "AUD") note="11.5% SGC">
                         "Assets :: Super :: Employer"
                     </TomlPosting>
-                    <TomlPosting amount=bc_ipc::Money::new(428_055, "AUD") note="take-home">
+                    <TomlPosting amount=bc_ipc::Amount::new(428_055, "AUD") note="take-home">
                         "Assets :: Smart Access"
                     </TomlPosting>
                 </div>
@@ -106,11 +106,11 @@ pub fn TomlViewQa() -> impl IntoView {
                 </p>
                 <div style="padding:16px;background:var(--bc-surface-accent);border-radius:6px">
                     <TomlArraySection>"postings"</TomlArraySection>
-                    <TomlPosting amount=bc_ipc::Money::new(
+                    <TomlPosting amount=bc_ipc::Amount::new(
                         -8_420,
                         "AUD",
                     )>"Assets :: Smart Access"</TomlPosting>
-                    <TomlPosting amount=bc_ipc::Money::new(
+                    <TomlPosting amount=bc_ipc::Amount::new(
                         8_420,
                         "AUD",
                     )>"Expenses :: Groceries"</TomlPosting>

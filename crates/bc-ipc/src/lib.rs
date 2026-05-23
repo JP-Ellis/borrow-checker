@@ -6,7 +6,7 @@
 //!
 //! # Type conventions
 //!
-//! - Monetary amounts use [`Money`] — a currency-aware minor-unit value
+//! - Monetary amounts use [`Amount`] — a currency-aware minor-unit value
 //! - IDs use `String` — newtype IDs serialise to their string representation
 //! - All public enums carry `#[non_exhaustive]` for forward compatibility
 //! - All types implement `Send + Sync`, `Serialize`, `Deserialize`, `Clone`,
@@ -40,4 +40,4 @@ pub use currency::KRW;
 pub use currency::USD;
 pub use currency::currency_from_code;
 pub use error::Error as BcError;
-pub use money::Money;
+pub use money::Amount;
