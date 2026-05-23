@@ -21,7 +21,7 @@ mise run test
 aubx playwright test --ui
 
 # Update screenshot baselines (run on Linux to match CI baselines)
-mise run test:e2e:web:update
+mise run test:e2e:web --update-snapshots
 ```
 
 ## Screenshot baselines
@@ -31,8 +31,8 @@ directories. They are generated on Linux so that font rendering is consistent
 across runs. If you update snapshots locally on macOS or Windows, minor
 rendering differences may cause CI failures.
 
-To regenerate all baselines, run `mise run test:e2e:web:update` on a Linux
-machine and commit the updated snapshot files.
+To regenerate all baselines, run `mise run test:e2e:web --update-snapshots` on a
+Linux machine and commit the updated snapshot files.
 
 ## IPC stub
 

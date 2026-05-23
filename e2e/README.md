@@ -8,7 +8,7 @@ independently — they have different prerequisites, tools, and CI jobs.
 | Suite | Directory | Tool | Server | What it tests |
 |---|---|---|---|---|
 | Web | `e2e/web/` | Playwright | `trunk serve` (port 1420) | Visual snapshots of `/__test/*` pages, shell routing |
-| Native | `e2e/native/` | WebdriverIO + tauri-driver | Tauri binary | Full app flows with IPC |
+| Desktop | `e2e/desktop/` | WebdriverIO + tauri-driver | Tauri binary | Full app flows with IPC |
 
 ## Quick start
 
@@ -21,10 +21,10 @@ npx playwright install --with-deps
 npx playwright test
 ```
 
-**Native suite** (requires `cargo install tauri-driver`):
+**Desktop suite** (requires `cargo install tauri-driver`):
 
 ```sh
-cd e2e/native
+cd e2e/desktop
 npm install
 npx wdio run wdio.conf.ts
 ```
