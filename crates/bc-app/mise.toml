@@ -1,5 +1,7 @@
 [tasks."gen:icons"]
 description = "Generate icon set (PNG, ICO, ICNS) from icons/icon.svg"
+sources     = ["icons/icon.svg"]
+outputs     = ["icons/*.png", "icons/*.ico", "icons/*.icns"]
 run         = "cargo tauri icon icons/icon.svg --output icons/"
 
 [tasks."build:debug"]

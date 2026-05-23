@@ -3,21 +3,25 @@
 experimental_monorepo_root = true
 
 [settings]
-experimental = true
+experimental                      = true
+unix_default_inline_shell_args    = "bash -c -o errexit"
+windows_default_inline_shell_args = "pwsh -NonInteractive -Command"
 
 [monorepo]
 config_roots = [
   "crates/bc-app",
   "crates/bc-ui",
   "e2e/web",
-  "e2e/native",
+  "e2e/desktop",
 ]
 
 [tools]
+"core:node" = "24"
 "core:rust" = {
   version    = "stable",
   components = "llvm-tools,rustfmt,clippy",
-  # wasm32-wasip2: plugin system (Wasmtime); wasm32-unknown-unknown: Leptos frontend (Tauri webview)
+  # wasm32-wasip2: plugin system (Wasmtime)
+  # wasm32-unknown-unknown: Leptos frontend (Tauri webview)
   targets    = "wasm32-wasip2,wasm32-unknown-unknown",
 }
 
@@ -25,7 +29,7 @@ config_roots = [
 "aqua:cargo-bins/cargo-binstall" = "1.18"
 
 # JS package manager (aube) and runner (aubx)
-"github:endevco/aube" = "1.9"
+"github:endevco/aube" = "1"
 
 "cargo:cargo-hack"     = "0.6"
 "cargo:cargo-leptos"   = "0.3"
@@ -47,13 +51,11 @@ config_roots = [
   [tasks."dev:app"]
   description = "Run the desktop GUI in development mode (Tauri + Trunk hot-reload)"
   depends     = ["//crates/bc-app:gen:icons"]
-  dir         = "crates/bc-app"
   run         = "cargo tauri dev"
 
   [tasks."build:app"]
   description = "Build a release bundle of the desktop GUI"
   depends     = ["//crates/bc-app:gen:icons"]
-  dir         = "crates/bc-app"
   run         = "cargo tauri build"
 
   # MARK: Testing
@@ -65,38 +67,6 @@ config_roots = [
     { task = "test:docs" },
   ]
 
-  [tasks."test:e2e"]
-  description = "Run all E2E tests (web + native)"
-  run         = [
-    { task = "test:e2e:web" },
-    { task = "test:e2e:native" },
-  ]
-
-  [tasks."test:e2e:web"]
-  description = "Run Playwright web E2E tests (trunk serve, port 1420)"
-  depends     = ["//e2e/web:test"]
-
-  [tasks."test:e2e:web:update"]
-  description = "Run Playwright web E2E tests, updating snapshot baselines"
-  depends     = ["//e2e/web:test:update"]
-
-  [tasks."test:e2e:native"]
-  description = "Run WebdriverIO native E2E tests (tauri-driver)"
-  depends     = ["//e2e/native:test"]
-
-  [tasks."test:e2e:native:linux"]
-  description = "Run native E2E tests in a Linux container (matches CI; works on macOS)"
-  run         = """
-    docker build -t bc-e2e-native -f e2e/native/Containerfile .
-    docker run --rm \
-      -v "{{config_root}}:/repo" \
-      -w /repo/e2e/native \
-      -e CARGO_TARGET_DIR=/repo/target-linux \
-      -e TAURI_BINARY=/repo/target-linux/debug/bc-app \
-      bc-e2e-native \
-      bash -c "aube install && xvfb-run -a aubx wdio run wdio.conf.ts"
-  """
-
   [tasks."test:unit"]
   description = "Run unit tests across all feature combinations"
   depends     = ["build-plugins", "//crates/bc-app:gen:icons"]
@@ -107,75 +77,80 @@ config_roots = [
   depends     = ["//crates/bc-app:gen:icons"]
   run         = "cargo test --doc --workspace"
 
+  [tasks."test:e2e"]
+  description = "Run all E2E tests (web + desktop)"
+  run         = [
+    { task = "test:e2e:web" },
+    { task = "test:e2e:desktop" },
+  ]
+
+  [tasks."test:e2e:web"]
+  description = "Run web E2E tests in a Linux container"
+  usage       = 'flag "--update-snapshots" help="Update snapshot baselines with actual results"'
+  run         = "mise run //e2e/web:container{% if usage.update_snapshots %} --update-snapshots{% endif %}"
+
+  [tasks."test:e2e:desktop"]
+  description = "Run WebdriverIO desktop app E2E tests"
+  usage       = 'flag "--container" help="Run in a Linux container (matches CI; works on macOS)"'
+  run         = '''
+{% if usage.container %}
+  docker build -t bc-e2e-native -f e2e/desktop/Containerfile .
+  docker run --rm \
+    -v "{{config_root}}:/repo" \
+    -w /repo/e2e/desktop \
+    -e CARGO_TARGET_DIR=/repo/target-linux \
+    -e TAURI_BINARY=/repo/target-linux/debug/bc-app \
+    bc-e2e-native \
+    bash -c "aube install && xvfb-run -a aubx wdio run wdio.conf.ts"
+{% else %}
+  mise run //e2e/desktop:test
+{% endif %}
+'''
+
   # MARK: Quality
 
   [tasks.check]
-  description = "Run format and lint checks"
-  run         = [{ task = "format" }, { task = "lint" }]
-
-  [tasks."check:fix"]
-  description = "Auto-fix format and lint issues"
-  run         = [{ task = "format:fix" }, { task = "lint:fix" }]
+  description = "Check (or fix) formatting and linting"
+  usage       = 'flag "--fix" help="Apply fixes automatically"'
+  run         = [
+    { task = "format", args = ["{% if usage.fix %}--fix{% endif %}"] },
+    { task = "lint", args = ["{% if usage.fix %}--fix{% endif %}"] },
+  ]
 
   # MARK: Formatting
 
   [tasks.format]
-  description = "Check formatting (requires nightly rustfmt)"
+  description = "Check or apply formatting (nightly rustfmt + leptosfmt)"
+  usage       = 'flag "--fix" help="Apply changes rather than checking"'
   run         = [
-    "cargo +nightly fmt --check",
-    "leptosfmt --check crates/",
-  ]
-
-  [tasks."format:fix"]
-  description = "Apply formatting (requires nightly rustfmt)"
-  run         = [
-    "cargo +nightly fmt",
-    "leptosfmt crates/",
+    "cargo +nightly fmt {% if not usage.fix %}--check{% endif %}",
+    "leptosfmt {% if not usage.fix %}--check{% endif %} crates/",
   ]
 
   # MARK: Linting
 
+  [tasks."lint:hack"]
+  hide        = true
+  description = "Lint with Clippy across all feature combinations on all targets (CI)"
+  depends     = ["//crates/bc-app:gen:icons", "install:wasm-targets"]
+  run         = [
+    "cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings",
+    "cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown -- -D warnings",
+  ]
+
   [tasks.lint]
   description = "Lint with Clippy on all targets (fast, pre-commit)"
-  run         = [{ task = "lint:native" }, { task = "lint:wasm" }]
-
-  [tasks."lint:fix"]
-  description = "Auto-fix lint issues across all feature combinations on all targets"
-  run         = [{ task = "lint:fix:native" }, { task = "lint:fix:wasm" }]
-
-  [tasks."lint:native"]
-  description = "Lint with Clippy on native target (fast, pre-commit)"
-  depends     = ["//crates/bc-app:gen:icons"]
-  run         = "cargo clippy --workspace --all-targets -- -D warnings"
-
-  [tasks."lint:wasm"]
-  description = "Lint with Clippy on wasm32-unknown-unknown target (fast, pre-commit)"
-  depends     = ["install:wasm-targets"]
-  run         = "cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings"
-
-  [tasks."lint:hack"]
-  description = "Lint with Clippy across all feature combinations on all targets (thorough, CI)"
-  run         = [{ task = "lint:hack:native" }, { task = "lint:hack:wasm" }]
-
-  [tasks."lint:hack:native"]
-  description = "Lint with Clippy across all feature combinations on native target (thorough, CI)"
-  depends     = ["//crates/bc-app:gen:icons"]
-  run         = "cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings"
-
-  [tasks."lint:hack:wasm"]
-  description = "Lint with Clippy across all feature combinations on wasm32-unknown-unknown target (thorough, CI)"
-  depends     = ["install:wasm-targets"]
-  run         = "cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown -- -D warnings"
-
-  [tasks."lint:fix:native"]
-  description = "Auto-fix lint issues across all feature combinations on native target"
-  depends     = ["//crates/bc-app:gen:icons"]
-  run         = "cargo hack --feature-powerset --workspace clippy --all-targets --fix --allow-staged --allow-dirty -- -D warnings"
-
-  [tasks."lint:fix:wasm"]
-  description = "Auto-fix lint issues across all feature combinations on wasm32-unknown-unknown target"
-  depends     = ["install:wasm-targets"]
-  run         = "cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings"
+  depends     = ["//crates/bc-app:gen:icons", "install:wasm-targets"]
+  usage       = 'flag "--fix" help="Apply fixes automatically (uses cargo hack --feature-powerset)"'
+  run         = '''
+{% if usage.fix %}
+  cargo hack --feature-powerset --workspace clippy --all-targets --fix --allow-staged --allow-dirty -- -D warnings
+  cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings
+{% else %}
+  cargo clippy --workspace --all-targets -- -D warnings
+  cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings
+{% endif %}
+'''
 
   # MARK: Utilities
 
@@ -188,14 +163,21 @@ config_roots = [
   depends     = ["build-plugins", "//crates/bc-app:gen:icons"]
   run         = "cargo llvm-cov nextest --all-features --lcov --output-path coverage.lcov"
 
+  [tasks."build-plugins"]
+  description = "Compile WASM importer plugins and stage them under target/plugins/"
+  depends     = ["install:wasm-targets"]
+  sources     = [
+    "plugins/*/src/**/*.rs",
+    "plugins/*/Cargo.toml",
+    "Cargo.toml",
+    "Cargo.lock"
+  ]
+  outputs     = ["target/plugins/*.wasm"]
+  shell       = "bash -c"
+  run         = "plugins/scripts/build.sh"
+
   # MARK: Internal
 
   [tasks."install:wasm-targets"]
   description = "Install required WASM targets (no-op if already present)"
   run         = "rustup target add wasm32-wasip2 wasm32-unknown-unknown"
-
-  [tasks."build-plugins"]
-  description = "Compile WASM importer plugins and stage them under target/plugins/"
-  depends     = ["install:wasm-targets"]
-  shell       = "bash -c"
-  run         = "plugins/scripts/build.sh"

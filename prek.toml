@@ -98,7 +98,7 @@ hooks = [
   {
     id             = "cargo-fmt",
     name           = "cargo fmt",
-    entry          = "mise run format:fix",
+    entry          = "mise run format --fix",
     language       = "system",
     types          = ["rust"],
     pass_filenames = false,
