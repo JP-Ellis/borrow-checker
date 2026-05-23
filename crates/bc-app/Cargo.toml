@@ -13,11 +13,11 @@ license.workspace      = true
 publish = false
 
   [package.metadata.cargo-machete]
-  # Phase 2 IPC commands will use these deps; forward-declared to avoid churn.
-  # tauri-build is a build-dep used by build.rs (machete can't detect build.rs usage).
-  ignored = ["bc-core", "bc-ipc", "bc-models", "serde", "tauri-build"]
+  # bc-models, serde: used by IPC types; tauri-build is a build-dep (machete can't detect build.rs usage).
+  ignored = ["bc-models", "serde", "tauri-build"]
 
 [dependencies]
+bc-config = { workspace = true }
 bc-core   = { workspace = true }
 bc-ipc    = { workspace = true }
 bc-models = { workspace = true }
