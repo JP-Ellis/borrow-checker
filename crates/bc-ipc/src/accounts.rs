@@ -230,3 +230,121 @@ impl Transaction {
         }
     }
 }
+
+/// The user-supplied fields for a new posting leg.
+///
+/// Omits `account_path` (derived by the backend from the account record) and
+/// cost/envelope fields (out of scope for v0).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct NewPosting {
+    /// Account ID — must reference an existing active account.
+    pub account_id: String,
+    /// Posting amount. Positive = credit; negative = debit.
+    pub amount: Money,
+    /// Optional inline note.
+    pub note: Option<String>,
+}
+
+impl NewPosting {
+    /// Creates a new [`NewPosting`].
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - Account ID referencing an existing active account.
+    /// * `amount` - Posting amount (positive = credit; negative = debit).
+    /// * `note` - Optional inline note, or `None`.
+    #[must_use]
+    #[inline]
+    pub fn new(
+        account_id: impl Into<String>,
+        amount: Money,
+        note: Option<impl Into<String>>,
+    ) -> Self {
+        Self {
+            account_id: account_id.into(),
+            amount,
+            note: note.map(Into::into),
+        }
+    }
+}
+
+/// The user-supplied fields for a new transaction.
+///
+/// The backend assigns the `id` and appends the initial audit entry.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct NewTransaction {
+    /// ISO-8601 date string, e.g. `"2026-05-23"`.
+    pub date: String,
+    /// Payee display name.
+    pub payee: String,
+    /// Transaction status.
+    pub status: TxStatus,
+    /// Tag paths attached to this transaction.
+    pub tags: Vec<String>,
+    /// All postings. Must sum to zero per commodity (enforced by the backend).
+    pub postings: Vec<NewPosting>,
+}
+
+impl NewTransaction {
+    /// Creates a new [`NewTransaction`].
+    ///
+    /// # Arguments
+    ///
+    /// * `date` - ISO-8601 date string (e.g. `"2026-05-23"`).
+    /// * `payee` - Payee display name.
+    /// * `status` - Transaction status.
+    /// * `tags` - Tag paths attached to this transaction.
+    /// * `postings` - All postings (must sum to zero per commodity).
+    #[must_use]
+    #[inline]
+    pub fn new(
+        date: impl Into<String>,
+        payee: impl Into<String>,
+        status: TxStatus,
+        tags: Vec<String>,
+        postings: Vec<NewPosting>,
+    ) -> Self {
+        Self {
+            date: date.into(),
+            payee: payee.into(),
+            status,
+            tags,
+            postings,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+    use crate::Money;
+
+    #[test]
+    fn new_posting_constructor_roundtrip() {
+        let p = NewPosting::new("acc-1", Money::new(-1_000, "AUD"), Some("test note"));
+        assert_eq!(p.account_id, "acc-1");
+        assert_eq!(p.amount.minor_units, -1_000);
+        assert_eq!(p.note.as_deref(), Some("test note"));
+    }
+
+    #[test]
+    fn new_transaction_serde_roundtrip() {
+        let tx = NewTransaction::new(
+            "2026-05-23",
+            "Test Payee",
+            TxStatus::Pending,
+            vec![],
+            vec![
+                NewPosting::new("acc-a", Money::new(-500, "AUD"), None::<&str>),
+                NewPosting::new("acc-b", Money::new(500, "AUD"), None::<&str>),
+            ],
+        );
+        let json = serde_json::to_string(&tx).expect("serialises");
+        let tx2: NewTransaction = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(tx, tx2);
+    }
+}

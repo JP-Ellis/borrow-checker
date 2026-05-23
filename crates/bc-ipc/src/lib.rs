@@ -13,6 +13,7 @@
 //!   `Debug`
 
 mod accounts;
+pub mod commands;
 mod currency;
 mod error;
 mod money;
@@ -20,6 +21,8 @@ mod money;
 pub use accounts::AccountNode;
 pub use accounts::AccountType;
 pub use accounts::AuditEntry;
+pub use accounts::NewPosting;
+pub use accounts::NewTransaction;
 pub use accounts::Posting;
 pub use accounts::Transaction;
 pub use accounts::TxStatus;
