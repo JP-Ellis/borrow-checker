@@ -1,5 +1,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { execSync }                  from 'node:child_process';
+import { mkdirSync }                 from 'node:fs';
+import { join }                      from 'node:path';
 import { dirname, resolve }          from 'node:path';
 import { fileURLToPath }             from 'node:url';
 import type { Options }              from '@wdio/types';
@@ -24,7 +26,9 @@ async function waitForDriver(port: number, timeoutMs: number): Promise<void> {
 
 const APPLICATION =
   process.env['TAURI_BINARY'] ?? resolve(__dirname, '../../target/debug/bc-app');
-const APP_CRATE   = resolve(__dirname, '../../crates/bc-app');
+const APP_CRATE    = resolve(__dirname, '../../crates/bc-app');
+const TEST_DB_DIR  = resolve(__dirname, 'fixtures');
+const TEST_DB_PATH = join(TEST_DB_DIR, 'test.db');
 
 export const config: Options.Testrunner = {
   hostname: 'localhost',
@@ -55,6 +59,19 @@ export const config: Options.Testrunner = {
   },
 
   async onPrepare() {
+    // Ensure fixtures directory exists.
+    mkdirSync(TEST_DB_DIR, { recursive: true });
+
+    // Set BC_DB_PATH so the Tauri app reads the test database.
+    process.env['BC_DB_PATH'] = TEST_DB_PATH;
+
+    // Seed the test database.
+    console.log('Seeding test database…');
+    execSync(
+      `cargo +nightly -Zscript ../../scripts/seed-test-db --db-path "${TEST_DB_PATH}" --force`,
+      { cwd: __dirname, stdio: 'inherit' },
+    );
+
     if (!process.env['SKIP_BUILD']) {
       console.log('Building Tauri debug binary…');
       execSync('cargo tauri build --debug', {
@@ -65,6 +82,7 @@ export const config: Options.Testrunner = {
 
     tauriDriver = spawn('tauri-driver', [], {
       stdio: [null, process.stdout, process.stderr],
+      env:   { ...process.env },  // passes BC_DB_PATH to tauri-driver + child processes
     });
 
     try {
