@@ -1,0 +1,6 @@
+/* SCSS-only: these variables are used in @media queries in component modules.
+   They produce no CSS output themselves. */
+$bp-sm: 480px;   /* large phones */
+$bp-md: 768px;   /* tablet */
+$bp-lg: 1024px;  /* desktop */
+$bp-xl: 1280px;  /* wide desktop */

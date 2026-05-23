@@ -526,12 +526,14 @@ version = "0.1.0"
 dependencies = [
  "bc-ipc",
  "console_error_panic_hook",
+ "js-sys",
  "leptos",
  "leptos_router",
  "leptos_router_macro",
  "pretty_assertions",
  "stylance",
  "tauri-sys",
+ "web-sys",
 ]
 
 [[package]]

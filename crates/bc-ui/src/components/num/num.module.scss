@@ -1,6 +1,6 @@
-// No @use needed: this module uses only CSS custom properties.
-// To add breakpoints: @use '../../styles/tokens/breakpoints' as bp;
-// To add focus: @use '../../styles/mixins/focus';
+/* No @use needed: this module uses only CSS custom properties. */
+/* To add breakpoints: @use '../../styles/tokens/breakpoints' as bp; */
+/* To add focus: @use '../../styles/mixins/focus'; */
 
 .num {
   font-family: var(--bc-font-mono);

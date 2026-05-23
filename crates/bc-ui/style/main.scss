@@ -1,0 +1,26 @@
+/* 1. Declare layer order before any rules */
+@use 'layer-order';
+
+/* 2. Token layer */
+@use 'tokens/colors';
+@use 'tokens/spacing';
+@use 'tokens/typography';
+@use 'tokens/layout';
+@use 'tokens/motion';
+/* Note: _breakpoints.scss is SCSS-only (no output); imported directly by
+   component modules via @use, not here. */
+
+/* 3. Base layer */
+@use 'base/reset';
+@use 'base/root';
+
+/* 4. Shell layer */
+@use 'shell/shell';
+@use 'shell/top-bar';
+@use 'shell/page';
+
+/* 5. Utilities layer */
+@use 'utilities/sr-only';
+
+/* Stylance component modules are compiled separately into style/bundle.scss
+   and linked independently in index.html. */

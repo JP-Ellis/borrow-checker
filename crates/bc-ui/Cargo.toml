@@ -17,20 +17,24 @@ publish = false
   ignored = [
     "bc-ipc",
     "console_error_panic_hook",
+    "js-sys",
     "leptos",
     "leptos_router",
     "leptos_router_macro",
     "stylance",
     "tauri-sys",
+    "web-sys",
   ]
 
   [package.metadata.stylance]
-  output_file = "./style/bundle.css"
-  folders     = ["./src/"]
+  output_file  = "./style/bundle.scss"
+  folders      = ["./src/"]
+  scss_prelude = "@use './tokens/breakpoints' as bp; @use './mixins/focus';"
 
 [dependencies]
 bc-ipc                   = { workspace = true }
 console_error_panic_hook = "0.1"
+js-sys                   = "0.3"
 leptos                   = { version = "0.8", features = ["csr"] }
 leptos_router            = { version = "0.8", default-features = false }
 leptos_router_macro      = "0.8"
@@ -39,6 +43,7 @@ stylance                 = "0.8"
 tauri-sys                = { git = "https://github.com/JonasKruckenberg/tauri-sys", branch = "v2", features = [
   "core"
 ] }
+web-sys                  = { version = "0.3", features = ["DomRect", "Element"] }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

@@ -1,0 +1,3 @@
+/* Explicit cascade layer order. Declared before all rules so specificity is
+   predictable: utilities always beat components, components beat shell, etc. */
+@layer reset, tokens, base, shell, components, utilities;

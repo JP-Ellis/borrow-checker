@@ -1,0 +1,232 @@
+//! Account tree sidebar — full tree and collapsed dot-rail states.
+
+use bc_ipc::AccountNode;
+use bc_ipc::AccountType;
+use bc_ipc::Money;
+use bc_ipc::USD;
+use bc_ipc::currency_from_code;
+use leptos::prelude::*;
+use leptos_router::components::A;
+use stylance::import_style;
+
+import_style!(style, "sidebar.module.scss");
+
+/// Formats a balance as a compact display string.
+///
+/// Returns `"64k"`, `"1m"`, or the full monetary value for small amounts.
+///
+/// # Arguments
+///
+/// * `balance` - Balance (minor units + currency code).
+///
+/// # Returns
+///
+/// A compact string for sidebar balance display.
+#[must_use]
+#[inline]
+#[expect(
+    clippy::integer_division,
+    clippy::integer_division_remainder_used,
+    reason = "display approximation — dividing by 100_000 / 100_000_000 cannot overflow or panic"
+)]
+pub fn format_balance_short(balance: &Money) -> String {
+    let abs = balance.minor_units.unsigned_abs();
+    let prefix = if balance.minor_units < 0 { "−" } else { "" };
+    if abs >= 100_000_000 {
+        format!("{prefix}{}m", abs / 100_000_000)
+    } else if abs >= 100_000 {
+        format!("{prefix}{}k", abs / 100_000)
+    } else {
+        let currency = currency_from_code(&balance.currency_code).unwrap_or(&USD);
+        crate::components::num::format_amount(balance.minor_units, currency)
+    }
+}
+
+/// Account tree sidebar.
+///
+/// In expanded state renders the full account hierarchy with balances.
+/// In collapsed state renders a dot rail — one dot per account, active dot highlighted.
+///
+/// # Arguments
+///
+/// * `nodes` - All account nodes (flat slice; hierarchy via `parent_id`).
+/// * `selected_id` - Currently selected account ID (derived from route).
+/// * `collapsed` - Whether the sidebar is in dot-rail mode.
+#[component]
+pub fn AccountSidebar(
+    /// All account nodes.
+    nodes: &'static [AccountNode],
+    /// Currently selected account ID.
+    selected_id: Signal<Option<String>>,
+    /// Whether the sidebar is collapsed to dot-rail.
+    collapsed: ReadSignal<bool>,
+) -> impl IntoView {
+    let assets: Vec<&AccountNode> = nodes
+        .iter()
+        .filter(|n| matches!(n.account_type, AccountType::Asset) && n.parent_id.is_none())
+        .collect();
+    let liabilities: Vec<&AccountNode> = nodes
+        .iter()
+        .filter(|n| matches!(n.account_type, AccountType::Liability) && n.parent_id.is_none())
+        .collect();
+
+    view! {
+        <nav class=style::nav aria-label="account navigation">
+            <Show when=move || collapsed.get()>
+                <div class=style::rail>
+                    {nodes
+                        .iter()
+                        .map(|node| {
+                            let id = node.id.as_str();
+                            let is_active = Signal::derive(move || {
+                                selected_id.get().as_deref() == Some(id)
+                            });
+                            view! {
+                                <A
+                                    href=format!("/accounts/{id}")
+                                    attr:class=move || {
+                                        if is_active.get() {
+                                            format!("{} {}", style::dot, style::dot_active)
+                                        } else {
+                                            style::dot.to_owned()
+                                        }
+                                    }
+                                    attr:title=node.name.clone()
+                                    attr:aria-label=node.name.clone()
+                                >
+                                    ""
+                                </A>
+                            }
+                        })
+                        .collect::<Vec<_>>()}
+                </div>
+            </Show>
+
+            <Show when=move || !collapsed.get()>
+                <div class=style::tree>
+                    <SidebarSection
+                        label="assets"
+                        nodes=nodes
+                        roots=assets.clone()
+                        selected_id=selected_id
+                    />
+                    <SidebarSection
+                        label="liabilities"
+                        nodes=nodes
+                        roots=liabilities.clone()
+                        selected_id=selected_id
+                    />
+                </div>
+            </Show>
+        </nav>
+    }
+}
+
+/// Renders one section (assets or liabilities) of the account tree.
+#[component]
+fn SidebarSection(
+    /// Section label shown as eyebrow.
+    label: &'static str,
+    /// Full node slice (needed to find children).
+    nodes: &'static [AccountNode],
+    /// Top-level nodes for this section.
+    roots: Vec<&'static AccountNode>,
+    /// Currently selected account ID.
+    selected_id: Signal<Option<String>>,
+) -> impl IntoView {
+    view! {
+        <div class=style::section>
+            <div class=style::section_label>{label}</div>
+            {roots
+                .into_iter()
+                .map(|root| {
+                    let children: Vec<&AccountNode> = nodes
+                        .iter()
+                        .filter(|n| n.parent_id.as_deref() == Some(root.id.as_str()))
+                        .collect();
+                    view! {
+                        <SidebarRow node=root selected_id=selected_id indent=false />
+                        {children
+                            .into_iter()
+                            .map(|child| {
+                                view! {
+                                    <SidebarRow node=child selected_id=selected_id indent=true />
+                                }
+                            })
+                            .collect::<Vec<_>>()}
+                    }
+                })
+                .collect::<Vec<_>>()}
+        </div>
+    }
+}
+
+/// A single row in the account tree.
+#[component]
+fn SidebarRow(
+    /// Account node to render.
+    node: &'static AccountNode,
+    /// Currently selected account ID.
+    selected_id: Signal<Option<String>>,
+    /// Whether this row is indented (child account).
+    indent: bool,
+) -> impl IntoView {
+    let id = node.id.as_str();
+    let balance = format_balance_short(&node.balance);
+    let is_active = Signal::derive(move || selected_id.get().as_deref() == Some(id));
+    let balance_class = if node.balance.minor_units < 0 {
+        style::bal_neg
+    } else {
+        style::bal
+    };
+
+    view! {
+        <A
+            href=format!("/accounts/{id}")
+            attr:class=move || {
+                let mut cls = vec![style::row];
+                if indent {
+                    cls.push(style::row_indent);
+                }
+                if is_active.get() {
+                    cls.push(style::row_active);
+                }
+                cls.join(" ")
+            }
+        >
+            <span class=style::row_name>{node.name.clone()}</span>
+            <span class=balance_class>{balance}</span>
+        </A>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bc_ipc::Money;
+    use pretty_assertions::assert_eq;
+
+    use super::format_balance_short;
+
+    #[test]
+    fn balance_short_thousands() {
+        assert_eq!(format_balance_short(&Money::new(6_400_000, "USD")), "64k");
+    }
+
+    #[test]
+    fn balance_short_millions() {
+        assert_eq!(format_balance_short(&Money::new(120_000_000, "USD")), "1m");
+    }
+
+    #[test]
+    fn balance_short_negative() {
+        assert_eq!(format_balance_short(&Money::new(-244_000, "USD")), "−2k");
+    }
+
+    #[test]
+    fn balance_short_small() {
+        assert_eq!(format_balance_short(&Money::new(42_100, "USD")), "+$421.00");
+    }
+}
+
+#[cfg(debug_assertions)]
+pub mod qa;

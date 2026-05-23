@@ -6,6 +6,11 @@
 
 #![cfg_attr(
     target_arch = "wasm32",
+    // mod.rs is used throughout to collocate source with SCSS module files.
+    expect(
+        clippy::mod_module_files,
+        reason = "mod.rs collocates source with its SCSS module file"
+    ),
     // Leptos's #[component] macro generates a struct + IntoView impl whose
     // method matches the function name.
     expect(

@@ -1,0 +1,51 @@
+/* --stat-cols is set as an inline style by StatCards (JS-computed).        */
+/* flex-grow:1 means items on the last row expand to fill the available row  */
+/* rather than leaving a blank column slot (grid would leave a gap).         */
+.cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bc-space-4);
+}
+
+.card {
+  /* flex-basis drives wrapping: each card claims exactly 1/cols of the row. */
+  /* flex-grow:1 then distributes any leftover space, so the last row fills. */
+  flex: 1 1 calc(
+    (100% - (var(--stat-cols, 4) - 1) * var(--bc-space-4)) / var(--stat-cols, 4)
+  );
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+  padding: var(--bc-space-4) var(--bc-space-5);
+  background: var(--bc-bg);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-card);
+}
+
+.label {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-ink-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.value {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-section);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+}
+
+.sub {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-comment);
+}
+
+.good    { color: var(--bc-good); }
+.bad     { color: var(--bc-bad); }
+.warn    { color: var(--bc-warn); }
+.neutral { color: var(--bc-ink); }

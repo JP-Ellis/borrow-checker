@@ -5,21 +5,20 @@ pub mod palette;
 pub mod top_bar;
 
 use leptos::prelude::*;
+use leptos_router::components::Outlet;
 pub use top_bar::TopBar;
 
 /// Full-app wrapper that renders [`TopBar`] above the routed content area.
 ///
-/// Every route is wrapped in this component — nav and search are always
-/// visible.
+/// Used as a Leptos Router layout route — child routes render via [`Outlet`].
 #[component]
-pub fn ConsoleShell(
-    /// Routed page content rendered in the main content area.
-    children: Children,
-) -> impl IntoView {
+pub fn ConsoleShell() -> impl IntoView {
     view! {
         <div class="console-shell">
             <TopBar />
-            <main class="console-main">{children()}</main>
+            <main class="console-main">
+                <Outlet />
+            </main>
         </div>
     }
 }
