@@ -17,12 +17,14 @@ publish = false
   ignored = ["bc-models", "serde", "tauri-build"]
 
 [dependencies]
-bc-config = { workspace = true }
-bc-core   = { workspace = true }
-bc-ipc    = { workspace = true }
-bc-models = { workspace = true }
-serde     = { workspace = true }
-tauri     = { version = "2", features = ["config-toml", "wry"] }
+bc-config    = { workspace = true }
+bc-core      = { workspace = true }
+bc-ipc       = { workspace = true }
+bc-models    = { workspace = true }
+jiff         = { workspace = true }
+rust_decimal = { workspace = true }
+serde        = { workspace = true }
+tauri        = { version = "2", features = ["config-toml", "wry"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = ["config-toml"] }
