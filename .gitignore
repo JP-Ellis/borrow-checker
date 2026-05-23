@@ -231,5 +231,5 @@ Temporary Items
 ## Project-specific overrides
 ################################################################################
 
-# Stylance-generated CSS bundle (rebuilt by build.rs on each cargo build)
-/crates/bc-ui/style/
+# Stylance-generated SCSS bundle (rebuilt by build.rs on each cargo build)
+/crates/bc-ui/style/bundle.scss

@@ -22,6 +22,7 @@ env:
   FORCE_COLOR: '1'
   NEXTEST_PROFILE: ci
   MISE_CARGO_BINSTALL_ONLY: 'true'
+  MISE_ENV: ci
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -120,16 +121,38 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       # Tauri system deps — https://v2.tauri.app/start/prerequisites/#linux
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev
-          libayatana-appindicator3-dev librsvg2-dev
-        if: runner.os == 'Linux'
+      - if: runner.os == 'Linux'
+        run: |
+          set -xeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev
+
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v4.0.1
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        if: matrix.toolchain == 'stable' && runner.os != 'Linux'
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/web/aube-lock.yaml') }}
       - run: rustup toolchain install ${{ matrix.toolchain }} --no-self-update
         if: matrix.toolchain != 'stable'
       - run: mise run test
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+      - name: Run E2E web tests (with snapshot assertions)
+        if: matrix.toolchain == 'stable' && runner.os == 'Linux'
+        run: mise run //e2e/web:container
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run E2E web tests (without snapshot assertions)
+        if: matrix.toolchain == 'stable' && runner.os != 'Linux'
+        run: mise run //e2e/web:test
 
   coverage:
     name: Coverage
