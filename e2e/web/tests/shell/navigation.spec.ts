@@ -26,6 +26,7 @@ test.describe('Shell navigation', () => {
     for (const { name } of ROUTES) {
       await expect(nav.getByRole('link', { name })).toBeVisible();
     }
+
   });
 
   test('clicking a nav link navigates correctly', async ({ page }) => {
@@ -35,6 +36,7 @@ test.describe('Shell navigation', () => {
     await nav.getByRole('link', { name: 'accounts' }).click();
     await expect(page).toHaveURL(/\/accounts/);
     await expect(page.locator('main')).toBeVisible();
+
   });
 
   test('direct navigation to each route renders a page (no fallback)', async ({ page }) => {
