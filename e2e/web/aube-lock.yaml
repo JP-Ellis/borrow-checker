@@ -7,7 +7,7 @@ settings:
 
 time:
   '@playwright/test@1.60.0': 2026-05-11T19:09:45.394000Z
-  '@types/node@24.12.3': 2026-05-07T22:21:56.254000Z
+  '@types/node@24.12.4': 2026-05-11T22:25:29Z
   apca-w3@0.1.9: 2022-07-04T09:07:03.397000Z
 
 importers:
@@ -18,10 +18,10 @@ importers:
         specifier: 1.60.0
         version: 1.60.0
       '@types/node':
-        specifier: ^24.0.0
-        version: 24.12.3
+        specifier: 24.12.4
+        version: 24.12.4
       apca-w3:
-        specifier: ^0.1.9
+        specifier: 0.1.9
         version: 0.1.9
 
 packages:
@@ -31,8 +31,8 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  '@types/node@24.12.3':
-    resolution: {integrity: sha512-8oljBDGun9cIsZRJR6fkihn0TSXJI0UDOOhncYaERq6M0JMDoPLxyscwruJcb4GKS6dvK/d8xebYBg27h/duaQ==}
+  '@types/node@24.12.4':
+    resolution: {integrity: sha512-GUUEShf+PBCGW2KaXwcIt3Yk+e3pkKwWKb9GSyM9WQVE+ep2jzmHdGsHzu4wgcZy5fN9FBdVzjpBQsYlpfpgLA==}
 
   apca-w3@0.1.9:
     resolution: {integrity: sha512-Zrf6AeBeQjNe/fxK7U1jCo5zfdjDl6T4/kdw5Xlky3G7u+EJTZkyItjMYQGtwf9pkftsINxcYyOpuLkzKf1ITQ==}
@@ -65,7 +65,7 @@ snapshots:
     dependencies:
       playwright: 1.60.0
 
-  '@types/node@24.12.3':
+  '@types/node@24.12.4':
     dependencies:
       undici-types: 7.16.0
 
