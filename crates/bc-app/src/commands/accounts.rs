@@ -39,12 +39,16 @@ fn map_account_type(t: bc_models::AccountType) -> bc_ipc::AccountType {
 
 /// Maps a [`bc_models::TransactionStatus`] to the IPC [`bc_ipc::TxStatus`].
 #[inline]
+#[expect(
+    clippy::match_same_arms,
+    reason = "both bc_models::TransactionStatus and bc_ipc::TxStatus are #[non_exhaustive]; \
+              Voided is kept explicit even though the wildcard fallback also maps to Unreconciled"
+)]
 fn map_tx_status(s: bc_models::TransactionStatus) -> bc_ipc::TxStatus {
     match s {
         bc_models::TransactionStatus::Cleared => bc_ipc::TxStatus::Cleared,
-        bc_models::TransactionStatus::Pending | bc_models::TransactionStatus::Voided => {
-            bc_ipc::TxStatus::Pending
-        }
+        bc_models::TransactionStatus::Pending => bc_ipc::TxStatus::Pending,
+        bc_models::TransactionStatus::Voided => bc_ipc::TxStatus::Unreconciled,
         _ => bc_ipc::TxStatus::Unreconciled,
     }
 }
@@ -82,6 +86,7 @@ fn amount_to_money(amount: &bc_models::Amount) -> bc_ipc::Money {
         reason = "Decimal multiplication by a power-of-ten scale factor is bounded by the IPC contract and safe in practice"
     )]
     let minor = (amount.value() * rust_decimal::Decimal::from(10_u64.pow(decimals)))
+        .round() // half-up rounding before truncation
         .to_i64()
         .unwrap_or(0);
     bc_ipc::Money::new(minor, code)
@@ -112,7 +117,7 @@ fn account_to_node(account: &bc_models::Account) -> bc_ipc::AccountNode {
         account.id().to_string(),
         account.name(),
         None::<&str>,
-        bc_ipc::Money::new(0, "AUD"),
+        bc_ipc::Money::new(0, "AUD"), // TODO(ipc): compute via BalanceEngine
         account.parent_id().map(ToString::to_string),
         map_account_type(account.account_type()),
         vec![],
@@ -125,7 +130,7 @@ fn posting_to_ipc(posting: &bc_models::Posting) -> bc_ipc::Posting {
     let account_id = posting.account_id().to_string();
     bc_ipc::Posting::new(
         account_id.clone(),
-        account_id,
+        account_id, // TODO(ipc): resolve display path via AccountService
         amount_to_money(posting.amount()),
         posting.memo(),
     )
@@ -140,7 +145,7 @@ fn transaction_to_ipc(tx: &bc_models::Transaction) -> bc_ipc::Transaction {
         tx.date().to_string(),
         tx.payee().unwrap_or_default(),
         map_tx_status(tx.status()),
-        vec![],
+        vec![], // TODO(ipc): resolve tag paths via TagService
         postings,
         vec![],
     )
