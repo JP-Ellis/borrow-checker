@@ -1,4 +1,4 @@
-# Native E2E Suite (WebdriverIO + tauri-driver)
+# Desktop E2E Suite (WebdriverIO + tauri-driver)
 
 Tests the full Tauri desktop application. Requires a compiled debug binary and
 the platform's WebDriver server.
@@ -28,7 +28,7 @@ Follow the install instructions in the tauri-webdriver repository. This is **not
 
 ```sh
 # Run all tests (builds the debug binary automatically via mise deps)
-mise run test:e2e:native
+mise run test:e2e:desktop
 
 # Or run directly from this directory (same effect)
 mise run test

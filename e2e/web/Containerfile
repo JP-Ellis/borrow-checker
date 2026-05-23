@@ -1,0 +1,82 @@
+# shellcheck shell=bash
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# hadolint shell=bash
+RUN <<EOT bash
+    set -euo pipefail -x
+    apt-get update
+    apt-get -y --no-install-recommends install \
+        build-essential \
+        ca-certificates \
+        curl \
+        git
+    rm -rf /var/lib/apt/lists/*
+EOT
+
+ARG MISE_VERSION
+# hadolint shell=bash
+RUN --mount=type=secret,id=MISE_GITHUB_TOKEN \
+  --mount=type=secret,id=GITHUB_TOKEN \
+  <<EOT bash
+    set -euo pipefail
+    MISE_GITHUB_TOKEN="$(cat /run/secrets/MISE_GITHUB_TOKEN 2>/dev/null \
+      || cat /run/secrets/GITHUB_TOKEN 2>/dev/null \
+      || echo '')"
+    export MISE_GITHUB_TOKEN
+    export MISE_INSTALL_PATH="/usr/local/bin/mise"
+    [ -n "${MISE_VERSION:-}" ] && export MISE_VERSION
+    set -x
+    curl https://mise.run | sh
+EOT
+
+ENV PATH="/root/.local/share/mise/shims:/root/.local/bin:${PATH}"
+
+ARG NODE_VERSION
+ARG BINSTALL_VERSION
+ARG TRUNK_VERSION
+ARG STYLANCE_VERSION
+ARG AUBE_VERSION
+# Install Rust from the project's mise.toml so the version identifier ("stable"),
+# components (llvm-tools, rustfmt, clippy), and wasm targets match exactly what
+# the root config expects at runtime. Other tools are pinned via build args.
+COPY mise.toml /build/mise.toml
+# hadolint shell=bash
+RUN --mount=type=secret,id=MISE_GITHUB_TOKEN \
+  --mount=type=secret,id=GITHUB_TOKEN \
+  <<EOT bash
+    set -euo pipefail
+    MISE_GITHUB_TOKEN="$(cat /run/secrets/MISE_GITHUB_TOKEN 2>/dev/null \
+      || cat /run/secrets/GITHUB_TOKEN 2>/dev/null \
+      || echo '')"
+    export MISE_GITHUB_TOKEN MISE_CARGO_BINSTALL_ONLY=true
+    set -x
+    cd /build && mise trust && mise install core:rust
+    mise use -g "core:node@${NODE_VERSION}"
+    mise use -g "aqua:cargo-bins/cargo-binstall@${BINSTALL_VERSION}"
+    mise use -g "cargo:trunk@${TRUNK_VERSION}"
+    mise use -g "cargo:stylance-cli@${STYLANCE_VERSION}"
+    mise use -g "github:endevco/aube@${AUBE_VERSION}"
+    mise activate > /etc/profile.d/mise.sh
+EOT
+
+# Pre-install Playwright Chromium so the first container run doesn't spend
+# time downloading the ~180 MB browser binary. aube and aubx are available
+# via mise shims from the step above.
+COPY e2e/web/package.json e2e/web/aube-lock.yaml e2e/web/playwright.config.ts /build/e2e/web/
+# hadolint shell=bash
+RUN <<EOT bash
+    set -euo pipefail -x
+    aube -C /build/e2e/web install
+    aubx -C /build/e2e/web playwright install --with-deps chromium
+    rm -rf /var/lib/apt/lists/*
+EOT
+
+# CI=true: mise auto-trusts mounted config files; sets 1 worker + 2 retries in Playwright.
+# MISE_AUTO_INSTALL=false: prevent mise from compiling tools listed in the root
+# mise.toml (cargo-hack, tauri-cli, etc.) that are not needed for web E2E.
+ENV CI=true \
+  MISE_AUTO_INSTALL=false
+
+WORKDIR /repo
