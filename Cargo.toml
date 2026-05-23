@@ -56,9 +56,9 @@ members  = [
   ] }
   jiff                  = { version = "0.2", features = ["serde"] }
   mti                   = { version = "1.1", features = ["serde"] }
-  opentelemetry         = "0.31"
-  opentelemetry-otlp    = "0.31"
-  opentelemetry_sdk     = "0.31"
+  opentelemetry         = "0.32"
+  opentelemetry-otlp    = "0.32"
+  opentelemetry_sdk     = "0.32"
   owo-colors            = "4"
   pretty_assertions     = { version = "1", features = ["unstable"] }
   proc-macro2           = "1"
