@@ -2,7 +2,7 @@
 
 use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
-use bc_ipc::Money;
+use bc_ipc::Amount;
 use bc_ipc::USD;
 use bc_ipc::currency_from_code;
 use leptos::prelude::*;
@@ -29,7 +29,7 @@ import_style!(style, "sidebar.module.scss");
     clippy::integer_division_remainder_used,
     reason = "display approximation — dividing by 100_000 / 100_000_000 cannot overflow or panic"
 )]
-pub fn format_balance_short(balance: &Money) -> String {
+pub fn format_balance_short(balance: &Amount) -> String {
     let abs = balance.minor_units.unsigned_abs();
     let prefix = if balance.minor_units < 0 { "−" } else { "" };
     if abs >= 100_000_000 {
@@ -222,29 +222,32 @@ fn SidebarRow(
 
 #[cfg(test)]
 mod tests {
-    use bc_ipc::Money;
+    use bc_ipc::Amount;
     use pretty_assertions::assert_eq;
 
     use super::format_balance_short;
 
     #[test]
     fn balance_short_thousands() {
-        assert_eq!(format_balance_short(&Money::new(6_400_000, "USD")), "64k");
+        assert_eq!(format_balance_short(&Amount::new(6_400_000, "USD")), "64k");
     }
 
     #[test]
     fn balance_short_millions() {
-        assert_eq!(format_balance_short(&Money::new(120_000_000, "USD")), "1m");
+        assert_eq!(format_balance_short(&Amount::new(120_000_000, "USD")), "1m");
     }
 
     #[test]
     fn balance_short_negative() {
-        assert_eq!(format_balance_short(&Money::new(-244_000, "USD")), "−2k");
+        assert_eq!(format_balance_short(&Amount::new(-244_000, "USD")), "−2k");
     }
 
     #[test]
     fn balance_short_small() {
-        assert_eq!(format_balance_short(&Money::new(42_100, "USD")), "+$421.00");
+        assert_eq!(
+            format_balance_short(&Amount::new(42_100, "USD")),
+            "+$421.00"
+        );
     }
 }
 

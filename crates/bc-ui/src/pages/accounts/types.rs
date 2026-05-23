@@ -3,7 +3,7 @@
 //! Domain types (`AccountNode`, `Transaction`, etc.) live in `bc_ipc`.
 //! This module retains display-layer helpers only.
 
-use bc_ipc::Money;
+use bc_ipc::Amount;
 use bc_ipc::Transaction;
 
 // MARK: Pure helpers
@@ -22,14 +22,14 @@ pub fn payee_initial(payee: &str) -> char {
 
 /// Returns the posting for `account_id` within `tx`.
 ///
-/// Returns a zero-AUD `Money` when the account has no posting.
+/// Returns a zero-AUD `Amount` when the account has no posting.
 #[must_use]
 #[inline]
-pub fn headline_amount(tx: &Transaction, account_id: &str) -> Money {
+pub fn headline_amount(tx: &Transaction, account_id: &str) -> Amount {
     tx.postings
         .iter()
         .find(|p| p.account_id == account_id)
-        .map_or_else(|| Money::new(0, "AUD"), |p| p.amount.clone())
+        .map_or_else(|| Amount::new(0, "AUD"), |p| p.amount.clone())
 }
 
 /// Formats an ISO-8601 date string (`"2026-04-30"`) for display.
@@ -85,8 +85,8 @@ pub fn format_date_display(iso: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use bc_ipc::Amount;
     use bc_ipc::AuditEntry;
-    use bc_ipc::Money;
     use bc_ipc::Posting;
     use bc_ipc::Transaction;
     use bc_ipc::TxStatus;
@@ -108,13 +108,13 @@ mod tests {
                     Posting::new(
                         "cb-smart-access",
                         "Assets :: Smart Access",
-                        Money::new(-8_420, "AUD"),
+                        Amount::new(-8_420, "AUD"),
                         None::<&str>,
                     ),
                     Posting::new(
                         "groceries",
                         "Expenses :: Groceries",
-                        Money::new(8_420, "AUD"),
+                        Amount::new(8_420, "AUD"),
                         None::<&str>,
                     ),
                 ],
@@ -137,25 +137,25 @@ mod tests {
                     Posting::new(
                         "income-salary",
                         "Income :: Salary",
-                        Money::new(-846_154, "AUD"),
+                        Amount::new(-846_154, "AUD"),
                         Some("gross pay"),
                     ),
                     Posting::new(
                         "liabilities-tax",
                         "Liabilities :: Tax Withheld",
-                        Money::new(327_692, "AUD"),
+                        Amount::new(327_692, "AUD"),
                         Some("PAYG withholding"),
                     ),
                     Posting::new(
                         "assets-super",
                         "Assets :: Super :: Employer",
-                        Money::new(90_407, "AUD"),
+                        Amount::new(90_407, "AUD"),
                         Some("11.5% SGC"),
                     ),
                     Posting::new(
                         "cb-smart-access",
                         "Assets :: Smart Access",
-                        Money::new(428_055, "AUD"),
+                        Amount::new(428_055, "AUD"),
                         Some("take-home"),
                     ),
                 ],

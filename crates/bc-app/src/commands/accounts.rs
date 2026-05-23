@@ -17,53 +17,7 @@ use tauri::State;
 
 use crate::AppState;
 
-// MARK: Mapping helpers
-
-/// Maps a [`bc_models::AccountType`] to the IPC [`bc_ipc::AccountType`].
-#[inline]
-#[expect(
-    clippy::match_same_arms,
-    reason = "both bc_models::AccountType and bc_ipc::AccountType are #[non_exhaustive]; \
-              the wildcard fallback to Asset is intentional for future unknown variants"
-)]
-fn map_account_type(t: bc_models::AccountType) -> bc_ipc::AccountType {
-    match t {
-        bc_models::AccountType::Asset => bc_ipc::AccountType::Asset,
-        bc_models::AccountType::Liability => bc_ipc::AccountType::Liability,
-        bc_models::AccountType::Equity => bc_ipc::AccountType::Equity,
-        bc_models::AccountType::Income => bc_ipc::AccountType::Income,
-        bc_models::AccountType::Expense => bc_ipc::AccountType::Expense,
-        _ => bc_ipc::AccountType::Asset,
-    }
-}
-
-/// Maps a [`bc_models::TransactionStatus`] to the IPC [`bc_ipc::TxStatus`].
-#[inline]
-#[expect(
-    clippy::match_same_arms,
-    reason = "both bc_models::TransactionStatus and bc_ipc::TxStatus are #[non_exhaustive]; \
-              Voided is kept explicit even though the wildcard fallback also maps to Unreconciled"
-)]
-fn map_tx_status(s: bc_models::TransactionStatus) -> bc_ipc::TxStatus {
-    match s {
-        bc_models::TransactionStatus::Cleared => bc_ipc::TxStatus::Cleared,
-        bc_models::TransactionStatus::Pending => bc_ipc::TxStatus::Pending,
-        bc_models::TransactionStatus::Voided => bc_ipc::TxStatus::Unreconciled,
-        _ => bc_ipc::TxStatus::Unreconciled,
-    }
-}
-
-/// Maps an IPC [`bc_ipc::TxStatus`] to a [`bc_models::TransactionStatus`].
-#[inline]
-fn map_ipc_status(s: bc_ipc::TxStatus) -> bc_models::TransactionStatus {
-    match s {
-        bc_ipc::TxStatus::Cleared => bc_models::TransactionStatus::Cleared,
-        bc_ipc::TxStatus::Pending | bc_ipc::TxStatus::Unreconciled => {
-            bc_models::TransactionStatus::Pending
-        }
-        _ => bc_models::TransactionStatus::Pending,
-    }
-}
+// MARK: Model → IPC conversions
 
 /// Returns the number of minor-unit decimal places for `currency_code`.
 ///
@@ -73,82 +27,178 @@ fn currency_decimals(currency_code: &str) -> u32 {
     bc_ipc::currency_from_code(currency_code).map_or(2, |c| u32::from(c.decimals))
 }
 
-/// Converts a [`bc_models::Amount`] to an IPC [`bc_ipc::Money`].
+/// Conversions from `bc_models` types to `bc_ipc` types and back.
 ///
-/// Multiplies the decimal value by `10 ^ decimals` to produce minor units.
-/// If the value cannot be represented as `i64`, it is clamped to `0`.
-#[inline]
-fn amount_to_money(amount: &bc_models::Amount) -> bc_ipc::Money {
-    let code = amount.commodity().as_str();
-    let decimals = currency_decimals(code);
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "Decimal multiplication by a power-of-ten scale factor is bounded by the IPC contract and safe in practice"
-    )]
-    let minor = (amount.value() * rust_decimal::Decimal::from(10_u64.pow(decimals)))
-        .round() // half-up rounding before truncation
-        .to_i64()
-        .unwrap_or(0);
-    bc_ipc::Money::new(minor, code)
+/// These cannot use the standard [`From`] trait because both sides are
+/// defined in external crates (orphan rule). The extension-trait pattern is
+/// the standard Rust alternative for exactly this situation.
+trait IntoIpc {
+    /// The IPC counterpart type.
+    type Output;
+    /// Convert `self` into its IPC representation.
+    fn into_ipc(self) -> Self::Output;
 }
 
-/// Converts an IPC [`bc_ipc::Money`] to a [`bc_models::Amount`].
+/// Conversions from `bc_ipc` types back to `bc_models` domain types.
 ///
-/// Divides `minor_units` by `10 ^ decimals` to recover the decimal value.
-#[inline]
-fn money_to_amount(money: &bc_ipc::Money) -> bc_models::Amount {
-    let decimals = currency_decimals(&money.currency_code);
+/// The inverse of [`IntoIpc`]. Same orphan-rule rationale applies.
+trait IntoModel {
+    /// The domain model counterpart type.
+    type Output;
+    /// Convert `self` into its domain model representation.
+    fn into_model(self) -> Self::Output;
+}
+
+impl IntoIpc for &bc_models::Amount {
+    type Output = bc_ipc::Amount;
+
+    /// Converts a [`bc_models::Amount`] to an IPC [`bc_ipc::Amount`].
+    ///
+    /// Multiplies the decimal value by `10 ^ decimals` to produce minor units,
+    /// using midpoint-nearest-even rounding. If the value cannot be represented
+    /// as `i64`, it is clamped to `0`.
+    #[inline]
+    fn into_ipc(self) -> bc_ipc::Amount {
+        let code = self.commodity().as_str();
+        let decimals = currency_decimals(code);
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "Decimal multiplication by a power-of-ten scale factor is bounded by the IPC contract and safe in practice"
+        )]
+        let minor = (self.value() * rust_decimal::Decimal::from(10_u64.pow(decimals)))
+            .round() // midpoint-nearest-even (banker's rounding)
+            .to_i64()
+            .unwrap_or(0);
+        bc_ipc::Amount::new(minor, code)
+    }
+}
+
+impl IntoModel for &bc_ipc::Amount {
+    type Output = bc_models::Amount;
+
+    /// Converts an IPC [`bc_ipc::Amount`] to a [`bc_models::Amount`].
+    ///
+    /// Divides `minor_units` by `10 ^ decimals` to recover the decimal value.
+    #[inline]
+    fn into_model(self) -> bc_models::Amount {
+        let decimals = currency_decimals(&self.currency_code);
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "Decimal division by a power-of-ten scale factor is bounded by the IPC contract and safe in practice"
+        )]
+        let value = rust_decimal::Decimal::from(self.minor_units)
+            / rust_decimal::Decimal::from(10_u64.pow(decimals));
+        bc_models::Amount::new(
+            value,
+            bc_models::CommodityCode::new(self.currency_code.clone()),
+        )
+    }
+}
+
+impl IntoIpc for bc_models::AccountType {
+    type Output = bc_ipc::AccountType;
+
+    #[inline]
     #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "Decimal division by a power-of-ten scale factor is bounded by the IPC contract and safe in practice"
+        clippy::match_same_arms,
+        reason = "both bc_models::AccountType and bc_ipc::AccountType are #[non_exhaustive]; \
+                  the wildcard fallback to Asset is intentional for future unknown variants"
     )]
-    let value = rust_decimal::Decimal::from(money.minor_units)
-        / rust_decimal::Decimal::from(10_u64.pow(decimals));
-    bc_models::Amount::new(
-        value,
-        bc_models::CommodityCode::new(money.currency_code.clone()),
-    )
+    fn into_ipc(self) -> bc_ipc::AccountType {
+        match self {
+            bc_models::AccountType::Asset => bc_ipc::AccountType::Asset,
+            bc_models::AccountType::Liability => bc_ipc::AccountType::Liability,
+            bc_models::AccountType::Equity => bc_ipc::AccountType::Equity,
+            bc_models::AccountType::Income => bc_ipc::AccountType::Income,
+            bc_models::AccountType::Expense => bc_ipc::AccountType::Expense,
+            _ => bc_ipc::AccountType::Asset,
+        }
+    }
 }
 
-/// Converts a [`bc_models::Account`] to an IPC [`bc_ipc::AccountNode`].
-#[inline]
-fn account_to_node(account: &bc_models::Account) -> bc_ipc::AccountNode {
-    bc_ipc::AccountNode::new(
-        account.id().to_string(),
-        account.name(),
-        None::<&str>,
-        bc_ipc::Money::new(0, "AUD"), // TODO(ipc): compute via BalanceEngine
-        account.parent_id().map(ToString::to_string),
-        map_account_type(account.account_type()),
-        vec![],
-    )
+impl IntoIpc for bc_models::TransactionStatus {
+    type Output = bc_ipc::TxStatus;
+
+    #[inline]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "both bc_models::TransactionStatus and bc_ipc::TxStatus are #[non_exhaustive]; \
+                  Voided is kept explicit even though the wildcard fallback also maps to Unreconciled"
+    )]
+    fn into_ipc(self) -> bc_ipc::TxStatus {
+        match self {
+            bc_models::TransactionStatus::Cleared => bc_ipc::TxStatus::Cleared,
+            bc_models::TransactionStatus::Pending => bc_ipc::TxStatus::Pending,
+            bc_models::TransactionStatus::Voided => bc_ipc::TxStatus::Unreconciled,
+            _ => bc_ipc::TxStatus::Unreconciled,
+        }
+    }
 }
 
-/// Converts a [`bc_models::Posting`] to an IPC [`bc_ipc::Posting`].
-#[inline]
-fn posting_to_ipc(posting: &bc_models::Posting) -> bc_ipc::Posting {
-    let account_id = posting.account_id().to_string();
-    bc_ipc::Posting::new(
-        account_id.clone(),
-        account_id, // TODO(ipc): resolve display path via AccountService
-        amount_to_money(posting.amount()),
-        posting.memo(),
-    )
+impl IntoModel for bc_ipc::TxStatus {
+    type Output = bc_models::TransactionStatus;
+
+    #[inline]
+    fn into_model(self) -> bc_models::TransactionStatus {
+        match self {
+            bc_ipc::TxStatus::Cleared => bc_models::TransactionStatus::Cleared,
+            bc_ipc::TxStatus::Pending | bc_ipc::TxStatus::Unreconciled => {
+                bc_models::TransactionStatus::Pending
+            }
+            _ => bc_models::TransactionStatus::Pending,
+        }
+    }
 }
 
-/// Converts a [`bc_models::Transaction`] to an IPC [`bc_ipc::Transaction`].
-#[inline]
-fn transaction_to_ipc(tx: &bc_models::Transaction) -> bc_ipc::Transaction {
-    let postings: Vec<bc_ipc::Posting> = tx.postings().iter().map(posting_to_ipc).collect();
-    bc_ipc::Transaction::new(
-        tx.id().to_string(),
-        tx.date().to_string(),
-        tx.payee().unwrap_or_default(),
-        map_tx_status(tx.status()),
-        vec![], // TODO(ipc): resolve tag paths via TagService
-        postings,
-        vec![],
-    )
+impl IntoIpc for &bc_models::Account {
+    type Output = bc_ipc::AccountNode;
+
+    #[inline]
+    fn into_ipc(self) -> bc_ipc::AccountNode {
+        bc_ipc::AccountNode::new(
+            self.id().to_string(),
+            self.name(),
+            None::<&str>,
+            bc_ipc::Amount::new(0, "AUD"), // TODO(ipc): compute via BalanceEngine
+            self.parent_id().map(ToString::to_string),
+            self.account_type().into_ipc(),
+            vec![],
+        )
+    }
+}
+
+impl IntoIpc for &bc_models::Posting {
+    type Output = bc_ipc::Posting;
+
+    #[inline]
+    fn into_ipc(self) -> bc_ipc::Posting {
+        let account_id = self.account_id().to_string();
+        bc_ipc::Posting::new(
+            account_id.clone(),
+            account_id, // TODO(ipc): resolve display path via AccountService
+            self.amount().into_ipc(),
+            self.memo(),
+        )
+    }
+}
+
+impl IntoIpc for &bc_models::Transaction {
+    type Output = bc_ipc::Transaction;
+
+    #[inline]
+    fn into_ipc(self) -> bc_ipc::Transaction {
+        let postings: Vec<bc_ipc::Posting> =
+            self.postings().iter().map(IntoIpc::into_ipc).collect();
+        bc_ipc::Transaction::new(
+            self.id().to_string(),
+            self.date().to_string(),
+            self.payee().unwrap_or_default(),
+            self.status().into_ipc(),
+            vec![], // TODO(ipc): resolve tag paths via TagService
+            postings,
+            vec![],
+        )
+    }
 }
 
 // MARK: Command handlers
@@ -171,7 +221,7 @@ pub async fn list_accounts(
         .list_active()
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    Ok(accounts.iter().map(account_to_node).collect())
+    Ok(accounts.iter().map(IntoIpc::into_ipc).collect())
 }
 
 /// List transactions for the given account.
@@ -201,7 +251,7 @@ pub async fn list_transactions(
         .list_for_account(&id)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    Ok(txs.map(|tx| transaction_to_ipc(&tx)).collect())
+    Ok(txs.map(|tx| tx.into_ipc()).collect())
 }
 
 /// Create a new transaction.
@@ -229,7 +279,7 @@ pub async fn create_transaction(
         .parse::<jiff::civil::Date>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid date '{}': {e}", tx.date)))?;
 
-    let status = map_ipc_status(tx.status);
+    let status = tx.status.into_model();
 
     let mut postings = Vec::with_capacity(tx.postings.len());
     for p in &tx.postings {
@@ -239,7 +289,7 @@ pub async fn create_transaction(
         let posting = bc_models::Posting::builder()
             .id(bc_models::PostingId::new())
             .account_id(account_id)
-            .amount(money_to_amount(&p.amount))
+            .amount(p.amount.into_model())
             .maybe_memo(p.note.clone())
             .build();
         postings.push(posting);

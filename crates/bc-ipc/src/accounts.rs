@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::money::Money;
+use crate::money::Amount;
 
 /// The five canonical account types in double-entry accounting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,9 +15,9 @@ pub enum AccountType {
     Liability,
     /// Net assets / retained earnings.
     Equity,
-    /// Money flowing into the entity.
+    /// Amount flowing into the entity.
     Income,
-    /// Money flowing out of the entity.
+    /// Amount flowing out of the entity.
     Expense,
 }
 
@@ -32,7 +32,7 @@ pub struct AccountNode {
     /// Last-four mask, e.g. `"4421"`. `None` for non-bank accounts.
     pub mask: Option<String>,
     /// Account balance (negative = liability).
-    pub balance: Money,
+    pub balance: Amount,
     /// `Some(parent_id)` for child accounts, `None` for top-level groups.
     pub parent_id: Option<String>,
     /// Account type (asset, liability, equity, income, or expense).
@@ -59,7 +59,7 @@ impl AccountNode {
         id: impl Into<String>,
         name: impl Into<String>,
         mask: Option<impl Into<String>>,
-        balance: Money,
+        balance: Amount,
         parent_id: Option<impl Into<String>>,
         account_type: AccountType,
         tags: Vec<String>,
@@ -110,7 +110,7 @@ pub struct Posting {
     /// Full account path for display, e.g. `"Assets :: Smart Access"`.
     pub account_path: String,
     /// Posting amount. Positive = credit; negative = debit.
-    pub amount: Money,
+    pub amount: Amount,
     /// Optional inline comment shown in the TOML view.
     pub note: Option<String>,
 }
@@ -129,7 +129,7 @@ impl Posting {
     pub fn new(
         account_id: impl Into<String>,
         account_path: impl Into<String>,
-        amount: Money,
+        amount: Amount,
         note: Option<impl Into<String>>,
     ) -> Self {
         Self {
@@ -241,7 +241,7 @@ pub struct NewPosting {
     /// Account ID — must reference an existing active account.
     pub account_id: String,
     /// Posting amount. Positive = credit; negative = debit.
-    pub amount: Money,
+    pub amount: Amount,
     /// Optional inline note.
     pub note: Option<String>,
 }
@@ -258,7 +258,7 @@ impl NewPosting {
     #[inline]
     pub fn new(
         account_id: impl Into<String>,
-        amount: Money,
+        amount: Amount,
         note: Option<impl Into<String>>,
     ) -> Self {
         Self {
@@ -321,11 +321,11 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::Money;
+    use crate::Amount;
 
     #[test]
     fn new_posting_constructor_roundtrip() {
-        let p = NewPosting::new("acc-1", Money::new(-1_000, "AUD"), Some("test note"));
+        let p = NewPosting::new("acc-1", Amount::new(-1_000, "AUD"), Some("test note"));
         assert_eq!(p.account_id, "acc-1");
         assert_eq!(p.amount.minor_units, -1_000);
         assert_eq!(p.note.as_deref(), Some("test note"));
@@ -339,8 +339,8 @@ mod tests {
             TxStatus::Pending,
             vec![],
             vec![
-                NewPosting::new("acc-a", Money::new(-500, "AUD"), None::<&str>),
-                NewPosting::new("acc-b", Money::new(500, "AUD"), None::<&str>),
+                NewPosting::new("acc-a", Amount::new(-500, "AUD"), None::<&str>),
+                NewPosting::new("acc-b", Amount::new(500, "AUD"), None::<&str>),
             ],
         );
         let json = serde_json::to_string(&tx).expect("serialises");

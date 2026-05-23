@@ -8,7 +8,7 @@
     reason = "items unused until connected in later tasks; audited at end of milestone"
 )]
 
-use bc_ipc::Money;
+use bc_ipc::Amount;
 use bc_ipc::USD;
 use bc_ipc::currency_from_code;
 use leptos::prelude::*;
@@ -174,7 +174,7 @@ pub fn TomlKv(
 #[expect(clippy::needless_pass_by_value, reason = "Leptos requires owned props")]
 pub fn TomlPosting(
     /// Monetary amount (minor units + currency code).
-    amount: Money,
+    amount: Amount,
     /// Optional inline comment shown above the posting row.
     #[prop(optional, into)]
     note: Option<String>,

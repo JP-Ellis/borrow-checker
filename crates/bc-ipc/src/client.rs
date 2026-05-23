@@ -21,9 +21,14 @@ use crate::commands;
 /// Empty args struct for commands that take no parameters.
 ///
 /// Tauri 2 IPC requires args to serialise as a JSON Object (`{}`), not `null`.
-/// Passing `()` serialises to `null` which Tauri rejects at the boundary.
+/// A unit struct (`struct NoArgs;`) serialises to `null`; an empty record
+/// struct (`struct NoArgs {}`) serialises to `{}` as required.
 #[derive(Serialize)]
-struct NoArgs;
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "empty braces are intentional: serde serialises `struct S {}` as `{}` but `struct S;` as `null`"
+)]
+struct NoArgs {}
 
 /// Argument struct for [`list_transactions`]. Must match the Tauri command param name.
 #[derive(Serialize)]
@@ -46,7 +51,7 @@ struct CreateTransactionArgs<'a> {
 /// Returns [`BcError::Internal`] if the Tauri invoke fails.
 #[inline]
 pub async fn list_accounts() -> Result<Vec<AccountNode>, BcError> {
-    tauri_sys::core::invoke_result::<Vec<AccountNode>, BcError>(commands::LIST_ACCOUNTS, NoArgs)
+    tauri_sys::core::invoke_result::<Vec<AccountNode>, BcError>(commands::LIST_ACCOUNTS, NoArgs {})
         .await
 }
 
