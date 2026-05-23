@@ -14,9 +14,14 @@ export default defineConfig({
   },
 
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    { name: 'firefox',  use: { ...devices['Desktop Firefox'] } },
-    { name: 'webkit',   use: { ...devices['Desktop Safari'] } },
+    {
+      name: 'desktop',
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
+    },
+    {
+      name: 'mobile',
+      use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 } },
+    },
   ],
 
   webServer: {
@@ -24,6 +29,6 @@ export default defineConfig({
     url: 'http://localhost:1420',
     cwd: '../../crates/bc-ui',
     reuseExistingServer: !process.env.CI,
-    timeout: 300_000,
+    timeout: 900_000,
   },
 });

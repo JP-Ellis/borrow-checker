@@ -1,5 +1,7 @@
 [tasks.setup]
 description = "Install npm dependencies"
+sources     = ["package.json", "aube-lock.yaml"]
+outputs     = ["node_modules/.package-lock.json"]
 run         = "aube install"
 
 [tasks.test]
