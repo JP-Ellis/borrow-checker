@@ -15,10 +15,13 @@
     "@wdio/spec-reporter": "9.27.1",
     "@wdio/types": "9.27.1",
     "ts-node": "10.9.2",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "@types/better-sqlite3": "^7.6.0",
+    "better-sqlite3": "^11.0.0"
   },
   "aube": {
     "allowBuilds": {
+      "better-sqlite3": true,
       "edgedriver": true,
       "esbuild": true,
       "geckodriver": true
