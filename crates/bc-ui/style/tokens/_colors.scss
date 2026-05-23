@@ -1,0 +1,106 @@
+/* MARK: SCSS palette constants */
+/* Each variable holds the C and H components of one oklch colour. Lightness
+   is left inline because it is the dimension that varies per theme.
+   bg and ink are theme-specific (warm neutral vs cool neutral). All semantic
+   and syntax colours share one C/H pair across both themes.                  */
+
+/* bg and ink — theme-specific (opposite ends of the hue wheel) */
+$light-bg-ch:  0.007   88.64deg;
+$light-ink-ch: 0.002  106.55deg;
+$dark-bg-ch:   0.010  276.32deg;
+$dark-ink-ch:  0.006  264.53deg;
+
+/* Accent, semantic and syntax colours, identical C and H in both */
+$accent-ch:      0.17  38deg;
+$good-ch:        0.17 148deg;
+$bad-ch:         0.17  10deg;
+$warn-ch:        0.17  80deg;
+$syn-keyword-ch: #{$accent-ch};
+$syn-string-ch:  #{$good-ch};
+$syn-number-ch:  #{$warn-ch};
+$syn-type-ch:    0.17  245deg;
+$syn-fn-ch:      0.17  310deg;
+$syn-comment-ch: 0.02   80deg;
+
+/* MARK: Theme mixins */
+/* Each mixin sets everything that differs between themes: the six raw privates,
+   the surface elevation direction, and the syntax lightness values.
+   Derived tokens (ink-soft, borders, soft tones) are defined once in :root
+   and re-derive automatically because they reference the private vars.        */
+
+@mixin derived-tokens {
+  /* Define tokens which are derived from other tokens. */
+  --bc-accent-soft: color-mix(in oklch, var(--bc-accent) 12%, var(--bc-bg));
+  --bc-good-soft:   color-mix(in oklch, var(--bc-good)   12%, var(--bc-bg));
+  --bc-bad-soft:    color-mix(in oklch, var(--bc-bad)    12%, var(--bc-bg));
+  --bc-warn-soft:   color-mix(in oklch, var(--bc-warn)   12%, var(--bc-bg));
+
+  --bc-border:        color-mix(in oklch, var(--bc-ink) 10%, var(--bc-bg));
+  --bc-border-strong: color-mix(in oklch, var(--bc-ink) 20%, var(--bc-bg));
+
+  --bc-ink-soft: color-mix(in oklch, var(--bc-ink) 80%, var(--bc-bg));
+  --bc-ink-mute: color-mix(in oklch, var(--bc-ink) 65%, var(--bc-bg));
+  --bc-ink-dim:  color-mix(in oklch, var(--bc-ink) 50%, var(--bc-bg));
+}
+
+@mixin bc-theme-light {
+  --bc-bg:     oklch(0.96 #{$light-bg-ch});
+  --bc-ink:    oklch(0.22 #{$light-ink-ch});
+  --bc-accent: oklch(0.55 #{$accent-ch});
+  --bc-good:   oklch(0.49 #{$good-ch});
+  --bc-bad:    oklch(0.52 #{$bad-ch});
+  --bc-warn:   oklch(0.50 #{$warn-ch});
+
+  /* In light mode, 'hi' is intended to be darker to stand out, but the other
+     are lighter to highlight the content vs background. */
+  --bc-surface:        oklch(0.99 #{$light-bg-ch});
+  --bc-surface-alt:    oklch(0.97 #{$light-bg-ch});
+  --bc-surface-accent: oklch(0.94 #{$light-bg-ch});
+
+  --bc-keyword: oklch(0.55 #{$syn-keyword-ch});
+  --bc-string:  oklch(0.49 #{$syn-string-ch});
+  --bc-number:  oklch(0.50 #{$syn-number-ch});
+  --bc-type:    oklch(0.52 #{$syn-type-ch});
+  --bc-fn:      oklch(0.49 #{$syn-fn-ch});
+  --bc-comment: oklch(0.66 #{$syn-comment-ch});
+
+  @include derived-tokens;
+}
+
+@mixin bc-theme-dark {
+  --bc-bg:     oklch(0.17 #{$dark-bg-ch});
+  --bc-ink:    oklch(0.94 #{$dark-ink-ch});
+  --bc-accent: oklch(0.55 #{$accent-ch});
+  --bc-good:   oklch(0.74 #{$good-ch});
+  --bc-bad:    oklch(0.64 #{$bad-ch});
+  --bc-warn:   oklch(0.78 #{$warn-ch});
+
+  /* In dark mode, each surface level is lighter */
+  --bc-surface:        oklch(0.20 #{$dark-bg-ch});
+  --bc-surface-alt:    oklch(0.23 #{$dark-bg-ch});
+  --bc-surface-accent: oklch(0.25 #{$dark-bg-ch});
+
+  --bc-keyword: oklch(0.78 #{$syn-keyword-ch});
+  --bc-string:  oklch(0.74 #{$syn-string-ch});
+  --bc-number:  oklch(0.78 #{$syn-number-ch});
+  --bc-type:    oklch(0.75 #{$syn-type-ch});
+  --bc-fn:      oklch(0.74 #{$syn-fn-ch});
+  --bc-comment: oklch(0.54 #{$syn-comment-ch});
+
+  @include derived-tokens;
+}
+
+
+@layer tokens {
+  :root {
+    @include bc-theme-light;
+  }
+
+  /* MARK: OS-level theme preference */
+  @media (prefers-color-scheme: light) { :root { @include bc-theme-light; } }
+  @media (prefers-color-scheme: dark) { :root { @include bc-theme-dark; } }
+
+  /* MARK: Manual theme toggle */
+  [data-theme="light"] { @include bc-theme-light; }
+  [data-theme="dark"]  { @include bc-theme-dark; }
+}

@@ -1,0 +1,19 @@
+@layer tokens {
+  :root {
+    --bc-z-below:   -1;
+    --bc-z-base:     0;
+    --bc-z-raised:  10;
+    --bc-z-overlay: 20;
+    --bc-z-modal:   30;
+    --bc-z-toast:   40;
+    --bc-z-top:     50;
+
+    /* MARK: Sidebar */
+    --bc-sidebar-width:           280px;
+    --bc-sidebar-collapsed-width: var(--bc-space-9);   /* 28px */
+    --bc-sidebar-toggle-size:     var(--bc-space-7);   /* 18px */
+
+    /* MARK: Shadows */
+    --bc-shadow-card: 0 4px 12px color-mix(in oklch, var(--bc-ink) 8%, transparent);
+  }
+}

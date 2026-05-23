@@ -1,8 +1,9 @@
-// To add breakpoints: @use '../../styles/tokens/breakpoints' as bp;
+/* To add breakpoints: @use '../../styles/tokens/breakpoints' as bp; */
 
 .pill {
   display: inline-flex;
   align-items: center;
+  align-self: flex-start;
   gap: var(--bc-space-2);
   padding: var(--bc-space-1) var(--bc-space-3);
   border-radius: var(--bc-radius-pill);
