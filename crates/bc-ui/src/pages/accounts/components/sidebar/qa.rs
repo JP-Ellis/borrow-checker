@@ -1,9 +1,47 @@
 //! QA page for [`super::AccountSidebar`].
 
+use bc_ipc::AccountNode;
+use bc_ipc::AccountType;
+use bc_ipc::Money;
 use leptos::prelude::*;
 
 use super::AccountSidebar;
-use crate::pages::accounts::types::ACCOUNTS;
+
+/// Returns sample account nodes for the QA showcase.
+fn sample_accounts() -> Vec<AccountNode> {
+    vec![
+        AccountNode::new(
+            "cb-smart-access",
+            "Smart Access",
+            Some("4421"),
+            Money::new(421_842, "AUD"),
+            Some("commbank"),
+            AccountType::Asset,
+            vec![
+                "institution:commbank".to_owned(),
+                "type:transactional".to_owned(),
+            ],
+        ),
+        AccountNode::new(
+            "commbank",
+            "CommBank",
+            None::<&str>,
+            Money::new(6_421_000, "AUD"),
+            None::<&str>,
+            AccountType::Asset,
+            vec![],
+        ),
+        AccountNode::new(
+            "amex-platinum",
+            "Amex Platinum",
+            Some("9001"),
+            Money::new(-244_000, "AUD"),
+            None::<&str>,
+            AccountType::Liability,
+            vec!["type:credit".to_owned()],
+        ),
+    ]
+}
 
 /// Renders [`AccountSidebar`] in expanded and collapsed states.
 #[component]
@@ -21,7 +59,7 @@ pub fn AccountSidebarQa() -> impl IntoView {
                 </p>
                 <div style="width:200px;border:1px solid var(--bc-border)">
                     <AccountSidebar
-                        nodes=&*ACCOUNTS
+                        nodes=sample_accounts()
                         selected_id=selected_id.read_only().into()
                         collapsed=collapsed
                     />
@@ -34,7 +72,7 @@ pub fn AccountSidebarQa() -> impl IntoView {
                 </p>
                 <div style="width:48px;border:1px solid var(--bc-border)">
                     <AccountSidebar
-                        nodes=&*ACCOUNTS
+                        nodes=sample_accounts()
                         selected_id=selected_id.read_only().into()
                         collapsed=collapsed_true
                     />

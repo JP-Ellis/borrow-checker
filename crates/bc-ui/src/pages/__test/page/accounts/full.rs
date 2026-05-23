@@ -4,11 +4,13 @@
 
 use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
+use bc_ipc::AuditEntry;
 use bc_ipc::Money;
+use bc_ipc::Posting;
+use bc_ipc::Transaction;
+use bc_ipc::TxStatus;
 use leptos::prelude::*;
 
-use crate::pages::accounts::ACCOUNTS;
-use crate::pages::accounts::TRANSACTIONS;
 use crate::pages::accounts::components::sidebar::AccountSidebar;
 use crate::pages::accounts::components::transaction_register::TransactionRegister;
 use crate::pages::accounts::dashboard::AccountDashboard;
@@ -36,6 +38,85 @@ fn smart_access_node() -> AccountNode {
     )
 }
 
+/// Returns sample account nodes for the sidebar.
+fn sample_accounts() -> Vec<AccountNode> {
+    vec![
+        smart_access_node(),
+        AccountNode::new(
+            "commbank",
+            "CommBank",
+            None::<&str>,
+            Money::new(6_421_000, "AUD"),
+            None::<&str>,
+            AccountType::Asset,
+            vec![],
+        ),
+        AccountNode::new(
+            "amex-platinum",
+            "Amex Platinum",
+            Some("9001"),
+            Money::new(-244_000, "AUD"),
+            None::<&str>,
+            AccountType::Liability,
+            vec!["type:credit".to_owned()],
+        ),
+    ]
+}
+
+/// Returns sample transactions for the Smart Access account.
+fn sample_transactions() -> Vec<Transaction> {
+    vec![
+        Transaction::new(
+            "tx-coles-2026-04-30",
+            "2026-04-30",
+            "Coles Carlton",
+            TxStatus::Cleared,
+            vec!["shared".to_owned()],
+            vec![
+                Posting::new(
+                    "cb-smart-access",
+                    "Assets :: Smart Access",
+                    Money::new(-8_420, "AUD"),
+                    None::<&str>,
+                ),
+                Posting::new(
+                    "groceries",
+                    "Expenses :: Groceries",
+                    Money::new(8_420, "AUD"),
+                    None::<&str>,
+                ),
+            ],
+            vec![AuditEntry::new(
+                "14:21",
+                "import",
+                "from commbank-au.wasm@1.4.2",
+            )],
+        ),
+        Transaction::new(
+            "tx-salary-2026-04-30",
+            "2026-04-30",
+            "Salary — Atlassian",
+            TxStatus::Cleared,
+            vec!["work".to_owned()],
+            vec![
+                Posting::new(
+                    "income-salary",
+                    "Income :: Salary",
+                    Money::new(-846_154, "AUD"),
+                    Some("gross pay"),
+                ),
+                Posting::new(
+                    "cb-smart-access",
+                    "Assets :: Smart Access",
+                    Money::new(428_055, "AUD"),
+                    Some("take-home"),
+                ),
+            ],
+            vec![],
+        ),
+    ]
+}
+
 /// Full accounts view QA: sidebar, dashboard hero, and transaction register.
 #[component]
 pub fn AccountFullQa() -> impl IntoView {
@@ -45,14 +126,14 @@ pub fn AccountFullQa() -> impl IntoView {
     view! {
         <div style="display:grid;grid-template-columns:200px 1fr;min-height:100vh">
             <AccountSidebar
-                nodes=&*ACCOUNTS
+                nodes=sample_accounts()
                 selected_id=selected_id.read_only().into()
                 collapsed=collapsed
             />
             <div style="display:flex;flex-direction:column">
                 <AccountDashboard node=smart_access_node() />
                 <TransactionRegister
-                    transactions=&*TRANSACTIONS
+                    transactions=Signal::derive(sample_transactions)
                     viewing_account_id="cb-smart-access"
                 />
             </div>
