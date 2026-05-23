@@ -20,5 +20,11 @@ thiserror = { workspace = true }
 pretty_assertions = { workspace = true }
 serde_json        = { workspace = true }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# tauri-sys is not on crates.io; requires `esbuild` (provided via mise).
+tauri-sys = { git = "https://github.com/JonasKruckenberg/tauri-sys", branch = "v2", features = [
+  "core"
+] }
+
 [lints]
 workspace = true

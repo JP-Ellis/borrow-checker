@@ -13,6 +13,8 @@
 //!   `Debug`
 
 mod accounts;
+#[cfg(target_arch = "wasm32")]
+pub mod client;
 pub mod commands;
 mod currency;
 mod error;
