@@ -67,3 +67,67 @@
 
 .bal     { color: var(--bc-comment); font-size: var(--bc-text-caption); flex-shrink: 0; }
 .bal_neg { color: var(--bc-bad);     font-size: var(--bc-text-caption); flex-shrink: 0; }
+
+/* MARK: Mobile trigger (dot-rail button shown below bp-md) */
+
+.mobile_trigger {
+  display: none; /* hidden on desktop */
+  flex-direction: column;
+  align-items: center;
+  padding: var(--bc-space-4) 0;
+  gap: var(--bc-space-3);
+  background: none;
+  border: none;
+  cursor: pointer;
+  height: 100%;
+  width: 100%;
+
+  @media (max-width: #{bp.$bp-md - 1px}) {
+    display: flex;
+  }
+}
+
+/* Hide the desktop sidebar nav on mobile */
+.nav {
+  @media (max-width: #{bp.$bp-md - 1px}) {
+    display: none;
+  }
+}
+
+/* MARK: Mobile drawer (popover overlay) */
+
+.drawer {
+  /* Reset UA popover styles */
+  margin: 0;
+  padding: 0;
+  border: none;
+
+  /* Layout */
+  position: fixed;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 220px;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bc-surface);
+  border-inline-end: 1px solid var(--bc-border);
+
+  /* Slide-in from left — closed state */
+  translate: -100% 0;
+  transition:
+    translate var(--bc-duration-normal) var(--bc-ease-out),
+    display var(--bc-duration-normal) var(--bc-ease-out) allow-discrete,
+    overlay var(--bc-duration-normal) var(--bc-ease-out) allow-discrete;
+
+  /* Open state */
+  &:popover-open {
+    translate: 0 0;
+  }
+
+  /* Entry animation — browser needs the closed position as the starting style */
+  @starting-style {
+    &:popover-open {
+      translate: -100% 0;
+    }
+  }
+}

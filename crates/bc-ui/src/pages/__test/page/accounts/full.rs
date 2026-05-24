@@ -10,8 +10,11 @@ use bc_ipc::Posting;
 use bc_ipc::Transaction;
 use bc_ipc::TxStatus;
 use leptos::prelude::*;
+use stylance::import_style;
 
 use crate::pages::accounts::components::sidebar::AccountSidebar;
+
+import_style!(style, "full.module.scss");
 use crate::pages::accounts::components::transaction_register::TransactionRegister;
 use crate::pages::accounts::dashboard::AccountDashboard;
 
@@ -124,13 +127,13 @@ pub fn AccountFullQa() -> impl IntoView {
     let (collapsed, _) = signal(false);
 
     view! {
-        <div style="display:grid;grid-template-columns:200px 1fr;min-height:100vh">
+        <div class=style::layout>
             <AccountSidebar
                 nodes=sample_accounts()
                 selected_id=selected_id.read_only().into()
                 collapsed=collapsed
             />
-            <div style="display:flex;flex-direction:column">
+            <div class=style::content>
                 <AccountDashboard node=smart_access_node() />
                 <TransactionRegister
                     transactions=Signal::derive(sample_transactions)

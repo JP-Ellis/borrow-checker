@@ -55,7 +55,10 @@
   container-type: inline-size;
 }
 
-@media (max-width: #{bp.$bp-sm}) {
+/* On mobile the dot-rail trigger replaces the full sidebar; shrink the
+   column to collapsed width and hide the desktop toggle arrow. */
+@media (max-width: #{bp.$bp-md - 1px}) {
+  .sidebar { width: var(--bc-sidebar-collapsed-width); }
   .sidebar_toggle { display: none; }
 }
 
