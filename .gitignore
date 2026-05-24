@@ -233,3 +233,6 @@ Temporary Items
 
 # Stylance-generated SCSS bundle (rebuilt by build.rs on each cargo build)
 /crates/bc-ui/style/bundle.scss
+
+# Dev database seeded by `mise run dev:app` (ephemeral, machine-local)
+/.dev-db/
