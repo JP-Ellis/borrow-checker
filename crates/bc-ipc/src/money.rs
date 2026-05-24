@@ -12,7 +12,7 @@ use serde::Serialize;
 ///
 /// `currency_code` is the ISO 4217 code (or informal code for crypto, e.g.
 /// `"BTC"`).  The UI resolves display metadata via
-/// [`bc_ipc::currency::currency_from_code`].
+/// [`bc_ipc::currency_from_code`].
 ///
 /// `scale` is the number of decimal places — e.g. `2` for AUD cents,
 /// `8` for BTC satoshis. Carried explicitly so that arbitrary commodities

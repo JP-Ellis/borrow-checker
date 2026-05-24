@@ -146,7 +146,6 @@ pub fn AccountSidebar(
                 class=style::mobile_trigger
                 popovertarget="bc-sidebar-drawer"
                 aria-label="Open account navigation"
-                aria-haspopup="dialog"
             >
                 <div class=style::rail>
                     {stored_nodes
