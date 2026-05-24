@@ -4,6 +4,7 @@
 //! entry point (future work). All command handlers are registered here.
 
 pub mod commands;
+pub(crate) mod ipc;
 
 use tauri::Manager as _;
 
