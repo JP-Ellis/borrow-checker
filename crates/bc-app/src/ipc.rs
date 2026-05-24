@@ -9,14 +9,6 @@ use rust_decimal::prelude::ToPrimitive as _;
 // MARK: Traits
 
 /// Converts a `bc_models` type into its `bc_ipc` counterpart.
-#[expect(
-    clippy::allow_attributes,
-    reason = "trait is used through impl blocks and test extension method calls, but clippy cannot detect it; #[allow] is necessary"
-)]
-#[allow(
-    dead_code,
-    reason = "trait is used through impl blocks and test extension method calls"
-)]
 pub(crate) trait IntoIpc {
     /// The IPC counterpart type.
     type Output;
@@ -25,14 +17,6 @@ pub(crate) trait IntoIpc {
 }
 
 /// Converts a `bc_ipc` type back into its `bc_models` counterpart.
-#[expect(
-    clippy::allow_attributes,
-    reason = "trait is used through impl blocks and test extension method calls, but clippy cannot detect it; #[allow] is necessary"
-)]
-#[allow(
-    dead_code,
-    reason = "trait is used through impl blocks and test extension method calls"
-)]
 pub(crate) trait IntoModel {
     /// The domain model counterpart type.
     type Output;
