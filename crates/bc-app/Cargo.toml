@@ -26,6 +26,9 @@ rust_decimal = { workspace = true }
 serde        = { workspace = true }
 tauri        = { version = "2", features = ["config-toml", "wry"] }
 
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
 [build-dependencies]
 tauri-build = { version = "2", features = ["config-toml"] }
 

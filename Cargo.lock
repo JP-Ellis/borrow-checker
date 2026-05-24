@@ -342,6 +342,7 @@ dependencies = [
  "bc-ipc",
  "bc-models",
  "jiff",
+ "pretty_assertions",
  "rust_decimal",
  "serde",
  "tauri",
