@@ -12,6 +12,8 @@ cargo clippy -p bc-ui --target wasm32-unknown-unknown -- -D warnings
 
 A native `cargo check` will not catch missing `web-sys`/`js-sys` features or WASM-only APIs.
 
+Unit tests gated on `#[cfg(target_arch = "wasm32")]` **do not run** under a native `cargo nextest run` — this is expected. End-to-end coverage comes from the Playwright suite in `e2e/web/`.
+
 ## Extended Documentation
 
 Deeper reference material lives in [`docs/gui/`](../../docs/gui/) at the workspace root:
