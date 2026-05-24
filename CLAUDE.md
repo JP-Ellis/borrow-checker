@@ -81,3 +81,8 @@ The workspace enables all Clippy groups at `warn` (priority = -1) and selectivel
 ## Commit Style
 
 Conventional commits are enforced (`committed.toml`). Subject line ≤ 50 characters. Format: `type(scope): message` where scope is usually the crate short name (e.g. `bc-ui`, `bc-core`).
+
+## Workflow
+
+- **Copilot auto-reviews every PR** in this repo. Do not call `gh pr edit --add-reviewer copilot-pull-request-reviewer` — it will trigger automatically.
+- **`docs/superpowers/`** is gitignored. Never `git add` or commit files under that path (specs and plans written there are ephemeral).

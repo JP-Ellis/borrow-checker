@@ -12,21 +12,26 @@ independently — they have different prerequisites, tools, and CI jobs.
 
 ## Quick start
 
+Both suites use **aube** as their package manager (`aubx` in place of `npx`).
+
 **Web suite:**
 
 ```sh
 cd e2e/web
-npm install
-npx playwright install --with-deps
-npx playwright test
+aube install
+aubx playwright install --with-deps
+aubx playwright test
 ```
 
 **Desktop suite** (requires `cargo install tauri-driver`):
 
 ```sh
 cd e2e/desktop
-npm install
-npx wdio run wdio.conf.ts
+aube install
+aubx wdio run wdio.conf.ts
 ```
+
+Prefer the `mise run test:e2e:*` tasks from the repo root — they handle
+dependency ordering (stylance bundle generation, Tauri binary build) automatically.
 
 See each suite's `README.md` for full setup, including platform-specific notes.
