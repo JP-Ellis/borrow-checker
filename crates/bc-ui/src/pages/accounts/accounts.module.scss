@@ -9,9 +9,17 @@
   flex-shrink: 0;
   border-right: 1px solid var(--bc-border);
   background: var(--bc-surface);
-  overflow-y: auto;
   position: relative;
   transition: width var(--bc-duration) var(--bc-ease-out);
+  /* No overflow here — overflow-y: auto on the outer element implicitly sets
+     overflow-x: auto, which creates a scrollbar when the absolutely-positioned
+     toggle button hangs outside the right edge. The scroll is handled by the
+     inner .sidebar_content wrapper instead. */
+}
+
+.sidebar_content {
+  height: 100%;
+  overflow-y: auto;
 }
 
 .sidebar_collapsed {
