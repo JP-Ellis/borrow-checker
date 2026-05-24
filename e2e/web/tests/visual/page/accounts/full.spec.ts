@@ -6,8 +6,15 @@ test.describe('Full account view (/__test/page/accounts/full)', () => {
       await page.emulateMedia({ colorScheme: scheme });
       await page.goto('/__test/page/accounts/full');
 
-      await expect(page.getByText('Smart Access').first()).toBeVisible();
-      await expect(page.getByText('Coles Carlton', { exact: false })).toBeVisible();
+      const isMobile = (page.viewportSize()?.width ?? 1440) < 768;
+      if (isMobile) {
+        // On mobile the sidebar collapses to a dot-rail trigger; account names
+        // are inside the closed popover drawer and are not visible by default.
+        await expect(page.getByLabel('Open account navigation')).toBeVisible();
+      } else {
+        await expect(page.getByText('Smart Access').first()).toBeVisible();
+        await expect(page.getByText('Coles Carlton', { exact: false })).toBeVisible();
+      }
 
       await expect(page.locator('main')).toHaveScreenshot(`full-${scheme}.png`);
     });
