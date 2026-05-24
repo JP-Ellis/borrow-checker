@@ -1,0 +1,13 @@
+/* QA full-page layout: mirrors the production accounts shell grid so mobile
+   snapshot tests render at the correct sidebar width. */
+.layout {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  min-height: 100vh;
+
+  @media (max-width: #{bp.$bp-md - 1px}) {
+    grid-template-columns: var(--bc-sidebar-collapsed-width) 1fr;
+  }
+}
+
+.content { display: flex; flex-direction: column; }
