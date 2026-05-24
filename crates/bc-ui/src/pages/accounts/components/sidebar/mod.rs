@@ -229,23 +229,32 @@ mod tests {
 
     #[test]
     fn balance_short_thousands() {
-        assert_eq!(format_balance_short(&Amount::new(6_400_000, "USD")), "64k");
+        assert_eq!(
+            format_balance_short(&Amount::new(6_400_000, "USD", 2)),
+            "64k"
+        );
     }
 
     #[test]
     fn balance_short_millions() {
-        assert_eq!(format_balance_short(&Amount::new(120_000_000, "USD")), "1m");
+        assert_eq!(
+            format_balance_short(&Amount::new(120_000_000, "USD", 2)),
+            "1m"
+        );
     }
 
     #[test]
     fn balance_short_negative() {
-        assert_eq!(format_balance_short(&Amount::new(-244_000, "USD")), "−2k");
+        assert_eq!(
+            format_balance_short(&Amount::new(-244_000, "USD", 2)),
+            "−2k"
+        );
     }
 
     #[test]
     fn balance_short_small() {
         assert_eq!(
-            format_balance_short(&Amount::new(42_100, "USD")),
+            format_balance_short(&Amount::new(42_100, "USD", 2)),
             "+$421.00"
         );
     }

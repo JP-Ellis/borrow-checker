@@ -29,7 +29,7 @@ pub fn headline_amount(tx: &Transaction, account_id: &str) -> Amount {
     tx.postings
         .iter()
         .find(|p| p.account_id == account_id)
-        .map_or_else(|| Amount::new(0, "AUD"), |p| p.amount.clone())
+        .map_or_else(|| Amount::new(0, "AUD", 2), |p| p.amount.clone())
 }
 
 /// Formats an ISO-8601 date string (`"2026-04-30"`) for display.
@@ -108,13 +108,13 @@ mod tests {
                     Posting::new(
                         "cb-smart-access",
                         "Assets :: Smart Access",
-                        Amount::new(-8_420, "AUD"),
+                        Amount::new(-8_420, "AUD", 2),
                         None::<&str>,
                     ),
                     Posting::new(
                         "groceries",
                         "Expenses :: Groceries",
-                        Amount::new(8_420, "AUD"),
+                        Amount::new(8_420, "AUD", 2),
                         None::<&str>,
                     ),
                 ],
@@ -137,25 +137,25 @@ mod tests {
                     Posting::new(
                         "income-salary",
                         "Income :: Salary",
-                        Amount::new(-846_154, "AUD"),
+                        Amount::new(-846_154, "AUD", 2),
                         Some("gross pay"),
                     ),
                     Posting::new(
                         "liabilities-tax",
                         "Liabilities :: Tax Withheld",
-                        Amount::new(327_692, "AUD"),
+                        Amount::new(327_692, "AUD", 2),
                         Some("PAYG withholding"),
                     ),
                     Posting::new(
                         "assets-super",
                         "Assets :: Super :: Employer",
-                        Amount::new(90_407, "AUD"),
+                        Amount::new(90_407, "AUD", 2),
                         Some("11.5% SGC"),
                     ),
                     Posting::new(
                         "cb-smart-access",
                         "Assets :: Smart Access",
-                        Amount::new(428_055, "AUD"),
+                        Amount::new(428_055, "AUD", 2),
                         Some("take-home"),
                     ),
                 ],

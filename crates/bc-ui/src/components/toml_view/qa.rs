@@ -14,6 +14,10 @@ use super::TomlSection;
 
 /// Renders all `TomlView` primitives for visual inspection.
 #[component]
+#[expect(
+    clippy::too_many_lines,
+    reason = "QA showcase component with many examples"
+)]
 pub fn TomlViewQa() -> impl IntoView {
     view! {
         <div style="display:flex;flex-direction:column;gap:32px;padding:24px;max-width:600px">
@@ -67,16 +71,16 @@ pub fn TomlViewQa() -> impl IntoView {
                 </p>
                 <div style="padding:16px;background:var(--bc-surface-accent);border-radius:6px">
                     <TomlArraySection>"postings"</TomlArraySection>
-                    <TomlPosting amount=bc_ipc::Amount::new(-846_154, "AUD") note="gross pay">
+                    <TomlPosting amount=bc_ipc::Amount::new(-846_154, "AUD", 2) note="gross pay">
                         "Income :: Salary"
                     </TomlPosting>
-                    <TomlPosting amount=bc_ipc::Amount::new(327_692, "AUD") note="PAYG">
+                    <TomlPosting amount=bc_ipc::Amount::new(327_692, "AUD", 2) note="PAYG">
                         "Liabilities :: Tax Withheld"
                     </TomlPosting>
-                    <TomlPosting amount=bc_ipc::Amount::new(90_407, "AUD") note="11.5% SGC">
+                    <TomlPosting amount=bc_ipc::Amount::new(90_407, "AUD", 2) note="11.5% SGC">
                         "Assets :: Super :: Employer"
                     </TomlPosting>
-                    <TomlPosting amount=bc_ipc::Amount::new(428_055, "AUD") note="take-home">
+                    <TomlPosting amount=bc_ipc::Amount::new(428_055, "AUD", 2) note="take-home">
                         "Assets :: Smart Access"
                     </TomlPosting>
                 </div>
@@ -109,10 +113,12 @@ pub fn TomlViewQa() -> impl IntoView {
                     <TomlPosting amount=bc_ipc::Amount::new(
                         -8_420,
                         "AUD",
+                        2,
                     )>"Assets :: Smart Access"</TomlPosting>
                     <TomlPosting amount=bc_ipc::Amount::new(
                         8_420,
                         "AUD",
+                        2,
                     )>"Expenses :: Groceries"</TomlPosting>
                 </div>
             </section>

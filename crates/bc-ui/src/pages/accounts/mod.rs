@@ -182,12 +182,12 @@ pub fn Accounts() -> impl IntoView {
                                                 vec![
                                                     NewPosting::new(
                                                         debit_id.clone(),
-                                                        Amount::new(-1_000, "AUD"),
+                                                        Amount::new(-1_000, "AUD", 2),
                                                         None::<&str>,
                                                     ),
                                                     NewPosting::new(
                                                         offset_id.clone(),
-                                                        Amount::new(1_000, "AUD"),
+                                                        Amount::new(1_000, "AUD", 2),
                                                         None::<&str>,
                                                     ),
                                                 ],
