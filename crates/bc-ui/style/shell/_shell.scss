@@ -7,4 +7,19 @@
     background: var(--bc-bg);
     color: var(--bc-ink);
   }
+
+  /* Mobile sidebar popover backdrop */
+  #bc-sidebar-drawer::backdrop {
+    background: oklch(0 0 0 / 0.4);
+    transition:
+      background var(--bc-duration-normal) var(--bc-ease-out),
+      display var(--bc-duration-normal) var(--bc-ease-out) allow-discrete,
+      overlay var(--bc-duration-normal) var(--bc-ease-out) allow-discrete;
+  }
+
+  @starting-style {
+    #bc-sidebar-drawer::backdrop {
+      background: oklch(0 0 0 / 0);
+    }
+  }
 }
