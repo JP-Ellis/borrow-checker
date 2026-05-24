@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn new_posting_constructor_roundtrip() {
-        let p = NewPosting::new("acc-1", Amount::new(-1_000, "AUD"), Some("test note"));
+        let p = NewPosting::new("acc-1", Amount::new(-1_000, "AUD", 2), Some("test note"));
         assert_eq!(p.account_id, "acc-1");
         assert_eq!(p.amount.minor_units, -1_000);
         assert_eq!(p.note.as_deref(), Some("test note"));
@@ -339,8 +339,8 @@ mod tests {
             TxStatus::Pending,
             vec![],
             vec![
-                NewPosting::new("acc-a", Amount::new(-500, "AUD"), None::<&str>),
-                NewPosting::new("acc-b", Amount::new(500, "AUD"), None::<&str>),
+                NewPosting::new("acc-a", Amount::new(-500, "AUD", 2), None::<&str>),
+                NewPosting::new("acc-b", Amount::new(500, "AUD", 2), None::<&str>),
             ],
         );
         let json = serde_json::to_string(&tx).expect("serialises");

@@ -21,13 +21,13 @@ fn tx_simple() -> Transaction {
             Posting::new(
                 "cb-smart-access",
                 "Assets :: Smart Access",
-                Amount::new(-8_420, "AUD"),
+                Amount::new(-8_420, "AUD", 2),
                 None::<&str>,
             ),
             Posting::new(
                 "groceries",
                 "Expenses :: Groceries",
-                Amount::new(8_420, "AUD"),
+                Amount::new(8_420, "AUD", 2),
                 None::<&str>,
             ),
         ],
@@ -51,13 +51,13 @@ fn tx_multi_posting() -> Transaction {
             Posting::new(
                 "income-salary",
                 "Income :: Salary",
-                Amount::new(-846_154, "AUD"),
+                Amount::new(-846_154, "AUD", 2),
                 Some("gross pay"),
             ),
             Posting::new(
                 "cb-smart-access",
                 "Assets :: Smart Access",
-                Amount::new(428_055, "AUD"),
+                Amount::new(428_055, "AUD", 2),
                 Some("take-home"),
             ),
         ],
