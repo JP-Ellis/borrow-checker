@@ -103,26 +103,31 @@ pub fn Accounts() -> impl IntoView {
                     style::sidebar.to_owned()
                 }
             }>
-                {move || match accounts_resource.get() {
-                    None => {
-                        view! { <div class=style::empty_state>"Loading accounts…"</div> }
-                            .into_any()
-                    }
-                    Some(Err(e)) => {
-                        view! { <div class=style::empty_state>{format!("Error: {e}")}</div> }
-                            .into_any()
-                    }
-                    Some(Ok(accounts)) => {
-                        view! {
-                            <AccountSidebar
-                                nodes=accounts
-                                selected_id=selected_id
-                                collapsed=sidebar_collapsed.read_only()
-                            />
+                // Inner scroll wrapper — keeps overflow-y: auto off the outer
+                // sidebar so the absolutely-positioned toggle button can hang
+                // outside the right edge without triggering a scrollbar.
+                <div class=style::sidebar_content>
+                    {move || match accounts_resource.get() {
+                        None => {
+                            view! { <div class=style::empty_state>"Loading accounts…"</div> }
+                                .into_any()
                         }
-                            .into_any()
-                    }
-                }}
+                        Some(Err(e)) => {
+                            view! { <div class=style::empty_state>{format!("Error: {e}")}</div> }
+                                .into_any()
+                        }
+                        Some(Ok(accounts)) => {
+                            view! {
+                                <AccountSidebar
+                                    nodes=accounts
+                                    selected_id=selected_id
+                                    collapsed=sidebar_collapsed.read_only()
+                                />
+                            }
+                                .into_any()
+                        }
+                    }}
+                </div>
                 <button
                     class=style::sidebar_toggle
                     on:click=toggle_sidebar
