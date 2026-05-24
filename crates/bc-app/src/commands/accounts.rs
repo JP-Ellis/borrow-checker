@@ -69,7 +69,12 @@ impl IntoIpc for &bc_models::Amount {
             .round() // midpoint-nearest-even (banker's rounding)
             .to_i64()
             .unwrap_or(0);
-        bc_ipc::Amount::new(minor, code)
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::as_conversions,
+            reason = "currency_decimals returns u32 ≤ 18 (ISO 4217 + crypto conventions); fits in u8"
+        )]
+        bc_ipc::Amount::new(minor, code, decimals as u8)
     }
 }
 
@@ -159,7 +164,7 @@ impl IntoIpc for &bc_models::Account {
             self.id().to_string(),
             self.name(),
             None::<&str>,
-            bc_ipc::Amount::new(0, "AUD"), // TODO(ipc): compute via BalanceEngine
+            bc_ipc::Amount::new(0, "AUD", 2), // TODO(ipc): compute via BalanceEngine
             self.parent_id().map(ToString::to_string),
             self.account_type().into_ipc(),
             vec![],
