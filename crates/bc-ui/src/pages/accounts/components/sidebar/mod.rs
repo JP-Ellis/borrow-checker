@@ -52,6 +52,7 @@ pub fn format_balance_short(balance: &Amount) -> String {
 /// * `nodes` - All account nodes (flat vec; hierarchy via `parent_id`).
 /// * `selected_id` - Currently selected account ID (derived from route).
 /// * `collapsed` - Whether the sidebar is in dot-rail mode.
+#[expect(clippy::too_many_lines, reason = "Leptos view! block")]
 #[component]
 pub fn AccountSidebar(
     /// All account nodes.
@@ -79,64 +80,109 @@ pub fn AccountSidebar(
     let stored_liabilities = StoredValue::new(liabilities);
 
     view! {
-        <nav class=style::nav aria-label="account navigation">
-            <Show
-                when=move || collapsed.get()
-                fallback=move || {
-                    view! {
-                        <div class=style::tree>
-                            <SidebarSection
-                                label="assets"
-                                nodes=stored_nodes.get_value()
-                                roots=stored_assets.get_value()
-                                selected_id=selected_id
-                            />
-                            <SidebarSection
-                                label="liabilities"
-                                nodes=stored_nodes.get_value()
-                                roots=stored_liabilities.get_value()
-                                selected_id=selected_id
-                            />
-                        </div>
+        <>
+            // Desktop sidebar — hidden on mobile via CSS
+            <nav class=style::nav aria-label="account navigation">
+                <Show
+                    when=move || collapsed.get()
+                    fallback=move || {
+                        view! {
+                            <div class=style::tree>
+                                <SidebarSection
+                                    label="assets"
+                                    nodes=stored_nodes.get_value()
+                                    roots=stored_assets.get_value()
+                                    selected_id=selected_id
+                                />
+                                <SidebarSection
+                                    label="liabilities"
+                                    nodes=stored_nodes.get_value()
+                                    roots=stored_liabilities.get_value()
+                                    selected_id=selected_id
+                                />
+                            </div>
+                        }
                     }
-                }
+                >
+                    <div class=style::rail>
+                        {move || {
+                            stored_nodes
+                                .with_value(|all_nodes| {
+                                    all_nodes
+                                        .iter()
+                                        .map(|node| {
+                                            let id = node.id.clone();
+                                            let title = node.name.clone();
+                                            let is_active = Signal::derive(move || {
+                                                selected_id.get().as_deref() == Some(id.as_str())
+                                            });
+                                            let href = format!("/accounts/{}", node.id);
+                                            view! {
+                                                <A
+                                                    href=href
+                                                    attr:class=move || {
+                                                        if is_active.get() {
+                                                            format!("{} {}", style::dot, style::dot_active)
+                                                        } else {
+                                                            style::dot.to_owned()
+                                                        }
+                                                    }
+                                                    attr:title=title.clone()
+                                                    attr:aria-label=title
+                                                >
+                                                    ""
+                                                </A>
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                        }}
+                    </div>
+                </Show>
+            </nav>
+
+            // Mobile: dot-rail trigger button — shown below bp-md
+            <button
+                class=style::mobile_trigger
+                popovertarget="bc-sidebar-drawer"
+                aria-label="Open account navigation"
+                aria-haspopup="dialog"
             >
                 <div class=style::rail>
-                    {move || {
-                        stored_nodes
-                            .with_value(|all_nodes| {
-                                all_nodes
-                                    .iter()
-                                    .map(|node| {
-                                        let id = node.id.clone();
-                                        let title = node.name.clone();
-                                        let is_active = Signal::derive(move || {
-                                            selected_id.get().as_deref() == Some(id.as_str())
-                                        });
-                                        let href = format!("/accounts/{}", node.id);
-                                        view! {
-                                            <A
-                                                href=href
-                                                attr:class=move || {
-                                                    if is_active.get() {
-                                                        format!("{} {}", style::dot, style::dot_active)
-                                                    } else {
-                                                        style::dot.to_owned()
-                                                    }
-                                                }
-                                                attr:title=title.clone()
-                                                attr:aria-label=title
-                                            >
-                                                ""
-                                            </A>
-                                        }
-                                    })
-                                    .collect::<Vec<_>>()
-                            })
-                    }}
+                    {stored_nodes
+                        .get_value()
+                        .iter()
+                        .map(|node| {
+                            let title = node.name.clone();
+                            view! { <span class=style::dot aria-hidden="true" title=title /> }
+                        })
+                        .collect::<Vec<_>>()}
                 </div>
-            </Show>
-        </nav>
+            </button>
+
+            // Mobile: full sidebar as a popover overlay
+            <nav
+                id="bc-sidebar-drawer"
+                class=style::drawer
+                popover="auto"
+                aria-label="account navigation"
+            >
+                <div class=style::tree>
+                    <SidebarSection
+                        label="assets"
+                        nodes=stored_nodes.get_value()
+                        roots=stored_assets.get_value()
+                        selected_id=selected_id
+                    />
+                    <SidebarSection
+                        label="liabilities"
+                        nodes=stored_nodes.get_value()
+                        roots=stored_liabilities.get_value()
+                        selected_id=selected_id
+                    />
+                </div>
+            </nav>
+        </>
     }
 }
 
