@@ -4,8 +4,6 @@
 //! because both sides of each conversion are defined in external crates (the
 //! Rust orphan rule). The extension-trait pattern is the idiomatic alternative.
 
-use rust_decimal::prelude::ToPrimitive as _;
-
 // MARK: Traits
 
 /// Converts a `bc_models` type into its `bc_ipc` counterpart.
@@ -31,27 +29,22 @@ impl IntoIpc for &bc_models::Amount {
 
     /// Converts a [`bc_models::Amount`] to an IPC [`bc_ipc::Amount`].
     ///
-    /// Reads scale directly from the decimal value — no currency lookup required.
-    /// Multiplies by `10 ^ scale` and rounds using midpoint-nearest-even.
+    /// Reads scale and mantissa directly from the decimal value — no currency
+    /// lookup and no power-of-ten multiplication required. `Decimal::mantissa()`
+    /// returns the coefficient already scaled (e.g. `10.50` → mantissa `1050`,
+    /// scale `2`), so minor units are derived without any arithmetic overflow risk.
     #[inline]
     fn into_ipc(self) -> bc_ipc::Amount {
         let code = self.commodity().as_str();
         let scale = self.value().scale();
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "Decimal multiplication by a power-of-ten scale factor is bounded by the IPC contract and safe in practice"
-        )]
-        let minor = (self.value() * rust_decimal::Decimal::from(10_u64.pow(scale)))
-            .round()
-            .to_i64()
-            .unwrap_or(0);
+        let minor = i64::try_from(self.value().mantissa()).unwrap_or(0);
         #[expect(
             clippy::cast_possible_truncation,
-            reason = "Decimal::scale() returns u32 representing decimal places, which is always ≤ 28 for rust_decimal and fits in u8"
+            reason = "Decimal::scale() returns u32 ≤ 28 for rust_decimal, which always fits in u8"
         )]
         #[expect(
             clippy::as_conversions,
-            reason = "Decimal::scale() returns u32 representing decimal places, which is always ≤ 28 for rust_decimal and fits in u8"
+            reason = "Decimal::scale() returns u32 ≤ 28 for rust_decimal, which always fits in u8"
         )]
         bc_ipc::Amount::new(minor, code, scale as u8)
     }
