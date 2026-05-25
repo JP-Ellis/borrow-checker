@@ -89,6 +89,13 @@ describe('Visual — accounts shell', () => {
                     browser.checkScreen(`accounts-shell-${tag}`)
                 ).resolves.toEqual(0);
             });
+
+            it(`transaction rows have aria-expanded="false" by default [${tag}]`, async () => {
+                const register = await $('[aria-label="transaction register"]');
+                const rows     = await register.$$('[role="button"][aria-expanded]');
+                expect(rows.length).toBeGreaterThan(0);
+                await expect(rows[0]).toHaveAttribute('aria-expanded', 'false');
+            });
         });
     }
 

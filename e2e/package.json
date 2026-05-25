@@ -6,6 +6,9 @@
   "scripts": {
     "test": "wdio run wdio.conf.ts"
   },
+  "dependencies": {
+    "apca-w3": "0.1.9"
+  },
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",
     "@types/mocha": "10.0.10",
