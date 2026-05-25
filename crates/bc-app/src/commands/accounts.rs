@@ -199,3 +199,178 @@ pub async fn get_account_stats(
         crate::ipc::decimal_to_amount(outflow, &commodity_code),
     ))
 }
+
+// MARK: Sparkline helpers
+
+/// Formats a bucket start date as a sparkline X-axis label.
+fn spark_label(start: jiff::civil::Date, period: &bc_models::Period) -> String {
+    match period {
+        bc_models::Period::Monthly => {
+            let months = [
+                "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+            ];
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_sign_loss,
+                reason = "month() returns i8 in 1–12; casting to usize is safe"
+            )]
+            let idx = start.month() as usize;
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "idx is 1–12; subtracting 1 gives 0–11, always in bounds"
+            )]
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "idx - 1 is 0–11; array has exactly 12 elements"
+            )]
+            months[idx - 1].to_owned()
+        }
+        bc_models::Period::Weekly => {
+            #[expect(
+                clippy::expect_used,
+                reason = "Jan 1 of any year is always a valid date"
+            )]
+            let jan1 = jiff::civil::Date::new(start.year(), 1, 1).expect("Jan 1 is always valid");
+            #[expect(
+                clippy::arithmetic_side_effects,
+                clippy::integer_division,
+                clippy::integer_division_remainder_used,
+                reason = "approximate week from day-of-year; day count is bounded [0, 365]"
+            )]
+            let week = i64::from((start - jan1).get_days()) / 7 + 1;
+            format!("w{week:02}")
+        }
+        bc_models::Period::Quarterly | bc_models::Period::FinancialQuarter { .. } => {
+            // Map month to Q1–Q4 (calendar quarters)
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_sign_loss,
+                reason = "month() returns i8 in 1–12; casting to u8 is safe"
+            )]
+            let month_u8 = start.month() as u8;
+            #[expect(
+                clippy::arithmetic_side_effects,
+                clippy::integer_division,
+                clippy::integer_division_remainder_used,
+                reason = "month_u8 is 1–12; arithmetic maps to quarter 1–4 without overflow"
+            )]
+            let q = (month_u8 - 1) / 3 + 1;
+            format!("Q{q}")
+        }
+        bc_models::Period::CalendarYear => format!("{}", start.year()),
+        bc_models::Period::FinancialYear { .. } => {
+            #[expect(
+                clippy::integer_division_remainder_used,
+                clippy::modulo_arithmetic,
+                reason = "year % 100 gives 2-digit year; i16 year is always positive for realistic dates"
+            )]
+            let two_digit = start.year() % 100;
+            format!("FY{two_digit:02}")
+        }
+        bc_models::Period::Fortnightly { .. } | bc_models::Period::Custom { .. } | _ => {
+            start.to_string()
+        }
+    }
+}
+
+/// Converts a [`bc_ipc::SparklinePeriod`] to a [`bc_models::Period`].
+fn ipc_to_model_period(p: &bc_ipc::SparklinePeriod) -> bc_models::Period {
+    match p {
+        bc_ipc::SparklinePeriod::Weekly => bc_models::Period::Weekly,
+        bc_ipc::SparklinePeriod::Quarterly => bc_models::Period::Quarterly,
+        bc_ipc::SparklinePeriod::CalendarYear => bc_models::Period::CalendarYear,
+        bc_ipc::SparklinePeriod::FinancialYear {
+            start_month,
+            start_day,
+        } => bc_models::Period::FinancialYear {
+            start_month: *start_month,
+            start_day: *start_day,
+        },
+        bc_ipc::SparklinePeriod::Monthly | _ => bc_models::Period::Monthly,
+    }
+}
+
+/// Returns period-bucketed cash-flow data for a sparkline chart.
+///
+/// Defaults to 6 monthly buckets ending with the current month.
+///
+/// # Arguments
+///
+/// * `account_id` - The account to query.
+/// * `commodity`  - Optional commodity code. Defaults to the account's first commodity.
+/// * `count`      - Optional bucket count (default 6).
+/// * `period`     - Optional bucket period (default Monthly).
+/// * `state`      - Tauri managed application state.
+///
+/// # Panics
+///
+/// Never panics in practice — the internal `NonZeroUsize::new(6)` is a
+/// compile-time constant and can never be zero.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError`] if the account ID is invalid or a service call fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_account_sparkline(
+    account_id: String,
+    commodity: Option<String>,
+    count: Option<u32>,
+    period: Option<bc_ipc::SparklinePeriod>,
+    state: State<'_, AppState>,
+) -> Result<Vec<bc_ipc::SparkPoint>, bc_ipc::BcError> {
+    use core::num::NonZeroUsize;
+
+    let id = account_id
+        .parse::<bc_models::AccountId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
+
+    let commodity_code = match commodity {
+        Some(c) => c,
+        None => state
+            .balance_engine
+            .default_commodity_for(&id)
+            .await
+            .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?
+            .unwrap_or_default(),
+    };
+
+    let bucket_count = count
+        .and_then(|c| NonZeroUsize::new(usize::try_from(c).unwrap_or(0)))
+        .unwrap_or_else(|| {
+            #[expect(
+                clippy::expect_used,
+                reason = "6 is a non-zero constant; this can never panic"
+            )]
+            NonZeroUsize::new(6).expect("6 > 0")
+        });
+
+    let model_period = period
+        .as_ref()
+        .map_or(bc_models::Period::Monthly, ipc_to_model_period);
+
+    let as_of = jiff::Zoned::now().date();
+
+    let buckets = state
+        .balance_engine
+        .posting_buckets(&id, &commodity_code, &model_period, bucket_count, as_of)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
+    // `mantissa()` returns the integer coefficient already at the Decimal's scale
+    // (e.g. `Decimal::new(10000, 2)` = $100.00 → mantissa 10000 = 100 cents).
+    // Amounts created via the IPC layer always carry the correct scale.
+    let points: Vec<bc_ipc::SparkPoint> = buckets
+        .into_iter()
+        .map(|b| {
+            let income = i64::try_from(b.inflow.mantissa()).unwrap_or(0);
+            let expenses = i64::try_from(b.outflow.mantissa()).unwrap_or(0);
+            bc_ipc::SparkPoint::new(spark_label(b.start, &model_period), income, expenses)
+        })
+        .collect();
+
+    Ok(points)
+}
