@@ -8,11 +8,7 @@ use super::Title;
 
 /// Constructs a [`SparkPoint`] from a static string label and cent values.
 fn pt(label: &'static str, income: i64, expenses: i64) -> SparkPoint {
-    SparkPoint {
-        label: label.into(),
-        income,
-        expenses,
-    }
+    SparkPoint::new(label, income, expenses)
 }
 
 /// Renders [`Sparkline`] in several states for visual inspection.
@@ -26,14 +22,16 @@ fn pt(label: &'static str, income: i64, expenses: i64) -> SparkPoint {
 pub fn SparklineQa() -> impl IntoView {
     // 30 daily points: weekends (d%7 < 2) have no income; expenses occur every day.
     let dense_pts: Vec<SparkPoint> = (1_i64..=30)
-        .map(|d| SparkPoint {
-            label: format!("{d:02}"),
-            income: if d % 7 < 2 {
-                0
-            } else {
-                11_000 + d * 317 % 4_000
-            },
-            expenses: 8_000 + d * 53 % 3_000,
+        .map(|d| {
+            SparkPoint::new(
+                format!("{d:02}"),
+                if d % 7 < 2 {
+                    0
+                } else {
+                    11_000 + d * 317 % 4_000
+                },
+                8_000 + d * 53 % 3_000,
+            )
         })
         .collect();
     view! {

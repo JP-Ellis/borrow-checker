@@ -160,17 +160,9 @@ fn fill_points_attr(pts: &[(f32, f32)], chart_bot: f32) -> String {
 
 // MARK: Data Types
 
-/// A data point for the sparkline: a label and two values (income, expenses).
-#[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-pub struct SparkPoint {
-    /// X-axis label, e.g. `"apr"`.
-    pub label: String,
-    /// Income in the currency's minor unit (positive).
-    pub income: i64,
-    /// Expenses in the currency's minor unit (positive magnitude — plotted separately).
-    pub expenses: i64,
-}
+/// Re-exported from `bc_ipc` so callers can `use crate::components::sparkline::SparkPoint`
+/// without adding a direct `bc_ipc` import.
+pub use bc_ipc::SparkPoint;
 
 // MARK: Component
 

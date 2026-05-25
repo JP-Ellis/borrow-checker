@@ -8,7 +8,6 @@ use bc_ipc::AccountType;
 use leptos::prelude::*;
 use stylance::import_style;
 
-use crate::components::sparkline::SparkPoint;
 use crate::components::sparkline::Sparkline;
 use crate::components::sparkline::Title;
 use crate::components::stat_card::StatCard;
@@ -20,42 +19,6 @@ import_style!(style, "dashboard.module.scss");
 
 /// Monotonic counter for generating unique per-instance anchor names and popover IDs.
 static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
-
-/// Static 6-month sparkline stub data (income, expenses).
-fn stub_spark_points() -> Vec<SparkPoint> {
-    vec![
-        SparkPoint {
-            label: "nov".into(),
-            income: 900_000,
-            expenses: 680_000,
-        },
-        SparkPoint {
-            label: "dec".into(),
-            income: 915_000,
-            expenses: 710_000,
-        },
-        SparkPoint {
-            label: "jan".into(),
-            income: 905_000,
-            expenses: 695_000,
-        },
-        SparkPoint {
-            label: "feb".into(),
-            income: 910_000,
-            expenses: 700_000,
-        },
-        SparkPoint {
-            label: "mar".into(),
-            income: 908_000,
-            expenses: 688_000,
-        },
-        SparkPoint {
-            label: "apr".into(),
-            income: 910_000,
-            expenses: 690_000,
-        },
-    ]
-}
 
 /// Full per-account dashboard: breadcrumb, balance headline, stat tiles, sparkline.
 ///
@@ -75,11 +38,19 @@ pub fn AccountDashboard(
     node: AccountNode,
 ) -> impl IntoView {
     let account_id = node.id.clone();
+    let sparkline_account_id = node.id.clone();
 
     let stats_resource = LocalResource::new(move || {
         let id = account_id.clone();
         async move { bc_ipc::client::get_account_stats(&id).await }
     });
+
+    let sparkline_resource = LocalResource::new(move || {
+        let id = sparkline_account_id.clone();
+        async move { bc_ipc::client::get_account_sparkline(&id).await }
+    });
+
+    let sparkline_currency_code = node.balance.currency_code.clone();
 
     let balance_str = {
         let currency =
@@ -241,13 +212,16 @@ pub fn AccountDashboard(
                 </StatCards>
             </div>
 
-            <Sparkline
-                points=stub_spark_points()
-                currency=bc_ipc::currency_from_code(&node.balance.currency_code)
-                    .unwrap_or(&bc_ipc::USD)
-            >
-                <Title slot>"Cash Flow (Last 6 Months)"</Title>
-            </Sparkline>
+            {move || {
+                let points = sparkline_resource.get().and_then(Result::ok).unwrap_or_default();
+                let currency = bc_ipc::currency_from_code(&sparkline_currency_code)
+                    .unwrap_or(&bc_ipc::USD);
+                view! {
+                    <Sparkline points=points currency=currency>
+                        <Title slot>"Cash Flow (Last 6 Months)"</Title>
+                    </Sparkline>
+                }
+            }}
         </div>
     }
 }
