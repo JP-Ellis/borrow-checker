@@ -25,8 +25,8 @@ async function waitForDriver(port: number, timeoutMs: number): Promise<void> {
 }
 
 const APPLICATION =
-  process.env['TAURI_BINARY'] ?? resolve(__dirname, '../../target/debug/bc-app');
-const APP_CRATE    = resolve(__dirname, '../../crates/bc-app');
+  process.env['TAURI_BINARY'] ?? resolve(__dirname, '../target/debug/bc-app');
+const APP_CRATE    = resolve(__dirname, '../crates/bc-app');
 const TEST_DB_DIR  = resolve(__dirname, 'fixtures');
 const TEST_DB_PATH = join(TEST_DB_DIR, 'test.db');
 
@@ -83,7 +83,7 @@ export const config: Options.Testrunner = {
     // Seed the test database.
     console.log('Seeding test database…');
     execSync(
-      `cargo +nightly -Zscript ../../scripts/seed-test-db --db-path "${TEST_DB_PATH}" --force`,
+      `cargo +nightly -Zscript ../scripts/seed-test-db --db-path "${TEST_DB_PATH}" --force`,
       { cwd: __dirname, stdio: 'inherit' },
     );
 
