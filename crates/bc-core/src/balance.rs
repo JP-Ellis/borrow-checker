@@ -128,6 +128,50 @@ impl Engine {
 
         Ok(total)
     }
+
+    /// Returns the default-commodity balance for every active account in one query.
+    ///
+    /// The map key is [`AccountId`]; the value is `(commodity_code, balance)`.
+    /// Accounts with no linked default commodity are omitted from the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or parse failure.
+    #[inline]
+    pub async fn default_balances(
+        &self,
+    ) -> BcResult<std::collections::HashMap<AccountId, (String, Decimal)>> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT
+                 a.id,
+                 COALESCE(c.code, '')           AS commodity_code,
+                 COALESCE(b.amount, '0')        AS balance
+             FROM accounts a
+             LEFT JOIN account_commodities ac
+                    ON ac.account_id = a.id AND ac.position = 0
+             LEFT JOIN commodities c ON c.id = ac.commodity_id
+             LEFT JOIN balances b
+                    ON b.account_id = a.id AND b.commodity = c.code
+             WHERE a.archived_at IS NULL",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut map = std::collections::HashMap::with_capacity(rows.len());
+        for (id_str, commodity, balance_str) in rows {
+            if commodity.is_empty() {
+                continue; // no default commodity — omit from results
+            }
+            let id = id_str
+                .parse::<AccountId>()
+                .map_err(|e| BcError::BadData(format!("invalid account id '{id_str}': {e}")))?;
+            let balance = balance_str.parse::<Decimal>().map_err(|e| {
+                BcError::BadData(format!("invalid balance amount '{balance_str}': {e}"))
+            })?;
+            map.insert(id, (commodity, balance));
+        }
+        Ok(map)
+    }
 }
 
 #[cfg(test)]
@@ -259,6 +303,124 @@ mod tests {
         // Expected: savings (50_000) + house valuation (650_000) = 700_000
         // (Income account is excluded from net worth as it's not Asset/Liability)
         assert_eq!(net_worth, dec!(700_000));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn default_balances_returns_real_balance(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+        use rust_decimal_macros::dec;
+
+        // Create commodity
+        sqlx::query("INSERT INTO commodities (id, code) VALUES ('com_aud', 'AUD')")
+            .execute(&pool)
+            .await
+            .expect("insert commodity");
+
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        // Wire the commodity to the account
+        sqlx::query(
+            "INSERT INTO account_commodities (account_id, commodity_id, position)
+             VALUES (?, 'com_aud', 0)",
+        )
+        .bind(acc.to_string())
+        .execute(&pool)
+        .await
+        .expect("link commodity");
+
+        // Seed the balance cache directly
+        sqlx::query(
+            "INSERT INTO balances (account_id, commodity, amount, updated_at)
+             VALUES (?, 'AUD', '1234.56', '2026-01-01T00:00:00Z')",
+        )
+        .bind(acc.to_string())
+        .execute(&pool)
+        .await
+        .expect("seed balance");
+
+        let engine = Engine::new(pool.clone());
+        let map = engine
+            .default_balances()
+            .await
+            .expect("default_balances should succeed");
+
+        let (code, bal) = map.get(&acc).expect("account should be in map");
+        assert_eq!(code.as_str(), "AUD");
+        assert_eq!(*bal, dec!(1234.56));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn default_balances_zero_for_account_without_balance_row(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+
+        sqlx::query("INSERT INTO commodities (id, code) VALUES ('com_aud2', 'AUD')")
+            .execute(&pool)
+            .await
+            .expect("insert commodity");
+
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("Empty")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        sqlx::query(
+            "INSERT INTO account_commodities (account_id, commodity_id, position)
+             VALUES (?, 'com_aud2', 0)",
+        )
+        .bind(acc.to_string())
+        .execute(&pool)
+        .await
+        .expect("link commodity");
+
+        let engine = Engine::new(pool.clone());
+        let map = engine
+            .default_balances()
+            .await
+            .expect("default_balances should succeed");
+
+        let (code, bal) = map.get(&acc).expect("account in map");
+        assert_eq!(code.as_str(), "AUD");
+        assert_eq!(*bal, rust_decimal::Decimal::ZERO);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn default_balances_omits_account_without_commodity(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("NoCommodity")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let engine = Engine::new(pool.clone());
+        let map = engine
+            .default_balances()
+            .await
+            .expect("default_balances should succeed");
+
+        // Account has no commodity → not included in the map
+        assert!(!map.contains_key(&acc));
     }
 
     #[sqlx::test(migrations = "./migrations")]
