@@ -35,7 +35,8 @@ export const config: Options.Testrunner = {
   port:     4444,
   path:     '/',
 
-  specs: ['./tests/**/*.spec.ts'],
+  /* Visual specs run first (before mutating flow tests dirty the DB). */
+  specs: ['./tests/visual/**/*.spec.ts', './tests/flows/**/*.spec.ts'],
 
   maxInstances: 1,
 
@@ -47,6 +48,20 @@ export const config: Options.Testrunner = {
         application: APPLICATION,
       },
     },
+  ],
+
+  services: [
+    [
+      'visual',
+      {
+        baselineFolder:    './tests/visual/__snapshots__',
+        formatImageName:   '{tag}-{browserName}',
+        screenshotPath:    './.tmp/visual',
+        autoSaveBaseline:  true,
+        /* Threshold 0 = pixel-perfect; raise if font hinting varies. */
+        savePerInstance:   true,
+      },
+    ],
   ],
 
   logLevel:  'warn',

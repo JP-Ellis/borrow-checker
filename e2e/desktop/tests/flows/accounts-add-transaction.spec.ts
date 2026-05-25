@@ -19,11 +19,21 @@ describe('Accounts — add transaction', () => {
             { timeout: 5_000, timeoutMsg: 'URL did not reach /accounts within 5 s' },
         );
 
+        // Wait for the sidebar to populate with account links before clicking.
+        // Accounts are loaded via async IPC so the nav may lag behind the URL change.
+        // We wait for any <a> inside the nav to appear, which means the list is ready.
+        const sidebarNav = await $('nav[aria-label="account navigation"]');
+        await sidebarNav.$('a').waitForDisplayed({ timeout: 10_000 });
+
         // Click on the "Checking" account in the sidebar.
-        // "Checking" comes from the seed DB — seed-test-db creates this account.
-        const checkingLink = await $('=Checking');
-        await checkingLink.waitForDisplayed({ timeout: 5_000 });
-        await checkingLink.click();
+        // "Checking" comes from the seed DB.  Each sidebar row is an <a> containing
+        // a name <span> and a balance <span>, so $('=Checking') (exact link text)
+        // would not match the full "Checking$3,500" text.  Chain a text selector on
+        // the nav element to scope the search without mixing CSS + text in one string
+        // (WebdriverIO does not support 'css-selector span=Text' combined selectors).
+        const checkingSpan = await sidebarNav.$('span=Checking');
+        await checkingSpan.waitForDisplayed({ timeout: 10_000 });
+        await checkingSpan.click();
 
         // Wait for the URL to update to the selected account.
         await browser.waitUntil(
@@ -39,10 +49,13 @@ describe('Accounts — add transaction', () => {
         await addBtn.click();
 
         // UI assertion — "Test Payee" row must appear in the transaction register.
-        const payeeCell = await $('=Test Payee');
+        // Use span= (element-text selector) because the payee renders in a <span>,
+        // not an <a>.  The plain ='Text' selector uses WebDriver's link-text
+        // strategy and only matches <a> elements.
+        const payeeCell = await $('span=Test Payee');
         await payeeCell.waitForDisplayed({
-            timeout: 5_000,
-            timeoutMsg: '"Test Payee" did not appear in the register within 5 s',
+            timeout: 10_000,
+            timeoutMsg: '"Test Payee" did not appear in the register within 10 s',
         });
 
         // DB assertion — row must be persisted in SQLite.
