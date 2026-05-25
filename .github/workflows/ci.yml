@@ -139,20 +139,17 @@ jobs:
       - run: mise run test
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
-      - name: Cache .linux-cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        if: matrix.toolchain == 'stable' && runner.os == 'Linux'
-        with:
-          path: .linux-cache
-          key: linux-cache-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'e2e/aube-lock.yaml') }}
-          restore-keys: |
-            linux-cache-${{ runner.os }}-
-      - name: Link Linux cache dirs to host build outputs
+      - name: Prepare .linux-cache for container bind mounts
         if: matrix.toolchain == 'stable' && runner.os == 'Linux'
         run: |
-          mkdir -p .linux-cache
-          ln -sfn "$(pwd)/target"           .linux-cache/target
-          ln -sfn "$(pwd)/e2e/node_modules" .linux-cache/node_modules
+          # Docker requires real directories as bind-mount sources (not symlinks).
+          # node_modules: empty dir; aube install inside the container populates it
+          #   from the pnpm global store baked into the image.
+          # target: hard-link from the host Cargo build (already warmed by
+          #   Swatinem/rust-cache) so the container reuses the pre-built binary.
+          mkdir -p .linux-cache/node_modules
+          cp -rn --link target/. .linux-cache/target/ 2>/dev/null \
+            || mkdir -p .linux-cache/target
       - name: Run E2E desktop tests (in container)
         if: matrix.toolchain == 'stable' && runner.os == 'Linux'
         run: mise run //e2e:container
