@@ -5,7 +5,52 @@ outputs     = ["node_modules/.package-lock.json"]
 run         = "aube install"
 
 [tasks.test]
-description = "Run WebdriverIO native E2E tests"
+description = "Run WebdriverIO native E2E tests (builds app + seeds DB automatically)"
 depends     = [":setup", "//crates/bc-app:build:debug"]
 env         = { SKIP_BUILD = "1" }
 run         = "aubx wdio run wdio.conf.ts"
+
+# MARK: Container tasks
+# These tasks build and run a Linux container so tests run on WebKitGTK
+# regardless of the host OS (mirrors CI).  {{config_root}} expands to the
+# absolute path of e2e/desktop/, so {{config_root}}/../.. is the repo root.
+
+[tasks."container:build"]
+description = "Build the desktop E2E container image"
+run         = """
+#!/usr/bin/env bash
+docker build -t bc-e2e-native -f {{config_root}}/Containerfile \
+      ${GITHUB_TOKEN:+--secret id=GITHUB_TOKEN,env=GITHUB_TOKEN} \
+      --build-arg NODE_VERSION="$(node --version)" \
+      --build-arg MISE_VERSION="$(mise version | cut -d' ' -f1)" \
+      --build-arg BINSTALL_VERSION="$(cargo-binstall -V)" \
+      --build-arg TRUNK_VERSION="$(trunk --version | cut -d' ' -f2)" \
+      --build-arg STYLANCE_VERSION="$(stylance --version | cut -d' ' -f2)" \
+      --build-arg AUBE_VERSION="$(aube --version | cut -d' ' -f1)" \
+      {{config_root}}/../..
+"""
+
+[tasks.container]
+description = "Run desktop E2E tests in a Linux container (matches CI; works on macOS)"
+depends     = [":container:build"]
+run         = '''
+#!/usr/bin/env bash
+# Run Xvfb manually so stdout/stderr from the test suite is not swallowed.
+# xvfb-run as container PID 1 silences child output; this approach avoids it.
+docker run --rm \
+  -v "{{config_root}}/../..:/repo" \
+  -v bc-e2e-native-node-modules:/repo/e2e/desktop/node_modules \
+  -w /repo \
+  -e CARGO_TARGET_DIR=/repo/target-linux \
+  -e TAURI_BINARY=/repo/target-linux/debug/bc-app \
+  -e DISPLAY=:99 \
+  bc-e2e-native \
+  bash -c 'Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+    XVFB_PID=$!
+    trap "kill $XVFB_PID 2>/dev/null" EXIT
+    # Give Xvfb a moment to initialise.
+    sleep 1
+    mise run //e2e/desktop:test; STATUS=$?
+    kill $XVFB_PID 2>/dev/null
+    exit $STATUS'
+'''
