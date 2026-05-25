@@ -79,11 +79,11 @@ RUN --mount=type=secret,id=MISE_GITHUB_TOKEN \
 EOT
 
 # Pre-install WebdriverIO packages so the first container run is fast.
-COPY e2e/desktop/package.json e2e/desktop/aube-lock.yaml /build/e2e/desktop/
+COPY e2e/package.json e2e/aube-lock.yaml /build/e2e/
 # hadolint shell=bash
 RUN <<EOT bash
     set -euo pipefail -x
-    aube -C /build/e2e/desktop install
+    aube -C /build/e2e install
     rm -rf /var/lib/apt/lists/*
 EOT
 
