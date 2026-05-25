@@ -9,6 +9,22 @@ use crate::BcError;
 use crate::BcResult;
 use crate::db::to_db_str;
 
+/// A single time-bucket of posting aggregation data.
+///
+/// Used for sparklines and period-based cash-flow summaries.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct PostingBucket {
+    /// Inclusive start of the bucket period.
+    pub start: jiff::civil::Date,
+    /// Exclusive end of the bucket period (= start of the next bucket).
+    pub end: jiff::civil::Date,
+    /// Sum of positive postings (money entering the account) in this period.
+    pub inflow: rust_decimal::Decimal,
+    /// Sum of absolute negative postings (money leaving the account) in this period.
+    pub outflow: rust_decimal::Decimal,
+}
+
 /// Calculates account balances from the `postings` projection table.
 #[derive(Debug, Clone)]
 pub struct Engine {
@@ -236,6 +252,92 @@ impl Engine {
                 }
             },
         )
+    }
+
+    /// Returns `count` contiguous period buckets ending with the period containing `as_of`.
+    ///
+    /// Buckets are returned oldest-first. Each bucket covers exactly one `period`
+    /// length. Postings are fetched in a single query and assigned to buckets in Rust.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account to query.
+    /// * `commodity`  - Commodity code (e.g. `"AUD"`).
+    /// * `period`     - Bucket width. Use [`bc_models::Period::Monthly`] for a 6-month sparkline.
+    /// * `count`      - Number of buckets to return.
+    /// * `as_of`      - Reference date; the most recent bucket contains this date.
+    ///
+    /// # Returns
+    ///
+    /// [`Vec<PostingBucket>`] ordered oldest-first. Length equals `count`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or parse failure.
+    #[inline]
+    pub async fn posting_buckets(
+        &self,
+        account_id: &AccountId,
+        commodity: &str,
+        period: &bc_models::Period,
+        count: core::num::NonZeroUsize,
+        as_of: jiff::civil::Date,
+    ) -> BcResult<Vec<PostingBucket>> {
+        // Build bucket boundaries, going backward from as_of.
+        let mut ranges: Vec<(jiff::civil::Date, jiff::civil::Date)> =
+            Vec::with_capacity(count.get());
+        let current = period.range_containing(as_of);
+        ranges.push(current);
+        let mut prev_start = current.0;
+        for _ in 1..count.get() {
+            let prev =
+                period.range_containing(prev_start.saturating_sub(jiff::Span::new().days(1_i32)));
+            ranges.push(prev);
+            prev_start = prev.0;
+        }
+        ranges.reverse(); // oldest first
+
+        // ranges is non-empty: count is NonZeroUsize so we always push at least one entry.
+        let Some(&(earliest_start, _)) = ranges.first() else {
+            return Ok(vec![]);
+        };
+        let Some(&(_, latest_end)) = ranges.last() else {
+            return Ok(vec![]);
+        };
+
+        // One query for all postings across the full range.
+        let all_postings = self
+            .fetch_postings_in_range(account_id, commodity, earliest_start, latest_end)
+            .await?;
+
+        // Distribute postings into buckets.
+        let mut buckets: Vec<PostingBucket> = ranges
+            .into_iter()
+            .map(|(start, end)| PostingBucket {
+                start,
+                end,
+                inflow: rust_decimal::Decimal::ZERO,
+                outflow: rust_decimal::Decimal::ZERO,
+            })
+            .collect();
+
+        for (date, amount) in all_postings {
+            if let Some(bucket) = buckets.iter_mut().find(|b| date >= b.start && date < b.end) {
+                if amount >= rust_decimal::Decimal::ZERO {
+                    bucket.inflow = bucket
+                        .inflow
+                        .checked_add(amount)
+                        .ok_or_else(|| BcError::BadData("inflow overflow".into()))?;
+                } else {
+                    bucket.outflow = bucket
+                        .outflow
+                        .checked_sub(amount)
+                        .ok_or_else(|| BcError::BadData("outflow overflow".into()))?;
+                }
+            }
+        }
+
+        Ok(buckets)
     }
 
     /// Returns the default-commodity balance for every active account in one query.
@@ -705,6 +807,133 @@ mod tests {
 
         // Only the 100.00 inside [2026-04-01, 2026-05-01) should be counted
         assert_eq!(inflow, dec!(100.00));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_buckets_returns_correct_count(pool: sqlx::SqlitePool) {
+        use core::num::NonZeroUsize;
+
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+        use bc_models::Period;
+        use jiff::civil::date;
+
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("Test")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let engine = Engine::new(pool.clone());
+        let buckets = engine
+            .posting_buckets(
+                &acc,
+                "AUD",
+                &Period::Monthly,
+                NonZeroUsize::new(6).expect("6 > 0"),
+                date(2026, 5, 25),
+            )
+            .await
+            .expect("posting_buckets");
+
+        // Should return exactly 6 monthly buckets, oldest first.
+        // as_of = 2026-05-25 → current bucket = [2026-05-01, 2026-06-01)
+        // Going back 5 more months: 2026-04, 2026-03, 2026-02, 2026-01, 2025-12
+        assert_eq!(buckets.len(), 6);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "test assertions on known-length vec"
+        )]
+        {
+            assert_eq!(buckets[0].start.to_string(), "2025-12-01");
+            assert_eq!(buckets[5].start.to_string(), "2026-05-01");
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_buckets_assigns_postings_to_correct_bucket(pool: sqlx::SqlitePool) {
+        use core::num::NonZeroUsize;
+
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+        use bc_models::Period;
+        use jiff::civil::date;
+        use rust_decimal_macros::dec;
+
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("Test")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        // One inflow in April, one outflow in May
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, status, created_at)
+             VALUES ('tbk1', '2026-04-15', 'April pay', 'cleared', '2026-04-15T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("tx april");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position)
+             VALUES ('pbk1', 'tbk1', ?, '500.00', 'AUD', 0)",
+        )
+        .bind(acc.to_string())
+        .execute(&pool)
+        .await
+        .expect("posting april");
+
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, status, created_at)
+             VALUES ('tbk2', '2026-05-10', 'May rent', 'cleared', '2026-05-10T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("tx may");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position)
+             VALUES ('pbk2', 'tbk2', ?, '-200.00', 'AUD', 0)",
+        )
+        .bind(acc.to_string())
+        .execute(&pool)
+        .await
+        .expect("posting may");
+
+        let engine = Engine::new(pool.clone());
+        let buckets = engine
+            .posting_buckets(
+                &acc,
+                "AUD",
+                &Period::Monthly,
+                NonZeroUsize::new(2).expect("2 > 0"),
+                date(2026, 5, 25),
+            )
+            .await
+            .expect("posting_buckets");
+
+        assert_eq!(buckets.len(), 2);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "test assertions on known-length vec"
+        )]
+        {
+            // First bucket: April (inflow 500, outflow 0)
+            assert_eq!(buckets[0].start.to_string(), "2026-04-01");
+            assert_eq!(buckets[0].inflow, dec!(500.00));
+            assert_eq!(buckets[0].outflow, rust_decimal::Decimal::ZERO);
+            // Second bucket: May (inflow 0, outflow 200)
+            assert_eq!(buckets[1].start.to_string(), "2026-05-01");
+            assert_eq!(buckets[1].inflow, rust_decimal::Decimal::ZERO);
+            assert_eq!(buckets[1].outflow, dec!(200.00));
+        }
     }
 
     #[sqlx::test(migrations = "./migrations")]
