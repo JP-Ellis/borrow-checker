@@ -149,3 +149,53 @@ pub async fn create_transaction(
 
     Ok(tx_id.to_string())
 }
+
+/// Returns income and expense totals for `account_id` over the last 30 days.
+///
+/// # Arguments
+///
+/// * `account_id` - The account to query.
+/// * `commodity`  - Optional commodity code override. Defaults to the account's first commodity.
+/// * `state`      - Tauri managed application state.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError`] if the account ID is invalid or a service call fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_account_stats(
+    account_id: String,
+    commodity: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<bc_ipc::AccountStats, bc_ipc::BcError> {
+    let id = account_id
+        .parse::<bc_models::AccountId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
+
+    let commodity_code = match commodity {
+        Some(c) => c,
+        None => state
+            .balance_engine
+            .default_commodity_for(&id)
+            .await
+            .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?
+            .unwrap_or_default(),
+    };
+
+    let today = jiff::Zoned::now().date();
+    let from = today.saturating_sub(jiff::Span::new().days(30_i32));
+
+    let (inflow, outflow) = state
+        .balance_engine
+        .posting_flows(&id, &commodity_code, from, today)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
+    Ok(bc_ipc::AccountStats::new(
+        crate::ipc::decimal_to_amount(inflow, &commodity_code),
+        crate::ipc::decimal_to_amount(outflow, &commodity_code),
+    ))
+}

@@ -340,6 +340,27 @@ impl Engine {
         Ok(buckets)
     }
 
+    /// Returns the commodity code of the first (default) commodity for `account_id`, or `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database failure.
+    #[inline]
+    pub async fn default_commodity_for(&self, account_id: &AccountId) -> BcResult<Option<String>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT c.code
+             FROM account_commodities ac
+             JOIN commodities c ON c.id = ac.commodity_id
+             WHERE ac.account_id = ?
+             ORDER BY ac.position
+             LIMIT 1",
+        )
+        .bind(account_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(code,)| code))
+    }
+
     /// Returns the default-commodity balance for every active account in one query.
     ///
     /// The map key is [`AccountId`]; the value is `(commodity_code, balance)`.
