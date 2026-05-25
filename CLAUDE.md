@@ -48,8 +48,7 @@ crates/
   bc-sdk-macros/   # Proc-macros for bc-sdk
   bc-otel/         # OpenTelemetry initialisation
 plugins/           # First-party importer plugins (CSV, OFX, Ledger, Beancount)
-e2e/web/           # Playwright tests (trunk serve, port 1420)
-e2e/desktop/       # WebdriverIO + tauri-driver desktop app tests
+e2e/               # WebdriverIO + tauri-driver desktop app tests
 ```
 
 ## Data Flow
