@@ -9,6 +9,23 @@ const ROUTES = [
     { name: 'settings'  as const, path: '/settings' },
 ];
 
+/**
+ * Wait until the WebView's `window.location.pathname` matches `path`.
+ *
+ * Using `window.location` rather than `browser.getUrl()` sidesteps the
+ * Tauri/WRY custom-protocol prefix (`tauri://localhost/…`) and gives us
+ * exactly the path that the Leptos router reads.
+ */
+async function waitForPath(path: string, timeout = 5_000): Promise<void> {
+    await browser.waitUntil(
+        () => browser.execute(
+            (expected: string) => window.location.pathname === expected,
+            path,
+        ),
+        { timeout, timeoutMsg: `Pathname did not reach ${path} within ${timeout} ms` },
+    );
+}
+
 describe('Shell navigation', () => {
     it('header and main area are visible on every route', async () => {
         for (const { name, path } of ROUTES) {
@@ -16,12 +33,7 @@ describe('Shell navigation', () => {
             const link = await nav.$(`a=${name}`);
             await link.click();
 
-            if (path !== '/') {
-                await browser.waitUntil(
-                    async () => (await browser.getUrl()).includes(path),
-                    { timeout: 5_000, timeoutMsg: `URL did not reach ${path} within 5 s` },
-                );
-            }
+            await waitForPath(path);
 
             await expect(await $('header')).toBeDisplayed();
             await expect(await $('main')).toBeDisplayed();
@@ -42,10 +54,7 @@ describe('Shell navigation', () => {
         const accountsLink = await nav.$('a=accounts');
         await accountsLink.click();
 
-        await browser.waitUntil(
-            async () => (await browser.getUrl()).includes('/accounts'),
-            { timeout: 5_000, timeoutMsg: 'URL did not reach /accounts within 5 s' },
-        );
+        await waitForPath('/accounts');
 
         await expect(await $('main')).toBeDisplayed();
     });
@@ -56,12 +65,7 @@ describe('Shell navigation', () => {
             const link = await nav.$(`a=${name}`);
             await link.click();
 
-            if (path !== '/') {
-                await browser.waitUntil(
-                    async () => (await browser.getUrl()).includes(path),
-                    { timeout: 5_000 },
-                );
-            }
+            await waitForPath(path);
 
             await expect(await $('main')).toBeDisplayed();
             const bodyText = (await (await $('body')).getText()).toLowerCase();
@@ -80,5 +84,12 @@ describe('Shell navigation', () => {
 
         const bodyText = (await (await $('body')).getText()).toLowerCase();
         expect(bodyText).toContain('page not found');
+
+        /* Restore to a known-good route so later specs are not order-dependent. */
+        await browser.execute(() => {
+            window.history.pushState({}, '', '/');
+            window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+        });
+        await waitForPath('/');
     });
 });
