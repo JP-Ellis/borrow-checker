@@ -83,3 +83,61 @@ pub async fn create_transaction(tx: &NewTransaction) -> Result<String, BcError> 
     )
     .await
 }
+
+/// Argument struct for [`get_account_stats`].
+#[derive(Serialize)]
+struct GetAccountStatsArgs<'a> {
+    /// Account ID to query.
+    account_id: &'a str,
+    /// Optional commodity code override.
+    commodity: Option<&'a str>,
+}
+
+/// Argument struct for [`get_account_sparkline`].
+#[derive(Serialize)]
+struct GetAccountSparklineArgs<'a> {
+    /// Account ID to query.
+    account_id: &'a str,
+    /// Optional commodity code override.
+    commodity: Option<&'a str>,
+    /// Optional bucket count (default: 6).
+    count: Option<u32>,
+    /// Optional bucket period (default: Monthly).
+    period: Option<&'a crate::SparklinePeriod>,
+}
+
+/// Gets income and expense totals for `account_id` over the last 30 days.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn get_account_stats(account_id: &str) -> Result<crate::AccountStats, BcError> {
+    tauri_sys::core::invoke_result::<crate::AccountStats, BcError>(
+        commands::GET_ACCOUNT_STATS,
+        GetAccountStatsArgs {
+            account_id,
+            commodity: None,
+        },
+    )
+    .await
+}
+
+/// Gets period-bucketed cash-flow data for a sparkline, defaulting to 6 monthly buckets.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn get_account_sparkline(account_id: &str) -> Result<Vec<crate::SparkPoint>, BcError> {
+    tauri_sys::core::invoke_result::<Vec<crate::SparkPoint>, BcError>(
+        commands::GET_ACCOUNT_SPARKLINE,
+        GetAccountSparklineArgs {
+            account_id,
+            commodity: None,
+            count: None,
+            period: None,
+        },
+    )
+    .await
+}
