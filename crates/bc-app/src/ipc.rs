@@ -137,12 +137,60 @@ impl IntoIpc for &bc_models::Account {
             self.id().to_string(),
             self.name(),
             None::<&str>,
-            bc_ipc::Amount::new(0, "AUD", 2), // TODO(ipc): compute via BalanceEngine
+            bc_ipc::Amount::new(0, "", 2),
             self.parent_id().map(ToString::to_string),
             self.account_type().into_ipc(),
             vec![],
         )
     }
+}
+
+/// Converts a [`bc_models::Account`] to [`bc_ipc::AccountNode`] with a pre-computed balance.
+///
+/// Used by `list_accounts` which fetches balances in a separate batch query.
+///
+/// # Arguments
+///
+/// * `account` - The account to convert.
+/// * `balance` - The pre-computed balance for this account.
+#[inline]
+pub(crate) fn into_ipc_with_balance(
+    account: &bc_models::Account,
+    balance: bc_ipc::Amount,
+) -> bc_ipc::AccountNode {
+    bc_ipc::AccountNode::new(
+        account.id().to_string(),
+        account.name(),
+        None::<&str>,
+        balance,
+        account.parent_id().map(ToString::to_string),
+        account.account_type().into_ipc(),
+        vec![],
+    )
+}
+
+/// Converts a [`rust_decimal::Decimal`] to a [`bc_ipc::Amount`].
+///
+/// The decimal's internal mantissa and scale are used directly — `mantissa()`
+/// gives the coefficient already scaled (e.g. `10.50` → mantissa `1050`, scale `2`),
+/// so minor units are derived without any arithmetic overflow risk.
+///
+/// # Arguments
+///
+/// * `d`             - Decimal value.
+/// * `currency_code` - ISO 4217 code, e.g. `"AUD"`.
+#[inline]
+pub(crate) fn decimal_to_amount(d: rust_decimal::Decimal, currency_code: &str) -> bc_ipc::Amount {
+    let minor = i64::try_from(d.mantissa()).unwrap_or(0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Decimal::scale() ≤ 28 for rust_decimal; always fits in u8"
+    )]
+    #[expect(
+        clippy::as_conversions,
+        reason = "Decimal::scale() ≤ 28 for rust_decimal; cast is safe"
+    )]
+    bc_ipc::Amount::new(minor, currency_code, d.scale() as u8)
 }
 
 // MARK: Posting

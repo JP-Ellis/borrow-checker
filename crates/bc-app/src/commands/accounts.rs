@@ -15,7 +15,7 @@
 use tauri::State;
 
 use crate::AppState;
-use crate::ipc::IntoIpc;
+use crate::ipc::IntoIpc as _;
 use crate::ipc::IntoModel as _;
 
 // MARK: Command handlers
@@ -38,7 +38,26 @@ pub async fn list_accounts(
         .list_active()
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    Ok(accounts.iter().map(IntoIpc::into_ipc).collect())
+
+    let balances = state
+        .balance_engine
+        .default_balances()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
+    let nodes = accounts
+        .iter()
+        .map(|account| {
+            let (currency_code, decimal) = balances
+                .get(account.id())
+                .map_or(("", rust_decimal::Decimal::ZERO), |(c, d)| (c.as_str(), *d));
+
+            let balance = crate::ipc::decimal_to_amount(decimal, currency_code);
+            crate::ipc::into_ipc_with_balance(account, balance)
+        })
+        .collect();
+
+    Ok(nodes)
 }
 
 /// List transactions for the given account.

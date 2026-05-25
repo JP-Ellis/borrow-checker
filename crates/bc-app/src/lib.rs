@@ -21,6 +21,8 @@ pub(crate) struct AppState {
     pub(crate) accounts: bc_core::AccountService,
     /// Transaction service.
     pub(crate) transactions: bc_core::TransactionService,
+    /// Balance engine — computes running balances and cash-flow aggregations.
+    pub(crate) balance_engine: bc_core::BalanceEngine,
 }
 
 /// Initialise and run the Tauri application.
@@ -53,7 +55,8 @@ pub fn run() {
             let pool = tauri::async_runtime::block_on(bc_core::open_db_at(&db_path))?;
             app.manage(AppState {
                 accounts: bc_core::AccountService::new(pool.clone()),
-                transactions: bc_core::TransactionService::new(pool),
+                transactions: bc_core::TransactionService::new(pool.clone()),
+                balance_engine: bc_core::BalanceEngine::new(pool),
             });
             Ok(())
         })
