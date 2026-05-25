@@ -74,6 +74,13 @@ pub fn AccountDashboard(
     /// Account to display.
     node: AccountNode,
 ) -> impl IntoView {
+    let account_id = node.id.clone();
+
+    let stats_resource = LocalResource::new(move || {
+        let id = account_id.clone();
+        async move { bc_ipc::client::get_account_stats(&id).await }
+    });
+
     let balance_str = {
         let currency =
             bc_ipc::currency_from_code(&node.balance.currency_code).unwrap_or(&bc_ipc::USD);
@@ -181,18 +188,44 @@ pub fn AccountDashboard(
 
             <div class=style::stat_row>
                 <StatCards count=4>
-                    <StatCard
-                        label="income (30d)".into()
-                        value="+$9,100".into()
-                        sub="avg · commbank-au"
-                        tone=StatTone::Good
-                    />
-                    <StatCard
-                        label="expenses (30d)".into()
-                        value="−$6,900".into()
-                        sub="avg · 47 transactions"
-                        tone=StatTone::Bad
-                    />
+                    {move || {
+                        let stats = stats_resource.get().and_then(Result::ok);
+                        let (income_str, expense_str) = stats
+                            .as_ref()
+                            .map_or_else(
+                                || ("—".into(), "—".into()),
+                                |s| {
+                                    let currency = bc_ipc::currency_from_code(
+                                            &s.income.currency_code,
+                                        )
+                                        .unwrap_or(&bc_ipc::USD);
+                                    let inc = crate::components::num::format_amount(
+                                        s.income.minor_units,
+                                        currency,
+                                    );
+                                    let exp = crate::components::num::format_amount(
+                                        s.expenses.minor_units,
+                                        currency,
+                                    );
+                                    (inc, exp)
+                                },
+                            );
+
+                        view! {
+                            <StatCard
+                                label="income (30d)".into()
+                                value=income_str
+                                sub="last 30 days"
+                                tone=StatTone::Good
+                            />
+                            <StatCard
+                                label="expenses (30d)".into()
+                                value=expense_str
+                                sub="last 30 days"
+                                tone=StatTone::Bad
+                            />
+                        }
+                    }}
                     <StatCard
                         label="uncategorised".into()
                         value="3".into()
