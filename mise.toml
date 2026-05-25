@@ -11,8 +11,7 @@ windows_default_inline_shell_args = "pwsh -NonInteractive -Command"
 config_roots = [
   "crates/bc-app",
   "crates/bc-ui",
-  "e2e/web",
-  "e2e/desktop",
+  "e2e",
 ]
 
 [tools]
@@ -88,21 +87,9 @@ BC_DB_PATH="$DEV_DB" cargo tauri dev
   run         = "cargo test --doc --workspace"
 
   [tasks."test:e2e"]
-  description = "Run all E2E tests (web + desktop)"
-  run         = [
-    { task = "test:e2e:web" },
-    { task = "test:e2e:desktop" },
-  ]
-
-  [tasks."test:e2e:web"]
-  description = "Run web E2E tests in a Linux container"
-  usage       = 'flag "--update-snapshots" help="Update snapshot baselines with actual results"'
-  run         = "mise run //e2e/web:container{% if usage.update_snapshots %} --update-snapshots{% endif %}"
-
-  [tasks."test:e2e:desktop"]
-  description = "Run WebdriverIO desktop app E2E tests"
+  description = "Run E2E tests (desktop suite; container recommended on macOS)"
   usage       = 'flag "--container" help="Run in a Linux container (matches CI; works on macOS)"'
-  run         = "mise run {% if usage.container %}//e2e/desktop:container{% else %}//e2e/desktop:test{% endif %}"
+  run         = "mise run {% if usage.container %}//e2e:container{% else %}//e2e:test{% endif %}"
 
   # MARK: Quality
 
