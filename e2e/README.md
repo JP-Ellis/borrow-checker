@@ -1,51 +1,53 @@
-# Desktop E2E Suite (WebdriverIO + tauri-driver)
+# E2E Tests
 
-Tests the full Tauri desktop application. Requires a compiled debug binary and
-the platform's WebDriver server.
+WebdriverIO + tauri-driver end-to-end tests for the compiled Tauri desktop app.
+
+Tests run against the real `bc-app` binary on WebKitGTK — the same engine that
+ships to users. IPC, SQLite persistence, and real rendering are all exercised.
 
 ## Prerequisites
 
-- `mise install` from the repo root (installs Rust, tauri-cli, tauri-driver, and
-  all other project tools)
+- `cargo install tauri-cli tauri-driver` (one-time)
+- Linux: `webkitgtk-webdriver` package (Ubuntu 26.04+: included in `Containerfile`)
+- macOS/Windows: run via the container task (see below)
 
-### Linux
-
-```sh
-sudo apt-get install webkit2gtk-driver
-```
-
-### Windows
-
-Install [Microsoft Edge WebDriver](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/) and ensure it is on `PATH`.
-
-### macOS ⚠️ Experimental
-
-macOS WKWebView has no native WebDriver support. Testing on macOS requires [tauri-webdriver](https://github.com/danielraffel/tauri-webdriver), which is **experimental** (released February 2026) and may be unstable.
-
-Follow the install instructions in the tauri-webdriver repository. This is **not** required for CI (Linux handles the stable baseline); macOS support is best-effort and the CI job runs with `continue-on-error: true`.
-
-## Running
+## Quick start
 
 ```sh
-# Run all tests (builds the debug binary automatically via mise deps)
-mise run test:e2e:desktop
+# Install Node dependencies
+aube install
 
-# Or run directly from this directory (same effect)
-mise run test
+# Run tests (builds the app automatically)
+aubx wdio run wdio.conf.ts
 ```
 
-To skip the Tauri build when the binary is already up-to-date:
+Prefer the `mise` tasks from the repo root — they handle dependency ordering:
 
 ```sh
-SKIP_BUILD=1 aubx wdio run wdio.conf.ts
+mise run test:e2e            # run locally (no container)
+mise run test:e2e --container  # run in Linux container (recommended on macOS)
 ```
 
-## Adding flow tests
+## Visual regression
 
-Each flow test in `tests/flows/` should:
+Baselines live in `tests/visual/__snapshots__/desktop_wry/` and are generated
+on Linux (WebKitGTK) for consistency. To regenerate them:
 
-1. Seed state via a `#[cfg(debug_assertions)]`-gated Tauri command (e.g. `__seed_accounts`) registered in `crates/bc-app/src/commands.rs`.
-1. Drive the UI with WebdriverIO selectors.
-1. Assert the expected result in the rendered DOM.
+```sh
+mise run test:e2e --container
+```
 
-Prefer semantic HTML selectors (`$('main')`, `$('nav[aria-label="..."]')`) over CSS class selectors, which may be scoped by stylance.
+Delete the relevant `*-wry.png` files before running to force a fresh capture.
+
+## Test structure
+
+| Directory | What it covers |
+|-----------|---------------|
+| `tests/flows/` | Full app flows: shell navigation, transaction creation |
+| `tests/visual/` | Visual regression and design-token / APCA contrast checks |
+
+## Database seeding
+
+Each test run seeds `fixtures/test.db` from `scripts/seed-test-db` (via the
+`onPrepare` hook in `wdio.conf.ts`). The `fixtures/` directory is gitignored —
+it is created at runtime.
