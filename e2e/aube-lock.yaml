@@ -16,6 +16,7 @@ time:
   '@wdio/spec-reporter@9.27.1': 2026-04-30T21:03:23.687000Z
   '@wdio/types@9.27.1': 2026-04-30T21:03:14.852000Z
   '@wdio/visual-service@9.2.2': 2026-04-09T05:12:37.407000Z
+  apca-w3@0.1.9: 2022-07-04T09:07:03.397000Z
   better-sqlite3@12.10.0: 2026-05-12T09:58:59.557000Z
   expect-webdriverio@5.6.5: 2026-03-13T19:34:51.396000Z
   ts-node@10.9.2: 2023-12-08T12:04:46.154000Z
@@ -29,6 +30,9 @@ importers:
       '@types/node':
         specifier: '*'
         version: 25.9.1
+      apca-w3:
+        specifier: 0.1.9
+        version: 0.1.9
       expect-webdriverio:
         specifier: ^5.6.5
         version: 5.6.5(@wdio/globals@9.27.1)(@wdio/logger@9.18.0)(webdriverio@9.27.1)
@@ -654,6 +658,9 @@ packages:
     resolution: {integrity: sha512-KMReFUr0B4t+D+OBkjR3KYqvocp2XaSzO55UcB6mgQMd3KbcE+mWTyvVV7D/zsdEbNnV6acZUutkiHQXvTr1Rw==}
     engines: {node: '>= 8'}
 
+  apca-w3@0.1.9:
+    resolution: {integrity: sha512-Zrf6AeBeQjNe/fxK7U1jCo5zfdjDl6T4/kdw5Xlky3G7u+EJTZkyItjMYQGtwf9pkftsINxcYyOpuLkzKf1ITQ==}
+
   archiver-utils@5.0.2:
     resolution: {integrity: sha512-wuLJMmIBQYCsGZgYLTy5FIB2pF6Lfb6cXMSF8Qywwk3t20zWnAi7zLcQFdKQmIB8wyZpY5ER38x08GbwtR2cLA==}
     engines: {node: '>= 14'}
@@ -851,6 +858,9 @@ packages:
 
   color-name@1.1.4:
     resolution: {integrity: sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA==}
+
+  colorparsley@0.1.8:
+    resolution: {integrity: sha512-rObESTTTE6G5qO5WFwFxWPggpw4KfpxnLC6Ssl8bITBnNVRhDsyCeTRAUxWQNVTx2pRknKlO2nddYTxjkdNFaw==}
 
   commander@14.0.3:
     resolution: {integrity: sha512-H+y0Jo/T1RZ9qPP4Eh1pkcQcLRglraJaSLoyOtHxu6AapkjWVCy2Sit1QQ4x3Dng8qDlSsZEet7g5Pq06MvTgw==}
@@ -2889,6 +2899,10 @@ snapshots:
       normalize-path: 3.0.0
       picomatch: 2.3.2
 
+  apca-w3@0.1.9:
+    dependencies:
+      colorparsley: 0.1.8
+
   archiver-utils@5.0.2:
     dependencies:
       glob: 10.5.0
@@ -3084,6 +3098,8 @@ snapshots:
       color-name: 1.1.4
 
   color-name@1.1.4: {}
+
+  colorparsley@0.1.8: {}
 
   commander@14.0.3: {}
 
