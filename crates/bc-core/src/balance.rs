@@ -363,8 +363,12 @@ impl Engine {
 
     /// Returns the default-commodity balance for every active account in one query.
     ///
+    /// Balances are computed live from non-voided postings, not from the `balances`
+    /// cache table (which is a write-through cache not yet populated by the application).
+    ///
     /// The map key is [`AccountId`]; the value is `(commodity_code, balance)`.
     /// Accounts with no linked default commodity are omitted from the result.
+    /// Accounts with a default commodity but no postings are included with a zero balance.
     ///
     /// # Errors
     ///
@@ -373,36 +377,79 @@ impl Engine {
     pub async fn default_balances(
         &self,
     ) -> BcResult<std::collections::HashMap<AccountId, (String, Decimal)>> {
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT
-                 a.id,
-                 COALESCE(c.code, '')           AS commodity_code,
-                 COALESCE(b.amount, '0')        AS balance
+        // Fetch the default commodity per active account.
+        let commodity_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT a.id, c.code
              FROM accounts a
-             LEFT JOIN account_commodities ac
-                    ON ac.account_id = a.id AND ac.position = 0
-             LEFT JOIN commodities c ON c.id = ac.commodity_id
-             LEFT JOIN balances b
-                    ON b.account_id = a.id AND b.commodity = c.code
+             JOIN account_commodities ac ON ac.account_id = a.id AND ac.position = 0
+             JOIN commodities c ON c.id = ac.commodity_id
              WHERE a.archived_at IS NULL",
         )
         .fetch_all(&self.pool)
         .await?;
 
-        let mut map = std::collections::HashMap::with_capacity(rows.len());
-        for (id_str, commodity, balance_str) in rows {
-            if commodity.is_empty() {
-                continue; // no default commodity — omit from results
-            }
-            let id = id_str
-                .parse::<AccountId>()
-                .map_err(|e| BcError::BadData(format!("invalid account id '{id_str}': {e}")))?;
-            let balance = balance_str.parse::<Decimal>().map_err(|e| {
-                BcError::BadData(format!("invalid balance amount '{balance_str}': {e}"))
-            })?;
-            map.insert(id, (commodity, balance));
+        if commodity_rows.is_empty() {
+            return Ok(std::collections::HashMap::new());
         }
-        Ok(map)
+
+        // Fetch all non-voided postings for those accounts (one query, filtered in Rust).
+        let voided_str = to_db_str(TransactionStatus::Voided)?;
+        let posting_rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT p.account_id, p.commodity, p.amount
+             FROM postings p
+             JOIN transactions t ON t.id = p.transaction_id
+             JOIN accounts a ON a.id = p.account_id
+             WHERE a.archived_at IS NULL
+               AND t.status != ?",
+        )
+        .bind(&voided_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Build commodity lookup: account_id_str → commodity_code.
+        let commodity_by_account: std::collections::HashMap<String, String> = commodity_rows
+            .iter()
+            .map(|(id, code)| (id.clone(), code.clone()))
+            .collect();
+
+        // Sum posting amounts per account for that account's default commodity.
+        let mut map: std::collections::HashMap<String, Decimal> = commodity_by_account
+            .keys()
+            .map(|id| (id.clone(), Decimal::ZERO))
+            .collect();
+
+        for (acc_id, commodity, amt_str) in &posting_rows {
+            let Some(default_commodity) = commodity_by_account.get(acc_id) else {
+                continue; // no default commodity — skip
+            };
+            if commodity != default_commodity {
+                continue; // posting is in a non-default commodity — skip
+            }
+            let amount = amt_str.parse::<Decimal>().map_err(|e| {
+                BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
+            })?;
+            let entry = map.entry(acc_id.clone()).or_insert(Decimal::ZERO);
+            *entry = entry.checked_add(amount).ok_or_else(|| {
+                BcError::BadData("balance overflow: sum exceeds Decimal range".into())
+            })?;
+        }
+
+        // Convert string IDs to AccountId.
+        map.into_iter()
+            .map(|(id_str, balance)| {
+                // id_str was inserted from commodity_by_account keys, so the lookup cannot miss.
+                let commodity = commodity_by_account
+                    .get(&id_str)
+                    .ok_or_else(|| {
+                        BcError::BadData(format!("commodity lookup missing for account '{id_str}'"))
+                    })?
+                    .clone();
+                let id = id_str
+                    .parse::<AccountId>()
+                    .map_err(|e| BcError::BadData(format!("invalid account id '{id_str}': {e}")))?;
+                Ok((id, (commodity, balance)))
+            })
+            .collect()
     }
 }
 
@@ -569,15 +616,22 @@ mod tests {
         .await
         .expect("link commodity");
 
-        // Seed the balance cache directly
+        // Seed via a real transaction + posting
         sqlx::query(
-            "INSERT INTO balances (account_id, commodity, amount, updated_at)
-             VALUES (?, 'AUD', '1234.56', '2026-01-01T00:00:00Z')",
+            "INSERT INTO transactions (id, date, description, status, created_at)
+             VALUES ('t1', '2026-01-01', 'Test', 'cleared', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert tx");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position)
+             VALUES ('p1', 't1', ?, '1234.56', 'AUD', 0)",
         )
         .bind(acc.to_string())
         .execute(&pool)
         .await
-        .expect("seed balance");
+        .expect("insert posting");
 
         let engine = Engine::new(pool.clone());
         let map = engine

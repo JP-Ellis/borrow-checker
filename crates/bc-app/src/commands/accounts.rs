@@ -187,10 +187,11 @@ pub async fn get_account_stats(
 
     let today = jiff::Zoned::now().date();
     let from = today.saturating_sub(jiff::Span::new().days(30_i32));
+    let tomorrow = today.saturating_add(jiff::Span::new().days(1_i32));
 
     let (inflow, outflow) = state
         .balance_engine
-        .posting_flows(&id, &commodity_code, from, today)
+        .posting_flows(&id, &commodity_code, from, tomorrow)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
@@ -286,7 +287,11 @@ fn ipc_to_model_period(p: &bc_ipc::SparklinePeriod) -> bc_models::Period {
             start_month: *start_month,
             start_day: *start_day,
         },
-        bc_ipc::SparklinePeriod::Monthly | _ => bc_models::Period::Monthly,
+        bc_ipc::SparklinePeriod::Monthly => bc_models::Period::Monthly,
+        unknown => {
+            tracing::warn!(?unknown, "unknown SparklinePeriod; falling back to Monthly");
+            bc_models::Period::Monthly
+        }
     }
 }
 
