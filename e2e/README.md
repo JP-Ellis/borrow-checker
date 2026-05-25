@@ -1,37 +1,51 @@
-# E2E Tests
+# Desktop E2E Suite (WebdriverIO + tauri-driver)
 
-Two separate test suites covering different layers of the application. Run them
-independently — they have different prerequisites, tools, and CI jobs.
+Tests the full Tauri desktop application. Requires a compiled debug binary and
+the platform's WebDriver server.
 
-## Suites
+## Prerequisites
 
-| Suite | Directory | Tool | Server | What it tests |
-|---|---|---|---|---|
-| Web | `e2e/web/` | Playwright | `trunk serve` (port 1420) | Visual snapshots of `/__test/*` pages, shell routing |
-| Desktop | `e2e/desktop/` | WebdriverIO + tauri-driver | Tauri binary | Full app flows with IPC |
+- `mise install` from the repo root (installs Rust, tauri-cli, tauri-driver, and
+  all other project tools)
 
-## Quick start
-
-Both suites use **aube** as their package manager (`aubx` in place of `npx`).
-
-**Web suite:**
+### Linux
 
 ```sh
-cd e2e/web
-aube install
-aubx playwright install --with-deps
-aubx playwright test
+sudo apt-get install webkit2gtk-driver
 ```
 
-**Desktop suite** (requires `cargo install tauri-driver`):
+### Windows
+
+Install [Microsoft Edge WebDriver](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/) and ensure it is on `PATH`.
+
+### macOS ⚠️ Experimental
+
+macOS WKWebView has no native WebDriver support. Testing on macOS requires [tauri-webdriver](https://github.com/danielraffel/tauri-webdriver), which is **experimental** (released February 2026) and may be unstable.
+
+Follow the install instructions in the tauri-webdriver repository. This is **not** required for CI (Linux handles the stable baseline); macOS support is best-effort and the CI job runs with `continue-on-error: true`.
+
+## Running
 
 ```sh
-cd e2e/desktop
-aube install
-aubx wdio run wdio.conf.ts
+# Run all tests (builds the debug binary automatically via mise deps)
+mise run test:e2e:desktop
+
+# Or run directly from this directory (same effect)
+mise run test
 ```
 
-Prefer the `mise run test:e2e:*` tasks from the repo root — they handle
-dependency ordering (stylance bundle generation, Tauri binary build) automatically.
+To skip the Tauri build when the binary is already up-to-date:
 
-See each suite's `README.md` for full setup, including platform-specific notes.
+```sh
+SKIP_BUILD=1 aubx wdio run wdio.conf.ts
+```
+
+## Adding flow tests
+
+Each flow test in `tests/flows/` should:
+
+1. Seed state via a `#[cfg(debug_assertions)]`-gated Tauri command (e.g. `__seed_accounts`) registered in `crates/bc-app/src/commands.rs`.
+1. Drive the UI with WebdriverIO selectors.
+1. Assert the expected result in the rendered DOM.
+
+Prefer semantic HTML selectors (`$('main')`, `$('nav[aria-label="..."]')`) over CSS class selectors, which may be scoped by stylance.
