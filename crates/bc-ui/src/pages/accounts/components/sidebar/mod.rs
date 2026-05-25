@@ -62,22 +62,34 @@ pub fn AccountSidebar(
     /// Whether the sidebar is collapsed to dot-rail.
     collapsed: ReadSignal<bool>,
 ) -> impl IntoView {
-    let assets: Vec<AccountNode> = nodes
-        .iter()
-        .filter(|n| matches!(n.account_type, AccountType::Asset) && n.parent_id.is_none())
-        .cloned()
-        .collect();
-    let liabilities: Vec<AccountNode> = nodes
-        .iter()
-        .filter(|n| matches!(n.account_type, AccountType::Liability) && n.parent_id.is_none())
-        .cloned()
+    let all_types = [
+        (AccountType::Asset, "assets"),
+        (AccountType::Liability, "liabilities"),
+        (AccountType::Equity, "equity"),
+        (AccountType::Income, "income"),
+        (AccountType::Expense, "expenses"),
+    ];
+
+    let sections: Vec<(AccountType, &'static str, Vec<AccountNode>)> = all_types
+        .into_iter()
+        .filter_map(|(ty, label)| {
+            let roots: Vec<AccountNode> = nodes
+                .iter()
+                .filter(|n| n.account_type == ty && n.parent_id.is_none())
+                .cloned()
+                .collect();
+            if roots.is_empty() {
+                None
+            } else {
+                Some((ty, label, roots))
+            }
+        })
         .collect();
 
     // Use StoredValue so the vecs can be retrieved from reactive closures
     // (Leptos Show/fallback children require Fn, not FnOnce).
     let stored_nodes = StoredValue::new(nodes);
-    let stored_assets = StoredValue::new(assets);
-    let stored_liabilities = StoredValue::new(liabilities);
+    let stored_sections = StoredValue::new(sections);
 
     view! {
         <>
@@ -88,18 +100,21 @@ pub fn AccountSidebar(
                     fallback=move || {
                         view! {
                             <div class=style::tree>
-                                <SidebarSection
-                                    label="assets"
-                                    nodes=stored_nodes.get_value()
-                                    roots=stored_assets.get_value()
-                                    selected_id=selected_id
-                                />
-                                <SidebarSection
-                                    label="liabilities"
-                                    nodes=stored_nodes.get_value()
-                                    roots=stored_liabilities.get_value()
-                                    selected_id=selected_id
-                                />
+                                {stored_sections
+                                    .with_value(|secs| {
+                                        secs.iter()
+                                            .map(|(_, label, roots)| {
+                                                view! {
+                                                    <SidebarSection
+                                                        label=label
+                                                        nodes=stored_nodes.get_value()
+                                                        roots=roots.clone()
+                                                        selected_id=selected_id
+                                                    />
+                                                }
+                                            })
+                                            .collect::<Vec<_>>()
+                                    })}
                             </div>
                         }
                     }
@@ -167,25 +182,28 @@ pub fn AccountSidebar(
                 aria-label="account navigation"
             >
                 <div class=style::tree>
-                    <SidebarSection
-                        label="assets"
-                        nodes=stored_nodes.get_value()
-                        roots=stored_assets.get_value()
-                        selected_id=selected_id
-                    />
-                    <SidebarSection
-                        label="liabilities"
-                        nodes=stored_nodes.get_value()
-                        roots=stored_liabilities.get_value()
-                        selected_id=selected_id
-                    />
+                    {stored_sections
+                        .with_value(|secs| {
+                            secs.iter()
+                                .map(|(_, label, roots)| {
+                                    view! {
+                                        <SidebarSection
+                                            label=label
+                                            nodes=stored_nodes.get_value()
+                                            roots=roots.clone()
+                                            selected_id=selected_id
+                                        />
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        })}
                 </div>
             </nav>
         </>
     }
 }
 
-/// Renders one section (assets or liabilities) of the account tree.
+/// Renders one account type section of the account tree.
 #[component]
 fn SidebarSection(
     /// Section label shown as eyebrow.
