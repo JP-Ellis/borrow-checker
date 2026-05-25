@@ -129,6 +129,115 @@ impl Engine {
         Ok(total)
     }
 
+    /// Fetches all non-voided postings for `account_id` in `commodity` within `[from, to)`.
+    ///
+    /// Returns `(transaction_date, amount)` pairs — both parsed from their stored strings.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account to query.
+    /// * `commodity`  - Commodity code (e.g. `"AUD"`).
+    /// * `from`       - Inclusive start date.
+    /// * `to`         - Exclusive end date.
+    ///
+    /// # Returns
+    ///
+    /// A vector of `(date, amount)` pairs for all matching postings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or parse failure.
+    async fn fetch_postings_in_range(
+        &self,
+        account_id: &AccountId,
+        commodity: &str,
+        from: jiff::civil::Date,
+        to: jiff::civil::Date,
+    ) -> BcResult<Vec<(jiff::civil::Date, Decimal)>> {
+        let voided_str = to_db_str(TransactionStatus::Voided)?;
+
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT t.date, p.amount
+             FROM postings p
+             JOIN transactions t ON t.id = p.transaction_id
+             WHERE p.account_id = ?
+               AND p.commodity  = ?
+               AND t.date >= ?
+               AND t.date  < ?
+               AND t.status != ?",
+        )
+        .bind(account_id.to_string())
+        .bind(commodity)
+        .bind(from.to_string())
+        .bind(to.to_string())
+        .bind(&voided_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|(date_str, amt_str)| {
+                let date = date_str
+                    .parse::<jiff::civil::Date>()
+                    .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
+                let amount = amt_str
+                    .parse::<Decimal>()
+                    .map_err(|e| BcError::BadData(format!("invalid amount '{amt_str}': {e}")))?;
+                Ok((date, amount))
+            })
+            .collect()
+    }
+
+    /// Returns the total inflow and outflow for `account_id` in `commodity` over `[from, to)`.
+    ///
+    /// - `inflow` — sum of all positive postings (money entering the account).
+    /// - `outflow` — absolute sum of all negative postings (money leaving).
+    ///
+    /// Both values are non-negative. Voided transactions are excluded.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account to query.
+    /// * `commodity`  - Commodity code (e.g. `"AUD"`).
+    /// * `from`       - Inclusive start date.
+    /// * `to`         - Exclusive end date.
+    ///
+    /// # Returns
+    ///
+    /// `(inflow, outflow)` as [`Decimal`] values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or parse failure.
+    #[inline]
+    pub async fn posting_flows(
+        &self,
+        account_id: &AccountId,
+        commodity: &str,
+        from: jiff::civil::Date,
+        to: jiff::civil::Date,
+    ) -> BcResult<(Decimal, Decimal)> {
+        let rows = self
+            .fetch_postings_in_range(account_id, commodity, from, to)
+            .await?;
+
+        rows.into_iter().try_fold(
+            (Decimal::ZERO, Decimal::ZERO),
+            |(inflow, outflow), (_, amount)| {
+                if amount >= Decimal::ZERO {
+                    let new_inflow = inflow.checked_add(amount).ok_or_else(|| {
+                        BcError::BadData("inflow overflow: sum exceeds Decimal range".into())
+                    })?;
+                    Ok((new_inflow, outflow))
+                } else {
+                    let new_outflow = outflow.checked_sub(amount).ok_or_else(|| {
+                        BcError::BadData("outflow overflow: sum exceeds Decimal range".into())
+                    })?;
+                    Ok((inflow, new_outflow))
+                }
+            },
+        )
+    }
+
     /// Returns the default-commodity balance for every active account in one query.
     ///
     /// The map key is [`AccountId`]; the value is `(commodity_code, balance)`.
@@ -421,6 +530,181 @@ mod tests {
 
         // Account has no commodity → not included in the map
         assert!(!map.contains_key(&acc));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_flows_splits_inflow_and_outflow(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+        use jiff::civil::date;
+        use rust_decimal_macros::dec;
+
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let wallet = acct_svc
+            .create()
+            .name("Wallet")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Wallet");
+        let income = acct_svc
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Income");
+
+        // Two cleared transactions within the range
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, status, created_at)
+             VALUES ('tf1', '2026-04-10', 'Pay', 'cleared', '2026-04-10T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("tx 1");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position)
+             VALUES ('pf1a', 'tf1', ?, '1000.00', 'AUD', 0),
+                    ('pf1b', 'tf1', ?, '-1000.00', 'AUD', 1)",
+        )
+        .bind(wallet.to_string())
+        .bind(income.to_string())
+        .execute(&pool)
+        .await
+        .expect("postings 1");
+
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, status, created_at)
+             VALUES ('tf2', '2026-04-20', 'Expense', 'cleared', '2026-04-20T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("tx 2");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position)
+             VALUES ('pf2a', 'tf2', ?, '-250.00', 'AUD', 0),
+                    ('pf2b', 'tf2', ?, '250.00', 'AUD', 1)",
+        )
+        .bind(wallet.to_string())
+        .bind(income.to_string())
+        .execute(&pool)
+        .await
+        .expect("postings 2");
+
+        let engine = Engine::new(pool.clone());
+        let (inflow, outflow) = engine
+            .posting_flows(&wallet, "AUD", date(2026, 4, 1), date(2026, 5, 1))
+            .await
+            .expect("posting_flows");
+
+        assert_eq!(inflow, dec!(1000.00));
+        assert_eq!(outflow, dec!(250.00));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_flows_excludes_voided_transactions(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+        use jiff::civil::date;
+
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let wallet = acct_svc
+            .create()
+            .name("Wallet")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Wallet");
+
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, status, created_at)
+             VALUES ('tv1', '2026-04-15', 'Voided', 'voided', '2026-04-15T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("voided tx");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position)
+             VALUES ('pv1', 'tv1', ?, '500.00', 'AUD', 0)",
+        )
+        .bind(wallet.to_string())
+        .execute(&pool)
+        .await
+        .expect("posting");
+
+        let engine = Engine::new(pool.clone());
+        let (inflow, outflow) = engine
+            .posting_flows(&wallet, "AUD", date(2026, 4, 1), date(2026, 5, 1))
+            .await
+            .expect("posting_flows");
+
+        assert_eq!(inflow, rust_decimal::Decimal::ZERO);
+        assert_eq!(outflow, rust_decimal::Decimal::ZERO);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_flows_respects_date_boundary(pool: sqlx::SqlitePool) {
+        use bc_models::AccountKind;
+        use bc_models::AccountType;
+        use jiff::civil::date;
+        use rust_decimal_macros::dec;
+
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let wallet = acct_svc
+            .create()
+            .name("Wallet")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Wallet");
+
+        // Inside range
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, status, created_at)
+             VALUES ('tb1', '2026-04-01', 'In', 'cleared', '2026-04-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("tx in");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position)
+             VALUES ('pb1', 'tb1', ?, '100.00', 'AUD', 0)",
+        )
+        .bind(wallet.to_string())
+        .execute(&pool)
+        .await
+        .expect("posting in");
+
+        // On the exclusive upper bound — should be excluded
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, status, created_at)
+             VALUES ('tb2', '2026-05-01', 'Boundary', 'cleared', '2026-05-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("tx boundary");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position)
+             VALUES ('pb2', 'tb2', ?, '999.00', 'AUD', 0)",
+        )
+        .bind(wallet.to_string())
+        .execute(&pool)
+        .await
+        .expect("posting boundary");
+
+        let engine = Engine::new(pool.clone());
+        let (inflow, _) = engine
+            .posting_flows(&wallet, "AUD", date(2026, 4, 1), date(2026, 5, 1))
+            .await
+            .expect("posting_flows");
+
+        // Only the 100.00 inside [2026-04-01, 2026-05-01) should be counted
+        assert_eq!(inflow, dec!(100.00));
     }
 
     #[sqlx::test(migrations = "./migrations")]
