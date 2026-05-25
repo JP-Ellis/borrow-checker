@@ -11,7 +11,7 @@ mise run dev:app          # Hot-reload desktop app (Tauri + Trunk)
 mise run test             # Unit tests + doc tests
 mise run test:unit        # cargo hack feature-powerset nextest (all feature combos)
 mise run test:docs        # cargo test --doc --workspace
-mise run test:e2e         # Playwright (web) + WebdriverIO (desktop)
+mise run test:e2e         # WebdriverIO desktop E2E tests
 mise run lint [--fix]     # Clippy on native + wasm32-unknown-unknown
 mise run format [--fix]   # Check formatting (nightly rustfmt + leptosfmt)
 mise run check [--fix]    # format + lint
