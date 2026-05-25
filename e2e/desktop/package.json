@@ -7,6 +7,7 @@
     "test": "wdio run wdio.conf.ts"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
     "@types/mocha": "10.0.10",
     "@wdio/cli": "9.27.1",
     "@wdio/globals": "9.27.1",
@@ -14,10 +15,10 @@
     "@wdio/mocha-framework": "9.27.1",
     "@wdio/spec-reporter": "9.27.1",
     "@wdio/types": "9.27.1",
+    "@wdio/visual-service": "9.2.2",
+    "better-sqlite3": "12.10.0",
     "ts-node": "10.9.2",
-    "typescript": "6.0.3",
-    "@types/better-sqlite3": "7.6.13",
-    "better-sqlite3": "12.10.0"
+    "typescript": "6.0.3"
   },
   "aube": {
     "allowBuilds": {

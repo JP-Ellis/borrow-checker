@@ -57,3 +57,22 @@ The `stub_spark_points()` function and all hardcoded stat strings can be removed
 once these are wired up.
 
 ______________________________________________________________________
+
+## Remove Playwright — consolidate on WebdriverIO
+
+**Identified in:** PR #107 (test/desktop-e2e-visual)
+
+The Playwright suite covers only visual component-level tests of `bc-ui`.
+Since bc-ui is never served as a standalone web app (it runs exclusively inside
+the Tauri WebView), Playwright tests a non-production environment and cannot
+exercise the IPC layer or SQLite persistence.
+
+WebdriverIO + tauri-driver tests the actual compiled app running on the same
+WebKitGTK engine that ships to users, covering the full stack end-to-end.
+Keeping both ecosystems imposes two containers, two package managers, two CI
+jobs, and an ambiguous boundary between what belongs in each suite.
+
+**Action:** Delete `e2e/web/` (the Playwright tree), remove its CI step, and
+migrate any test cases worth preserving into the wdio suite.
+
+______________________________________________________________________
