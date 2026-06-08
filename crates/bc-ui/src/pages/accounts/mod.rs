@@ -166,10 +166,6 @@ pub fn Accounts() -> impl IntoView {
                             .into_any()
                     }
                     Some(node) => {
-                        let all_accounts = accounts_resource
-                            .get()
-                            .and_then(Result::ok)
-                            .unwrap_or_default();
                         let currency_code = node.balance.currency_code.clone();
                         let scale = node.balance.scale;
                         let node_id = node.id.clone();
@@ -186,15 +182,22 @@ pub fn Accounts() -> impl IntoView {
                                 show_add_tx
                                     .get()
                                     .then(|| {
+                                        let all_accounts = accounts_resource
+                                            .get()
+                                            .and_then(Result::ok)
+                                            .unwrap_or_default();
                                         let submit_error = create_tx
                                             .value()
                                             .with(|v| {
                                                 let r = v.as_ref()?;
                                                 r.as_ref().err().map(ToString::to_string)
                                             });
+                                        // Re-read accounts_resource inside this closure so the
+                                        // form always shows the current account list even after
+                                        // a successful create_tx refetch.
                                         view! {
                                             <AddTransactionForm
-                                                accounts=all_accounts.clone()
+                                                accounts=all_accounts
                                                 current_account_id=node_id.clone()
                                                 currency_code=currency_code.clone()
                                                 scale=scale
