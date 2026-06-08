@@ -20,3 +20,6 @@ pub const GET_ACCOUNT_SPARKLINE: &str = "get_account_sparkline";
 
 /// Command: get the count of uncategorised postings for an account.
 pub const GET_UNCATEGORISED_COUNT: &str = "get_uncategorised_count";
+
+/// Command: list installed plugins.
+pub const LIST_PLUGINS: &str = "list_plugins";

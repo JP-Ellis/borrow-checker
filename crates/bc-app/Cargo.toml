@@ -21,6 +21,7 @@ bc-config    = { workspace = true }
 bc-core      = { workspace = true }
 bc-ipc       = { workspace = true }
 bc-models    = { workspace = true }
+bc-plugins   = { workspace = true }
 jiff         = { workspace = true }
 rust_decimal = { workspace = true }
 serde        = { workspace = true }

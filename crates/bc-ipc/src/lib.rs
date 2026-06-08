@@ -19,6 +19,7 @@ pub mod commands;
 mod currency;
 mod error;
 mod money;
+mod plugins;
 
 pub use accounts::AccountNode;
 pub use accounts::AccountStats;
@@ -44,3 +45,4 @@ pub use currency::USD;
 pub use currency::currency_from_code;
 pub use error::Error as BcError;
 pub use money::Amount;
+pub use plugins::PluginInfo;
