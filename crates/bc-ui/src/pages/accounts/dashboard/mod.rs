@@ -52,7 +52,9 @@ pub fn AccountDashboard(
 
     let sparkline_currency_code = node.balance.currency_code.clone();
 
-    let balance_str = {
+    let balance_str = if node.balance.currency_code.is_empty() {
+        "—".into()
+    } else {
         let currency =
             bc_ipc::currency_from_code(&node.balance.currency_code).unwrap_or(&bc_ipc::USD);
         crate::components::num::format_amount(node.balance.minor_units, currency)

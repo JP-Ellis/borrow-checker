@@ -342,23 +342,39 @@ impl Engine {
 
     /// Returns the commodity code of the first (default) commodity for `account_id`, or `None`.
     ///
+    /// Prefers the configured default from `account_commodities` (position = 0). When no
+    /// commodity is configured, falls back to the most-used posting commodity so that
+    /// accounts imported without explicit commodity setup still return a useful value.
+    ///
     /// # Errors
     ///
     /// Returns [`BcError`] on database failure.
     #[inline]
     pub async fn default_commodity_for(&self, account_id: &AccountId) -> BcResult<Option<String>> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT c.code
-             FROM account_commodities ac
-             JOIN commodities c ON c.id = ac.commodity_id
-             WHERE ac.account_id = ?
-             ORDER BY ac.position
-             LIMIT 1",
+        let voided_str = to_db_str(TransactionStatus::Voided)?;
+        let (commodity_code,): (Option<String>,) = sqlx::query_as(
+            "SELECT COALESCE(
+                 (SELECT c.code
+                  FROM account_commodities ac
+                  JOIN commodities c ON c.id = ac.commodity_id
+                  WHERE ac.account_id = ?
+                  ORDER BY ac.position
+                  LIMIT 1),
+                 (SELECT p.commodity
+                  FROM postings p
+                  JOIN transactions t ON t.id = p.transaction_id
+                  WHERE p.account_id = ? AND t.status != ?
+                  GROUP BY p.commodity
+                  ORDER BY COUNT(*) DESC
+                  LIMIT 1)
+             ) AS commodity_code",
         )
         .bind(account_id.to_string())
-        .fetch_optional(&self.pool)
+        .bind(account_id.to_string())
+        .bind(&voided_str)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(row.map(|(code,)| code))
+        Ok(commodity_code)
     }
 
     /// Returns the default-commodity balance for every active account in one query.
@@ -367,8 +383,13 @@ impl Engine {
     /// cache table (which is a write-through cache not yet populated by the application).
     ///
     /// The map key is [`AccountId`]; the value is `(commodity_code, balance)`.
-    /// Accounts with no linked default commodity are omitted from the result.
-    /// Accounts with a default commodity but no postings are included with a zero balance.
+    /// Accounts with neither a configured commodity nor any postings are omitted.
+    /// Accounts with a commodity (configured or inferred) but no postings are included with a zero
+    /// balance.
+    ///
+    /// The commodity for each account is resolved in priority order:
+    /// 1. The configured default from `account_commodities` (position = 0).
+    /// 2. The most-used posting commodity (for accounts imported without explicit commodity setup).
     ///
     /// # Errors
     ///
@@ -377,14 +398,32 @@ impl Engine {
     pub async fn default_balances(
         &self,
     ) -> BcResult<std::collections::HashMap<AccountId, (String, Decimal)>> {
-        // Fetch the default commodity per active account.
+        let voided_str = to_db_str(TransactionStatus::Voided)?;
+
+        // Fetch the effective default commodity per active account.
+        // Prefers account_commodities (position = 0); falls back to the most-used posting
+        // commodity so accounts imported without explicit commodity setup are still included.
         let commodity_rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT a.id, c.code
-             FROM accounts a
-             JOIN account_commodities ac ON ac.account_id = a.id AND ac.position = 0
-             JOIN commodities c ON c.id = ac.commodity_id
-             WHERE a.archived_at IS NULL",
+            "SELECT id, commodity_code FROM (
+                 SELECT a.id,
+                        COALESCE(
+                            c.code,
+                            (SELECT p.commodity
+                             FROM postings p
+                             JOIN transactions t ON t.id = p.transaction_id
+                             WHERE p.account_id = a.id AND t.status != ?
+                             GROUP BY p.commodity
+                             ORDER BY COUNT(*) DESC
+                             LIMIT 1)
+                        ) AS commodity_code
+                 FROM accounts a
+                 LEFT JOIN account_commodities ac ON ac.account_id = a.id AND ac.position = 0
+                 LEFT JOIN commodities c ON c.id = ac.commodity_id
+                 WHERE a.archived_at IS NULL
+             )
+             WHERE commodity_code IS NOT NULL",
         )
+        .bind(&voided_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -393,7 +432,6 @@ impl Engine {
         }
 
         // Fetch all non-voided postings for those accounts (one query, filtered in Rust).
-        let voided_str = to_db_str(TransactionStatus::Voided)?;
         let posting_rows: Vec<(String, String, String)> = sqlx::query_as(
             "SELECT p.account_id, p.commodity, p.amount
              FROM postings p

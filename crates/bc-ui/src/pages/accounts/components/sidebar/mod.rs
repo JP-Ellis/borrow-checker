@@ -30,6 +30,9 @@ import_style!(style, "sidebar.module.scss");
     reason = "display approximation — dividing by 100_000 / 100_000_000 cannot overflow or panic"
 )]
 pub fn format_balance_short(balance: &Amount) -> String {
+    if balance.currency_code.is_empty() {
+        return "—".into();
+    }
     let abs = balance.minor_units.unsigned_abs();
     let prefix = if balance.minor_units < 0 { "−" } else { "" };
     if abs >= 100_000_000 {
