@@ -103,7 +103,7 @@ struct GetAccountSparklineArgs<'a> {
     /// Optional bucket count (default: 6).
     count: Option<u32>,
     /// Optional bucket period (default: Monthly).
-    period: Option<&'a crate::SparklinePeriod>,
+    period: Option<crate::SparklinePeriod>,
 }
 
 /// Gets income and expense totals for `account_id` over the last 30 days.
@@ -137,7 +137,7 @@ pub async fn get_account_stats(account_id: &str) -> Result<crate::AccountStats, 
 #[inline]
 pub async fn get_account_sparkline(
     account_id: &str,
-    period: Option<&crate::SparklinePeriod>,
+    period: Option<crate::SparklinePeriod>,
     count: Option<u32>,
 ) -> Result<Vec<crate::SparkPoint>, BcError> {
     tauri_sys::core::invoke_result::<Vec<crate::SparkPoint>, BcError>(
