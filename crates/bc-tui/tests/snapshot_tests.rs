@@ -147,8 +147,8 @@ mod tests {
     /// Snapshot: `AccountSidebar` rendered with no accounts.
     #[test]
     fn account_sidebar_empty() {
-        let mut component = AccountSidebar::new(vec![]);
-        let output = render(&mut component, 25, 20);
+        let mut component = AccountSidebar::new(vec![], &std::collections::HashMap::new());
+        let output = render(&mut component, 45, 20);
         insta::assert_snapshot!(output);
     }
 
@@ -160,8 +160,8 @@ mod tests {
             make_account("Liabilities", bc_models::AccountType::Liability),
             make_account("Expenses", bc_models::AccountType::Expense),
         ];
-        let mut component = AccountSidebar::new(accounts);
-        let output = render(&mut component, 25, 20);
+        let mut component = AccountSidebar::new(accounts, &std::collections::HashMap::new());
+        let output = render(&mut component, 45, 20);
         insta::assert_snapshot!(output);
     }
 }

@@ -10,10 +10,12 @@ pub mod forms;
 pub mod list;
 pub mod sidebar;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bc_models::Account;
 use bc_models::AccountId;
+use bc_models::Decimal;
 use bc_models::Transaction;
 use bc_models::TransactionId;
 use tuirealm::application::Application;
@@ -55,7 +57,7 @@ enum PendingForm {
 )]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "six independent state flags: loading, list/detail dirty tracking, focus-restore, form state — not reducible to an enum"
+    reason = "seven independent state flags: loading, list/detail/sidebar dirty tracking, focus-restore, form state — not reducible to an enum"
 )]
 #[non_exhaustive]
 pub struct AccountsScreen {
@@ -65,6 +67,8 @@ pub struct AccountsScreen {
     accounts: Vec<Account>,
     /// Transactions for the currently selected account.
     transactions: Vec<Transaction>,
+    /// Balances for all accounts, keyed by account ID.
+    balances: HashMap<AccountId, (String, Decimal)>,
     /// The account currently selected in the sidebar, if any.
     selected_account: Option<AccountId>,
     /// The transaction currently selected in the list, if any.
@@ -75,6 +79,8 @@ pub struct AccountsScreen {
     loading: bool,
     /// Whether the transaction list needs to be re-mounted on the next `view()` call.
     list_dirty: bool,
+    /// Whether the sidebar needs to be re-mounted on the next `view()` call.
+    sidebar_dirty: bool,
     /// Whether the detail panel needs to be re-mounted on the next `view()` call.
     detail_dirty: bool,
     /// Pending form action to execute on the next `view()` call.
@@ -100,11 +106,13 @@ impl AccountsScreen {
             ctx,
             accounts: Vec::new(),
             transactions: Vec::new(),
+            balances: HashMap::new(),
             selected_account: None,
             selected_transaction: None,
             detail_visible: false,
             loading: false,
             list_dirty: false,
+            sidebar_dirty: false,
             detail_dirty: false,
             pending_form: PendingForm::None,
             form_mounted: false,
@@ -124,6 +132,25 @@ impl AccountsScreen {
         match self.ctx.block_on(self.ctx.accounts.list_active()) {
             Ok(accounts) => self.accounts = accounts,
             Err(e) => eprintln!("failed to load accounts: {e}"),
+        }
+    }
+
+    /// Load default balances for all accounts into `self.balances`.
+    ///
+    /// Calls [`bc_core::BalanceEngine::default_balances`] and stores the
+    /// result. On error, clears the balance map and logs to stderr.
+    #[inline]
+    #[expect(
+        clippy::print_stderr,
+        reason = "load errors are logged to stderr since we are in raw terminal mode"
+    )]
+    fn load_balances(&mut self) {
+        match self.ctx.block_on(self.ctx.balances.default_balances()) {
+            Ok(balances) => self.balances = balances,
+            Err(e) => {
+                eprintln!("failed to load balances: {e}");
+                self.balances = HashMap::new();
+            }
         }
     }
 
@@ -185,6 +212,11 @@ impl AccountsScreen {
                 }
             }
         }
+
+        // Refresh all-account balances so the sidebar balance column stays
+        // in sync after any transaction is created, amended, or voided.
+        self.load_balances();
+        self.sidebar_dirty = true;
     }
 
     /// Parse form field strings and create or amend a transaction via bc-core.
@@ -385,10 +417,14 @@ impl Screen for AccountsScreen {
     fn mount(&mut self, app: &mut Application<Id, Msg, NoUserEvent>) -> anyhow::Result<()> {
         self.loading = true;
         self.load_accounts();
+        self.load_balances();
         self.loading = false;
         app.mount(
             Id::Accounts(AccountsId::Sidebar),
-            Box::new(sidebar::AccountSidebar::new(self.accounts.clone())),
+            Box::new(sidebar::AccountSidebar::new(
+                self.accounts.clone(),
+                &self.balances,
+            )),
             vec![],
         )?;
         app.mount(
@@ -538,6 +574,27 @@ impl Screen for AccountsScreen {
                 area,
             );
             return;
+        }
+
+        if self.sidebar_dirty {
+            self.sidebar_dirty = false;
+            #[expect(
+                clippy::unused_result_ok,
+                reason = "umount errors are non-fatal; component may already be absent"
+            )]
+            {
+                app.umount(&Id::Accounts(AccountsId::Sidebar)).ok();
+            }
+            if let Err(e) = app.mount(
+                Id::Accounts(AccountsId::Sidebar),
+                Box::new(sidebar::AccountSidebar::new(
+                    self.accounts.clone(),
+                    &self.balances,
+                )),
+                vec![],
+            ) {
+                eprintln!("failed to re-mount sidebar: {e}");
+            }
         }
 
         if self.list_dirty {

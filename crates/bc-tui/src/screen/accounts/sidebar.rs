@@ -5,8 +5,11 @@
 //!
 //! Selection changes emit [`crate::msg::AccountsMsg::AccountSelected`].
 
+use std::collections::HashMap;
+
 use bc_models::Account;
 use bc_models::AccountId;
+use bc_models::Decimal;
 use tui_tree_widget::Tree;
 use tui_tree_widget::TreeItem;
 use tui_tree_widget::TreeState;
@@ -26,6 +29,8 @@ use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::style::Style;
+use tuirealm::ratatui::text::Line;
+use tuirealm::ratatui::text::Span;
 use tuirealm::ratatui::widgets::Block;
 use tuirealm::ratatui::widgets::BorderType;
 use tuirealm::ratatui::widgets::Borders;
@@ -37,36 +42,94 @@ use crate::msg::Msg;
 
 // MARK: helper
 
+/// Width in characters of the balance column appended to each account name.
+///
+/// Format: `COMM  AMOUNT` where commodity is 5 chars wide and amount is 12 chars
+/// wide (2 decimal places), separated by a single space. Total = 18 chars.
+const BALANCE_COLUMN_WIDTH: usize = 18;
+
+/// Format a balance entry for display in the sidebar.
+///
+/// Returns an 18-character string: commodity left-padded to 5 chars, one space,
+/// then the decimal amount right-padded to 12 chars with 2 decimal places.
+///
+/// # Arguments
+///
+/// * `commodity` - The commodity code string (e.g. `"AUD"`).
+/// * `amount`    - The balance amount to format.
+///
+/// # Returns
+///
+/// An owned `String` of exactly [`BALANCE_COLUMN_WIDTH`] characters.
+fn format_balance(commodity: &str, amount: Decimal) -> String {
+    format!("{commodity:<5} {amount:>12.2}")
+}
+
+/// Build the label [`Line`] for a single account in the tree.
+///
+/// The label consists of the account name followed by the balance string.
+/// If the account has no entry in `balances`, an em-dash placeholder is shown
+/// right-padded to [`BALANCE_COLUMN_WIDTH`] chars.
+///
+/// # Arguments
+///
+/// * `account`  - The account whose label to build.
+/// * `balances` - Map of `AccountId` to `(commodity, amount)` pairs.
+///
+/// # Returns
+///
+/// A `Line<'static>` containing two `Span`s: name and balance.
+fn build_label(
+    account: &Account,
+    balances: &HashMap<AccountId, (String, Decimal)>,
+) -> Line<'static> {
+    let name = account.name().to_owned();
+    let balance_text = match balances.get(account.id()) {
+        Some((commodity, amount)) => format_balance(commodity, *amount),
+        None => format!("{:<width$}", "\u{2014}", width = BALANCE_COLUMN_WIDTH),
+    };
+    Line::from(vec![
+        Span::raw(name),
+        Span::raw(" "),
+        Span::raw(balance_text),
+    ])
+}
+
 /// Recursively build a [`TreeItem`] for `account` and all of its descendants
 /// found in `all`.
 ///
 /// # Arguments
 ///
-/// * `account` - The account to build a tree item for.
-/// * `all`     - The full flat list of accounts used to find children.
+/// * `account`  - The account to build a tree item for.
+/// * `all`      - The full flat list of accounts used to find children.
+/// * `balances` - Map of `AccountId` to `(commodity, amount)` for balance display.
 ///
 /// # Returns
 ///
 /// An owned `TreeItem<'static, AccountId>` representing the account and its
 /// subtree.
-fn build_item_owned(account: &Account, all: &[Account]) -> TreeItem<'static, AccountId> {
+fn build_item_owned(
+    account: &Account,
+    all: &[Account],
+    balances: &HashMap<AccountId, (String, Decimal)>,
+) -> TreeItem<'static, AccountId> {
     let children: Vec<TreeItem<'static, AccountId>> = all
         .iter()
         .filter(|a| a.parent_id() == Some(account.id()))
-        .map(|child| build_item_owned(child, all))
+        .map(|child| build_item_owned(child, all, balances))
         .collect();
 
-    let name: String = account.name().to_owned();
+    let label = build_label(account, balances);
 
     if children.is_empty() {
-        TreeItem::new_leaf(account.id().clone(), name)
+        TreeItem::new_leaf(account.id().clone(), label)
     } else {
         #[expect(
             clippy::expect_used,
             reason = "TreeItem::new panics only on duplicate IDs, which we guarantee won't happen \
                       because AccountId values are unique UUIDs"
         )]
-        TreeItem::new(account.id().clone(), name, children)
+        TreeItem::new(account.id().clone(), label, children)
             .expect("account IDs are unique within a parent")
     }
 }
@@ -97,20 +160,24 @@ struct Sidebar {
 }
 
 impl Sidebar {
-    /// Build a new `Sidebar` from a flat list of accounts.
+    /// Build a new `Sidebar` from a flat list of accounts and a balance map.
     ///
     /// Root accounts (those without a `parent_id`) form the top-level nodes;
     /// child accounts are nested under their parent. The first root account,
     /// if any, is opened by default so the user immediately sees its children.
     ///
+    /// Each account label includes a right-aligned balance column showing the
+    /// current balance for that account, or an em-dash if no balance is known.
+    ///
     /// # Arguments
     ///
     /// * `accounts` - All accounts to display, in any order.
+    /// * `balances` - Map of account ID to `(commodity_code, amount)` pairs.
     ///
     /// # Returns
     ///
     /// A new `Sidebar` with the tree fully built and the first root node open.
-    fn new(accounts: Vec<Account>) -> Self {
+    fn new(accounts: Vec<Account>, balances: &HashMap<AccountId, (String, Decimal)>) -> Self {
         let roots: Vec<&Account> = accounts
             .iter()
             .filter(|a| a.parent_id().is_none())
@@ -118,7 +185,7 @@ impl Sidebar {
 
         let tree_items: Vec<TreeItem<'static, AccountId>> = roots
             .iter()
-            .map(|root| build_item_owned(root, &accounts))
+            .map(|root| build_item_owned(root, &accounts, balances))
             .collect();
 
         let mut tree_state: TreeState<AccountId> = TreeState::default();
@@ -224,20 +291,25 @@ pub struct AccountSidebar {
 }
 
 impl AccountSidebar {
-    /// Create a new `AccountSidebar` displaying the given accounts.
+    /// Create a new `AccountSidebar` displaying the given accounts with balances.
+    ///
+    /// Each account row in the tree shows the account name followed by its
+    /// current balance. Accounts absent from `balances` display an em-dash
+    /// placeholder.
     ///
     /// # Arguments
     ///
     /// * `accounts` - Flat list of all accounts to show in the tree.
+    /// * `balances` - Shared reference to a map of account ID to `(commodity_code, amount)` pairs.
     ///
     /// # Returns
     ///
     /// A new `AccountSidebar` ready to be mounted.
     #[inline]
     #[must_use]
-    pub fn new(accounts: Vec<Account>) -> Self {
+    pub fn new(accounts: Vec<Account>, balances: &HashMap<AccountId, (String, Decimal)>) -> Self {
         Self {
-            component: Sidebar::new(accounts),
+            component: Sidebar::new(accounts, balances),
         }
     }
 
@@ -334,13 +406,13 @@ mod tests {
 
     #[test]
     fn empty_sidebar_has_no_state() {
-        let sidebar = Sidebar::new(vec![]);
+        let sidebar = Sidebar::new(vec![], &HashMap::new());
         assert_eq!(sidebar.state(), State::None);
     }
 
     #[test]
     fn perform_move_down_on_empty_tree_does_not_panic() {
-        let mut sidebar = Sidebar::new(vec![]);
+        let mut sidebar = Sidebar::new(vec![], &HashMap::new());
         let result = sidebar.perform(Cmd::Move(Direction::Down));
         // Either Changed(State::None) or CmdResult::NoChange are acceptable.
         assert!(matches!(
@@ -352,7 +424,7 @@ mod tests {
     #[test]
     fn single_root_account_builds_tree() {
         let acct = make_account("Assets");
-        let sidebar = Sidebar::new(vec![acct]);
+        let sidebar = Sidebar::new(vec![acct], &HashMap::new());
         // Nothing is selected initially.
         assert_eq!(sidebar.state(), State::None);
         assert_eq!(sidebar.tree_items.len(), 1);
@@ -366,28 +438,28 @@ mod tests {
     fn child_accounts_are_nested_under_parent() {
         let parent = make_account("Assets");
         let child = make_child_account("Checking", parent.id().clone());
-        let sidebar = Sidebar::new(vec![parent, child]);
+        let sidebar = Sidebar::new(vec![parent, child], &HashMap::new());
         assert_eq!(sidebar.tree_items.len(), 1);
         assert_eq!(sidebar.tree_items[0].children().len(), 1);
     }
 
     #[test]
     fn perform_unknown_cmd_returns_none() {
-        let mut sidebar = Sidebar::new(vec![]);
+        let mut sidebar = Sidebar::new(vec![], &HashMap::new());
         let result = sidebar.perform(Cmd::None);
         assert_eq!(result, CmdResult::NoChange);
     }
 
     #[test]
     fn account_sidebar_on_unknown_event_returns_none() {
-        let mut sidebar = AccountSidebar::new(vec![]);
+        let mut sidebar = AccountSidebar::new(vec![], &HashMap::new());
         let result = sidebar.on(&Event::None);
         assert_eq!(result, None);
     }
 
     #[test]
     fn account_sidebar_right_on_empty_tree_emits_redraw() {
-        let mut sidebar = AccountSidebar::new(vec![]);
+        let mut sidebar = AccountSidebar::new(vec![], &HashMap::new());
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Right,
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -397,7 +469,7 @@ mod tests {
 
     #[test]
     fn j_key_emits_redraw() {
-        let mut sidebar = AccountSidebar::new(vec![]);
+        let mut sidebar = AccountSidebar::new(vec![], &HashMap::new());
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('j'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -407,7 +479,7 @@ mod tests {
 
     #[test]
     fn down_arrow_emits_redraw() {
-        let mut sidebar = AccountSidebar::new(vec![]);
+        let mut sidebar = AccountSidebar::new(vec![], &HashMap::new());
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Down,
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -417,7 +489,7 @@ mod tests {
 
     #[test]
     fn k_key_emits_redraw() {
-        let mut sidebar = AccountSidebar::new(vec![]);
+        let mut sidebar = AccountSidebar::new(vec![], &HashMap::new());
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('k'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -427,7 +499,7 @@ mod tests {
 
     #[test]
     fn h_key_emits_redraw() {
-        let mut sidebar = AccountSidebar::new(vec![]);
+        let mut sidebar = AccountSidebar::new(vec![], &HashMap::new());
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('h'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -440,7 +512,7 @@ mod tests {
         let parent = make_account("Assets");
         let child = make_child_account("Checking", parent.id().clone());
         let child_id = child.id().clone();
-        let mut sidebar = AccountSidebar::new(vec![parent.clone(), child]);
+        let mut sidebar = AccountSidebar::new(vec![parent.clone(), child], &HashMap::new());
 
         // After Sidebar::new the first root is already opened, so we navigate
         // down once to move selection to the first visible item (Assets root),
@@ -477,7 +549,7 @@ mod tests {
     fn j_key_emits_account_navigated() {
         let parent = make_account("Assets");
         let child = make_child_account("Checking", parent.id().clone());
-        let mut sidebar = AccountSidebar::new(vec![parent, child]);
+        let mut sidebar = AccountSidebar::new(vec![parent, child], &HashMap::new());
 
         // First Down lands on the parent.
         let msg = sidebar.on(&Event::Keyboard(KeyEvent {
@@ -503,7 +575,7 @@ mod tests {
     fn k_key_emits_account_navigated_after_navigation() {
         let parent = make_account("Assets");
         let child = make_child_account("Checking", parent.id().clone());
-        let mut sidebar = AccountSidebar::new(vec![parent, child]);
+        let mut sidebar = AccountSidebar::new(vec![parent, child], &HashMap::new());
 
         // Navigate down to parent, then down to child.
         sidebar.on(&Event::Keyboard(KeyEvent {
@@ -531,6 +603,55 @@ mod tests {
                 )
             ),
             "expected AccountNavigated or Redraw, got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn format_balance_formats_correctly() {
+        use core::str::FromStr as _;
+
+        use bc_models::Decimal;
+        let amount = Decimal::from_str("1234.56").expect("valid decimal");
+        let result = format_balance("AUD", amount);
+        // 5-char commodity + 1 space + 12-char amount = 18 chars total
+        assert_eq!(result.len(), 18, "balance column must be exactly 18 chars");
+        assert!(
+            result.starts_with("AUD  "),
+            "commodity should be left-padded to 5"
+        );
+        assert!(result.contains("1234.56"), "amount should appear in output");
+    }
+
+    #[test]
+    fn build_label_shows_em_dash_when_no_balance() {
+        let acct = make_account("Assets");
+        let label = build_label(&acct, &HashMap::new());
+        // Collect all span text to verify the em-dash placeholder is present.
+        let text: String = label.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains('\u{2014}'),
+            "label should contain em-dash when no balance: {text:?}"
+        );
+    }
+
+    #[test]
+    fn build_label_shows_balance_when_present() {
+        use core::str::FromStr as _;
+
+        use bc_models::Decimal;
+        let acct = make_account("Checking");
+        let amount = Decimal::from_str("500.00").expect("valid decimal");
+        let mut balances: HashMap<AccountId, (String, Decimal)> = HashMap::new();
+        balances.insert(acct.id().clone(), ("AUD".to_owned(), amount));
+        let label = build_label(&acct, &balances);
+        let text: String = label.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("AUD"),
+            "label should contain commodity: {text:?}"
+        );
+        assert!(
+            text.contains("500.00"),
+            "label should contain formatted amount: {text:?}"
         );
     }
 }

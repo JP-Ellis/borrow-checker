@@ -75,6 +75,63 @@ impl Engine {
         })
     }
 
+    /// Returns the default balance for every active account that has at least one posting.
+    ///
+    /// For each account the commodity is chosen as the most-used posting commodity
+    /// (the one appearing on the greatest number of non-voided postings). The balance
+    /// is then the sum of all non-voided postings for that account in that commodity.
+    ///
+    /// Accounts with no postings are omitted from the returned map.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or parse failure.
+    #[inline]
+    pub async fn default_balances(
+        &self,
+    ) -> BcResult<std::collections::HashMap<AccountId, (String, Decimal)>> {
+        let voided_str = to_db_str(TransactionStatus::Voided)?;
+
+        // Fetch (account_id, commodity) pairs where the commodity is the most-used
+        // non-voided posting commodity for each account.
+        let commodity_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT p.account_id, p.commodity
+             FROM postings p
+             JOIN transactions t ON t.id = p.transaction_id
+             WHERE t.status != ?
+             GROUP BY p.account_id, p.commodity
+             ORDER BY p.account_id, COUNT(*) DESC",
+        )
+        .bind(&voided_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Retain only the first (highest-count) commodity per account.
+        let mut account_commodity: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for (account_id, commodity) in commodity_rows {
+            account_commodity.entry(account_id).or_insert(commodity);
+        }
+
+        let mut result: std::collections::HashMap<AccountId, (String, Decimal)> =
+            std::collections::HashMap::new();
+
+        // Iteration order does not matter here — each entry is independent.
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "iteration order does not affect correctness; each account-commodity pair is independent"
+        )]
+        for (account_id_str, commodity) in account_commodity {
+            let account_id: AccountId = account_id_str.parse().map_err(|e| {
+                BcError::BadData(format!("invalid account id '{account_id_str}': {e}"))
+            })?;
+            let balance = self.balance_for(&account_id, &commodity).await?;
+            result.insert(account_id, (commodity, balance));
+        }
+
+        Ok(result)
+    }
+
     /// Computes total net worth in `commodity` across all asset and liability accounts.
     ///
     /// - [`DepositAccount`], [`Receivable`], [`VirtualAllocation`]: balance from postings.
