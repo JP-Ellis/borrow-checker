@@ -22,27 +22,22 @@
 /// loaded (e.g. malformed config file, out-of-range field values).
 #[tauri::command(rename_all = "snake_case")]
 pub async fn get_settings() -> Result<bc_ipc::SettingsInfo, bc_ipc::BcError> {
+    let config_file_paths = bc_config::Settings::config_file_paths();
+    let config_file_path = config_file_paths
+        .iter()
+        .find(|p| p.exists())
+        .or_else(|| config_file_paths.first())
+        .map(|p| p.to_string_lossy().into_owned());
+
     let settings =
         bc_config::Settings::load().map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-
-    let db_path = settings.db_path();
-    let db_filename = db_path.file_name().map_or_else(
-        || db_path.to_string_lossy().into_owned(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-
-    let config_file_path = bc_config::Settings::config_file_paths()
-        .into_iter()
-        .next()
-        .map(|p| p.to_string_lossy().into_owned());
 
     Ok(bc_ipc::SettingsInfo::new(
         settings.financial_year_start_month(),
         settings.financial_year_start_day(),
         settings.fortnightly_anchor().map(|d| d.to_string()),
         settings.display_commodity().to_string(),
-        db_path.to_string_lossy(),
-        db_filename,
+        settings.db_path().to_string_lossy(),
         settings
             .plugin_paths()
             .iter()

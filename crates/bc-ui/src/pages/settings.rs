@@ -4,6 +4,8 @@ use bc_ipc::SettingsInfo;
 use leptos::prelude::*;
 use stylance::import_style;
 
+use crate::components::error_banner::ErrorBanner;
+
 import_style!(style, "settings.module.scss");
 
 /// Returns the English name for a 1-based month number (1 = January).
@@ -55,11 +57,12 @@ pub fn SettingsPanel(
     let anchor = info
         .fortnightly_anchor
         .unwrap_or_else(|| "not set".to_owned());
-    let db_filename = info.db_filename.clone();
-    let plugin_paths = info.plugin_paths.clone();
+    let db_path = info.db_path;
+    let db_filename = db_path.rsplit('/').next().unwrap_or(&db_path).to_owned();
+    let plugin_paths = info.plugin_paths;
+    let display_commodity = info.display_commodity;
     let config_hint = info
         .config_file_path
-        .clone()
         .unwrap_or_else(|| "the borrow-checker config file".to_owned());
 
     view! {
@@ -84,7 +87,7 @@ pub fn SettingsPanel(
                 <dl class=style::field_list>
                     <div class=style::field_row>
                         <dt class=style::field_label>"Currency"</dt>
-                        <dd class=style::field_value>{info.display_commodity}</dd>
+                        <dd class=style::field_value>{display_commodity}</dd>
                     </div>
                 </dl>
             </section>
@@ -106,10 +109,8 @@ pub fn SettingsPanel(
                                 view! {
                                     <ul class=style::path_list>
                                         {plugin_paths
-                                            .iter()
-                                            .map(|p| {
-                                                view! { <li>{p.clone()}</li> }
-                                            })
+                                            .into_iter()
+                                            .map(|p| view! { <li>{p}</li> })
                                             .collect::<Vec<_>>()}
                                     </ul>
                                 }
@@ -123,6 +124,46 @@ pub fn SettingsPanel(
             <p class=style::hint>
                 "To change settings, edit " <code class=style::code>{config_hint}</code>
             </p>
+        </div>
+    }
+}
+
+/// Loading skeleton for the settings panel — prevents layout shift while the
+/// IPC response is in flight.
+#[component]
+fn SettingsSkeleton() -> impl IntoView {
+    view! {
+        <div class=style::settings_panel>
+            {core::iter::repeat_with(|| {
+                    view! {
+                        <section class=style::section>
+                            <span
+                                class=style::skeleton_bar
+                                style="width:6rem;margin-bottom:var(--bc-space-2)"
+                            />
+                            <dl class=style::field_list>
+                                <div class=style::field_row>
+                                    <dt class=style::field_label>
+                                        <span class=style::skeleton_bar style="width:5rem" />
+                                    </dt>
+                                    <dd class=style::field_value>
+                                        <span class=style::skeleton_bar style="width:10rem" />
+                                    </dd>
+                                </div>
+                                <div class=style::field_row>
+                                    <dt class=style::field_label>
+                                        <span class=style::skeleton_bar style="width:8rem" />
+                                    </dt>
+                                    <dd class=style::field_value>
+                                        <span class=style::skeleton_bar style="width:7rem" />
+                                    </dd>
+                                </div>
+                            </dl>
+                        </section>
+                    }
+                })
+                .take(3)
+                .collect::<Vec<_>>()}
         </div>
     }
 }
@@ -142,11 +183,14 @@ pub fn Settings() -> impl IntoView {
     let settings = LocalResource::new(move || async move { bc_ipc::client::get_settings().await });
 
     view! {
-        <div class="page page-settings">
+        <div class=format!(
+            "page {}",
+            style::page_settings,
+        )>
             {move || match settings.get() {
-                None => view! { <p class=style::loading>"Loading settings…"</p> }.into_any(),
+                None => view! { <SettingsSkeleton /> }.into_any(),
                 Some(Err(e)) => {
-                    view! { <p class=style::error>{format!("Failed to load settings: {e}")}</p> }
+                    view! { <ErrorBanner message=format!("Failed to load settings: {e}") /> }
                         .into_any()
                 }
                 Some(Ok(s)) => view! { <SettingsPanel info=s /> }.into_any(),
