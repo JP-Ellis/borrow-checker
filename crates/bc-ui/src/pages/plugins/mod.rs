@@ -1,17 +1,21 @@
 //! Plugins page — installed WASM importer plugin list.
 
+#[cfg(debug_assertions)]
+pub(crate) mod qa;
+
 use leptos::prelude::*;
 use stylance::import_style;
 
 use crate::components::status_pill::StatusPill;
 use crate::components::status_pill::Tone;
 
-import_style!(style, "plugins.module.scss");
+import_style!(pub(crate) style, "plugins.module.scss");
 
 /// Plugins page — lists every installed importer plugin with its ABI version
 /// and the source `.wasm` filename.
 #[component]
 pub fn Plugins() -> impl IntoView {
+    // Plugins are a startup snapshot — not wired to data_version (no hot-reload).
     let plugins_resource = LocalResource::new(bc_ipc::client::list_plugins);
 
     view! {
@@ -50,24 +54,24 @@ pub fn Plugins() -> impl IntoView {
                                     {plugins
                                         .into_iter()
                                         .map(|plugin| {
-                                            let file_name = std::path::Path::new(&plugin.source_path)
-                                                .file_name()
-                                                .and_then(|n| n.to_str())
-                                                .unwrap_or(&plugin.source_path)
-                                                .to_owned();
+                                            let (label, tone) = if plugin.is_deprecated {
+                                                ("deprecated".to_owned(), Tone::Warn)
+                                            } else {
+                                                ("loaded".to_owned(), Tone::Good)
+                                            };
                                             view! {
                                                 <tr class=style::row>
                                                     <td class=style::td>
-                                                        <span class=style::plugin_name>{plugin.name.clone()}</span>
+                                                        <span class=style::plugin_name>{plugin.name}</span>
                                                     </td>
                                                     <td class=style::td>
                                                         <code class=style::abi>{plugin.sdk_abi}</code>
                                                     </td>
                                                     <td class=style::td>
-                                                        <code class=style::file_name>{file_name}</code>
+                                                        <code class=style::file_name>{plugin.file_name}</code>
                                                     </td>
                                                     <td class=style::td>
-                                                        <StatusPill label="loaded".to_owned() tone=Tone::Good />
+                                                        <StatusPill label=label tone=tone />
                                                     </td>
                                                 </tr>
                                             }
