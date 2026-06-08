@@ -20,6 +20,7 @@ mod currency;
 mod error;
 mod money;
 mod plugins;
+mod settings;
 
 pub use accounts::AccountNode;
 pub use accounts::AccountRef;
@@ -47,3 +48,4 @@ pub use currency::currency_from_code;
 pub use error::Error as BcError;
 pub use money::Amount;
 pub use plugins::PluginInfo;
+pub use settings::SettingsInfo;

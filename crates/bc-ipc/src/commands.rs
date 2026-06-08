@@ -23,3 +23,6 @@ pub const GET_UNCATEGORISED_COUNT: &str = "get_uncategorised_count";
 
 /// Command: list installed plugins.
 pub const LIST_PLUGINS: &str = "list_plugins";
+
+/// Command: get the current application settings.
+pub const GET_SETTINGS: &str = "get_settings";
