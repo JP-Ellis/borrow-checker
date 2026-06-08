@@ -50,6 +50,16 @@ fn no_mask_node() -> AccountNode {
 }
 
 /// Renders [`AccountDashboard`] in three account configurations.
+///
+/// # Period toggle coverage
+///
+/// All three sections start with the default period (Monthly). To exercise the
+/// period toggle interactively, click the weekly/monthly/quarterly buttons in
+/// any section. The sparkline will re-fetch with 8 buckets for Weekly and 6
+/// buckets for all other periods.
+///
+/// CalendarYear and FinancialYear variants are not yet exposed in the toggle UI
+/// (see the `#[expect(clippy::wildcard_enum_match_arm)]` comment in `mod.rs`).
 #[component]
 pub fn AccountDashboardQa() -> impl IntoView {
     view! {
@@ -57,21 +67,21 @@ pub fn AccountDashboardQa() -> impl IntoView {
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
-                    "asset account with mask and tags"
+                    "asset account with mask and tags (default: monthly)"
                 </p>
                 <AccountDashboard node=asset_node() />
             </section>
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
-                    "liability — negative balance"
+                    "liability — negative balance (default: monthly)"
                 </p>
                 <AccountDashboard node=liability_node() />
             </section>
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
-                    "no mask, no tags, no parent"
+                    "no mask, no tags, no parent (default: monthly)"
                 </p>
                 <AccountDashboard node=no_mask_node() />
             </section>

@@ -397,6 +397,20 @@ pub enum SparklinePeriod {
     },
 }
 
+impl SparklinePeriod {
+    /// Returns the default number of buckets to display for this period.
+    ///
+    /// Weekly shows 8 weeks; all other periods default to 6 buckets.
+    #[must_use]
+    #[inline]
+    pub fn default_count(&self) -> u32 {
+        match self {
+            Self::Weekly => 8,
+            Self::Monthly | Self::Quarterly | Self::CalendarYear | Self::FinancialYear { .. } => 6,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -427,5 +441,72 @@ mod tests {
         let json = serde_json::to_string(&tx).expect("serialises");
         let tx2: NewTransaction = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(tx, tx2);
+    }
+
+    #[test]
+    fn sparkline_period_weekly_serde_roundtrip() {
+        let p = SparklinePeriod::Weekly;
+        let json = serde_json::to_string(&p).expect("serialises");
+        assert_eq!(json, r#"{"type":"weekly"}"#);
+        let p2: SparklinePeriod = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(p, p2);
+    }
+
+    #[test]
+    fn sparkline_period_monthly_serde_roundtrip() {
+        let p = SparklinePeriod::Monthly;
+        let json = serde_json::to_string(&p).expect("serialises");
+        assert_eq!(json, r#"{"type":"monthly"}"#);
+        let p2: SparklinePeriod = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(p, p2);
+    }
+
+    #[test]
+    fn sparkline_period_quarterly_serde_roundtrip() {
+        let p = SparklinePeriod::Quarterly;
+        let json = serde_json::to_string(&p).expect("serialises");
+        assert_eq!(json, r#"{"type":"quarterly"}"#);
+        let p2: SparklinePeriod = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(p, p2);
+    }
+
+    #[test]
+    fn sparkline_period_calendar_year_serde_roundtrip() {
+        let p = SparklinePeriod::CalendarYear;
+        let json = serde_json::to_string(&p).expect("serialises");
+        assert_eq!(json, r#"{"type":"calendar_year"}"#);
+        let p2: SparklinePeriod = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(p, p2);
+    }
+
+    #[test]
+    fn sparkline_period_financial_year_serde_roundtrip() {
+        let p = SparklinePeriod::FinancialYear {
+            start_month: 7,
+            start_day: 1,
+        };
+        let json = serde_json::to_string(&p).expect("serialises");
+        assert_eq!(
+            json,
+            r#"{"type":"financial_year","start_month":7,"start_day":1}"#
+        );
+        let p2: SparklinePeriod = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(p, p2);
+    }
+
+    #[test]
+    fn sparkline_period_default_count() {
+        assert_eq!(SparklinePeriod::Weekly.default_count(), 8);
+        assert_eq!(SparklinePeriod::Monthly.default_count(), 6);
+        assert_eq!(SparklinePeriod::Quarterly.default_count(), 6);
+        assert_eq!(SparklinePeriod::CalendarYear.default_count(), 6);
+        assert_eq!(
+            SparklinePeriod::FinancialYear {
+                start_month: 7,
+                start_day: 1,
+            }
+            .default_count(),
+            6
+        );
     }
 }

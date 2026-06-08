@@ -89,7 +89,7 @@
 .action_primary {
   background: var(--bc-accent);
   border-color: var(--bc-accent);
-  color: white;
+  color: var(--bc-ink-on-accent);
 }
 
 .kbd {
@@ -205,5 +205,5 @@
 .period_btn_active {
   background: var(--bc-accent);
   border-color: var(--bc-accent);
-  color: white;
+  color: var(--bc-ink-on-accent);
 }
