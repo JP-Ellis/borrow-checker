@@ -15,6 +15,7 @@ use serde::Serialize;
 use crate::AccountNode;
 use crate::BcError;
 use crate::NewTransaction;
+use crate::PluginInfo;
 use crate::Transaction;
 use crate::commands;
 
@@ -175,4 +176,15 @@ pub async fn get_account_sparkline(
         },
     )
     .await
+}
+
+/// Lists all installed plugins from the backend.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the Tauri invoke fails.
+#[inline]
+pub async fn list_plugins() -> Result<Vec<PluginInfo>, BcError> {
+    tauri_sys::core::invoke_result::<Vec<PluginInfo>, BcError>(commands::LIST_PLUGINS, NoArgs {})
+        .await
 }

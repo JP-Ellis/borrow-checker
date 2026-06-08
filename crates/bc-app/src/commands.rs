@@ -9,3 +9,4 @@
 //! `bc-ipc`; `bc-ui` must never see `bc-core` types.
 
 pub mod accounts;
+pub mod plugins;
