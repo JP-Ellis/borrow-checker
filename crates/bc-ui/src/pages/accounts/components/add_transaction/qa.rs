@@ -8,10 +8,6 @@ use leptos::prelude::*;
 use super::AddTransactionForm;
 
 /// Sample account list used in the QA showcase.
-#[expect(
-    dead_code,
-    reason = "used only within QA module, compiler may not see the call site"
-)]
 fn sample_accounts() -> Vec<AccountNode> {
     vec![
         AccountNode::new(

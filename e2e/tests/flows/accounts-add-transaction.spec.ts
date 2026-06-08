@@ -2,7 +2,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import Database from 'better-sqlite3';
-import { browser, $, expect as wdioExpect } from '@wdio/globals';
+import { browser, $, $$, expect as wdioExpect } from '@wdio/globals';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEST_DB_PATH = resolve(__dirname, '../../fixtures/test.db');
@@ -41,21 +41,54 @@ describe('Accounts — add transaction', () => {
             { timeout: 5_000, timeoutMsg: 'URL did not update to account route within 5 s' },
         );
 
-        // Wait for the test button to appear (only renders once an account is selected).
-        const addBtn = await $('[data-testid="add-test-transaction"]');
-        await addBtn.waitForDisplayed({ timeout: 5_000 });
+        // Click the "+ transaction" button on the dashboard action bar.
+        // Find the button by its text content since it also contains a <kbd> child.
+        const allButtons = await $$('button');
+        let addTxBtn: WebdriverIO.Element | undefined;
+        for (const btn of allButtons) {
+            const text = await btn.getText();
+            if (text.includes('+ transaction')) {
+                addTxBtn = btn;
+                break;
+            }
+        }
+        if (!addTxBtn) {
+            throw new Error('"+ transaction" button not found on dashboard');
+        }
+        await addTxBtn.waitForDisplayed({ timeout: 5_000 });
+        await addTxBtn.click();
 
-        // Fire the placeholder create button.
-        await addBtn.click();
+        // Wait for the AddTransactionForm to appear.
+        const form = await $('[data-testid="add-transaction-form"]');
+        await form.waitForDisplayed({
+            timeout: 5_000,
+            timeoutMsg: 'AddTransactionForm did not appear within 5 s',
+        });
 
-        // UI assertion — "Test Payee" row must appear in the transaction register.
+        // Fill in the date field (type="date", id="atf-date").
+        const dateField = await $('#atf-date');
+        await dateField.setValue('2026-06-01');
+
+        // Fill in the payee field.
+        const payeeField = await $('#atf-payee');
+        await payeeField.setValue('E2E Test Payee');
+
+        // Fill in the amount field.
+        const amountField = await $('#atf-amount');
+        await amountField.setValue('-42.00');
+
+        // Submit the form via the submit button.
+        const submitBtn = await $('[data-testid="add-transaction-submit"]');
+        await submitBtn.click();
+
+        // UI assertion — "E2E Test Payee" row must appear in the transaction register.
         // Use span= (element-text selector) because the payee renders in a <span>,
         // not an <a>.  The plain ='Text' selector uses WebDriver's link-text
         // strategy and only matches <a> elements.
-        const payeeCell = await $('span=Test Payee');
+        const payeeCell = await $('span=E2E Test Payee');
         await payeeCell.waitForDisplayed({
             timeout: 10_000,
-            timeoutMsg: '"Test Payee" did not appear in the register within 10 s',
+            timeoutMsg: '"E2E Test Payee" did not appear in the register within 10 s',
         });
 
         // DB assertion — row must be persisted in SQLite.
@@ -65,7 +98,7 @@ describe('Accounts — add transaction', () => {
             try {
                 row = db
                     .prepare('SELECT id, payee FROM transactions WHERE payee = ?')
-                    .get('Test Payee');
+                    .get('E2E Test Payee');
             } finally {
                 db.close();
             }
