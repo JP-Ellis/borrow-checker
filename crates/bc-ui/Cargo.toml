@@ -55,6 +55,7 @@ web-sys                  = { version = "0.3", features = [
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+rstest            = { workspace = true }
 
 [lints]
 workspace = true

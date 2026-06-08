@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod plugins;
+pub mod settings;
 
 use leptos::prelude::*;
 use leptos_router::MatchNestedRoutes;
@@ -21,6 +22,7 @@ pub fn PageRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
             <Route path=path!("") view=PageIndex />
             <accounts::AccountsRoutes />
             <plugins::PluginsRoutes />
+            <settings::SettingsRoutes />
         </ParentRoute>
     }
     .into_inner()
@@ -42,6 +44,11 @@ pub fn PageIndex() -> impl IntoView {
                     description=accounts::DESCRIPTION
                 />
                 <QaCard title=plugins::TITLE path=plugins::PATH description=plugins::DESCRIPTION />
+                <QaCard
+                    title=settings::TITLE
+                    path=settings::PATH
+                    description=settings::DESCRIPTION
+                />
             </div>
         </div>
     }
