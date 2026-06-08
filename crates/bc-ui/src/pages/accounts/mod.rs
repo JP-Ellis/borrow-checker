@@ -5,10 +5,8 @@ mod types;
 pub(crate) mod components;
 pub(crate) mod dashboard;
 
-use bc_ipc::Amount;
-use bc_ipc::NewPosting;
 use bc_ipc::NewTransaction;
-use bc_ipc::TxStatus;
+use components::add_transaction::AddTransactionForm;
 use components::sidebar::AccountSidebar;
 use components::sticky_bar::StickyAccountBar;
 use components::transaction_register::TransactionRegister;
@@ -97,12 +95,16 @@ pub fn Accounts() -> impl IntoView {
         async move { bc_ipc::client::create_transaction(&tx).await }
     });
 
+    // Controls whether the add-transaction form is shown.
+    let show_add_tx = RwSignal::new(false);
+
     // After any successful mutation, bump data_version — all subscribed
     // resources react automatically.  Future actions (amend, void, import)
     // only need to add one line here.
     Effect::new(move |_| {
         if create_tx.value().with(|v| matches!(v, Some(Ok(_)))) {
             data_version.update(|v| *v = v.wrapping_add(1));
+            show_add_tx.set(false);
         }
     });
 
@@ -164,59 +166,53 @@ pub fn Accounts() -> impl IntoView {
                             .into_any()
                     }
                     Some(node) => {
-                        let offset_id = accounts_resource
+                        let all_accounts = accounts_resource
                             .get()
                             .and_then(Result::ok)
-                            .and_then(|accounts| {
-                                accounts
-                                    .into_iter()
-                                    .find(|a| {
-                                        matches!(a.account_type, bc_ipc::AccountType::Expense)
-                                    })
-                                    .map(|a| a.id)
-                            })
                             .unwrap_or_default();
-                        let debit_id = node.id.clone();
+                        let currency_code = node.balance.currency_code.clone();
+                        let scale = node.balance.scale;
+                        let node_id = node.id.clone();
+                        let node_id_register = node.id.clone();
 
                         view! {
                             <AccountDashboard
                                 node=node.clone()
                                 data_version=data_version.read_only()
+                                on_add_tx=Callback::new(move |()| show_add_tx.set(true))
                             />
 
-                            // TODO(ipc): replace with real add-transaction form
-                            <button
-                                data-testid="add-test-transaction"
-                                on:click=move |_| {
-                                    create_tx
-                                        .dispatch(
-                                            NewTransaction::new(
-                                                "2026-05-23",
-                                                "Test Payee",
-                                                TxStatus::Pending,
-                                                vec![],
-                                                vec![
-                                                    NewPosting::new(
-                                                        debit_id.clone(),
-                                                        Amount::new(-1_000, "AUD", 2),
-                                                        None::<&str>,
-                                                    ),
-                                                    NewPosting::new(
-                                                        offset_id.clone(),
-                                                        Amount::new(1_000, "AUD", 2),
-                                                        None::<&str>,
-                                                    ),
-                                                ],
-                                            ),
-                                        );
-                                }
-                            >
-                                "Add Test Transaction"
-                            </button>
+                            {move || {
+                                show_add_tx
+                                    .get()
+                                    .then(|| {
+                                        let submit_error = create_tx
+                                            .value()
+                                            .with(|v| {
+                                                let r = v.as_ref()?;
+                                                r.as_ref().err().map(ToString::to_string)
+                                            });
+                                        view! {
+                                            <AddTransactionForm
+                                                accounts=all_accounts.clone()
+                                                current_account_id=node_id.clone()
+                                                currency_code=currency_code.clone()
+                                                scale=scale
+                                                on_submit=Callback::new(move |tx: NewTransaction| {
+                                                    create_tx.dispatch(tx);
+                                                })
+                                                on_cancel=Callback::new(move |()| {
+                                                    show_add_tx.set(false);
+                                                })
+                                                submit_error=submit_error
+                                            />
+                                        }
+                                    })
+                            }}
 
                             <TransactionRegister
                                 transactions=transactions_signal
-                                viewing_account_id=node.id.clone()
+                                viewing_account_id=node_id_register
                             />
                         }
                             .into_any()

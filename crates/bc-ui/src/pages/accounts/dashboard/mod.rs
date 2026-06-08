@@ -29,6 +29,7 @@ static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 ///
 /// * `node` - The account to display.
 /// * `data_version` - Optional monotonic counter; when it changes, stats and sparkline re-fetch.
+/// * `on_add_tx` - Optional callback fired when the user clicks "+ transaction".
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -45,6 +46,9 @@ pub fn AccountDashboard(
     /// Stats and sparkline LocalResources re-fetch whenever this changes.
     #[prop(optional)]
     data_version: Option<ReadSignal<u32>>,
+    /// Optional callback fired when the user clicks the "+ transaction" action button.
+    #[prop(optional)]
+    on_add_tx: Option<Callback<()>>,
 ) -> impl IntoView {
     let account_id = node.id.clone();
     let sparkline_account_id = node.id.clone();
@@ -115,11 +119,17 @@ pub fn AccountDashboard(
                         <button class=style::action_btn>
                             "import " <kbd class=style::kbd>"i"</kbd>
                         </button>
-                        <button class=format!(
-                            "{} {}",
-                            style::action_btn,
-                            style::action_primary,
-                        )>"+ transaction " <kbd class=style::kbd>"↵"</kbd></button>
+                        <button
+                            class=format!("{} {}", style::action_btn, style::action_primary)
+                            on:click=move |_| {
+                                if let Some(cb) = on_add_tx {
+                                    cb.run(());
+                                }
+                            }
+                        >
+                            "+ transaction "
+                            <kbd class=style::kbd>"↵"</kbd>
+                        </button>
                     </div>
 
                     <button
@@ -155,6 +165,11 @@ pub fn AccountDashboard(
                             class=format!("{} {}", style::action_btn, style::action_primary)
                             popovertarget=popover_id.clone()
                             popovertargetaction="hide"
+                            on:click=move |_| {
+                                if let Some(cb) = on_add_tx {
+                                    cb.run(());
+                                }
+                            }
                         >
                             "+ transaction "
                             <kbd class=style::kbd>"↵"</kbd>
