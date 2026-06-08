@@ -123,20 +123,30 @@ pub async fn get_account_stats(account_id: &str) -> Result<crate::AccountStats, 
     .await
 }
 
-/// Gets period-bucketed cash-flow data for a sparkline, defaulting to 6 monthly buckets.
+/// Gets period-bucketed cash-flow data for a sparkline.
+///
+/// # Arguments
+///
+/// * `account_id` - Account ID to query.
+/// * `period` - Time-bucket size; defaults to [`crate::SparklinePeriod::Monthly`] when `None`.
+/// * `count` - Number of buckets to return; defaults to 6 when `None`.
 ///
 /// # Errors
 ///
 /// Returns [`BcError`] if the backend call fails.
 #[inline]
-pub async fn get_account_sparkline(account_id: &str) -> Result<Vec<crate::SparkPoint>, BcError> {
+pub async fn get_account_sparkline(
+    account_id: &str,
+    period: Option<&crate::SparklinePeriod>,
+    count: Option<u32>,
+) -> Result<Vec<crate::SparkPoint>, BcError> {
     tauri_sys::core::invoke_result::<Vec<crate::SparkPoint>, BcError>(
         commands::GET_ACCOUNT_SPARKLINE,
         GetAccountSparklineArgs {
             account_id,
             commodity: None,
-            count: None,
-            period: None,
+            count,
+            period,
         },
     )
     .await
