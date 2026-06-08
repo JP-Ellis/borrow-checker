@@ -28,6 +28,7 @@ static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 /// # Arguments
 ///
 /// * `node` - The account to display.
+/// * `data_version` - Optional monotonic counter; when it changes, stats and sparkline re-fetch.
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -36,17 +37,27 @@ static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 pub fn AccountDashboard(
     /// Account to display.
     node: AccountNode,
+    /// Monotonic counter bumped by the parent after any successful mutation.
+    /// Stats and sparkline LocalResources re-fetch whenever this changes.
+    #[prop(optional)]
+    data_version: Option<ReadSignal<u32>>,
 ) -> impl IntoView {
     let account_id = node.id.clone();
     let sparkline_account_id = node.id.clone();
 
     let stats_resource = LocalResource::new(move || {
         let id = account_id.clone();
+        if let Some(v) = data_version {
+            v.get();
+        }
         async move { bc_ipc::client::get_account_stats(&id).await }
     });
 
     let sparkline_resource = LocalResource::new(move || {
         let id = sparkline_account_id.clone();
+        if let Some(v) = data_version {
+            v.get();
+        }
         async move { bc_ipc::client::get_account_sparkline(&id).await }
     });
 
