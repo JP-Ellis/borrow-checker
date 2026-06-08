@@ -1,0 +1,118 @@
+.page {
+  padding: var(--bc-space-7);
+  overflow-y: auto;
+  background: var(--bc-bg);
+}
+
+/* MARK: Net worth headline */
+
+.headline_section {
+  margin-bottom: var(--bc-space-7);
+}
+
+.headline_label {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--bc-ink-mute);
+  margin-bottom: var(--bc-space-2);
+}
+
+.headline {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-display);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.015em;
+  color: var(--bc-ink);
+  margin-bottom: var(--bc-space-4);
+}
+
+.subtotals {
+  display: flex;
+  gap: var(--bc-space-7);
+  flex-wrap: wrap;
+}
+
+.subtotal_item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+}
+
+.subtotal_label {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--bc-ink-mute);
+}
+
+.subtotal_value {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  font-variant-numeric: tabular-nums;
+  color: var(--bc-ink-soft);
+}
+
+/* MARK: Stat card section */
+
+.stat_section {
+  margin-bottom: var(--bc-space-7);
+}
+
+/* MARK: Account list */
+
+.account_section {
+  margin-bottom: var(--bc-space-7);
+}
+
+.account_section_title {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--bc-ink-mute);
+  margin-bottom: var(--bc-space-3);
+  padding-bottom: var(--bc-space-2);
+  border-bottom: 1px solid var(--bc-border);
+}
+
+.account_group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+  margin-bottom: var(--bc-space-5);
+}
+
+.account_row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--bc-space-2) var(--bc-space-3);
+  border-radius: var(--bc-radius-control);
+  background: transparent;
+  transition: background var(--bc-duration-fast) var(--bc-ease-out);
+
+  &:hover {
+    background: var(--bc-surface);
+  }
+}
+
+.account_name {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink);
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.account_balance {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  font-variant-numeric: tabular-nums;
+  color: var(--bc-ink-soft);
+}
