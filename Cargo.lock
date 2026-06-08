@@ -556,6 +556,7 @@ dependencies = [
  "leptos_router",
  "leptos_router_macro",
  "pretty_assertions",
+ "rstest",
  "stylance",
  "tauri-sys",
  "wasm-bindgen",

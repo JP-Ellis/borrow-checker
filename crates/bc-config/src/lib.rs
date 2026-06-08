@@ -353,6 +353,20 @@ impl Settings {
         &self.plugin_dirs
     }
 
+    /// Returns the candidate config file paths searched during [`Self::load`].
+    ///
+    /// The list is ordered: the first existing file wins. No file is required to
+    /// exist; this method returns the candidate locations regardless of whether
+    /// any file is present on disk.
+    ///
+    /// Useful for diagnostics (e.g. displaying the correct config path in a UI
+    /// rather than hardcoding a platform-specific guess).
+    #[inline]
+    #[must_use]
+    pub fn config_file_paths() -> Vec<std::path::PathBuf> {
+        user_config_paths()
+    }
+
     /// Overrides the database path at runtime (e.g. from a CLI flag).
     ///
     /// This takes precedence over any value loaded from the config file.
