@@ -12,7 +12,7 @@ pub const LIST_TRANSACTIONS: &str = "list_transactions";
 /// Command: create a new transaction.
 pub const CREATE_TRANSACTION: &str = "create_transaction";
 
-/// Command: get income and expense totals for an account over the last N days.
+/// Command: get income and expense totals for an account over the last 30 days.
 pub const GET_ACCOUNT_STATS: &str = "get_account_stats";
 
 /// Command: get period-bucketed cash-flow data for a sparkline chart.

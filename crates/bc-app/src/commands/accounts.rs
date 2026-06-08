@@ -52,10 +52,10 @@ pub async fn list_accounts(
                 .get(account.id())
                 .map_or(("", rust_decimal::Decimal::ZERO), |(c, d)| (c.as_str(), *d));
 
-            let balance = crate::ipc::decimal_to_amount(decimal, currency_code);
-            crate::ipc::into_ipc_with_balance(account, balance)
+            let balance = crate::ipc::decimal_to_amount(decimal, currency_code)?;
+            Ok(crate::ipc::into_ipc_with_balance(account, balance))
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(nodes)
 }
@@ -186,7 +186,7 @@ pub async fn get_account_stats(
     };
 
     let today = jiff::Zoned::now().date();
-    let from = today.saturating_sub(jiff::Span::new().days(30_i32));
+    let from = today.saturating_sub(jiff::Span::new().days(29_i32));
     let tomorrow = today.saturating_add(jiff::Span::new().days(1_i32));
 
     let (inflow, outflow) = state
@@ -196,8 +196,8 @@ pub async fn get_account_stats(
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
     Ok(bc_ipc::AccountStats::new(
-        crate::ipc::decimal_to_amount(inflow, &commodity_code),
-        crate::ipc::decimal_to_amount(outflow, &commodity_code),
+        crate::ipc::decimal_to_amount(inflow, &commodity_code)?,
+        crate::ipc::decimal_to_amount(outflow, &commodity_code)?,
     ))
 }
 
@@ -368,14 +368,22 @@ pub async fn get_account_sparkline(
     // `mantissa()` returns the integer coefficient already at the Decimal's scale
     // (e.g. `Decimal::new(10000, 2)` = $100.00 → mantissa 10000 = 100 cents).
     // Amounts created via the IPC layer always carry the correct scale.
-    let points: Vec<bc_ipc::SparkPoint> = buckets
+    let points = buckets
         .into_iter()
         .map(|b| {
-            let income = i64::try_from(b.inflow.mantissa()).unwrap_or(0);
-            let expenses = i64::try_from(b.outflow.mantissa()).unwrap_or(0);
-            bc_ipc::SparkPoint::new(spark_label(b.start, &model_period), income, expenses)
+            let income = i64::try_from(b.inflow.mantissa()).map_err(|_e| {
+                bc_ipc::BcError::Internal(format!("inflow mantissa overflows i64: {}", b.inflow))
+            })?;
+            let expenses = i64::try_from(b.outflow.mantissa()).map_err(|_e| {
+                bc_ipc::BcError::Internal(format!("outflow mantissa overflows i64: {}", b.outflow))
+            })?;
+            Ok(bc_ipc::SparkPoint::new(
+                spark_label(b.start, &model_period),
+                income,
+                expenses,
+            ))
         })
-        .collect();
+        .collect::<Result<Vec<_>, bc_ipc::BcError>>()?;
 
     Ok(points)
 }

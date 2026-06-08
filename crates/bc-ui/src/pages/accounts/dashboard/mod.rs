@@ -175,7 +175,7 @@ pub fn AccountDashboard(
                                         currency,
                                     );
                                     let exp = crate::components::num::format_amount(
-                                        s.expenses.minor_units,
+                                        s.expenses.minor_units.saturating_neg(),
                                         currency,
                                     );
                                     (inc, exp)

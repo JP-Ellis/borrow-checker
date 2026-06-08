@@ -102,12 +102,13 @@ pub fn AccountSidebar(
                             <div class=style::tree>
                                 {stored_sections
                                     .with_value(|secs| {
+                                        let all_nodes = stored_nodes.get_value();
                                         secs.iter()
                                             .map(|(_, label, roots)| {
                                                 view! {
                                                     <SidebarSection
                                                         label=label
-                                                        nodes=stored_nodes.get_value()
+                                                        nodes=all_nodes.clone()
                                                         roots=roots.clone()
                                                         selected_id=selected_id
                                                     />

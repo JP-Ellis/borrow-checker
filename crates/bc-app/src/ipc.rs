@@ -179,9 +179,17 @@ pub(crate) fn into_ipc_with_balance(
 ///
 /// * `d`             - Decimal value.
 /// * `currency_code` - ISO 4217 code, e.g. `"AUD"`.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Internal`] if the decimal's mantissa overflows `i64`.
 #[inline]
-pub(crate) fn decimal_to_amount(d: rust_decimal::Decimal, currency_code: &str) -> bc_ipc::Amount {
-    let minor = i64::try_from(d.mantissa()).unwrap_or(0);
+pub(crate) fn decimal_to_amount(
+    d: rust_decimal::Decimal,
+    currency_code: &str,
+) -> Result<bc_ipc::Amount, bc_ipc::BcError> {
+    let minor = i64::try_from(d.mantissa())
+        .map_err(|_e| bc_ipc::BcError::Internal(format!("amount mantissa overflows i64: {d}")))?;
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Decimal::scale() ≤ 28 for rust_decimal; always fits in u8"
@@ -190,7 +198,7 @@ pub(crate) fn decimal_to_amount(d: rust_decimal::Decimal, currency_code: &str) -
         clippy::as_conversions,
         reason = "Decimal::scale() ≤ 28 for rust_decimal; cast is safe"
     )]
-    bc_ipc::Amount::new(minor, currency_code, d.scale() as u8)
+    Ok(bc_ipc::Amount::new(minor, currency_code, d.scale() as u8))
 }
 
 // MARK: Posting
