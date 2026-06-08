@@ -79,6 +79,17 @@
   border-bottom: 1px solid var(--bc-border);
 }
 
+/* Per-type group sub-heading (Assets, Liabilities, …) — lighter than the
+ * section title: no border, slightly dimmer text. */
+.account_group_title {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--bc-ink-dim);
+  margin-bottom: var(--bc-space-2);
+}
+
 .account_group {
   display: flex;
   flex-direction: column;
@@ -94,6 +105,8 @@
   border-radius: var(--bc-radius-control);
   background: transparent;
   transition: background var(--bc-duration-fast) var(--bc-ease-out);
+  text-decoration: none;
+  color: inherit;
 
   &:hover {
     background: var(--bc-surface);
