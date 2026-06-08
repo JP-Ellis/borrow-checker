@@ -1,6 +1,7 @@
 //! Route entries for page-level QA pages (`/__test/page/*`).
 
 pub mod accounts;
+pub mod plugins;
 
 use leptos::prelude::*;
 use leptos_router::MatchNestedRoutes;
@@ -19,6 +20,7 @@ pub fn PageRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
         <ParentRoute path=path!("/page") view=|| view! { <Outlet /> }>
             <Route path=path!("") view=PageIndex />
             <accounts::AccountsRoutes />
+            <plugins::PluginsRoutes />
         </ParentRoute>
     }
     .into_inner()
@@ -39,6 +41,7 @@ pub fn PageIndex() -> impl IntoView {
                     path=accounts::PATH
                     description=accounts::DESCRIPTION
                 />
+                <QaCard title=plugins::TITLE path=plugins::PATH description=plugins::DESCRIPTION />
             </div>
         </div>
     }
