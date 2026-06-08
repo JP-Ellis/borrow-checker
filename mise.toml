@@ -17,7 +17,7 @@ config_roots = [
 [tools]
 "core:node" = "24"
 "core:rust" = {
-  version    = "stable",
+  version    = "1.96",
   components = "llvm-tools,rustfmt,clippy",
   # wasm32-wasip2: plugin system (Wasmtime)
   # wasm32-unknown-unknown: Leptos frontend (Tauri webview)
@@ -25,7 +25,7 @@ config_roots = [
 }
 
 # Binstall ensures fast installs of cargo binaries
-"aqua:cargo-bins/cargo-binstall" = "1.18"
+"aqua:cargo-bins/cargo-binstall" = "1"
 
 # JS package manager (aube) and runner (aubx)
 "github:endevco/aube" = "1"
@@ -36,7 +36,7 @@ config_roots = [
 "cargo:cargo-machete"  = "0.9"
 "cargo:cargo-nextest"  = "0.9"
 "cargo:leptosfmt"      = "0.1"
-"cargo:prek"           = "0.3"
+"cargo:prek"           = "0.4"
 "cargo:stylance-cli"   = "0.8"
 "cargo:tauri-cli"      = "2"
 "cargo:tauri-driver"   = "2"
