@@ -4,9 +4,8 @@
 pub mod palette;
 pub mod top_bar;
 
+use leptos::ev;
 use leptos::prelude::*;
-use leptos::wasm_bindgen::JsCast as _;
-use leptos::web_sys;
 use leptos_router::components::Outlet;
 pub use top_bar::TopBar;
 
@@ -20,11 +19,10 @@ use crate::shell::palette::CommandPalette;
 pub fn ConsoleShell() -> impl IntoView {
     let palette_open = RwSignal::new(false);
 
-    /* Global ⌘K / Ctrl+K shortcut — opens the command palette from anywhere. */
-    window_event_listener_untyped("keydown", move |e| {
-        let ke: web_sys::KeyboardEvent = e.unchecked_into();
+    /* Global ⌘K / Ctrl+K shortcut — toggles the command palette from anywhere. */
+    window_event_listener(ev::keydown, move |ke| {
         if ke.key() == "k" && (ke.meta_key() || ke.ctrl_key()) {
-            palette_open.set(true);
+            palette_open.update(|v| *v = !*v);
             ke.prevent_default();
         }
     });

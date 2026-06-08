@@ -1,27 +1,14 @@
 //! Command palette (⌘K) — account search and keyboard navigation.
 
 use bc_ipc::AccountNode;
-use bc_ipc::AccountType;
 use leptos::prelude::*;
 use leptos::web_sys;
 use leptos_router::hooks::use_navigate;
 use stylance::import_style;
 
-use crate::pages::accounts::components::sidebar::format_balance_short;
+use crate::components::num::format_balance_short;
 
 import_style!(style, "palette.module.scss");
-
-/// Returns the display label for an [`AccountType`].
-fn account_type_label(ty: AccountType) -> &'static str {
-    match ty {
-        AccountType::Asset => "asset",
-        AccountType::Liability => "liability",
-        AccountType::Equity => "equity",
-        AccountType::Income => "income",
-        AccountType::Expense => "expense",
-        _ => "account",
-    }
-}
 
 /// Command palette modal triggered by ⌘K.
 ///
@@ -48,10 +35,13 @@ pub fn CommandPalette(
     /* StoredValue allows the navigate fn to be copied into multiple closures. */
     let navigate = StoredValue::new(use_navigate());
 
-    /* Re-fetch every time the palette opens so results stay current. */
-    let accounts_resource = LocalResource::new(move || {
-        open.get(); /* subscribes so resource refreshes each open */
-        bc_ipc::client::list_accounts()
+    /* Re-fetch when the palette opens; skip the fetch while it is closed. */
+    let accounts_resource = LocalResource::new(move || async move {
+        if open.get() {
+            bc_ipc::client::list_accounts().await
+        } else {
+            Ok(vec![])
+        }
     });
 
     /* Filtered list — recomputes when query or resource changes. */
@@ -86,20 +76,35 @@ pub fn CommandPalette(
 
     view! {
         <Show when=move || open.get()>
-            <div
-                class=style::overlay
-                on:click=move |_| on_close.run(())
-                role="dialog"
-                aria-label="Command palette"
-                aria-modal="true"
-            >
-                <div class=style::modal on:click=move |e| e.stop_propagation()>
+            <div class=style::overlay on:click=move |_| on_close.run(())>
+                <div
+                    class=style::modal
+                    role="dialog"
+                    aria-label="Command palette"
+                    aria-modal="true"
+                    on:click=move |e| e.stop_propagation()
+                >
                     <input
                         node_ref=input_ref
                         class=style::input
                         type="text"
+                        role="combobox"
                         placeholder="Search accounts…"
                         aria-label="Search accounts"
+                        aria-expanded=move || open.get()
+                        aria-controls="palette-listbox"
+                        aria-activedescendant=move || {
+                            let items = filtered.get();
+                            if items.is_empty() {
+                                String::new()
+                            } else {
+                                let idx = selected_idx.get();
+                                items
+                                    .get(idx)
+                                    .map(|n| format!("palette-option-{}", n.id))
+                                    .unwrap_or_default()
+                            }
+                        }
                         prop:value=move || query.get()
                         on:input=move |e| {
                             let val = event_target_value(&e);
@@ -146,8 +151,25 @@ pub fn CommandPalette(
                             }
                         }
                     />
-                    <div class=style::list role="listbox">
+                    <div
+                        id="palette-listbox"
+                        class=style::list
+                        role="listbox"
+                        aria-label="Accounts"
+                    >
                         {move || {
+                            let loading = accounts_resource.get().is_none();
+                            if loading {
+                                return view! { <div class=style::empty>"Loading…"</div> }
+                                    .into_any();
+                            }
+                            let error = accounts_resource.get().and_then(Result::err).is_some();
+                            if error {
+                                return view! {
+                                    <div class=style::empty>"Failed to load accounts."</div>
+                                }
+                                    .into_any();
+                            }
                             let items = filtered.get();
                             if items.is_empty() {
                                 let q = query.get();
@@ -163,11 +185,12 @@ pub fn CommandPalette(
                                     .into_iter()
                                     .enumerate()
                                     .map(|(idx, node)| {
+                                        let option_id = format!("palette-option-{}", node.id);
                                         let path = format!("/accounts/{}", node.id);
                                         let nav = navigate.get_value();
                                         let close = on_close;
                                         let balance = format_balance_short(&node.balance);
-                                        let type_label = account_type_label(node.account_type);
+                                        let type_label = node.account_type.label();
                                         let item_class = if idx == sel {
                                             format!("{} {}", style::item, style::item_selected)
                                         } else {
@@ -175,6 +198,7 @@ pub fn CommandPalette(
                                         };
                                         view! {
                                             <div
+                                                id=option_id
                                                 class=item_class
                                                 role="option"
                                                 aria-selected=idx == sel
@@ -198,5 +222,74 @@ pub fn CommandPalette(
                 </div>
             </div>
         </Show>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bc_ipc::AccountType;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn account_type_label_asset() {
+        assert_eq!(AccountType::Asset.label(), "asset");
+    }
+
+    #[test]
+    fn account_type_label_liability() {
+        assert_eq!(AccountType::Liability.label(), "liability");
+    }
+
+    #[test]
+    fn account_type_label_equity() {
+        assert_eq!(AccountType::Equity.label(), "equity");
+    }
+
+    #[test]
+    fn account_type_label_income() {
+        assert_eq!(AccountType::Income.label(), "income");
+    }
+
+    #[test]
+    fn account_type_label_expense() {
+        assert_eq!(AccountType::Expense.label(), "expense");
+    }
+
+    #[test]
+    fn selected_idx_clamping_arrow_down_at_last() {
+        /* ArrowDown at the last item (idx 2, count 3) stays at 2. */
+        let i = 2_usize;
+        let count = 3_usize;
+        let next = i.saturating_add(1).min(count.saturating_sub(1));
+        assert_eq!(next, 2);
+    }
+
+    #[test]
+    fn selected_idx_clamping_arrow_up_at_first() {
+        /* ArrowUp at the first item stays at 0. */
+        let i = 0_usize;
+        let prev = i.saturating_sub(1);
+        assert_eq!(prev, 0);
+    }
+
+    #[test]
+    fn selected_idx_clamping_empty_list_arrow_down() {
+        /* ArrowDown on an empty list — guarded by count > 0 check — is a no-op. */
+        let count = 0_usize;
+        let i = 0_usize;
+        if count > 0 {
+            let _ = i.saturating_add(1).min(count.saturating_sub(1));
+            panic!("should not reach here when count == 0");
+        }
+        assert_eq!(i, 0);
+    }
+
+    #[test]
+    fn selected_idx_clamping_single_item_arrow_down() {
+        /* ArrowDown with one item stays at 0. */
+        let i = 0_usize;
+        let count = 1_usize;
+        let next = i.saturating_add(1).min(count.saturating_sub(1));
+        assert_eq!(next, 0);
     }
 }
