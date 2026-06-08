@@ -16,6 +16,7 @@ use crate::AccountNode;
 use crate::BcError;
 use crate::NewTransaction;
 use crate::PluginInfo;
+use crate::SettingsInfo;
 use crate::Transaction;
 use crate::commands;
 
@@ -187,4 +188,15 @@ pub async fn get_account_sparkline(
 pub async fn list_plugins() -> Result<Vec<PluginInfo>, BcError> {
     tauri_sys::core::invoke_result::<Vec<PluginInfo>, BcError>(commands::LIST_PLUGINS, NoArgs {})
         .await
+}
+
+/// Gets the current application settings from the backend.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the Tauri invoke fails or the config
+/// cannot be loaded.
+#[inline]
+pub async fn get_settings() -> Result<SettingsInfo, BcError> {
+    tauri_sys::core::invoke_result::<SettingsInfo, BcError>(commands::GET_SETTINGS, NoArgs {}).await
 }

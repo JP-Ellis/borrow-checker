@@ -57,6 +57,8 @@ pub fn run() {
             commands::accounts::get_account_sparkline,
             commands::accounts::get_uncategorised_count,
             commands::plugins::list_plugins,
+            // MARK: settings — see bc_ipc::commands for canonical name strings
+            commands::settings::get_settings,
         ])
         .setup(|app| {
             let db_path = std::env::var("BC_DB_PATH")
