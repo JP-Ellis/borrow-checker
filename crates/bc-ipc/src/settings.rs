@@ -20,17 +20,13 @@ pub struct SettingsInfo {
     pub display_commodity: String,
     /// Resolved database file path as a UTF-8 string.
     pub db_path: String,
-    /// Filename component of `db_path` (e.g. `"db.sqlite"`).
-    ///
-    /// Extracted on the native side so the WASM component stays purely
-    /// presentational and avoids platform-specific path splitting.
-    pub db_filename: String,
     /// Ordered list of plugin search directory paths as UTF-8 strings.
     pub plugin_paths: Vec<String>,
-    /// First candidate config file path on this platform.
+    /// First existing config file path on this platform, or the first candidate
+    /// path if no config file has been written yet.
     ///
-    /// Used by the UI to show the user where to find the config file without
-    /// hardcoding platform-specific paths.
+    /// Used by the UI to show the user where to find or create the config file
+    /// without hardcoding platform-specific paths.
     pub config_file_path: Option<String>,
 }
 
@@ -44,13 +40,8 @@ impl SettingsInfo {
     /// * `fortnightly_anchor` - Optional anchor date as `"YYYY-MM-DD"`.
     /// * `display_commodity` - Display commodity code string.
     /// * `db_path` - Resolved database file path as a string.
-    /// * `db_filename` - Filename component of the database path.
     /// * `plugin_paths` - Ordered list of plugin directory paths.
-    /// * `config_file_path` - First candidate config file path, if determinable.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "All fields are required; a builder would be over-engineering for a read-only IPC snapshot"
-    )]
+    /// * `config_file_path` - First existing (or candidate) config file path.
     #[inline]
     #[must_use]
     pub fn new(
@@ -59,7 +50,6 @@ impl SettingsInfo {
         fortnightly_anchor: Option<String>,
         display_commodity: impl Into<String>,
         db_path: impl Into<String>,
-        db_filename: impl Into<String>,
         plugin_paths: Vec<String>,
         config_file_path: Option<String>,
     ) -> Self {
@@ -69,7 +59,6 @@ impl SettingsInfo {
             fortnightly_anchor,
             display_commodity: display_commodity.into(),
             db_path: db_path.into(),
-            db_filename: db_filename.into(),
             plugin_paths,
             config_file_path,
         }
@@ -90,7 +79,6 @@ mod tests {
             Some("2026-01-15".to_owned()),
             "AUD",
             "/home/alice/.local/share/borrow-checker/db.sqlite",
-            "db.sqlite",
             vec!["/home/alice/.local/share/borrow-checker/plugins".to_owned()],
             Some("/home/alice/.config/borrow-checker/config.toml".to_owned()),
         );
@@ -101,16 +89,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_no_anchor_empty_plugins() {
-        let info = SettingsInfo::new(
-            1,
-            1,
-            None,
-            "USD",
-            "/data/db.sqlite",
-            "db.sqlite",
-            vec![],
-            None,
-        );
+        let info = SettingsInfo::new(1, 1, None, "USD", "/data/db.sqlite", vec![], None);
         let json = serde_json::to_string(&info).expect("serialises");
         let info2: SettingsInfo = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(info, info2);
