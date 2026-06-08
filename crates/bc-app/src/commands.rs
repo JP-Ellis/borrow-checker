@@ -10,3 +10,4 @@
 
 pub mod accounts;
 pub mod plugins;
+pub mod settings;
