@@ -34,6 +34,7 @@ use crate::msg::AccountsMsg;
 use crate::msg::Msg;
 use crate::screen::KeyBinding;
 use crate::screen::Screen;
+use crate::screen::accounts::sidebar::AccountBalance;
 
 /// Which form overlay, if any, should be mounted on the next render.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -68,7 +69,7 @@ pub struct AccountsScreen {
     /// Transactions for the currently selected account.
     transactions: Vec<Transaction>,
     /// Balances for all accounts, keyed by account ID.
-    balances: HashMap<AccountId, (String, Decimal)>,
+    balances: HashMap<AccountId, AccountBalance>,
     /// The account currently selected in the sidebar, if any.
     selected_account: Option<AccountId>,
     /// The transaction currently selected in the list, if any.
@@ -90,7 +91,7 @@ pub struct AccountsScreen {
     /// Whether to move keyboard focus to the transaction list after the next list remount.
     focus_list_after_dirty: bool,
     /// Current balance for the selected account (in `current_commodity`).
-    current_balance: bc_models::Decimal,
+    current_balance: Decimal,
     /// Commodity code for `current_balance` (empty when no account is selected).
     current_commodity: String,
 }
@@ -117,7 +118,7 @@ impl AccountsScreen {
             pending_form: PendingForm::None,
             form_mounted: false,
             focus_list_after_dirty: false,
-            current_balance: bc_models::Decimal::ZERO,
+            current_balance: Decimal::ZERO,
             current_commodity: String::new(),
         }
     }
@@ -146,7 +147,12 @@ impl AccountsScreen {
     )]
     fn load_balances(&mut self) {
         match self.ctx.block_on(self.ctx.balances.default_balances()) {
-            Ok(balances) => self.balances = balances,
+            Ok(balances) => {
+                self.balances = balances
+                    .into_iter()
+                    .map(|(id, (commodity, amount))| (id, AccountBalance::new(commodity, amount)))
+                    .collect();
+            }
             Err(e) => {
                 eprintln!("failed to load balances: {e}");
                 self.balances = HashMap::new();
@@ -166,7 +172,7 @@ impl AccountsScreen {
     fn load_transactions(&mut self) {
         let Some(account_id) = self.selected_account.clone() else {
             self.transactions = Vec::new();
-            self.current_balance = bc_models::Decimal::ZERO;
+            self.current_balance = Decimal::ZERO;
             self.current_commodity = String::new();
             return;
         };
@@ -178,7 +184,7 @@ impl AccountsScreen {
             Err(e) => {
                 eprintln!("failed to load transactions: {e}");
                 self.transactions = Vec::new();
-                self.current_balance = bc_models::Decimal::ZERO;
+                self.current_balance = Decimal::ZERO;
                 self.current_commodity = String::new();
                 return;
             }
@@ -194,7 +200,7 @@ impl AccountsScreen {
             .unwrap_or_default();
 
         if commodity.is_empty() {
-            self.current_balance = bc_models::Decimal::ZERO;
+            self.current_balance = Decimal::ZERO;
             self.current_commodity = String::new();
         } else {
             match self
@@ -207,16 +213,11 @@ impl AccountsScreen {
                 }
                 Err(e) => {
                     eprintln!("failed to load balance: {e}");
-                    self.current_balance = bc_models::Decimal::ZERO;
+                    self.current_balance = Decimal::ZERO;
                     self.current_commodity = String::new();
                 }
             }
         }
-
-        // Refresh all-account balances so the sidebar balance column stays
-        // in sync after any transaction is created, amended, or voided.
-        self.load_balances();
-        self.sidebar_dirty = true;
     }
 
     /// Parse form field strings and create or amend a transaction via bc-core.
@@ -252,7 +253,7 @@ impl AccountsScreen {
             eprintln!("invalid amount '{amount_str}': expected 'VALUE COMMODITY'");
             return;
         };
-        let value = match value_str.parse::<bc_models::Decimal>() {
+        let value = match value_str.parse::<Decimal>() {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("invalid amount value '{value_str}': {e}");
@@ -376,7 +377,9 @@ impl AccountsScreen {
                 // form_mounted stays true — view() will unmount and clear it
                 self.save_transaction(&date, &payee, &amount, &account, is_edit);
                 self.load_transactions();
+                self.load_balances();
                 self.list_dirty = true;
+                self.sidebar_dirty = true;
                 Some(Msg::ModeChange(AppMode::Normal))
             }
             AccountsMsg::VoidRequested(id) => {
@@ -385,7 +388,9 @@ impl AccountsScreen {
                     Err(e) => eprintln!("failed to void transaction: {e}"),
                 }
                 self.load_transactions();
+                self.load_balances();
                 self.list_dirty = true;
+                self.sidebar_dirty = true;
                 None
             }
             AccountsMsg::OpenDetail(id) => {
@@ -432,7 +437,7 @@ impl Screen for AccountsScreen {
             Box::new(list::TransactionList::new(
                 vec![],
                 None,
-                bc_models::Decimal::ZERO,
+                Decimal::ZERO,
                 String::new(),
             )),
             vec![],
@@ -910,5 +915,41 @@ mod tests {
         );
         let mut screen = AccountsScreen::new(ctx);
         pretty_assertions::assert_eq!(screen.handle(Msg::AppQuit), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_balances_empty_db() {
+        let dir = assert_fs::TempDir::new().expect("create temp dir");
+        let db_path = dir.path().join("test.db");
+        let ctx = Arc::new(TuiContext::open(&db_path).await.expect("open test context"));
+        let mut screen = AccountsScreen::new(ctx);
+        tokio::task::block_in_place(|| {
+            screen.load_balances();
+        });
+        // Fresh DB has no accounts or postings, so the balance map should be empty.
+        pretty_assertions::assert_eq!(screen.balances.len(), 0);
+    }
+
+    #[test]
+    fn form_submitted_sets_sidebar_dirty() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build rt");
+        let dir = assert_fs::TempDir::new().expect("create temp dir");
+        let ctx = Arc::new(
+            rt.block_on(TuiContext::open(&dir.path().join("test.db")))
+                .expect("open ctx"),
+        );
+        let mut screen = AccountsScreen::new(ctx);
+        pretty_assertions::assert_eq!(screen.sidebar_dirty, false);
+        // Submitting a form (even with invalid data) should set sidebar_dirty.
+        drop(screen.handle(Msg::Accounts(AccountsMsg::FormSubmitted {
+            date: String::new(),
+            payee: String::new(),
+            amount: String::new(),
+            account: String::new(),
+        })));
+        pretty_assertions::assert_eq!(screen.sidebar_dirty, true);
     }
 }

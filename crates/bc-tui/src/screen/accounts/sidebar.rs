@@ -48,21 +48,64 @@ use crate::msg::Msg;
 /// wide (2 decimal places), separated by a single space. Total = 18 chars.
 const BALANCE_COLUMN_WIDTH: usize = 18;
 
+/// Maximum number of characters shown for the commodity code in the sidebar.
+///
+/// Commodity codes longer than this are truncated to preserve column alignment.
+const MAX_COMMODITY_WIDTH: usize = 5;
+
+/// A primary-commodity balance entry for a single account.
+///
+/// Used in the sidebar balance column to display the account's current balance.
+/// Only the primary (default) commodity is shown; multi-commodity accounts
+/// silently display only their first commodity. This is a known limitation and
+/// is out of scope for this feature.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccountBalance {
+    /// The commodity code (e.g. `"AUD"`, `"USD"`). Truncated to
+    /// [`MAX_COMMODITY_WIDTH`] chars when rendering.
+    pub commodity: String,
+    /// The balance amount for the primary commodity.
+    pub amount: Decimal,
+}
+
+impl AccountBalance {
+    /// Create a new [`AccountBalance`] with the given commodity and amount.
+    ///
+    /// # Arguments
+    ///
+    /// * `commodity` - The commodity code string (e.g. `"AUD"`).
+    /// * `amount`    - The balance amount.
+    ///
+    /// # Returns
+    ///
+    /// A new `AccountBalance`.
+    #[inline]
+    #[must_use]
+    pub fn new(commodity: String, amount: Decimal) -> Self {
+        Self { commodity, amount }
+    }
+}
+
 /// Format a balance entry for display in the sidebar.
 ///
-/// Returns an 18-character string: commodity left-padded to 5 chars, one space,
-/// then the decimal amount right-padded to 12 chars with 2 decimal places.
+/// Returns an 18-character string: commodity left-padded to 5 chars (truncated
+/// if longer), one space, then the decimal amount right-padded to 12 chars with
+/// 2 decimal places.
 ///
 /// # Arguments
 ///
-/// * `commodity` - The commodity code string (e.g. `"AUD"`).
+/// * `commodity` - The commodity code string (e.g. `"AUD"`). Codes longer than
+///   [`MAX_COMMODITY_WIDTH`] chars are silently truncated to preserve column
+///   alignment.
 /// * `amount`    - The balance amount to format.
 ///
 /// # Returns
 ///
 /// An owned `String` of exactly [`BALANCE_COLUMN_WIDTH`] characters.
 fn format_balance(commodity: &str, amount: Decimal) -> String {
-    format!("{commodity:<5} {amount:>12.2}")
+    let comm: String = commodity.chars().take(MAX_COMMODITY_WIDTH).collect();
+    format!("{comm:<5} {amount:>12.2}")
 }
 
 /// Build the label [`Line`] for a single account in the tree.
@@ -74,18 +117,15 @@ fn format_balance(commodity: &str, amount: Decimal) -> String {
 /// # Arguments
 ///
 /// * `account`  - The account whose label to build.
-/// * `balances` - Map of `AccountId` to `(commodity, amount)` pairs.
+/// * `balances` - Map of `AccountId` to [`AccountBalance`] entries.
 ///
 /// # Returns
 ///
 /// A `Line<'static>` containing two `Span`s: name and balance.
-fn build_label(
-    account: &Account,
-    balances: &HashMap<AccountId, (String, Decimal)>,
-) -> Line<'static> {
+fn build_label(account: &Account, balances: &HashMap<AccountId, AccountBalance>) -> Line<'static> {
     let name = account.name().to_owned();
     let balance_text = match balances.get(account.id()) {
-        Some((commodity, amount)) => format_balance(commodity, *amount),
+        Some(balance) => format_balance(&balance.commodity, balance.amount),
         None => format!("{:<width$}", "\u{2014}", width = BALANCE_COLUMN_WIDTH),
     };
     Line::from(vec![
@@ -102,7 +142,7 @@ fn build_label(
 ///
 /// * `account`  - The account to build a tree item for.
 /// * `all`      - The full flat list of accounts used to find children.
-/// * `balances` - Map of `AccountId` to `(commodity, amount)` for balance display.
+/// * `balances` - Map of `AccountId` to [`AccountBalance`] for balance display.
 ///
 /// # Returns
 ///
@@ -111,7 +151,7 @@ fn build_label(
 fn build_item_owned(
     account: &Account,
     all: &[Account],
-    balances: &HashMap<AccountId, (String, Decimal)>,
+    balances: &HashMap<AccountId, AccountBalance>,
 ) -> TreeItem<'static, AccountId> {
     let children: Vec<TreeItem<'static, AccountId>> = all
         .iter()
@@ -172,12 +212,12 @@ impl Sidebar {
     /// # Arguments
     ///
     /// * `accounts` - All accounts to display, in any order.
-    /// * `balances` - Map of account ID to `(commodity_code, amount)` pairs.
+    /// * `balances` - Map of account ID to [`AccountBalance`] entries.
     ///
     /// # Returns
     ///
     /// A new `Sidebar` with the tree fully built and the first root node open.
-    fn new(accounts: Vec<Account>, balances: &HashMap<AccountId, (String, Decimal)>) -> Self {
+    fn new(accounts: Vec<Account>, balances: &HashMap<AccountId, AccountBalance>) -> Self {
         let roots: Vec<&Account> = accounts
             .iter()
             .filter(|a| a.parent_id().is_none())
@@ -300,14 +340,14 @@ impl AccountSidebar {
     /// # Arguments
     ///
     /// * `accounts` - Flat list of all accounts to show in the tree.
-    /// * `balances` - Shared reference to a map of account ID to `(commodity_code, amount)` pairs.
+    /// * `balances` - Shared reference to a map of account ID to [`AccountBalance`] entries.
     ///
     /// # Returns
     ///
     /// A new `AccountSidebar` ready to be mounted.
     #[inline]
     #[must_use]
-    pub fn new(accounts: Vec<Account>, balances: &HashMap<AccountId, (String, Decimal)>) -> Self {
+    pub fn new(accounts: Vec<Account>, balances: &HashMap<AccountId, AccountBalance>) -> Self {
         Self {
             component: Sidebar::new(accounts, balances),
         }
@@ -623,6 +663,56 @@ mod tests {
     }
 
     #[test]
+    fn format_balance_truncates_long_commodity() {
+        use core::str::FromStr as _;
+
+        use bc_models::Decimal;
+        let amount = Decimal::from_str("100.00").expect("valid decimal");
+        // BTCUSD is 6 chars — should be truncated to 5 (BTCUS)
+        let result = format_balance("BTCUSD", amount);
+        assert_eq!(
+            result.len(),
+            18,
+            "balance column must be exactly 18 chars even with a 6-char commodity"
+        );
+        assert!(
+            result.starts_with("BTCUS"),
+            "commodity should be truncated to 5 chars: got {result:?}"
+        );
+    }
+
+    #[test]
+    fn format_balance_handles_negative_amount() {
+        use core::str::FromStr as _;
+
+        use bc_models::Decimal;
+        let amount = Decimal::from_str("-500.00").expect("valid decimal");
+        let result = format_balance("AUD", amount);
+        assert_eq!(result.len(), 18, "balance column must be exactly 18 chars");
+        assert!(
+            result.contains("-500.00"),
+            "negative amount should appear in output: {result:?}"
+        );
+    }
+
+    #[test]
+    fn build_label_no_balance_placeholder_width() {
+        let acct = make_account("Assets");
+        let label = build_label(&acct, &HashMap::new());
+        // The em-dash placeholder span should be BALANCE_COLUMN_WIDTH display chars.
+        let balance_span = label
+            .spans
+            .iter()
+            .find(|s| s.content.contains('\u{2014}'))
+            .expect("em-dash placeholder span should be present");
+        assert_eq!(
+            balance_span.content.chars().count(),
+            BALANCE_COLUMN_WIDTH,
+            "em-dash placeholder must be exactly BALANCE_COLUMN_WIDTH display chars"
+        );
+    }
+
+    #[test]
     fn build_label_shows_em_dash_when_no_balance() {
         let acct = make_account("Assets");
         let label = build_label(&acct, &HashMap::new());
@@ -641,8 +731,11 @@ mod tests {
         use bc_models::Decimal;
         let acct = make_account("Checking");
         let amount = Decimal::from_str("500.00").expect("valid decimal");
-        let mut balances: HashMap<AccountId, (String, Decimal)> = HashMap::new();
-        balances.insert(acct.id().clone(), ("AUD".to_owned(), amount));
+        let mut balances: HashMap<AccountId, AccountBalance> = HashMap::new();
+        balances.insert(
+            acct.id().clone(),
+            AccountBalance::new("AUD".to_owned(), amount),
+        );
         let label = build_label(&acct, &balances);
         let text: String = label.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(

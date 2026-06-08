@@ -1,0 +1,25 @@
+---
+source: crates/bc-tui/tests/snapshot_tests.rs
+assertion_line: 200
+expression: output
+---
+╭ Accounts ─────────────────────────────────╮
+│  Assets AUD        1500.00                │
+│  Liabilities AUD        -200.50           │
+│  Expenses —                               │
+│                                           │
+│                                           │
+│                                           │
+│                                           │
+│                                           │
+│                                           │
+│                                           │
+│                                           │
+│                                           │
+│                                           │
+│                                           │
+│                                           │
+│                                           │
+│                                           │
+│                                           │
+╰───────────────────────────────────────────╯

@@ -104,6 +104,7 @@ fn make_account(name: &str, account_type: bc_models::AccountType) -> bc_models::
 #[cfg(test)]
 mod tests {
     use bc_tui::screen::accounts::list::TransactionList;
+    use bc_tui::screen::accounts::sidebar::AccountBalance;
     use bc_tui::screen::accounts::sidebar::AccountSidebar;
 
     use super::make_account;
@@ -161,6 +162,40 @@ mod tests {
             make_account("Expenses", bc_models::AccountType::Expense),
         ];
         let mut component = AccountSidebar::new(accounts, &std::collections::HashMap::new());
+        let output = render(&mut component, 45, 20);
+        insta::assert_snapshot!(output);
+    }
+
+    /// Snapshot: `AccountSidebar` rendered with accounts and populated balance map.
+    ///
+    /// This snapshot locks in the visual layout of the balance column so that
+    /// formatting regressions are caught automatically.
+    #[test]
+    fn account_sidebar_with_balances() {
+        use core::str::FromStr as _;
+
+        use bc_models::Decimal;
+
+        let assets = make_account("Assets", bc_models::AccountType::Asset);
+        let liabilities = make_account("Liabilities", bc_models::AccountType::Liability);
+        let expenses = make_account("Expenses", bc_models::AccountType::Expense);
+        let mut balances = std::collections::HashMap::new();
+        balances.insert(
+            assets.id().clone(),
+            AccountBalance::new(
+                "AUD".to_owned(),
+                Decimal::from_str("1500.00").expect("valid decimal"),
+            ),
+        );
+        balances.insert(
+            liabilities.id().clone(),
+            AccountBalance::new(
+                "AUD".to_owned(),
+                Decimal::from_str("-200.50").expect("valid decimal"),
+            ),
+        );
+        let accounts = vec![assets, liabilities, expenses];
+        let mut component = AccountSidebar::new(accounts, &balances);
         let output = render(&mut component, 45, 20);
         insta::assert_snapshot!(output);
     }
