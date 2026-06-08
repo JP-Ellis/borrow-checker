@@ -12,8 +12,15 @@ use crate::components::status_pill::Tone;
 /// Active tab detection matches the current route pathname against each tab's
 /// href prefix. The sync status pill is a static placeholder pending Phase 2
 /// IPC wiring.
+///
+/// # Arguments
+///
+/// * `on_search` - Callback invoked when the user clicks the search button.
 #[component]
-pub fn TopBar() -> impl IntoView {
+pub fn TopBar(
+    /// Called when the user clicks the search button or triggers ⌘K.
+    on_search: Callback<()>,
+) -> impl IntoView {
     let location = use_location();
 
     let is_active = move |href: &'static str| {
@@ -70,7 +77,11 @@ pub fn TopBar() -> impl IntoView {
                     .collect::<Vec<_>>()}
             </nav>
 
-            <button class="top-bar__search" aria-label="open command palette (⌘K)">
+            <button
+                class="top-bar__search"
+                aria-label="open command palette (⌘K)"
+                on:click=move |_| on_search.run(())
+            >
                 <span class="top-bar__search-prompt">
                     "› search payee, account, or run a command…"
                 </span>
