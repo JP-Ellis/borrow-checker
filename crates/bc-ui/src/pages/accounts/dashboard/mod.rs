@@ -34,6 +34,10 @@ static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
     clippy::too_many_lines,
     reason = "Leptos view! macro expands verbosely; logic is straightforward"
 )]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "SparklinePeriod is #[non_exhaustive]; wildcard is required for CalendarYear and FinancialYear which have no dedicated UI label"
+)]
 pub fn AccountDashboard(
     /// Account to display.
     node: AccountNode,
@@ -53,12 +57,19 @@ pub fn AccountDashboard(
         async move { bc_ipc::client::get_account_stats(&id).await }
     });
 
+    let period = RwSignal::new(bc_ipc::SparklinePeriod::Monthly);
+
     let sparkline_resource = LocalResource::new(move || {
         let id = sparkline_account_id.clone();
+        let p = period.get();
         if let Some(v) = data_version {
             v.get();
         }
-        async move { bc_ipc::client::get_account_sparkline(&id).await }
+        let count = match p {
+            bc_ipc::SparklinePeriod::Weekly => Some(8_u32),
+            _ => Some(6_u32),
+        };
+        async move { bc_ipc::client::get_account_sparkline(&id, Some(&p), count).await }
     });
 
     let sparkline_currency_code = node.balance.currency_code.clone();
@@ -225,13 +236,47 @@ pub fn AccountDashboard(
                 </StatCards>
             </div>
 
+            <div class=style::period_toggle>
+                {[
+                    ("weekly", bc_ipc::SparklinePeriod::Weekly),
+                    ("monthly", bc_ipc::SparklinePeriod::Monthly),
+                    ("quarterly", bc_ipc::SparklinePeriod::Quarterly),
+                ]
+                    .map(|(label, p)| {
+                        let p_set = p.clone();
+                        view! {
+                            <button
+                                class=move || {
+                                    if period.get() == p {
+                                        format!(
+                                            "{} {}",
+                                            style::period_btn,
+                                            style::period_btn_active,
+                                        )
+                                    } else {
+                                        style::period_btn.to_owned()
+                                    }
+                                }
+                                on:click=move |_| period.set(p_set.clone())
+                            >
+                                {label}
+                            </button>
+                        }
+                    })}
+            </div>
+
             {move || {
                 let points = sparkline_resource.get().and_then(Result::ok).unwrap_or_default();
                 let currency = bc_ipc::currency_from_code(&sparkline_currency_code)
                     .unwrap_or(&bc_ipc::USD);
+                let title = match period.get() {
+                    bc_ipc::SparklinePeriod::Weekly => "Cash Flow (Last 8 Weeks)",
+                    bc_ipc::SparklinePeriod::Quarterly => "Cash Flow (Last 6 Quarters)",
+                    _ => "Cash Flow (Last 6 Months)",
+                };
                 view! {
                     <Sparkline points=points currency=currency>
-                        <Title slot>"Cash Flow (Last 6 Months)"</Title>
+                        <Title slot>{title}</Title>
                     </Sparkline>
                 }
             }}
