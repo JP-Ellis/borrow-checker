@@ -417,6 +417,7 @@ impl Period {
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::*;
     use crate::Amount;
@@ -429,12 +430,14 @@ mod tests {
         assert_eq!(p.note.as_deref(), Some("test note"));
     }
 
-    #[test]
-    fn new_transaction_serde_roundtrip() {
+    #[rstest]
+    #[case(TxStatus::Pending)]
+    #[case(TxStatus::Cleared)]
+    fn new_transaction_serde_roundtrip(#[case] status: TxStatus) {
         let tx = NewTransaction::new(
             "2026-05-23",
             "Test Payee",
-            TxStatus::Pending,
+            status,
             vec![],
             vec![
                 NewPosting::new("acc-a", Amount::new(-500, "AUD", 2), None::<&str>),
@@ -530,6 +533,28 @@ mod tests {
             }
             .default_sparkline_count(),
             6
+        );
+    }
+
+    #[test]
+    fn new_transaction_serde_roundtrip_with_tags() {
+        let tx = NewTransaction::new(
+            "2026-05-23",
+            "Payee With Tags",
+            TxStatus::Pending,
+            vec!["category:groceries".to_owned(), "budget:food".to_owned()],
+            vec![
+                NewPosting::new("acc-a", Amount::new(-3_000, "AUD", 2), None::<&str>),
+                NewPosting::new("acc-b", Amount::new(3_000, "AUD", 2), None::<&str>),
+            ],
+        );
+        let json = serde_json::to_string(&tx).expect("serialises");
+        let tx2: NewTransaction = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(tx, tx2);
+        assert_eq!(tx2.tags.len(), 2);
+        assert_eq!(
+            tx2.tags.first().map(String::as_str),
+            Some("category:groceries")
         );
     }
 }

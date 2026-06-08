@@ -13,14 +13,20 @@ import_style!(style, "add_transaction.module.scss");
 /// Parses a decimal string into an [`Amount`].
 ///
 /// Trims whitespace, parses as `f64`, multiplies by `10^scale`, rounds to
-/// `i64`.  Returns `None` if the input is empty, not a valid number, or rounds
-/// to zero.
+/// `i64`.  Returns `None` only if the input is empty or not a valid number.
+/// Zero amounts are allowed — the backend enforces the double-entry balance
+/// invariant; zero is a legitimate correcting posting.
 ///
 /// # Arguments
 ///
 /// * `input` - User-entered decimal string (e.g. `"-84.20"`).
 /// * `currency_code` - ISO 4217 code for the resulting [`Amount`].
 /// * `scale` - Number of decimal places (e.g. `2` for AUD cents).
+///
+/// # Note
+///
+/// Uses `f64` arithmetic for minor-unit conversion; safe for `scale <= 15`.
+/// Higher scales (e.g. 18-decimal crypto) may produce silent rounding errors.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::as_conversions,
@@ -38,9 +44,6 @@ fn parse_amount(input: &str, currency_code: &str, scale: u8) -> Option<Amount> {
     let value: f64 = trimmed.parse().ok()?;
     let factor = 10_f64.powi(i32::from(scale));
     let minor = (value * factor).round() as i64;
-    if minor == 0 {
-        return None;
-    }
     Some(Amount::new(minor, currency_code, scale))
 }
 
@@ -136,7 +139,7 @@ pub fn AddTransactionForm(
 
         let amount_opt = parse_amount(&amount_input.get(), &currency_code_submit, scale);
         if amount_opt.is_none() {
-            errs.push("amount must be a non-zero number");
+            errs.push("amount must be a valid number");
         }
 
         if !errs.is_empty() {
@@ -183,7 +186,7 @@ pub fn AddTransactionForm(
         .collect();
 
     view! {
-        <form class=style::form on:submit=on_form_submit>
+        <form class=style::form data-testid="add-transaction-form" on:submit=on_form_submit>
             <div class=style::form_header>
                 <span class=style::form_title>"new transaction"</span>
                 <button
@@ -204,8 +207,7 @@ pub fn AddTransactionForm(
                 <input
                     id="atf-date"
                     class=style::input
-                    type="text"
-                    placeholder="YYYY-MM-DD"
+                    type="date"
                     prop:value=move || date_input.get()
                     on:input=move |e| {
                         date_input.set(event_target_value(&e));
@@ -319,7 +321,7 @@ pub fn AddTransactionForm(
                 <button type="button" class=style::cancel_btn on:click=on_cancel_footer>
                     "cancel"
                 </button>
-                <button type="submit" class=style::submit_btn>
+                <button type="submit" class=style::submit_btn data-testid="add-transaction-submit">
                     "add transaction"
                 </button>
             </div>
@@ -329,3 +331,59 @@ pub fn AddTransactionForm(
 
 #[cfg(debug_assertions)]
 pub mod qa;
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::parse_amount;
+
+    #[test]
+    fn parse_amount_positive_decimal() {
+        let amt = parse_amount("84.20", "AUD", 2).expect("parses positive decimal");
+        assert_eq!(amt.minor_units, 8_420);
+        assert_eq!(amt.currency_code, "AUD");
+        assert_eq!(amt.scale, 2);
+    }
+
+    #[test]
+    fn parse_amount_negative_decimal() {
+        let amt = parse_amount("-84.20", "AUD", 2).expect("parses negative decimal");
+        assert_eq!(amt.minor_units, -8_420);
+    }
+
+    #[test]
+    fn parse_amount_zero_is_allowed() {
+        // Zero is a valid correcting posting; the backend enforces double-entry balance.
+        let amt = parse_amount("0", "AUD", 2).expect("parses zero");
+        assert_eq!(amt.minor_units, 0);
+    }
+
+    #[test]
+    fn parse_amount_empty_returns_none() {
+        assert!(parse_amount("", "AUD", 2).is_none());
+    }
+
+    #[test]
+    fn parse_amount_whitespace_only_returns_none() {
+        assert!(parse_amount("   ", "AUD", 2).is_none());
+    }
+
+    #[test]
+    fn parse_amount_non_numeric_returns_none() {
+        assert!(parse_amount("abc", "AUD", 2).is_none());
+    }
+
+    #[test]
+    fn parse_amount_scale_conversion() {
+        // scale=3 means minor units are thousandths
+        let amt = parse_amount("1.234", "USD", 3).expect("parses scale=3");
+        assert_eq!(amt.minor_units, 1_234);
+    }
+
+    #[test]
+    fn parse_amount_trims_whitespace() {
+        let amt = parse_amount("  10.00  ", "AUD", 2).expect("trims whitespace");
+        assert_eq!(amt.minor_units, 1_000);
+    }
+}

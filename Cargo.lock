@@ -426,6 +426,7 @@ name = "bc-ipc"
 version = "0.1.0"
 dependencies = [
  "pretty_assertions",
+ "rstest",
  "serde",
  "serde_json",
  "tauri-sys",

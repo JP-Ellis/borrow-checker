@@ -39,6 +39,10 @@ pub fn AccountsRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
             />
             <Route path=path!("/sidebar") view=component::sidebar::AccountSidebarQa />
             <Route path=path!("/sticky-bar") view=component::sticky_bar::StickyAccountBarQa />
+            <Route
+                path=path!("/add-transaction")
+                view=component::add_transaction::AddTransactionFormQa
+            />
         </ParentRoute>
     }
     .into_inner()
@@ -80,6 +84,11 @@ pub fn AccountsIndex() -> impl IntoView {
                     title=component::sticky_bar::TITLE
                     path=component::sticky_bar::PATH
                     description=component::sticky_bar::DESCRIPTION
+                />
+                <QaCard
+                    title=component::add_transaction::TITLE
+                    path=component::add_transaction::PATH
+                    description=component::add_transaction::DESCRIPTION
                 />
             </div>
         </div>

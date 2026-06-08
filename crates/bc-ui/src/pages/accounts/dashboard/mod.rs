@@ -106,6 +106,14 @@ pub fn AccountDashboard(
     let toggle_style = format!("anchor-name: {anchor_name}");
     let menu_style = format!("position-anchor: {anchor_name}");
 
+    // Single handler for both the inline action-bar button and the popover menu
+    // button, avoiding duplicate closure definitions.
+    let fire_add_tx = move |_: leptos::ev::MouseEvent| {
+        if let Some(cb) = on_add_tx {
+            cb.run(());
+        }
+    };
+
     view! {
         <div class=style::dashboard>
             <div class=style::header_row>
@@ -121,11 +129,7 @@ pub fn AccountDashboard(
                         </button>
                         <button
                             class=format!("{} {}", style::action_btn, style::action_primary)
-                            on:click=move |_| {
-                                if let Some(cb) = on_add_tx {
-                                    cb.run(());
-                                }
-                            }
+                            on:click=fire_add_tx
                         >
                             "+ transaction "
                             <kbd class=style::kbd>"↵"</kbd>
@@ -165,11 +169,7 @@ pub fn AccountDashboard(
                             class=format!("{} {}", style::action_btn, style::action_primary)
                             popovertarget=popover_id.clone()
                             popovertargetaction="hide"
-                            on:click=move |_| {
-                                if let Some(cb) = on_add_tx {
-                                    cb.run(());
-                                }
-                            }
+                            on:click=fire_add_tx
                         >
                             "+ transaction "
                             <kbd class=style::kbd>"↵"</kbd>
