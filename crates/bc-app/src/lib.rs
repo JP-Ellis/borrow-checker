@@ -6,6 +6,7 @@
 pub mod commands;
 pub(crate) mod ipc;
 
+use bc_core::Importer as _;
 use tauri::Manager as _;
 
 /// Application state held in Tauri's managed-state system.
@@ -78,6 +79,39 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running borrow-checker");
+}
+
+/// Loads plugin metadata from configured search paths.
+///
+/// Builds a [`bc_plugins::PluginRegistry`] using paths from [`bc_config::Settings`],
+/// then immediately converts the loaded plugins into plain [`bc_ipc::PluginInfo`]
+/// values. This allows the metadata to be stored in [`AppState`] and cloned
+/// cheaply, avoiding the need to store the non-`Clone` registry itself.
+///
+/// # Returns
+///
+/// A `Vec` of [`bc_ipc::PluginInfo`] for all successfully loaded plugins.
+/// Returns an empty `Vec` if no plugins are found or the registry fails to
+/// initialise.
+fn collect_plugin_info() -> Vec<bc_ipc::PluginInfo> {
+    let settings = bc_config::Settings::load().unwrap_or_default();
+    let paths = settings.plugin_paths().to_owned();
+
+    bc_plugins::PluginRegistry::load(&paths).map_or_else(
+        |_| Vec::new(),
+        |registry| {
+            registry
+                .plugins()
+                .map(|p| {
+                    bc_ipc::PluginInfo::new(
+                        p.name().to_owned(),
+                        p.sdk_abi(),
+                        p.source_path().display().to_string(),
+                    )
+                })
+                .collect()
+        },
+    )
 }
 
 #[cfg(test)]
