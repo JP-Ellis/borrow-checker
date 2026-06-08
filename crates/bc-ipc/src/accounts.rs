@@ -21,6 +21,33 @@ pub enum AccountType {
     Expense,
 }
 
+impl AccountType {
+    /// Returns the lowercase display label for this account type.
+    ///
+    /// # Returns
+    ///
+    /// A static string such as `"asset"`, `"liability"`, etc.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bc_ipc::AccountType;
+    /// assert_eq!(AccountType::Asset.label(), "asset");
+    /// assert_eq!(AccountType::Liability.label(), "liability");
+    /// ```
+    #[must_use]
+    #[inline]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Asset => "asset",
+            Self::Liability => "liability",
+            Self::Equity => "equity",
+            Self::Income => "income",
+            Self::Expense => "expense",
+        }
+    }
+}
+
 /// A single node in the account tree sidebar.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]

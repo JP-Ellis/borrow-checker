@@ -141,6 +141,53 @@ pub fn format_amount(minor_units: i64, currency: &Currency) -> String {
     }
 }
 
+/// Formats a balance as a compact display string.
+///
+/// Returns a compact suffix notation (`"64k"`, `"1m"`) for large amounts, or the
+/// full locale-formatted monetary value for smaller amounts. An empty currency
+/// code produces `"—"`.
+///
+/// # Arguments
+///
+/// * `balance` - Balance (minor units + currency code).
+///
+/// # Returns
+///
+/// A compact string suitable for sidebar and palette balance display.
+///
+/// # Example
+///
+/// ```ignore
+/// # use bc_ipc::Amount;
+/// assert_eq!(format_balance_short(&Amount::new(6_400_000, "USD", 2)), "64k");
+/// ```
+#[must_use]
+#[inline]
+#[expect(
+    clippy::integer_division,
+    clippy::integer_division_remainder_used,
+    reason = "display approximation — dividing by 100_000 / 100_000_000 cannot overflow or panic"
+)]
+pub fn format_balance_short(balance: &Amount) -> String {
+    if balance.currency_code.is_empty() {
+        return "\u{2014}".into();
+    }
+    let abs = balance.minor_units.unsigned_abs();
+    let prefix = if balance.minor_units < 0 {
+        "\u{2212}"
+    } else {
+        ""
+    };
+    if abs >= 100_000_000 {
+        format!("{prefix}{}m", abs / 100_000_000)
+    } else if abs >= 100_000 {
+        format!("{prefix}{}k", abs / 100_000)
+    } else {
+        let currency = currency_from_code(&balance.currency_code).unwrap_or(&USD);
+        format_amount(balance.minor_units, currency)
+    }
+}
+
 // MARK: Component
 
 /// Renders a monetary amount as a formatted, coloured string.
@@ -187,8 +234,10 @@ pub mod qa;
 
 #[cfg(test)]
 mod tests {
+    use bc_ipc::Amount;
     use pretty_assertions::assert_eq;
 
+    use super::format_balance_short;
     use super::to_decimal_string;
 
     #[test]
@@ -224,5 +273,34 @@ mod tests {
     #[test]
     fn zero_value_no_decimals() {
         assert_eq!(to_decimal_string(0, 0), "0");
+    }
+
+    #[test]
+    fn balance_short_thousands() {
+        assert_eq!(
+            format_balance_short(&Amount::new(6_400_000, "USD", 2)),
+            "64k"
+        );
+    }
+
+    #[test]
+    fn balance_short_millions() {
+        assert_eq!(
+            format_balance_short(&Amount::new(120_000_000, "USD", 2)),
+            "1m"
+        );
+    }
+
+    #[test]
+    fn balance_short_negative() {
+        assert_eq!(
+            format_balance_short(&Amount::new(-244_000, "USD", 2)),
+            "\u{2212}2k"
+        );
+    }
+
+    #[test]
+    fn balance_short_empty_currency() {
+        assert_eq!(format_balance_short(&Amount::new(1_000, "", 2)), "\u{2014}");
     }
 }
