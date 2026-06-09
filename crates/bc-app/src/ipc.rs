@@ -201,6 +201,33 @@ pub(crate) fn decimal_to_amount(
     Ok(bc_ipc::Amount::new(minor, currency_code, d.scale() as u8))
 }
 
+// MARK: Period
+
+impl IntoModel for bc_ipc::Period {
+    type Output = bc_models::Period;
+
+    #[inline]
+    fn into_model(self) -> bc_models::Period {
+        match self {
+            bc_ipc::Period::Weekly => bc_models::Period::Weekly,
+            bc_ipc::Period::Monthly => bc_models::Period::Monthly,
+            bc_ipc::Period::Quarterly => bc_models::Period::Quarterly,
+            bc_ipc::Period::CalendarYear => bc_models::Period::CalendarYear,
+            bc_ipc::Period::FinancialYear {
+                start_month,
+                start_day,
+            } => bc_models::Period::FinancialYear {
+                start_month,
+                start_day,
+            },
+            unknown => {
+                tracing::warn!(?unknown, "unknown Period; falling back to Monthly");
+                bc_models::Period::Monthly
+            }
+        }
+    }
+}
+
 // MARK: Posting
 
 impl IntoIpc for &bc_models::Posting {

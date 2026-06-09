@@ -100,10 +100,10 @@ struct GetAccountSparklineArgs<'a> {
     account_id: &'a str,
     /// Optional commodity code override.
     commodity: Option<&'a str>,
-    /// Optional bucket count (default: 6).
-    count: Option<u32>,
-    /// Optional bucket period (default: Monthly).
-    period: Option<crate::SparklinePeriod>,
+    /// Number of buckets to return.
+    count: u32,
+    /// Time-bucket granularity.
+    period: crate::Period,
 }
 
 /// Gets income and expense totals for `account_id` over the last 30 days.
@@ -128,8 +128,8 @@ pub async fn get_account_stats(account_id: &str) -> Result<crate::AccountStats, 
 /// # Arguments
 ///
 /// * `account_id` - Account ID to query.
-/// * `period` - Time-bucket size; defaults to [`crate::SparklinePeriod::Monthly`] when `None`.
-/// * `count` - Number of buckets to return; defaults to 6 when `None`.
+/// * `period` - Time-bucket granularity.
+/// * `count` - Number of buckets to return.
 ///
 /// # Errors
 ///
@@ -137,8 +137,8 @@ pub async fn get_account_stats(account_id: &str) -> Result<crate::AccountStats, 
 #[inline]
 pub async fn get_account_sparkline(
     account_id: &str,
-    period: Option<crate::SparklinePeriod>,
-    count: Option<u32>,
+    period: crate::Period,
+    count: u32,
 ) -> Result<Vec<crate::SparkPoint>, BcError> {
     tauri_sys::core::invoke_result::<Vec<crate::SparkPoint>, BcError>(
         commands::GET_ACCOUNT_SPARKLINE,
