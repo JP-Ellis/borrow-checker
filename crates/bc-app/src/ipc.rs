@@ -209,7 +209,22 @@ impl IntoModel for bc_ipc::Period {
     #[inline]
     fn into_model(self) -> bc_models::Period {
         match self {
+            bc_ipc::Period::Daily => bc_models::Period::Custom {
+                days: Some(1),
+                weeks: None,
+                months: None,
+            },
             bc_ipc::Period::Weekly => bc_models::Period::Weekly,
+            bc_ipc::Period::Fortnightly => {
+                // Anchor to 2026-01-05 (a Monday); phase determines which fortnights align.
+                #[expect(
+                    clippy::expect_used,
+                    reason = "2026-01-05 is a valid date; this can never panic"
+                )]
+                let anchor =
+                    jiff::civil::Date::new(2026, 1, 5).expect("2026-01-05 is a valid date");
+                bc_models::Period::Fortnightly { anchor }
+            }
             bc_ipc::Period::Monthly => bc_models::Period::Monthly,
             bc_ipc::Period::Quarterly => bc_models::Period::Quarterly,
             bc_ipc::Period::CalendarYear => bc_models::Period::CalendarYear,
