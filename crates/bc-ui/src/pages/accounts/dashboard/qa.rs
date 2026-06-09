@@ -51,15 +51,13 @@ fn no_mask_node() -> AccountNode {
 
 /// Renders [`AccountDashboard`] in three account configurations.
 ///
-/// # Period toggle coverage
+/// # Period and count control coverage
 ///
-/// All three sections start with the default period (Monthly). To exercise the
-/// period toggle interactively, click the weekly/monthly/quarterly buttons in
-/// any section. The sparkline will re-fetch with 8 buckets for Weekly and 6
-/// buckets for all other periods.
-///
-/// CalendarYear and FinancialYear variants are not yet exposed in the toggle UI
-/// (see the `#[expect(clippy::wildcard_enum_match_arm)]` comment in `mod.rs`).
+/// All three sections start with Monthly / 6 buckets. Use the period and count
+/// dropdowns in any section to exercise different combinations interactively.
+/// Changing period resets count to the period's default (8 for Weekly, 6 for
+/// others). CalendarYear and FinancialYear title labels are covered by the
+/// wildcard arm in `mod.rs`.
 #[component]
 pub fn AccountDashboardQa() -> impl IntoView {
     view! {

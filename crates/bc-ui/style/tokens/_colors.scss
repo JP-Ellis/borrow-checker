@@ -41,9 +41,6 @@ $syn-comment-ch: 0.02   80deg;
   --bc-ink-soft: color-mix(in oklch, var(--bc-ink) 80%, var(--bc-bg));
   --bc-ink-mute: color-mix(in oklch, var(--bc-ink) 65%, var(--bc-bg));
   --bc-ink-dim:  color-mix(in oklch, var(--bc-ink) 50%, var(--bc-bg));
-
-  /* Text colour for content placed directly on the accent background. */
-  --bc-ink-on-accent: oklch(0.98 0 0);
 }
 
 @mixin bc-theme-light {

@@ -16,7 +16,7 @@ use tauri::State;
 
 use crate::AppState;
 use crate::ipc::IntoIpc as _;
-use crate::ipc::IntoModel as _;
+use crate::ipc::IntoModel;
 
 // MARK: Command handlers
 
@@ -274,27 +274,6 @@ fn spark_label(start: jiff::civil::Date, period: &bc_models::Period) -> String {
     }
 }
 
-/// Converts a [`bc_ipc::SparklinePeriod`] to a [`bc_models::Period`].
-fn ipc_to_model_period(p: &bc_ipc::SparklinePeriod) -> bc_models::Period {
-    match p {
-        bc_ipc::SparklinePeriod::Weekly => bc_models::Period::Weekly,
-        bc_ipc::SparklinePeriod::Quarterly => bc_models::Period::Quarterly,
-        bc_ipc::SparklinePeriod::CalendarYear => bc_models::Period::CalendarYear,
-        bc_ipc::SparklinePeriod::FinancialYear {
-            start_month,
-            start_day,
-        } => bc_models::Period::FinancialYear {
-            start_month: *start_month,
-            start_day: *start_day,
-        },
-        bc_ipc::SparklinePeriod::Monthly => bc_models::Period::Monthly,
-        unknown => {
-            tracing::warn!(?unknown, "unknown SparklinePeriod; falling back to Monthly");
-            bc_models::Period::Monthly
-        }
-    }
-}
-
 /// Returns period-bucketed cash-flow data for a sparkline chart.
 ///
 /// Defaults to 6 monthly buckets ending with the current month.
@@ -324,7 +303,7 @@ pub async fn get_account_sparkline(
     account_id: String,
     commodity: Option<String>,
     count: Option<u32>,
-    period: Option<bc_ipc::SparklinePeriod>,
+    period: Option<bc_ipc::Period>,
     state: State<'_, AppState>,
 ) -> Result<Vec<bc_ipc::SparkPoint>, bc_ipc::BcError> {
     use core::num::NonZeroUsize;
@@ -353,9 +332,7 @@ pub async fn get_account_sparkline(
             NonZeroUsize::new(6).expect("6 > 0")
         });
 
-    let model_period = period
-        .as_ref()
-        .map_or(bc_models::Period::Monthly, ipc_to_model_period);
+    let model_period = period.map_or(bc_models::Period::Monthly, IntoModel::into_model);
 
     let as_of = jiff::Zoned::now().date();
 
