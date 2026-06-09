@@ -18,7 +18,7 @@
     "@wdio/mocha-framework": "9.27.2",
     "@wdio/spec-reporter": "9.27.2",
     "@wdio/types": "9.27.2",
-    "@wdio/visual-service": "9.2.2",
+    "@wdio/visual-service": "9.2.3",
     "better-sqlite3": "12.10.0",
     "ts-node": "10.9.2",
     "typescript": "6.0.3"
