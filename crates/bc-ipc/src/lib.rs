@@ -21,11 +21,14 @@ mod error;
 mod money;
 
 pub use accounts::AccountNode;
+pub use accounts::AccountStats;
 pub use accounts::AccountType;
 pub use accounts::AuditEntry;
 pub use accounts::NewPosting;
 pub use accounts::NewTransaction;
 pub use accounts::Posting;
+pub use accounts::SparkPoint;
+pub use accounts::SparklinePeriod;
 pub use accounts::Transaction;
 pub use accounts::TxStatus;
 pub use currency::AUD;
