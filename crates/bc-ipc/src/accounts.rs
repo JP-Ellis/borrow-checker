@@ -380,8 +380,12 @@ impl SparkPoint {
 #[non_exhaustive]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Period {
+    /// Every calendar day.
+    Daily,
     /// Every 7 days.
     Weekly,
+    /// Every 14 days.
+    Fortnightly,
     /// Calendar month.
     Monthly,
     /// Calendar quarter (Jan/Apr/Jul/Oct).
@@ -399,13 +403,12 @@ pub enum Period {
 
 impl Period {
     /// Returns the default number of buckets to display in a sparkline for this period.
-    ///
-    /// Weekly shows 8 weeks; all other periods default to 6 buckets.
     #[must_use]
     #[inline]
     pub fn default_sparkline_count(&self) -> u32 {
         match self {
-            Self::Weekly => 8,
+            Self::Daily => 14,
+            Self::Weekly | Self::Fortnightly => 8,
             Self::Monthly | Self::Quarterly | Self::CalendarYear | Self::FinancialYear { .. } => 6,
         }
     }
@@ -495,8 +498,28 @@ mod tests {
     }
 
     #[test]
+    fn period_daily_serde_roundtrip() {
+        let p = Period::Daily;
+        let json = serde_json::to_string(&p).expect("serialises");
+        assert_eq!(json, r#"{"type":"daily"}"#);
+        let p2: Period = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(p, p2);
+    }
+
+    #[test]
+    fn period_fortnightly_serde_roundtrip() {
+        let p = Period::Fortnightly;
+        let json = serde_json::to_string(&p).expect("serialises");
+        assert_eq!(json, r#"{"type":"fortnightly"}"#);
+        let p2: Period = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(p, p2);
+    }
+
+    #[test]
     fn period_default_sparkline_count() {
+        assert_eq!(Period::Daily.default_sparkline_count(), 14);
         assert_eq!(Period::Weekly.default_sparkline_count(), 8);
+        assert_eq!(Period::Fortnightly.default_sparkline_count(), 8);
         assert_eq!(Period::Monthly.default_sparkline_count(), 6);
         assert_eq!(Period::Quarterly.default_sparkline_count(), 6);
         assert_eq!(Period::CalendarYear.default_sparkline_count(), 6);
