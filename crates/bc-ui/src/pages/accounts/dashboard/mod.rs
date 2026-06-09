@@ -239,17 +239,34 @@ pub fn AccountDashboard(
                     class=style::sparkline_select
                     on:change=move |ev| {
                         let new_period = match leptos::prelude::event_target_value(&ev).as_str() {
+                            "daily" => bc_ipc::Period::Daily,
                             "weekly" => bc_ipc::Period::Weekly,
+                            "fortnightly" => bc_ipc::Period::Fortnightly,
                             "quarterly" => bc_ipc::Period::Quarterly,
                             "calendar_year" => bc_ipc::Period::CalendarYear,
+                            "financial_year" => {
+                                bc_ipc::Period::FinancialYear {
+                                    start_month: 7,
+                                    start_day: 1,
+                                }
+                            }
                             _ => bc_ipc::Period::Monthly,
                         };
                         count.set(new_period.default_sparkline_count());
                         period.set(new_period);
                     }
                 >
+                    <option value="daily" selected=move || period.get() == bc_ipc::Period::Daily>
+                        "daily"
+                    </option>
                     <option value="weekly" selected=move || period.get() == bc_ipc::Period::Weekly>
                         "weekly"
+                    </option>
+                    <option
+                        value="fortnightly"
+                        selected=move || period.get() == bc_ipc::Period::Fortnightly
+                    >
+                        "fortnightly"
                     </option>
                     <option
                         value="monthly"
@@ -268,6 +285,14 @@ pub fn AccountDashboard(
                         selected=move || period.get() == bc_ipc::Period::CalendarYear
                     >
                         "calendar year"
+                    </option>
+                    <option
+                        value="financial_year"
+                        selected=move || {
+                            matches!(period.get(), bc_ipc::Period::FinancialYear { .. })
+                        }
+                    >
+                        "financial year"
                     </option>
                 </select>
 
@@ -304,8 +329,13 @@ pub fn AccountDashboard(
                 let currency = bc_ipc::currency_from_code(&sparkline_currency_code)
                     .unwrap_or(&bc_ipc::USD);
                 let title = match p {
+                    bc_ipc::Period::Daily => format!("Cash Flow (Last {n} Days)"),
                     bc_ipc::Period::Weekly => format!("Cash Flow (Last {n} Weeks)"),
+                    bc_ipc::Period::Fortnightly => format!("Cash Flow (Last {n} Fortnights)"),
                     bc_ipc::Period::Quarterly => format!("Cash Flow (Last {n} Quarters)"),
+                    bc_ipc::Period::CalendarYear | bc_ipc::Period::FinancialYear { .. } => {
+                        format!("Cash Flow (Last {n} Years)")
+                    }
                     _ => format!("Cash Flow (Last {n} Months)"),
                 };
                 view! {
