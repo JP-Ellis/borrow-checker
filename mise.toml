@@ -94,6 +94,23 @@ BC_DB_PATH="$DEV_DB" cargo tauri dev
 
   # MARK: Quality
 
+  [tasks.ci]
+  description = "Run the full CI suite locally (format, lint, machete, prek, tests, E2E)"
+  run         = [
+    { task = "format" },
+    { task = "prek" },
+    { task = "lint:hack" },
+    { task = "machete" },
+    { task = "test" },
+    { task = "test:e2e", args = ["--container"] },
+  ]
+
+  [tasks.prek]
+  hide        = true
+  description = "Run prek hooks (file hygiene, YAML/JSON/TOML/Markdown, typos, shellcheck)"
+  run         = "prek run --all-files"
+  env         = { SKIP = "cargo-clippy,cargo-fmt,cargo-machete" }
+
   [tasks.check]
   description = "Check (or fix) formatting and linting"
   usage       = 'flag "--fix" help="Apply fixes automatically"'
