@@ -316,6 +316,87 @@ impl NewTransaction {
     }
 }
 
+/// Aggregate income and expense totals for a time window.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AccountStats {
+    /// Sum of positive postings (money entering the account).
+    pub income: Amount,
+    /// Sum of negative postings, as a positive magnitude (money leaving the account).
+    pub expenses: Amount,
+}
+
+impl AccountStats {
+    /// Creates a new [`AccountStats`].
+    ///
+    /// # Arguments
+    ///
+    /// * `income`   - Total inflow amount.
+    /// * `expenses` - Total outflow amount (positive magnitude).
+    #[must_use]
+    #[inline]
+    pub fn new(income: Amount, expenses: Amount) -> Self {
+        Self { income, expenses }
+    }
+}
+
+/// A single data point in a cash-flow sparkline: a time-bucket label plus
+/// income and expense totals in the account's minor unit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SparkPoint {
+    /// X-axis label, e.g. `"apr"`, `"w03"`, `"Q2"`.
+    pub label: String,
+    /// Income in the currency's minor unit (positive).
+    pub income: i64,
+    /// Expenses in the currency's minor unit (positive magnitude — plotted separately).
+    pub expenses: i64,
+}
+
+impl SparkPoint {
+    /// Creates a new [`SparkPoint`].
+    ///
+    /// # Arguments
+    ///
+    /// * `label`    - X-axis label.
+    /// * `income`   - Income in minor units.
+    /// * `expenses` - Expenses in minor units (positive magnitude).
+    #[must_use]
+    #[inline]
+    pub fn new(label: impl Into<String>, income: i64, expenses: i64) -> Self {
+        Self {
+            label: label.into(),
+            income,
+            expenses,
+        }
+    }
+}
+
+/// Time-bucket size for the sparkline chart, sent from the frontend.
+///
+/// Maps to [`bc_models::Period`] on the backend; only variants meaningful to a
+/// frontend caller are exposed here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum SparklinePeriod {
+    /// Every 7 days.
+    Weekly,
+    /// Calendar month.
+    Monthly,
+    /// Calendar quarter (Jan/Apr/Jul/Oct).
+    Quarterly,
+    /// Calendar year (1 January).
+    CalendarYear,
+    /// Financial year with configurable start.
+    FinancialYear {
+        /// 1-based start month (1–12).
+        start_month: u8,
+        /// 1-based start day (1–28).
+        start_day: u8,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;

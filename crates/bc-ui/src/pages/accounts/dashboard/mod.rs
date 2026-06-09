@@ -8,7 +8,6 @@ use bc_ipc::AccountType;
 use leptos::prelude::*;
 use stylance::import_style;
 
-use crate::components::sparkline::SparkPoint;
 use crate::components::sparkline::Sparkline;
 use crate::components::sparkline::Title;
 use crate::components::stat_card::StatCard;
@@ -21,42 +20,6 @@ import_style!(style, "dashboard.module.scss");
 /// Monotonic counter for generating unique per-instance anchor names and popover IDs.
 static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 
-/// Static 6-month sparkline stub data (income, expenses).
-fn stub_spark_points() -> Vec<SparkPoint> {
-    vec![
-        SparkPoint {
-            label: "nov".into(),
-            income: 900_000,
-            expenses: 680_000,
-        },
-        SparkPoint {
-            label: "dec".into(),
-            income: 915_000,
-            expenses: 710_000,
-        },
-        SparkPoint {
-            label: "jan".into(),
-            income: 905_000,
-            expenses: 695_000,
-        },
-        SparkPoint {
-            label: "feb".into(),
-            income: 910_000,
-            expenses: 700_000,
-        },
-        SparkPoint {
-            label: "mar".into(),
-            income: 908_000,
-            expenses: 688_000,
-        },
-        SparkPoint {
-            label: "apr".into(),
-            income: 910_000,
-            expenses: 690_000,
-        },
-    ]
-}
-
 /// Full per-account dashboard: breadcrumb, balance headline, stat tiles, sparkline.
 ///
 /// Scrolls away with the page — the [`StickyAccountBar`] takes over once this
@@ -65,6 +28,7 @@ fn stub_spark_points() -> Vec<SparkPoint> {
 /// # Arguments
 ///
 /// * `node` - The account to display.
+/// * `data_version` - Optional monotonic counter; when it changes, stats and sparkline re-fetch.
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -73,8 +37,35 @@ fn stub_spark_points() -> Vec<SparkPoint> {
 pub fn AccountDashboard(
     /// Account to display.
     node: AccountNode,
+    /// Monotonic counter bumped by the parent after any successful mutation.
+    /// Stats and sparkline LocalResources re-fetch whenever this changes.
+    #[prop(optional)]
+    data_version: Option<ReadSignal<u32>>,
 ) -> impl IntoView {
-    let balance_str = {
+    let account_id = node.id.clone();
+    let sparkline_account_id = node.id.clone();
+
+    let stats_resource = LocalResource::new(move || {
+        let id = account_id.clone();
+        if let Some(v) = data_version {
+            v.get();
+        }
+        async move { bc_ipc::client::get_account_stats(&id).await }
+    });
+
+    let sparkline_resource = LocalResource::new(move || {
+        let id = sparkline_account_id.clone();
+        if let Some(v) = data_version {
+            v.get();
+        }
+        async move { bc_ipc::client::get_account_sparkline(&id).await }
+    });
+
+    let sparkline_currency_code = node.balance.currency_code.clone();
+
+    let balance_str = if node.balance.currency_code.is_empty() {
+        "—".into()
+    } else {
         let currency =
             bc_ipc::currency_from_code(&node.balance.currency_code).unwrap_or(&bc_ipc::USD);
         crate::components::num::format_amount(node.balance.minor_units, currency)
@@ -181,18 +172,44 @@ pub fn AccountDashboard(
 
             <div class=style::stat_row>
                 <StatCards count=4>
-                    <StatCard
-                        label="income (30d)".into()
-                        value="+$9,100".into()
-                        sub="avg · commbank-au"
-                        tone=StatTone::Good
-                    />
-                    <StatCard
-                        label="expenses (30d)".into()
-                        value="−$6,900".into()
-                        sub="avg · 47 transactions"
-                        tone=StatTone::Bad
-                    />
+                    {move || {
+                        let stats = stats_resource.get().and_then(Result::ok);
+                        let (income_str, expense_str) = stats
+                            .as_ref()
+                            .map_or_else(
+                                || ("—".into(), "—".into()),
+                                |s| {
+                                    let currency = bc_ipc::currency_from_code(
+                                            &s.income.currency_code,
+                                        )
+                                        .unwrap_or(&bc_ipc::USD);
+                                    let inc = crate::components::num::format_amount(
+                                        s.income.minor_units,
+                                        currency,
+                                    );
+                                    let exp = crate::components::num::format_amount(
+                                        s.expenses.minor_units.saturating_neg(),
+                                        currency,
+                                    );
+                                    (inc, exp)
+                                },
+                            );
+
+                        view! {
+                            <StatCard
+                                label="income (30d)".into()
+                                value=income_str
+                                sub="last 30 days"
+                                tone=StatTone::Good
+                            />
+                            <StatCard
+                                label="expenses (30d)".into()
+                                value=expense_str
+                                sub="last 30 days"
+                                tone=StatTone::Bad
+                            />
+                        }
+                    }}
                     <StatCard
                         label="uncategorised".into()
                         value="3".into()
@@ -208,13 +225,16 @@ pub fn AccountDashboard(
                 </StatCards>
             </div>
 
-            <Sparkline
-                points=stub_spark_points()
-                currency=bc_ipc::currency_from_code(&node.balance.currency_code)
-                    .unwrap_or(&bc_ipc::USD)
-            >
-                <Title slot>"Cash Flow (Last 6 Months)"</Title>
-            </Sparkline>
+            {move || {
+                let points = sparkline_resource.get().and_then(Result::ok).unwrap_or_default();
+                let currency = bc_ipc::currency_from_code(&sparkline_currency_code)
+                    .unwrap_or(&bc_ipc::USD);
+                view! {
+                    <Sparkline points=points currency=currency>
+                        <Title slot>"Cash Flow (Last 6 Months)"</Title>
+                    </Sparkline>
+                }
+            }}
         </div>
     }
 }
