@@ -57,8 +57,39 @@ than relying on the host GTK theme.
 
 ## Screenshot baselines
 
-Baselines are generated on Linux (WebKitGTK). Do not commit snapshots generated
-on macOS or Windows — rendering differences will cause CI failures.
+Baselines are generated inside the pinned Linux container (same WebKitGTK build
+as CI) with a **frozen clock** (`FAKETIME="2025-01-15 12:00:00"`) so they are
+stable across dates and monthly image rebuilds. Do not commit snapshots generated
+outside this container — rendering differences will cause CI failures.
+
+The `update-e2e-snapshots` workflow runs on the 1st of each month to rebuild the
+container image, push it to GHCR, and regenerate baselines if anything changed.
+Trigger it manually via `workflow_dispatch` to bootstrap after the Containerfile
+changes, or to force a one-off baseline refresh.
+
+## Container image
+
+`e2e/.container-image` holds the GHCR digest reference used by CI and the
+`container` mise task. CI pulls this exact image; the monthly workflow rebuilds
+and re-pins it. If the file is empty, `mise run //e2e:container:build` is used
+as a fallback (builds locally from the Containerfile).
+
+To pull the pinned image locally:
+
+```sh
+mise run //e2e:container:pull   # docker pull using e2e/.container-image
+```
+
+To push a new image manually (e.g. to bootstrap before the monthly workflow has
+run), build with the mise task (which targets `linux/amd64` correctly on all
+hosts) then tag, push, and record the digest:
+
+```sh
+mise run //e2e:container:build
+docker tag bc-e2e-native ghcr.io/jp-ellis/borrow-checker-e2e
+DIGEST=$(docker push ghcr.io/jp-ellis/borrow-checker-e2e | awk '/digest:/{print $3}')
+printf 'ghcr.io/jp-ellis/borrow-checker-e2e@%s\n' "$DIGEST" > e2e/.container-image
+```
 
 ## Linux cache
 
