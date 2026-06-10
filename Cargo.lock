@@ -502,6 +502,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bc-seed"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bc-core",
+ "bc-models",
+ "clap",
+ "jiff",
+ "pretty_assertions",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "tokio",
+]
+
+[[package]]
 name = "bc-tui"
 version = "0.1.0"
 dependencies = [
