@@ -13,6 +13,7 @@ members  = [
   "crates/bc-plugins",
   "crates/bc-sdk",
   "crates/bc-sdk-macros",
+  "crates/bc-seed",
   "crates/bc-tui",
   "crates/bc-ui",
 ]
