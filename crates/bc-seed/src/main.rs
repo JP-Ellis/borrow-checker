@@ -1,26 +1,17 @@
-#!/usr/bin/env -S cargo +nightly -Zscript
----
-[package]
-edition = "2024"
+//! Seed a SQLite database with a realistic 6-month dataset for E2E tests.
+//!
+//! Creates a full account hierarchy, envelope budget structure with allocations,
+//! and ~79 transactions covering 6 historical months plus the current month.
+//!
+//! Usage:
+//!   bc-seed [--db-path <PATH>] [--force].
 
-[dependencies]
-anyhow             = "1"
-bc-core            = { path = "../crates/bc-core" }
-bc-models          = { path = "../crates/bc-models" }
-clap               = { version = "4", features = ["derive"] }
-jiff               = { version = "0.2", features = ["serde"] }
-rust_decimal       = { version = "1", features = ["serde-with-str"] }
-rust_decimal_macros = "1"
-tokio              = { version = "1", features = ["rt-multi-thread", "macros"] }
----
-
-// Seed a SQLite database with a realistic 6-month dataset for manual QA.
-//
-// Creates a full account hierarchy, envelope budget structure with allocations,
-// and ~75 transactions covering 6 historical months plus the current month.
-//
-// Usage:
-//   cargo +nightly -Zscript scripts/seed-test-db [--db-path <PATH>] [--force]
+#![expect(
+    clippy::print_stdout,
+    clippy::arithmetic_side_effects,
+    clippy::too_many_lines,
+    reason = "test fixture seeding binary; not a public library"
+)]
 
 use std::path::PathBuf;
 
@@ -31,6 +22,7 @@ use bc_models::AccountId;
 use bc_models::AccountKind;
 use bc_models::AccountType;
 use bc_models::Amount;
+use bc_models::BudgetWindow;
 use bc_models::CommodityCode;
 use bc_models::Decimal;
 use bc_models::Period;
@@ -46,50 +38,42 @@ use jiff::civil::Date;
 use rust_decimal_macros::dec;
 
 #[derive(Parser)]
-#[command(name = "seed-test-db", about = "Seed a SQLite database with realistic test fixture data")]
+#[command(
+    name = "bc-seed",
+    about = "Seed a SQLite database with realistic test fixture data"
+)]
+/// CLI arguments for the seed binary.
 struct Args {
-    // Path where the database file will be written.
+    /// Path where the database file will be written.
     #[arg(long, default_value = "./borrow-checker-test.db")]
     db_path: PathBuf,
 
-    // Overwrite the database file if it already exists.
+    /// Overwrite the database file if it already exists.
     #[arg(long)]
     force: bool,
 }
 
+/// Constructs an AUD [`Amount`] from a decimal value.
 fn aud(value: Decimal) -> Amount {
     Amount::new(value, CommodityCode::new("AUD"))
 }
 
-/// Returns the first day of the calendar month that is `months_ago` months before today.
-///
-/// `months_ago = 0` returns the first day of the current month.
+/// Returns the first day of the calendar month `months_ago` months before
+/// the current wall-clock date (intercepted by libfaketime in CI).
 fn month_start(months_ago: i64) -> Date {
     let today = jiff::Zoned::now().date();
-    let approx = today
-        .checked_sub(jiff::Span::new().months(months_ago))
-        .expect("valid date arithmetic");
-    #[expect(
-        clippy::expect_used,
-        reason = "day=1 is always valid for any year and month"
-    )]
-    Date::new(approx.year(), approx.month(), 1).expect("first of month is always valid")
+    let approx = today.saturating_sub(jiff::Span::new().months(months_ago));
+    BudgetWindow::this_month(approx).start
 }
 
 /// Returns a specific day within the month that is `months_ago` months before today.
 ///
 /// `day` is 1-based.
 fn month_day(months_ago: i64, day: i8) -> Date {
-    let start = month_start(months_ago);
-    #[expect(
-        clippy::expect_used,
-        reason = "caller must supply a valid day for the target month"
-    )]
-    start
-        .checked_add(jiff::Span::new().days(i64::from(day) - 1))
-        .expect("day offset is within a reasonable range")
+    month_start(months_ago).saturating_add(jiff::Span::new().days(i64::from(day) - 1))
 }
 
+/// Constructs a [`Posting`] with a new random ID.
 fn posting(account_id: &AccountId, amount: Amount) -> Posting {
     Posting::builder()
         .id(PostingId::new())
@@ -121,8 +105,6 @@ async fn main() -> anyhow::Result<()> {
     // =========================================================================
     // ACCOUNTS (24 total: 5 root + 19 leaf)
     // =========================================================================
-
-    // --- Root accounts -------------------------------------------------------
 
     let assets_id = accounts
         .create()
@@ -164,8 +146,6 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
-    // --- Asset leaf accounts -------------------------------------------------
-
     let checking_id = accounts
         .create()
         .name("Checking")
@@ -184,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
-    let car_id = accounts
+    let _car_id = accounts
         .create()
         .name("Car")
         .account_type(AccountType::Asset)
@@ -192,8 +172,6 @@ async fn main() -> anyhow::Result<()> {
         .parent_id(&assets_id)
         .call()
         .await?;
-
-    // --- Liability leaf accounts ---------------------------------------------
 
     let credit_card_id = accounts
         .create()
@@ -213,8 +191,6 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
-    // --- Equity leaf accounts ------------------------------------------------
-
     let opening_balance_id = accounts
         .create()
         .name("OpeningBalance")
@@ -223,8 +199,6 @@ async fn main() -> anyhow::Result<()> {
         .parent_id(&equity_id)
         .call()
         .await?;
-
-    // --- Income leaf accounts ------------------------------------------------
 
     let salary_id = accounts
         .create()
@@ -253,8 +227,6 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
-    // --- Expense leaf accounts -----------------------------------------------
-
     let groceries_id = accounts
         .create()
         .name("Groceries")
@@ -273,7 +245,6 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
-    // Utilities parent (no direct transactions)
     let utilities_id = accounts
         .create()
         .name("Utilities")
@@ -283,7 +254,6 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
-    // Leaf accounts
     let electricity_id = accounts
         .create()
         .name("Electricity")
@@ -356,19 +326,9 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
-    // Silence unused-variable warnings for root accounts only used as parents.
-    let _ = &income_id;
-    let _ = &liabilities_id;
-    let _ = &equity_id;
-    let _ = &car_id;
-    let _ = &utilities_id;
-    let _ = &water_id;
-
     // =========================================================================
     // ENVELOPES (10 total: 3 root + 7 leaf)
     // =========================================================================
-
-    // --- Root envelopes ------------------------------------------------------
 
     let living_env = envelopes
         .create()
@@ -393,8 +353,6 @@ async fn main() -> anyhow::Result<()> {
         .rollover_policy(RolloverPolicy::ResetToZero)
         .call()
         .await?;
-
-    // --- Living leaf envelopes -----------------------------------------------
 
     let groceries_env = envelopes
         .create()
@@ -423,8 +381,6 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
-    // --- Discretionary leaf envelopes ----------------------------------------
-
     let dining_env = envelopes
         .create()
         .name("Dining")
@@ -452,8 +408,6 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
-    // --- Health leaf envelopes -----------------------------------------------
-
     let healthcare_env = envelopes
         .create()
         .name("Healthcare")
@@ -463,25 +417,10 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
-    // Silence unused-variable warnings for root envelopes only used as parents.
-    let _ = &living_env;
-    let _ = &discretionary_env;
-    let _ = &health_env;
-
     // =========================================================================
     // ALLOCATIONS (49 total: 7 leaf envelopes × 7 months)
     // =========================================================================
 
-    // Monthly allocation amounts:
-    //   Groceries:     600/mo
-    //   Utilities:     350/mo
-    //   Transport:     200/mo
-    //   Dining:        300/mo
-    //   Entertainment: 150/mo
-    //   Subscriptions:  60/mo
-    //   Healthcare:    200/mo
-
-    // Allocate for the 6 historical months plus the current month (7 total).
     for months_ago in (0_i64..=6_i64).rev() {
         let period_start = month_start(months_ago);
         envelopes
@@ -508,10 +447,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // =========================================================================
-    // TRANSACTIONS (~75 total across 6 historical months + current month)
+    // TRANSACTIONS (~79 total across 6 historical months + current month)
     // =========================================================================
 
-    // Helper macro to reduce boilerplate for simple two-posting transactions.
     macro_rules! txn {
         ($date:expr, $payee:expr, $desc:expr, $status:expr,
          $debit_acct:expr, $debit_amt:expr,
@@ -535,7 +473,6 @@ async fn main() -> anyhow::Result<()> {
         };
     }
 
-    // Macro for expense transactions that assigns the debit posting to an envelope.
     macro_rules! txn_env {
         ($date:expr, $payee:expr, $desc:expr, $status:expr,
          $debit_acct:expr, $debit_amt:expr, $envelope:expr,
@@ -568,7 +505,6 @@ async fn main() -> anyhow::Result<()> {
     // Opening balances (6 months ago, day 1)
     // -------------------------------------------------------------------------
 
-    // Checking: 3500 opening balance
     txn!(
         month_day(6, 1),
         "Opening Balance",
@@ -579,8 +515,6 @@ async fn main() -> anyhow::Result<()> {
         &opening_balance_id,
         dec!(-3500.00)
     );
-
-    // Savings: 8000 opening balance
     txn!(
         month_day(6, 1),
         "Opening Balance",
@@ -591,8 +525,6 @@ async fn main() -> anyhow::Result<()> {
         &opening_balance_id,
         dec!(-8000.00)
     );
-
-    // CreditCard liability: -450 opening balance (liability has credit balance)
     txn!(
         month_day(6, 1),
         "Opening Balance",
@@ -603,8 +535,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-450.00)
     );
-
-    // CarLoan liability: -12000 opening balance
     txn!(
         month_day(6, 1),
         "Opening Balance",
@@ -620,7 +550,6 @@ async fn main() -> anyhow::Result<()> {
     // 6 months ago
     // -------------------------------------------------------------------------
 
-    // Day 5: Freelance income
     txn!(
         month_day(6, 5),
         "Client A",
@@ -631,8 +560,6 @@ async fn main() -> anyhow::Result<()> {
         &freelance_id,
         dec!(-800.00)
     );
-
-    // Day 15: Paycheck
     txn!(
         month_day(6, 15),
         "Employer Ltd",
@@ -643,8 +570,6 @@ async fn main() -> anyhow::Result<()> {
         &salary_id,
         dec!(-5200.00)
     );
-
-    // Day 20: Credit card payment
     txn!(
         month_day(6, 20),
         "Visa",
@@ -655,8 +580,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-800.00)
     );
-
-    // Day 25: Savings transfer
     txn!(
         month_day(6, 25),
         "Transfer",
@@ -667,8 +590,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-1000.00)
     );
-
-    // Day 30: Savings interest
     txn!(
         month_day(6, 30),
         "Bank",
@@ -679,8 +600,6 @@ async fn main() -> anyhow::Result<()> {
         &interest_id,
         dec!(-9.50)
     );
-
-    // Day 1: Car loan repayment
     txn!(
         month_day(6, 1),
         "Car Finance",
@@ -691,8 +610,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-350.00)
     );
-
-    // Day 3: Woolworths groceries
     txn_env!(
         month_day(6, 3),
         "Woolworths",
@@ -704,8 +621,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-140.00)
     );
-
-    // Day 14: Coles groceries
     txn_env!(
         month_day(6, 14),
         "Coles",
@@ -717,8 +632,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-110.00)
     );
-
-    // Day 22: IGA top-up
     txn_env!(
         month_day(6, 22),
         "IGA",
@@ -730,8 +643,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-55.00)
     );
-
-    // Day 8: Restaurant dining
     txn_env!(
         month_day(6, 8),
         "The Local Bistro",
@@ -743,8 +654,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-85.00)
     );
-
-    // Day 20: Café coffee
     txn_env!(
         month_day(6, 20),
         "The Coffee Club",
@@ -756,8 +665,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-18.50)
     );
-
-    // Day 12: AGL electricity
     txn_env!(
         month_day(6, 12),
         "AGL Energy",
@@ -769,8 +676,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-210.00)
     );
-
-    // Day 12: Telstra internet (drinking water)
     txn_env!(
         month_day(6, 12),
         "Telstra",
@@ -782,8 +687,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-89.00)
     );
-
-    // Day 28: Origin Energy gas bill (sewer)
     txn_env!(
         month_day(6, 28),
         "Origin Energy",
@@ -795,8 +698,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-130.00)
     );
-
-    // Day 18: Opal card transit
     txn_env!(
         month_day(6, 18),
         "Opal Card",
@@ -808,8 +709,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-50.00)
     );
-
-    // Day 3: Netflix streaming
     txn_env!(
         month_day(6, 3),
         "Netflix",
@@ -821,8 +720,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-22.99)
     );
-
-    // Day 3: Spotify music
     txn_env!(
         month_day(6, 3),
         "Spotify",
@@ -834,8 +731,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-12.99)
     );
-
-    // Day 10: iCloud storage
     txn_env!(
         month_day(6, 10),
         "iCloud",
@@ -852,7 +747,6 @@ async fn main() -> anyhow::Result<()> {
     // 5 months ago
     // -------------------------------------------------------------------------
 
-    // Day 15: Paycheck
     txn!(
         month_day(5, 15),
         "Employer Ltd",
@@ -863,8 +757,6 @@ async fn main() -> anyhow::Result<()> {
         &salary_id,
         dec!(-5200.00)
     );
-
-    // Day 20: Credit card payment
     txn!(
         month_day(5, 20),
         "Visa",
@@ -875,8 +767,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-800.00)
     );
-
-    // Day 25: Savings transfer
     txn!(
         month_day(5, 25),
         "Transfer",
@@ -887,8 +777,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-1000.00)
     );
-
-    // Day 31: Savings interest
     txn!(
         month_day(5, 31),
         "Bank",
@@ -899,8 +787,6 @@ async fn main() -> anyhow::Result<()> {
         &interest_id,
         dec!(-10.00)
     );
-
-    // Day 1: Car loan repayment
     txn!(
         month_day(5, 1),
         "Car Finance",
@@ -911,8 +797,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-350.00)
     );
-
-    // Day 3: Woolworths groceries
     txn_env!(
         month_day(5, 3),
         "Woolworths",
@@ -924,8 +808,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-140.00)
     );
-
-    // Day 14: Coles groceries
     txn_env!(
         month_day(5, 14),
         "Coles",
@@ -937,8 +819,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-110.00)
     );
-
-    // Day 22: IGA top-up
     txn_env!(
         month_day(5, 22),
         "IGA",
@@ -950,8 +830,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-55.00)
     );
-
-    // Day 8: Restaurant dining
     txn_env!(
         month_day(5, 8),
         "The Local Bistro",
@@ -963,8 +841,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-85.00)
     );
-
-    // Day 20: Café coffee
     txn_env!(
         month_day(5, 20),
         "The Coffee Club",
@@ -976,8 +852,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-18.50)
     );
-
-    // Day 22: Christmas dinner (extra)
     txn_env!(
         month_day(5, 22),
         "Fine Dining Co",
@@ -989,8 +863,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-210.00)
     );
-
-    // Day 31: NYE dinner (extra)
     txn_env!(
         month_day(5, 31),
         "NYE Restaurant",
@@ -1002,8 +874,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-175.00)
     );
-
-    // Day 12: AGL electricity
     txn_env!(
         month_day(5, 12),
         "AGL Energy",
@@ -1015,8 +885,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-210.00)
     );
-
-    // Day 12: Telstra internet (drinking water)
     txn_env!(
         month_day(5, 12),
         "Telstra",
@@ -1028,8 +896,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-89.00)
     );
-
-    // Day 18: Opal card transit
     txn_env!(
         month_day(5, 18),
         "Opal Card",
@@ -1041,8 +907,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-50.00)
     );
-
-    // Day 3: Netflix streaming
     txn_env!(
         month_day(5, 3),
         "Netflix",
@@ -1054,8 +918,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-22.99)
     );
-
-    // Day 3: Spotify music
     txn_env!(
         month_day(5, 3),
         "Spotify",
@@ -1067,8 +929,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-12.99)
     );
-
-    // Day 10: iCloud storage
     txn_env!(
         month_day(5, 10),
         "iCloud",
@@ -1080,8 +940,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-4.49)
     );
-
-    // Day 15: Cinema (extra)
     txn_env!(
         month_day(5, 15),
         "Event Cinemas",
@@ -1093,8 +951,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-45.00)
     );
-
-    // Day 20: Concert (extra)
     txn_env!(
         month_day(5, 20),
         "Live Nation",
@@ -1111,7 +967,6 @@ async fn main() -> anyhow::Result<()> {
     // 4 months ago
     // -------------------------------------------------------------------------
 
-    // Day 15: Paycheck
     txn!(
         month_day(4, 15),
         "Employer Ltd",
@@ -1122,8 +977,6 @@ async fn main() -> anyhow::Result<()> {
         &salary_id,
         dec!(-5200.00)
     );
-
-    // Day 20: Credit card payment
     txn!(
         month_day(4, 20),
         "Visa",
@@ -1134,8 +987,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-800.00)
     );
-
-    // Day 25: Savings transfer
     txn!(
         month_day(4, 25),
         "Transfer",
@@ -1146,8 +997,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-1000.00)
     );
-
-    // Day 31: Savings interest
     txn!(
         month_day(4, 31),
         "Bank",
@@ -1158,8 +1007,6 @@ async fn main() -> anyhow::Result<()> {
         &interest_id,
         dec!(-10.50)
     );
-
-    // Day 1: Car loan repayment
     txn!(
         month_day(4, 1),
         "Car Finance",
@@ -1170,8 +1017,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-350.00)
     );
-
-    // Day 3: Woolworths groceries (increased to 190 for January)
     txn_env!(
         month_day(4, 3),
         "Woolworths",
@@ -1183,8 +1028,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-190.00)
     );
-
-    // Day 14: Coles groceries
     txn_env!(
         month_day(4, 14),
         "Coles",
@@ -1196,8 +1039,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-110.00)
     );
-
-    // Day 22: IGA top-up
     txn_env!(
         month_day(4, 22),
         "IGA",
@@ -1209,8 +1050,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-55.00)
     );
-
-    // Day 28: Harris Farm (extra)
     txn_env!(
         month_day(4, 28),
         "Harris Farm",
@@ -1222,8 +1061,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-80.00)
     );
-
-    // Day 8: Restaurant dining
     txn_env!(
         month_day(4, 8),
         "The Local Bistro",
@@ -1235,8 +1072,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-85.00)
     );
-
-    // Day 20: Café coffee
     txn_env!(
         month_day(4, 20),
         "The Coffee Club",
@@ -1248,8 +1083,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-18.50)
     );
-
-    // Day 12: AGL electricity
     txn_env!(
         month_day(4, 12),
         "AGL Energy",
@@ -1261,8 +1094,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-210.00)
     );
-
-    // Day 12: Telstra internet (drinking water)
     txn_env!(
         month_day(4, 12),
         "Telstra",
@@ -1274,8 +1105,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-89.00)
     );
-
-    // Day 18: Opal card transit
     txn_env!(
         month_day(4, 18),
         "Opal Card",
@@ -1287,8 +1116,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-50.00)
     );
-
-    // Day 3: Netflix streaming
     txn_env!(
         month_day(4, 3),
         "Netflix",
@@ -1300,8 +1127,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-22.99)
     );
-
-    // Day 3: Spotify music
     txn_env!(
         month_day(4, 3),
         "Spotify",
@@ -1313,8 +1138,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-12.99)
     );
-
-    // Day 10: iCloud storage
     txn_env!(
         month_day(4, 10),
         "iCloud",
@@ -1326,8 +1149,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-4.49)
     );
-
-    // Day 10: GP visit (extra)
     txn_env!(
         month_day(4, 10),
         "City Medical Centre",
@@ -1339,8 +1160,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-85.00)
     );
-
-    // Day 11: Pharmacy (extra)
     txn_env!(
         month_day(4, 11),
         "Chemist Warehouse",
@@ -1353,7 +1172,6 @@ async fn main() -> anyhow::Result<()> {
         dec!(-32.50)
     );
 
-    // Voided transaction: duplicate paycheck
     let voided_jan_paycheck = transactions
         .create(
             Transaction::builder()
@@ -1376,7 +1194,6 @@ async fn main() -> anyhow::Result<()> {
     // 3 months ago
     // -------------------------------------------------------------------------
 
-    // Day 15: Paycheck
     txn!(
         month_day(3, 15),
         "Employer Ltd",
@@ -1387,8 +1204,6 @@ async fn main() -> anyhow::Result<()> {
         &salary_id,
         dec!(-5200.00)
     );
-
-    // Day 20: Credit card payment
     txn!(
         month_day(3, 20),
         "Visa",
@@ -1399,8 +1214,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-800.00)
     );
-
-    // Day 25: Savings transfer
     txn!(
         month_day(3, 25),
         "Transfer",
@@ -1411,8 +1224,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-1000.00)
     );
-
-    // Day 28: Savings interest
     txn!(
         month_day(3, 28),
         "Bank",
@@ -1423,8 +1234,6 @@ async fn main() -> anyhow::Result<()> {
         &interest_id,
         dec!(-11.00)
     );
-
-    // Day 1: Car loan repayment
     txn!(
         month_day(3, 1),
         "Car Finance",
@@ -1435,8 +1244,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-350.00)
     );
-
-    // Day 3: Woolworths groceries
     txn_env!(
         month_day(3, 3),
         "Woolworths",
@@ -1448,8 +1255,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-140.00)
     );
-
-    // Day 14: Coles groceries
     txn_env!(
         month_day(3, 14),
         "Coles",
@@ -1461,8 +1266,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-110.00)
     );
-
-    // Day 22: IGA top-up
     txn_env!(
         month_day(3, 22),
         "IGA",
@@ -1474,8 +1277,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-55.00)
     );
-
-    // Day 8: Restaurant dining
     txn_env!(
         month_day(3, 8),
         "The Local Bistro",
@@ -1487,8 +1288,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-85.00)
     );
-
-    // Day 20: Café coffee
     txn_env!(
         month_day(3, 20),
         "The Coffee Club",
@@ -1500,8 +1299,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-18.50)
     );
-
-    // Day 12: AGL electricity
     txn_env!(
         month_day(3, 12),
         "AGL Energy",
@@ -1513,8 +1310,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-210.00)
     );
-
-    // Day 12: Telstra internet (drinking water)
     txn_env!(
         month_day(3, 12),
         "Telstra",
@@ -1526,8 +1321,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-89.00)
     );
-
-    // Day 5: BP petrol (extra)
     txn_env!(
         month_day(3, 5),
         "BP Service Station",
@@ -1539,8 +1332,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-85.00)
     );
-
-    // Day 18: Opal card transit
     txn_env!(
         month_day(3, 18),
         "Opal Card",
@@ -1552,8 +1343,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-50.00)
     );
-
-    // Day 3: Netflix streaming
     txn_env!(
         month_day(3, 3),
         "Netflix",
@@ -1565,8 +1354,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-22.99)
     );
-
-    // Day 3: Spotify music
     txn_env!(
         month_day(3, 3),
         "Spotify",
@@ -1578,8 +1365,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-12.99)
     );
-
-    // Day 10: iCloud storage
     txn_env!(
         month_day(3, 10),
         "iCloud",
@@ -1591,8 +1376,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-4.49)
     );
-
-    // Day 20: Freelance income (extra)
     txn!(
         month_day(3, 20),
         "Client B",
@@ -1604,7 +1387,6 @@ async fn main() -> anyhow::Result<()> {
         dec!(-1200.00)
     );
 
-    // Voided transaction: duplicate Woolworths
     let voided_feb_woolworths = transactions
         .create(
             Transaction::builder()
@@ -1627,7 +1409,6 @@ async fn main() -> anyhow::Result<()> {
     // 2 months ago
     // -------------------------------------------------------------------------
 
-    // Day 15: Paycheck
     txn!(
         month_day(2, 15),
         "Employer Ltd",
@@ -1638,8 +1419,6 @@ async fn main() -> anyhow::Result<()> {
         &salary_id,
         dec!(-5200.00)
     );
-
-    // Day 20: Credit card payment
     txn!(
         month_day(2, 20),
         "Visa",
@@ -1650,8 +1429,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-800.00)
     );
-
-    // Day 25: Savings transfer (increased to 1200 for March)
     txn!(
         month_day(2, 25),
         "Transfer",
@@ -1662,8 +1439,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-1200.00)
     );
-
-    // Day 31: Savings interest
     txn!(
         month_day(2, 31),
         "Bank",
@@ -1674,8 +1449,6 @@ async fn main() -> anyhow::Result<()> {
         &interest_id,
         dec!(-11.50)
     );
-
-    // Day 1: Car loan repayment
     txn!(
         month_day(2, 1),
         "Car Finance",
@@ -1686,8 +1459,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-350.00)
     );
-
-    // Day 3: Woolworths groceries
     txn_env!(
         month_day(2, 3),
         "Woolworths",
@@ -1699,8 +1470,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-140.00)
     );
-
-    // Day 14: Coles groceries
     txn_env!(
         month_day(2, 14),
         "Coles",
@@ -1712,8 +1481,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-110.00)
     );
-
-    // Day 22: IGA top-up
     txn_env!(
         month_day(2, 22),
         "IGA",
@@ -1725,8 +1492,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-55.00)
     );
-
-    // Day 8: Restaurant dining
     txn_env!(
         month_day(2, 8),
         "The Local Bistro",
@@ -1738,8 +1503,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-85.00)
     );
-
-    // Day 20: Café coffee
     txn_env!(
         month_day(2, 20),
         "The Coffee Club",
@@ -1751,8 +1514,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-18.50)
     );
-
-    // Day 12: AGL electricity
     txn_env!(
         month_day(2, 12),
         "AGL Energy",
@@ -1764,8 +1525,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-210.00)
     );
-
-    // Day 12: Telstra internet (drinking water)
     txn_env!(
         month_day(2, 12),
         "Telstra",
@@ -1777,8 +1536,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-89.00)
     );
-
-    // Day 28: Origin Energy gas bill (extra, sewer)
     txn_env!(
         month_day(2, 28),
         "Origin Energy",
@@ -1790,8 +1547,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-130.00)
     );
-
-    // Day 18: Opal card transit
     txn_env!(
         month_day(2, 18),
         "Opal Card",
@@ -1803,8 +1558,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-50.00)
     );
-
-    // Day 3: Netflix streaming
     txn_env!(
         month_day(2, 3),
         "Netflix",
@@ -1816,8 +1569,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-22.99)
     );
-
-    // Day 3: Spotify music
     txn_env!(
         month_day(2, 3),
         "Spotify",
@@ -1829,8 +1580,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-12.99)
     );
-
-    // Day 10: iCloud storage
     txn_env!(
         month_day(2, 10),
         "iCloud",
@@ -1844,10 +1593,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // -------------------------------------------------------------------------
-    // 1 month ago (last historical month — some transactions Pending)
+    // 1 month ago
     // -------------------------------------------------------------------------
 
-    // Day 15: Paycheck
     txn!(
         month_day(1, 15),
         "Employer Ltd",
@@ -1858,8 +1606,6 @@ async fn main() -> anyhow::Result<()> {
         &salary_id,
         dec!(-5200.00)
     );
-
-    // Day 20: Credit card payment
     txn!(
         month_day(1, 20),
         "Visa",
@@ -1870,8 +1616,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-800.00)
     );
-
-    // Day 25: Savings transfer
     txn!(
         month_day(1, 25),
         "Transfer",
@@ -1882,8 +1626,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-1000.00)
     );
-
-    // Day 30: Savings interest
     txn!(
         month_day(1, 30),
         "Bank",
@@ -1894,8 +1636,6 @@ async fn main() -> anyhow::Result<()> {
         &interest_id,
         dec!(-12.00)
     );
-
-    // Day 1: Car loan repayment
     txn!(
         month_day(1, 1),
         "Car Finance",
@@ -1906,8 +1646,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-350.00)
     );
-
-    // Day 3: Woolworths groceries (Pending — last grocery shop 1)
     txn_env!(
         month_day(1, 3),
         "Woolworths",
@@ -1919,8 +1657,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-140.00)
     );
-
-    // Day 14: Coles groceries (Pending — last grocery shop 2)
     txn_env!(
         month_day(1, 14),
         "Coles",
@@ -1932,8 +1668,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-110.00)
     );
-
-    // Day 22: IGA top-up
     txn_env!(
         month_day(1, 22),
         "IGA",
@@ -1945,8 +1679,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-55.00)
     );
-
-    // Day 8: Restaurant dining (Pending — last dining entry)
     txn_env!(
         month_day(1, 8),
         "The Local Bistro",
@@ -1958,8 +1690,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-85.00)
     );
-
-    // Day 20: Café coffee
     txn_env!(
         month_day(1, 20),
         "The Coffee Club",
@@ -1971,8 +1701,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-18.50)
     );
-
-    // Day 12: AGL electricity
     txn_env!(
         month_day(1, 12),
         "AGL Energy",
@@ -1984,8 +1712,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-210.00)
     );
-
-    // Day 12: Telstra internet (drinking water)
     txn_env!(
         month_day(1, 12),
         "Telstra",
@@ -1997,8 +1723,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-89.00)
     );
-
-    // Day 18: Opal card transit
     txn_env!(
         month_day(1, 18),
         "Opal Card",
@@ -2010,8 +1734,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-50.00)
     );
-
-    // Day 3: Netflix streaming (Pending — subscription renewal)
     txn_env!(
         month_day(1, 3),
         "Netflix",
@@ -2023,8 +1745,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-22.99)
     );
-
-    // Day 3: Spotify music
     txn_env!(
         month_day(1, 3),
         "Spotify",
@@ -2036,8 +1756,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-12.99)
     );
-
-    // Day 10: iCloud storage
     txn_env!(
         month_day(1, 10),
         "iCloud",
@@ -2051,7 +1769,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // -------------------------------------------------------------------------
-    // Current month: salary + a few expenses
+    // Current month
     // -------------------------------------------------------------------------
 
     txn!(
@@ -2064,7 +1782,6 @@ async fn main() -> anyhow::Result<()> {
         &salary_id,
         dec!(-5200)
     );
-
     txn_env!(
         month_day(0, 3),
         "Supermarket",
@@ -2076,7 +1793,6 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-95)
     );
-
     txn_env!(
         month_day(0, 4),
         "The Coffee Club",
@@ -2088,7 +1804,6 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-6.50)
     );
-
     txn_env!(
         month_day(0, 2),
         "Power Company",
@@ -2101,16 +1816,50 @@ async fn main() -> anyhow::Result<()> {
         dec!(-120)
     );
 
-    // =========================================================================
-    // SUMMARY
-    // =========================================================================
-
     println!("Done.");
     println!("Created database at {}", args.db_path.display());
     println!("Accounts:     24 (5 root + 19 leaf)");
     println!("Envelopes:    10 (3 root + 7 leaf)");
-    println!("Allocations:  49 (7 leaf envelopes × 7 months)");
-    println!("Transactions: ~79 (cleared, pending, voided across 6 historical months + current month)");
+    println!("Allocations:  49 (7 leaf envelopes x 7 months)");
+    println!(
+        "Transactions: ~79 (cleared, pending, voided across 6 historical months + current month)"
+    );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    #[test]
+    fn month_start_matches_this_month_window() {
+        let today = jiff::Zoned::now().date();
+        assert_eq!(month_start(0), BudgetWindow::this_month(today).start);
+    }
+
+    #[test]
+    fn month_start_one_matches_last_month_window() {
+        let today = jiff::Zoned::now().date();
+        assert_eq!(month_start(1), BudgetWindow::last_month(today).start);
+    }
+
+    #[test]
+    fn month_day_offset_lands_on_correct_date() {
+        let start = month_start(0);
+        assert_eq!(
+            month_day(0, 15),
+            start.saturating_add(jiff::Span::new().days(14_i64))
+        );
+    }
+
+    #[test]
+    fn aud_constructs_correct_amount() {
+        assert_eq!(
+            aud(dec!(42.50)),
+            Amount::new(dec!(42.50), CommodityCode::new("AUD"))
+        );
+    }
 }

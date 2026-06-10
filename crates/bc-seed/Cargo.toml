@@ -1,0 +1,36 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[package]
+name        = "bc-seed"
+description = "Seed test database with realistic fixture data for E2E tests"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
+
+publish = false
+
+  [package.metadata.cargo-machete]
+  ignored = ["rust_decimal"]
+
+[[bin]]
+name = "bc-seed"
+path = "src/main.rs"
+
+[dependencies]
+anyhow              = "1"
+bc-core             = { workspace = true }
+bc-models           = { workspace = true }
+clap                = { workspace = true }
+jiff                = { workspace = true }
+rust_decimal        = { workspace = true }
+rust_decimal_macros = { workspace = true }
+tokio               = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[lints]
+workspace = true

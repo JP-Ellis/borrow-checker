@@ -85,9 +85,8 @@ describe('Visual — accounts shell', () => {
             });
 
             it(`accounts shell matches baseline [${tag}]`, async () => {
-                /* Allow up to 1 % pixel difference to absorb font-hinting
-                 * variation across WebKit versions (e.g. apt package bumps
-                 * between baseline generation and current CI run). */
+                /* Allow up to 1 % pixel difference to absorb minor rendering
+                 * variation across WebKit patch releases between image rebuilds. */
                 const mismatch = await browser.checkScreen(`accounts-shell-${tag}`);
                 expect(mismatch).toBeLessThanOrEqual(1);
             });

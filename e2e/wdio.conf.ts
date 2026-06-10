@@ -81,11 +81,14 @@ export const config: Options.Testrunner = {
     process.env['BC_DB_PATH'] = TEST_DB_PATH;
 
     // Seed the test database.
+    // SEED_BIN is set by the container task when a pre-built Linux binary is available;
+    // otherwise fall back to cargo run (builds bc-seed on demand, no nightly required).
+    const seedBin = process.env['SEED_BIN'] ?? 'cargo run -p bc-seed --';
     console.log('Seeding test database…');
-    execSync(
-      `cargo +nightly -Zscript ../scripts/seed-test-db --db-path "${TEST_DB_PATH}" --force`,
-      { cwd: __dirname, stdio: 'inherit' },
-    );
+    execSync(`${seedBin} --db-path "${TEST_DB_PATH}" --force`, {
+      cwd:   __dirname,
+      stdio: 'inherit',
+    });
 
     if (!process.env['SKIP_BUILD']) {
       console.log('Building Tauri debug binary…');

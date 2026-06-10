@@ -48,6 +48,6 @@ Delete the relevant `*-wry.png` files before running to force a fresh capture.
 
 ## Database seeding
 
-Each test run seeds `fixtures/test.db` from `scripts/seed-test-db` (via the
-`onPrepare` hook in `wdio.conf.ts`). The `fixtures/` directory is gitignored —
-it is created at runtime.
+Each test run seeds `fixtures/test.db` via the `bc-seed` binary (invoked in
+the `onPrepare` hook in `wdio.conf.ts`). The `fixtures/` directory is
+gitignored — it is created at runtime.

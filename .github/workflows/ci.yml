@@ -3,6 +3,7 @@ name: CI
 
 permissions:
   contents: read
+  packages: read
 
 on:
   pull_request:
@@ -139,6 +140,11 @@ jobs:
       - run: mise run test
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+      - name: Pre-build binaries for container cache
+        if: matrix.toolchain == 'stable' && runner.os == 'Linux'
+        run: |
+          cargo build -p bc-ui --target wasm32-unknown-unknown
+          cargo build -p bc-seed
       - name: Prepare .linux-cache for container bind mounts
         if: matrix.toolchain == 'stable' && runner.os == 'Linux'
         run: |
@@ -146,10 +152,27 @@ jobs:
           # node_modules: empty dir; aube install inside the container populates it
           #   from the pnpm global store baked into the image.
           # target: hard-link from the host Cargo build (already warmed by
-          #   Swatinem/rust-cache) so the container reuses the pre-built binary.
+          #   Swatinem/rust-cache) so the container reuses the pre-built binary,
+          #   including wasm32-unknown-unknown artifacts for the Leptos frontend.
           mkdir -p .linux-cache/node_modules
           cp -rn --link target/. .linux-cache/target/ 2>/dev/null \
             || mkdir -p .linux-cache/target
+      - name: Obtain E2E container image
+        if: matrix.toolchain == 'stable' && runner.os == 'Linux'
+        run: |
+          IMAGE="$(cat e2e/.container-image 2>/dev/null)"
+          if [[ "$IMAGE" == ghcr.io/* ]]; then
+            # Pull the exact pinned image from GHCR for a reproducible environment.
+            echo "${{ secrets.GITHUB_TOKEN }}" \
+              | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            docker pull "$IMAGE"
+          else
+            # No pinned image yet — build the container locally.
+            # Run the update-e2e-snapshots workflow once to bootstrap the GHCR image.
+            mise run //e2e:container:build
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run E2E desktop tests (in container)
         if: matrix.toolchain == 'stable' && runner.os == 'Linux'
         run: mise run //e2e:container
