@@ -14,12 +14,22 @@ run         = "aubx wdio run wdio.conf.ts"
 # These tasks build and run a Linux container so tests run on WebKitGTK
 # regardless of the host OS (mirrors CI).  {{config_root}} expands to the
 # absolute path of e2e/, so {{config_root}}/.. is the repo root.
+#
+# Two paths to obtain the container image:
+#   container:build  — build bc-e2e-native from the local Containerfile
+#   container:pull   — pull the pinned digest from GHCR (requires login)
+#
+# `container` uses whichever image is available; CI pulls the pinned image
+# and the update-e2e-snapshots workflow rebuilds and re-pins it monthly.
 
 [tasks."container:build"]
-description = "Build the E2E container image"
+description = "Build the E2E container image locally (tags it as bc-e2e-native)"
 run         = """
 #!/usr/bin/env bash
-docker build -t bc-e2e-native -f {{config_root}}/Containerfile \
+# Always target linux/amd64 — the container runs on amd64 CI and must match.
+# On Apple Silicon this cross-compiles via QEMU; on CI it is native.
+docker buildx build --platform linux/amd64 -t bc-e2e-native \
+      -f {{config_root}}/Containerfile \
       ${GITHUB_TOKEN:+--secret id=GITHUB_TOKEN,env=GITHUB_TOKEN} \
       --build-arg NODE_VERSION="$(node --version)" \
       --build-arg MISE_VERSION="$(mise version | cut -d' ' -f1)" \
@@ -30,14 +40,34 @@ docker build -t bc-e2e-native -f {{config_root}}/Containerfile \
       {{config_root}}/..
 """
 
+[tasks."container:pull"]
+description = "Pull the pinned E2E container image from GHCR (reads e2e/.container-image)"
+run         = """
+#!/usr/bin/env bash
+IMAGE="$(cat {{config_root}}/.container-image 2>/dev/null)"
+[[ -n "$IMAGE" ]] || { echo "e2e/.container-image is empty — run the update-e2e-snapshots workflow first"; exit 1; }
+docker pull "$IMAGE"
+"""
+
 [tasks.container]
-description = "Run E2E tests in a Linux container (matches CI; works on macOS)"
-depends     = [":container:build"]
+description = "Run E2E tests in a Linux container with a frozen clock for reproducible snapshots"
 run         = '''
 #!/usr/bin/env bash
 # Create Linux-specific cache dirs so Docker does not create them as root.
 mkdir -p "{{config_root}}/../.linux-cache/target" \
          "{{config_root}}/../.linux-cache/node_modules"
+
+# Use the pinned GHCR image when available; fall back to a locally-built image.
+IMAGE_FILE="{{config_root}}/.container-image"
+IMAGE="$(cat "$IMAGE_FILE" 2>/dev/null)"
+if [[ -z "$IMAGE" ]]; then
+  IMAGE=bc-e2e-native
+fi
+
+# Frozen wall-clock date for reproducible visual baselines.
+# FAKETIME_DONT_FAKE_MONOTONIC preserves the monotonic clock so that
+# WebdriverIO waitFor timeouts fire correctly despite the fake wall clock.
+FAKE_NOW="2025-01-15 12:00:00"
 
 docker run --rm \
   -v "{{config_root}}/..:/repo" \
@@ -45,12 +75,29 @@ docker run --rm \
   -v "{{config_root}}/../.linux-cache/node_modules:/repo/e2e/node_modules" \
   -w /repo \
   -e DISPLAY=:99 \
-  bc-e2e-native \
-  bash -c 'Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+  -e FAKETIME="$FAKE_NOW" \
+  -e FAKETIME_DONT_FAKE_MONOTONIC=1 \
+  "$IMAGE" \
+  bash -c 'set -euo pipefail
+    Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
     XVFB_PID=$!
     trap "kill $XVFB_PID 2>/dev/null" EXIT
     sleep 1
-    mise run //e2e:test; STATUS=$?
+    # Build and setup without fake time: libfaketime shifts the clock backward,
+    # causing TLS cert validation to fail when the fake date precedes the cert
+    # notBefore date, which makes trunk hang while downloading wasm-opt.
+    mise run //crates/bc-app:build:debug
+    mise run //e2e:setup
+
+    LIBFAKETIME="$(ls /usr/lib/*/faketime/libfaketime.so.1 2>/dev/null | head -1)"
+    # Use the pre-built workspace binary when available (compiled on the host with
+    # Swatinem cache and hard-linked into .linux-cache/target before docker run).
+    SEED_BIN=""
+    if /repo/target/debug/bc-seed --help >/dev/null 2>&1; then
+      SEED_BIN="/repo/target/debug/bc-seed"
+    fi
+    cd /repo/e2e
+    LD_PRELOAD="$LIBFAKETIME" SEED_BIN="$SEED_BIN" SKIP_BUILD=1 aubx wdio run wdio.conf.ts; STATUS=$?
     kill $XVFB_PID 2>/dev/null
     exit $STATUS'
 '''

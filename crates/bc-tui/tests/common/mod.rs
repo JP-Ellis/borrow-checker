@@ -4,10 +4,9 @@
 //! Cargo does not treat it as a standalone test binary. Other test files pull
 //! it in with `mod common;`.
 //!
-//! For creating a standalone test database for manual QA (CLI, TUI, GUI),
-//! use the `scripts/seed-test-db.rs` cargo script:
+//! For creating a standalone test database for manual QA (CLI, TUI, GUI):
 //! ```sh
-//! cargo +nightly -Zscript scripts/seed-test-db.rs --db-path ./test.db
+//! cargo run -p bc-seed -- --db-path ./test.db
 //! ```
 
 use std::sync::Arc;

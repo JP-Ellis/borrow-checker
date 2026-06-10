@@ -57,7 +57,7 @@ DEV_DB="{{config_root}}/.dev-db/borrow-checker.db"
 mkdir -p "$(dirname "$DEV_DB")"
 if [[ ! -f "$DEV_DB" ]] || [[ "{{usage.reseed}}" == "true" ]]; then
   echo "Seeding dev database at $DEV_DB…"
-  cargo +nightly -Zscript scripts/seed-test-db --db-path "$DEV_DB" --force
+  cargo run -p bc-seed -- --db-path "$DEV_DB" --force
 fi
 BC_DB_PATH="$DEV_DB" cargo tauri dev
 '''
