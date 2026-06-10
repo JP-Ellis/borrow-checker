@@ -65,6 +65,7 @@ BC_DB_PATH="$DEV_DB" cargo tauri dev
   [tasks."build:app"]
   description = "Build a release bundle of the desktop GUI"
   depends     = ["//crates/bc-app:gen:icons"]
+  env         = { WASM_RELEASE = "1" }
   run         = "cargo tauri build"
 
   # MARK: Testing
