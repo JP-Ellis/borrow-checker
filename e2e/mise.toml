@@ -28,7 +28,9 @@ run         = """
 #!/usr/bin/env bash
 # Always target linux/amd64 — the container runs on amd64 CI and must match.
 # On Apple Silicon this cross-compiles via QEMU; on CI it is native.
-docker buildx build --platform linux/amd64 -t bc-e2e-native \
+# DOCKER_BUILDKIT=1 enables BuildKit (required for --mount=type=secret and
+# heredoc RUN syntax) without needing the separate docker-buildx plugin.
+DOCKER_BUILDKIT=1 docker build --platform linux/amd64 -t bc-e2e-native \
       -f {{config_root}}/Containerfile \
       ${GITHUB_TOKEN:+--secret id=GITHUB_TOKEN,env=GITHUB_TOKEN} \
       --build-arg NODE_VERSION="$(node --version)" \

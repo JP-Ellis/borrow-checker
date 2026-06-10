@@ -13,7 +13,7 @@ frontend-dist = "../bc-ui/dist"
 
   [build.before-build-command]
   cwd    = "../bc-ui"
-  script = "stylance . && trunk build --release"
+  script = "stylance . && trunk build ${WASM_RELEASE:+--release}"
 
 [app]
 with-global-tauri = true
