@@ -55,3 +55,25 @@ data:
 
 The `stub_spark_points()` function and all hardcoded stat strings can be removed
 once these are wired up.
+
+______________________________________________________________________
+
+## Add-transaction form — per-posting tags and notes
+
+**Identified in:** PR #127 (feat/add-transaction-form)
+**File:** `crates/bc-ui/src/pages/accounts/components/add_transaction/mod.rs`
+
+The add-transaction form currently supports date, payee, status, and N postings
+(account + amount), but not per-transaction tags or per-posting notes.
+
+- **Transaction tags** — free-form string labels (e.g. `budget:food`,
+  `category:groceries`) attached to the `NewTransaction.tags` field.  The IPC
+  type already supports `Vec<String>` tags; only the UI is missing.  A
+  tag-token input (type-and-press-Enter to add, click token to remove) would
+  map naturally to this field.
+
+- **Posting notes** — the optional `note` field on `NewPosting`.  A small
+  per-row text input in the postings grid would surface this.
+
+Both additions depend on the envelope/budget model being defined (Milestone 5)
+to give tags a canonical vocabulary; until then a free-form input is acceptable.
