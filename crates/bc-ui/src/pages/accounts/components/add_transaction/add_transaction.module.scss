@@ -67,6 +67,91 @@
   &:focus-visible { outline: 2px solid var(--bc-accent); outline-offset: 2px; }
 }
 
+/* MARK: Postings */
+
+.postings_section {
+  margin-bottom: var(--bc-space-4);
+}
+
+.postings_header {
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink-soft);
+  margin-bottom: var(--bc-space-2);
+}
+
+.posting_row_primary {
+  display: grid;
+  grid-template-columns: 1fr 8rem;
+  gap: var(--bc-space-2);
+  align-items: center;
+  margin-bottom: var(--bc-space-2);
+
+  @media (max-width: 480px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.posting_row {
+  display: grid;
+  grid-template-columns: 1fr 8rem 1.75rem;
+  gap: var(--bc-space-2);
+  align-items: center;
+  margin-bottom: var(--bc-space-2);
+
+  @media (max-width: 480px) {
+    grid-template-columns: 1fr 1fr 1.75rem;
+  }
+}
+
+.posting_account_label {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink-soft);
+  padding: var(--bc-space-2) var(--bc-space-3);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  background: var(--bc-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remove_posting_btn {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  background: transparent;
+  color: var(--bc-ink-mute);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+
+  &:hover { color: var(--bc-bad); border-color: var(--bc-bad); }
+  &:focus-visible { outline: 2px solid var(--bc-accent); outline-offset: 2px; }
+  &:disabled { opacity: 0.3; cursor: not-allowed; }
+}
+
+.add_posting_btn {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  padding: var(--bc-space-1) var(--bc-space-3);
+  border: 1px dashed var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  background: transparent;
+  color: var(--bc-ink-soft);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+
+  &:hover { color: var(--bc-ink); border-color: var(--bc-border-strong); }
+  &:focus-visible { outline: 2px solid var(--bc-accent); outline-offset: 2px; }
+}
+
 /* MARK: Validation errors */
 
 .error_list {

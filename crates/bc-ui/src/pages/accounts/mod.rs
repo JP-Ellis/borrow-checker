@@ -98,14 +98,53 @@ pub fn Accounts() -> impl IntoView {
     // Controls whether the add-transaction form is shown.
     let show_add_tx = RwSignal::new(false);
 
+    // Centralised open/close so all writers go through one place.
+    let open_add_tx = move || show_add_tx.set(true);
+    let close_add_tx = move || show_add_tx.set(false);
+
+    // Reactive IPC error signal passed down to AddTransactionForm.
+    let submit_error = Signal::derive(move || {
+        create_tx.value().with(|v| {
+            let r = v.as_ref()?;
+            r.as_ref().err().map(ToString::to_string)
+        })
+    });
+
     // After any successful mutation, bump data_version — all subscribed
     // resources react automatically.  Future actions (amend, void, import)
     // only need to add one line here.
     Effect::new(move |_| {
         if create_tx.value().with(|v| matches!(v, Some(Ok(_)))) {
             data_version.update(|v| *v = v.wrapping_add(1));
-            show_add_tx.set(false);
+            close_add_tx();
         }
+    });
+
+    // MARK: Keyboard shortcuts
+
+    // ↵ (Enter) opens the add-transaction form when an account is selected
+    // and the form is not already visible.  Ignored when an interactive
+    // element (input, select, textarea, button) has focus.
+    window_event_listener_untyped("keydown", move |e| {
+        use wasm_bindgen::JsCast as _;
+        let Ok(ke) = e.dyn_into::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        if ke.key() != "Enter"
+            || show_add_tx.get()
+            || selected_id.get().is_none()
+        {
+            return;
+        }
+        if let Some(target) = ke.target()
+            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+        {
+            let tag = el.tag_name().to_ascii_lowercase();
+            if matches!(tag.as_str(), "input" | "select" | "textarea" | "button") {
+                return;
+            }
+        }
+        open_add_tx();
     });
 
     view! {
@@ -166,8 +205,6 @@ pub fn Accounts() -> impl IntoView {
                             .into_any()
                     }
                     Some(node) => {
-                        let currency_code = node.balance.currency_code.clone();
-                        let scale = node.balance.scale;
                         let node_id = node.id.clone();
                         let node_id_register = node.id.clone();
 
@@ -175,42 +212,33 @@ pub fn Accounts() -> impl IntoView {
                             <AccountDashboard
                                 node=node.clone()
                                 data_version=data_version.read_only()
-                                on_add_tx=Callback::new(move |()| show_add_tx.set(true))
+                                on_add_tx=Callback::new(move |()| open_add_tx())
                             />
 
                             {move || {
-                                show_add_tx
+                                // Gate on accounts being loaded — prevents an empty offset
+                                // dropdown from showing before the resource resolves.
+                                let all_accounts = accounts_resource
                                     .get()
-                                    .then(|| {
-                                        let all_accounts = accounts_resource
-                                            .get()
-                                            .and_then(Result::ok)
-                                            .unwrap_or_default();
-                                        let submit_error = create_tx
-                                            .value()
-                                            .with(|v| {
-                                                let r = v.as_ref()?;
-                                                r.as_ref().err().map(ToString::to_string)
-                                            });
-                                        // Re-read accounts_resource inside this closure so the
-                                        // form always shows the current account list even after
-                                        // a successful create_tx refetch.
-                                        view! {
-                                            <AddTransactionForm
-                                                accounts=all_accounts
-                                                current_account_id=node_id.clone()
-                                                currency_code=currency_code.clone()
-                                                scale=scale
-                                                on_submit=Callback::new(move |tx: NewTransaction| {
-                                                    create_tx.dispatch(tx);
-                                                })
-                                                on_cancel=Callback::new(move |()| {
-                                                    show_add_tx.set(false);
-                                                })
-                                                submit_error=submit_error
-                                            />
-                                        }
-                                    })
+                                    .and_then(Result::ok)?;
+                                if !show_add_tx.get() {
+                                    return None;
+                                }
+                                let currency_code = node.balance.currency_code.clone();
+                                let scale = node.balance.scale;
+                                Some(view! {
+                                    <AddTransactionForm
+                                        accounts=all_accounts
+                                        current_account_id=node_id.clone()
+                                        currency_code=currency_code
+                                        scale=scale
+                                        on_submit=Callback::new(move |tx: NewTransaction| {
+                                            create_tx.dispatch(tx);
+                                        })
+                                        on_cancel=Callback::new(move |()| close_add_tx())
+                                        submit_error=submit_error
+                                    />
+                                })
                             }}
 
                             <TransactionRegister

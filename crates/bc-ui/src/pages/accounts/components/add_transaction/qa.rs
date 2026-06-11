@@ -46,28 +46,29 @@ pub fn AddTransactionFormQa() -> impl IntoView {
     let last_submit = RwSignal::new(Option::<String>::None);
     let show_error = RwSignal::new(false);
 
+    let submit_error = Signal::derive(move || {
+        show_error
+            .get()
+            .then(|| "IPC error: backend unavailable".to_owned())
+    });
+
     view! {
         <div style="padding: 2rem; max-width: 640px;">
             <h2 style="font-family: var(--bc-font-mono); margin-bottom: 1rem;">
                 "AddTransactionForm QA"
             </h2>
 
-            {move || {
-                let err = show_error.get().then(|| "IPC error: backend unavailable".to_owned());
-                view! {
-                    <AddTransactionForm
-                        accounts=sample_accounts()
-                        current_account_id="acc-checking"
-                        currency_code="AUD"
-                        scale=2
-                        on_submit=Callback::new(move |tx| {
-                            last_submit.set(Some(format!("{tx:?}")));
-                        })
-                        on_cancel=Callback::new(|()| leptos::logging::log!("cancelled"))
-                        submit_error=err
-                    />
-                }
-            }}
+            <AddTransactionForm
+                accounts=sample_accounts()
+                current_account_id="acc-checking"
+                currency_code="AUD"
+                scale=2
+                on_submit=Callback::new(move |tx| {
+                    last_submit.set(Some(format!("{tx:?}")));
+                })
+                on_cancel=Callback::new(|()| leptos::logging::log!("cancelled"))
+                submit_error=submit_error
+            />
 
             {move || {
                 last_submit

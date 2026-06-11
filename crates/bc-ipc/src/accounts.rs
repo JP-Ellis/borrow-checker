@@ -536,12 +536,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn new_transaction_serde_roundtrip_with_tags() {
+    #[rstest]
+    #[case(TxStatus::Pending)]
+    #[case(TxStatus::Cleared)]
+    fn new_transaction_serde_roundtrip_with_tags(#[case] status: TxStatus) {
         let tx = NewTransaction::new(
             "2026-05-23",
             "Payee With Tags",
-            TxStatus::Pending,
+            status,
             vec!["category:groceries".to_owned(), "budget:food".to_owned()],
             vec![
                 NewPosting::new("acc-a", Amount::new(-3_000, "AUD", 2), None::<&str>),
