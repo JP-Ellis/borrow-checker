@@ -557,6 +557,7 @@ dependencies = [
  "pretty_assertions",
  "stylance",
  "tauri-sys",
+ "wasm-bindgen",
  "web-sys",
 ]
 
