@@ -371,6 +371,7 @@ pub fn AddTransactionForm(
                         {primary_account_name}
                     </span>
                     <input
+                        id="atf-primary-amount"
                         class=style::input
                         type="text"
                         placeholder="e.g. -84.20"
@@ -402,6 +403,7 @@ pub fn AddTransactionForm(
                                 <div class=style::posting_row>
                                     <select
                                         class=style::input
+                                        data-testid=format!("atf-offset-account-{i}")
                                         on:change=move |e| {
                                             acc_id.set(event_target_value(&e));
                                         }
@@ -425,6 +427,7 @@ pub fn AddTransactionForm(
                                         class=style::input
                                         type="text"
                                         placeholder="e.g. 84.20"
+                                        data-testid=format!("atf-offset-amount-{i}")
                                         prop:value=move || amt.get()
                                         on:input=move |e| {
                                             amt.set(event_target_value(&e));
