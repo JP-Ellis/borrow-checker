@@ -52,12 +52,17 @@ describe('Visual — accounts shell', () => {
                     await sidebarNav.$('span=Checking').click();
                 } else {
                     /* Narrow viewport — sidebar collapses to a dot-rail trigger.
-                     * Open the popover drawer, wait for accounts, click Checking. */
+                     * Wait for accounts to populate the drawer before opening it:
+                     * the drawer is rendered inside a reactive branch that re-mounts
+                     * when the list_accounts IPC resolves, which would dismiss an
+                     * already-open popover and cause waitForDisplayed to time out. */
                     const trigger = await $('[aria-label="Open account navigation"]');
                     await trigger.waitForDisplayed({ timeout: 15_000 });
-                    await trigger.click();
 
                     const drawer = await $('#bc-sidebar-drawer');
+                    await drawer.$('span=Assets').waitForExist({ timeout: 15_000 });
+
+                    await trigger.click();
                     await drawer.waitForDisplayed({ timeout: 10_000 });
                     const checkingInDrawer = await drawer.$('span=Checking');
                     await checkingInDrawer.waitForDisplayed({ timeout: 10_000 });
