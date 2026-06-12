@@ -200,6 +200,38 @@ pub async fn get_account_stats(
     ))
 }
 
+/// Returns the count of uncategorised postings for `account_id`.
+///
+/// A posting is uncategorised when it has no `envelope_id`. Voided transactions
+/// are excluded.
+///
+/// # Arguments
+///
+/// * `account_id` - The account to query.
+/// * `state`      - Tauri managed application state.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError`] if the account ID is invalid or the query fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_uncategorised_count(
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<u32, bc_ipc::BcError> {
+    let id = account_id
+        .parse::<bc_models::AccountId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
+    state
+        .balance_engine
+        .uncategorised_count(&id)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
+}
+
 // MARK: Sparkline helpers
 
 /// Formats a bucket start date as a sparkline X-axis label.
