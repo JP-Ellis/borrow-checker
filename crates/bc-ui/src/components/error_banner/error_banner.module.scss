@@ -1,0 +1,12 @@
+/* Inline error banner — semantically distinct from empty-state paragraphs. */
+
+.banner {
+    border-left: 3px solid var(--bc-bad);
+    background: var(--bc-bad-soft);
+    color: var(--bc-bad);
+    padding: var(--bc-space-3) var(--bc-space-4);
+    border-radius: var(--bc-radius-card);
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-body);
+    margin: 0;
+}

@@ -83,7 +83,7 @@ export const config: Options.Testrunner = {
     // Seed the test database.
     // SEED_BIN is set by the container task when a pre-built Linux binary is available;
     // otherwise fall back to cargo run (builds bc-seed on demand, no nightly required).
-    const seedBin = process.env['SEED_BIN'] ?? 'cargo run -p bc-seed --';
+    const seedBin = process.env['SEED_BIN'] || 'cargo run -p bc-seed --';
     console.log('Seeding test database…');
     execSync(`${seedBin} --db-path "${TEST_DB_PATH}" --force`, {
       cwd:   __dirname,

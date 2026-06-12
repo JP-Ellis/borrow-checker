@@ -160,6 +160,7 @@ pub fn Accounts() -> impl IntoView {
                 <div class=style::sidebar_content>
                     {move || match accounts_resource.get() {
                         None => {
+                            // TODO: replace with AccountSidebarSkeleton (layout shift)
                             view! { <div class=style::empty_state>"Loading accounts…"</div> }
                                 .into_any()
                         }
