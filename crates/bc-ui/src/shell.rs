@@ -20,16 +20,17 @@ pub fn ConsoleShell() -> impl IntoView {
     let palette_open = RwSignal::new(false);
 
     /* Global ⌘K / Ctrl+K shortcut — toggles the command palette from anywhere. */
-    window_event_listener(ev::keydown, move |ke| {
+    let handle = window_event_listener(ev::keydown, move |ke| {
         if ke.key() == "k" && (ke.meta_key() || ke.ctrl_key()) {
             palette_open.update(|v| *v = !*v);
             ke.prevent_default();
         }
     });
+    on_cleanup(move || handle.remove());
 
     view! {
         <div class="console-shell">
-            <TopBar on_search=Callback::new(move |()| palette_open.set(true)) />
+            <TopBar on_search=Callback::new(move |()| palette_open.update(|v| *v = !*v)) />
             <main class="console-main">
                 <Outlet />
             </main>
