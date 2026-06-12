@@ -137,7 +137,7 @@ impl IntoIpc for &bc_models::Account {
             self.id().to_string(),
             self.name(),
             None::<&str>,
-            bc_ipc::Amount::new(0, "", 2),
+            None,
             self.parent_id().map(ToString::to_string),
             self.account_type().into_ipc(),
             vec![],
@@ -156,7 +156,7 @@ impl IntoIpc for &bc_models::Account {
 #[inline]
 pub(crate) fn into_ipc_with_balance(
     account: &bc_models::Account,
-    balance: bc_ipc::Amount,
+    balance: Option<bc_ipc::Amount>,
 ) -> bc_ipc::AccountNode {
     bc_ipc::AccountNode::new(
         account.id().to_string(),
@@ -216,7 +216,9 @@ impl IntoModel for bc_ipc::Period {
             },
             bc_ipc::Period::Weekly => bc_models::Period::Weekly,
             bc_ipc::Period::Fortnightly => {
-                // Anchor to 2026-01-05 (a Monday); phase determines which fortnights align.
+                // TODO: use the globally-configured fortnightly anchor (Milestone 5 config).
+                // 2026-01-05 (Monday) is a placeholder; any user whose pay cycle does not
+                // align to this anchor will see misaligned fortnightly buckets.
                 #[expect(
                     clippy::expect_used,
                     reason = "2026-01-05 is a valid date; this can never panic"
@@ -232,6 +234,13 @@ impl IntoModel for bc_ipc::Period {
                 start_month,
                 start_day,
             } => bc_models::Period::FinancialYear {
+                start_month,
+                start_day,
+            },
+            bc_ipc::Period::FinancialQuarter {
+                start_month,
+                start_day,
+            } => bc_models::Period::FinancialQuarter {
                 start_month,
                 start_day,
             },

@@ -48,11 +48,10 @@ pub async fn list_accounts(
     let nodes = accounts
         .iter()
         .map(|account| {
-            let (currency_code, decimal) = balances
+            let balance = balances
                 .get(account.id())
-                .map_or(("", rust_decimal::Decimal::ZERO), |(c, d)| (c.as_str(), *d));
-
-            let balance = crate::ipc::decimal_to_amount(decimal, currency_code)?;
+                .map(|(c, d)| crate::ipc::decimal_to_amount(*d, c))
+                .transpose()?;
             Ok(crate::ipc::into_ipc_with_balance(account, balance))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -268,7 +267,11 @@ fn spark_label(start: jiff::civil::Date, period: &bc_models::Period) -> String {
             let two_digit = start.year() % 100;
             format!("FY{two_digit:02}")
         }
-        bc_models::Period::Fortnightly { .. } | bc_models::Period::Custom { .. } | _ => {
+        bc_models::Period::Fortnightly { .. } | bc_models::Period::Custom { .. } => {
+            start.to_string()
+        }
+        _ => {
+            tracing::warn!(period = ?period, "unknown Period variant in spark_label; using start date as label");
             start.to_string()
         }
     }
@@ -342,22 +345,15 @@ pub async fn get_account_sparkline(
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
-    // `mantissa()` returns the integer coefficient already at the Decimal's scale
-    // (e.g. `Decimal::new(10000, 2)` = $100.00 → mantissa 10000 = 100 cents).
-    // Amounts created via the IPC layer always carry the correct scale.
     let points = buckets
         .into_iter()
         .map(|b| {
-            let income = i64::try_from(b.inflow.mantissa()).map_err(|_e| {
-                bc_ipc::BcError::Internal(format!("inflow mantissa overflows i64: {}", b.inflow))
-            })?;
-            let expenses = i64::try_from(b.outflow.mantissa()).map_err(|_e| {
-                bc_ipc::BcError::Internal(format!("outflow mantissa overflows i64: {}", b.outflow))
-            })?;
+            let income_amount = crate::ipc::decimal_to_amount(b.inflow, &commodity_code)?;
+            let expenses_amount = crate::ipc::decimal_to_amount(b.outflow, &commodity_code)?;
             Ok(bc_ipc::SparkPoint::new(
                 spark_label(b.start, &model_period),
-                income,
-                expenses,
+                income_amount.minor_units,
+                expenses_amount.minor_units,
             ))
         })
         .collect::<Result<Vec<_>, bc_ipc::BcError>>()?;

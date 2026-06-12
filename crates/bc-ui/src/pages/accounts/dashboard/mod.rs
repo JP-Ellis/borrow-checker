@@ -74,14 +74,17 @@ pub fn AccountDashboard(
         async move { bc_ipc::client::get_account_sparkline(&id, p, n).await }
     });
 
-    let sparkline_currency_code = node.balance.currency_code.clone();
+    let sparkline_currency_code = node
+        .balance
+        .as_ref()
+        .map_or_else(String::new, |b| b.currency_code.clone());
 
-    let balance_str = if node.balance.currency_code.is_empty() {
-        "—".into()
-    } else {
-        let currency =
-            bc_ipc::currency_from_code(&node.balance.currency_code).unwrap_or(&bc_ipc::USD);
-        crate::components::num::format_amount(node.balance.minor_units, currency)
+    let balance_str = match node.balance.as_ref() {
+        None => "\u{2014}".into(),
+        Some(b) => {
+            let currency = bc_ipc::currency_from_code(&b.currency_code).unwrap_or(&bc_ipc::USD);
+            crate::components::num::format_amount(b.minor_units, currency)
+        }
     };
 
     let breadcrumb = if node.parent_id.is_some() {
@@ -212,7 +215,7 @@ pub fn AccountDashboard(
                                         currency,
                                     );
                                     let exp = crate::components::num::format_amount(
-                                        s.expenses.minor_units.saturating_neg(),
+                                        s.expenses.minor_units,
                                         currency,
                                     );
                                     (inc, exp)
@@ -265,6 +268,12 @@ pub fn AccountDashboard(
                                     start_day: 1,
                                 }
                             }
+                            "financial_quarter" => {
+                                bc_ipc::Period::FinancialQuarter {
+                                    start_month: 7,
+                                    start_day: 1,
+                                }
+                            }
                             _ => bc_ipc::Period::Monthly,
                         };
                         count.set(new_period.default_sparkline_count());
@@ -309,6 +318,14 @@ pub fn AccountDashboard(
                     >
                         "financial year"
                     </option>
+                    <option
+                        value="financial_quarter"
+                        selected=move || {
+                            matches!(period.get(), bc_ipc::Period::FinancialQuarter { .. })
+                        }
+                    >
+                        "financial quarter"
+                    </option>
                 </select>
 
                 <select
@@ -347,7 +364,9 @@ pub fn AccountDashboard(
                     bc_ipc::Period::Daily => format!("Cash Flow (Last {n} Days)"),
                     bc_ipc::Period::Weekly => format!("Cash Flow (Last {n} Weeks)"),
                     bc_ipc::Period::Fortnightly => format!("Cash Flow (Last {n} Fortnights)"),
-                    bc_ipc::Period::Quarterly => format!("Cash Flow (Last {n} Quarters)"),
+                    bc_ipc::Period::Quarterly | bc_ipc::Period::FinancialQuarter { .. } => {
+                        format!("Cash Flow (Last {n} Quarters)")
+                    }
                     bc_ipc::Period::CalendarYear | bc_ipc::Period::FinancialYear { .. } => {
                         format!("Cash Flow (Last {n} Years)")
                     }
