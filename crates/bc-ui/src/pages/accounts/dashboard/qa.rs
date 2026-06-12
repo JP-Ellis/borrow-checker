@@ -58,6 +58,12 @@ fn no_mask_node() -> AccountNode {
 /// Changing period resets count to the period's default (8 for Weekly, 6 for
 /// others). CalendarYear and FinancialYear title labels are covered by the
 /// wildcard arm in `mod.rs`.
+///
+/// Note: `uncategorised_resource` always resolves to an error in this QA harness
+/// because there is no real IPC connection. The uncategorised stat card will show
+/// "—" (the fallback value for a failed or pending resource). To visually verify
+/// the non-error rendering (e.g. a numeric count with warn/neutral tone), use the
+/// stat card QA page directly.
 #[component]
 pub fn AccountDashboardQa() -> impl IntoView {
     view! {

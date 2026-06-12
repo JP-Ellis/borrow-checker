@@ -377,6 +377,51 @@ impl Engine {
         Ok(commodity_code)
     }
 
+    /// Returns the count of non-voided postings without an envelope for `account_id`.
+    ///
+    /// A posting is considered "uncategorised" when its `envelope_id` column is `NULL`.
+    /// Voided transactions are excluded from the count.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account to query.
+    ///
+    /// # Returns
+    ///
+    /// The number of uncategorised postings as a [`u32`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database failure or if the database driver returns a
+    /// negative `COUNT(*)` value (which violates the SQLite invariant but is handled
+    /// defensively).
+    #[inline]
+    pub async fn uncategorised_count(&self, account_id: &AccountId) -> BcResult<u32> {
+        let voided_str = to_db_str(TransactionStatus::Voided)?;
+
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*)
+             FROM postings p
+             JOIN transactions t ON t.id = p.transaction_id
+             WHERE p.account_id = ?
+               AND p.envelope_id IS NULL
+               AND t.status != ?",
+        )
+        .bind(account_id.to_string())
+        .bind(&voided_str)
+        .fetch_one(&self.pool)
+        .await?;
+
+        // COUNT(*) is always non-negative; a negative result would indicate a
+        // database driver bug or schema mismatch, so we surface it as an error
+        // rather than silently returning 0.
+        u32::try_from(count).map_err(|_e| {
+            BcError::BadData(format!(
+                "COUNT(*) returned negative value {count}; SQLite invariant violated"
+            ))
+        })
+    }
+
     /// Returns the default-commodity balance for every active account in one query.
     ///
     /// Balances are computed live from non-voided postings, not from the `balances`
@@ -495,6 +540,12 @@ impl Engine {
 mod tests {
     use bc_models::AccountKind;
     use bc_models::AccountType;
+    use bc_models::Amount;
+    use bc_models::CommodityCode;
+    use bc_models::Posting;
+    use bc_models::PostingId;
+    use bc_models::Transaction;
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
@@ -1051,14 +1102,6 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn balance_excludes_voided_transactions(pool: sqlx::SqlitePool) {
-        use bc_models::Amount;
-        use bc_models::CommodityCode;
-        use bc_models::Posting;
-        use bc_models::PostingId;
-        use bc_models::Transaction;
-        use bc_models::TransactionStatus;
-        use jiff::civil::date;
-
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -1111,5 +1154,219 @@ mod tests {
             Decimal::ZERO,
             "voided transaction should not affect balance"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn uncategorised_count_zero_for_account_with_no_postings(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("Empty")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account should succeed");
+
+        let engine = Engine::new(pool.clone());
+        let count = engine
+            .uncategorised_count(&acc)
+            .await
+            .expect("uncategorised_count should succeed");
+        assert_eq!(count, 0, "account with no postings should have count 0");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn uncategorised_count_counts_null_envelope_postings(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Checking account should succeed");
+        let other = acct_svc
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Income account should succeed");
+
+        // Two postings without envelope_id (NULL)
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, status, created_at)
+             VALUES ('uc_tx1', '2026-01-01', 'Deposit', 'cleared', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert transaction");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position)
+             VALUES ('uc_p1', 'uc_tx1', ?, '100.00', 'AUD', 0),
+                    ('uc_p2', 'uc_tx1', ?, '-100.00', 'AUD', 1)",
+        )
+        .bind(acc.to_string())
+        .bind(other.to_string())
+        .execute(&pool)
+        .await
+        .expect("insert postings");
+
+        let engine = Engine::new(pool.clone());
+        let count = engine
+            .uncategorised_count(&acc)
+            .await
+            .expect("uncategorised_count should succeed");
+        // Only the posting for `acc` should be counted, not the `other` account posting
+        assert_eq!(count, 1, "one uncategorised posting for checked account");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn uncategorised_count_excludes_categorised_postings(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Checking account should succeed");
+
+        // First insert an envelope so the FK constraint is satisfied
+        sqlx::query(
+            "INSERT INTO envelopes (id, name, period, rollover_policy, created_at)
+             VALUES ('env1', 'Groceries', '\"Monthly\"', 'reset_to_zero', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert envelope");
+
+        // Insert a transaction and posting with a non-NULL envelope_id
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, status, created_at)
+             VALUES ('uc_cat_tx1', '2026-01-01', 'Groceries', 'cleared', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert transaction");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position, envelope_id)
+             VALUES ('uc_cat_p1', 'uc_cat_tx1', ?, '-50.00', 'AUD', 0, 'env1')",
+        )
+        .bind(acc.to_string())
+        .execute(&pool)
+        .await
+        .expect("insert categorised posting");
+
+        let engine = Engine::new(pool.clone());
+        let count = engine
+            .uncategorised_count(&acc)
+            .await
+            .expect("uncategorised_count should succeed");
+        assert_eq!(count, 0, "categorised posting should not be counted");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn uncategorised_count_mixed_categorised_and_uncategorised(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Checking account should succeed");
+
+        sqlx::query(
+            "INSERT INTO envelopes (id, name, period, rollover_policy, created_at)
+             VALUES ('env_mix', 'Groceries', '\"Monthly\"', 'reset_to_zero', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert envelope");
+
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, status, created_at)
+             VALUES ('mix_tx1', '2026-01-15', 'Partial', 'cleared', '2026-01-15T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert transaction");
+
+        // One posting with an envelope (categorised) and one without (uncategorised)
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position, envelope_id)
+             VALUES ('mix_p1', 'mix_tx1', ?, '-30.00', 'AUD', 0, 'env_mix'),
+                    ('mix_p2', 'mix_tx1', ?, '-20.00', 'AUD', 1, NULL)",
+        )
+        .bind(acc.to_string())
+        .bind(acc.to_string())
+        .execute(&pool)
+        .await
+        .expect("insert postings");
+
+        let engine = Engine::new(pool.clone());
+        let count = engine
+            .uncategorised_count(&acc)
+            .await
+            .expect("uncategorised_count should succeed");
+        assert_eq!(count, 1, "only the NULL-envelope posting should be counted");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn uncategorised_count_excludes_voided_transactions(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc_a = acct_svc
+            .create()
+            .name("Wallet")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Wallet should succeed");
+        let acc_b = acct_svc
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Income should succeed");
+
+        let tx_svc = crate::transaction::Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 1, 1))
+            .description("Voided")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_a.clone())
+                    .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_b)
+                    .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .status(TransactionStatus::Cleared)
+            .created_at(jiff::Timestamp::now())
+            .build();
+        let tx_id = tx.id().clone();
+        tx_svc.create(tx).await.expect("create should succeed");
+        tx_svc.void(&tx_id).await.expect("void should succeed");
+
+        let engine = Engine::new(pool.clone());
+        let count = engine
+            .uncategorised_count(&acc_a)
+            .await
+            .expect("uncategorised_count should succeed");
+        assert_eq!(count, 0, "voided transaction should not be counted");
     }
 }

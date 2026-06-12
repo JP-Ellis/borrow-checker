@@ -49,6 +49,7 @@ pub fn run() {
             commands::accounts::create_transaction,
             commands::accounts::get_account_stats,
             commands::accounts::get_account_sparkline,
+            commands::accounts::get_uncategorised_count,
         ])
         .setup(|app| {
             let db_path = std::env::var("BC_DB_PATH")
