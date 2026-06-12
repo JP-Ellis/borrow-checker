@@ -57,7 +57,7 @@ These patterns are the design target for components not yet built. Implement the
 
 **Top bar** — 52px fixed height. Logo mark (24px square, `--bc-accent` fill), wordmark (mono, label weight), tab strip (`.top-bar__tab` / `.top-bar__tab--active`), search trigger (280px, ⌘K hint), avatar (28px circle). All implemented in `src/styles/shell/_top-bar.scss`.
 
-**Command palette** — full-screen overlay, `--bc-z-modal`, `--bc-surface` panel centred at 40% from top, 600px wide, fuzzy-search input, result list with keyboard navigation. Not yet implemented.
+**Command palette** — full-screen overlay, `--bc-z-modal`, `--bc-surface` panel centred at 40% from top, 600px wide, fuzzy-search input, result list with keyboard navigation. Implemented: `src/shell/palette.rs`.
 
 ### Log and Output
 

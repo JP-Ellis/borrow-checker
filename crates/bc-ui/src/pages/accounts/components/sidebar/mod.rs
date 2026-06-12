@@ -6,8 +6,6 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use stylance::import_style;
 
-pub use crate::components::num::format_balance_short;
-
 import_style!(style, "sidebar.module.scss");
 
 /// Account tree sidebar.
