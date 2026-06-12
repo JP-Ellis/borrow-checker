@@ -58,6 +58,29 @@ once these are wired up.
 
 ______________________________________________________________________
 
+## CLI — `account balance` subcommand
+
+**Identified in:** PR #128 (feat/cli-account-balance)
+**File:** `crates/bc-cli/src/commands/account.rs`
+
+The `borrow-checker account` subcommand should gain a `balance` child command that
+lists all account balances in a table: ID | NAME | TYPE | BALANCE | COMMODITY.
+
+Requirements:
+
+- Optional positional `<account-id>` to filter to a single account.
+- `--commodity <CODE>` flag to filter by commodity.
+- Rows sorted by account type (Asset → Liability → Equity → Income → Expense) then
+  alphabetically by name within each type.
+- `--json` flag emitting a JSON array of `{ id, name, type, balance, commodity }`
+  objects.
+
+The command should call `BalanceEngine::default_balances` (already in `bc-core`)
+and format the result with `comfy-table` consistent with other `bc-cli` table
+commands.
+
+______________________________________________________________________
+
 ## Add-transaction form — per-posting tags and notes
 
 **Identified in:** PR #127 (feat/add-transaction-form)
