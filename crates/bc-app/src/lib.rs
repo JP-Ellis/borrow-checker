@@ -6,7 +6,6 @@
 pub mod commands;
 pub(crate) mod ipc;
 
-use bc_core::Importer as _;
 use tauri::Manager as _;
 
 /// Application state held in Tauri's managed-state system.
@@ -79,71 +78,6 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running borrow-checker");
-}
-
-/// Loads plugin metadata from configured search paths.
-///
-/// Builds a [`bc_plugins::PluginRegistry`] using paths from [`bc_config::Settings`],
-/// then immediately converts the loaded plugins into plain [`bc_ipc::PluginInfo`]
-/// values. This allows the metadata to be stored in [`AppState`] and cloned
-/// cheaply, avoiding the need to store the non-`Clone` registry itself.
-///
-/// # Returns
-///
-/// A `Vec` of [`bc_ipc::PluginInfo`] for all successfully loaded plugins.
-/// Returns an empty `Vec` if no plugins are found or the registry fails to
-/// initialise.
-fn collect_plugin_info() -> Vec<bc_ipc::PluginInfo> {
-    let settings = bc_config::Settings::load().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "failed to load settings; using defaults");
-        bc_config::Settings::default()
-    });
-    let paths = settings.plugin_paths().to_owned();
-
-    bc_plugins::PluginRegistry::load(&paths).map_or_else(
-        |e| {
-            tracing::warn!(
-                error = %e,
-                "plugin registry failed to initialise; no plugins will be available"
-            );
-            Vec::new()
-        },
-        |registry| {
-            registry
-                .plugins()
-                .map(|p| {
-                    let file_name = p
-                        .source_path()
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or_else(|| {
-                            // A plugin path without a filename component is
-                            // effectively impossible (the registry only loads
-                            // *.wasm files from directories), but fall back
-                            // gracefully rather than panicking.
-                            tracing::warn!(
-                                path = %p.source_path().display(),
-                                "plugin source path has no valid filename component"
-                            );
-                            ""
-                        })
-                        .to_owned();
-                    // The deprecated range (HOST_ABI_DEPRECATED_MIN ..< HOST_ABI_MIN) is
-                    // currently empty (both constants equal 1 in bc-plugins), so
-                    // is_deprecated is always false today. This field is populated
-                    // here so the IPC contract is forward-compatible without a
-                    // breaking change when a grace window is introduced.
-                    let is_deprecated = false;
-                    bc_ipc::PluginInfo::new(
-                        p.name().to_owned(),
-                        p.sdk_abi(),
-                        file_name,
-                        is_deprecated,
-                    )
-                })
-                .collect()
-        },
-    )
 }
 
 #[cfg(test)]
