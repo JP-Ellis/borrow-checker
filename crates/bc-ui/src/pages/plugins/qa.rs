@@ -6,11 +6,17 @@
 use bc_ipc::PluginInfo;
 use leptos::prelude::*;
 
+use super::PluginsTable;
 use super::style;
-use crate::components::status_pill::StatusPill;
-use crate::components::status_pill::Tone;
+use crate::components::error_banner::ErrorBanner;
 
 /// Returns two sample plugins for QA display: one current, one deprecated.
+///
+/// The deprecated entry uses `sdk_abi = 1` with `is_deprecated = true` to
+/// represent the visual state that will occur when the ABI grace window opens
+/// (i.e. when `HOST_ABI_MIN` is bumped above `HOST_ABI_DEPRECATED_MIN`). The
+/// real registry gate would reject `sdk_abi = 0`, so that value is intentionally
+/// avoided here.
 fn sample_plugins() -> Vec<PluginInfo> {
     vec![
         PluginInfo::new(
@@ -19,7 +25,7 @@ fn sample_plugins() -> Vec<PluginInfo> {
             "commbank-au.wasm".to_owned(),
             false,
         ),
-        PluginInfo::new("amex-au".to_owned(), 0, "amex-au.wasm".to_owned(), true),
+        PluginInfo::new("amex-au".to_owned(), 1, "amex-au.wasm".to_owned(), true),
     ]
 }
 
@@ -40,49 +46,10 @@ pub fn PluginsEmptyQa() -> impl IntoView {
 /// QA fixture: renders the plugins page with a populated table (two mock rows).
 #[component]
 pub fn PluginsFullQa() -> impl IntoView {
-    let plugins = sample_plugins();
-
     view! {
         <div class=format!("page {}", style::page_plugins)>
             <h1 class=style::heading>"Plugins"</h1>
-            <table class=style::table>
-                <thead>
-                    <tr>
-                        <th class=style::th>"Name"</th>
-                        <th class=style::th>"ABI"</th>
-                        <th class=style::th>"File"</th>
-                        <th class=style::th>"Status"</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {plugins
-                        .into_iter()
-                        .map(|plugin| {
-                            let (label, tone) = if plugin.is_deprecated {
-                                ("deprecated".to_owned(), Tone::Warn)
-                            } else {
-                                ("loaded".to_owned(), Tone::Good)
-                            };
-                            view! {
-                                <tr class=style::row>
-                                    <td class=style::td>
-                                        <span class=style::plugin_name>{plugin.name}</span>
-                                    </td>
-                                    <td class=style::td>
-                                        <code class=style::abi>{plugin.sdk_abi}</code>
-                                    </td>
-                                    <td class=style::td>
-                                        <code class=style::file_name>{plugin.file_name}</code>
-                                    </td>
-                                    <td class=style::td>
-                                        <StatusPill label=label tone=tone />
-                                    </td>
-                                </tr>
-                            }
-                        })
-                        .collect::<Vec<_>>()}
-                </tbody>
-            </table>
+            <PluginsTable plugins=sample_plugins() />
         </div>
     }
 }
@@ -93,9 +60,7 @@ pub fn PluginsErrorQa() -> impl IntoView {
     view! {
         <div class=format!("page {}", style::page_plugins)>
             <h1 class=style::heading>"Plugins"</h1>
-            <p class=style::empty_state>
-                "Error loading plugins: plugin registry failed to initialise"
-            </p>
+            <ErrorBanner message="Error loading plugins: plugin registry failed to initialise" />
         </div>
     }
 }
