@@ -196,10 +196,7 @@ pub fn AddTransactionForm(
         let dflt = default_offset_id.clone();
         move |_: leptos::ev::MouseEvent| {
             extra_postings.update(|ps| {
-                ps.push((
-                    RwSignal::new(dflt.clone()),
-                    RwSignal::new(String::new()),
-                ));
+                ps.push((RwSignal::new(dflt.clone()), RwSignal::new(String::new())));
             });
         }
     };
@@ -222,8 +219,7 @@ pub fn AddTransactionForm(
             errs.push("date is required");
         }
 
-        let primary_amt_opt =
-            parse_amount(&primary_amount.get(), &currency_code_submit, scale);
+        let primary_amt_opt = parse_amount(&primary_amount.get(), &currency_code_submit, scale);
         if primary_amt_opt.is_none() {
             errs.push("primary amount must be a valid number");
         }
@@ -362,14 +358,10 @@ pub fn AddTransactionForm(
             </div>
 
             <div class=style::postings_section>
-                <div class=style::postings_header>
-                    {format!("postings ({currency_code})")}
-                </div>
+                <div class=style::postings_header>{format!("postings ({currency_code})")}</div>
 
                 <div class=style::posting_row_primary>
-                    <span class=style::posting_account_label>
-                        {primary_account_name}
-                    </span>
+                    <span class=style::posting_account_label>{primary_account_name}</span>
                     <input
                         id="atf-primary-amount"
                         class=style::input
@@ -413,10 +405,7 @@ pub fn AddTransactionForm(
                                             .map(|(id, name)| {
                                                 let id_clone = id.clone();
                                                 view! {
-                                                    <option
-                                                        value=id
-                                                        selected=move || acc_id.get() == id_clone
-                                                    >
+                                                    <option value=id selected=move || acc_id.get() == id_clone>
                                                         {name}
                                                     </option>
                                                 }
@@ -448,11 +437,7 @@ pub fn AddTransactionForm(
                         .collect::<Vec<_>>()
                 }}
 
-                <button
-                    type="button"
-                    class=style::add_posting_btn
-                    on:click=add_posting
-                >
+                <button type="button" class=style::add_posting_btn on:click=add_posting>
                     "+ posting"
                 </button>
             </div>
@@ -476,9 +461,7 @@ pub fn AddTransactionForm(
             }}
 
             {move || {
-                submit_error
-                    .get()
-                    .map(|err| view! { <div class=style::ipc_error>{err}</div> })
+                submit_error.get().map(|err| view! { <div class=style::ipc_error>{err}</div> })
             }}
 
             <div class=style::form_footer>

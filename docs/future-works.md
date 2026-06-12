@@ -67,12 +67,12 @@ The add-transaction form currently supports date, payee, status, and N postings
 (account + amount), but not per-transaction tags or per-posting notes.
 
 - **Transaction tags** — free-form string labels (e.g. `budget:food`,
-  `category:groceries`) attached to the `NewTransaction.tags` field.  The IPC
-  type already supports `Vec<String>` tags; only the UI is missing.  A
+  `category:groceries`) attached to the `NewTransaction.tags` field. The IPC
+  type already supports `Vec<String>` tags; only the UI is missing. A
   tag-token input (type-and-press-Enter to add, click token to remove) would
   map naturally to this field.
 
-- **Posting notes** — the optional `note` field on `NewPosting`.  A small
+- **Posting notes** — the optional `note` field on `NewPosting`. A small
   per-row text input in the postings grid would surface this.
 
 Both additions depend on the envelope/budget model being defined (Milestone 5)

@@ -36,7 +36,6 @@ publish = false
 bc-ipc                   = { workspace = true }
 console_error_panic_hook = "0.1"
 js-sys                   = "0.3"
-wasm-bindgen             = "0.2"
 leptos                   = { version = "0.8", features = ["csr"] }
 leptos_router            = { version = "0.8", default-features = false }
 leptos_router_macro      = "0.8"
@@ -45,7 +44,12 @@ stylance                 = "0.8"
 tauri-sys                = { git = "https://github.com/JonasKruckenberg/tauri-sys", branch = "v2", features = [
   "core"
 ] }
-web-sys                  = { version = "0.3", features = ["DomRect", "Element", "KeyboardEvent"] }
+wasm-bindgen             = "0.2"
+web-sys                  = { version = "0.3", features = [
+  "DomRect",
+  "Element",
+  "KeyboardEvent"
+] }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
