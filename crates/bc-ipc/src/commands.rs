@@ -17,3 +17,6 @@ pub const GET_ACCOUNT_STATS: &str = "get_account_stats";
 
 /// Command: get period-bucketed cash-flow data for a sparkline chart.
 pub const GET_ACCOUNT_SPARKLINE: &str = "get_account_sparkline";
+
+/// Command: get the count of uncategorised postings for an account.
+pub const GET_UNCATEGORISED_COUNT: &str = "get_uncategorised_count";
