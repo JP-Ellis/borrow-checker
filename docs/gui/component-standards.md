@@ -17,31 +17,32 @@ crates/bc-ui/src/
 Each module has one clear responsibility. Domain logic belongs in `pages/` or
 `components/`, not in `shell/`.
 
-## Resource + Suspense Pattern
+## Resource Pattern
 
-Every component that fetches remote data:
+Every component that fetches remote data uses `LocalResource` (required because
+`bc_ipc::client` futures are not `Send`). Pass the IPC client function directly
+when no reactive signals are captured; use a closure when the fetch depends on
+signals:
 
 ```rust
-// 1. Async fetch — calls invoke()
-async fn fetch_accounts() -> Result<Vec<bc_ipc::AccountRow>, String> {
-    tauri_sys::core::invoke::<Vec<bc_ipc::AccountRow>>("list_accounts", &())
-        .await
-        .map_err(|e| e.to_string())
-}
+// Simple case — no reactive dependencies
+let plugins = LocalResource::new(bc_ipc::client::list_plugins);
 
-// 2. Resource in the component body
-let accounts = Resource::new(|| (), |_| fetch_accounts());
+// Reactive case — re-fetches when a signal changes
+let transactions = LocalResource::new(move || async move {
+    data_version.get(); // subscribe
+    bc_ipc::client::list_transactions(&account_id).await
+});
 
-// 3. Suspense wraps the data-dependent subtree
-view! {
-    <Suspense fallback=|| view! { <AccountListSkeleton /> }>
-        {move || accounts.get().map(|result| match result {
-            Ok(rows) => view! { <AccountList rows /> }.into_any(),
-            Err(e)   => view! { <ErrorBanner message=e /> }.into_any(),
-        })}
-    </Suspense>
-}
+// Match on the resource in the view
+{move || match plugins.get() {
+    None          => view! { <PluginsSkeleton /> }.into_any(),
+    Some(Err(e))  => view! { <ErrorBanner message=format!("…: {e}") /> }.into_any(),
+    Some(Ok(data)) => view! { <PluginsTable plugins=data /> }.into_any(),
+}}
 ```
+
+No `<Suspense>` wrapper is needed — the `None` arm renders the skeleton directly.
 
 ## Skeleton Components
 
@@ -71,7 +72,7 @@ No optimistic updates in M7.
 | --------------------- | --------------------------------- |
 | Component function | `PascalCase` |
 | Skeleton component | `<NameSkeleton />` |
-| Fetch function | `fetch_<resource>` |
+| Fetch function | IPC client fn passed directly (no wrapper needed) |
 | Resource signal | `<resource>` (snake_case) |
 | CSS classes | `kebab-case`, BEM preferred |
 | CSS custom properties | `--bc-<token>` |

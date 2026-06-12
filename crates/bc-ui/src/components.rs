@@ -3,6 +3,7 @@
 //! All monetary values must use [`num::Num`]. Every screen is built from these
 //! atoms — resist inventing alternatives.
 
+pub mod error_banner;
 pub mod num;
 pub mod sparkline;
 pub mod stat_card;
