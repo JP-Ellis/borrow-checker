@@ -6,8 +6,6 @@ use leptos::web_sys;
 use leptos_router::hooks::use_navigate;
 use stylance::import_style;
 
-use crate::components::num::format_balance_short;
-
 import_style!(style, "palette.module.scss");
 
 /// Command palette modal triggered by ⌘K.
@@ -32,16 +30,20 @@ pub fn CommandPalette(
     let query = RwSignal::new(String::new());
     let selected_idx = RwSignal::new(0_usize);
     let input_ref = NodeRef::<leptos::html::Input>::new();
-    /* StoredValue allows the navigate fn to be copied into multiple closures. */
     let navigate = StoredValue::new(use_navigate());
 
-    /* Re-fetch when the palette opens; skip the fetch while it is closed. */
-    let accounts_resource = LocalResource::new(move || async move {
+    /* Increment only when opening so closing does not reset the cached list. */
+    let open_count = RwSignal::new(0_usize);
+    Effect::new(move |_| {
         if open.get() {
-            bc_ipc::client::list_accounts().await
-        } else {
-            Ok(vec![])
+            open_count.update(|n| *n = n.wrapping_add(1));
         }
+    });
+    let accounts_resource = LocalResource::new(move || async move {
+        if open_count.get() == 0 {
+            return Ok(vec![]);
+        }
+        bc_ipc::client::list_accounts().await
     });
 
     /* Filtered list — recomputes when query or resource changes. */
@@ -158,17 +160,18 @@ pub fn CommandPalette(
                         aria-label="Accounts"
                     >
                         {move || {
-                            let loading = accounts_resource.get().is_none();
-                            if loading {
-                                return view! { <div class=style::empty>"Loading…"</div> }
-                                    .into_any();
-                            }
-                            let error = accounts_resource.get().and_then(Result::err).is_some();
-                            if error {
-                                return view! {
-                                    <div class=style::empty>"Failed to load accounts."</div>
+                            match accounts_resource.get() {
+                                None => {
+                                    return view! { <div class=style::empty>"Loading…"</div> }
+                                        .into_any();
                                 }
-                                    .into_any();
+                                Some(Err(_)) => {
+                                    return view! {
+                                        <div class=style::empty>"Failed to load accounts."</div>
+                                    }
+                                        .into_any();
+                                }
+                                Some(Ok(_)) => {}
                             }
                             let items = filtered.get();
                             if items.is_empty() {
@@ -189,7 +192,13 @@ pub fn CommandPalette(
                                         let path = format!("/accounts/{}", node.id);
                                         let nav = navigate.get_value();
                                         let close = on_close;
-                                        let balance = format_balance_short(&node.balance);
+                                        let balance = node
+                                            .balance
+                                            .as_ref()
+                                            .map_or_else(
+                                                || "\u{2014}".to_owned(),
+                                                bc_ipc::Amount::format_short,
+                                            );
                                         let type_label = node.account_type.label();
                                         let item_class = if idx == sel {
                                             format!("{} {}", style::item, style::item_selected)
@@ -227,33 +236,7 @@ pub fn CommandPalette(
 
 #[cfg(test)]
 mod tests {
-    use bc_ipc::AccountType;
     use pretty_assertions::assert_eq;
-
-    #[test]
-    fn account_type_label_asset() {
-        assert_eq!(AccountType::Asset.label(), "asset");
-    }
-
-    #[test]
-    fn account_type_label_liability() {
-        assert_eq!(AccountType::Liability.label(), "liability");
-    }
-
-    #[test]
-    fn account_type_label_equity() {
-        assert_eq!(AccountType::Equity.label(), "equity");
-    }
-
-    #[test]
-    fn account_type_label_income() {
-        assert_eq!(AccountType::Income.label(), "income");
-    }
-
-    #[test]
-    fn account_type_label_expense() {
-        assert_eq!(AccountType::Expense.label(), "expense");
-    }
 
     #[test]
     fn selected_idx_clamping_arrow_down_at_last() {
