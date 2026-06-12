@@ -130,10 +130,7 @@ pub fn Accounts() -> impl IntoView {
         let Ok(ke) = e.dyn_into::<web_sys::KeyboardEvent>() else {
             return;
         };
-        if ke.key() != "Enter"
-            || show_add_tx.get()
-            || selected_id.get().is_none()
-        {
+        if ke.key() != "Enter" || show_add_tx.get() || selected_id.get().is_none() {
             return;
         }
         if let Some(target) = ke.target()
@@ -216,29 +213,29 @@ pub fn Accounts() -> impl IntoView {
                             />
 
                             {move || {
-                                // Gate on accounts being loaded — prevents an empty offset
-                                // dropdown from showing before the resource resolves.
-                                let all_accounts = accounts_resource
-                                    .get()
-                                    .and_then(Result::ok)?;
+                                let all_accounts = accounts_resource.get().and_then(Result::ok)?;
                                 if !show_add_tx.get() {
                                     return None;
                                 }
                                 let currency_code = node.balance.currency_code.clone();
                                 let scale = node.balance.scale;
-                                Some(view! {
-                                    <AddTransactionForm
-                                        accounts=all_accounts
-                                        current_account_id=node_id.clone()
-                                        currency_code=currency_code
-                                        scale=scale
-                                        on_submit=Callback::new(move |tx: NewTransaction| {
-                                            create_tx.dispatch(tx);
-                                        })
-                                        on_cancel=Callback::new(move |()| close_add_tx())
-                                        submit_error=submit_error
-                                    />
-                                })
+                                Some(
+                                    // Gate on accounts being loaded — prevents an empty offset
+                                    // dropdown from showing before the resource resolves.
+                                    view! {
+                                        <AddTransactionForm
+                                            accounts=all_accounts
+                                            current_account_id=node_id.clone()
+                                            currency_code=currency_code
+                                            scale=scale
+                                            on_submit=Callback::new(move |tx: NewTransaction| {
+                                                create_tx.dispatch(tx);
+                                            })
+                                            on_cancel=Callback::new(move |()| close_add_tx())
+                                            submit_error=submit_error
+                                        />
+                                    },
+                                )
                             }}
 
                             <TransactionRegister
