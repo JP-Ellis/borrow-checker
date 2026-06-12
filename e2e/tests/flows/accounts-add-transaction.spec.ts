@@ -138,7 +138,13 @@ describe('Accounts — add transaction', () => {
         await waitForForm();
 
         // Fill in date and payee.
-        await $('#atf-date').setValue('2026-06-01');
+        // setValue on type="date" sends chars into native date-picker slots on
+        // Linux/WebKit and produces garbage; set .value via JS instead.
+        await browser.execute((val: string) => {
+            const el = document.getElementById('atf-date') as HTMLInputElement;
+            el.value = val;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }, '2026-06-01');
         await $('#atf-payee').setValue('E2E Test Payee');
 
         // Primary posting amount (Checking account debited).
@@ -200,7 +206,11 @@ describe('Accounts — add transaction', () => {
 
         await waitForForm();
 
-        await $('#atf-date').setValue('2026-06-02');
+        await browser.execute((val: string) => {
+            const el = document.getElementById('atf-date') as HTMLInputElement;
+            el.value = val;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }, '2026-06-02');
         await $('#atf-payee').setValue('E2E Split Payee');
 
         // Primary posting: Checking debited -50.00.
