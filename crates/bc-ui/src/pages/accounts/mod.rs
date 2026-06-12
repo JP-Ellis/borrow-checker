@@ -217,8 +217,11 @@ pub fn Accounts() -> impl IntoView {
                                 if !show_add_tx.get() {
                                     return None;
                                 }
-                                let currency_code = node.balance.currency_code.clone();
-                                let scale = node.balance.scale;
+                                let currency_code = node
+                                    .balance
+                                    .as_ref()
+                                    .map_or_else(String::new, |b| b.currency_code.clone());
+                                let scale = node.balance.as_ref().map_or(2, |b| b.scale);
                                 Some(
                                     // Gate on accounts being loaded — prevents an empty offset
                                     // dropdown from showing before the resource resolves.

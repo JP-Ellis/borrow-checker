@@ -13,7 +13,7 @@ fn sample_node() -> AccountNode {
         "cb-smart-access",
         "Smart Access",
         Some("4421"),
-        Amount::new(421_842, "AUD", 2),
+        Some(Amount::new(421_842, "AUD", 2)),
         Some("commbank"),
         AccountType::Asset,
         vec![],

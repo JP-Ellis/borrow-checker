@@ -31,8 +31,8 @@ pub struct AccountNode {
     pub name: String,
     /// Last-four mask, e.g. `"4421"`. `None` for non-bank accounts.
     pub mask: Option<String>,
-    /// Account balance (negative = liability).
-    pub balance: Amount,
+    /// Current balance in the account's default commodity, or `None` if no commodity is configured.
+    pub balance: Option<Amount>,
     /// `Some(parent_id)` for child accounts, `None` for top-level groups.
     pub parent_id: Option<String>,
     /// Account type (asset, liability, equity, income, or expense).
@@ -59,7 +59,7 @@ impl AccountNode {
         id: impl Into<String>,
         name: impl Into<String>,
         mask: Option<impl Into<String>>,
-        balance: Amount,
+        balance: Option<Amount>,
         parent_id: Option<impl Into<String>>,
         account_type: AccountType,
         tags: Vec<String>,
@@ -399,6 +399,14 @@ pub enum Period {
         /// 1-based start day (1–28).
         start_day: u8,
     },
+    /// Financial quarter aligned to the configured financial year start (e.g. `start_month: 7,
+    /// start_day: 1` for Australian FY).
+    FinancialQuarter {
+        /// 1-based start month of the financial year (1–12).
+        start_month: u8,
+        /// 1-based start day of the financial year (1–28).
+        start_day: u8,
+    },
 }
 
 impl Period {
@@ -409,7 +417,11 @@ impl Period {
         match self {
             Self::Daily => 14,
             Self::Weekly | Self::Fortnightly => 8,
-            Self::Monthly | Self::Quarterly | Self::CalendarYear | Self::FinancialYear { .. } => 6,
+            Self::Monthly
+            | Self::Quarterly
+            | Self::CalendarYear
+            | Self::FinancialYear { .. }
+            | Self::FinancialQuarter { .. } => 6,
         }
     }
 }

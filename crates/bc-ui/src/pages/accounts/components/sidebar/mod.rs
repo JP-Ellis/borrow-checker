@@ -2,48 +2,11 @@
 
 use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
-use bc_ipc::Amount;
-use bc_ipc::USD;
-use bc_ipc::currency_from_code;
 use leptos::prelude::*;
 use leptos_router::components::A;
 use stylance::import_style;
 
 import_style!(style, "sidebar.module.scss");
-
-/// Formats a balance as a compact display string.
-///
-/// Returns `"64k"`, `"1m"`, or the full monetary value for small amounts.
-///
-/// # Arguments
-///
-/// * `balance` - Balance (minor units + currency code).
-///
-/// # Returns
-///
-/// A compact string for sidebar balance display.
-#[must_use]
-#[inline]
-#[expect(
-    clippy::integer_division,
-    clippy::integer_division_remainder_used,
-    reason = "display approximation — dividing by 100_000 / 100_000_000 cannot overflow or panic"
-)]
-pub fn format_balance_short(balance: &Amount) -> String {
-    if balance.currency_code.is_empty() {
-        return "—".into();
-    }
-    let abs = balance.minor_units.unsigned_abs();
-    let prefix = if balance.minor_units < 0 { "−" } else { "" };
-    if abs >= 100_000_000 {
-        format!("{prefix}{}m", abs / 100_000_000)
-    } else if abs >= 100_000 {
-        format!("{prefix}{}k", abs / 100_000)
-    } else {
-        let currency = currency_from_code(&balance.currency_code).unwrap_or(&USD);
-        crate::components::num::format_amount(balance.minor_units, currency)
-    }
-}
 
 /// Account tree sidebar.
 ///
@@ -258,9 +221,12 @@ fn SidebarRow(
     indent: bool,
 ) -> impl IntoView {
     let id = node.id.clone();
-    let balance = format_balance_short(&node.balance);
+    let balance = node
+        .balance
+        .as_ref()
+        .map_or_else(|| "\u{2014}".into(), bc_ipc::Amount::format_short);
     let is_active = Signal::derive(move || selected_id.get().as_deref() == Some(id.as_str()));
-    let balance_class = if node.balance.minor_units < 0 {
+    let balance_class = if node.balance.as_ref().is_some_and(|b| b.minor_units < 0) {
         style::bal_neg
     } else {
         style::bal
@@ -284,46 +250,6 @@ fn SidebarRow(
             <span class=style::row_name>{node.name.clone()}</span>
             <span class=balance_class>{balance}</span>
         </A>
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use bc_ipc::Amount;
-    use pretty_assertions::assert_eq;
-
-    use super::format_balance_short;
-
-    #[test]
-    fn balance_short_thousands() {
-        assert_eq!(
-            format_balance_short(&Amount::new(6_400_000, "USD", 2)),
-            "64k"
-        );
-    }
-
-    #[test]
-    fn balance_short_millions() {
-        assert_eq!(
-            format_balance_short(&Amount::new(120_000_000, "USD", 2)),
-            "1m"
-        );
-    }
-
-    #[test]
-    fn balance_short_negative() {
-        assert_eq!(
-            format_balance_short(&Amount::new(-244_000, "USD", 2)),
-            "−2k"
-        );
-    }
-
-    #[test]
-    fn balance_short_small() {
-        assert_eq!(
-            format_balance_short(&Amount::new(42_100, "USD", 2)),
-            "+$421.00"
-        );
     }
 }
 
