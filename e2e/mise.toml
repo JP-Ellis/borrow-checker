@@ -1,7 +1,7 @@
 [tasks.setup]
 description = "Install npm dependencies"
 sources     = ["package.json", "aube-lock.yaml"]
-outputs     = ["node_modules/.package-lock.json"]
+outputs     = ["node_modules/.aube-state/state.json"]
 run         = "aube install"
 
 [tasks.test]
@@ -89,7 +89,11 @@ docker run --rm \
     # causing TLS cert validation to fail when the fake date precedes the cert
     # notBefore date, which makes trunk hang while downloading wasm-opt.
     mise run //crates/bc-app:build:debug
-    mise run //e2e:setup
+    # Populate node_modules from the image pre-built copy when the cache is empty.
+    # aube is a global mise tool so it is absent from mise run PATH; copying the
+    # pre-built modules from the image avoids needing to call aube install here.
+    [[ -d /repo/e2e/node_modules/.aube-state ]] || \
+        cp -rn /build/e2e/node_modules/. /repo/e2e/node_modules/
 
     LIBFAKETIME="$(ls /usr/lib/*/faketime/libfaketime.so.1 2>/dev/null | head -1)"
     # Use the pre-built workspace binary when available (compiled on the host with
