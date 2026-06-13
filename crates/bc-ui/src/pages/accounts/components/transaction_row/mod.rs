@@ -65,8 +65,8 @@ pub fn TransactionRow(
     let envelope = tx
         .postings
         .iter()
-        .find(|p| p.account_id != viewing_account_id.as_str())
-        .map_or_else(|| "—".to_owned(), |p| p.account_path.clone());
+        .find(|p| p.account.id != viewing_account_id.as_str())
+        .map_or_else(|| "—".to_owned(), |p| p.account.name.clone());
 
     let payee = tx.payee.clone();
     let tags: Vec<String> = tx.tags.clone();
@@ -177,7 +177,7 @@ fn TransactionDetail(
     let stored_postings = StoredValue::new(stored_tx.with_value(|t| {
         t.postings
             .iter()
-            .map(|p| (p.account_path.clone(), p.amount.clone(), p.note.clone()))
+            .map(|p| (p.account.name.clone(), p.amount.clone(), p.note.clone()))
             .collect::<Vec<_>>()
     }));
 

@@ -15,7 +15,6 @@
 use tauri::State;
 
 use crate::AppState;
-use crate::ipc::IntoIpc as _;
 use crate::ipc::IntoModel;
 
 // MARK: Command handlers
@@ -81,12 +80,27 @@ pub async fn list_transactions(
     let id = account_id
         .parse::<bc_models::AccountId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
+
+    let accounts = state
+        .accounts
+        .list_active()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
+    let account_map = accounts
+        .iter()
+        .map(|a| (a.id().to_string(), a))
+        .collect::<std::collections::HashMap<_, _>>();
+
     let txs = state
         .transactions
         .list_for_account(&id)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    Ok(txs.map(|tx| tx.into_ipc()).collect())
+
+    Ok(txs
+        .map(|tx| crate::ipc::transaction_into_ipc_with_accounts(&tx, &account_map))
+        .collect())
 }
 
 /// Create a new transaction.

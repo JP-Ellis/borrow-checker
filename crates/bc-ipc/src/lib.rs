@@ -22,6 +22,7 @@ mod money;
 mod plugins;
 
 pub use accounts::AccountNode;
+pub use accounts::AccountRef;
 pub use accounts::AccountStats;
 pub use accounts::AccountType;
 pub use accounts::AuditEntry;
