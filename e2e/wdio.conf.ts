@@ -35,8 +35,11 @@ export const config: Options.Testrunner = {
   port:     4444,
   path:     '/',
 
-  /* Visual specs run first (before mutating flow tests dirty the DB). */
-  specs: ['./tests/visual/**/*.spec.ts', './tests/flows/**/*.spec.ts'],
+  /* Visual specs require the frozen-clock container environment — skip them
+   * outside the container to avoid spurious baseline mismatches. */
+  specs: process.env['WDIO_IN_CONTAINER']
+    ? ['./tests/visual/**/*.spec.ts', './tests/flows/**/*.spec.ts']
+    : ['./tests/flows/**/*.spec.ts'],
 
   maxInstances: 1,
 
