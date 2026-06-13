@@ -128,14 +128,48 @@ impl TxStatus {
     }
 }
 
+/// A reference to an account carrying both its stable identifier and display name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AccountRef {
+    /// Stable account identifier — matches [`AccountNode::id`].
+    pub id: String,
+    /// Human-readable display name, e.g. `"Assets :: Smart Access"`.
+    pub name: String,
+}
+
+impl AccountRef {
+    /// Creates a new [`AccountRef`].
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Stable account identifier matching [`AccountNode::id`].
+    /// * `name` - Human-readable display name.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bc_ipc::AccountRef;
+    /// let r = AccountRef::new("account_abc", "Assets :: Smart Access");
+    /// assert_eq!(r.id, "account_abc");
+    /// assert_eq!(r.name, "Assets :: Smart Access");
+    /// ```
+    #[must_use]
+    #[inline]
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+}
+
 /// One leg of a double-entry transaction.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Posting {
-    /// Account ID — matches [`AccountNode::id`].
-    pub account_id: String,
-    /// Full account path for display, e.g. `"Assets :: Smart Access"`.
-    pub account_path: String,
+    /// Account reference — carries the stable ID and human-readable display name.
+    pub account: AccountRef,
     /// Posting amount. Positive = credit; negative = debit.
     pub amount: Amount,
     /// Optional inline comment shown in the TOML view.
@@ -147,21 +181,14 @@ impl Posting {
     ///
     /// # Arguments
     ///
-    /// * `account_id` - Account ID matching [`AccountNode::id`].
-    /// * `account_path` - Full account path for display.
+    /// * `account` - Account reference with ID and display name.
     /// * `amount` - Posting amount.
     /// * `note` - Optional inline comment, or `None`.
     #[must_use]
     #[inline]
-    pub fn new(
-        account_id: impl Into<String>,
-        account_path: impl Into<String>,
-        amount: Amount,
-        note: Option<impl Into<String>>,
-    ) -> Self {
+    pub fn new(account: AccountRef, amount: Amount, note: Option<impl Into<String>>) -> Self {
         Self {
-            account_id: account_id.into(),
-            account_path: account_path.into(),
+            account,
             amount,
             note: note.map(Into::into),
         }

@@ -1,5 +1,6 @@
 //! QA page for [`super::TransactionRow`].
 
+use bc_ipc::AccountRef;
 use bc_ipc::Amount;
 use bc_ipc::AuditEntry;
 use bc_ipc::Posting;
@@ -19,14 +20,12 @@ fn tx_simple() -> Transaction {
         vec!["shared".to_owned()],
         vec![
             Posting::new(
-                "cb-smart-access",
-                "Assets :: Smart Access",
+                AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                 Amount::new(-8_420, "AUD", 2),
                 None::<&str>,
             ),
             Posting::new(
-                "groceries",
-                "Expenses :: Groceries",
+                AccountRef::new("groceries", "Expenses :: Groceries"),
                 Amount::new(8_420, "AUD", 2),
                 None::<&str>,
             ),
@@ -49,14 +48,12 @@ fn tx_multi_posting() -> Transaction {
         vec!["work".to_owned()],
         vec![
             Posting::new(
-                "income-salary",
-                "Income :: Salary",
+                AccountRef::new("income-salary", "Income :: Salary"),
                 Amount::new(-846_154, "AUD", 2),
                 Some("gross pay"),
             ),
             Posting::new(
-                "cb-smart-access",
-                "Assets :: Smart Access",
+                AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                 Amount::new(428_055, "AUD", 2),
                 Some("take-home"),
             ),
