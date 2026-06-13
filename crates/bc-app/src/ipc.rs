@@ -261,12 +261,89 @@ impl IntoIpc for &bc_models::Posting {
     fn into_ipc(self) -> bc_ipc::Posting {
         let account_id = self.account_id().to_string();
         bc_ipc::Posting::new(
-            account_id.clone(),
-            account_id, // TODO(ipc): resolve display path via AccountService
+            bc_ipc::AccountRef::new(account_id.clone(), account_id),
             self.amount().into_ipc(),
             self.memo(),
         )
     }
+}
+
+// MARK: Account path helpers
+
+/// Builds a display path for an account by walking up the parent chain.
+///
+/// Returns a `" :: "`-separated path from the root ancestor down to the account
+/// (e.g. `"Assets :: Smart Access"`). Falls back to `account_id` if the account
+/// is not present in the map.
+///
+/// # Arguments
+///
+/// * `account_id` - ID string of the account to resolve.
+/// * `account_map` - Map from ID string to account reference.
+pub(crate) fn build_account_path(
+    account_id: &str,
+    account_map: &std::collections::HashMap<String, &bc_models::Account>,
+) -> String {
+    let mut parts = Vec::new();
+    let mut current = account_id.to_owned();
+    let mut visited = std::collections::HashSet::new();
+
+    loop {
+        if !visited.insert(current.clone()) {
+            break;
+        }
+        let Some(account) = account_map.get(&current) else {
+            break;
+        };
+        parts.push(account.name().to_owned());
+        match account.parent_id() {
+            Some(parent) => current = parent.to_string(),
+            None => break,
+        }
+    }
+
+    parts.reverse();
+    if parts.is_empty() {
+        account_id.to_owned()
+    } else {
+        parts.join(" :: ")
+    }
+}
+
+/// Converts a [`bc_models::Transaction`] to [`bc_ipc::Transaction`], resolving
+/// posting account names from `account_map`.
+///
+/// # Arguments
+///
+/// * `tx` - The transaction to convert.
+/// * `account_map` - Map from account ID string to account reference.
+pub(crate) fn transaction_into_ipc_with_accounts(
+    tx: &bc_models::Transaction,
+    account_map: &std::collections::HashMap<String, &bc_models::Account>,
+) -> bc_ipc::Transaction {
+    let postings = tx
+        .postings()
+        .iter()
+        .map(|p| {
+            let account_id = p.account_id().to_string();
+            let account_name = build_account_path(&account_id, account_map);
+            bc_ipc::Posting::new(
+                bc_ipc::AccountRef::new(account_id, account_name),
+                p.amount().into_ipc(),
+                p.memo(),
+            )
+        })
+        .collect();
+
+    bc_ipc::Transaction::new(
+        tx.id().to_string(),
+        tx.date().to_string(),
+        tx.payee().unwrap_or_default(),
+        tx.status().into_ipc(),
+        vec![], // TODO(ipc): resolve tag paths via TagService
+        postings,
+        vec![],
+    )
 }
 
 // MARK: Transaction
@@ -292,10 +369,13 @@ impl IntoIpc for &bc_models::Transaction {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use pretty_assertions::assert_eq;
 
     use super::IntoIpc as _;
     use super::IntoModel as _;
+    use super::build_account_path;
 
     #[test]
     fn amount_into_ipc_aud() {
@@ -341,5 +421,49 @@ mod tests {
         assert_eq!(ipc.scale, 8);
         let back = (&ipc).into_model();
         assert_eq!(back, model);
+    }
+
+    #[test]
+    fn build_account_path_returns_name_for_root_account() {
+        let account = bc_models::Account::builder()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .build();
+
+        let account_id = account.id().to_string();
+        let map = HashMap::from([(account_id.clone(), &account)]);
+
+        assert_eq!(build_account_path(&account_id, &map), "Checking");
+    }
+
+    #[test]
+    fn build_account_path_returns_hierarchical_path() {
+        let parent = bc_models::Account::builder()
+            .name("Assets")
+            .account_type(bc_models::AccountType::Asset)
+            .build();
+
+        let child = bc_models::Account::builder()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .parent_id(parent.id().clone())
+            .build();
+
+        let map = HashMap::from([
+            (parent.id().to_string(), &parent),
+            (child.id().to_string(), &child),
+        ]);
+
+        assert_eq!(
+            build_account_path(&child.id().to_string(), &map),
+            "Assets :: Checking"
+        );
+    }
+
+    #[test]
+    fn build_account_path_falls_back_to_id_when_not_found() {
+        let map: HashMap<String, &bc_models::Account> = HashMap::new();
+        let fake_id = "account_00000000000000000000000000";
+        assert_eq!(build_account_path(fake_id, &map), fake_id);
     }
 }

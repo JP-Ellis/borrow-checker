@@ -28,7 +28,7 @@ pub fn payee_initial(payee: &str) -> char {
 pub fn headline_amount(tx: &Transaction, account_id: &str) -> Amount {
     tx.postings
         .iter()
-        .find(|p| p.account_id == account_id)
+        .find(|p| p.account.id == account_id)
         .map_or_else(|| Amount::new(0, "AUD", 2), |p| p.amount.clone())
 }
 
@@ -85,6 +85,7 @@ pub fn format_date_display(iso: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use bc_ipc::AccountRef;
     use bc_ipc::Amount;
     use bc_ipc::AuditEntry;
     use bc_ipc::Posting;
@@ -106,14 +107,12 @@ mod tests {
                 vec!["shared".to_owned()],
                 vec![
                     Posting::new(
-                        "cb-smart-access",
-                        "Assets :: Smart Access",
+                        AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                         Amount::new(-8_420, "AUD", 2),
                         None::<&str>,
                     ),
                     Posting::new(
-                        "groceries",
-                        "Expenses :: Groceries",
+                        AccountRef::new("groceries", "Expenses :: Groceries"),
                         Amount::new(8_420, "AUD", 2),
                         None::<&str>,
                     ),
@@ -135,26 +134,22 @@ mod tests {
                 vec!["work".to_owned()],
                 vec![
                     Posting::new(
-                        "income-salary",
-                        "Income :: Salary",
+                        AccountRef::new("income-salary", "Income :: Salary"),
                         Amount::new(-846_154, "AUD", 2),
                         Some("gross pay"),
                     ),
                     Posting::new(
-                        "liabilities-tax",
-                        "Liabilities :: Tax Withheld",
+                        AccountRef::new("liabilities-tax", "Liabilities :: Tax Withheld"),
                         Amount::new(327_692, "AUD", 2),
                         Some("PAYG withholding"),
                     ),
                     Posting::new(
-                        "assets-super",
-                        "Assets :: Super :: Employer",
+                        AccountRef::new("assets-super", "Assets :: Super :: Employer"),
                         Amount::new(90_407, "AUD", 2),
                         Some("11.5% SGC"),
                     ),
                     Posting::new(
-                        "cb-smart-access",
-                        "Assets :: Smart Access",
+                        AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                         Amount::new(428_055, "AUD", 2),
                         Some("take-home"),
                     ),
