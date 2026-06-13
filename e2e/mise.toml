@@ -79,6 +79,7 @@ docker run --rm \
   -e DISPLAY=:99 \
   -e FAKETIME="$FAKE_NOW" \
   -e FAKETIME_DONT_FAKE_MONOTONIC=1 \
+  -e WDIO_IN_CONTAINER=1 \
   "$IMAGE" \
   bash -c 'set -euo pipefail
     Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
