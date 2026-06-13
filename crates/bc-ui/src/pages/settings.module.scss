@@ -1,17 +1,8 @@
 /* Settings page — scoped styles for the read-only configuration panel. */
 
-.loading {
-  padding: var(--bc-space-6);
-  color: var(--bc-ink-mute);
-  font-family: var(--bc-font-mono);
-  font-size: var(--bc-text-body);
-}
-
-.error {
-  padding: var(--bc-space-6);
-  color: var(--bc-bad);
-  font-family: var(--bc-font-mono);
-  font-size: var(--bc-text-body);
+.page_settings {
+  padding: var(--bc-space-5);
+  max-width: 900px;
 }
 
 .settings_panel {
@@ -54,7 +45,7 @@
 
 .field_row {
   display: grid;
-  grid-template-columns: 180px 1fr;
+  grid-template-columns: 14ch 1fr;
   gap: var(--bc-space-4);
   align-items: baseline;
 }
@@ -108,4 +99,25 @@
   background: var(--bc-surface-accent);
   padding: 0 var(--bc-space-1);
   border-radius: var(--bc-radius-kbd);
+}
+
+/* MARK: Skeleton */
+
+.skeleton_bar {
+  display: inline-block;
+  height: 0.75em;
+  border-radius: var(--bc-radius-tag);
+  background: linear-gradient(
+    90deg,
+    var(--bc-surface-alt) 25%,
+    var(--bc-surface-accent) 50%,
+    var(--bc-surface-alt) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer var(--bc-duration-slow) ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
