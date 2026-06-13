@@ -76,7 +76,6 @@ fn populated_info() -> SettingsInfo {
         Some("2026-01-15".to_owned()),
         "AUD",
         "/Users/alice/Library/Application Support/borrow-checker/db.sqlite",
-        "db.sqlite",
         vec![
             "/Users/alice/Library/Application Support/borrow-checker/plugins".to_owned(),
             "/usr/local/share/borrow-checker/plugins".to_owned(),
@@ -93,7 +92,6 @@ fn minimal_info() -> SettingsInfo {
         None,
         "USD",
         "/data/db.sqlite",
-        "db.sqlite",
         vec![],
         Some("/home/alice/.config/borrow-checker/config.toml".to_owned()),
     )
@@ -101,16 +99,7 @@ fn minimal_info() -> SettingsInfo {
 
 /// Builds a mock [`SettingsInfo`] with no config file path (uses fallback hint).
 fn no_config_path_info() -> SettingsInfo {
-    SettingsInfo::new(
-        7,
-        1,
-        None,
-        "AUD",
-        "/data/db.sqlite",
-        "db.sqlite",
-        vec![],
-        None,
-    )
+    SettingsInfo::new(7, 1, None, "AUD", "/data/db.sqlite", vec![], None)
 }
 
 /// Settings QA: fully-populated snapshot (anchor date + plugin paths).
