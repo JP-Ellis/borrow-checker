@@ -1,5 +1,11 @@
 //! Budget management sub-commands: list, create, archive, allocate, status.
 
+use core::str::FromStr as _;
+
+use bc_models::Amount;
+use bc_models::CommodityCode;
+use bc_models::Period;
+use bc_models::RolloverPolicy;
 use clap::Subcommand;
 use jiff::civil::Date;
 
@@ -234,12 +240,6 @@ async fn create(
     fy_start_day: u8,
     rollover_arg: RolloverArg,
 ) -> CliResult<()> {
-    use core::str::FromStr as _;
-
-    use bc_models::Amount;
-    use bc_models::CommodityCode;
-    use bc_models::RolloverPolicy;
-
     let account_id = bc_models::AccountId::from_str(&account)
         .map_err(|e| CliError::Arg(format!("invalid account ID '{account}': {e}")))?;
 
@@ -304,7 +304,6 @@ async fn create(
 
 /// Archive a budget by ID, hiding it from active lists while preserving history.
 async fn archive(ctx: &AppContext, id: String) -> CliResult<()> {
-    use core::str::FromStr as _;
     let budget_id = bc_models::BudgetId::from_str(&id)
         .map_err(|e| CliError::Arg(format!("invalid budget ID '{id}': {e}")))?;
     ctx.budgets.archive(&budget_id).await?;
@@ -328,11 +327,6 @@ async fn allocate(
     commodity: String,
     period_start_str: Option<String>,
 ) -> CliResult<()> {
-    use core::str::FromStr as _;
-
-    use bc_models::Amount;
-    use bc_models::CommodityCode;
-
     let budget_id = bc_models::BudgetId::from_str(&budget)
         .map_err(|e| CliError::Arg(format!("invalid budget ID '{budget}': {e}")))?;
     let b = ctx.budgets.get(&budget_id).await?;
@@ -453,7 +447,6 @@ fn resolve_period(
     fy_start_month: Option<u8>,
     fy_start_day: u8,
 ) -> CliResult<bc_models::Period> {
-    use bc_models::Period;
     match period_arg {
         PeriodArg::Weekly => Ok(Period::Weekly),
         PeriodArg::Monthly => Ok(Period::Monthly),
@@ -491,7 +484,6 @@ fn resolve_period(
 
 /// Format a [`bc_models::Period`] as a human-readable string for table output.
 fn period_display(period: &bc_models::Period) -> String {
-    use bc_models::Period;
     match period {
         Period::Weekly => "Weekly".to_owned(),
         Period::Fortnightly { anchor } => format!("Fortnightly ({anchor})"),
