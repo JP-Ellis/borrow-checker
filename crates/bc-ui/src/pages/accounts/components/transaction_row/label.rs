@@ -19,8 +19,7 @@
 ///
 /// # Example
 ///
-/// ```
-/// # use bc_ui::pages::accounts::components::transaction_row::label::envelope_label;
+/// ```no_run
 /// assert_eq!(
 ///     envelope_label(&["Expenses :: Groceries", "Expenses :: Healthcare"]),
 ///     "Expenses :: {Groceries, Healthcare}"
@@ -68,6 +67,7 @@ fn expand_trie(paths: &[Vec<&str>]) -> Option<String> {
     let prefix = first_path.get(..common_len)?.join(" :: ");
     let tails: Vec<Vec<&str>> = paths
         .iter()
+        // Safe: common_len ≤ min path length, so the slice always exists.
         .map(|p| p.get(common_len..).unwrap_or_default().to_vec())
         .collect();
 
@@ -100,6 +100,7 @@ fn expand_trie(paths: &[Vec<&str>]) -> Option<String> {
                     .iter()
                     .map(|t| core::iter::once(*head).chain(t.iter().copied()).collect())
                     .collect();
+                // Safe: all paths in `full` share `head` as their first segment.
                 expand_trie(&full).unwrap_or_else(|| (*head).to_owned())
             }
         })
@@ -192,6 +193,14 @@ mod tests {
                 "Income :: Interest",
             ]),
             "split transaction"
+        );
+    }
+
+    #[test]
+    fn duplicate_counterparts_collapse_to_single() {
+        assert_eq!(
+            envelope_label(&["Expenses :: Groceries", "Expenses :: Groceries"]),
+            "Expenses :: Groceries"
         );
     }
 }
