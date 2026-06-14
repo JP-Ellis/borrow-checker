@@ -22,7 +22,7 @@
 /// loaded (e.g. malformed config file, out-of-range field values).
 #[tauri::command(rename_all = "snake_case")]
 pub async fn get_settings() -> Result<bc_ipc::SettingsInfo, bc_ipc::BcError> {
-    let config_file_paths = bc_config::Settings::config_file_paths();
+    let config_file_paths: Vec<_> = bc_config::config_file_paths().collect();
     let config_file_path = config_file_paths
         .iter()
         .find(|p| p.exists())
