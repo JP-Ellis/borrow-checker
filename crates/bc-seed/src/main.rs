@@ -103,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
     let transactions = TransactionService::new(pool.clone());
 
     // =========================================================================
-    // ACCOUNTS (24 total: 5 root + 19 leaf)
+    // ACCOUNTS (25 total: 5 root + 20 leaf)
     // =========================================================================
 
     let assets_id = accounts
@@ -320,6 +320,15 @@ async fn main() -> anyhow::Result<()> {
     let entertainment_id = accounts
         .create()
         .name("Entertainment")
+        .account_type(AccountType::Expense)
+        .kind(AccountKind::DepositAccount)
+        .parent_id(&expenses_id)
+        .call()
+        .await?;
+
+    let _uncategorised_id = accounts
+        .create()
+        .name("Uncategorised")
         .account_type(AccountType::Expense)
         .kind(AccountKind::DepositAccount)
         .parent_id(&expenses_id)
@@ -1687,7 +1696,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Done.");
     println!("Created database at {}", args.db_path.display());
-    println!("Accounts:     24 (5 root + 19 leaf)");
+    println!("Accounts:     25 (5 root + 20 leaf)");
     println!("Budgets:       7 (one per expense leaf account)");
     println!("Allocations:  49 (7 budgets × 7 months)");
     println!(
