@@ -70,7 +70,7 @@ impl AppContext {
             assets: bc_core::AssetService::new(pool.clone()),
             loans: bc_core::LoanService::new(pool.clone()),
             budgets: bc_core::BudgetService::new(pool.clone()),
-            budget_status: bc_core::BudgetStatusEngine::new(pool),
+            budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
         })
     }
 }
