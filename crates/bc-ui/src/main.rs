@@ -37,6 +37,10 @@
 #[cfg(any(target_arch = "wasm32", test))]
 mod format;
 
+#[cfg(all(not(target_arch = "wasm32"), test))]
+#[path = "pages/accounts/components/transaction_row/label.rs"]
+mod transaction_row_label;
+
 #[cfg(target_arch = "wasm32")]
 mod app;
 #[cfg(target_arch = "wasm32")]

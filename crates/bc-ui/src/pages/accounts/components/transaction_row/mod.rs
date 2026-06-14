@@ -1,6 +1,9 @@
 //! Transaction register row and inline expanded detail panel.
 
+pub(crate) mod label;
+
 use bc_ipc::Transaction;
+use label::envelope_label;
 use leptos::prelude::*;
 use leptos::web_sys;
 use stylance::import_style;
@@ -58,15 +61,15 @@ pub fn TransactionRow(
         core::cmp::Ordering::Equal => style::amt_neu,
     };
 
-    // TODO: This column is labelled "envelope" but derives from the first counterpart
-    // account's account_path, not from posting.envelope_id. When envelope_id is
-    // available on postings (after bc-ipc wiring), replace with a lookup via the
-    // envelope system.
-    let envelope = tx
+    // TODO: When envelope_id is available on postings (after bc-ipc wiring),
+    // replace counterpart name lookup with an envelope system lookup.
+    let counterpart_names: Vec<&str> = tx
         .postings
         .iter()
-        .find(|p| p.account.id != viewing_account_id.as_str())
-        .map_or_else(|| "—".to_owned(), |p| p.account.name.clone());
+        .filter(|p| p.account.id != viewing_account_id.as_str())
+        .map(|p| p.account.name.as_str())
+        .collect();
+    let envelope = envelope_label(&counterpart_names);
 
     let payee = tx.payee.clone();
     let tags: Vec<String> = tx.tags.clone();
