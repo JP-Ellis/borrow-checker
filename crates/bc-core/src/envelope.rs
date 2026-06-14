@@ -8,8 +8,8 @@ use bc_models::CommodityCode;
 use bc_models::Decimal;
 use bc_models::Envelope;
 use bc_models::EnvelopeId;
+use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
 use bc_models::Period;
-use bc_models::RolloverPolicy;
 use bc_models::TagId;
 use jiff::Timestamp;
 use jiff::civil::Date;
@@ -672,8 +672,8 @@ mod tests {
     use bc_models::AccountKind;
     use bc_models::AccountType;
     use bc_models::EnvelopeId;
+    use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
     use bc_models::Period;
-    use bc_models::RolloverPolicy;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -777,8 +777,8 @@ mod tests {
         use bc_models::Amount;
         use bc_models::CommodityCode;
         use bc_models::Decimal;
+        use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
         use bc_models::Period;
-        use bc_models::RolloverPolicy;
         use jiff::civil::Date;
 
         let svc = Service::new(pool);
@@ -820,8 +820,8 @@ mod tests {
         use bc_models::Amount;
         use bc_models::CommodityCode;
         use bc_models::Decimal;
+        use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
         use bc_models::Period;
-        use bc_models::RolloverPolicy;
         use jiff::civil::Date;
 
         let svc = Service::new(pool);
@@ -886,8 +886,8 @@ mod tests {
         use bc_models::Amount;
         use bc_models::CommodityCode;
         use bc_models::Decimal;
+        use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
         use bc_models::Period;
-        use bc_models::RolloverPolicy;
         use jiff::civil::Date;
 
         let svc = Service::new(pool);
@@ -919,8 +919,8 @@ mod tests {
         use bc_models::Amount;
         use bc_models::CommodityCode;
         use bc_models::Decimal;
+        use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
         use bc_models::Period;
-        use bc_models::RolloverPolicy;
         use jiff::civil::Date;
 
         let svc = Service::new(pool);
@@ -1077,7 +1077,7 @@ mod tests {
             .create()
             .name("Groceries")
             .period(bc_models::Period::Monthly)
-            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .rollover_policy(bc_models::EnvelopeRolloverPolicy::ResetToZero)
             .call()
             .await
             .expect("create should succeed");
@@ -1093,7 +1093,7 @@ mod tests {
             .create()
             .name("Health")
             .period(bc_models::Period::Monthly)
-            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .rollover_policy(bc_models::EnvelopeRolloverPolicy::ResetToZero)
             .call()
             .await
             .expect("create parent");
@@ -1102,7 +1102,7 @@ mod tests {
             .name("Gym")
             .parent_id(parent.id().clone())
             .period(bc_models::Period::Monthly)
-            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .rollover_policy(bc_models::EnvelopeRolloverPolicy::ResetToZero)
             .call()
             .await
             .expect("create child");
@@ -1116,7 +1116,7 @@ mod tests {
             .create()
             .name("Health")
             .period(bc_models::Period::Monthly)
-            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .rollover_policy(bc_models::EnvelopeRolloverPolicy::ResetToZero)
             .call()
             .await
             .expect("create parent");
@@ -1124,7 +1124,7 @@ mod tests {
             .create()
             .name("Gym")
             .period(bc_models::Period::Monthly)
-            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .rollover_policy(bc_models::EnvelopeRolloverPolicy::ResetToZero)
             .call()
             .await
             .expect("create child");
@@ -1176,7 +1176,7 @@ mod tests {
             .create()
             .name("Gym")
             .period(bc_models::Period::Monthly)
-            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .rollover_policy(bc_models::EnvelopeRolloverPolicy::ResetToZero)
             .tag_ids(vec![tag_id.clone()])
             .call()
             .await

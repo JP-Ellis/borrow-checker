@@ -228,9 +228,9 @@ async fn envelopes_list(ctx: &AppContext) -> CliResult<()> {
                 |a| format!("{} {}", a.value(), a.commodity()),
             );
             let rollover_str = match env.rollover_policy() {
-                bc_models::RolloverPolicy::CarryForward => "carry-forward",
-                bc_models::RolloverPolicy::ResetToZero => "reset-to-zero",
-                bc_models::RolloverPolicy::CapAtTarget => "cap-at-target",
+                bc_models::EnvelopeRolloverPolicy::CarryForward => "carry-forward",
+                bc_models::EnvelopeRolloverPolicy::ResetToZero => "reset-to-zero",
+                bc_models::EnvelopeRolloverPolicy::CapAtTarget => "cap-at-target",
                 _ => "unknown",
             };
             vec![
@@ -269,7 +269,7 @@ async fn envelopes_create(
 
     use bc_models::Amount;
     use bc_models::CommodityCode;
-    use bc_models::RolloverPolicy;
+    use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
 
     let bc_period = resolve_period(period_arg, anchor, fy_start_month, fy_start_day)?;
     let rollover_policy = match rollover_arg {

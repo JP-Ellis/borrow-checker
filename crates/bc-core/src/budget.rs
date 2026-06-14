@@ -259,7 +259,7 @@ impl Engine {
         Box::pin(async move {
             if matches!(
                 envelope.rollover_policy(),
-                bc_models::RolloverPolicy::ResetToZero
+                bc_models::EnvelopeRolloverPolicy::ResetToZero
             ) {
                 return Ok(Decimal::ZERO);
             }
@@ -294,8 +294,8 @@ impl Engine {
             let surplus = prev_allocated + prev_rollover - prev_actuals;
 
             Ok(match envelope.rollover_policy() {
-                bc_models::RolloverPolicy::CarryForward => surplus,
-                bc_models::RolloverPolicy::CapAtTarget => {
+                bc_models::EnvelopeRolloverPolicy::CarryForward => surplus,
+                bc_models::EnvelopeRolloverPolicy::CapAtTarget => {
                     #[expect(
                         clippy::expect_used,
                         reason = "CapAtTarget envelopes are validated to have allocation_target \
@@ -312,7 +312,7 @@ impl Engine {
                 }
                 // ResetToZero is already handled by the early return above; the wildcard
                 // arm covers any future #[non_exhaustive] variants added to bc-models.
-                bc_models::RolloverPolicy::ResetToZero => Decimal::ZERO,
+                bc_models::EnvelopeRolloverPolicy::ResetToZero => Decimal::ZERO,
                 _ => {
                     tracing::warn!(
                         policy = ?envelope.rollover_policy(),
@@ -331,8 +331,8 @@ mod tests {
     use bc_models::Amount;
     use bc_models::CommodityCode;
     use bc_models::Decimal;
+    use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
     use bc_models::Period;
-    use bc_models::RolloverPolicy;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
 
