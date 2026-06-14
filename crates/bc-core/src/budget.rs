@@ -960,7 +960,7 @@ mod budget_service_tests {
         let svc = BudgetService::new(pool.clone());
         let b = svc
             .create()
-            .account_id(acc.clone())
+            .account_id(acc)
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
             .call()
@@ -1011,7 +1011,6 @@ mod budget_service_tests {
             .get_allocation(budget.id(), Date::constant(2026, 3, 1))
             .await
             .expect("get_allocation");
-        assert!(fetched.is_some());
         assert_eq!(
             fetched.expect("allocation should exist").amount(),
             &Amount::new(Decimal::from(600_i32), CommodityCode::new("AUD"))
@@ -1120,21 +1119,18 @@ mod budget_service_tests {
             .await
             .expect("create budget");
 
-        // Allocate 100 AUD for July 2026 (must be a period after the budget was created
-        // in June 2026 so that the previous-period rollover check can traverse back one step).
         svc.allocate(
             budget.id(),
-            Date::constant(2026, 7, 1),
+            Date::constant(2030, 7, 1),
             Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
         )
         .await
         .expect("allocate July");
 
-        // Post a 60 AUD expense in July — 40 AUD surplus should carry forward to August.
         let txns = TransactionService::new(pool.clone());
         let tx = Transaction::builder()
             .id(bc_models::TransactionId::new())
-            .date(Date::constant(2026, 7, 15))
+            .date(Date::constant(2030, 7, 15))
             .description("Weekly shop")
             .postings(vec![
                 Posting::builder()
@@ -1155,7 +1151,7 @@ mod budget_service_tests {
 
         let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
         let statuses = engine
-            .status_all(&[budget], Date::constant(2026, 8, 15))
+            .status_all(&[budget], Date::constant(2030, 8, 15))
             .await
             .expect("status_all August");
 
@@ -1163,7 +1159,6 @@ mod budget_service_tests {
         let aug = statuses
             .first()
             .expect("statuses is non-empty; checked above");
-        // August has no explicit allocation, so allocated = 0; rollover = 40 surplus from July.
         assert_eq!(
             aug.rollover,
             dec!(40),
@@ -1197,21 +1192,17 @@ mod budget_service_tests {
             .await
             .expect("create budget");
 
-        // Allocate 100 AUD for July 2026 (period after budget creation in June 2026).
         svc.allocate(
             budget.id(),
-            Date::constant(2026, 7, 1),
+            Date::constant(2030, 7, 1),
             Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
         )
         .await
         .expect("allocate July");
 
-        // No spending in July — full 100 AUD surplus. CapAtTarget should clamp rollover to 100.
-        // We don't need a transaction since zero actuals is the default.
-
         let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
         let statuses = engine
-            .status_all(&[budget], Date::constant(2026, 8, 15))
+            .status_all(&[budget], Date::constant(2030, 8, 15))
             .await
             .expect("status_all August");
 
@@ -1219,7 +1210,6 @@ mod budget_service_tests {
         let aug = statuses
             .first()
             .expect("statuses is non-empty; checked above");
-        // Surplus = 100 AUD; CapAtTarget clamps to target = 100 AUD (not 200).
         assert_eq!(
             aug.rollover,
             dec!(100),
@@ -1239,7 +1229,6 @@ mod budget_service_tests {
             .await
             .expect("create account");
 
-        // Insert a tag directly.
         let tag_id = TagId::new();
         sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, 'restaurant', ?)")
             .bind(tag_id.to_string())
