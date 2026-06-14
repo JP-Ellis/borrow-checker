@@ -152,17 +152,17 @@ impl Component for Sidebar {
 /// [`BudgetMsg::OpenAllocate`](crate::msg::BudgetMsg::OpenAllocate).
 #[expect(
     clippy::module_name_repetitions,
-    reason = "referenced externally as sidebar::EnvelopeSidebar; repetition is intentional"
+    reason = "referenced externally as sidebar::BudgetSidebar; repetition is intentional"
 )]
 #[non_exhaustive]
 #[derive(Component)]
-pub struct EnvelopeSidebar {
+pub struct BudgetSidebar {
     /// Inner raw widget.
     component: Sidebar,
 }
 
-impl EnvelopeSidebar {
-    /// Create a new `EnvelopeSidebar` displaying the given budgets.
+impl BudgetSidebar {
+    /// Create a new `BudgetSidebar` displaying the given budgets.
     ///
     /// # Arguments
     ///
@@ -170,7 +170,7 @@ impl EnvelopeSidebar {
     ///
     /// # Returns
     ///
-    /// A new `EnvelopeSidebar` ready to be mounted.
+    /// A new `BudgetSidebar` ready to be mounted.
     #[inline]
     #[must_use]
     pub fn new(budgets: &[bc_models::Budget]) -> Self {
@@ -180,7 +180,7 @@ impl EnvelopeSidebar {
     }
 }
 
-impl AppComponent<Msg, NoUserEvent> for EnvelopeSidebar {
+impl AppComponent<Msg, NoUserEvent> for BudgetSidebar {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
@@ -288,14 +288,14 @@ mod tests {
 
     #[test]
     fn envelope_sidebar_on_unknown_event_returns_none() {
-        let mut sidebar = EnvelopeSidebar::new(&[]);
+        let mut sidebar = BudgetSidebar::new(&[]);
         let result = sidebar.on(&Event::None);
         assert_eq!(result, None);
     }
 
     #[test]
     fn envelope_sidebar_right_on_empty_tree_emits_redraw() {
-        let mut sidebar = EnvelopeSidebar::new(&[]);
+        let mut sidebar = BudgetSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Right,
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn j_key_emits_redraw() {
-        let mut sidebar = EnvelopeSidebar::new(&[]);
+        let mut sidebar = BudgetSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('j'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn k_key_emits_redraw() {
-        let mut sidebar = EnvelopeSidebar::new(&[]);
+        let mut sidebar = BudgetSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('k'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn h_key_emits_redraw() {
-        let mut sidebar = EnvelopeSidebar::new(&[]);
+        let mut sidebar = BudgetSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('h'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn bracket_key_emits_period_prev() {
-        let mut sidebar = EnvelopeSidebar::new(&[]);
+        let mut sidebar = BudgetSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('['),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn close_bracket_key_emits_period_next() {
-        let mut sidebar = EnvelopeSidebar::new(&[]);
+        let mut sidebar = BudgetSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char(']'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn envelope_sidebar_a_key_emits_open_allocate() {
-        let mut sidebar = EnvelopeSidebar::new(&[]);
+        let mut sidebar = BudgetSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('a'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
