@@ -387,7 +387,18 @@ impl BudgetService {
         amount: bc_models::Amount,
     ) -> crate::BcResult<bc_models::BudgetAllocation> {
         // Verify budget exists.
-        let _budget = self.get(budget_id).await?;
+        let budget = self.get(budget_id).await?;
+
+        // Validate allocation commodity matches budget target (when target is present).
+        if let Some(target) = budget.target()
+            && target.commodity() != amount.commodity()
+        {
+            return Err(crate::BcError::InvalidInput(format!(
+                "allocation commodity '{}' does not match budget target commodity '{}'",
+                amount.commodity(),
+                target.commodity(),
+            )));
+        }
 
         let id = bc_models::BudgetAllocationId::new();
         let now = jiff::Timestamp::now();
@@ -482,18 +493,28 @@ pub struct BudgetStatus {
 }
 
 /// Computes budget actuals, rollover, and status for budgets.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BudgetStatusEngine {
     /// The SQLite connection pool.
     pool: SqlitePool,
+    /// Foreign exchange rate service for cross-commodity conversion.
+    fx: std::sync::Arc<dyn crate::fx::FxRateService>,
+}
+
+impl core::fmt::Debug for BudgetStatusEngine {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BudgetStatusEngine")
+            .field("pool", &self.pool)
+            .finish_non_exhaustive()
+    }
 }
 
 impl BudgetStatusEngine {
-    /// Creates a new [`BudgetStatusEngine`] with the given connection pool.
+    /// Creates a new [`BudgetStatusEngine`] with the given connection pool and FX service.
     #[must_use]
     #[inline]
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub fn new(pool: SqlitePool, fx: std::sync::Arc<dyn crate::fx::FxRateService>) -> Self {
+        Self { pool, fx }
     }
 
     /// Computes the budget status for `budget` over an explicit [`bc_models::BudgetWindow`].
@@ -511,8 +532,6 @@ impl BudgetStatusEngine {
         window: bc_models::BudgetWindow,
     ) -> crate::BcResult<BudgetStatus> {
         let (period_start, period_end) = budget.period().range_containing(window.start);
-        let commodity: Option<bc_models::CommodityCode> =
-            budget.target().map(|t| t.commodity().clone());
 
         let svc = BudgetService::new(self.pool.clone());
         let allocation = svc.get_allocation(budget.id(), period_start).await?;
@@ -540,12 +559,8 @@ impl BudgetStatusEngine {
             (full_allocated * ratio).round_dp(2)
         };
 
-        let actuals = self
-            .sum_actuals(budget, window.start, window.end, commodity.as_ref())
-            .await?;
-        let rollover = self
-            .rollover_for(budget, period_start, commodity.as_ref())
-            .await?;
+        let (actuals, commodity) = self.sum_actuals(budget, window.start, window.end).await?;
+        let rollover = self.rollover_for(budget, period_start).await?;
 
         #[expect(
             clippy::arithmetic_side_effects,
@@ -601,11 +616,9 @@ impl BudgetStatusEngine {
         Ok(out)
     }
 
-    /// Fetches posting amount strings for `account_id` in `[period_start, period_end)`.
+    /// Fetches posting amount and commodity strings for `account_id` in `[period_start, period_end)`.
     ///
-    /// When `tag_filter` is `Some`, only postings carrying that tag or a descendant are
-    /// returned.  When `commodity` is `Some`, the query is further restricted to that
-    /// commodity.
+    /// When `tag_filter` is `Some`, only postings carrying that tag or a descendant are returned.
     ///
     /// # Errors
     ///
@@ -616,38 +629,12 @@ impl BudgetStatusEngine {
         account_id: &bc_models::AccountId,
         period_start: jiff::civil::Date,
         period_end: jiff::civil::Date,
-        commodity: Option<&bc_models::CommodityCode>,
         tag_filter: Option<&bc_models::TagId>,
         voided_str: &str,
-    ) -> crate::BcResult<Vec<(String,)>> {
-        // The four variants differ only by the presence of commodity / tag filters.
-        // We branch here rather than building a dynamic query string.
-        match (tag_filter, commodity) {
-            (Some(tag), Some(comm)) => sqlx::query_as(
-                "SELECT p.amount FROM postings p
-                 JOIN transactions t ON t.id = p.transaction_id
-                 WHERE p.account_id = ? AND p.commodity = ?
-                   AND t.date >= ? AND t.date < ? AND t.status != ?
-                   AND EXISTS (
-                     SELECT 1 FROM posting_tags pt WHERE pt.posting_id = p.id
-                     AND pt.tag_id IN (
-                       WITH RECURSIVE subtree(id) AS (
-                         SELECT ? UNION ALL
-                         SELECT tg.id FROM tags tg
-                         INNER JOIN subtree s ON tg.parent_id = s.id
-                       ) SELECT id FROM subtree))",
-            )
-            .bind(account_id.to_string())
-            .bind(comm.as_str())
-            .bind(period_start.to_string())
-            .bind(period_end.to_string())
-            .bind(voided_str)
-            .bind(tag.to_string())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Into::into),
-            (Some(tag), None) => sqlx::query_as(
-                "SELECT p.amount FROM postings p
+    ) -> crate::BcResult<Vec<(String, String)>> {
+        match tag_filter {
+            Some(tag) => sqlx::query_as(
+                "SELECT p.amount, p.commodity FROM postings p
                  JOIN transactions t ON t.id = p.transaction_id
                  WHERE p.account_id = ?
                    AND t.date >= ? AND t.date < ? AND t.status != ?
@@ -668,22 +655,8 @@ impl BudgetStatusEngine {
             .fetch_all(&self.pool)
             .await
             .map_err(Into::into),
-            (None, Some(comm)) => sqlx::query_as(
-                "SELECT p.amount FROM postings p
-                 JOIN transactions t ON t.id = p.transaction_id
-                 WHERE p.account_id = ? AND p.commodity = ?
-                   AND t.date >= ? AND t.date < ? AND t.status != ?",
-            )
-            .bind(account_id.to_string())
-            .bind(comm.as_str())
-            .bind(period_start.to_string())
-            .bind(period_end.to_string())
-            .bind(voided_str)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Into::into),
-            (None, None) => sqlx::query_as(
-                "SELECT p.amount FROM postings p
+            None => sqlx::query_as(
+                "SELECT p.amount, p.commodity FROM postings p
                  JOIN transactions t ON t.id = p.transaction_id
                  WHERE p.account_id = ?
                    AND t.date >= ? AND t.date < ? AND t.status != ?",
@@ -700,6 +673,11 @@ impl BudgetStatusEngine {
 
     /// Sums actuals for `budget` in `[period_start, period_end)`.
     ///
+    /// Returns the total and the commodity it is denominated in.  For budgets with a target
+    /// commodity, foreign postings are converted via the FX service (and skipped with a warning
+    /// if conversion is unavailable).  For tracking-only budgets, postings are grouped by
+    /// commodity and the dominant group (by absolute value) is returned.
+    ///
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on database or data parse failure.
@@ -709,28 +687,88 @@ impl BudgetStatusEngine {
         budget: &bc_models::Budget,
         period_start: jiff::civil::Date,
         period_end: jiff::civil::Date,
-        commodity: Option<&bc_models::CommodityCode>,
-    ) -> crate::BcResult<bc_models::Decimal> {
+    ) -> crate::BcResult<(bc_models::Decimal, Option<bc_models::CommodityCode>)> {
         let voided_str = crate::db::to_db_str(bc_models::TransactionStatus::Voided)?;
         let rows = self
             .fetch_posting_amounts(
                 budget.account_id(),
                 period_start,
                 period_end,
-                commodity,
                 budget.tag_filter(),
                 &voided_str,
             )
             .await?;
 
-        rows.into_iter()
-            .try_fold(bc_models::Decimal::ZERO, |acc, (amt_str,)| {
-                let d = amt_str.parse::<bc_models::Decimal>().map_err(|e| {
+        let target_commodity: Option<bc_models::CommodityCode> =
+            budget.target().map(|t| t.commodity().clone());
+
+        if let Some(ref target) = target_commodity {
+            // Budget has a target commodity: sum native, convert foreign via FX.
+            let mut total = bc_models::Decimal::ZERO;
+            for (amt_str, comm_str) in rows {
+                let value = amt_str.parse::<bc_models::Decimal>().map_err(|e| {
                     crate::BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
                 })?;
-                acc.checked_add(d)
-                    .ok_or_else(|| crate::BcError::BadData("actuals sum overflow".into()))
-            })
+                let posting_commodity = bc_models::CommodityCode::new(&comm_str);
+                let posting_amount = bc_models::Amount::new(value, posting_commodity);
+                match self.fx.convert(&posting_amount, target) {
+                    Ok(a) => {
+                        total = total.checked_add(a.value()).ok_or_else(|| {
+                            crate::BcError::BadData("actuals sum overflow".into())
+                        })?;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            budget_id = %budget.id(),
+                            %e,
+                            "skipping posting: FX conversion unavailable"
+                        );
+                    }
+                }
+            }
+            Ok((total, Some(target.clone())))
+        } else {
+            // Tracking-only: group by commodity, return dominant group.
+            let mut groups: std::collections::HashMap<String, bc_models::Decimal> =
+                std::collections::HashMap::new();
+            for (amt_str, comm_str) in rows {
+                let value = amt_str.parse::<bc_models::Decimal>().map_err(|e| {
+                    crate::BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
+                })?;
+                let entry = groups.entry(comm_str).or_insert(bc_models::Decimal::ZERO);
+                *entry = entry
+                    .checked_add(value)
+                    .ok_or_else(|| crate::BcError::BadData("actuals sum overflow".into()))?;
+            }
+            if groups.is_empty() {
+                return Ok((bc_models::Decimal::ZERO, None));
+            }
+            let group_count = groups.len();
+            #[expect(
+                clippy::expect_used,
+                reason = "groups is non-empty; checked immediately above"
+            )]
+            let (dominant_comm, dominant_total) = groups
+                .into_iter()
+                .max_by(|(_, a), (_, b)| {
+                    a.abs()
+                        .partial_cmp(&b.abs())
+                        .unwrap_or(core::cmp::Ordering::Equal)
+                })
+                .expect("groups is non-empty");
+            if group_count > 1 {
+                tracing::warn!(
+                    budget_id = %budget.id(),
+                    commodity = %dominant_comm,
+                    "tracking-only budget has multi-commodity postings; \
+                     reporting dominant commodity only"
+                );
+            }
+            Ok((
+                dominant_total,
+                Some(bc_models::CommodityCode::new(dominant_comm)),
+            ))
+        }
     }
 
     /// Computes rollover from the period immediately before `period_start`.
@@ -747,7 +785,6 @@ impl BudgetStatusEngine {
         &'a self,
         budget: &'a bc_models::Budget,
         period_start: jiff::civil::Date,
-        commodity: Option<&'a bc_models::CommodityCode>,
     ) -> core::pin::Pin<
         Box<dyn core::future::Future<Output = crate::BcResult<bc_models::Decimal>> + Send + 'a>,
     > {
@@ -776,15 +813,13 @@ impl BudgetStatusEngine {
                 .as_ref()
                 .map_or(bc_models::Decimal::ZERO, |a| a.amount().value());
 
-            let prev_actuals = self
-                .sum_actuals(budget, prev_start, prev_end, commodity)
-                .await?;
+            let (prev_actuals, _) = self.sum_actuals(budget, prev_start, prev_end).await?;
 
             if prev_alloc.is_none() && prev_actuals == bc_models::Decimal::ZERO {
                 return Ok(bc_models::Decimal::ZERO);
             }
 
-            let prev_rollover = self.rollover_for(budget, prev_start, commodity).await?;
+            let prev_rollover = self.rollover_for(budget, prev_start).await?;
 
             #[expect(
                 clippy::arithmetic_side_effects,
