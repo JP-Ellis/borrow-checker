@@ -92,7 +92,7 @@ docker run --rm \
     # causing TLS cert validation to fail when the fake date precedes the cert
     # notBefore date, which makes trunk hang while downloading wasm-opt.
     # bc-seed is also built here so it is never invoked via `cargo run` under
-    # libfaketime — libfaketime interferes with Rust's futex-based thread
+    # libfaketime — libfaketime interferes with Rust futex-based thread
     # synchronisation during compiler startup, causing the build to hang.
     mise run //crates/bc-app:build:debug
     cargo build -p bc-seed
