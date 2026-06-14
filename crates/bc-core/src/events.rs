@@ -158,6 +158,7 @@ pub enum Event {
         /// The budget's ID.
         budget_id: BudgetId,
     },
+    // TODO(milestone-5B): BudgetUpdated — rename, retarget, change rollover
     /// Funds were allocated to a budget line for a period.
     BudgetAllocated {
         /// The budget receiving the allocation.
