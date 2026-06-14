@@ -1,10 +1,6 @@
 //! Transaction register row and inline expanded detail panel.
 
-// Kept in a separate file so cargo nextest can run its tests on the native target.
-pub(crate) mod label;
-
 use bc_ipc::Transaction;
-use label::envelope_label;
 use leptos::prelude::*;
 use leptos::web_sys;
 use stylance::import_style;
@@ -18,6 +14,7 @@ use crate::components::toml_view::TomlAuditEntry;
 use crate::components::toml_view::TomlKv;
 use crate::components::toml_view::TomlPosting;
 use crate::components::toml_view::TomlSection;
+use crate::label::envelope_label;
 use crate::pages::accounts::types::format_date_display;
 use crate::pages::accounts::types::headline_amount;
 use crate::pages::accounts::types::payee_initial;
@@ -31,7 +28,7 @@ import_style!(style, "row.module.scss");
 ///
 /// # Arguments
 ///
-/// * `label` - The expansion string from [`label::envelope_label`] (e.g.
+/// * `label` - The expansion string from [`crate::label::envelope_label`] (e.g.
 ///   `"Expenses :: {Groceries, Healthcare}"` or `"—"`).
 #[component]
 fn EnvelopeCell(
@@ -39,7 +36,7 @@ fn EnvelopeCell(
     label: String,
 ) -> impl IntoView {
     let span_ref = NodeRef::<leptos::html::Span>::new();
-    let is_split = label == label::SPLIT_LABEL;
+    let is_split = label == crate::label::SPLIT_LABEL;
     let use_fallback = RwSignal::new(is_split);
     let label = StoredValue::new(label);
 
@@ -64,7 +61,11 @@ fn EnvelopeCell(
             node_ref=span_ref
         >
             {move || {
-                if use_fallback.get() { label::SPLIT_LABEL.to_owned() } else { label.get_value() }
+                if use_fallback.get() {
+                    crate::label::SPLIT_LABEL.to_owned()
+                } else {
+                    label.get_value()
+                }
             }}
         </span>
     }
