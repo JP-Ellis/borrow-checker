@@ -803,7 +803,7 @@ impl BudgetStatusEngine {
                 .period()
                 .range_containing(budget.created_at().to_zoned(jiff::tz::TimeZone::UTC).date())
                 .0;
-            if prev_start <= budget_epoch {
+            if prev_start < budget_epoch {
                 return Ok(bc_models::Decimal::ZERO);
             }
 
@@ -1163,6 +1163,97 @@ mod budget_service_tests {
             aug.rollover,
             dec!(40),
             "rollover should be 40 AUD (100 allocated - 60 spent in July)"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn carry_forward_rollover_includes_first_period_when_created_on_period_start(
+        pool: sqlx::SqlitePool,
+    ) {
+        let accounts = AccountService::new(pool.clone());
+        let budget_account = accounts
+            .create()
+            .name("Groceries")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create budget account");
+        let offset_account = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create offset account");
+
+        let svc = BudgetService::new(pool.clone());
+
+        let created_budget = svc
+            .create()
+            .account_id(budget_account.clone())
+            .target(Amount::new(
+                Decimal::from(100_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::CarryForward)
+            .call()
+            .await
+            .expect("create budget");
+
+        // Backdate created_at to 2030-07-01 so budget_epoch = 2030-07-01.
+        sqlx::query("UPDATE budgets SET created_at = '2030-07-01T00:00:00Z' WHERE id = ?")
+            .bind(created_budget.id().to_string())
+            .execute(&pool)
+            .await
+            .expect("backdate created_at");
+
+        let budget = svc.get(created_budget.id()).await.expect("re-fetch budget");
+
+        svc.allocate(
+            budget.id(),
+            Date::constant(2030, 7, 1),
+            Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
+        )
+        .await
+        .expect("allocate July");
+
+        let txns = TransactionService::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(Date::constant(2030, 7, 15))
+            .description("Weekly shop")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(budget_account)
+                    .amount(Amount::new(dec!(60), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(offset_account)
+                    .amount(Amount::new(dec!(-60), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .status(bc_models::TransactionStatus::Cleared)
+            .created_at(Timestamp::now())
+            .build();
+        txns.create(tx).await.expect("create transaction");
+
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+        let statuses = engine
+            .status_all(&[budget], Date::constant(2030, 8, 15))
+            .await
+            .expect("status_all August");
+
+        let aug = statuses.first().expect("one status");
+        assert_eq!(
+            aug.rollover,
+            dec!(40),
+            "July surplus (100 - 60 = 40) must carry into August even when budget was \
+             created on 2030-07-01 (the first day of the period)"
         );
     }
 
