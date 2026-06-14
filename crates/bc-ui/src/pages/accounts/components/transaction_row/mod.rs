@@ -24,6 +24,50 @@ use crate::pages::accounts::types::payee_initial;
 
 import_style!(style, "row.module.scss");
 
+/// Renders the Envelope column cell with overflow-aware fallback.
+///
+/// Displays the pre-computed `label` string. If the rendered text overflows
+/// the cell, replaces it with *split transaction* in muted italic style.
+///
+/// # Arguments
+///
+/// * `label` - The expansion string from [`label::envelope_label`] (e.g.
+///   `"Expenses :: {Groceries, Healthcare}"` or `"—"`).
+#[component]
+fn EnvelopeCell(
+    /// Computed envelope label — either an account name, a shell expansion, or `"—"`.
+    label: String,
+) -> impl IntoView {
+    let span_ref = NodeRef::<leptos::html::Span>::new();
+    let use_fallback = RwSignal::new(false);
+    let label = StoredValue::new(label);
+
+    Effect::new(move |_| {
+        if let Some(el) = span_ref.get()
+            && el.scroll_width() > el.client_width()
+        {
+            use_fallback.set(true);
+        }
+    });
+
+    view! {
+        <span
+            class=move || {
+                if use_fallback.get() {
+                    format!("{} {}", style::envelope, style::envelope_split)
+                } else {
+                    style::envelope.to_owned()
+                }
+            }
+            node_ref=span_ref
+        >
+            {move || {
+                if use_fallback.get() { "split transaction".to_owned() } else { label.get_value() }
+            }}
+        </span>
+    }
+}
+
 /// A single register row, optionally expanded to reveal the detail panel.
 ///
 /// # Arguments
@@ -118,7 +162,7 @@ pub fn TransactionRow(
                     .map(|t| view! { <TagToken label=t /> })
                     .collect::<Vec<_>>()}
             </div>
-            <span class=style::envelope>{envelope}</span>
+            <EnvelopeCell label=envelope />
             <span class=format!("{} {}", style::amount, amt_class)>{amount_str}</span>
             <span class=style::chevron aria-hidden="true">
                 {move || if expanded.get() { "↓" } else { "›" }}
