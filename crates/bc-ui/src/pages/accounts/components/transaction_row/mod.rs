@@ -39,7 +39,8 @@ fn EnvelopeCell(
     label: String,
 ) -> impl IntoView {
     let span_ref = NodeRef::<leptos::html::Span>::new();
-    let use_fallback = RwSignal::new(false);
+    let is_split = label == "split transaction";
+    let use_fallback = RwSignal::new(is_split);
     let label = StoredValue::new(label);
 
     Effect::new(move |_| {
