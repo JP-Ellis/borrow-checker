@@ -815,11 +815,15 @@ impl BudgetStatusEngine {
 
             let (prev_actuals, _) = self.sum_actuals(budget, prev_start, prev_end).await?;
 
-            if prev_alloc.is_none() && prev_actuals == bc_models::Decimal::ZERO {
+            let prev_rollover = self.rollover_for(budget, prev_start).await?;
+
+            // Only short-circuit when there is genuinely nothing to carry forward.
+            if prev_alloc.is_none()
+                && prev_actuals == bc_models::Decimal::ZERO
+                && prev_rollover == bc_models::Decimal::ZERO
+            {
                 return Ok(bc_models::Decimal::ZERO);
             }
-
-            let prev_rollover = self.rollover_for(budget, prev_start).await?;
 
             #[expect(
                 clippy::arithmetic_side_effects,
@@ -1254,6 +1258,90 @@ mod budget_service_tests {
             dec!(40),
             "July surplus (100 - 60 = 40) must carry into August even when budget was \
              created on 2030-07-01 (the first day of the period)"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn carry_forward_rollover_survives_gap_period(pool: sqlx::SqlitePool) {
+        // Period A: allocate 100, spend 60 → surplus 40.
+        // Period B: no allocation, no activity (gap).
+        // Period C: rollover should be 40, not 0.
+        let accounts = AccountService::new(pool.clone());
+        let budget_account = accounts
+            .create()
+            .name("Entertainment")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create budget account");
+        let offset_account = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create offset account");
+
+        let svc = BudgetService::new(pool.clone());
+        let budget = svc
+            .create()
+            .account_id(budget_account.clone())
+            .target(Amount::new(
+                Decimal::from(100_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::CarryForward)
+            .call()
+            .await
+            .expect("create budget");
+
+        // Period A: July 2030 — allocate 100, spend 60.
+        svc.allocate(
+            budget.id(),
+            Date::constant(2030, 7, 1),
+            Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
+        )
+        .await
+        .expect("allocate July");
+
+        let txns = TransactionService::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(Date::constant(2030, 7, 15))
+            .description("Concert")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(budget_account)
+                    .amount(Amount::new(dec!(60), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(offset_account)
+                    .amount(Amount::new(dec!(-60), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .status(bc_models::TransactionStatus::Cleared)
+            .created_at(Timestamp::now())
+            .build();
+        txns.create(tx).await.expect("create transaction");
+
+        // Period B (August 2030): no allocation, no activity — pure gap.
+        // Period C: September 2030 — should see 40 rollover from July.
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+        let statuses = engine
+            .status_all(&[budget], Date::constant(2030, 9, 15))
+            .await
+            .expect("status_all September");
+
+        let sep = statuses.first().expect("one status");
+        assert_eq!(
+            sep.rollover,
+            dec!(40),
+            "40 AUD surplus from July must survive an empty August and appear in September"
         );
     }
 
