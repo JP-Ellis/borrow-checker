@@ -1,6 +1,6 @@
 //! Seed a SQLite database with a realistic 6-month dataset for E2E tests.
 //!
-//! Creates a full account hierarchy, envelope budget structure with allocations,
+//! Creates a full account hierarchy, account-anchored budgets with allocations,
 //! and ~79 transactions covering 6 historical months plus the current month.
 //!
 //! Usage:
@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 use bc_core::AccountService;
-use bc_core::EnvelopeService;
+use bc_core::BudgetService;
 use bc_core::TransactionService;
 use bc_models::AccountId;
 use bc_models::AccountKind;
@@ -25,10 +25,10 @@ use bc_models::Amount;
 use bc_models::BudgetWindow;
 use bc_models::CommodityCode;
 use bc_models::Decimal;
-use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
 use bc_models::Period;
 use bc_models::Posting;
 use bc_models::PostingId;
+use bc_models::RolloverPolicy;
 use bc_models::Transaction;
 use bc_models::TransactionId;
 use bc_models::TransactionStatus;
@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
 
     let pool = bc_core::open_db_at(&args.db_path).await?;
     let accounts = AccountService::new(pool.clone());
-    let envelopes = EnvelopeService::new(pool.clone());
+    let budgets = BudgetService::new(pool.clone());
     let transactions = TransactionService::new(pool.clone());
 
     // =========================================================================
@@ -327,122 +327,98 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // =========================================================================
-    // ENVELOPES (10 total: 3 root + 7 leaf)
+    // BUDGETS (7 total: one per expense leaf account)
     // =========================================================================
 
-    let living_env = envelopes
+    let groceries_budget = budgets
         .create()
-        .name("Living")
-        .period(Period::Monthly)
-        .rollover_policy(RolloverPolicy::ResetToZero)
-        .call()
-        .await?;
-
-    let discretionary_env = envelopes
-        .create()
-        .name("Discretionary")
-        .period(Period::Monthly)
-        .rollover_policy(RolloverPolicy::ResetToZero)
-        .call()
-        .await?;
-
-    let health_env = envelopes
-        .create()
-        .name("Health")
-        .period(Period::Monthly)
-        .rollover_policy(RolloverPolicy::ResetToZero)
-        .call()
-        .await?;
-
-    let groceries_env = envelopes
-        .create()
+        .account_id(groceries_id.clone())
         .name("Groceries")
-        .parent_id(living_env.id().clone())
         .period(Period::Monthly)
-        .rollover_policy(RolloverPolicy::ResetToZero)
+        .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
-    let utilities_env = envelopes
+    let utilities_budget = budgets
         .create()
+        .account_id(utilities_id.clone())
         .name("Utilities")
-        .parent_id(living_env.id().clone())
         .period(Period::Monthly)
-        .rollover_policy(RolloverPolicy::ResetToZero)
+        .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
-    let transport_env = envelopes
+    let transport_budget = budgets
         .create()
+        .account_id(transport_id.clone())
         .name("Transport")
-        .parent_id(living_env.id().clone())
         .period(Period::Monthly)
-        .rollover_policy(RolloverPolicy::ResetToZero)
+        .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
-    let dining_env = envelopes
+    let dining_budget = budgets
         .create()
+        .account_id(dining_id.clone())
         .name("Dining")
-        .parent_id(discretionary_env.id().clone())
         .period(Period::Monthly)
-        .rollover_policy(RolloverPolicy::ResetToZero)
+        .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
-    let entertainment_env = envelopes
+    let entertainment_budget = budgets
         .create()
+        .account_id(entertainment_id.clone())
         .name("Entertainment")
-        .parent_id(discretionary_env.id().clone())
         .period(Period::Monthly)
-        .rollover_policy(RolloverPolicy::ResetToZero)
+        .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
-    let subscriptions_env = envelopes
+    let subscriptions_budget = budgets
         .create()
+        .account_id(subscriptions_id.clone())
         .name("Subscriptions")
-        .parent_id(discretionary_env.id().clone())
         .period(Period::Monthly)
-        .rollover_policy(RolloverPolicy::ResetToZero)
+        .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
-    let healthcare_env = envelopes
+    let healthcare_budget = budgets
         .create()
+        .account_id(healthcare_id.clone())
         .name("Healthcare")
-        .parent_id(health_env.id().clone())
         .period(Period::Monthly)
-        .rollover_policy(RolloverPolicy::ResetToZero)
+        .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
     // =========================================================================
-    // ALLOCATIONS (49 total: 7 leaf envelopes × 7 months)
+    // ALLOCATIONS (49 total: 7 budgets × 7 months)
     // =========================================================================
 
     for months_ago in (0_i64..=6_i64).rev() {
         let period_start = month_start(months_ago);
-        envelopes
-            .allocate(groceries_env.id(), period_start, aud(dec!(600.00)))
+        budgets
+            .allocate(groceries_budget.id(), period_start, aud(dec!(600.00)))
             .await?;
-        envelopes
-            .allocate(utilities_env.id(), period_start, aud(dec!(350.00)))
+        budgets
+            .allocate(utilities_budget.id(), period_start, aud(dec!(350.00)))
             .await?;
-        envelopes
-            .allocate(transport_env.id(), period_start, aud(dec!(200.00)))
+        budgets
+            .allocate(transport_budget.id(), period_start, aud(dec!(200.00)))
             .await?;
-        envelopes
-            .allocate(dining_env.id(), period_start, aud(dec!(300.00)))
+        budgets
+            .allocate(dining_budget.id(), period_start, aud(dec!(300.00)))
             .await?;
-        envelopes
-            .allocate(entertainment_env.id(), period_start, aud(dec!(150.00)))
+        budgets
+            .allocate(entertainment_budget.id(), period_start, aud(dec!(150.00)))
             .await?;
-        envelopes
-            .allocate(subscriptions_env.id(), period_start, aud(dec!(60.00)))
+        budgets
+            .allocate(subscriptions_budget.id(), period_start, aud(dec!(60.00)))
             .await?;
-        envelopes
-            .allocate(healthcare_env.id(), period_start, aud(dec!(200.00)))
+        budgets
+            .allocate(healthcare_budget.id(), period_start, aud(dec!(200.00)))
             .await?;
     }
 
@@ -465,34 +441,6 @@ async fn main() -> anyhow::Result<()> {
                         .created_at(Timestamp::now())
                         .postings(vec![
                             posting($debit_acct, aud($debit_amt)),
-                            posting($credit_acct, aud($credit_amt)),
-                        ])
-                        .build(),
-                )
-                .await?
-        };
-    }
-
-    macro_rules! txn_env {
-        ($date:expr, $payee:expr, $desc:expr, $status:expr,
-         $debit_acct:expr, $debit_amt:expr, $envelope:expr,
-         $credit_acct:expr, $credit_amt:expr) => {
-            transactions
-                .create(
-                    Transaction::builder()
-                        .id(TransactionId::new())
-                        .date($date)
-                        .payee($payee)
-                        .description($desc)
-                        .status($status)
-                        .created_at(Timestamp::now())
-                        .postings(vec![
-                            Posting::builder()
-                                .id(PostingId::new())
-                                .account_id($debit_acct.clone())
-                                .amount(aud($debit_amt))
-                                .envelope_id($envelope.id().clone())
-                                .build(),
                             posting($credit_acct, aud($credit_amt)),
                         ])
                         .build(),
@@ -610,135 +558,123 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-350.00)
     );
-    txn_env!(
+    txn!(
         month_day(6, 3),
         "Woolworths",
         "November groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(140.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-140.00)
     );
-    txn_env!(
+    txn!(
         month_day(6, 14),
         "Coles",
         "November fortnightly groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(110.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-110.00)
     );
-    txn_env!(
+    txn!(
         month_day(6, 22),
         "IGA",
         "November grocery top-up",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(55.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-55.00)
     );
-    txn_env!(
+    txn!(
         month_day(6, 8),
         "The Local Bistro",
         "November dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(85.00),
-        &dining_env,
         &credit_card_id,
         dec!(-85.00)
     );
-    txn_env!(
+    txn!(
         month_day(6, 20),
         "The Coffee Club",
         "November coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(18.50),
-        &dining_env,
         &credit_card_id,
         dec!(-18.50)
     );
-    txn_env!(
+    txn!(
         month_day(6, 12),
         "AGL Energy",
         "November electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(210.00),
-        &utilities_env,
         &checking_id,
         dec!(-210.00)
     );
-    txn_env!(
+    txn!(
         month_day(6, 12),
         "Telstra",
         "November internet bill",
         TransactionStatus::Cleared,
         &drinking_water_id,
         dec!(89.00),
-        &utilities_env,
         &checking_id,
         dec!(-89.00)
     );
-    txn_env!(
+    txn!(
         month_day(6, 28),
         "Origin Energy",
         "November gas bill",
         TransactionStatus::Cleared,
         &sewer_id,
         dec!(130.00),
-        &utilities_env,
         &checking_id,
         dec!(-130.00)
     );
-    txn_env!(
+    txn!(
         month_day(6, 18),
         "Opal Card",
         "November transit top-up",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(50.00),
-        &transport_env,
         &checking_id,
         dec!(-50.00)
     );
-    txn_env!(
+    txn!(
         month_day(6, 3),
         "Netflix",
         "November streaming subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(22.99),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-22.99)
     );
-    txn_env!(
+    txn!(
         month_day(6, 3),
         "Spotify",
         "November music subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(12.99),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-12.99)
     );
-    txn_env!(
+    txn!(
         month_day(6, 10),
         "iCloud",
         "November cloud storage",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(4.49),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-4.49)
     );
@@ -797,168 +733,153 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-350.00)
     );
-    txn_env!(
+    txn!(
         month_day(5, 3),
         "Woolworths",
         "December groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(140.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-140.00)
     );
-    txn_env!(
+    txn!(
         month_day(5, 14),
         "Coles",
         "December fortnightly groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(110.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-110.00)
     );
-    txn_env!(
+    txn!(
         month_day(5, 22),
         "IGA",
         "December grocery top-up",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(55.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-55.00)
     );
-    txn_env!(
+    txn!(
         month_day(5, 8),
         "The Local Bistro",
         "December dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(85.00),
-        &dining_env,
         &credit_card_id,
         dec!(-85.00)
     );
-    txn_env!(
+    txn!(
         month_day(5, 20),
         "The Coffee Club",
         "December coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(18.50),
-        &dining_env,
         &credit_card_id,
         dec!(-18.50)
     );
-    txn_env!(
+    txn!(
         month_day(5, 22),
         "Fine Dining Co",
         "Christmas dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(210.00),
-        &dining_env,
         &credit_card_id,
         dec!(-210.00)
     );
-    txn_env!(
+    txn!(
         month_day(5, 31),
         "NYE Restaurant",
         "New Year's Eve dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(175.00),
-        &dining_env,
         &credit_card_id,
         dec!(-175.00)
     );
-    txn_env!(
+    txn!(
         month_day(5, 12),
         "AGL Energy",
         "December electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(210.00),
-        &utilities_env,
         &checking_id,
         dec!(-210.00)
     );
-    txn_env!(
+    txn!(
         month_day(5, 12),
         "Telstra",
         "December internet bill",
         TransactionStatus::Cleared,
         &drinking_water_id,
         dec!(89.00),
-        &utilities_env,
         &checking_id,
         dec!(-89.00)
     );
-    txn_env!(
+    txn!(
         month_day(5, 18),
         "Opal Card",
         "December transit top-up",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(50.00),
-        &transport_env,
         &checking_id,
         dec!(-50.00)
     );
-    txn_env!(
+    txn!(
         month_day(5, 3),
         "Netflix",
         "December streaming subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(22.99),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-22.99)
     );
-    txn_env!(
+    txn!(
         month_day(5, 3),
         "Spotify",
         "December music subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(12.99),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-12.99)
     );
-    txn_env!(
+    txn!(
         month_day(5, 10),
         "iCloud",
         "December cloud storage",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(4.49),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-4.49)
     );
-    txn_env!(
+    txn!(
         month_day(5, 15),
         "Event Cinemas",
         "December cinema",
         TransactionStatus::Cleared,
         &entertainment_id,
         dec!(45.00),
-        &entertainment_env,
         &credit_card_id,
         dec!(-45.00)
     );
-    txn_env!(
+    txn!(
         month_day(5, 20),
         "Live Nation",
         "December concert",
         TransactionStatus::Cleared,
         &entertainment_id,
         dec!(120.00),
-        &entertainment_env,
         &credit_card_id,
         dec!(-120.00)
     );
@@ -1017,157 +938,143 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-350.00)
     );
-    txn_env!(
+    txn!(
         month_day(4, 3),
         "Woolworths",
         "January groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(190.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-190.00)
     );
-    txn_env!(
+    txn!(
         month_day(4, 14),
         "Coles",
         "January fortnightly groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(110.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-110.00)
     );
-    txn_env!(
+    txn!(
         month_day(4, 22),
         "IGA",
         "January grocery top-up",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(55.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-55.00)
     );
-    txn_env!(
+    txn!(
         month_day(4, 28),
         "Harris Farm",
         "January organic groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(80.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-80.00)
     );
-    txn_env!(
+    txn!(
         month_day(4, 8),
         "The Local Bistro",
         "January dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(85.00),
-        &dining_env,
         &credit_card_id,
         dec!(-85.00)
     );
-    txn_env!(
+    txn!(
         month_day(4, 20),
         "The Coffee Club",
         "January coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(18.50),
-        &dining_env,
         &credit_card_id,
         dec!(-18.50)
     );
-    txn_env!(
+    txn!(
         month_day(4, 12),
         "AGL Energy",
         "January electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(210.00),
-        &utilities_env,
         &checking_id,
         dec!(-210.00)
     );
-    txn_env!(
+    txn!(
         month_day(4, 12),
         "Telstra",
         "January internet bill",
         TransactionStatus::Cleared,
         &drinking_water_id,
         dec!(89.00),
-        &utilities_env,
         &checking_id,
         dec!(-89.00)
     );
-    txn_env!(
+    txn!(
         month_day(4, 18),
         "Opal Card",
         "January transit top-up",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(50.00),
-        &transport_env,
         &checking_id,
         dec!(-50.00)
     );
-    txn_env!(
+    txn!(
         month_day(4, 3),
         "Netflix",
         "January streaming subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(22.99),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-22.99)
     );
-    txn_env!(
+    txn!(
         month_day(4, 3),
         "Spotify",
         "January music subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(12.99),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-12.99)
     );
-    txn_env!(
+    txn!(
         month_day(4, 10),
         "iCloud",
         "January cloud storage",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(4.49),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-4.49)
     );
-    txn_env!(
+    txn!(
         month_day(4, 10),
         "City Medical Centre",
         "January GP visit",
         TransactionStatus::Cleared,
         &healthcare_id,
         dec!(85.00),
-        &healthcare_env,
         &credit_card_id,
         dec!(-85.00)
     );
-    txn_env!(
+    txn!(
         month_day(4, 11),
         "Chemist Warehouse",
         "January pharmacy",
         TransactionStatus::Cleared,
         &healthcare_id,
         dec!(32.50),
-        &healthcare_env,
         &credit_card_id,
         dec!(-32.50)
     );
@@ -1244,135 +1151,123 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-350.00)
     );
-    txn_env!(
+    txn!(
         month_day(3, 3),
         "Woolworths",
         "February groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(140.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-140.00)
     );
-    txn_env!(
+    txn!(
         month_day(3, 14),
         "Coles",
         "February fortnightly groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(110.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-110.00)
     );
-    txn_env!(
+    txn!(
         month_day(3, 22),
         "IGA",
         "February grocery top-up",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(55.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-55.00)
     );
-    txn_env!(
+    txn!(
         month_day(3, 8),
         "The Local Bistro",
         "February dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(85.00),
-        &dining_env,
         &credit_card_id,
         dec!(-85.00)
     );
-    txn_env!(
+    txn!(
         month_day(3, 20),
         "The Coffee Club",
         "February coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(18.50),
-        &dining_env,
         &credit_card_id,
         dec!(-18.50)
     );
-    txn_env!(
+    txn!(
         month_day(3, 12),
         "AGL Energy",
         "February electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(210.00),
-        &utilities_env,
         &checking_id,
         dec!(-210.00)
     );
-    txn_env!(
+    txn!(
         month_day(3, 12),
         "Telstra",
         "February internet bill",
         TransactionStatus::Cleared,
         &drinking_water_id,
         dec!(89.00),
-        &utilities_env,
         &checking_id,
         dec!(-89.00)
     );
-    txn_env!(
+    txn!(
         month_day(3, 5),
         "BP Service Station",
         "February petrol",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(85.00),
-        &transport_env,
         &credit_card_id,
         dec!(-85.00)
     );
-    txn_env!(
+    txn!(
         month_day(3, 18),
         "Opal Card",
         "February transit top-up",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(50.00),
-        &transport_env,
         &checking_id,
         dec!(-50.00)
     );
-    txn_env!(
+    txn!(
         month_day(3, 3),
         "Netflix",
         "February streaming subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(22.99),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-22.99)
     );
-    txn_env!(
+    txn!(
         month_day(3, 3),
         "Spotify",
         "February music subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(12.99),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-12.99)
     );
-    txn_env!(
+    txn!(
         month_day(3, 10),
         "iCloud",
         "February cloud storage",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(4.49),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-4.49)
     );
@@ -1459,135 +1354,123 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-350.00)
     );
-    txn_env!(
+    txn!(
         month_day(2, 3),
         "Woolworths",
         "March groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(140.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-140.00)
     );
-    txn_env!(
+    txn!(
         month_day(2, 14),
         "Coles",
         "March fortnightly groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(110.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-110.00)
     );
-    txn_env!(
+    txn!(
         month_day(2, 22),
         "IGA",
         "March grocery top-up",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(55.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-55.00)
     );
-    txn_env!(
+    txn!(
         month_day(2, 8),
         "The Local Bistro",
         "March dinner",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(85.00),
-        &dining_env,
         &credit_card_id,
         dec!(-85.00)
     );
-    txn_env!(
+    txn!(
         month_day(2, 20),
         "The Coffee Club",
         "March coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(18.50),
-        &dining_env,
         &credit_card_id,
         dec!(-18.50)
     );
-    txn_env!(
+    txn!(
         month_day(2, 12),
         "AGL Energy",
         "March electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(210.00),
-        &utilities_env,
         &checking_id,
         dec!(-210.00)
     );
-    txn_env!(
+    txn!(
         month_day(2, 12),
         "Telstra",
         "March internet bill",
         TransactionStatus::Cleared,
         &drinking_water_id,
         dec!(89.00),
-        &utilities_env,
         &checking_id,
         dec!(-89.00)
     );
-    txn_env!(
+    txn!(
         month_day(2, 28),
         "Origin Energy",
         "March gas bill",
         TransactionStatus::Cleared,
         &sewer_id,
         dec!(130.00),
-        &utilities_env,
         &checking_id,
         dec!(-130.00)
     );
-    txn_env!(
+    txn!(
         month_day(2, 18),
         "Opal Card",
         "March transit top-up",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(50.00),
-        &transport_env,
         &checking_id,
         dec!(-50.00)
     );
-    txn_env!(
+    txn!(
         month_day(2, 3),
         "Netflix",
         "March streaming subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(22.99),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-22.99)
     );
-    txn_env!(
+    txn!(
         month_day(2, 3),
         "Spotify",
         "March music subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(12.99),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-12.99)
     );
-    txn_env!(
+    txn!(
         month_day(2, 10),
         "iCloud",
         "March cloud storage",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(4.49),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-4.49)
     );
@@ -1646,124 +1529,113 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-350.00)
     );
-    txn_env!(
+    txn!(
         month_day(1, 3),
         "Woolworths",
         "April groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(140.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-140.00)
     );
-    txn_env!(
+    txn!(
         month_day(1, 14),
         "Coles",
         "April fortnightly groceries",
         TransactionStatus::Pending,
         &groceries_id,
         dec!(110.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-110.00)
     );
-    txn_env!(
+    txn!(
         month_day(1, 22),
         "IGA",
         "April grocery top-up",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(55.00),
-        &groceries_env,
         &credit_card_id,
         dec!(-55.00)
     );
-    txn_env!(
+    txn!(
         month_day(1, 8),
         "The Local Bistro",
         "April dinner",
         TransactionStatus::Pending,
         &dining_id,
         dec!(85.00),
-        &dining_env,
         &credit_card_id,
         dec!(-85.00)
     );
-    txn_env!(
+    txn!(
         month_day(1, 20),
         "The Coffee Club",
         "April coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(18.50),
-        &dining_env,
         &credit_card_id,
         dec!(-18.50)
     );
-    txn_env!(
+    txn!(
         month_day(1, 12),
         "AGL Energy",
         "April electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(210.00),
-        &utilities_env,
         &checking_id,
         dec!(-210.00)
     );
-    txn_env!(
+    txn!(
         month_day(1, 12),
         "Telstra",
         "April internet bill",
         TransactionStatus::Cleared,
         &drinking_water_id,
         dec!(89.00),
-        &utilities_env,
         &checking_id,
         dec!(-89.00)
     );
-    txn_env!(
+    txn!(
         month_day(1, 18),
         "Opal Card",
         "April transit top-up",
         TransactionStatus::Cleared,
         &transport_id,
         dec!(50.00),
-        &transport_env,
         &checking_id,
         dec!(-50.00)
     );
-    txn_env!(
+    txn!(
         month_day(1, 3),
         "Netflix",
         "April streaming subscription",
         TransactionStatus::Pending,
         &subscriptions_id,
         dec!(22.99),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-22.99)
     );
-    txn_env!(
+    txn!(
         month_day(1, 3),
         "Spotify",
         "April music subscription",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(12.99),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-12.99)
     );
-    txn_env!(
+    txn!(
         month_day(1, 10),
         "iCloud",
         "April cloud storage",
         TransactionStatus::Cleared,
         &subscriptions_id,
         dec!(4.49),
-        &subscriptions_env,
         &credit_card_id,
         dec!(-4.49)
     );
@@ -1782,36 +1654,33 @@ async fn main() -> anyhow::Result<()> {
         &salary_id,
         dec!(-5200)
     );
-    txn_env!(
+    txn!(
         month_day(0, 3),
         "Supermarket",
         "Groceries",
         TransactionStatus::Cleared,
         &groceries_id,
         dec!(95),
-        &groceries_env,
         &checking_id,
         dec!(-95)
     );
-    txn_env!(
+    txn!(
         month_day(0, 4),
         "The Coffee Club",
         "Coffee",
         TransactionStatus::Cleared,
         &dining_id,
         dec!(6.50),
-        &dining_env,
         &credit_card_id,
         dec!(-6.50)
     );
-    txn_env!(
+    txn!(
         month_day(0, 2),
         "Power Company",
         "Electricity bill",
         TransactionStatus::Cleared,
         &electricity_id,
         dec!(120),
-        &utilities_env,
         &checking_id,
         dec!(-120)
     );
@@ -1819,8 +1688,8 @@ async fn main() -> anyhow::Result<()> {
     println!("Done.");
     println!("Created database at {}", args.db_path.display());
     println!("Accounts:     24 (5 root + 19 leaf)");
-    println!("Envelopes:    10 (3 root + 7 leaf)");
-    println!("Allocations:  49 (7 leaf envelopes x 7 months)");
+    println!("Budgets:       7 (one per expense leaf account)");
+    println!("Allocations:  49 (7 budgets × 7 months)");
     println!(
         "Transactions: ~79 (cleared, pending, voided across 6 historical months + current month)"
     );

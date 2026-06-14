@@ -11,194 +11,72 @@ use crate::cmd_snapshot;
 use crate::common::TestContext;
 
 #[test]
-fn list_envelopes_empty() {
+fn list_budgets_empty() {
     let ctx = TestContext::new();
     let mut cmd = ctx.command();
-    cmd.args(["budget", "envelopes", "list"]);
+    cmd.args(["budget", "list"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
 #[test]
-fn create_envelope_with_colour_persists_colour() {
+fn create_budget_monthly_and_list() {
     let ctx = TestContext::new();
-    let out = ctx
+
+    // Create an expense account to anchor the budget to.
+    let acc_out = ctx
         .command()
         .args([
             "--json",
-            "budget",
-            "envelopes",
+            "account",
             "create",
             "--name",
             "Groceries",
-            "--commodity",
-            "AUD",
-            "--colour",
-            "#FF5733",
+            "--type",
+            "expense",
+            "--kind",
+            "deposit-account",
         ])
         .output()
         .expect("command executed");
-
     assert!(
-        out.status.success(),
-        "envelope create should succeed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        acc_out.status.success(),
+        "account create should succeed: {}",
+        String::from_utf8_lossy(&acc_out.stderr)
     );
+    let acc_json: serde_json::Value = serde_json::from_slice(&acc_out.stdout).expect("valid JSON");
+    let acc_id = acc_json
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("account id");
 
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    // Create a budget anchored to that account.
+    let budget_out = ctx
+        .command()
+        .args([
+            "--json",
+            "budget",
+            "create",
+            "--account",
+            acc_id,
+            "--name",
+            "Groceries Budget",
+            "--period",
+            "monthly",
+            "--rollover",
+            "reset-to-zero",
+        ])
+        .output()
+        .expect("command executed");
+    assert!(
+        budget_out.status.success(),
+        "budget create should succeed: {}",
+        String::from_utf8_lossy(&budget_out.stderr)
+    );
+    let budget_json: serde_json::Value =
+        serde_json::from_slice(&budget_out.stdout).expect("valid JSON");
     assert_eq!(
-        json.get("colour").and_then(serde_json::Value::as_str),
-        Some("#FF5733"),
-        "colour should be persisted"
-    );
-}
-
-#[test]
-fn move_envelope_to_parent() {
-    let ctx = TestContext::new();
-
-    // Create a parent envelope.
-    let parent_out = ctx
-        .command()
-        .args([
-            "--json",
-            "budget",
-            "envelopes",
-            "create",
-            "--name",
-            "Transport",
-        ])
-        .output()
-        .expect("command executed");
-    assert!(
-        parent_out.status.success(),
-        "parent envelope create should succeed: {}",
-        String::from_utf8_lossy(&parent_out.stderr)
-    );
-    let parent_json: serde_json::Value =
-        serde_json::from_slice(&parent_out.stdout).expect("valid JSON");
-    let parent_id = parent_json
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .expect("parent envelope id");
-
-    // Create a child envelope with no parent.
-    let env_out = ctx
-        .command()
-        .args([
-            "--json",
-            "budget",
-            "envelopes",
-            "create",
-            "--name",
-            "Fuel",
-            "--commodity",
-            "AUD",
-        ])
-        .output()
-        .expect("command executed");
-    assert!(
-        env_out.status.success(),
-        "envelope create should succeed: {}",
-        String::from_utf8_lossy(&env_out.stderr)
-    );
-    let env_json: serde_json::Value = serde_json::from_slice(&env_out.stdout).expect("valid JSON");
-    let env_id = env_json
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .expect("envelope id");
-
-    // Move the envelope under the parent.
-    let move_out = ctx
-        .command()
-        .args([
-            "--json",
-            "budget",
-            "envelopes",
-            "move",
-            env_id,
-            "--parent",
-            parent_id,
-        ])
-        .output()
-        .expect("command executed");
-    assert!(
-        move_out.status.success(),
-        "envelope move should succeed: {}",
-        String::from_utf8_lossy(&move_out.stderr)
-    );
-    let moved_json: serde_json::Value =
-        serde_json::from_slice(&move_out.stdout).expect("valid JSON");
-    assert_eq!(
-        moved_json
-            .get("parent_id")
-            .and_then(serde_json::Value::as_str),
-        Some(parent_id),
-        "parent_id should match the target parent envelope"
-    );
-}
-
-#[test]
-fn move_envelope_to_root_clears_parent() {
-    let ctx = TestContext::new();
-
-    // Create a parent envelope.
-    let parent_out = ctx
-        .command()
-        .args(["--json", "budget", "envelopes", "create", "--name", "Food"])
-        .output()
-        .expect("command executed");
-    assert!(
-        parent_out.status.success(),
-        "parent envelope create should succeed"
-    );
-    let parent_json: serde_json::Value =
-        serde_json::from_slice(&parent_out.stdout).expect("valid JSON");
-    let parent_id = parent_json
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .expect("parent id");
-
-    // Create an envelope under the parent.
-    let env_out = ctx
-        .command()
-        .args([
-            "--json",
-            "budget",
-            "envelopes",
-            "create",
-            "--name",
-            "Groceries",
-            "--commodity",
-            "AUD",
-            "--parent",
-            parent_id,
-        ])
-        .output()
-        .expect("command executed");
-    assert!(env_out.status.success(), "envelope create should succeed");
-    let env_json: serde_json::Value = serde_json::from_slice(&env_out.stdout).expect("valid JSON");
-    let env_id = env_json
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .expect("envelope id");
-
-    // Move to root by omitting --parent.
-    let move_out = ctx
-        .command()
-        .args(["--json", "budget", "envelopes", "move", env_id])
-        .output()
-        .expect("command executed");
-    assert!(
-        move_out.status.success(),
-        "envelope move to root should succeed: {}",
-        String::from_utf8_lossy(&move_out.stderr)
-    );
-    let moved_json: serde_json::Value =
-        serde_json::from_slice(&move_out.stdout).expect("valid JSON");
-    assert!(
-        moved_json
-            .get("parent_id")
-            .is_none_or(serde_json::Value::is_null),
-        "parent_id should be absent or null after moving to root, got: {moved_json:?}"
+        budget_json.get("name").and_then(serde_json::Value::as_str),
+        Some("Groceries Budget"),
+        "name should be persisted"
     );
 }

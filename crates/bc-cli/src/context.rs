@@ -21,10 +21,10 @@ pub struct AppContext {
     pub assets: bc_core::AssetService,
     /// Loan terms and amortization service.
     pub loans: bc_core::LoanService,
-    /// Envelope service.
-    pub envelopes: bc_core::EnvelopeService,
-    /// Budget calculation engine.
-    pub budget: bc_core::BudgetEngine,
+    /// Budget service.
+    pub budgets: bc_core::BudgetService,
+    /// Budget status engine.
+    pub budget_status: bc_core::BudgetStatusEngine,
 }
 
 impl AppContext {
@@ -69,8 +69,8 @@ impl AppContext {
             profiles: bc_core::ImportProfileService::new(pool.clone()),
             assets: bc_core::AssetService::new(pool.clone()),
             loans: bc_core::LoanService::new(pool.clone()),
-            envelopes: bc_core::EnvelopeService::new(pool.clone()),
-            budget: bc_core::BudgetEngine::new(pool),
+            budgets: bc_core::BudgetService::new(pool.clone()),
+            budget_status: bc_core::BudgetStatusEngine::new(pool),
         })
     }
 }

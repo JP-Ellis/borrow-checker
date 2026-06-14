@@ -3,13 +3,9 @@
 use bc_models::AccountId;
 use bc_models::AccountKind;
 use bc_models::AccountType;
-use bc_models::AllocationId;
 use bc_models::Amount;
 use bc_models::BudgetId;
-use bc_models::CommodityCode;
 use bc_models::DepreciationId;
-use bc_models::EnvelopeId;
-use bc_models::EnvelopeRolloverPolicy;
 use bc_models::EventId;
 use bc_models::LoanId;
 use bc_models::Period;
@@ -140,54 +136,6 @@ pub enum Event {
         /// Commodity of the loan (e.g. `"AUD"`).
         commodity: String,
     },
-    /// A new budget envelope was created.
-    EnvelopeCreated {
-        /// The new envelope's ID.
-        id: EnvelopeId,
-        /// Display name.
-        name: String,
-        /// Parent envelope this envelope belongs to, if any.
-        parent_id: Option<EnvelopeId>,
-        /// Recurrence period.
-        period: Period,
-        /// Rollover policy.
-        rollover_policy: EnvelopeRolloverPolicy,
-        /// Budget target per period; `None` = category tracking mode.
-        allocation_target: Option<Amount>,
-        /// Commodity this envelope tracks; `None` = multi-commodity.
-        commodity: Option<CommodityCode>,
-        /// Optional icon identifier.
-        icon: Option<String>,
-        /// Optional colour code.
-        colour: Option<String>,
-        /// Account IDs linked to this envelope.
-        account_ids: Vec<AccountId>,
-        /// Tag IDs linked to this envelope.
-        tag_ids: Vec<TagId>,
-    },
-    /// Funds were allocated to an envelope for a period.
-    EnvelopeAllocated {
-        /// Unique allocation record ID.
-        id: AllocationId,
-        /// The envelope receiving the allocation.
-        envelope_id: EnvelopeId,
-        /// Canonical period start date.
-        period_start: jiff::civil::Date,
-        /// Amount allocated.
-        amount: Amount,
-    },
-    /// An envelope was archived.
-    EnvelopeArchived {
-        /// The envelope's ID.
-        id: EnvelopeId,
-    },
-    /// An envelope was moved to a different parent (or to the root).
-    EnvelopeMoved {
-        /// The envelope's ID.
-        id: EnvelopeId,
-        /// New parent envelope ID, or `None` to place at the root.
-        parent_id: Option<EnvelopeId>,
-    },
     /// A new budget was created anchored to an account.
     BudgetCreated {
         /// The new budget's ID.
@@ -249,10 +197,6 @@ impl Event {
             Self::AssetValuationRecorded { .. } => "AssetValuationRecorded",
             Self::DepreciationCalculated { .. } => "DepreciationCalculated",
             Self::LoanTermsSet { .. } => "LoanTermsSet",
-            Self::EnvelopeCreated { .. } => "EnvelopeCreated",
-            Self::EnvelopeAllocated { .. } => "EnvelopeAllocated",
-            Self::EnvelopeArchived { .. } => "EnvelopeArchived",
-            Self::EnvelopeMoved { .. } => "EnvelopeMoved",
             Self::BudgetCreated { .. } => "BudgetCreated",
             Self::BudgetUpdated { .. } => "BudgetUpdated",
             Self::BudgetArchived { .. } => "BudgetArchived",
@@ -278,10 +222,6 @@ impl Event {
             Self::AssetValuationRecorded { account_id, .. }
             | Self::DepreciationCalculated { account_id, .. }
             | Self::LoanTermsSet { account_id, .. } => account_id.to_string(),
-            Self::EnvelopeCreated { id, .. }
-            | Self::EnvelopeArchived { id }
-            | Self::EnvelopeMoved { id, .. } => id.to_string(),
-            Self::EnvelopeAllocated { envelope_id, .. } => envelope_id.to_string(),
             Self::BudgetCreated { budget_id, .. }
             | Self::BudgetUpdated { budget_id, .. }
             | Self::BudgetArchived { budget_id }
@@ -406,6 +346,7 @@ pub(crate) async fn insert_event(event: &Event, conn: &mut sqlx::SqliteConnectio
 #[cfg(test)]
 mod tests {
     use bc_models::AccountId;
+    use bc_models::CommodityCode;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -657,148 +598,6 @@ mod tests {
             .await
             .expect("replay");
         assert_eq!(records.first().expect("one").kind, "LoanTermsSet");
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn envelope_created_payload_round_trips(pool: sqlx::SqlitePool) {
-        use bc_models::Amount;
-        use bc_models::CommodityCode;
-        use bc_models::Decimal;
-        use bc_models::EnvelopeId;
-        use bc_models::EnvelopeRolloverPolicy;
-        use bc_models::Period;
-        use bc_models::TagId;
-
-        let store = SqliteStore::new(pool.clone());
-        let id = EnvelopeId::new();
-        let account_id = AccountId::new();
-        let tag_id = TagId::new();
-        let event = Event::EnvelopeCreated {
-            id: id.clone(),
-            name: "Groceries".to_owned(),
-            parent_id: None,
-            period: Period::Monthly,
-            rollover_policy: EnvelopeRolloverPolicy::CarryForward,
-            allocation_target: Some(Amount::new(
-                Decimal::from(300_i32),
-                CommodityCode::new("AUD"),
-            )),
-            commodity: Some(CommodityCode::new("AUD")),
-            icon: Some("cart".to_owned()),
-            colour: Some("#00ff00".to_owned()),
-            account_ids: vec![account_id.clone()],
-            tag_ids: vec![tag_id.clone()],
-        };
-
-        store.append(&event).await.expect("append should succeed");
-
-        let records = store
-            .replay_for(&id.to_string())
-            .await
-            .expect("replay should succeed");
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            records.first().expect("record should exist").kind,
-            "EnvelopeCreated"
-        );
-
-        let replayed: Event = serde_json::from_str(&records.first().expect("record").payload)
-            .expect("payload should deserialise");
-
-        #[expect(
-            clippy::wildcard_enum_match_arm,
-            reason = "Event is #[non_exhaustive]; wildcard arm is required for exhaustive match in tests"
-        )]
-        match replayed {
-            Event::EnvelopeCreated {
-                id: replayed_id,
-                name,
-                parent_id,
-                period,
-                rollover_policy,
-                allocation_target,
-                commodity,
-                icon,
-                colour,
-                account_ids,
-                tag_ids,
-            } => {
-                assert_eq!(replayed_id, id);
-                assert_eq!(name, "Groceries");
-                assert_eq!(parent_id, None);
-                assert_eq!(period, Period::Monthly);
-                assert_eq!(rollover_policy, EnvelopeRolloverPolicy::CarryForward);
-                assert_eq!(
-                    allocation_target,
-                    Some(Amount::new(
-                        Decimal::from(300_i32),
-                        CommodityCode::new("AUD")
-                    ))
-                );
-                assert_eq!(commodity, Some(CommodityCode::new("AUD")));
-                assert_eq!(icon, Some("cart".to_owned()));
-                assert_eq!(colour, Some("#00ff00".to_owned()));
-                assert_eq!(account_ids, vec![account_id]);
-                assert_eq!(tag_ids, vec![tag_id]);
-            }
-            other => panic!("expected EnvelopeCreated, got {other:?}"),
-        }
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn envelope_allocated_payload_round_trips(pool: sqlx::SqlitePool) {
-        use bc_models::AllocationId;
-        use bc_models::Amount;
-        use bc_models::CommodityCode;
-        use bc_models::Decimal;
-        use bc_models::EnvelopeId;
-        use jiff::civil::Date;
-
-        let store = SqliteStore::new(pool.clone());
-        let alloc_id = AllocationId::new();
-        let env_id = EnvelopeId::new();
-        let event = Event::EnvelopeAllocated {
-            id: alloc_id.clone(),
-            envelope_id: env_id.clone(),
-            period_start: Date::constant(2026, 3, 1),
-            amount: Amount::new(Decimal::from(500_i32), CommodityCode::new("AUD")),
-        };
-
-        store.append(&event).await.expect("append should succeed");
-
-        // aggregate_id() must now return envelope_id, not the transient alloc_id
-        assert_eq!(event.aggregate_id(), env_id.to_string());
-
-        let records = store
-            .replay_for(&env_id.to_string())
-            .await
-            .expect("replay should succeed");
-        assert_eq!(records.first().expect("record").kind, "EnvelopeAllocated");
-
-        let replayed: Event = serde_json::from_str(&records.first().expect("record").payload)
-            .expect("payload should deserialise");
-
-        #[expect(
-            clippy::wildcard_enum_match_arm,
-            reason = "Event is #[non_exhaustive]; wildcard arm is required for exhaustive match in tests"
-        )]
-        match replayed {
-            Event::EnvelopeAllocated {
-                id: replayed_id,
-                envelope_id: replayed_env_id,
-                period_start,
-                amount: replayed_amount,
-            } => {
-                assert_eq!(replayed_id, alloc_id);
-                assert_eq!(replayed_env_id, env_id);
-                assert_eq!(period_start, Date::constant(2026, 3, 1));
-                assert_eq!(
-                    replayed_amount,
-                    Amount::new(Decimal::from(500_i32), CommodityCode::new("AUD"))
-                );
-            }
-            other => panic!("expected EnvelopeAllocated, got {other:?}"),
-        }
     }
 
     #[sqlx::test(migrations = "./migrations")]

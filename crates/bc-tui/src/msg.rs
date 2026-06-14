@@ -129,8 +129,8 @@ pub enum AccountsMsg {
     reason = "referenced externally as msg::BudgetMsg; repetition is intentional"
 )]
 pub enum BudgetMsg {
-    /// User selected a different envelope in the sidebar.
-    EnvelopeSelected(bc_models::EnvelopeId),
+    /// User selected a different budget in the sidebar.
+    BudgetSelected(bc_models::BudgetId),
     /// User wants to allocate funds to the selected envelope.
     OpenAllocate,
     /// User cancelled an open form.
