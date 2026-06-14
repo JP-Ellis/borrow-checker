@@ -103,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
     let transactions = TransactionService::new(pool.clone());
 
     // =========================================================================
-    // ACCOUNTS (25 total: 5 root + 20 leaf)
+    // ACCOUNTS (26 total: 5 root + 21 leaf)
     // =========================================================================
 
     let assets_id = accounts
@@ -1696,7 +1696,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Done.");
     println!("Created database at {}", args.db_path.display());
-    println!("Accounts:     25 (5 root + 20 leaf)");
+    println!("Accounts:     26 (5 root + 21 leaf)");
     println!("Budgets:       7 (one per expense leaf account)");
     println!("Allocations:  49 (7 budgets × 7 months)");
     println!(

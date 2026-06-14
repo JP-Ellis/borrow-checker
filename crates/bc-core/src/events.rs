@@ -153,19 +153,6 @@ pub enum Event {
         /// Rollover policy.
         rollover: RolloverPolicy,
     },
-    /// A budget was updated (name, target, period, or rollover changed).
-    BudgetUpdated {
-        /// The budget's ID.
-        budget_id: BudgetId,
-        /// New display name, if changed.
-        name: Option<String>,
-        /// New target, if changed.
-        target: Option<Amount>,
-        /// New period, if changed.
-        period: Option<Period>,
-        /// New rollover policy, if changed.
-        rollover: Option<RolloverPolicy>,
-    },
     /// A budget was archived.
     BudgetArchived {
         /// The budget's ID.
@@ -198,7 +185,6 @@ impl Event {
             Self::DepreciationCalculated { .. } => "DepreciationCalculated",
             Self::LoanTermsSet { .. } => "LoanTermsSet",
             Self::BudgetCreated { .. } => "BudgetCreated",
-            Self::BudgetUpdated { .. } => "BudgetUpdated",
             Self::BudgetArchived { .. } => "BudgetArchived",
             Self::BudgetAllocated { .. } => "BudgetAllocated",
         }
@@ -223,7 +209,6 @@ impl Event {
             | Self::DepreciationCalculated { account_id, .. }
             | Self::LoanTermsSet { account_id, .. } => account_id.to_string(),
             Self::BudgetCreated { budget_id, .. }
-            | Self::BudgetUpdated { budget_id, .. }
             | Self::BudgetArchived { budget_id }
             | Self::BudgetAllocated { budget_id, .. } => budget_id.to_string(),
         }
