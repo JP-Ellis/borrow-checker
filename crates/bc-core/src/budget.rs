@@ -406,8 +406,7 @@ impl BudgetService {
              (id, budget_id, period_start, amount, commodity, created_at) \
              VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT (budget_id, period_start) \
-             DO UPDATE SET id = excluded.id, amount = excluded.amount, \
-                           commodity = excluded.commodity, created_at = excluded.created_at",
+             DO UPDATE SET amount = excluded.amount, commodity = excluded.commodity",
         )
         .bind(id.to_string())
         .bind(budget_id.to_string())
@@ -767,7 +766,7 @@ impl BudgetStatusEngine {
                 .period()
                 .range_containing(budget.created_at().to_zoned(jiff::tz::TimeZone::UTC).date())
                 .0;
-            if prev_start < budget_epoch {
+            if prev_start <= budget_epoch {
                 return Ok(bc_models::Decimal::ZERO);
             }
 
@@ -793,6 +792,10 @@ impl BudgetStatusEngine {
             )]
             let surplus = prev_allocated + prev_rollover - prev_actuals;
 
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "ResetToZero is handled by early return above"
+            )]
             Ok(match budget.rollover() {
                 bc_models::RolloverPolicy::CarryForward => surplus,
                 bc_models::RolloverPolicy::CapAtTarget => {
@@ -806,7 +809,6 @@ impl BudgetStatusEngine {
                         .value();
                     surplus.max(bc_models::Decimal::ZERO).min(cap)
                 }
-                bc_models::RolloverPolicy::ResetToZero => bc_models::Decimal::ZERO,
                 _ => {
                     tracing::warn!(
                         policy = ?budget.rollover(),
