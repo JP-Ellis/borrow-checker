@@ -1,8 +1,8 @@
 //! Budget screen — budget list sidebar and status detail panel.
 //!
 //! This module owns the two components that make up the Budget tab:
-//! - [`sidebar::EnvelopeSidebar`] — left panel showing the budget list
-//! - [`detail::EnvelopeDetail`] — right panel showing the selected budget's status
+//! - [`sidebar::BudgetSidebar`] — left panel showing the budget list
+//! - [`detail::BudgetDetail`] — right panel showing the selected budget's status
 
 pub mod detail;
 pub mod forms;
@@ -270,12 +270,12 @@ impl Screen for BudgetScreen {
         self.loading = false;
         app.mount(
             Id::Budget(BudgetId::Sidebar),
-            Box::new(sidebar::EnvelopeSidebar::new(&self.budgets)),
+            Box::new(sidebar::BudgetSidebar::new(&self.budgets)),
             vec![],
         )?;
         app.mount(
             Id::Budget(BudgetId::Detail),
-            Box::new(detail::EnvelopeDetail::new(None)),
+            Box::new(detail::BudgetDetail::new(None)),
             vec![],
         )?;
         Ok(())
@@ -376,7 +376,7 @@ impl Screen for BudgetScreen {
             }
             if let Err(e) = app.mount(
                 Id::Budget(BudgetId::Detail),
-                Box::new(detail::EnvelopeDetail::new(self.selected_status.clone())),
+                Box::new(detail::BudgetDetail::new(self.selected_status.clone())),
                 vec![],
             ) {
                 eprintln!("failed to re-mount budget detail: {e}");

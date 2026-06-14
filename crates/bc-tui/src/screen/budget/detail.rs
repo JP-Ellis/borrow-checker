@@ -252,17 +252,17 @@ impl Component for Detail {
 /// Tui-realm component wrapper for the budget status detail panel widget.
 #[expect(
     clippy::module_name_repetitions,
-    reason = "referenced externally as detail::EnvelopeDetail; repetition is intentional"
+    reason = "referenced externally as detail::BudgetDetail; repetition is intentional"
 )]
 #[non_exhaustive]
 #[derive(Component)]
-pub struct EnvelopeDetail {
+pub struct BudgetDetail {
     /// Inner raw widget.
     component: Detail,
 }
 
-impl EnvelopeDetail {
-    /// Create a new `EnvelopeDetail` showing the given budget status, or empty if `None`.
+impl BudgetDetail {
+    /// Create a new `BudgetDetail` showing the given budget status, or empty if `None`.
     ///
     /// # Arguments
     ///
@@ -270,7 +270,7 @@ impl EnvelopeDetail {
     ///
     /// # Returns
     ///
-    /// A new `EnvelopeDetail` ready to be mounted.
+    /// A new `BudgetDetail` ready to be mounted.
     #[inline]
     #[must_use]
     pub fn new(status: Option<BudgetStatus>) -> Self {
@@ -293,7 +293,7 @@ impl EnvelopeDetail {
     }
 }
 
-impl AppComponent<Msg, NoUserEvent> for EnvelopeDetail {
+impl AppComponent<Msg, NoUserEvent> for BudgetDetail {
     #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
