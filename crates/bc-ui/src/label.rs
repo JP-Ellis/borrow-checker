@@ -69,15 +69,36 @@ fn expand_trie(paths: &[Vec<&str>]) -> Option<String> {
     }
 
     let prefix = first_path.get(..common_len)?.join(" :: ");
-    let tails: Vec<Vec<&str>> = paths
-        .iter()
-        // Safe: common_len ≤ min path length, so the slice always exists.
-        .map(|p| p.get(common_len..).unwrap_or_default().to_vec())
-        .collect();
 
-    // Group tails by their first segment, preserving input order.
+    // If any path ends exactly at the shared prefix while others extend further,
+    // the prefix itself is a leaf destination alongside its descendants.
+    // Step back one level so everything appears as siblings:
+    // e.g. ["Expenses :: Food", "Expenses :: Food :: Groceries"]
+    //   →  "Expenses :: {Food, Food :: Groceries}"
+    let any_empty = paths.iter().any(|p| p.len() == common_len);
+    let any_deeper = paths.iter().any(|p| p.len() > common_len);
+    if any_empty && any_deeper {
+        // Step back one prefix level so the leaf and its descendants appear
+        // as siblings. If there is no parent level, we cannot group them.
+        let parent_len = common_len.checked_sub(1).filter(|&n| n > 0)?;
+        let parent_prefix = first_path.get(..parent_len)?.join(" :: ");
+        // Each sibling string is the path from parent_len onward.
+        let mut iter = paths
+            .iter()
+            .map(|p| p.get(parent_len..).unwrap_or_default().join(" :: "));
+        let siblings = join_iter(&mut iter, ", ");
+        return Some(format!("{parent_prefix} :: {{{siblings}}}"));
+    }
+
+    // Group tails (suffix after the common prefix) by their first segment,
+    // preserving input order.  Paths that end at exactly common_len are skipped
+    // here — the any_empty && any_deeper branch above handles that case; the
+    // remaining possibility (all equal to common_len) is caught after the loop.
     let mut groups: Vec<(&str, Vec<Vec<&str>>)> = Vec::new();
-    for tail in &tails {
+    for path in paths {
+        let Some(tail) = path.get(common_len..) else {
+            continue;
+        };
         let Some((head, tail_rest)) = tail.split_first() else {
             continue;
         };
@@ -90,35 +111,41 @@ fn expand_trie(paths: &[Vec<&str>]) -> Option<String> {
     }
 
     if groups.is_empty() {
+        // All paths ended at the same prefix (e.g. duplicate accounts).
         return Some(prefix);
     }
 
-    let group_strs: Vec<String> = groups
-        .iter()
-        .map(|(head, sub_tails)| {
-            if sub_tails.iter().all(Vec::is_empty) {
-                (*head).to_owned()
-            } else {
-                // Re-attach the head segment and recurse.
-                let full: Vec<Vec<&str>> = sub_tails
-                    .iter()
-                    .map(|t| core::iter::once(*head).chain(t.iter().copied()).collect())
-                    .collect();
-                // Safe: all paths in `full` share `head` as their first segment.
-                expand_trie(&full).unwrap_or_else(|| (*head).to_owned())
-            }
-        })
-        .collect();
+    let mut group_iter = groups.iter().map(|(head, sub_tails)| {
+        if sub_tails.iter().all(Vec::is_empty) {
+            (*head).to_owned()
+        } else {
+            // Re-attach the head segment and recurse on the deeper paths.
+            let full: Vec<Vec<&str>> = sub_tails
+                .iter()
+                .map(|t| core::iter::once(*head).chain(t.iter().copied()).collect())
+                .collect();
+            // Safe: all paths in `full` share `head` as their first segment.
+            expand_trie(&full).unwrap_or_else(|| (*head).to_owned())
+        }
+    });
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "guarded by group_strs.len() == 1 check immediately above"
-    )]
-    Some(if group_strs.len() == 1 {
-        format!("{prefix} :: {}", group_strs[0])
+    Some(if groups.len() == 1 {
+        format!("{prefix} :: {}", group_iter.next().unwrap_or_default())
     } else {
-        format!("{prefix} :: {{{}}}", group_strs.join(", "))
+        format!("{prefix} :: {{{}}}", join_iter(&mut group_iter, ", "))
     })
+}
+
+/// Joins an iterator of strings with a separator without collecting first.
+fn join_iter(iter: &mut impl Iterator<Item = String>, sep: &str) -> String {
+    let mut out = String::new();
+    for (i, s) in iter.enumerate() {
+        if i > 0 {
+            out.push_str(sep);
+        }
+        out.push_str(&s);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -166,7 +193,7 @@ mod tests {
     #[test]
     fn mixed_depth_within_same_type() {
         assert_eq!(
-            envelope_label(&["Expenses :: Food :: Groceries", "Expenses :: Healthcare",]),
+            envelope_label(&["Expenses :: Food :: Groceries", "Expenses :: Healthcare"]),
             "Expenses :: {Food :: Groceries, Healthcare}"
         );
     }
@@ -213,13 +240,12 @@ mod tests {
     }
 
     #[test]
-    fn shorter_path_prefix_of_longer_is_collapsed() {
-        // When one path is a strict prefix of another, the algorithm drops the
-        // shorter path's leaf and produces the longer path. This pins the
-        // current behaviour so regressions are visible.
+    fn shorter_path_prefix_of_longer_shows_both() {
+        // When one path is a strict prefix of another, both must appear as
+        // siblings so neither destination is silently dropped.
         assert_eq!(
             envelope_label(&["Expenses :: Food", "Expenses :: Food :: Groceries"]),
-            "Expenses :: Food :: Groceries"
+            "Expenses :: {Food, Food :: Groceries}"
         );
     }
 }
