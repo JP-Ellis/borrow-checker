@@ -1,7 +1,7 @@
 //! Allocation form overlay.
 //!
 //! Renders a centred floating popup with a single amount input field for
-//! allocating funds to an envelope.
+//! allocating funds to a budget.
 
 use tui_input::Input;
 use tui_input::InputRequest;
@@ -41,8 +41,8 @@ struct AllocForm {
     props: Props,
     /// Amount field input buffer.
     amount: Input,
-    /// Name of the envelope being allocated to.
-    envelope_name: String,
+    /// Name of the budget being allocated to.
+    budget_name: String,
 }
 
 impl AllocForm {
@@ -50,16 +50,16 @@ impl AllocForm {
     ///
     /// # Arguments
     ///
-    /// * `envelope_name` - Name of the envelope to allocate to.
+    /// * `budget_name` - Name of the budget to allocate to.
     ///
     /// # Returns
     ///
     /// An [`AllocForm`] ready to be mounted with an empty amount field.
-    fn new(envelope_name: impl Into<String>) -> Self {
+    fn new(budget_name: impl Into<String>) -> Self {
         Self {
             props: Props::default(),
             amount: Input::default(),
-            envelope_name: envelope_name.into(),
+            budget_name: budget_name.into(),
         }
     }
 
@@ -113,7 +113,7 @@ impl Component for AllocForm {
             .split(popup);
 
         let block = Block::default()
-            .title(format!(" Allocate to: {} ", self.envelope_name))
+            .title(format!(" Allocate to: {} ", self.budget_name))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::Yellow));
@@ -160,20 +160,20 @@ pub struct AllocationForm {
 }
 
 impl AllocationForm {
-    /// Create a new allocation form for the given envelope.
+    /// Create a new allocation form for the given budget.
     ///
     /// # Arguments
     ///
-    /// * `envelope_name` - Name of the envelope to display in the form title.
+    /// * `budget_name` - Name of the budget to display in the form title.
     ///
     /// # Returns
     ///
     /// An [`AllocationForm`] ready to be mounted.
     #[inline]
     #[must_use]
-    pub fn new(envelope_name: impl Into<String>) -> Self {
+    pub fn new(budget_name: impl Into<String>) -> Self {
         Self {
-            component: AllocForm::new(envelope_name),
+            component: AllocForm::new(budget_name),
         }
     }
 }
