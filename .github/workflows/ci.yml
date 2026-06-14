@@ -144,6 +144,7 @@ jobs:
         if: matrix.toolchain == 'stable' && runner.os == 'Linux'
         run: |
           cargo build -p bc-ui --target wasm32-unknown-unknown
+          mise run //crates/bc-app:build:debug
           cargo build -p bc-seed
       - name: Prepare .linux-cache for container bind mounts
         if: matrix.toolchain == 'stable' && runner.os == 'Linux'
