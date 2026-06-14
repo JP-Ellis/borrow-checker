@@ -70,6 +70,14 @@ impl TestContext {
                 "[DEPRECIATION_ID]".to_owned(),
             ),
             (
+                Regex::new("budget_[0-9a-z]{26}").expect("valid regex"),
+                "[BUDGET_ID]".to_owned(),
+            ),
+            (
+                Regex::new("allocation_[0-9a-z]{26}").expect("valid regex"),
+                "[ALLOCATION_ID]".to_owned(),
+            ),
+            (
                 Regex::new(&home_path_escaped).expect("valid temp-dir regex"),
                 "[TEMP_DIR]".to_owned(),
             ),
