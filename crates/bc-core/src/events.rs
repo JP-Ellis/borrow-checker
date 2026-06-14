@@ -5,13 +5,15 @@ use bc_models::AccountKind;
 use bc_models::AccountType;
 use bc_models::AllocationId;
 use bc_models::Amount;
+use bc_models::BudgetId;
 use bc_models::CommodityCode;
 use bc_models::DepreciationId;
 use bc_models::EnvelopeId;
-use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
+use bc_models::EnvelopeRolloverPolicy;
 use bc_models::EventId;
 use bc_models::LoanId;
 use bc_models::Period;
+use bc_models::RolloverPolicy;
 use bc_models::TagId;
 use bc_models::TransactionId;
 use bc_models::ValuationId;
@@ -149,7 +151,7 @@ pub enum Event {
         /// Recurrence period.
         period: Period,
         /// Rollover policy.
-        rollover_policy: RolloverPolicy,
+        rollover_policy: EnvelopeRolloverPolicy,
         /// Budget target per period; `None` = category tracking mode.
         allocation_target: Option<Amount>,
         /// Commodity this envelope tracks; `None` = multi-commodity.
@@ -186,6 +188,50 @@ pub enum Event {
         /// New parent envelope ID, or `None` to place at the root.
         parent_id: Option<EnvelopeId>,
     },
+    /// A new budget was created anchored to an account.
+    BudgetCreated {
+        /// The new budget's ID.
+        budget_id: BudgetId,
+        /// The account this budget is anchored to.
+        account_id: AccountId,
+        /// Optional tag filter for sub-budget matching.
+        tag_filter: Option<TagId>,
+        /// Optional display name override.
+        name: Option<String>,
+        /// Optional allocation target per period; `None` = tracking-only.
+        target: Option<Amount>,
+        /// Recurrence period.
+        period: Period,
+        /// Rollover policy.
+        rollover: RolloverPolicy,
+    },
+    /// A budget was updated (name, target, period, or rollover changed).
+    BudgetUpdated {
+        /// The budget's ID.
+        budget_id: BudgetId,
+        /// New display name, if changed.
+        name: Option<String>,
+        /// New target, if changed.
+        target: Option<Amount>,
+        /// New period, if changed.
+        period: Option<Period>,
+        /// New rollover policy, if changed.
+        rollover: Option<RolloverPolicy>,
+    },
+    /// A budget was archived.
+    BudgetArchived {
+        /// The budget's ID.
+        budget_id: BudgetId,
+    },
+    /// Funds were allocated to a budget line for a period.
+    BudgetAllocated {
+        /// The budget receiving the allocation.
+        budget_id: BudgetId,
+        /// Canonical period start date.
+        period_start: jiff::civil::Date,
+        /// Amount allocated.
+        amount: Amount,
+    },
 }
 
 impl Event {
@@ -207,6 +253,10 @@ impl Event {
             Self::EnvelopeAllocated { .. } => "EnvelopeAllocated",
             Self::EnvelopeArchived { .. } => "EnvelopeArchived",
             Self::EnvelopeMoved { .. } => "EnvelopeMoved",
+            Self::BudgetCreated { .. } => "BudgetCreated",
+            Self::BudgetUpdated { .. } => "BudgetUpdated",
+            Self::BudgetArchived { .. } => "BudgetArchived",
+            Self::BudgetAllocated { .. } => "BudgetAllocated",
         }
     }
 
@@ -232,6 +282,10 @@ impl Event {
             | Self::EnvelopeArchived { id }
             | Self::EnvelopeMoved { id, .. } => id.to_string(),
             Self::EnvelopeAllocated { envelope_id, .. } => envelope_id.to_string(),
+            Self::BudgetCreated { budget_id, .. }
+            | Self::BudgetUpdated { budget_id, .. }
+            | Self::BudgetArchived { budget_id }
+            | Self::BudgetAllocated { budget_id, .. } => budget_id.to_string(),
         }
     }
 }
@@ -611,7 +665,7 @@ mod tests {
         use bc_models::CommodityCode;
         use bc_models::Decimal;
         use bc_models::EnvelopeId;
-        use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
+        use bc_models::EnvelopeRolloverPolicy;
         use bc_models::Period;
         use bc_models::TagId;
 
@@ -624,7 +678,7 @@ mod tests {
             name: "Groceries".to_owned(),
             parent_id: None,
             period: Period::Monthly,
-            rollover_policy: RolloverPolicy::CarryForward,
+            rollover_policy: EnvelopeRolloverPolicy::CarryForward,
             allocation_target: Some(Amount::new(
                 Decimal::from(300_i32),
                 CommodityCode::new("AUD"),
@@ -673,7 +727,7 @@ mod tests {
                 assert_eq!(name, "Groceries");
                 assert_eq!(parent_id, None);
                 assert_eq!(period, Period::Monthly);
-                assert_eq!(rollover_policy, RolloverPolicy::CarryForward);
+                assert_eq!(rollover_policy, EnvelopeRolloverPolicy::CarryForward);
                 assert_eq!(
                     allocation_target,
                     Some(Amount::new(
