@@ -864,12 +864,22 @@ mod budget_service_tests {
     use bc_models::CommodityCode;
     use bc_models::Decimal;
     use bc_models::Period;
+    use bc_models::Posting;
+    use bc_models::PostingId;
     use bc_models::RolloverPolicy;
+    use bc_models::TagId;
+    use bc_models::Transaction;
+    use bc_models::TransactionStatus;
+    use jiff::Timestamp;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
+    use rust_decimal_macros::dec;
 
     use super::BudgetService;
+    use super::BudgetStatusEngine;
     use crate::account::Service as AccountService;
+    use crate::fx::noop_fx;
+    use crate::transaction::Service as TransactionService;
 
     #[sqlx::test(migrations = "./migrations")]
     async fn create_budget_returns_budget_with_id(pool: sqlx::SqlitePool) {
@@ -1040,6 +1050,272 @@ mod budget_service_tests {
         assert!(
             result.is_err(),
             "second untagged budget should fail uniqueness constraint"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn archive_returns_not_found_on_double_archive(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let svc = BudgetService::new(pool.clone());
+        let budget = svc
+            .create()
+            .account_id(acc)
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create budget");
+
+        svc.archive(budget.id())
+            .await
+            .expect("first archive should succeed");
+
+        let result = svc.archive(budget.id()).await;
+        assert!(
+            matches!(result, Err(crate::BcError::NotFound(_))),
+            "second archive should return NotFound, got: {result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn carry_forward_rollover_adds_surplus_to_next_period(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let budget_account = accounts
+            .create()
+            .name("Groceries")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create budget account");
+        let offset_account = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create offset account");
+
+        let svc = BudgetService::new(pool.clone());
+        let budget = svc
+            .create()
+            .account_id(budget_account.clone())
+            .target(Amount::new(
+                Decimal::from(100_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::CarryForward)
+            .call()
+            .await
+            .expect("create budget");
+
+        // Allocate 100 AUD for July 2026 (must be a period after the budget was created
+        // in June 2026 so that the previous-period rollover check can traverse back one step).
+        svc.allocate(
+            budget.id(),
+            Date::constant(2026, 7, 1),
+            Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
+        )
+        .await
+        .expect("allocate July");
+
+        // Post a 60 AUD expense in July — 40 AUD surplus should carry forward to August.
+        let txns = TransactionService::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(Date::constant(2026, 7, 15))
+            .description("Weekly shop")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(budget_account)
+                    .amount(Amount::new(dec!(60), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(offset_account)
+                    .amount(Amount::new(dec!(-60), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .status(TransactionStatus::Cleared)
+            .created_at(Timestamp::now())
+            .build();
+        txns.create(tx).await.expect("create transaction");
+
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+        let statuses = engine
+            .status_all(&[budget], Date::constant(2026, 8, 15))
+            .await
+            .expect("status_all August");
+
+        assert_eq!(statuses.len(), 1, "expected exactly one status");
+        let aug = statuses
+            .first()
+            .expect("statuses is non-empty; checked above");
+        // August has no explicit allocation, so allocated = 0; rollover = 40 surplus from July.
+        assert_eq!(
+            aug.rollover,
+            dec!(40),
+            "rollover should be 40 AUD (100 allocated - 60 spent in July)"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn cap_at_target_clamps_rollover_to_target(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let budget_account = accounts
+            .create()
+            .name("Entertainment")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create budget account");
+
+        let svc = BudgetService::new(pool.clone());
+        let budget = svc
+            .create()
+            .account_id(budget_account)
+            .target(Amount::new(
+                Decimal::from(100_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::CapAtTarget)
+            .call()
+            .await
+            .expect("create budget");
+
+        // Allocate 100 AUD for July 2026 (period after budget creation in June 2026).
+        svc.allocate(
+            budget.id(),
+            Date::constant(2026, 7, 1),
+            Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
+        )
+        .await
+        .expect("allocate July");
+
+        // No spending in July — full 100 AUD surplus. CapAtTarget should clamp rollover to 100.
+        // We don't need a transaction since zero actuals is the default.
+
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+        let statuses = engine
+            .status_all(&[budget], Date::constant(2026, 8, 15))
+            .await
+            .expect("status_all August");
+
+        assert_eq!(statuses.len(), 1, "expected exactly one status");
+        let aug = statuses
+            .first()
+            .expect("statuses is non-empty; checked above");
+        // Surplus = 100 AUD; CapAtTarget clamps to target = 100 AUD (not 200).
+        assert_eq!(
+            aug.rollover,
+            dec!(100),
+            "rollover capped at target (100), not 200"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn duplicate_tagged_budget_on_same_account_fails(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Dining")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        // Insert a tag directly.
+        let tag_id = TagId::new();
+        sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, 'restaurant', ?)")
+            .bind(tag_id.to_string())
+            .bind(Timestamp::now().to_string())
+            .execute(&pool)
+            .await
+            .expect("insert tag");
+
+        let svc = BudgetService::new(pool.clone());
+        svc.create()
+            .account_id(acc.clone())
+            .tag_filter(tag_id.clone())
+            .target(Amount::new(
+                Decimal::from(200_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("first tagged budget should succeed");
+
+        let result = svc
+            .create()
+            .account_id(acc)
+            .tag_filter(tag_id)
+            .target(Amount::new(
+                Decimal::from(200_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await;
+
+        assert!(
+            result.is_err(),
+            "duplicate tagged budget on same account should fail"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn can_create_untagged_budget_after_archiving_previous(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Transport")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let svc = BudgetService::new(pool.clone());
+        let first = svc
+            .create()
+            .account_id(acc.clone())
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create first untagged budget");
+
+        svc.archive(first.id()).await.expect("archive first budget");
+
+        let second = svc
+            .create()
+            .account_id(acc)
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await;
+
+        assert!(
+            second.is_ok(),
+            "creating a new untagged budget after archiving the previous one should succeed"
         );
     }
 }
