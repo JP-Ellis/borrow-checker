@@ -1,6 +1,7 @@
 # BorrowChecker — Design Specification
 
 **Date:** 2026-03-20
+**Updated:** 2026-06-14
 **Status:** Approved
 **Pun:** Rust's borrow checker + personal finance (borrowing money)
 
@@ -26,7 +27,7 @@ ______________________________________________________________________
 - Append-only event log in the core (audit trail, undo/redo, future sync)
 - Double-entry accounting enforced at the core level
 - Import profiles: account-bound importer configurations that eliminate import ambiguity
-- Envelope/zero-based budgeting as the default model, with category tracking as a fallback
+- Zero-based budgeting as the default model, with category tracking as a fallback; expense account hierarchy is the category tree (as in ledger/beancount)
 - Fortnightly and financial-year periods as first-class budget intervals
 - WASM plugin system with explicit ABI versioning and a graceful deprecation/grace-period policy
 - Transaction processor pipeline (generalisation of categorisation)
@@ -52,7 +53,7 @@ borrow-checker/
 ├── Cargo.toml                  # workspace root
 ├── ROADMAP.md
 ├── crates/
-│   ├── bc-models/              # shared domain types (accounts, transactions, envelopes, etc.)
+│   ├── bc-models/              # shared domain types (accounts, transactions, budgets, etc.)
 │   ├── bc-core/                # engine: event log, SQLite projections, business logic
 │   ├── bc-config/              # configuration management (XDG + platform config hierarchy, settings loading)
 │   ├── bc-otel/                # OpenTelemetry tracing setup
@@ -90,7 +91,7 @@ The core owns two layers:
 | `accounts` | Projected read model |
 | `transactions` | Projected read model |
 | `balances` | Projected read model (table exists in M1 schema as a planned cache; M1 queries the `postings` table live — this cache will be populated in a later milestone for performance) |
-| `budget_envelopes` | Projected read model _(delivered in Milestone 5)_ |
+| `budgets` | Projected read model — budget lines anchored to accounts _(delivered in Milestone 5)_ |
 | `asset_valuations` | Projected read model — latest market value per ManualAsset account _(delivered in Milestone 5A)_ |
 | `asset_depreciations` | Projected read model — depreciation history per ManualAsset account _(delivered in Milestone 5A)_ |
 | `loan_terms` | Projected read model — loan terms per Receivable account _(delivered in Milestone 5A)_ |
@@ -102,7 +103,7 @@ The core owns two layers:
 ```
 AccountCreated / AccountUpdated / AccountArchived
 TransactionCreated / TransactionAmended / TransactionVoided
-EnvelopeCreated / EnvelopeAllocated / EnvelopeMoved
+BudgetCreated / BudgetUpdated / BudgetArchived / BudgetAllocated
 ImportBatchStarted / ImportBatchCompleted
 PluginRegistered / PluginUnregistered
 AssetValuationRecorded
@@ -154,9 +155,11 @@ The `account_tags` join table links accounts to their tags in the database.
 
 Example tag paths: `institution:commbank`, `owner:mine`, `owner:shared`, `liquid`.
 
-**Expense categorisation is separate from account hierarchy:**
+**Expense categorisation is the account hierarchy:**
 
-Deep expense category trees (food > restaurant, food > groceries, holiday > food, etc.) belong to the **envelope / budget system** (Milestone 5), not to `Account`. Account hierarchy is for real and virtual financial accounts. Cross-cutting expense views are handled via tags on transactions and postings, enabling queries like "all food spend regardless of holiday context."
+Fine-grained expense categories (`Expenses:Food:Restaurants`, `Expenses:Health:Gym`, etc.) are represented as `Expense`-type accounts in the account tree, exactly as in ledger/beancount. There is no separate envelope or category entity. A `Budget` (see §7) is the mechanism for attaching allocation targets and period rules to any account; multiple budgets can exist per account (e.g., per-person sub-budgets on a shared expense account).
+
+Cross-cutting expense views are handled via tags on postings and accounts, enabling queries like "all food spend regardless of context" or "all spending tagged `person:me`" — without duplicating the account hierarchy.
 
 ______________________________________________________________________
 
@@ -249,7 +252,7 @@ A general-purpose pipeline that runs after import, before committing events. Eac
 fn process(tx: PendingTransaction, ctx: &TransactionContext) -> ProcessorResult
 ```
 
-Example processors: merchant normalisation, auto-categorisation, auto-split, FX enrichment, tax flagging, recurring detection, anomaly flagging, envelope auto-assignment. Processors declare a priority; pipeline order is deterministic and configurable.
+Example processors: merchant normalisation, auto-categorisation, auto-split, FX enrichment, tax flagging, recurring detection, anomaly flagging, account auto-assignment. Processors declare a priority; pipeline order is deterministic and configurable.
 
 **Phase 3 — Report Generators (Milestone 9)**
 
@@ -270,30 +273,57 @@ ______________________________________________________________________
 
 ### 7.1 Model
 
-Default methodology is **envelope/zero-based budgeting** (every dollar assigned to a purpose). Users who don't want zero-based budgeting use envelopes with no allocation target — they become plain category trackers. The data model is identical; it's a workflow preference.
+Default methodology is **zero-based budgeting** (every dollar assigned to a purpose). Users who don't want zero-based budgeting attach no allocation target to their accounts — they become plain category trackers. The data model is identical; it's a workflow preference.
 
-**Envelope fields:**
+**There is no separate envelope entity.** Budget categories are `Expense`-type accounts in the account tree (see §4.3). The `Budget` entity attaches allocation targets and period rules to an account:
 
-- Name, parent envelope (nestable to arbitrary depth), icon/colour
-- Allocation target (optional)
-- Commodity (optional — required only when commodity-specific reporting is needed)
-- Period (see §7.2)
-- Rollover policy: carry forward / reset to zero / cap at target
-- Tags (cross-cutting labels; see below)
-- Linked account(s)
+```
+Budget {
+    id:             BudgetId
+    account_id:     AccountId       // required — always anchored to an account
+    tag_filter:     Option<TagId>   // postings matching this tag count against this budget;
+                                    //   None = all postings to this account
+    name:           Option<String>  // e.g. "Weekly repayment", "Person: me"
+    target:         Option<Amount>  // None = tracking-only, no allocation target
+    period:         BudgetPeriod    // see §7.2
+    rollover:       RolloverPolicy  // carry forward / reset / cap at target
+    created_at:     Timestamp
+    archived_at:    Option<Timestamp>
+}
+```
 
-**Hierarchy:**
+**Multiple budgets per account** are allowed and expected. Examples:
 
-Envelopes form an arbitrary-depth tree via `parent_id: Option<EnvelopeId>`. There is no separate "group" entity — a parent envelope is simply an envelope whose children roll their actuals and allocations upward. This mirrors the `Expense:Health:Gym:Me` hierarchy from ledger/beancount. Postings are assigned to leaf envelopes only; parent envelopes aggregate their children's actuals and allocations upward automatically.
+- `Liabilities:Mortgage` — one budget for weekly repayments, another tracking accrued interest
+- `Expenses:Haircuts` — one budget filtered to `#person:me` ($30/month), one to `#person:wife` ($60/month)
+- Any account type may carry budgets; the restriction to `Expense`-type accounts is a workflow convention, not a data model constraint
+
+**Rollup uses the account tree.** Parent accounts aggregate their children's actuals and budget totals upward automatically — no separate grouping entity is needed. `Expenses:Health` rolls up `Expenses:Health:Gym`, `Expenses:Health:Pharmacy`, etc.
 
 **Budget assignment vs. reporting dimensions:**
 
 Two orthogonal mechanisms exist for categorising spending:
 
-- `posting.envelope_id` → **where** the money was budgeted (zero-based assignment; one leaf envelope per posting; the primary budget signal)
-- `posting.tag_ids` / `envelope.tag_ids` → **how** to slice for reporting (multi-dimensional; many tags per entity; enables cross-cutting views like "all spending tagged `person:me`" or "total budget for all envelopes tagged `context:holiday`")
+- `posting.account_id` → **where** the money was categorised (the expense account IS the category; one account per posting; satisfies double-entry balance)
+- `posting.tag_ids` / `account.tag_ids` → **how** to slice for reporting (multi-dimensional; many tags per entity; enables cross-cutting views like "all spending tagged `person:me`" or "all postings tagged `context:holiday`")
 
-Example: a gym posting assigned to `Health > Gym > Me` envelope and tagged `person:me`. This counts against the gym budget explicitly, and also appears in any "personal spending" report filtered by `person:me` tag — without double-counting in the budget.
+Example: a gym posting to `Expenses:Health:Gym`, tagged `person:me`. This counts against the gym account budget, and also appears in any "personal spending" report filtered by `person:me` — without double-counting.
+
+**Posting-to-budget matching:**
+
+A posting matches a `Budget` row when `posting.account_id == budget.account_id` and either `budget.tag_filter` is `None` or the posting carries that tag. Budget matching is **exact** — a budget on `Expenses:Health` does not match postings to `Expenses:Health:Gym`; it only matches postings directly to `Expenses:Health`. Actuals roll up through the account tree for reporting, but budget assignment does not propagate to ancestors.
+
+Resolution:
+
+- 0 matches: posting is tracking-only for this account — contributes to the account's actual total but no budget line
+- 1 match: unambiguous
+- 2+ matches: ambiguous — computed at query time and surfaced by the UI; the user must resolve (split the transaction, remove a conflicting tag, or explicitly nominate one budget)
+
+A uniqueness constraint on `(account_id, tag_filter)` in the `budgets` table prevents two tracking-only budgets (both with `tag_filter = None`) from existing on the same account, which would create permanent unresolvable ambiguity.
+
+Budget anchoring is permanent: a `Budget` cannot be re-anchored to a different account. Account restructuring (e.g., splitting `Expenses:Food` into sub-accounts) requires archiving affected budgets and creating replacements on the new accounts.
+
+Conflict detection is a UI concern. The event log records raw postings; resolution is not enforced at the storage layer.
 
 ### 7.2 Budget Periods
 
@@ -319,7 +349,7 @@ Example: a gym posting assigned to `Health > Gym > Me` envelope and tagged `pers
 | 🇺🇸 US (federal) | 1 October |
 | 🇺🇸 US (personal) / Europe | 1 January |
 
-**Mixed-period display:** all envelopes normalise to a user-chosen display period (monthly by default). An annual `Car Registration` envelope that accumulates monthly is displayed correctly alongside monthly grocery envelopes.
+**Mixed-period display:** all budgets normalise to a user-chosen display period (monthly by default). An annual `Car Registration` budget that accumulates monthly is displayed correctly alongside monthly grocery budgets.
 
 ______________________________________________________________________
 
@@ -336,7 +366,7 @@ borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|bo
 borrow-checker import --profile <name> --counterpart <account-id> <file>
 borrow-checker export --format <ledger|beancount> --output <file>
 borrow-checker report [net-worth|summary|budget]
-borrow-checker budget [status|allocate|envelopes]
+borrow-checker budget [status|allocate|list]
 borrow-checker plugin [install|list|remove]
 borrow-checker completions <bash|elvish|fish|powershell|zsh>
 ```
@@ -358,7 +388,7 @@ Layout: **sidebar + main panel**. Account tree on the left; keyboard-first navig
 Layout: **icon rail + context-sensitive content**.
 
 - Icon rail (left): Dashboard · Accounts · Budget · Reports · Plugins (plugin icons auto-append)
-- **Dashboard** is the home screen: net worth, spend this month, budget remaining, recent transactions, envelope health bars, quick-import button
+- **Dashboard** is the home screen: net worth, spend this month, budget remaining, recent transactions, budget health bars, quick-import button
 - Accounts view: account tree (left panel) + transaction list + detail (right panel)
 - Power users navigate directly via the account tree; new users land on the dashboard
 
@@ -373,7 +403,7 @@ ______________________________________________________________________
 | 2 | Format compatibility (`bc-format-*` crates) | 1 |
 | 3 | CLI (`bc-cli`) | 1, 2 |
 | 4 | TUI (`bc-tui`) | 1, 5\* |
-| 5 | Budgeting (nested envelope hierarchy, tags, allocation, all periods) | 1 |
+| 5 | Budgeting (account-anchored budgets, tag-filtered sub-budgets, allocation, all periods) | 1 |
 | 5A | Illiquid asset tracking (valuations, depreciation, loan terms) | 1, 5 |
 | 6 | Plugin Phase 1: Importers | 2, 3 |
 | 7 | Tauri GUI (`bc-app`) | 1, 2, 5 |
@@ -396,6 +426,6 @@ ______________________________________________________________________
 | TUI framework | ratatui | De-facto standard in the Rust ecosystem |
 | GUI framework | Tauri | Rust-native, small binary, web frontend flexibility |
 | Plugin ABI versioning | Integer ABI + N+2 grace period | Simple, explicit, protects the community ecosystem |
-| Budget default | Envelope/zero-based | Most intentional model; degrades gracefully to category tracking |
+| Budget default | Zero-based; expense accounts are categories | Most intentional model; degrades gracefully to category tracking; round-trips cleanly with ledger/beancount |
 | Importer/account split | Importer = parser, Profile = account binding | Clean separation; same parser serves multiple accounts |
 | ID types | `mti` newtype wrappers (e.g. `profile_01h…`) | Type-safe, log-readable, no ID confusion across domain types |
