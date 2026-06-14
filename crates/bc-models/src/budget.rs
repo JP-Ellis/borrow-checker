@@ -272,9 +272,14 @@ impl BudgetAllocation {
 
 #[cfg(test)]
 mod tests {
+    use jiff::civil::Date;
     use pretty_assertions::assert_eq;
 
     use super::*;
+    use crate::Amount;
+    use crate::CommodityCode;
+    use crate::Decimal;
+    use crate::Period;
 
     #[test]
     fn budget_id_round_trips_display_from_str() {
@@ -322,7 +327,6 @@ mod tests {
 
     #[test]
     fn budget_without_target_is_tracking_only() {
-        use crate::Period;
         let budget = Budget::builder()
             .account_id(crate::AccountId::new())
             .period(Period::Monthly)
@@ -336,10 +340,6 @@ mod tests {
 
     #[test]
     fn budget_with_target_is_not_tracking_only() {
-        use crate::Amount;
-        use crate::CommodityCode;
-        use crate::Decimal;
-        use crate::Period;
         let budget = Budget::builder()
             .account_id(crate::AccountId::new())
             .target(Amount::new(
@@ -355,7 +355,6 @@ mod tests {
 
     #[test]
     fn budget_with_tag_filter_stores_tag_id() {
-        use crate::Period;
         let tag_id = crate::TagId::new();
         let budget = Budget::builder()
             .account_id(crate::AccountId::new())
@@ -369,11 +368,6 @@ mod tests {
 
     #[test]
     fn budget_allocation_stores_fields() {
-        use jiff::civil::Date;
-
-        use crate::Amount;
-        use crate::CommodityCode;
-        use crate::Decimal;
         let budget_id = BudgetId::new();
         let alloc = BudgetAllocation::builder()
             .budget_id(budget_id.clone())
@@ -387,5 +381,19 @@ mod tests {
         assert_eq!(alloc.budget_id(), &budget_id);
         assert_eq!(alloc.period_start(), Date::constant(2026, 1, 1));
         assert!(alloc.id().to_string().starts_with("budget_alloc_"));
+    }
+
+    #[test]
+    fn budget_with_archived_at_is_archived() {
+        let now = jiff::Timestamp::now();
+        let budget = Budget::builder()
+            .account_id(crate::AccountId::new())
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .created_at(now)
+            .archived_at(now)
+            .build();
+        assert!(budget.is_archived());
+        assert!(budget.archived_at().is_some());
     }
 }
