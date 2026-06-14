@@ -1,0 +1,10 @@
+---
+source: crates/bc-cli/tests/cli/budget.rs
+assertion_line: 162
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+No budgets.
+----- stderr -----
