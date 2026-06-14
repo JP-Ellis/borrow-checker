@@ -1,12 +1,14 @@
-//! Settings IPC type — read-only view of `bc_config::Settings`.
+//! Settings IPC type — serialisable contract for `bc_config::Settings`.
 
 use serde::Deserialize;
 use serde::Serialize;
 
-/// Read-only snapshot of application settings for the frontend.
+/// IPC contract type for application settings.
 ///
-/// Produced by the native `get_settings` Tauri command and consumed by
-/// the WASM frontend to render the settings page.
+/// Produced by the native `get_settings` Tauri command and consumed by the
+/// WASM frontend to render the settings page. This type lives in `bc-ipc`
+/// (the WASM-safe IPC boundary crate) because `bc-config::Settings` cannot
+/// be used directly on the WASM side — it carries native-only dependencies.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SettingsInfo {

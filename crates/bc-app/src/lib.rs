@@ -49,7 +49,6 @@ pub(crate) struct AppState {
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
-            // MARK: accounts — see bc_ipc::commands for canonical name strings
             commands::accounts::list_accounts,
             commands::accounts::list_transactions,
             commands::accounts::create_transaction,
@@ -57,7 +56,6 @@ pub fn run() {
             commands::accounts::get_account_sparkline,
             commands::accounts::get_uncategorised_count,
             commands::plugins::list_plugins,
-            // MARK: settings — see bc_ipc::commands for canonical name strings
             commands::settings::get_settings,
         ])
         .setup(|app| {

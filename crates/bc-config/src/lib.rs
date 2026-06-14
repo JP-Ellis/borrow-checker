@@ -200,7 +200,7 @@ impl Settings {
             .set_default("cli.json", false)?
             .set_default("cli.log", Option::<String>::None)?;
 
-        for path in user_config_paths() {
+        for path in config_file_paths() {
             tracing::debug!(path = %path.display(), "config: adding source");
             builder = builder.add_source(config::File::from(path).required(false));
         }
@@ -353,20 +353,6 @@ impl Settings {
         &self.plugin_dirs
     }
 
-    /// Returns the candidate config file paths searched during [`Self::load`].
-    ///
-    /// The list is ordered: the first existing file wins. No file is required to
-    /// exist; this method returns the candidate locations regardless of whether
-    /// any file is present on disk.
-    ///
-    /// Useful for diagnostics (e.g. displaying the correct config path in a UI
-    /// rather than hardcoding a platform-specific guess).
-    #[inline]
-    #[must_use]
-    pub fn config_file_paths() -> Vec<std::path::PathBuf> {
-        user_config_paths()
-    }
-
     /// Overrides the database path at runtime (e.g. from a CLI flag).
     ///
     /// This takes precedence over any value loaded from the config file.
@@ -402,7 +388,7 @@ impl Default for Settings {
     }
 }
 
-/// Returns the ordered list of user config file paths to load.
+/// Returns an iterator over candidate config file paths, in priority order.
 ///
 /// Priority (lowest first, so later entries override earlier ones):
 /// 1. XDG path: `$XDG_CONFIG_HOME/borrow-checker/config.toml`, falling back
@@ -411,10 +397,13 @@ impl Default for Settings {
 /// 2. Platform-native path from the [`directories`] crate (e.g.
 ///    `~/Library/Application Support/borrow-checker/config.toml` on macOS).
 ///
-/// The two paths are deduplicated when they resolve to the same location,
-/// which is the common case on Linux (where `directories` already honours
-/// `XDG_CONFIG_HOME`).
-fn user_config_paths() -> Vec<PathBuf> {
+/// Duplicate paths are skipped; on Linux the two candidates typically resolve
+/// to the same location (both honour `XDG_CONFIG_HOME`), so the iterator
+/// yields a single path.
+///
+/// No file is required to exist — callers that want only existing paths should
+/// filter with [`Path::exists`].
+pub fn config_file_paths() -> impl Iterator<Item = PathBuf> {
     // XDG path: $XDG_CONFIG_HOME or fall back to $HOME/.config.
     // Per the XDG Base Directory Specification, XDG_CONFIG_HOME must be an
     // absolute path; non-absolute values are ignored.
@@ -428,16 +417,11 @@ fn user_config_paths() -> Vec<PathBuf> {
     let native_path = directories::ProjectDirs::from("", "", "borrow-checker")
         .map(|p| p.config_dir().join("config.toml"));
 
-    let mut paths: Vec<PathBuf> = Vec::new();
-    if let Some(xdg) = xdg_path {
-        paths.push(xdg);
-    }
-    if let Some(native) = native_path
-        && !paths.contains(&native)
-    {
-        paths.push(native);
-    }
-    paths
+    let mut seen = std::collections::HashSet::new();
+    [xdg_path, native_path]
+        .into_iter()
+        .flatten()
+        .filter(move |p| seen.insert(p.clone()))
 }
 
 #[cfg(test)]
@@ -480,11 +464,11 @@ mod tests {
 
     #[test]
     #[cfg(not(windows))]
-    fn user_config_paths_contains_xdg_path_when_env_is_set() {
+    fn config_file_paths_contains_xdg_path_when_env_is_set() {
         // SAFETY: Tests run in isolated processes under nextest; no concurrent
         // threads are reading environment variables.
         unsafe { std::env::set_var("XDG_CONFIG_HOME", "/tmp/bc_test_xdg_9f3a") }
-        let paths = user_config_paths();
+        let paths: Vec<_> = config_file_paths().collect();
         // SAFETY: Same as above — isolated process, no concurrent env access.
         unsafe { std::env::remove_var("XDG_CONFIG_HOME") }
         assert!(
@@ -496,11 +480,11 @@ mod tests {
     }
 
     #[test]
-    fn user_config_paths_ignores_relative_xdg_config_home() {
+    fn config_file_paths_ignores_relative_xdg_config_home() {
         // SAFETY: Tests run in isolated processes under nextest; no concurrent
         // threads are reading environment variables.
         unsafe { std::env::set_var("XDG_CONFIG_HOME", "relative/path") }
-        let paths = user_config_paths();
+        let paths: Vec<_> = config_file_paths().collect();
         // SAFETY: Same as above — isolated process, no concurrent env access.
         unsafe { std::env::remove_var("XDG_CONFIG_HOME") }
         assert!(
@@ -510,10 +494,9 @@ mod tests {
     }
 
     #[test]
-    fn user_config_paths_has_no_duplicates() {
-        let paths = user_config_paths();
+    fn config_file_paths_has_no_duplicates() {
         let mut seen = std::collections::HashSet::new();
-        for p in &paths {
+        for p in config_file_paths() {
             assert!(seen.insert(p.clone()), "duplicate path found: {p:?}");
         }
     }
