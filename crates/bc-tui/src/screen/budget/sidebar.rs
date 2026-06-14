@@ -319,7 +319,7 @@ mod tests {
         Envelope::builder()
             .name(name)
             .period(bc_models::Period::Monthly)
-            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .rollover_policy(bc_models::EnvelopeRolloverPolicy::ResetToZero)
             .created_at(jiff::Timestamp::now())
             .build()
     }
@@ -330,7 +330,7 @@ mod tests {
             .name(name)
             .parent_id(parent_id)
             .period(bc_models::Period::Monthly)
-            .rollover_policy(bc_models::RolloverPolicy::ResetToZero)
+            .rollover_policy(bc_models::EnvelopeRolloverPolicy::ResetToZero)
             .created_at(jiff::Timestamp::now())
             .build()
     }

@@ -92,6 +92,7 @@ macro_rules! define_id {
 }
 
 mod account;
+mod budget;
 mod budget_window;
 mod commodity;
 mod envelope;
@@ -111,6 +112,13 @@ pub use account::AccountId;
 pub use account::Kind as AccountKind;
 pub use account::Type as AccountType;
 pub use account::ValidationError as AccountValidationError;
+pub use budget::Budget;
+pub use budget::BudgetAllocation;
+pub use budget::BudgetAllocationBuilder;
+pub use budget::BudgetAllocationId;
+pub use budget::BudgetBuilder;
+pub use budget::BudgetId;
+pub use budget::RolloverPolicy;
 pub use budget_window::BudgetWindow;
 pub use commodity::Commodity;
 pub use commodity::CommodityBuilder;
@@ -121,7 +129,7 @@ pub use envelope::AllocationId;
 pub use envelope::Envelope;
 pub use envelope::EnvelopeBuilder;
 pub use envelope::EnvelopeId;
-pub use envelope::RolloverPolicy;
+pub use envelope::RolloverPolicy as EnvelopeRolloverPolicy;
 pub use event::EventId;
 pub use import_batch::ImportBatchId;
 pub use loan::AmortizationRow;

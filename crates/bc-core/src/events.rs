@@ -8,10 +8,10 @@ use bc_models::Amount;
 use bc_models::CommodityCode;
 use bc_models::DepreciationId;
 use bc_models::EnvelopeId;
+use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
 use bc_models::EventId;
 use bc_models::LoanId;
 use bc_models::Period;
-use bc_models::RolloverPolicy;
 use bc_models::TagId;
 use bc_models::TransactionId;
 use bc_models::ValuationId;
@@ -611,8 +611,8 @@ mod tests {
         use bc_models::CommodityCode;
         use bc_models::Decimal;
         use bc_models::EnvelopeId;
+        use bc_models::EnvelopeRolloverPolicy as RolloverPolicy;
         use bc_models::Period;
-        use bc_models::RolloverPolicy;
         use bc_models::TagId;
 
         let store = SqliteStore::new(pool.clone());
