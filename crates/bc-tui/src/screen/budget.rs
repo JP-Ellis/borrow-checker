@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn open_allocate_without_selection_is_noop() {
         let mut screen = BudgetScreen::new(make_ctx());
-        // No envelope selected — OpenAllocate should be a no-op.
+        // No budget selected — OpenAllocate should be a no-op.
         let result = screen.handle(Msg::Budget(BudgetMsg::OpenAllocate));
         pretty_assertions::assert_eq!(result, None);
         pretty_assertions::assert_eq!(screen.pending_form, false);
