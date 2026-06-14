@@ -91,7 +91,11 @@ docker run --rm \
     # Build and setup without fake time: libfaketime shifts the clock backward,
     # causing TLS cert validation to fail when the fake date precedes the cert
     # notBefore date, which makes trunk hang while downloading wasm-opt.
+    # bc-seed is also built here so it is never invoked via `cargo run` under
+    # libfaketime — libfaketime interferes with Rust's futex-based thread
+    # synchronisation during compiler startup, causing the build to hang.
     mise run //crates/bc-app:build:debug
+    cargo build -p bc-seed
     # Populate node_modules from the image pre-built copy when the cache is empty.
     # aube is a global mise tool so it is absent from mise run PATH; copying the
     # pre-built modules from the image avoids needing to call aube install here.
@@ -99,14 +103,8 @@ docker run --rm \
         cp -rn /build/e2e/node_modules/. /repo/e2e/node_modules/
 
     LIBFAKETIME="$(ls /usr/lib/*/faketime/libfaketime.so.1 2>/dev/null | head -1)"
-    # Use the pre-built workspace binary when available (compiled on the host with
-    # Swatinem cache and hard-linked into .linux-cache/target before docker run).
-    SEED_BIN=""
-    if /repo/target/debug/bc-seed --help >/dev/null 2>&1; then
-      SEED_BIN="/repo/target/debug/bc-seed"
-    fi
     cd /repo/e2e
-    LD_PRELOAD="$LIBFAKETIME" SEED_BIN="$SEED_BIN" SKIP_BUILD=1 aubx wdio run wdio.conf.ts; STATUS=$?
+    LD_PRELOAD="$LIBFAKETIME" SEED_BIN="/repo/target/debug/bc-seed" SKIP_BUILD=1 aubx wdio run wdio.conf.ts; STATUS=$?
     kill $XVFB_PID 2>/dev/null
     exit $STATUS'
 '''
