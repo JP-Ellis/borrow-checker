@@ -165,10 +165,19 @@ impl BudgetScreen {
             eprintln!("no budget selected");
             return;
         };
+        // Fetch the budget to resolve the canonical period start.
+        let budget = match self.ctx.block_on(self.ctx.budgets.get(budget_id)) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("failed to fetch budget for allocation: {e}");
+                return;
+            }
+        };
         let today = jiff::Zoned::now().date();
+        let period_start = budget.period().range_containing(today).0;
         match self
             .ctx
-            .block_on(self.ctx.budgets.allocate(budget_id, today, amount))
+            .block_on(self.ctx.budgets.allocate(budget_id, period_start, amount))
         {
             Ok(_) => {}
             Err(e) => eprintln!("failed to allocate: {e}"),
