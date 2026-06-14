@@ -1,5 +1,6 @@
 //! Transaction register row and inline expanded detail panel.
 
+// Kept in a separate file so cargo nextest can run its tests on the native target.
 pub(crate) mod label;
 
 use bc_ipc::Transaction;
