@@ -1,0 +1,12 @@
+---
+source: crates/bc-cli/tests/cli/budget.rs
+assertion_line: 295
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+ BUDGET           | PERIOD                  | ALLOCATED | ACTUALS | AVAILABLE 
+==============================================================================
+ Groceries Budget | 2030-01-01 – 2030-01-31 | 500 AUD   | 0 AUD   | 500 AUD   
+----- stderr -----
