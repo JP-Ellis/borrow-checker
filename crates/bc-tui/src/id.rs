@@ -60,9 +60,9 @@ pub enum AccountsId {
     reason = "referenced externally as id::BudgetId; repetition is intentional"
 )]
 pub enum BudgetId {
-    /// Envelope tree sidebar.
+    /// Budget tree sidebar.
     Sidebar,
-    /// Envelope status detail panel.
+    /// Budget status detail panel.
     Detail,
     /// Allocation form overlay.
     AllocationForm,

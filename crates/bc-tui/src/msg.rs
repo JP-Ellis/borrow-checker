@@ -40,7 +40,7 @@ pub enum Msg {
 pub enum Tab {
     /// Account tree + transaction list/detail.
     Accounts,
-    /// Envelope tree + budget status.
+    /// Budget tree + budget status.
     Budget,
     /// Report selector + output.
     Reports,
@@ -131,7 +131,7 @@ pub enum AccountsMsg {
 pub enum BudgetMsg {
     /// User selected a different budget in the sidebar.
     BudgetSelected(bc_models::BudgetId),
-    /// User wants to allocate funds to the selected envelope.
+    /// User wants to allocate funds to the selected budget.
     OpenAllocate,
     /// User cancelled an open form.
     FormCancelled,
