@@ -1,5 +1,8 @@
 //! Pure-Rust helper for deriving the envelope column label.
 
+/// Sentinel displayed when a transaction spans multiple account types.
+pub(crate) const SPLIT_LABEL: &str = "split transaction";
+
 /// Derives the envelope column label from a list of counterpart account names.
 ///
 /// - Zero counterparts → `"—"`
@@ -19,7 +22,8 @@
 ///
 /// # Example
 ///
-/// ```no_run
+/// ```ignore
+/// // pub(crate) — tested via unit tests in this module.
 /// assert_eq!(
 ///     envelope_label(&["Expenses :: Groceries", "Expenses :: Healthcare"]),
 ///     "Expenses :: {Groceries, Healthcare}"
@@ -31,7 +35,7 @@ pub(crate) fn envelope_label(counterpart_names: &[&str]) -> String {
         [single] => (*single).to_owned(),
         names => {
             let paths: Vec<Vec<&str>> = names.iter().map(|n| n.split(" :: ").collect()).collect();
-            expand_trie(&paths).unwrap_or_else(|| "split transaction".to_owned())
+            expand_trie(&paths).unwrap_or_else(|| SPLIT_LABEL.to_owned())
         }
     }
 }
@@ -106,8 +110,12 @@ fn expand_trie(paths: &[Vec<&str>]) -> Option<String> {
         })
         .collect();
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "guarded by group_strs.len() == 1 check immediately above"
+    )]
     Some(if group_strs.len() == 1 {
-        format!("{prefix} :: {}", group_strs.join(""))
+        format!("{prefix} :: {}", group_strs[0])
     } else {
         format!("{prefix} :: {{{}}}", group_strs.join(", "))
     })
@@ -201,6 +209,17 @@ mod tests {
         assert_eq!(
             envelope_label(&["Expenses :: Groceries", "Expenses :: Groceries"]),
             "Expenses :: Groceries"
+        );
+    }
+
+    #[test]
+    fn shorter_path_prefix_of_longer_is_collapsed() {
+        // When one path is a strict prefix of another, the algorithm drops the
+        // shorter path's leaf and produces the longer path. This pins the
+        // current behaviour so regressions are visible.
+        assert_eq!(
+            envelope_label(&["Expenses :: Food", "Expenses :: Food :: Groceries"]),
+            "Expenses :: Food :: Groceries"
         );
     }
 }

@@ -39,10 +39,11 @@ fn EnvelopeCell(
     label: String,
 ) -> impl IntoView {
     let span_ref = NodeRef::<leptos::html::Span>::new();
-    let is_split = label == "split transaction";
+    let is_split = label == label::SPLIT_LABEL;
     let use_fallback = RwSignal::new(is_split);
     let label = StoredValue::new(label);
 
+    // Two-pass render: overflow cannot be measured before first paint.
     Effect::new(move |_| {
         if let Some(el) = span_ref.get()
             && el.scroll_width() > el.client_width()
@@ -63,7 +64,7 @@ fn EnvelopeCell(
             node_ref=span_ref
         >
             {move || {
-                if use_fallback.get() { "split transaction".to_owned() } else { label.get_value() }
+                if use_fallback.get() { label::SPLIT_LABEL.to_owned() } else { label.get_value() }
             }}
         </span>
     }
