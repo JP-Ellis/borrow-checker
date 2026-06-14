@@ -802,6 +802,106 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn budget_created_payload_round_trips(pool: sqlx::SqlitePool) {
+        let store = SqliteStore::new(pool.clone());
+        let budget_id = BudgetId::new();
+        let account_id = AccountId::new();
+        let event = Event::BudgetCreated {
+            budget_id: budget_id.clone(),
+            account_id: account_id.clone(),
+            tag_filter: None,
+            name: Some("Groceries Budget".to_owned()),
+            target: Some(Amount::new(
+                Decimal::from(600_i32),
+                CommodityCode::new("AUD"),
+            )),
+            period: Period::Monthly,
+            rollover: bc_models::RolloverPolicy::ResetToZero,
+        };
+
+        store.append(&event).await.expect("append should succeed");
+
+        let records = store
+            .replay_for(&budget_id.to_string())
+            .await
+            .expect("replay should succeed");
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records.first().expect("record should exist").kind,
+            "BudgetCreated"
+        );
+
+        let replayed: Event = serde_json::from_str(&records.first().expect("record").payload)
+            .expect("payload should deserialise");
+
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "Event is #[non_exhaustive]; wildcard arm required"
+        )]
+        match replayed {
+            Event::BudgetCreated {
+                budget_id: rid,
+                account_id: raid,
+                tag_filter,
+                name,
+                target,
+                period,
+                rollover,
+            } => {
+                assert_eq!(rid, budget_id);
+                assert_eq!(raid, account_id);
+                assert_eq!(tag_filter, None);
+                assert_eq!(name, Some("Groceries Budget".to_owned()));
+                assert_eq!(
+                    target,
+                    Some(Amount::new(
+                        Decimal::from(600_i32),
+                        CommodityCode::new("AUD")
+                    ))
+                );
+                assert_eq!(period, Period::Monthly);
+                assert_eq!(rollover, bc_models::RolloverPolicy::ResetToZero);
+            }
+            other => panic!("expected BudgetCreated, got {other:?}"),
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn budget_allocated_round_trips(pool: sqlx::SqlitePool) {
+        let store = SqliteStore::new(pool.clone());
+        let budget_id = BudgetId::new();
+        let event = Event::BudgetAllocated {
+            budget_id: budget_id.clone(),
+            period_start: Date::constant(2026, 3, 1),
+            amount: Amount::new(Decimal::from(500_i32), CommodityCode::new("AUD")),
+        };
+
+        store.append(&event).await.expect("append should succeed");
+
+        let records = store
+            .replay_for(&budget_id.to_string())
+            .await
+            .expect("replay");
+        assert_eq!(records.first().expect("one").kind, "BudgetAllocated");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn budget_archived_round_trips(pool: sqlx::SqlitePool) {
+        let store = SqliteStore::new(pool.clone());
+        let budget_id = BudgetId::new();
+        let event = Event::BudgetArchived {
+            budget_id: budget_id.clone(),
+        };
+
+        store.append(&event).await.expect("append");
+        let records = store
+            .replay_for(&budget_id.to_string())
+            .await
+            .expect("replay");
+        assert_eq!(records.first().expect("one").kind, "BudgetArchived");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn account_created_payload_round_trips(pool: sqlx::SqlitePool) {
         use bc_models::AccountKind;
         use bc_models::AccountType;
