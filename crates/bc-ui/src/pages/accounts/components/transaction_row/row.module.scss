@@ -105,6 +105,11 @@
   @media (min-width: #{bp.$bp-md}) { display: block; }
 }
 
+.envelope_split {
+  color: var(--bc-ink-mute);
+  font-style: italic;
+}
+
 .amount {
   font-family: var(--bc-font-mono);
   font-size: var(--bc-text-body);
