@@ -287,14 +287,14 @@ mod tests {
     }
 
     #[test]
-    fn envelope_sidebar_on_unknown_event_returns_none() {
+    fn budget_sidebar_on_unknown_event_returns_none() {
         let mut sidebar = BudgetSidebar::new(&[]);
         let result = sidebar.on(&Event::None);
         assert_eq!(result, None);
     }
 
     #[test]
-    fn envelope_sidebar_right_on_empty_tree_emits_redraw() {
+    fn budget_sidebar_right_on_empty_tree_emits_redraw() {
         let mut sidebar = BudgetSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Right,
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn envelope_sidebar_a_key_emits_open_allocate() {
+    fn budget_sidebar_a_key_emits_open_allocate() {
         let mut sidebar = BudgetSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('a'),
