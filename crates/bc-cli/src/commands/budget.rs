@@ -21,11 +21,7 @@ pub struct Args {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// List all active budgets.
-    List {
-        /// Include archived budgets.
-        #[arg(long)]
-        archived: bool,
-    },
+    List,
     /// Create a new budget anchored to an account.
     Create {
         /// Account ID to anchor this budget to.
@@ -133,7 +129,7 @@ pub enum RolloverArg {
 #[inline]
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
-        Command::List { archived } => list(ctx, archived).await,
+        Command::List => list(ctx).await,
         Command::Create {
             account,
             tag_filter,
@@ -172,8 +168,8 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     }
 }
 
-/// List all active (and optionally archived) budgets.
-async fn list(ctx: &AppContext, _archived: bool) -> CliResult<()> {
+/// List all active budgets.
+async fn list(ctx: &AppContext) -> CliResult<()> {
     let budgets = ctx.budgets.list().await?;
 
     if ctx.json {
@@ -263,15 +259,20 @@ async fn create(
         RolloverArg::CapAtTarget => RolloverPolicy::CapAtTarget,
     };
 
-    let target_amount = target
-        .zip(commodity.as_deref())
-        .map(|(amt, c)| Amount::new(amt, CommodityCode::new(c)));
-
     if target.is_some() && commodity.is_none() {
         return Err(CliError::Arg(
             "--commodity is required when --target is set".to_owned(),
         ));
     }
+    if commodity.is_some() && target.is_none() {
+        return Err(CliError::Arg(
+            "--target is required when --commodity is set".to_owned(),
+        ));
+    }
+
+    let target_amount = target
+        .zip(commodity.as_deref())
+        .map(|(amt, c)| Amount::new(amt, CommodityCode::new(c)));
 
     let budget = ctx
         .budgets

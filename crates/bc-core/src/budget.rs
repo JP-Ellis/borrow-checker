@@ -342,6 +342,9 @@ impl BudgetService {
     /// Returns [`crate::BcError`] on event append or database update failure.
     #[inline]
     pub async fn archive(&self, id: &bc_models::BudgetId) -> crate::BcResult<()> {
+        // Verify budget exists before opening the transaction.
+        let _budget = self.get(id).await?;
+
         let now = jiff::Timestamp::now();
         let event = crate::events::Event::BudgetArchived {
             budget_id: id.clone(),
@@ -350,16 +353,11 @@ impl BudgetService {
         let mut db_tx = self.pool.begin().await?;
         crate::events::insert_event(&event, &mut db_tx).await?;
 
-        let result =
-            sqlx::query("UPDATE budgets SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
-                .bind(now.to_string())
-                .bind(id.to_string())
-                .execute(&mut *db_tx)
-                .await?;
-
-        if result.rows_affected() == 0 {
-            return Err(crate::BcError::NotFound(id.to_string()));
-        }
+        sqlx::query("UPDATE budgets SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
+            .bind(now.to_string())
+            .bind(id.to_string())
+            .execute(&mut *db_tx)
+            .await?;
 
         db_tx.commit().await?;
         tracing::info!(budget_id = %id, "budget archived");
@@ -758,6 +756,15 @@ impl BudgetStatusEngine {
                 .checked_sub(jiff::Span::new().days(1_i32))
                 .map_err(|e| crate::BcError::BadData(format!("period underflow: {e}")))?;
             let (prev_start, prev_end) = budget.period().range_containing(prev_period_date);
+
+            // Don't recurse before the budget itself existed.
+            let budget_epoch = budget
+                .period()
+                .range_containing(budget.created_at().to_zoned(jiff::tz::TimeZone::UTC).date())
+                .0;
+            if prev_start < budget_epoch {
+                return Ok(bc_models::Decimal::ZERO);
+            }
 
             let svc = BudgetService::new(self.pool.clone());
             let prev_alloc = svc.get_allocation(budget.id(), prev_start).await?;
