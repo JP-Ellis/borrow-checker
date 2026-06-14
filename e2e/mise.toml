@@ -19,6 +19,11 @@ run         = "aubx wdio run wdio.conf.ts"
 #   container:build  — build bc-e2e-native from the local Containerfile
 #   container:pull   — pull the pinned digest from GHCR (requires login)
 #
+# The main `container` task delegates to three sub-tasks:
+#   container:cache-dirs          — create .linux-cache/ dirs as the current user
+#   container:linux-node-modules  — copy node_modules from the image (once per image)
+#   container:linux-build         — compile bc-app + bc-seed inside the container
+#
 # `container` uses whichever image is available; CI pulls the pinned image
 # and the update-e2e-snapshots workflow rebuilds and re-pins it monthly.
 
@@ -51,27 +56,67 @@ IMAGE="$(cat {{config_root}}/.container-image 2>/dev/null)"
 docker pull "$IMAGE"
 """
 
-[tasks.container]
-description = "Run E2E tests in a Linux container with a frozen clock for reproducible snapshots"
-run         = '''
-#!/usr/bin/env bash
-# Create Linux-specific cache dirs so Docker does not create them as root.
+[tasks."container:cache-dirs"]
+description = "Create .linux-cache directories on the host (prevents Docker from owning them as root)"
+run         = """
 mkdir -p "{{config_root}}/../.linux-cache/target" \
          "{{config_root}}/../.linux-cache/node_modules" \
          "{{config_root}}/../.linux-cache/trunk"
+"""
 
-# Use the pinned GHCR image when available; fall back to a locally-built image.
-IMAGE_FILE="{{config_root}}/.container-image"
-IMAGE="$(cat "$IMAGE_FILE" 2>/dev/null)"
-if [[ -z "$IMAGE" ]]; then
-  IMAGE=bc-e2e-native
-fi
+[tasks."container:linux-node-modules"]
+description = "Copy node_modules from the container image into the Linux cache (once per image)"
+depends     = ["container:cache-dirs"]
+sources     = ["package.json", "aube-lock.yaml", "../.container-image"]
+outputs     = ["../.linux-cache/node_modules/.aube-state/state.json"]
+run         = '''
+#!/usr/bin/env bash
+IMAGE="$(cat {{config_root}}/.container-image 2>/dev/null || echo bc-e2e-native)"
+docker run --rm \
+  -v "{{config_root}}/../.linux-cache/node_modules:/repo/e2e/node_modules" \
+  "$IMAGE" \
+  bash -c 'cp -rn /build/e2e/node_modules/. /repo/e2e/node_modules/'
+'''
 
+[tasks."container:linux-build"]
+description = "Compile bc-app and bc-seed inside the Linux container (skipped when sources unchanged)"
+depends     = ["container:cache-dirs"]
+sources     = [
+  "../crates/**/*.rs",
+  "../crates/**/*.scss",
+  "../crates/**/*.html",
+  "../Cargo.toml",
+  "../Cargo.lock",
+  "../crates/**/Cargo.toml",
+  "../.container-image",
+]
+outputs     = [
+  "../.linux-cache/target/debug/bc-app",
+  "../.linux-cache/target/debug/bc-seed",
+]
+run         = '''
+#!/usr/bin/env bash
+IMAGE="$(cat {{config_root}}/.container-image 2>/dev/null || echo bc-e2e-native)"
+docker run --rm \
+  -v "{{config_root}}/..:/repo" \
+  -v "{{config_root}}/../.linux-cache/target:/repo/target" \
+  -v "{{config_root}}/../.linux-cache/trunk:/root/.cache/trunk" \
+  "$IMAGE" \
+  bash -c 'set -euo pipefail
+    mise run //crates/bc-app:build:debug
+    cargo build -p bc-seed'
+'''
+
+[tasks.container]
+description = "Run E2E tests in a Linux container with a frozen clock for reproducible snapshots"
+depends     = ["container:linux-build", "container:linux-node-modules"]
+run         = '''
+#!/usr/bin/env bash
+IMAGE="$(cat {{config_root}}/.container-image 2>/dev/null || echo bc-e2e-native)"
 # Frozen wall-clock date for reproducible visual baselines.
 # FAKETIME_DONT_FAKE_MONOTONIC preserves the monotonic clock so that
 # WebdriverIO waitFor timeouts fire correctly despite the fake wall clock.
 FAKE_NOW="2025-01-15 12:00:00"
-
 docker run --rm \
   -v "{{config_root}}/..:/repo" \
   -v "{{config_root}}/../.linux-cache/target:/repo/target" \
@@ -88,20 +133,6 @@ docker run --rm \
     XVFB_PID=$!
     trap "kill $XVFB_PID 2>/dev/null" EXIT
     sleep 1
-    # Build and setup without fake time: libfaketime shifts the clock backward,
-    # causing TLS cert validation to fail when the fake date precedes the cert
-    # notBefore date, which makes trunk hang while downloading wasm-opt.
-    # bc-seed is also built here so it is never invoked via `cargo run` under
-    # libfaketime — libfaketime interferes with Rust futex-based thread
-    # synchronisation during compiler startup, causing the build to hang.
-    mise run //crates/bc-app:build:debug
-    cargo build -p bc-seed
-    # Populate node_modules from the image pre-built copy when the cache is empty.
-    # aube is a global mise tool so it is absent from mise run PATH; copying the
-    # pre-built modules from the image avoids needing to call aube install here.
-    [[ -d /repo/e2e/node_modules/.aube-state ]] || \
-        cp -rn /build/e2e/node_modules/. /repo/e2e/node_modules/
-
     LIBFAKETIME="$(ls /usr/lib/*/faketime/libfaketime.so.1 2>/dev/null | head -1)"
     cd /repo/e2e
     LD_PRELOAD="$LIBFAKETIME" SEED_BIN="/repo/target/debug/bc-seed" SKIP_BUILD=1 aubx wdio run wdio.conf.ts; STATUS=$?
