@@ -5,7 +5,7 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Manage budget envelopes: hierarchy, allocate, status
+Manage budgets: create, list, allocate, archive, status
 
 Usage: borrow-checker budget [OPTIONS] <COMMAND>
 

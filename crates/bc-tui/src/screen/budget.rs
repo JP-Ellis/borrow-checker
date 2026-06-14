@@ -50,7 +50,7 @@ pub struct BudgetScreen {
     selected_budget: Option<bc_models::BudgetId>,
     /// Budget status for the currently selected budget.
     selected_status: Option<BudgetStatus>,
-    /// Whether envelopes are currently being loaded from the database.
+    /// Whether budgets are currently being loaded from the database.
     loading: bool,
     /// Whether the detail panel needs to be updated on the next `view()` call.
     detail_dirty: bool,
@@ -60,7 +60,7 @@ pub struct BudgetScreen {
     form_mounted: bool,
     /// Whether to move keyboard focus to the detail panel after the next detail remount.
     focus_detail_after_dirty: bool,
-    /// Ordered list of period presets built when an envelope is selected.
+    /// Ordered list of period presets built when a budget is selected.
     window_presets: Vec<bc_models::BudgetWindow>,
     /// Index into `window_presets` for the currently displayed period.
     selected_window_idx: usize,
@@ -258,7 +258,7 @@ impl BudgetScreen {
 impl Screen for BudgetScreen {
     /// Mount the budget screen components into the application.
     ///
-    /// Loads envelopes from the database, then mounts the sidebar and detail components.
+    /// Loads budgets from the database, then mounts the sidebar and detail components.
     ///
     /// # Errors
     ///
@@ -431,7 +431,7 @@ impl Screen for BudgetScreen {
 
     /// Returns the keybindings for the budget screen in the given mode.
     ///
-    /// - Normal: 4 bindings (navigation, select envelope, allocate funds)
+    /// - Normal: 4 bindings (navigation, select budget, allocate funds)
     /// - Insert: 4 bindings (form submit/cancel, next/previous field)
     /// - Visual: empty (visual mode is not used in this screen)
     #[inline]
@@ -566,7 +566,7 @@ mod tests {
         let mut screen = BudgetScreen::new(make_ctx());
         screen.pending_form = true;
         screen.form_mounted = true;
-        // Invalid amount — allocate_to_envelope logs to stderr and returns early.
+        // Invalid amount — allocate_to_budget logs to stderr and returns early.
         let result = screen.handle(Msg::Budget(BudgetMsg::FormSubmitted {
             amount: String::new(),
         }));
