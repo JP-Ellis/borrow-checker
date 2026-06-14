@@ -21,64 +21,12 @@ fn list_budgets_empty() {
 #[test]
 fn create_budget_monthly_and_list() {
     let ctx = TestContext::new();
+    let acc_id = create_expense_account(&ctx);
+    let _budget_id = create_budget(&ctx, &acc_id);
 
-    // Create an expense account to anchor the budget to.
-    let acc_out = ctx
-        .command()
-        .args([
-            "--json",
-            "account",
-            "create",
-            "--name",
-            "Groceries",
-            "--type",
-            "expense",
-            "--kind",
-            "deposit-account",
-        ])
-        .output()
-        .expect("command executed");
-    assert!(
-        acc_out.status.success(),
-        "account create should succeed: {}",
-        String::from_utf8_lossy(&acc_out.stderr)
-    );
-    let acc_json: serde_json::Value = serde_json::from_slice(&acc_out.stdout).expect("valid JSON");
-    let acc_id = acc_json
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .expect("account id");
-
-    // Create a budget anchored to that account.
-    let budget_out = ctx
-        .command()
-        .args([
-            "--json",
-            "budget",
-            "create",
-            "--account",
-            acc_id,
-            "--name",
-            "Groceries Budget",
-            "--period",
-            "monthly",
-            "--rollover",
-            "reset-to-zero",
-        ])
-        .output()
-        .expect("command executed");
-    assert!(
-        budget_out.status.success(),
-        "budget create should succeed: {}",
-        String::from_utf8_lossy(&budget_out.stderr)
-    );
-    let budget_json: serde_json::Value =
-        serde_json::from_slice(&budget_out.stdout).expect("valid JSON");
-    assert_eq!(
-        budget_json.get("name").and_then(serde_json::Value::as_str),
-        Some("Groceries Budget"),
-        "name should be persisted"
-    );
+    let mut cmd = ctx.command();
+    cmd.args(["budget", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
 }
 
 /// Helper: create an expense account and return its ID string.
@@ -153,12 +101,10 @@ fn archive_budget() {
     let acc_id = create_expense_account(&ctx);
     let budget_id = create_budget(&ctx, &acc_id);
 
-    // Archive the budget.
     let mut archive_cmd = ctx.command();
     archive_cmd.args(["budget", "archive", &budget_id]);
     cmd_snapshot!(ctx, &mut archive_cmd);
 
-    // List should now be empty.
     let mut list_cmd = ctx.command();
     list_cmd.args(["budget", "list"]);
     cmd_snapshot!(ctx, &mut list_cmd);
@@ -200,8 +146,8 @@ fn reallocate_updates_amount() {
     let acc_id = create_expense_account(&ctx);
     let budget_id = create_budget(&ctx, &acc_id);
 
-    // First allocation: 500 AUD.
-    ctx.command()
+    let first_out = ctx
+        .command()
         .args([
             "--json",
             "budget",
@@ -217,8 +163,12 @@ fn reallocate_updates_amount() {
         ])
         .output()
         .expect("first allocate executed");
+    assert!(
+        first_out.status.success(),
+        "first allocate should succeed: {}",
+        String::from_utf8_lossy(&first_out.stderr)
+    );
 
-    // Second allocation: 300 AUD — re-allocates, overwrites first.
     let mut second_cmd = ctx.command();
     second_cmd.args([
         "budget",
@@ -234,7 +184,7 @@ fn reallocate_updates_amount() {
     ]);
     cmd_snapshot!(ctx, &mut second_cmd);
 
-    // Third allocation: 200 AUD — verify final stored value via JSON.
+    // Verify the allocation is overwritten (not accumulated).
     let third_out = ctx
         .command()
         .args([
@@ -264,10 +214,7 @@ fn reallocate_updates_amount() {
         .and_then(|a| a.get("value"))
         .and_then(serde_json::Value::as_str)
         .expect("amount.value");
-    assert_eq!(
-        amount_value, "200",
-        "final allocation should be 200, not 700"
-    );
+    assert_eq!(amount_value, "200");
 }
 
 #[test]
@@ -276,8 +223,8 @@ fn budget_status_with_allocation() {
     let acc_id = create_expense_account(&ctx);
     let budget_id = create_budget(&ctx, &acc_id);
 
-    // Allocate 500 AUD for 2030-01.
-    ctx.command()
+    let alloc_out = ctx
+        .command()
         .args([
             "--json",
             "budget",
@@ -293,8 +240,12 @@ fn budget_status_with_allocation() {
         ])
         .output()
         .expect("allocate executed");
+    assert!(
+        alloc_out.status.success(),
+        "allocate should succeed: {}",
+        String::from_utf8_lossy(&alloc_out.stderr)
+    );
 
-    // Status as of mid-January.
     let mut cmd = ctx.command();
     cmd.args(["budget", "status", "--as-of", "2030-01-15"]);
     cmd_snapshot!(ctx, &mut cmd);
