@@ -105,7 +105,7 @@ fn tx_split_cross_type() -> Transaction {
     Transaction::new(
         "tx-cross-qa",
         "2026-06-13",
-        "test",
+        "Cross-Type Merchant",
         TxStatus::Pending,
         vec![],
         vec![
