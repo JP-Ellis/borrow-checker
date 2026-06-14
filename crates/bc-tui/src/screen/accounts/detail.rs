@@ -65,7 +65,7 @@ impl TxDetail {
     ///
     /// If no transaction is set, returns the placeholder text.
     /// Otherwise formats: Date, Payee, Description (if non-empty),
-    /// Status, and all postings with their accounts, amounts, and envelope.
+    /// Status, and all postings with their accounts, amounts, and budget.
     #[inline]
     fn render_content(&self) -> String {
         match &self.transaction {
