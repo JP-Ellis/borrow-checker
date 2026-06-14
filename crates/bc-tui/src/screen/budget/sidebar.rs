@@ -1,12 +1,10 @@
-//! Envelope tree sidebar component.
+//! Budget list sidebar component.
 //!
-//! Renders the full envelope hierarchy as a navigable tree using
+//! Renders a flat list of budgets as a navigable tree using
 //! [`tui_tree_widget::Tree`] and [`tui_tree_widget::TreeState`].
 //!
-//! Selection changes emit [`crate::msg::BudgetMsg::EnvelopeSelected`].
+//! Selection changes emit [`crate::msg::BudgetMsg::BudgetSelected`].
 
-use bc_models::Envelope;
-use bc_models::EnvelopeId;
 use tui_tree_widget::Tree;
 use tui_tree_widget::TreeItem;
 use tui_tree_widget::TreeState;
@@ -35,104 +33,43 @@ use tuirealm::state::StateValue;
 use crate::msg::BudgetMsg;
 use crate::msg::Msg;
 
-// MARK: helper
-
-/// Recursively build a [`TreeItem`] for `envelope` and all of its descendants
-/// found in `all`.
-///
-/// # Arguments
-///
-/// * `envelope` - The envelope to build a tree item for.
-/// * `all`      - The full flat list of envelopes used to find children.
-///
-/// # Returns
-///
-/// An owned `TreeItem<'static, EnvelopeId>` representing the envelope and its
-/// subtree.
-fn build_item_owned(envelope: &Envelope, all: &[Envelope]) -> TreeItem<'static, EnvelopeId> {
-    let children: Vec<TreeItem<'static, EnvelopeId>> = all
-        .iter()
-        .filter(|e| e.parent_id() == Some(envelope.id()))
-        .map(|child| build_item_owned(child, all))
-        .collect();
-
-    let name: String = envelope.name().to_owned();
-
-    if children.is_empty() {
-        TreeItem::new_leaf(envelope.id().clone(), name)
-    } else {
-        #[expect(
-            clippy::expect_used,
-            reason = "TreeItem::new panics only on duplicate IDs, which we guarantee won't happen \
-                      because EnvelopeId values are unique UUIDs"
-        )]
-        TreeItem::new(envelope.id().clone(), name, children)
-            .expect("envelope IDs are unique within a parent")
-    }
-}
-
-/// Returns `true` when `id` is the ID of an envelope that has at least one
-/// direct child in `all`.
-///
-/// # Arguments
-///
-/// * `id`  - The envelope ID to test.
-/// * `all` - The flat list of all envelopes.
-fn has_children(id: &EnvelopeId, all: &[Envelope]) -> bool {
-    all.iter().any(|e| e.parent_id() == Some(id))
-}
-
 // MARK: private component
 
-/// Raw widget that renders the envelope tree sidebar.
+/// Raw widget that renders the budget list sidebar.
 struct Sidebar {
     /// Component props storage.
     props: Props,
     /// Scrolling / selection state for the tree widget.
-    tree_state: TreeState<EnvelopeId>,
+    tree_state: TreeState<bc_models::BudgetId>,
     /// Pre-built tree items passed to [`Tree`] on each render.
-    tree_items: Vec<TreeItem<'static, EnvelopeId>>,
-    /// Flat list of all envelopes; used to check for children in event handling.
-    envelopes: Vec<Envelope>,
+    tree_items: Vec<TreeItem<'static, bc_models::BudgetId>>,
 }
 
 impl Sidebar {
-    /// Build a new `Sidebar` from a flat list of envelopes.
-    ///
-    /// Root envelopes (those without a `parent_id`) form the top-level nodes;
-    /// child envelopes are nested under their parent. The first root envelope,
-    /// if any, is opened by default so the user immediately sees its children.
+    /// Build a new `Sidebar` from a flat list of budgets.
     ///
     /// # Arguments
     ///
-    /// * `envelopes` - All envelopes to display, in any order.
+    /// * `budgets` - All budgets to display.
     ///
     /// # Returns
     ///
-    /// A new `Sidebar` with the tree fully built and the first root node open.
-    fn new(envelopes: Vec<Envelope>) -> Self {
-        let roots: Vec<&Envelope> = envelopes
+    /// A new `Sidebar` with the tree fully built.
+    fn new(budgets: &[bc_models::Budget]) -> Self {
+        let tree_items: Vec<TreeItem<'static, bc_models::BudgetId>> = budgets
             .iter()
-            .filter(|e| e.parent_id().is_none())
+            .map(|b| {
+                let label = b
+                    .name()
+                    .map_or_else(|| b.account_id().to_string(), str::to_owned);
+                TreeItem::new_leaf(b.id().clone(), label)
+            })
             .collect();
-
-        let tree_items: Vec<TreeItem<'static, EnvelopeId>> = roots
-            .iter()
-            .map(|root| build_item_owned(root, &envelopes))
-            .collect();
-
-        let mut tree_state: TreeState<EnvelopeId> = TreeState::default();
-
-        // Open the first root node so children are visible immediately.
-        if let Some(first_root) = roots.first() {
-            tree_state.open(vec![first_root.id().clone()]);
-        }
 
         Self {
             props: Props::default(),
-            tree_state,
+            tree_state: TreeState::default(),
             tree_items,
-            envelopes,
         }
     }
 }
@@ -141,7 +78,7 @@ impl Component for Sidebar {
     #[inline]
     #[expect(
         clippy::expect_used,
-        reason = "Tree::new fails only on duplicate identifiers; EnvelopeId values are unique UUIDs"
+        reason = "Tree::new fails only on duplicate identifiers; BudgetId values are unique UUIDs"
     )]
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         let focused = self
@@ -150,12 +87,12 @@ impl Component for Sidebar {
             .is_some_and(|v| matches!(*v, AttrValue::Flag(true)));
         let border_color = if focused { Color::Cyan } else { Color::White };
         let block = Block::default()
-            .title(" Envelopes ")
+            .title(" Budgets ")
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color));
         let tree = Tree::new(&self.tree_items)
-            .expect("envelope IDs are unique")
+            .expect("budget IDs are unique")
             .block(block)
             .highlight_style(Style::default().fg(Color::Yellow));
         frame.render_stateful_widget(tree, area, &mut self.tree_state);
@@ -207,11 +144,11 @@ impl Component for Sidebar {
 
 // MARK: public wrapper
 
-/// Tui-realm component wrapper for the envelope tree sidebar widget.
+/// Tui-realm component wrapper for the budget list sidebar widget.
 ///
 /// Handles keyboard navigation and emits
-/// [`BudgetMsg::EnvelopeSelected`](crate::msg::BudgetMsg::EnvelopeSelected)
-/// when the user confirms a leaf node. Pressing `'a'` emits
+/// [`BudgetMsg::BudgetSelected`](crate::msg::BudgetMsg::BudgetSelected)
+/// when the user confirms a budget. Pressing `'a'` emits
 /// [`BudgetMsg::OpenAllocate`](crate::msg::BudgetMsg::OpenAllocate).
 #[expect(
     clippy::module_name_repetitions,
@@ -225,20 +162,20 @@ pub struct EnvelopeSidebar {
 }
 
 impl EnvelopeSidebar {
-    /// Create a new `EnvelopeSidebar` displaying the given envelopes.
+    /// Create a new `EnvelopeSidebar` displaying the given budgets.
     ///
     /// # Arguments
     ///
-    /// * `envelopes` - Flat list of all envelopes to show in the tree.
+    /// * `budgets` - Flat list of all budgets to show.
     ///
     /// # Returns
     ///
     /// A new `EnvelopeSidebar` ready to be mounted.
     #[inline]
     #[must_use]
-    pub fn new(envelopes: Vec<Envelope>) -> Self {
+    pub fn new(budgets: &[bc_models::Budget]) -> Self {
         Self {
-            component: Sidebar::new(envelopes),
+            component: Sidebar::new(budgets),
         }
     }
 }
@@ -270,12 +207,11 @@ impl AppComponent<Msg, NoUserEvent> for EnvelopeSidebar {
                 ..
             }) => {
                 self.component.perform(Cmd::Move(Direction::Right));
-                // Emit EnvelopeSelected only when a leaf node is confirmed.
+                // Emit BudgetSelected when an item is confirmed.
                 if let State::Single(StateValue::String(ref s)) = self.component.state()
-                    && let Ok(id) = s.parse::<EnvelopeId>()
-                    && !has_children(&id, &self.component.envelopes)
+                    && let Ok(id) = s.parse::<bc_models::BudgetId>()
                 {
-                    return Some(Msg::Budget(BudgetMsg::EnvelopeSelected(id)));
+                    return Some(Msg::Budget(BudgetMsg::BudgetSelected(id)));
                 }
                 Some(Msg::Chrome(crate::msg::ChromeMsg::Redraw))
             }
@@ -314,38 +250,16 @@ mod tests {
     use crate::msg::BudgetMsg;
     use crate::msg::Msg;
 
-    /// Build a minimal [`Envelope`] with the given name and no parent.
-    fn make_envelope(name: &str) -> Envelope {
-        Envelope::builder()
-            .name(name)
-            .period(bc_models::Period::Monthly)
-            .rollover_policy(bc_models::EnvelopeRolloverPolicy::ResetToZero)
-            .created_at(jiff::Timestamp::now())
-            .build()
-    }
-
-    /// Build a child [`Envelope`] with a known parent ID.
-    fn make_child_envelope(name: &str, parent_id: EnvelopeId) -> Envelope {
-        Envelope::builder()
-            .name(name)
-            .parent_id(parent_id)
-            .period(bc_models::Period::Monthly)
-            .rollover_policy(bc_models::EnvelopeRolloverPolicy::ResetToZero)
-            .created_at(jiff::Timestamp::now())
-            .build()
-    }
-
     #[test]
     fn empty_sidebar_has_no_state() {
-        let sidebar = Sidebar::new(vec![]);
+        let sidebar = Sidebar::new(&[]);
         assert_eq!(sidebar.state(), State::None);
     }
 
     #[test]
     fn perform_move_down_on_empty_tree_does_not_panic() {
-        let mut sidebar = Sidebar::new(vec![]);
+        let mut sidebar = Sidebar::new(&[]);
         let result = sidebar.perform(Cmd::Move(Direction::Down));
-        // Either Changed(State::None) or CmdResult::NoChange are acceptable.
         assert!(matches!(
             result,
             CmdResult::Changed(_) | CmdResult::NoChange
@@ -353,44 +267,35 @@ mod tests {
     }
 
     #[test]
-    fn single_root_envelope_builds_tree() {
-        let env = make_envelope("Food");
-        let sidebar = Sidebar::new(vec![env]);
-        // Nothing is selected initially.
+    fn single_budget_builds_tree() {
+        let budget = bc_models::Budget::builder()
+            .account_id(bc_models::AccountId::new())
+            .period(bc_models::Period::Monthly)
+            .rollover(bc_models::RolloverPolicy::ResetToZero)
+            .created_at(jiff::Timestamp::now())
+            .build();
+        let sidebar = Sidebar::new(&[budget]);
         assert_eq!(sidebar.state(), State::None);
         assert_eq!(sidebar.tree_items.len(), 1);
     }
 
     #[test]
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "test asserts tree_items.len() == 1 immediately before indexing [0]"
-    )]
-    fn child_envelopes_are_nested_under_parent() {
-        let parent = make_envelope("Food");
-        let child = make_child_envelope("Groceries", parent.id().clone());
-        let sidebar = Sidebar::new(vec![parent, child]);
-        assert_eq!(sidebar.tree_items.len(), 1);
-        assert_eq!(sidebar.tree_items[0].children().len(), 1);
-    }
-
-    #[test]
     fn perform_unknown_cmd_returns_none() {
-        let mut sidebar = Sidebar::new(vec![]);
+        let mut sidebar = Sidebar::new(&[]);
         let result = sidebar.perform(Cmd::None);
         assert_eq!(result, CmdResult::NoChange);
     }
 
     #[test]
     fn envelope_sidebar_on_unknown_event_returns_none() {
-        let mut sidebar = EnvelopeSidebar::new(vec![]);
+        let mut sidebar = EnvelopeSidebar::new(&[]);
         let result = sidebar.on(&Event::None);
         assert_eq!(result, None);
     }
 
     #[test]
     fn envelope_sidebar_right_on_empty_tree_emits_redraw() {
-        let mut sidebar = EnvelopeSidebar::new(vec![]);
+        let mut sidebar = EnvelopeSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Right,
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -400,7 +305,7 @@ mod tests {
 
     #[test]
     fn j_key_emits_redraw() {
-        let mut sidebar = EnvelopeSidebar::new(vec![]);
+        let mut sidebar = EnvelopeSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('j'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -410,7 +315,7 @@ mod tests {
 
     #[test]
     fn k_key_emits_redraw() {
-        let mut sidebar = EnvelopeSidebar::new(vec![]);
+        let mut sidebar = EnvelopeSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('k'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -420,7 +325,7 @@ mod tests {
 
     #[test]
     fn h_key_emits_redraw() {
-        let mut sidebar = EnvelopeSidebar::new(vec![]);
+        let mut sidebar = EnvelopeSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('h'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -430,7 +335,7 @@ mod tests {
 
     #[test]
     fn bracket_key_emits_period_prev() {
-        let mut sidebar = EnvelopeSidebar::new(vec![]);
+        let mut sidebar = EnvelopeSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('['),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -440,7 +345,7 @@ mod tests {
 
     #[test]
     fn close_bracket_key_emits_period_next() {
-        let mut sidebar = EnvelopeSidebar::new(vec![]);
+        let mut sidebar = EnvelopeSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char(']'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
@@ -450,49 +355,11 @@ mod tests {
 
     #[test]
     fn envelope_sidebar_a_key_emits_open_allocate() {
-        let mut sidebar = EnvelopeSidebar::new(vec![]);
+        let mut sidebar = EnvelopeSidebar::new(&[]);
         let result = sidebar.on(&Event::Keyboard(KeyEvent {
             code: Key::Char('a'),
             modifiers: tuirealm::event::KeyModifiers::NONE,
         }));
         assert_eq!(result, Some(Msg::Budget(BudgetMsg::OpenAllocate)));
-    }
-
-    #[test]
-    fn envelope_sidebar_enter_selects_leaf_emits_msg() {
-        let parent = make_envelope("Food");
-        let child = make_child_envelope("Groceries", parent.id().clone());
-        let child_id = child.id().clone();
-        let mut sidebar = EnvelopeSidebar::new(vec![parent.clone(), child]);
-
-        // After Sidebar::new the first root is already opened, so we navigate
-        // down once to move selection to the first visible item (Food root),
-        // then down again to land on the child (Groceries).
-        sidebar.on(&Event::Keyboard(KeyEvent {
-            code: Key::Down,
-            modifiers: tuirealm::event::KeyModifiers::NONE,
-        }));
-        sidebar.on(&Event::Keyboard(KeyEvent {
-            code: Key::Down,
-            modifiers: tuirealm::event::KeyModifiers::NONE,
-        }));
-
-        // Press Enter — if Groceries is now selected it should emit EnvelopeSelected.
-        let msg = sidebar.on(&Event::Keyboard(KeyEvent {
-            code: Key::Enter,
-            modifiers: tuirealm::event::KeyModifiers::NONE,
-        }));
-
-        // The exact navigation path depends on the tree's internal state after
-        // two key_down calls without a prior render, so we only assert the
-        // message shape when the ID matches.
-        if let Some(Msg::Budget(BudgetMsg::EnvelopeSelected(ref id))) = msg {
-            assert!(
-                id == &child_id || id == parent.id(),
-                "selected ID should be one of the envelopes we inserted"
-            );
-        }
-        // If None is returned, navigation simply didn't land on a leaf yet —
-        // acceptable without a rendered frame.
     }
 }

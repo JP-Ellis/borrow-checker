@@ -35,10 +35,10 @@ pub struct TuiContext {
     pub assets: bc_core::AssetService,
     /// Loan terms and amortization service.
     pub loans: bc_core::LoanService,
-    /// Budget envelope service.
-    pub envelopes: bc_core::EnvelopeService,
-    /// Budget calculation engine.
-    pub budget: bc_core::BudgetEngine,
+    /// Budget service.
+    pub budgets: bc_core::BudgetService,
+    /// Budget status engine.
+    pub budget_status: bc_core::BudgetStatusEngine,
     /// Tokio runtime handle — used by [`Self::block_on`] to bridge async bc-core calls.
     handle: Handle,
 }
@@ -59,8 +59,8 @@ impl TuiContext {
             profiles: bc_core::ImportProfileService::new(pool.clone()),
             assets: bc_core::AssetService::new(pool.clone()),
             loans: bc_core::LoanService::new(pool.clone()),
-            envelopes: bc_core::EnvelopeService::new(pool.clone()),
-            budget: bc_core::BudgetEngine::new(pool),
+            budgets: bc_core::BudgetService::new(pool.clone()),
+            budget_status: bc_core::BudgetStatusEngine::new(pool),
             handle: Handle::current(),
         })
     }

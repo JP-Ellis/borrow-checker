@@ -1,9 +1,9 @@
-//! Envelope status detail panel component.
+//! Budget status detail panel component.
 //!
-//! Displays the full budget status of a selected envelope (read-only),
-//! or a placeholder when no envelope is selected.
+//! Displays the full budget status of a selected budget (read-only),
+//! or a placeholder when no budget is selected.
 
-use bc_core::EnvelopeStatus;
+use bc_core::BudgetStatus;
 use tuirealm::command::Cmd;
 use tuirealm::command::CmdResult;
 use tuirealm::component::AppComponent;
@@ -31,12 +31,12 @@ use crate::msg::Msg;
 
 // MARK: private component
 
-/// Raw widget that renders the envelope status detail panel.
+/// Raw widget that renders the budget status detail panel.
 struct Detail {
     /// Component props storage.
     props: Props,
-    /// Envelope status to display, if any.
-    status: Option<EnvelopeStatus>,
+    /// Budget status to display, if any.
+    status: Option<BudgetStatus>,
 }
 
 impl Detail {
@@ -108,14 +108,14 @@ impl Detail {
         Line::from(spans)
     }
 
-    /// Format the envelope status as ratatui [`Text`].
+    /// Format the budget status as ratatui [`Text`].
     ///
     /// Returns the placeholder text when no status is set.
     #[inline]
     #[must_use]
     fn render_lines(&self) -> Text<'static> {
         let Some(s) = &self.status else {
-            return Text::from("Select an envelope to see budget status.".to_owned());
+            return Text::from("Select a budget to see budget status.".to_owned());
         };
 
         #[expect(
@@ -160,7 +160,7 @@ impl Detail {
         // Header: name + period label
         lines.push(Line::from(format!(
             "{}  [\u{2190} {} \u{2192}]", // ← label →
-            s.envelope.name(),
+            s.budget.name().unwrap_or("(unnamed)"),
             s.window.label
         )));
         lines.push(Line::from("\u{2500}".repeat(35)));
@@ -185,10 +185,7 @@ impl Detail {
         lines.push(Self::build_bar_line(pct_f64));
 
         lines.push(Line::from(""));
-        lines.push(Line::from(format!(
-            "Rollover:   {:?}",
-            s.envelope.rollover_policy()
-        )));
+        lines.push(Line::from(format!("Rollover:   {:?}", s.budget.rollover())));
         lines.push(Line::from(format!(
             "Period:     {} \u{2013} {}",
             s.period_start, s.period_end
@@ -219,7 +216,7 @@ impl Component for Detail {
         let paragraph = Paragraph::new(content)
             .block(
                 Block::default()
-                    .title(" Envelope Status ")
+                    .title(" Budget Status ")
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(border_color)),
@@ -252,7 +249,7 @@ impl Component for Detail {
 
 // MARK: public wrapper
 
-/// Tui-realm component wrapper for the envelope status detail panel widget.
+/// Tui-realm component wrapper for the budget status detail panel widget.
 #[expect(
     clippy::module_name_repetitions,
     reason = "referenced externally as detail::EnvelopeDetail; repetition is intentional"
@@ -265,18 +262,18 @@ pub struct EnvelopeDetail {
 }
 
 impl EnvelopeDetail {
-    /// Create a new `EnvelopeDetail` showing the given envelope status, or empty if `None`.
+    /// Create a new `EnvelopeDetail` showing the given budget status, or empty if `None`.
     ///
     /// # Arguments
     ///
-    /// * `status` - Optional envelope status to display, or `None` if no envelope is selected.
+    /// * `status` - Optional budget status to display, or `None` if no budget is selected.
     ///
     /// # Returns
     ///
     /// A new `EnvelopeDetail` ready to be mounted.
     #[inline]
     #[must_use]
-    pub fn new(status: Option<EnvelopeStatus>) -> Self {
+    pub fn new(status: Option<BudgetStatus>) -> Self {
         Self {
             component: Detail {
                 props: Props::default(),
@@ -285,13 +282,13 @@ impl EnvelopeDetail {
         }
     }
 
-    /// Update the displayed envelope status.
+    /// Update the displayed budget status.
     ///
     /// # Arguments
     ///
-    /// * `status` - New envelope status to display, or `None` to show the placeholder.
+    /// * `status` - New budget status to display, or `None` to show the placeholder.
     #[inline]
-    pub fn set_status(&mut self, status: Option<EnvelopeStatus>) {
+    pub fn set_status(&mut self, status: Option<BudgetStatus>) {
         self.component.status = status;
     }
 }
@@ -345,7 +342,7 @@ mod tests {
         assert_eq!(text.lines.len(), 1);
         let first = text.lines.first().expect("one line present");
         let line_str: String = first.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(line_str, "Select an envelope to see budget status.");
+        assert_eq!(line_str, "Select a budget to see budget status.");
     }
 
     #[test]

@@ -5,5 +5,5 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-No envelopes.
+No budgets.
 ----- stderr -----

@@ -1,8 +1,8 @@
-//! Budget screen — envelope tree sidebar and status detail panel.
+//! Budget screen — budget list sidebar and status detail panel.
 //!
 //! This module owns the two components that make up the Budget tab:
-//! - [`sidebar::EnvelopeSidebar`] — left panel showing the envelope hierarchy
-//! - [`detail::EnvelopeDetail`] — right panel showing the selected envelope's budget status
+//! - [`sidebar::EnvelopeSidebar`] — left panel showing the budget list
+//! - [`detail::EnvelopeDetail`] — right panel showing the selected budget's status
 
 pub mod detail;
 pub mod forms;
@@ -10,9 +10,7 @@ pub mod sidebar;
 
 use std::sync::Arc;
 
-use bc_core::EnvelopeStatus;
-use bc_models::Envelope;
-use bc_models::EnvelopeId;
+use bc_core::BudgetStatus;
 use tuirealm::application::Application;
 use tuirealm::event::NoUserEvent;
 use tuirealm::ratatui::Frame;
@@ -32,7 +30,7 @@ use crate::screen::Screen;
 
 /// The budget tab screen.
 ///
-/// Owns the envelope sidebar, envelope status detail panel, and allocation form overlay.
+/// Owns the budget sidebar, budget status detail panel, and allocation form overlay.
 /// Handles [`BudgetMsg`] variants delegated from `Model::update()`.
 #[expect(
     clippy::module_name_repetitions,
@@ -46,12 +44,12 @@ use crate::screen::Screen;
 pub struct BudgetScreen {
     /// Shared bc-core services.
     ctx: Arc<TuiContext>,
-    /// All active envelopes loaded from the database.
-    envelopes: Vec<Envelope>,
-    /// The envelope currently selected in the sidebar, if any.
-    selected_envelope: Option<EnvelopeId>,
-    /// Budget status for the currently selected envelope.
-    selected_status: Option<EnvelopeStatus>,
+    /// All active budgets loaded from the database.
+    budgets: Vec<bc_models::Budget>,
+    /// The budget currently selected in the sidebar, if any.
+    selected_budget: Option<bc_models::BudgetId>,
+    /// Budget status for the currently selected budget.
+    selected_status: Option<BudgetStatus>,
     /// Whether envelopes are currently being loaded from the database.
     loading: bool,
     /// Whether the detail panel needs to be updated on the next `view()` call.
@@ -77,8 +75,8 @@ impl BudgetScreen {
     pub fn new(ctx: Arc<TuiContext>) -> Self {
         Self {
             ctx,
-            envelopes: Vec::new(),
-            selected_envelope: None,
+            budgets: Vec::new(),
+            selected_budget: None,
             selected_status: None,
             loading: false,
             detail_dirty: false,
@@ -90,16 +88,16 @@ impl BudgetScreen {
         }
     }
 
-    /// Load all active envelopes from the database into `self.envelopes`.
+    /// Load all active budgets from the database into `self.budgets`.
     #[inline]
     #[expect(
         clippy::print_stderr,
         reason = "load errors are logged to stderr since we are in raw terminal mode"
     )]
-    fn load_envelopes(&mut self) {
-        match self.ctx.block_on(self.ctx.envelopes.list()) {
-            Ok(envelopes) => self.envelopes = envelopes,
-            Err(e) => eprintln!("failed to load envelopes: {e}"),
+    fn load_budgets(&mut self) {
+        match self.ctx.block_on(self.ctx.budgets.list()) {
+            Ok(budgets) => self.budgets = budgets,
+            Err(e) => eprintln!("failed to load budgets: {e}"),
         }
     }
 
@@ -115,33 +113,33 @@ impl BudgetScreen {
             .unwrap_or_else(|| bc_models::BudgetWindow::last_month(today))
     }
 
-    /// Load the budget status for the currently selected envelope.
+    /// Load the budget status for the currently selected budget.
     ///
-    /// Returns early if no envelope is selected. On success, stores the
-    /// [`EnvelopeStatus`] in `self.selected_status`.
+    /// Returns early if no budget is selected. On success, stores the
+    /// [`BudgetStatus`] in `self.selected_status`.
     #[inline]
     #[expect(
         clippy::print_stderr,
         reason = "load errors are logged to stderr since we are in raw terminal mode"
     )]
     fn load_status(&mut self) {
-        let Some(ref id) = self.selected_envelope else {
+        let Some(ref id) = self.selected_budget else {
             return;
         };
-        let Some(envelope) = self.envelopes.iter().find(|e| e.id() == id).cloned() else {
+        let Some(budget) = self.budgets.iter().find(|b| b.id() == id).cloned() else {
             return;
         };
         let window = self.selected_window();
         match self
             .ctx
-            .block_on(self.ctx.budget.status_for_window(&envelope, window))
+            .block_on(self.ctx.budget_status.status_for_window(&budget, window))
         {
             Ok(status) => self.selected_status = Some(status),
-            Err(e) => eprintln!("failed to load envelope status: {e}"),
+            Err(e) => eprintln!("failed to load budget status: {e}"),
         }
     }
 
-    /// Parse the amount string and allocate funds to the selected envelope.
+    /// Parse the amount string and allocate funds to the selected budget.
     ///
     /// Errors are logged to stderr — no attempt is made to surface them in the UI.
     #[inline]
@@ -149,7 +147,7 @@ impl BudgetScreen {
         clippy::print_stderr,
         reason = "allocation errors are logged to stderr since we are in raw terminal mode"
     )]
-    fn allocate_to_envelope(&mut self, amount_str: &str) {
+    fn allocate_to_budget(&mut self, amount_str: &str) {
         let Some((value_str, commodity_str)) = amount_str.rsplit_once(' ') else {
             eprintln!("invalid amount '{amount_str}': expected 'VALUE COMMODITY'");
             return;
@@ -163,14 +161,14 @@ impl BudgetScreen {
         };
         let commodity = bc_models::CommodityCode::new(commodity_str);
         let amount = bc_models::Amount::new(value, commodity);
-        let Some(ref envelope_id) = self.selected_envelope else {
-            eprintln!("no envelope selected");
+        let Some(ref budget_id) = self.selected_budget else {
+            eprintln!("no budget selected");
             return;
         };
         let today = jiff::Zoned::now().date();
         match self
             .ctx
-            .block_on(self.ctx.envelopes.allocate(envelope_id, today, amount))
+            .block_on(self.ctx.budgets.allocate(budget_id, today, amount))
         {
             Ok(_) => {}
             Err(e) => eprintln!("failed to allocate: {e}"),
@@ -181,13 +179,13 @@ impl BudgetScreen {
     #[inline]
     fn handle_budget_msg(&mut self, msg: BudgetMsg) -> Option<Msg> {
         match msg {
-            BudgetMsg::EnvelopeSelected(id) => {
-                self.selected_envelope = Some(id);
+            BudgetMsg::BudgetSelected(id) => {
+                self.selected_budget = Some(id);
                 let today = jiff::Zoned::now().date();
                 self.window_presets = bc_models::BudgetWindow::standard_presets(today);
                 self.selected_window_idx = 0;
                 self.load_status();
-                // Fallback to "Last Month" (index 1) when the current month has no data.
+                // Fallback to "Last Month" (index 1) when the current period has no data.
                 if let Some(ref s) = self.selected_status
                     && s.allocated.is_zero()
                     && s.actuals.is_zero()
@@ -199,7 +197,7 @@ impl BudgetScreen {
                 self.focus_detail_after_dirty = true;
                 None
             }
-            BudgetMsg::OpenAllocate => self.selected_envelope.is_some().then(|| {
+            BudgetMsg::OpenAllocate => self.selected_budget.is_some().then(|| {
                 self.pending_form = true;
                 Msg::ModeChange(AppMode::Insert)
             }),
@@ -211,7 +209,7 @@ impl BudgetScreen {
             BudgetMsg::FormSubmitted { amount } => {
                 self.pending_form = false;
                 // form_mounted stays true — view() will unmount and clear it
-                self.allocate_to_envelope(&amount);
+                self.allocate_to_budget(&amount);
                 self.load_status();
                 self.detail_dirty = true;
                 Some(Msg::ModeChange(AppMode::Normal))
@@ -259,11 +257,11 @@ impl Screen for BudgetScreen {
     #[inline]
     fn mount(&mut self, app: &mut Application<Id, Msg, NoUserEvent>) -> anyhow::Result<()> {
         self.loading = true;
-        self.load_envelopes();
+        self.load_budgets();
         self.loading = false;
         app.mount(
             Id::Budget(BudgetId::Sidebar),
-            Box::new(sidebar::EnvelopeSidebar::new(self.envelopes.clone())),
+            Box::new(sidebar::EnvelopeSidebar::new(&self.budgets)),
             vec![],
         )?;
         app.mount(
@@ -288,8 +286,8 @@ impl Screen for BudgetScreen {
 
     /// Render the budget screen: sidebar on the left (30%), detail panel on the right (70%).
     ///
-    /// If the selected envelope changed since the last render, the detail panel is
-    /// re-mounted with the updated [`EnvelopeStatus`] before rendering.
+    /// If the selected budget changed since the last render, the detail panel is
+    /// re-mounted with the updated [`BudgetStatus`] before rendering.
     ///
     /// The allocation form overlay is mounted/unmounted based on `pending_form` state,
     /// and rendered on top of the rest of the screen when `form_mounted` is true.
@@ -306,11 +304,11 @@ impl Screen for BudgetScreen {
     fn view(&mut self, app: &mut Application<Id, Msg, NoUserEvent>, frame: &mut Frame, area: Rect) {
         // Mount or unmount the form overlay based on pending_form state.
         if self.pending_form && !self.form_mounted {
-            let envelope_name = self
-                .selected_envelope
+            let budget_name = self
+                .selected_budget
                 .as_ref()
-                .and_then(|id| self.envelopes.iter().find(|e| e.id() == id))
-                .map(|e| e.name().to_owned())
+                .and_then(|id| self.budgets.iter().find(|b| b.id() == id))
+                .and_then(|b| b.name().map(str::to_owned))
                 .unwrap_or_default();
             #[expect(
                 clippy::unused_result_ok,
@@ -321,7 +319,7 @@ impl Screen for BudgetScreen {
             }
             match app.mount(
                 Id::Budget(BudgetId::AllocationForm),
-                Box::new(forms::AllocationForm::new(envelope_name)),
+                Box::new(forms::AllocationForm::new(budget_name)),
                 vec![],
             ) {
                 Ok(()) => {
@@ -352,7 +350,7 @@ impl Screen for BudgetScreen {
 
         if self.loading {
             frame.render_widget(
-                tuirealm::ratatui::widgets::Paragraph::new("Loading envelopes\u{2026}"),
+                tuirealm::ratatui::widgets::Paragraph::new("Loading budgets\u{2026}"),
                 area,
             );
             return;
@@ -372,7 +370,7 @@ impl Screen for BudgetScreen {
                 Box::new(detail::EnvelopeDetail::new(self.selected_status.clone())),
                 vec![],
             ) {
-                eprintln!("failed to re-mount envelope detail: {e}");
+                eprintln!("failed to re-mount budget detail: {e}");
             }
         }
 
@@ -443,7 +441,7 @@ impl Screen for BudgetScreen {
                 },
                 KeyBinding {
                     key: "Enter".into(),
-                    action: "Select envelope".into(),
+                    action: "Select budget".into(),
                     mode: AppMode::Normal,
                 },
                 KeyBinding {
