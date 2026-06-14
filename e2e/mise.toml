@@ -57,7 +57,8 @@ run         = '''
 #!/usr/bin/env bash
 # Create Linux-specific cache dirs so Docker does not create them as root.
 mkdir -p "{{config_root}}/../.linux-cache/target" \
-         "{{config_root}}/../.linux-cache/node_modules"
+         "{{config_root}}/../.linux-cache/node_modules" \
+         "{{config_root}}/../.linux-cache/trunk"
 
 # Use the pinned GHCR image when available; fall back to a locally-built image.
 IMAGE_FILE="{{config_root}}/.container-image"
@@ -75,6 +76,7 @@ docker run --rm \
   -v "{{config_root}}/..:/repo" \
   -v "{{config_root}}/../.linux-cache/target:/repo/target" \
   -v "{{config_root}}/../.linux-cache/node_modules:/repo/e2e/node_modules" \
+  -v "{{config_root}}/../.linux-cache/trunk:/root/.cache/trunk" \
   -w /repo \
   -e DISPLAY=:99 \
   -e FAKETIME="$FAKE_NOW" \
