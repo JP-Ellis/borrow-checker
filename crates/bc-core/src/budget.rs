@@ -353,11 +353,16 @@ impl BudgetService {
         let mut db_tx = self.pool.begin().await?;
         crate::events::insert_event(&event, &mut db_tx).await?;
 
-        sqlx::query("UPDATE budgets SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
-            .bind(now.to_string())
-            .bind(id.to_string())
-            .execute(&mut *db_tx)
-            .await?;
+        let result =
+            sqlx::query("UPDATE budgets SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
+                .bind(now.to_string())
+                .bind(id.to_string())
+                .execute(&mut *db_tx)
+                .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(crate::BcError::NotFound(id.to_string()));
+        }
 
         db_tx.commit().await?;
         tracing::info!(budget_id = %id, "budget archived");
