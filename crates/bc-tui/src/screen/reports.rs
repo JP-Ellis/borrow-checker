@@ -119,30 +119,30 @@ impl ReportsScreen {
 
     /// Run the Budget Summary report and return the formatted output.
     ///
-    /// Loads all envelopes and their budget status as of today, then formats
+    /// Loads all budgets and their status as of today, then formats
     /// a table of allocated / actual / available amounts.
     ///
     /// # Returns
     ///
-    /// A multi-line string summarising each envelope's budget status.
+    /// A multi-line string summarising each budget's status.
     #[inline]
     fn run_budget_summary(&self) -> String {
-        let envelopes = match self.ctx.block_on(self.ctx.envelopes.list()) {
-            Ok(e) => e,
-            Err(e) => return format!("Error loading envelopes: {e}"),
+        let budgets = match self.ctx.block_on(self.ctx.budgets.list()) {
+            Ok(b) => b,
+            Err(e) => return format!("Error loading budgets: {e}"),
         };
 
         let today = jiff::Zoned::now().date();
         let statuses = match self
             .ctx
-            .block_on(self.ctx.budget.status_all(&envelopes, today))
+            .block_on(self.ctx.budget_status.status_all(&budgets, today))
         {
             Ok(s) => s,
             Err(e) => return format!("Error running Budget Summary report: {e}"),
         };
 
         if statuses.is_empty() {
-            return "Budget Summary\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\nNo envelopes configured.".to_owned();
+            return "Budget Summary\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\nNo budgets configured.".to_owned();
         }
 
         let mut lines = vec![
@@ -150,7 +150,7 @@ impl ReportsScreen {
             "\u{2500}".repeat(56),
             format!(
                 "{:<20}  {:>10}  {:>10}  {:>10}",
-                "Envelope", "Allocated", "Actual", "Available"
+                "Budget", "Allocated", "Actual", "Available"
             ),
             "\u{2500}".repeat(56),
         ];
@@ -158,7 +158,7 @@ impl ReportsScreen {
         for s in &statuses {
             lines.push(format!(
                 "{:<20}  {:>10}  {:>10}  {:>10}",
-                s.envelope.name(),
+                s.budget.name().unwrap_or("(unnamed)"),
                 s.allocated,
                 s.actuals,
                 s.available,

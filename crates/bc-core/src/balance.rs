@@ -377,9 +377,11 @@ impl Engine {
         Ok(commodity_code)
     }
 
-    /// Returns the count of non-voided postings without an envelope for `account_id`.
+    /// Returns the count of non-voided postings for `account_id`.
     ///
-    /// A posting is considered "uncategorised" when its `envelope_id` column is `NULL`.
+    /// Previously this counted postings without an envelope tag; with the
+    /// budget model transition (budgets are now account-anchored, not
+    /// posting-tagged) all non-voided postings are returned instead.
     /// Voided transactions are excluded from the count.
     ///
     /// # Arguments
@@ -388,7 +390,7 @@ impl Engine {
     ///
     /// # Returns
     ///
-    /// The number of uncategorised postings as a [`u32`].
+    /// The number of non-voided postings as a [`u32`].
     ///
     /// # Errors
     ///
@@ -404,7 +406,6 @@ impl Engine {
              FROM postings p
              JOIN transactions t ON t.id = p.transaction_id
              WHERE p.account_id = ?
-               AND p.envelope_id IS NULL
                AND t.status != ?",
         )
         .bind(account_id.to_string())
@@ -1196,7 +1197,7 @@ mod tests {
             .await
             .expect("create Income account should succeed");
 
-        // Two postings without envelope_id (NULL)
+        // Two postings (budgets are now account-anchored, not posting-tagged)
         sqlx::query(
             "INSERT INTO transactions (id, date, description, status, created_at)
              VALUES ('uc_tx1', '2026-01-01', 'Deposit', 'cleared', '2026-01-01T00:00:00Z')",
@@ -1221,7 +1222,7 @@ mod tests {
             .await
             .expect("uncategorised_count should succeed");
         // Only the posting for `acc` should be counted, not the `other` account posting
-        assert_eq!(count, 1, "one uncategorised posting for checked account");
+        assert_eq!(count, 1, "one posting counted for the queried account");
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1236,16 +1237,8 @@ mod tests {
             .await
             .expect("create Checking account should succeed");
 
-        // First insert an envelope so the FK constraint is satisfied
-        sqlx::query(
-            "INSERT INTO envelopes (id, name, period, rollover_policy, created_at)
-             VALUES ('env1', 'Groceries', '\"Monthly\"', 'reset_to_zero', '2026-01-01T00:00:00Z')",
-        )
-        .execute(&pool)
-        .await
-        .expect("insert envelope");
-
-        // Insert a transaction and posting with a non-NULL envelope_id
+        // With budget model, all non-voided postings are counted.
+        // Two postings for this account.
         sqlx::query(
             "INSERT INTO transactions (id, date, description, status, created_at)
              VALUES ('uc_cat_tx1', '2026-01-01', 'Groceries', 'cleared', '2026-01-01T00:00:00Z')",
@@ -1254,20 +1247,22 @@ mod tests {
         .await
         .expect("insert transaction");
         sqlx::query(
-            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position, envelope_id)
-             VALUES ('uc_cat_p1', 'uc_cat_tx1', ?, '-50.00', 'AUD', 0, 'env1')",
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position)
+             VALUES ('uc_cat_p1', 'uc_cat_tx1', ?, '-50.00', 'AUD', 0),
+                    ('uc_cat_p2', 'uc_cat_tx1', ?, '50.00', 'AUD', 1)",
         )
+        .bind(acc.to_string())
         .bind(acc.to_string())
         .execute(&pool)
         .await
-        .expect("insert categorised posting");
+        .expect("insert postings");
 
         let engine = Engine::new(pool.clone());
         let count = engine
             .uncategorised_count(&acc)
             .await
             .expect("uncategorised_count should succeed");
-        assert_eq!(count, 0, "categorised posting should not be counted");
+        assert_eq!(count, 2, "both non-voided postings should be counted");
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1283,14 +1278,6 @@ mod tests {
             .expect("create Checking account should succeed");
 
         sqlx::query(
-            "INSERT INTO envelopes (id, name, period, rollover_policy, created_at)
-             VALUES ('env_mix', 'Groceries', '\"Monthly\"', 'reset_to_zero', '2026-01-01T00:00:00Z')",
-        )
-        .execute(&pool)
-        .await
-        .expect("insert envelope");
-
-        sqlx::query(
             "INSERT INTO transactions (id, date, description, status, created_at)
              VALUES ('mix_tx1', '2026-01-15', 'Partial', 'cleared', '2026-01-15T00:00:00Z')",
         )
@@ -1298,11 +1285,11 @@ mod tests {
         .await
         .expect("insert transaction");
 
-        // One posting with an envelope (categorised) and one without (uncategorised)
+        // Two postings for the same account (budgets are now account-anchored)
         sqlx::query(
-            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position, envelope_id)
-             VALUES ('mix_p1', 'mix_tx1', ?, '-30.00', 'AUD', 0, 'env_mix'),
-                    ('mix_p2', 'mix_tx1', ?, '-20.00', 'AUD', 1, NULL)",
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position)
+             VALUES ('mix_p1', 'mix_tx1', ?, '-30.00', 'AUD', 0),
+                    ('mix_p2', 'mix_tx1', ?, '-20.00', 'AUD', 1)",
         )
         .bind(acc.to_string())
         .bind(acc.to_string())
@@ -1315,7 +1302,7 @@ mod tests {
             .uncategorised_count(&acc)
             .await
             .expect("uncategorised_count should succeed");
-        assert_eq!(count, 1, "only the NULL-envelope posting should be counted");
+        assert_eq!(count, 2, "both non-voided postings should be counted");
     }
 
     #[sqlx::test(migrations = "./migrations")]

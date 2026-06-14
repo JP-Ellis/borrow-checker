@@ -105,11 +105,6 @@ impl TxDetail {
                             Self::account_name(posting.account_id(), &self.accounts),
                             amount_str
                         ));
-
-                        // Envelope (optional)
-                        if let Some(env_id) = posting.envelope_id() {
-                            lines.push(format!("    envelope: {env_id}"));
-                        }
                     }
                 }
 
