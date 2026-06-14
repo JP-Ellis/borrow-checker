@@ -66,6 +66,74 @@ fn tx_multi_posting() -> Transaction {
     )
 }
 
+/// Returns a multi-split same-type transaction for QA display.
+fn tx_split_siblings() -> Transaction {
+    Transaction::new(
+        "tx-amazon-qa",
+        "2026-06-13",
+        "Amazon",
+        TxStatus::Pending,
+        vec![],
+        vec![
+            Posting::new(
+                AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
+                Amount::new(-30_000, "AUD", 2),
+                None::<&str>,
+            ),
+            Posting::new(
+                AccountRef::new("exp-groceries", "Expenses :: Groceries"),
+                Amount::new(10_000, "AUD", 2),
+                None::<&str>,
+            ),
+            Posting::new(
+                AccountRef::new("exp-healthcare", "Expenses :: Healthcare"),
+                Amount::new(10_000, "AUD", 2),
+                None::<&str>,
+            ),
+            Posting::new(
+                AccountRef::new("exp-household", "Expenses :: Household"),
+                Amount::new(10_000, "AUD", 2),
+                None::<&str>,
+            ),
+        ],
+        vec![],
+    )
+}
+
+/// Returns a multi-split cross-type transaction for QA display.
+fn tx_split_cross_type() -> Transaction {
+    Transaction::new(
+        "tx-cross-qa",
+        "2026-06-13",
+        "test",
+        TxStatus::Pending,
+        vec![],
+        vec![
+            Posting::new(
+                AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
+                Amount::new(-30_000, "AUD", 2),
+                None::<&str>,
+            ),
+            Posting::new(
+                AccountRef::new("exp-groceries", "Expenses :: Groceries"),
+                Amount::new(10_000, "AUD", 2),
+                None::<&str>,
+            ),
+            Posting::new(
+                AccountRef::new("exp-healthcare", "Expenses :: Healthcare"),
+                Amount::new(10_000, "AUD", 2),
+                None::<&str>,
+            ),
+            Posting::new(
+                AccountRef::new("inc-interest", "Income :: Interest"),
+                Amount::new(10_000, "AUD", 2),
+                None::<&str>,
+            ),
+        ],
+        vec![],
+    )
+}
+
 /// Renders [`TransactionRow`] in collapsed, selected, and expanded states.
 #[component]
 pub fn TransactionRowQa() -> impl IntoView {
@@ -107,6 +175,32 @@ pub fn TransactionRowQa() -> impl IntoView {
                     viewing_account_id="cb-smart-access"
                     selected=Signal::derive(|| true)
                     expanded=Signal::derive(|| true)
+                    on_toggle=Callback::new(|()| {})
+                />
+            </section>
+
+            <section>
+                <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
+                    "multi-split, same type → shell expansion"
+                </p>
+                <TransactionRow
+                    tx=tx_split_siblings()
+                    viewing_account_id="cb-smart-access"
+                    selected=Signal::derive(|| false)
+                    expanded=Signal::derive(|| false)
+                    on_toggle=Callback::new(|()| {})
+                />
+            </section>
+
+            <section>
+                <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
+                    "multi-split, cross-type → split transaction placeholder"
+                </p>
+                <TransactionRow
+                    tx=tx_split_cross_type()
+                    viewing_account_id="cb-smart-access"
+                    selected=Signal::derive(|| false)
+                    expanded=Signal::derive(|| false)
                     on_toggle=Callback::new(|()| {})
                 />
             </section>
