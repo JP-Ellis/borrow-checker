@@ -1,0 +1,12 @@
+---
+source: crates/bc-cli/tests/cli/budget.rs
+assertion_line: 29
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+ ID                                | ACCOUNT                            | NAME             | PERIOD  | TARGET  | ROLLOVER      
+===============================================================================================================================
+ [BUDGET_ID] | [ACCOUNT_ID] | Groceries Budget | Monthly | 500 AUD | reset-to-zero 
+----- stderr -----
