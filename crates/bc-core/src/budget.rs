@@ -610,7 +610,12 @@ impl BudgetStatusEngine {
             .map_or(bc_models::Decimal::ZERO, |a| a.amount().value());
 
         let window_days = window.days();
-        debug_assert!(window_days >= 0, "BudgetWindow has end before start");
+        if window_days < 0 {
+            return Err(crate::BcError::InvalidInput(format!(
+                "BudgetWindow has end before start: {} to {}",
+                window.start, window.end,
+            )));
+        }
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "Date - Date returns a Span; get_days() is safe for any realistic period"
@@ -1764,6 +1769,44 @@ mod budget_service_tests {
             fetched.amount().value(),
             Decimal::from(300_i32),
             "amount updated to 300"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn status_for_window_rejects_inverted_window(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Groceries")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let svc = BudgetService::new(pool.clone());
+        let budget = svc
+            .create()
+            .account_id(acc)
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create budget");
+
+        // end (Jan 1) is before start (Feb 1) — inverted window.
+        let window = bc_models::BudgetWindow::custom(
+            Date::constant(2026, 2, 1),
+            Date::constant(2026, 1, 1),
+            "inverted",
+        );
+
+        let engine = BudgetStatusEngine::new(pool, noop_fx());
+        let result = engine.status_for_window(&budget, window).await;
+
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidInput(_))),
+            "inverted window must return InvalidInput, got: {result:?}"
         );
     }
 }
