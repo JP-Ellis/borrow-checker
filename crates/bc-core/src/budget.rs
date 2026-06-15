@@ -348,6 +348,7 @@ impl BudgetService {
         let now = jiff::Timestamp::now();
         let event = crate::events::Event::BudgetArchived {
             budget_id: id.clone(),
+            archived_at: now,
         };
 
         let mut db_tx = self.pool.begin().await?;
