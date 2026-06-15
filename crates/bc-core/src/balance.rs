@@ -377,12 +377,10 @@ impl Engine {
         Ok(commodity_code)
     }
 
-    /// Returns the count of non-voided postings for `account_id`.
+    /// Returns the number of non-voided postings for `account_id`.
     ///
-    /// Previously this counted postings without an envelope tag; with the
-    /// budget model transition (budgets are now account-anchored, not
-    /// posting-tagged) all non-voided postings are returned instead.
-    /// Voided transactions are excluded from the count.
+    /// Voided transactions are excluded. Used to populate the "Transactions"
+    /// stat card on the account dashboard.
     ///
     /// # Arguments
     ///
@@ -398,7 +396,7 @@ impl Engine {
     /// negative `COUNT(*)` value (which violates the SQLite invariant but is handled
     /// defensively).
     #[inline]
-    pub async fn uncategorised_count(&self, account_id: &AccountId) -> BcResult<u32> {
+    pub async fn posting_count(&self, account_id: &AccountId) -> BcResult<u32> {
         let voided_str = to_db_str(TransactionStatus::Voided)?;
 
         let (count,): (i64,) = sqlx::query_as(
@@ -1158,7 +1156,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn uncategorised_count_zero_for_account_with_no_postings(pool: sqlx::SqlitePool) {
+    async fn posting_count_zero_for_empty_account(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc = acct_svc
             .create()
@@ -1171,14 +1169,14 @@ mod tests {
 
         let engine = Engine::new(pool.clone());
         let count = engine
-            .uncategorised_count(&acc)
+            .posting_count(&acc)
             .await
-            .expect("uncategorised_count should succeed");
+            .expect("posting_count should succeed");
         assert_eq!(count, 0, "account with no postings should have count 0");
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn uncategorised_count_counts_null_envelope_postings(pool: sqlx::SqlitePool) {
+    async fn posting_count_counts_non_voided_postings(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc = acct_svc
             .create()
@@ -1218,15 +1216,15 @@ mod tests {
 
         let engine = Engine::new(pool.clone());
         let count = engine
-            .uncategorised_count(&acc)
+            .posting_count(&acc)
             .await
-            .expect("uncategorised_count should succeed");
+            .expect("posting_count should succeed");
         // Only the posting for `acc` should be counted, not the `other` account posting
         assert_eq!(count, 1, "one posting counted for the queried account");
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn uncategorised_count_excludes_categorised_postings(pool: sqlx::SqlitePool) {
+    async fn posting_count_is_total_regardless_of_budget_assignment(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc = acct_svc
             .create()
@@ -1259,14 +1257,14 @@ mod tests {
 
         let engine = Engine::new(pool.clone());
         let count = engine
-            .uncategorised_count(&acc)
+            .posting_count(&acc)
             .await
-            .expect("uncategorised_count should succeed");
+            .expect("posting_count should succeed");
         assert_eq!(count, 2, "both non-voided postings should be counted");
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn uncategorised_count_mixed_categorised_and_uncategorised(pool: sqlx::SqlitePool) {
+    async fn posting_count_sums_all_non_voided_for_account(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc = acct_svc
             .create()
@@ -1299,14 +1297,14 @@ mod tests {
 
         let engine = Engine::new(pool.clone());
         let count = engine
-            .uncategorised_count(&acc)
+            .posting_count(&acc)
             .await
-            .expect("uncategorised_count should succeed");
+            .expect("posting_count should succeed");
         assert_eq!(count, 2, "both non-voided postings should be counted");
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn uncategorised_count_excludes_voided_transactions(pool: sqlx::SqlitePool) {
+    async fn posting_count_excludes_voided_transactions(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -1351,9 +1349,9 @@ mod tests {
 
         let engine = Engine::new(pool.clone());
         let count = engine
-            .uncategorised_count(&acc_a)
+            .posting_count(&acc_a)
             .await
-            .expect("uncategorised_count should succeed");
+            .expect("posting_count should succeed");
         assert_eq!(count, 0, "voided transaction should not be counted");
     }
 }

@@ -125,27 +125,23 @@ pub async fn get_account_stats(account_id: &str) -> Result<crate::AccountStats, 
     .await
 }
 
-/// Argument struct for [`get_uncategorised_count`].
+/// Argument struct for [`get_posting_count`].
 #[derive(Serialize)]
-struct GetUncategorisedCountArgs<'a> {
+struct GetPostingCountArgs<'a> {
     /// Account ID to query.
     account_id: &'a str,
 }
 
-/// Gets the count of postings without an envelope for `account_id`.
-///
-/// Returns the number of non-voided postings belonging to the account that have
-/// no envelope assigned. Used to populate the "uncategorised" stat card on the
-/// account dashboard.
+/// Returns the number of non-voided postings for `account_id`.
 ///
 /// # Errors
 ///
 /// Returns [`BcError`] if the backend call fails.
 #[inline]
-pub async fn get_uncategorised_count(account_id: &str) -> Result<u32, BcError> {
+pub async fn get_posting_count(account_id: &str) -> Result<u32, BcError> {
     tauri_sys::core::invoke_result::<u32, BcError>(
-        commands::GET_UNCATEGORISED_COUNT,
-        GetUncategorisedCountArgs { account_id },
+        commands::GET_POSTING_COUNT,
+        GetPostingCountArgs { account_id },
     )
     .await
 }
