@@ -412,12 +412,15 @@ impl BudgetService {
         let mut db_tx = self.pool.begin().await?;
         crate::events::insert_event(&event, &mut db_tx).await?;
 
-        sqlx::query(
+        // RETURNING ensures we get back the id and created_at that were actually
+        // stored: on INSERT the new values, on conflict the existing row's values.
+        let (raw_id, raw_created_at): (String, String) = sqlx::query_as(
             "INSERT INTO budget_allocations \
              (id, budget_id, period_start, amount, commodity, created_at) \
              VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT (budget_id, period_start) \
-             DO UPDATE SET amount = excluded.amount, commodity = excluded.commodity",
+             DO UPDATE SET amount = excluded.amount, commodity = excluded.commodity \
+             RETURNING id, created_at",
         )
         .bind(id.to_string())
         .bind(budget_id.to_string())
@@ -425,18 +428,25 @@ impl BudgetService {
         .bind(amount.value().to_string())
         .bind(amount.commodity().as_str())
         .bind(now.to_string())
-        .execute(&mut *db_tx)
+        .fetch_one(&mut *db_tx)
         .await?;
 
         db_tx.commit().await?;
         tracing::info!(budget_id = %budget_id, %period_start, "budget allocated");
 
+        let stored_id = raw_id
+            .parse::<bc_models::BudgetAllocationId>()
+            .map_err(|e| crate::BcError::BadData(format!("stored allocation id invalid: {e}")))?;
+        let stored_created_at = raw_created_at
+            .parse::<jiff::Timestamp>()
+            .map_err(|e| crate::BcError::BadData(format!("stored created_at invalid: {e}")))?;
+
         Ok(bc_models::BudgetAllocation::builder()
-            .id(id)
+            .id(stored_id)
             .budget_id(budget_id.clone())
             .period_start(period_start)
             .amount(amount)
-            .created_at(now)
+            .created_at(stored_created_at)
             .build())
     }
 
@@ -1484,6 +1494,68 @@ mod budget_service_tests {
         assert!(
             second.is_ok(),
             "creating a new untagged budget after archiving the previous one should succeed"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reallocate_returns_id_that_exists_in_db(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Groceries")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let svc = BudgetService::new(pool.clone());
+        let budget = svc
+            .create()
+            .account_id(acc)
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create budget");
+
+        let first = svc
+            .allocate(
+                budget.id(),
+                Date::constant(2026, 3, 1),
+                Amount::new(Decimal::from(500_i32), CommodityCode::new("AUD")),
+            )
+            .await
+            .expect("first allocation");
+
+        let second = svc
+            .allocate(
+                budget.id(),
+                Date::constant(2026, 3, 1),
+                Amount::new(Decimal::from(300_i32), CommodityCode::new("AUD")),
+            )
+            .await
+            .expect("re-allocation (upsert)");
+
+        // The first allocation's ID must survive the upsert.
+        assert_eq!(
+            first.id(),
+            second.id(),
+            "re-allocation must return the original row's ID, not a freshly-generated one"
+        );
+
+        // Verify the returned ID actually exists in the database.
+        let fetched = svc
+            .get_allocation(budget.id(), Date::constant(2026, 3, 1))
+            .await
+            .expect("get_allocation succeeds")
+            .expect("allocation exists");
+
+        assert_eq!(fetched.id(), second.id(), "fetched ID matches returned ID");
+        assert_eq!(
+            fetched.amount().value(),
+            Decimal::from(300_i32),
+            "amount updated to 300"
         );
     }
 }
