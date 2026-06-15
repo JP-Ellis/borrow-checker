@@ -617,6 +617,13 @@ impl BudgetStatusEngine {
                 window.start, window.end,
             )));
         }
+        if window_days == 0 {
+            tracing::debug!(
+                budget_id = %budget.id(),
+                window_start = %window.start,
+                "zero-day window: allocated will be 0"
+            );
+        }
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "Date - Date returns a Span; get_days() is safe for any realistic period"
