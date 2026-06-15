@@ -28,7 +28,7 @@ static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 /// # Arguments
 ///
 /// * `node` - The account to display.
-/// * `data_version` - Optional monotonic counter; when it changes, stats, sparkline, and uncategorised-count re-fetch.
+/// * `data_version` - Optional monotonic counter; when it changes, stats, sparkline, and posting-count re-fetch.
 /// * `on_add_tx` - Optional callback fired when the user clicks "+ transaction".
 #[component]
 #[expect(
@@ -43,7 +43,7 @@ pub fn AccountDashboard(
     /// Account to display.
     node: AccountNode,
     /// Monotonic counter bumped by the parent after any successful mutation.
-    /// Stats, sparkline, and uncategorised-count LocalResources re-fetch whenever this changes.
+    /// Stats, sparkline, and posting-count LocalResources re-fetch whenever this changes.
     #[prop(optional)]
     data_version: Option<ReadSignal<u32>>,
     /// Optional callback fired when the user clicks the "+ transaction" action button.
@@ -52,7 +52,7 @@ pub fn AccountDashboard(
 ) -> impl IntoView {
     let account_id = node.id.clone();
     let sparkline_account_id = node.id.clone();
-    let uncategorised_account_id = node.id.clone();
+    let posting_count_account_id = node.id.clone();
 
     let stats_resource = LocalResource::new(move || {
         let id = account_id.clone();
@@ -75,12 +75,12 @@ pub fn AccountDashboard(
         async move { bc_ipc::client::get_account_sparkline(&id, p, n).await }
     });
 
-    let uncategorised_resource = LocalResource::new(move || {
-        let id = uncategorised_account_id.clone();
+    let posting_count_resource = LocalResource::new(move || {
+        let id = posting_count_account_id.clone();
         if let Some(v) = data_version {
             v.get();
         }
-        async move { bc_ipc::client::get_uncategorised_count(&id).await }
+        async move { bc_ipc::client::get_posting_count(&id).await }
     });
 
     let sparkline_currency_code = node
@@ -247,25 +247,24 @@ pub fn AccountDashboard(
                         }
                     }}
                     {move || {
-                        let maybe_count = uncategorised_resource
+                        let posting_count_str = match posting_count_resource
                             .get()
                             .and_then(|r| {
                                 r.map_err(|e| {
-                                        leptos::logging::warn!("uncategorised_count failed: {e}");
+                                        leptos::logging::warn!("posting_count failed: {e}");
                                     })
                                     .ok()
-                            });
-                        let (uncategorised_str, tone) = match maybe_count {
-                            Some(n) if n > 0 => (n.to_string(), StatTone::Warn),
-                            Some(_) => ("0".into(), StatTone::Neutral),
-                            None => ("—".into(), StatTone::Neutral),
+                            })
+                        {
+                            Some(n) => n.to_string(),
+                            None => "—".into(),
                         };
                         view! {
                             <StatCard
-                                label="uncategorised".into()
-                                value=uncategorised_str
-                                sub="need envelope"
-                                tone=tone
+                                label="transactions".into()
+                                value=posting_count_str
+                                sub="non-voided postings"
+                                tone=StatTone::Neutral
                             />
                         }
                     }}
