@@ -140,6 +140,14 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
         with:
           cache-key: ${{ matrix.toolchain }}
+          # Include the Linux container bind-mount dirs so the container:linux-build
+          # artifacts are pruned and cached with the same logic as the main target/.
+          # These dirs are only created by the stable/Linux matrix entry; other
+          # entries simply have nothing to save here, which is harmless.
+          cache-workspaces: |
+            . -> target
+            . -> .linux-cache/target
+          cache-directories: .linux-cache/trunk
       - run: rustup toolchain install ${{ matrix.toolchain }} --no-self-update
         if: matrix.toolchain != 'stable'
       - uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
