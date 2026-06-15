@@ -1,5 +1,5 @@
 ---
-source: crates/bc-cli/tests/cli/help.rs
+source: crates/bc-cli/tests/cli/budget.rs
 expression: output
 ---
 success: true

@@ -1,0 +1,12 @@
+---
+source: crates/bc-cli/tests/cli/budget.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Updated budget [BUDGET_ID]
+  name:    Groceries Budget
+  target:  (tracking-only)
+  rollover: reset-to-zero
+----- stderr -----
