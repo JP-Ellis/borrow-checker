@@ -5,6 +5,8 @@
 pub struct AppContext {
     /// Whether to emit JSON instead of human-readable output.
     pub json: bool,
+    /// Fortnightly anchor date from config.
+    pub fortnightly_anchor: Option<jiff::civil::Date>,
     /// Raw plugin registry — retains manifest metadata for `plugin list`.
     pub plugin_registry: bc_plugins::PluginRegistry,
     /// Loaded importer plugins (WASM + any native adapters).
@@ -61,6 +63,7 @@ impl AppContext {
 
         Ok(Self {
             json,
+            fortnightly_anchor: settings.fortnightly_anchor(),
             plugin_registry,
             importers,
             accounts: bc_core::AccountService::new(pool.clone()),
