@@ -482,16 +482,23 @@ async fn status(ctx: &AppContext, as_of_str: Option<String>) -> CliResult<()> {
                 .commodity
                 .as_ref()
                 .map_or("", bc_models::CommodityCode::as_str);
+            let fmt = |v: bc_models::Decimal| {
+                if commodity_str.is_empty() {
+                    v.to_string()
+                } else {
+                    format!("{v} {commodity_str}")
+                }
+            };
             let alloc_str = if s.allocated.is_zero() && s.rollover.is_zero() {
                 "\u{2014}".to_owned()
             } else {
-                format!("{} {}", s.allocated, commodity_str)
+                fmt(s.allocated)
             };
-            let actuals_str = format!("{} {}", s.actuals, commodity_str);
+            let actuals_str = fmt(s.actuals);
             let avail_str = if s.budget.is_tracking_only() && s.rollover.is_zero() {
                 "\u{2014}".to_owned()
             } else {
-                format!("{} {}", s.available, commodity_str)
+                fmt(s.available)
             };
             let name_str = s
                 .budget
