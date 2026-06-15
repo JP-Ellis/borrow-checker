@@ -465,6 +465,16 @@ impl BudgetService {
             )));
         }
 
+        // Validate that period_start is the canonical start of a period.
+        let canonical = budget.period().range_containing(period_start).0;
+        if canonical != period_start {
+            return Err(crate::BcError::InvalidInput(format!(
+                "'{period_start}' is not a canonical period start for {:?} period; \
+                 did you mean '{canonical}'?",
+                budget.period(),
+            )));
+        }
+
         let id = bc_models::BudgetAllocationId::new();
         let candidate_created_at = jiff::Timestamp::now();
 
@@ -1655,6 +1665,43 @@ mod budget_service_tests {
         assert!(
             matches!(result, Err(crate::BcError::InvalidInput(_))),
             "CapAtTarget without target must fail with InvalidInput"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn allocate_rejects_non_canonical_period_start(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Groceries")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let svc = BudgetService::new(pool.clone());
+        let budget = svc
+            .create()
+            .account_id(acc)
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create budget");
+
+        // 2026-03-15 is mid-month; canonical start for Monthly is 2026-03-01.
+        let result = svc
+            .allocate(
+                budget.id(),
+                Date::constant(2026, 3, 15),
+                Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidInput(_))),
+            "mid-period date must be rejected with InvalidInput, got: {result:?}"
         );
     }
 
