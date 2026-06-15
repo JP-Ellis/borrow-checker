@@ -214,10 +214,9 @@ pub async fn get_account_stats(
     ))
 }
 
-/// Returns the count of uncategorised postings for `account_id`.
+/// Returns the count of non-voided postings for `account_id`.
 ///
-/// A posting is uncategorised when it has no `envelope_id`. Voided transactions
-/// are excluded.
+/// Voided transactions are excluded.
 ///
 /// # Arguments
 ///
@@ -232,7 +231,7 @@ pub async fn get_account_stats(
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
 )]
 #[tauri::command(rename_all = "snake_case")]
-pub async fn get_uncategorised_count(
+pub async fn get_posting_count(
     account_id: String,
     state: State<'_, AppState>,
 ) -> Result<u32, bc_ipc::BcError> {
@@ -241,7 +240,7 @@ pub async fn get_uncategorised_count(
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
     state
         .balance_engine
-        .uncategorised_count(&id)
+        .posting_count(&id)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
 }
