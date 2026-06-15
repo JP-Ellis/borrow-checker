@@ -48,6 +48,15 @@ pub enum Command {
         /// Budget period type.
         #[arg(long, default_value = "monthly")]
         period: PeriodArg,
+        /// Days component of a custom period duration.
+        #[arg(long)]
+        duration_days: Option<u32>,
+        /// Weeks component of a custom period duration.
+        #[arg(long)]
+        duration_weeks: Option<u32>,
+        /// Months component of a custom period duration.
+        #[arg(long)]
+        duration_months: Option<u32>,
         /// Financial year start month (1–12).
         #[arg(long)]
         fy_start_month: Option<u8>,
@@ -131,6 +140,8 @@ pub enum PeriodArg {
     /// Calendar year.
     #[value(name = "calendar-year")]
     CalendarYear,
+    /// Arbitrary duration (requires at least one of --duration-days, --duration-weeks, --duration-months).
+    Custom,
 }
 
 /// CLI representation of rollover policies.
@@ -164,6 +175,9 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             target,
             commodity,
             period,
+            duration_days,
+            duration_weeks,
+            duration_months,
             fy_start_month,
             fy_start_day,
             rollover,
@@ -176,6 +190,9 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
                 target,
                 commodity,
                 period,
+                duration_days,
+                duration_weeks,
+                duration_months,
                 fy_start_month,
                 fy_start_day,
                 rollover,
@@ -275,6 +292,9 @@ async fn create(
     target: Option<rust_decimal::Decimal>,
     commodity: Option<String>,
     period_arg: PeriodArg,
+    duration_days: Option<u32>,
+    duration_weeks: Option<u32>,
+    duration_months: Option<u32>,
     fy_start_month: Option<u8>,
     fy_start_day: u8,
     rollover_arg: RolloverArg,
@@ -293,6 +313,9 @@ async fn create(
     let bc_period = resolve_period(
         period_arg,
         ctx.fortnightly_anchor,
+        duration_days,
+        duration_weeks,
+        duration_months,
         fy_start_month,
         fy_start_day,
     )?;
@@ -565,6 +588,9 @@ async fn update_budget(
 fn resolve_period(
     period_arg: PeriodArg,
     fortnightly_anchor: Option<Date>,
+    duration_days: Option<u32>,
+    duration_weeks: Option<u32>,
+    duration_months: Option<u32>,
     fy_start_month: Option<u8>,
     fy_start_day: u8,
 ) -> CliResult<bc_models::Period> {
@@ -597,6 +623,10 @@ fn resolve_period(
             })?;
             bc_models::Period::financial_quarter(month, fy_start_day)
                 .map_err(|e| CliError::Arg(format!("invalid financial quarter: {e}")))
+        }
+        PeriodArg::Custom => {
+            bc_models::Period::custom(duration_days, duration_weeks, duration_months)
+                .map_err(|e| CliError::Arg(format!("invalid custom period: {e}")))
         }
     }
 }
