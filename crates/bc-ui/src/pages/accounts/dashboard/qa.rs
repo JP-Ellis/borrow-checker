@@ -59,8 +59,8 @@ fn no_mask_node() -> AccountNode {
 /// others). CalendarYear and FinancialYear title labels are covered by the
 /// wildcard arm in `mod.rs`.
 ///
-/// Note: `uncategorised_resource` always resolves to an error in this QA harness
-/// because there is no real IPC connection. The uncategorised stat card will show
+/// Note: `posting_count_resource` always resolves to an error in this QA harness
+/// because there is no real IPC connection. The posting count stat card will show
 /// "—" (the fallback value for a failed or pending resource). To visually verify
 /// the non-error rendering (e.g. a numeric count with warn/neutral tone), use the
 /// stat card QA page directly.
