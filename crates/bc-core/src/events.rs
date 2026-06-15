@@ -157,6 +157,8 @@ pub enum Event {
     BudgetArchived {
         /// The budget's ID.
         budget_id: BudgetId,
+        /// When the budget was archived.
+        archived_at: jiff::Timestamp,
     },
     // TODO(milestone-5B): BudgetUpdated — rename, retarget, change rollover
     /// Funds were allocated to a budget line for a period.
@@ -210,7 +212,7 @@ impl Event {
             | Self::DepreciationCalculated { account_id, .. }
             | Self::LoanTermsSet { account_id, .. } => account_id.to_string(),
             Self::BudgetCreated { budget_id, .. }
-            | Self::BudgetArchived { budget_id }
+            | Self::BudgetArchived { budget_id, .. }
             | Self::BudgetAllocated { budget_id, .. } => budget_id.to_string(),
         }
     }
@@ -676,6 +678,7 @@ mod tests {
         let budget_id = BudgetId::new();
         let event = Event::BudgetArchived {
             budget_id: budget_id.clone(),
+            archived_at: Timestamp::now(),
         };
 
         store.append(&event).await.expect("append");
