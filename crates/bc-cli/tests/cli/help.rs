@@ -35,7 +35,6 @@ fn subcommand_help(#[case] subcommand: &str) {
 }
 
 #[rstest]
-#[case("budget", "status")]
 #[case("plugin", "list")]
 fn stub_commands(#[case] cmd_name: &str, #[case] subcommand: &str) {
     let ctx = TestContext::new();
