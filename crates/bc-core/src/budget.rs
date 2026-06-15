@@ -224,6 +224,7 @@ impl BudgetService {
             target: target.clone(),
             period: period.clone(),
             rollover,
+            created_at: now,
         };
 
         let mut db_tx = self.pool.begin().await?;

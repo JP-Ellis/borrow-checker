@@ -152,6 +152,8 @@ pub enum Event {
         period: Period,
         /// Rollover policy.
         rollover: RolloverPolicy,
+        /// When the budget was first persisted.
+        created_at: Timestamp,
     },
     /// A budget was archived.
     BudgetArchived {
@@ -616,6 +618,7 @@ mod tests {
             )),
             period: Period::Monthly,
             rollover: bc_models::RolloverPolicy::ResetToZero,
+            created_at: Timestamp::now(),
         };
 
         store.append(&event).await.expect("append should succeed");
@@ -646,6 +649,7 @@ mod tests {
                 target,
                 period,
                 rollover,
+                ..
             } => {
                 assert_eq!(rid, budget_id);
                 assert_eq!(raid, account_id);
