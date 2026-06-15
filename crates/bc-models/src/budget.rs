@@ -68,7 +68,7 @@ pub enum RolloverPolicy {
 /// assert!(budget.target().is_none());
 /// assert!(budget.tag_filter().is_none());
 /// ```
-#[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(bon::Builder, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Budget {
     /// Stable, opaque identifier for this budget (a prefixed `UUIDv7`).
@@ -213,7 +213,7 @@ impl Budget {
 ///
 /// assert_eq!(alloc.period_start(), Date::constant(2026, 1, 1));
 /// ```
-#[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(bon::Builder, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct BudgetAllocation {
     /// Stable, opaque identifier (a prefixed `UUIDv7`).
@@ -395,5 +395,35 @@ mod tests {
             .build();
         assert!(budget.is_archived());
         assert!(budget.archived_at().is_some());
+    }
+
+    #[test]
+    fn budget_partial_eq() {
+        let ts = jiff::Timestamp::now();
+        let a = Budget::builder()
+            .account_id(crate::AccountId::new())
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .created_at(ts)
+            .build();
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn budget_allocation_partial_eq() {
+        let budget_id = BudgetId::new();
+        let ts = jiff::Timestamp::now();
+        let a = BudgetAllocation::builder()
+            .budget_id(budget_id.clone())
+            .period_start(Date::constant(2026, 1, 1))
+            .amount(Amount::new(
+                Decimal::from(500_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .created_at(ts)
+            .build();
+        let b = a.clone();
+        assert_eq!(a, b);
     }
 }
