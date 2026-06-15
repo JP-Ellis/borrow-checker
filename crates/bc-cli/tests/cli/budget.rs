@@ -218,6 +218,39 @@ fn reallocate_updates_amount() {
 }
 
 #[test]
+fn update_budget_name() {
+    let ctx = TestContext::new();
+    let acc_id = create_expense_account(&ctx);
+    let budget_id = create_budget(&ctx, &acc_id);
+
+    let mut cmd = ctx.command();
+    cmd.args(["budget", "update", "--id", &budget_id, "--name", "New Name"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn update_budget_rollover_and_target() {
+    let ctx = TestContext::new();
+    let acc_id = create_expense_account(&ctx);
+    let budget_id = create_budget(&ctx, &acc_id);
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "budget",
+        "update",
+        "--id",
+        &budget_id,
+        "--target",
+        "200",
+        "--commodity",
+        "AUD",
+        "--rollover",
+        "carry-forward",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
 fn budget_status_with_allocation() {
     let ctx = TestContext::new();
     let acc_id = create_expense_account(&ctx);

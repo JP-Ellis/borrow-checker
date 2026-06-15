@@ -370,6 +370,70 @@ impl BudgetService {
         Ok(())
     }
 
+    /// Updates the mutable properties of an active budget.
+    ///
+    /// Only `name`, `target`, and `rollover` may be changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::NotFound`] if no active budget exists with `id`.
+    /// Returns [`crate::BcError::InvalidInput`] if `rollover` is `CapAtTarget` but
+    /// no target is set after applying the update.
+    /// Returns [`crate::BcError`] on event or database failure.
+    #[inline]
+    pub async fn update(
+        &self,
+        id: &bc_models::BudgetId,
+        name: Option<Option<String>>,
+        target: Option<Option<bc_models::Amount>>,
+        rollover: Option<bc_models::RolloverPolicy>,
+    ) -> crate::BcResult<bc_models::Budget> {
+        let budget = self.get(id).await?;
+
+        let new_name = name
+            .clone()
+            .unwrap_or_else(|| budget.name().map(str::to_owned));
+        let new_target = target.clone().unwrap_or_else(|| budget.target().cloned());
+        let new_rollover = rollover.unwrap_or_else(|| budget.rollover());
+
+        if matches!(new_rollover, bc_models::RolloverPolicy::CapAtTarget) && new_target.is_none() {
+            return Err(crate::BcError::InvalidInput(
+                "rollover policy CapAtTarget requires a non-None target".into(),
+            ));
+        }
+
+        let event = crate::events::Event::BudgetUpdated {
+            budget_id: id.clone(),
+            name: name.clone(),
+            target: target.clone(),
+            rollover,
+        };
+
+        let mut db_tx = self.pool.begin().await?;
+        crate::events::insert_event(&event, &mut db_tx).await?;
+
+        sqlx::query(
+            "UPDATE budgets \
+             SET name = ?, \
+                 target_amount = ?, \
+                 target_currency = ?, \
+                 rollover = ? \
+             WHERE id = ? AND archived_at IS NULL",
+        )
+        .bind(new_name.as_deref())
+        .bind(new_target.as_ref().map(|a| a.value().to_string()))
+        .bind(new_target.as_ref().map(|a| a.commodity().as_str()))
+        .bind(crate::db::to_db_str(new_rollover)?)
+        .bind(id.to_string())
+        .execute(&mut *db_tx)
+        .await?;
+
+        db_tx.commit().await?;
+        tracing::info!(budget_id = %id, "budget updated");
+
+        self.get(id).await
+    }
+
     // MARK: Allocation management
 
     /// Records (or replaces) the allocation for `budget_id` in the period starting on `period_start`.
@@ -1480,6 +1544,117 @@ mod budget_service_tests {
         assert!(
             second.is_ok(),
             "creating a new untagged budget after archiving the previous one should succeed"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn update_budget_name(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Groceries")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let svc = BudgetService::new(pool.clone());
+        let budget = svc
+            .create()
+            .account_id(acc)
+            .name("Old Name")
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create budget");
+
+        let updated = svc
+            .update(budget.id(), Some(Some("New Name".into())), None, None)
+            .await
+            .expect("update budget");
+
+        assert_eq!(updated.name(), Some("New Name"), "name updated");
+        assert_eq!(updated.rollover(), budget.rollover(), "rollover unchanged");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn update_budget_target_and_rollover(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Entertainment")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let svc = BudgetService::new(pool.clone());
+        let budget = svc
+            .create()
+            .account_id(acc)
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create budget");
+
+        let updated = svc
+            .update(
+                budget.id(),
+                None,
+                Some(Some(Amount::new(
+                    Decimal::from(200_i32),
+                    CommodityCode::new("AUD"),
+                ))),
+                Some(RolloverPolicy::CarryForward),
+            )
+            .await
+            .expect("update budget");
+
+        assert_eq!(
+            updated.target().map(bc_models::Amount::value),
+            Some(Decimal::from(200_i32)),
+            "target set to 200 AUD"
+        );
+        assert_eq!(
+            updated.rollover(),
+            RolloverPolicy::CarryForward,
+            "rollover updated"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn update_cap_at_target_without_target_fails(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let svc = BudgetService::new(pool.clone());
+        let budget = svc
+            .create()
+            .account_id(acc)
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create tracking-only budget");
+
+        let result = svc
+            .update(budget.id(), None, None, Some(RolloverPolicy::CapAtTarget))
+            .await;
+
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidInput(_))),
+            "CapAtTarget without target must fail with InvalidInput"
         );
     }
 

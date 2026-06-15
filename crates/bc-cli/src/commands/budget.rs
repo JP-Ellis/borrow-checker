@@ -87,6 +87,30 @@ pub enum Command {
         #[arg(long)]
         as_of: Option<String>,
     },
+    /// Update a budget's name, target, or rollover policy.
+    Update {
+        /// Budget ID to update.
+        #[arg(long)]
+        id: String,
+        /// New display name (omit to keep existing).
+        #[arg(long)]
+        name: Option<String>,
+        /// Clear the display name.
+        #[arg(long, conflicts_with = "name")]
+        clear_name: bool,
+        /// New target amount per period.
+        #[arg(long)]
+        target: Option<rust_decimal::Decimal>,
+        /// Commodity code for the new target (required when --target is set).
+        #[arg(long)]
+        commodity: Option<String>,
+        /// Clear the allocation target (make tracking-only).
+        #[arg(long, conflicts_with_all = ["target", "commodity"])]
+        clear_target: bool,
+        /// New rollover policy.
+        #[arg(long, value_enum)]
+        rollover: Option<RolloverArg>,
+    },
 }
 
 /// CLI representation of budget period types.
@@ -164,6 +188,27 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             .await
         }
         Command::Archive { id } => archive(ctx, id).await,
+        Command::Update {
+            id,
+            name,
+            clear_name,
+            target,
+            commodity,
+            clear_target,
+            rollover,
+        } => {
+            update_budget(
+                ctx,
+                id,
+                name,
+                clear_name,
+                target,
+                commodity,
+                clear_target,
+                rollover,
+            )
+            .await
+        }
         Command::Allocate {
             budget,
             amount,
@@ -437,6 +482,83 @@ async fn status(ctx: &AppContext, as_of_str: Option<String>) -> CliResult<()> {
         &["BUDGET", "PERIOD", "ALLOCATED", "ACTUALS", "AVAILABLE"],
         &rows,
     );
+    Ok(())
+}
+
+/// Update a budget's name, target, or rollover policy.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument maps to a CLI flag"
+)]
+async fn update_budget(
+    ctx: &AppContext,
+    id_str: String,
+    name: Option<String>,
+    clear_name: bool,
+    target: Option<rust_decimal::Decimal>,
+    commodity: Option<String>,
+    clear_target: bool,
+    rollover: Option<RolloverArg>,
+) -> CliResult<()> {
+    let id = bc_models::BudgetId::from_str(&id_str)
+        .map_err(|e| CliError::Arg(format!("invalid budget id '{id_str}': {e}")))?;
+
+    let new_name: Option<Option<String>> = if clear_name {
+        Some(None)
+    } else {
+        name.map(Some)
+    };
+
+    let new_target: Option<Option<bc_models::Amount>> = if clear_target {
+        Some(None)
+    } else if let Some(dec) = target {
+        let code = commodity
+            .as_deref()
+            .ok_or_else(|| CliError::Arg("--commodity is required when --target is set".into()))?;
+        Some(Some(bc_models::Amount::new(
+            dec,
+            bc_models::CommodityCode::new(code),
+        )))
+    } else {
+        None
+    };
+
+    let new_rollover: Option<bc_models::RolloverPolicy> = rollover.map(|r| match r {
+        RolloverArg::CarryForward => bc_models::RolloverPolicy::CarryForward,
+        RolloverArg::ResetToZero => bc_models::RolloverPolicy::ResetToZero,
+        RolloverArg::CapAtTarget => bc_models::RolloverPolicy::CapAtTarget,
+    });
+
+    let updated = ctx
+        .budgets
+        .update(&id, new_name, new_target, new_rollover)
+        .await
+        .map_err(CliError::Core)?;
+
+    if ctx.json {
+        return crate::output::print_json(&updated);
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("Updated budget {}", updated.id());
+        if let Some(n) = updated.name() {
+            println!("  name:    {n}");
+        }
+        if let Some(t) = updated.target() {
+            println!("  target:  {} {}", t.value(), t.commodity());
+        } else {
+            println!("  target:  (tracking-only)");
+        }
+        let rollover_str = match updated.rollover() {
+            bc_models::RolloverPolicy::CarryForward => "carry-forward",
+            bc_models::RolloverPolicy::ResetToZero => "reset-to-zero",
+            bc_models::RolloverPolicy::CapAtTarget => "cap-at-target",
+            _ => "unknown",
+        };
+        println!("  rollover: {rollover_str}");
+    }
+
     Ok(())
 }
 
