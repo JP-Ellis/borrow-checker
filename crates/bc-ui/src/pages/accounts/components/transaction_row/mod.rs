@@ -14,25 +14,25 @@ use crate::components::toml_view::TomlAuditEntry;
 use crate::components::toml_view::TomlKv;
 use crate::components::toml_view::TomlPosting;
 use crate::components::toml_view::TomlSection;
-use crate::label::envelope_label;
+use crate::label::category_label;
 use crate::pages::accounts::types::format_date_display;
 use crate::pages::accounts::types::headline_amount;
 use crate::pages::accounts::types::payee_initial;
 
 import_style!(style, "row.module.scss");
 
-/// Renders the Envelope column cell with overflow-aware fallback.
+/// Renders the Category column cell with overflow-aware fallback.
 ///
 /// Displays the pre-computed `label` string. If the rendered text overflows
 /// the cell, replaces it with *split transaction* in muted italic style.
 ///
 /// # Arguments
 ///
-/// * `label` - The expansion string from [`crate::label::envelope_label`] (e.g.
+/// * `label` - The expansion string from [`crate::label::category_label`] (e.g.
 ///   `"Expenses :: {Groceries, Healthcare}"` or `"—"`).
 #[component]
-fn EnvelopeCell(
-    /// Computed envelope label — either an account name, a shell expansion, or `"—"`.
+fn CategoryCell(
+    /// Computed category label — either an account name, a shell expansion, or `"—"`.
     label: String,
 ) -> impl IntoView {
     let span_ref = NodeRef::<leptos::html::Span>::new();
@@ -53,9 +53,9 @@ fn EnvelopeCell(
         <span
             class=move || {
                 if use_fallback.get() {
-                    format!("{} {}", style::envelope, style::envelope_split)
+                    format!("{} {}", style::category, style::category_split)
                 } else {
-                    style::envelope.to_owned()
+                    style::category.to_owned()
                 }
             }
             node_ref=span_ref
@@ -109,15 +109,13 @@ pub fn TransactionRow(
         core::cmp::Ordering::Equal => style::amt_neu,
     };
 
-    // TODO: When envelope_id is available on postings (after bc-ipc wiring),
-    // replace counterpart name lookup with an envelope system lookup.
     let counterpart_names: Vec<&str> = tx
         .postings
         .iter()
         .filter(|p| p.account.id != viewing_account_id.as_str())
         .map(|p| p.account.name.as_str())
         .collect();
-    let envelope = envelope_label(&counterpart_names);
+    let category = category_label(&counterpart_names);
 
     let payee = tx.payee.clone();
     let tags: Vec<String> = tx.tags.clone();
@@ -165,7 +163,7 @@ pub fn TransactionRow(
                     .map(|t| view! { <TagToken label=t /> })
                     .collect::<Vec<_>>()}
             </div>
-            <EnvelopeCell label=envelope />
+            <CategoryCell label=category />
             <span class=format!("{} {}", style::amount, amt_class)>{amount_str}</span>
             <span class=style::chevron aria-hidden="true">
                 {move || if expanded.get() { "↓" } else { "›" }}

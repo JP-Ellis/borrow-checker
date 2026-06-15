@@ -1,9 +1,9 @@
-//! Pure-Rust helper for deriving the envelope column label.
+//! Pure-Rust helper for deriving the category column label.
 
 /// Sentinel displayed when a transaction spans multiple account types.
 pub(crate) const SPLIT_LABEL: &str = "split transaction";
 
-/// Derives the envelope column label from a list of counterpart account names.
+/// Derives the category column label from a list of counterpart account names.
 ///
 /// - Zero counterparts → `"—"`
 /// - One counterpart → the account name verbatim
@@ -18,18 +18,18 @@ pub(crate) const SPLIT_LABEL: &str = "split transaction";
 ///
 /// # Returns
 ///
-/// A string ready to render in the Envelope column cell.
+/// A string ready to render in the Category column cell.
 ///
 /// # Example
 ///
 /// ```ignore
 /// // pub(crate) — tested via unit tests in this module.
 /// assert_eq!(
-///     envelope_label(&["Expenses :: Groceries", "Expenses :: Healthcare"]),
+///     category_label(&["Expenses :: Groceries", "Expenses :: Healthcare"]),
 ///     "Expenses :: {Groceries, Healthcare}"
 /// );
 /// ```
-pub(crate) fn envelope_label(counterpart_names: &[&str]) -> String {
+pub(crate) fn category_label(counterpart_names: &[&str]) -> String {
     match counterpart_names {
         [] => "—".to_owned(),
         [single] => (*single).to_owned(),
@@ -152,17 +152,17 @@ fn join_iter(iter: &mut impl Iterator<Item = String>, sep: &str) -> String {
 mod tests {
     use pretty_assertions::assert_eq;
 
-    use super::envelope_label;
+    use super::category_label;
 
     #[test]
     fn no_counterpart_returns_dash() {
-        assert_eq!(envelope_label(&[]), "—");
+        assert_eq!(category_label(&[]), "—");
     }
 
     #[test]
     fn single_counterpart_returned_as_is() {
         assert_eq!(
-            envelope_label(&["Expenses :: Groceries"]),
+            category_label(&["Expenses :: Groceries"]),
             "Expenses :: Groceries"
         );
     }
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn siblings_expand_with_braces() {
         assert_eq!(
-            envelope_label(&[
+            category_label(&[
                 "Expenses :: Groceries",
                 "Expenses :: Alcohol",
                 "Expenses :: Snacks",
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn deep_siblings_use_full_common_prefix() {
         assert_eq!(
-            envelope_label(&[
+            category_label(&[
                 "Expenses :: Food :: Groceries",
                 "Expenses :: Food :: Snacks",
             ]),
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn mixed_depth_within_same_type() {
         assert_eq!(
-            envelope_label(&["Expenses :: Food :: Groceries", "Expenses :: Healthcare"]),
+            category_label(&["Expenses :: Food :: Groceries", "Expenses :: Healthcare"]),
             "Expenses :: {Food :: Groceries, Healthcare}"
         );
     }
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn deeply_nested_recursive_expansion() {
         assert_eq!(
-            envelope_label(&[
+            category_label(&[
                 "Expenses :: Utilities :: Electricity :: Usage",
                 "Expenses :: Utilities :: Electricity :: Connection",
                 "Expenses :: Utilities :: Gas :: Usage",
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn cross_type_split_returns_placeholder() {
         assert_eq!(
-            envelope_label(&["Expenses :: Groceries", "Income :: Interest"]),
+            category_label(&["Expenses :: Groceries", "Income :: Interest"]),
             "split transaction"
         );
     }
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn cross_type_three_way_split_returns_placeholder() {
         assert_eq!(
-            envelope_label(&[
+            category_label(&[
                 "Expenses :: Groceries",
                 "Expenses :: Healthcare",
                 "Income :: Interest",
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn duplicate_counterparts_collapse_to_single() {
         assert_eq!(
-            envelope_label(&["Expenses :: Groceries", "Expenses :: Groceries"]),
+            category_label(&["Expenses :: Groceries", "Expenses :: Groceries"]),
             "Expenses :: Groceries"
         );
     }
@@ -244,7 +244,7 @@ mod tests {
         // When one path is a strict prefix of another, both must appear as
         // siblings so neither destination is silently dropped.
         assert_eq!(
-            envelope_label(&["Expenses :: Food", "Expenses :: Food :: Groceries"]),
+            category_label(&["Expenses :: Food", "Expenses :: Food :: Groceries"]),
             "Expenses :: {Food, Food :: Groceries}"
         );
     }
