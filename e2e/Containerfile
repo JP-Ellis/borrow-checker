@@ -93,7 +93,15 @@ EOT
 # CI=true: mise auto-trusts mounted config files.
 # MISE_AUTO_INSTALL=false: prevent mise from installing tools in root mise.toml
 # that are not needed for desktop E2E (cargo-hack, cargo-nextest, etc.)
+# Cargo env vars mirror what actions-rust-lang/setup-rust-toolchain sets on the
+# host runner so that container:linux-build compiles under identical conditions.
 ENV CI=true \
-  MISE_AUTO_INSTALL=false
+  MISE_AUTO_INSTALL=false \
+  CARGO_INCREMENTAL=0 \
+  CARGO_PROFILE_DEV_DEBUG=0 \
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+  CARGO_TERM_COLOR=always \
+  RUST_BACKTRACE=short \
+  RUSTFLAGS="-D warnings"
 
 WORKDIR /repo

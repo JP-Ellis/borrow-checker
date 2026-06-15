@@ -426,6 +426,7 @@ pub fn config_file_paths() -> impl Iterator<Item = PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
     use std::path::PathBuf;
 
     use pretty_assertions::assert_eq;
