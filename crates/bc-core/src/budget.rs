@@ -692,9 +692,8 @@ impl BudgetStatusEngine {
         Ok(out)
     }
 
-    /// Fetches posting amount and commodity strings for `account_id` in `[period_start, period_end)`.
-    ///
-    /// When `tag_filter` is `Some`, only postings carrying that tag or a descendant are returned.
+    /// Fetches raw `(amount, commodity)` pairs for postings to `account_id` or any
+    /// descendant account in `[period_start, period_end)`, optionally filtered by tag.
     ///
     /// # Errors
     ///
@@ -710,31 +709,42 @@ impl BudgetStatusEngine {
     ) -> crate::BcResult<Vec<(String, String)>> {
         match tag_filter {
             Some(tag) => sqlx::query_as(
-                "SELECT p.amount, p.commodity FROM postings p
-                 JOIN transactions t ON t.id = p.transaction_id
-                 WHERE p.account_id = ?
-                   AND t.date >= ? AND t.date < ? AND t.status != ?
-                   AND EXISTS (
-                     SELECT 1 FROM posting_tags pt WHERE pt.posting_id = p.id
-                     AND pt.tag_id IN (
-                       WITH RECURSIVE subtree(id) AS (
-                         SELECT ? UNION ALL
-                         SELECT tg.id FROM tags tg
-                         INNER JOIN subtree s ON tg.parent_id = s.id
-                       ) SELECT id FROM subtree))",
+                "WITH RECURSIVE \
+                   acct_tree(id) AS ( \
+                     SELECT ? UNION ALL \
+                     SELECT a.id FROM accounts a \
+                     INNER JOIN acct_tree ON a.parent_id = acct_tree.id \
+                   ), \
+                   tag_subtree(id) AS ( \
+                     SELECT ? UNION ALL \
+                     SELECT tg.id FROM tags tg \
+                     INNER JOIN tag_subtree ON tg.parent_id = tag_subtree.id \
+                   ) \
+                 SELECT p.amount, p.commodity FROM postings p \
+                 JOIN transactions t ON t.id = p.transaction_id \
+                 WHERE p.account_id IN (SELECT id FROM acct_tree) \
+                   AND t.date >= ? AND t.date < ? AND t.status != ? \
+                   AND EXISTS ( \
+                     SELECT 1 FROM posting_tags pt WHERE pt.posting_id = p.id \
+                     AND pt.tag_id IN (SELECT id FROM tag_subtree))",
             )
             .bind(account_id.to_string())
+            .bind(tag.to_string())
             .bind(period_start.to_string())
             .bind(period_end.to_string())
             .bind(voided_str)
-            .bind(tag.to_string())
             .fetch_all(&self.pool)
             .await
             .map_err(Into::into),
             None => sqlx::query_as(
-                "SELECT p.amount, p.commodity FROM postings p
-                 JOIN transactions t ON t.id = p.transaction_id
-                 WHERE p.account_id = ?
+                "WITH RECURSIVE acct_tree(id) AS ( \
+                   SELECT ? UNION ALL \
+                   SELECT a.id FROM accounts a \
+                   INNER JOIN acct_tree ON a.parent_id = acct_tree.id \
+                 ) \
+                 SELECT p.amount, p.commodity FROM postings p \
+                 JOIN transactions t ON t.id = p.transaction_id \
+                 WHERE p.account_id IN (SELECT id FROM acct_tree) \
                    AND t.date >= ? AND t.date < ? AND t.status != ?",
             )
             .bind(account_id.to_string())
@@ -1827,6 +1837,87 @@ mod budget_service_tests {
         ) -> crate::BcResult<bc_models::Decimal> {
             self.rollover_for(budget, period_start).await
         }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn budget_actuals_include_child_accounts(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+
+        let parent_account = accounts
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create parent expense account");
+
+        let child_account = accounts
+            .create()
+            .name("Groceries")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&parent_account)
+            .call()
+            .await
+            .expect("create child expense account");
+
+        let asset_account = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create asset account");
+
+        let txns = TransactionService::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(Date::constant(2026, 3, 15))
+            .description("Grocery run")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(child_account)
+                    .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(asset_account)
+                    .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .status(TransactionStatus::Cleared)
+            .created_at(Timestamp::now())
+            .build();
+        txns.create(tx).await.expect("create transaction");
+
+        let svc = BudgetService::new(pool.clone());
+        let budget = svc
+            .create()
+            .account_id(parent_account)
+            .target(Amount::new(
+                Decimal::from(500_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create budget on parent account");
+
+        let engine = BudgetStatusEngine::new(pool, noop_fx());
+        let status = engine
+            .status_for(&budget, Date::constant(2026, 3, 15))
+            .await
+            .expect("status_for succeeds");
+
+        assert_eq!(
+            status.actuals,
+            Decimal::from(100_i32),
+            "actuals must include postings to child accounts"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
