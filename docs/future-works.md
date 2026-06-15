@@ -100,3 +100,28 @@ The add-transaction form currently supports date, payee, status, and N postings
 
 Both additions depend on the envelope/budget model being defined (Milestone 5)
 to give tags a canonical vocabulary; until then a free-form input is acceptable.
+
+______________________________________________________________________
+
+## IPC budget commands — missing Tauri backend
+
+**Identified in:** PR #??? (feat/budget-design)
+**File:** `crates/bc-ipc/src/` and `crates/bc-app/src/commands/`
+
+The CLI (`bc-cli`) supports full budget management operations (create, update,
+archive, list, status), but these commands are not yet wired up for the desktop
+GUI via Tauri IPC. `bc-ipc` is missing IPC message types for budget operations,
+and `bc-app` is missing the corresponding command handlers.
+
+The reason for deferral: the Leptos frontend (`bc-ui`) does not yet have a
+budget management UI page, so implementing these commands would be premature.
+They have no consumer in the current state.
+
+When the budget UI is built out, add:
+
+- Budget command types to `crates/bc-ipc/src/` (analogous to existing
+  account commands like `CreateAccount`, `UpdateAccount`).
+- Tauri command handlers in `crates/bc-app/src/commands/` (or similar module)
+  that delegate to `bc-core` services.
+- Wire up from the Leptos frontend to call these commands when budget
+  management actions occur on the budget page.
