@@ -251,6 +251,36 @@ fn update_budget_rollover_and_target() {
 }
 
 #[test]
+fn update_budget_clear_name() {
+    let ctx = TestContext::new();
+    let acc_id = create_expense_account(&ctx);
+    let budget_id = create_budget(&ctx, &acc_id);
+
+    let mut cmd = ctx.command();
+    cmd.args(["budget", "update", "--id", &budget_id, "--clear-name"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn update_budget_clear_target() {
+    let ctx = TestContext::new();
+    let acc_id = create_expense_account(&ctx);
+    let budget_id = create_budget(&ctx, &acc_id);
+
+    let mut cmd = ctx.command();
+    cmd.args(["budget", "update", "--id", &budget_id, "--clear-target"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn budget_status_empty() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["budget", "status"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
 fn budget_status_with_allocation() {
     let ctx = TestContext::new();
     let acc_id = create_expense_account(&ctx);
