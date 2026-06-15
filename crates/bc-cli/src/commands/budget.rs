@@ -48,9 +48,6 @@ pub enum Command {
         /// Budget period type.
         #[arg(long, default_value = "monthly")]
         period: PeriodArg,
-        /// Anchor date for fortnightly periods (YYYY-MM-DD).
-        #[arg(long)]
-        anchor: Option<String>,
         /// Financial year start month (1–12).
         #[arg(long)]
         fy_start_month: Option<u8>,
@@ -167,7 +164,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             target,
             commodity,
             period,
-            anchor,
             fy_start_month,
             fy_start_day,
             rollover,
@@ -180,7 +176,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
                 target,
                 commodity,
                 period,
-                anchor,
                 fy_start_month,
                 fy_start_day,
                 rollover,
@@ -280,7 +275,6 @@ async fn create(
     target: Option<rust_decimal::Decimal>,
     commodity: Option<String>,
     period_arg: PeriodArg,
-    anchor: Option<String>,
     fy_start_month: Option<u8>,
     fy_start_day: u8,
     rollover_arg: RolloverArg,
@@ -296,7 +290,12 @@ async fn create(
         })
         .transpose()?;
 
-    let bc_period = resolve_period(period_arg, anchor, fy_start_month, fy_start_day)?;
+    let bc_period = resolve_period(
+        period_arg,
+        ctx.fortnightly_anchor,
+        fy_start_month,
+        fy_start_day,
+    )?;
 
     let rollover_policy = match rollover_arg {
         RolloverArg::CarryForward => RolloverPolicy::CarryForward,
@@ -565,7 +564,7 @@ async fn update_budget(
 /// Convert CLI period arguments into a [`bc_models::Period`].
 fn resolve_period(
     period_arg: PeriodArg,
-    anchor: Option<String>,
+    fortnightly_anchor: Option<Date>,
     fy_start_month: Option<u8>,
     fy_start_day: u8,
 ) -> CliResult<bc_models::Period> {
@@ -575,15 +574,13 @@ fn resolve_period(
         PeriodArg::Quarterly => Ok(Period::Quarterly),
         PeriodArg::CalendarYear => Ok(Period::CalendarYear),
         PeriodArg::Fortnightly => {
-            let anchor_str = anchor.ok_or_else(|| {
-                CliError::Arg("--anchor is required for fortnightly periods".to_owned())
+            let anchor = fortnightly_anchor.ok_or_else(|| {
+                CliError::Arg(
+                    "fortnightly period requires `fortnightly_anchor` to be set in config"
+                        .to_owned(),
+                )
             })?;
-            let anchor_date = anchor_str
-                .parse::<Date>()
-                .map_err(|e| CliError::Arg(format!("invalid anchor date '{anchor_str}': {e}")))?;
-            Ok(Period::Fortnightly {
-                anchor: anchor_date,
-            })
+            Ok(Period::Fortnightly { anchor })
         }
         PeriodArg::FinancialYear => {
             let month = fy_start_month.ok_or_else(|| {
