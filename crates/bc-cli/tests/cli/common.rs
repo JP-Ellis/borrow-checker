@@ -74,7 +74,7 @@ impl TestContext {
                 "[BUDGET_ID]".to_owned(),
             ),
             (
-                Regex::new("allocation_[0-9a-z]{26}").expect("valid regex"),
+                Regex::new("budget_alloc_[0-9a-z]{26}").expect("valid regex"),
                 "[ALLOCATION_ID]".to_owned(),
             ),
             (
