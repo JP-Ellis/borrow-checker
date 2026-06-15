@@ -15,6 +15,7 @@ Commands:
   archive   Archive a budget (hides it; data is preserved)
   allocate  Allocate funds to a budget for a period
   status    Show budget status for all active budgets
+  update    Update a budget's name, target, or rollover policy
   help      Print this message or the help of the given subcommand(s)
 
 Options:
