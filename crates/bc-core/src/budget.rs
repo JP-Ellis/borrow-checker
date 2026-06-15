@@ -401,7 +401,7 @@ impl BudgetService {
         }
 
         let id = bc_models::BudgetAllocationId::new();
-        let now = jiff::Timestamp::now();
+        let candidate_created_at = jiff::Timestamp::now();
 
         let event = crate::events::Event::BudgetAllocated {
             budget_id: budget_id.clone(),
@@ -412,42 +412,27 @@ impl BudgetService {
         let mut db_tx = self.pool.begin().await?;
         crate::events::insert_event(&event, &mut db_tx).await?;
 
-        // RETURNING ensures we get back the id and created_at that were actually
-        // stored: on INSERT the new values, on conflict the existing row's values.
-        let (raw_id, raw_created_at): (String, String) = sqlx::query_as(
+        let row = sqlx::query_as::<_, BudgetAllocationRow>(
             "INSERT INTO budget_allocations \
              (id, budget_id, period_start, amount, commodity, created_at) \
              VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT (budget_id, period_start) \
              DO UPDATE SET amount = excluded.amount, commodity = excluded.commodity \
-             RETURNING id, created_at",
+             RETURNING *",
         )
         .bind(id.to_string())
         .bind(budget_id.to_string())
         .bind(period_start.to_string())
         .bind(amount.value().to_string())
         .bind(amount.commodity().as_str())
-        .bind(now.to_string())
+        .bind(candidate_created_at.to_string())
         .fetch_one(&mut *db_tx)
         .await?;
 
         db_tx.commit().await?;
         tracing::info!(budget_id = %budget_id, %period_start, "budget allocated");
 
-        let stored_id = raw_id
-            .parse::<bc_models::BudgetAllocationId>()
-            .map_err(|e| crate::BcError::BadData(format!("stored allocation id invalid: {e}")))?;
-        let stored_created_at = raw_created_at
-            .parse::<jiff::Timestamp>()
-            .map_err(|e| crate::BcError::BadData(format!("stored created_at invalid: {e}")))?;
-
-        Ok(bc_models::BudgetAllocation::builder()
-            .id(stored_id)
-            .budget_id(budget_id.clone())
-            .period_start(period_start)
-            .amount(amount)
-            .created_at(stored_created_at)
-            .build())
+        bc_models::BudgetAllocation::try_from(row)
     }
 
     /// Retrieves the allocation for a budget in a specific period, if one exists.
