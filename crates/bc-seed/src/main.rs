@@ -272,7 +272,7 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
-    let drinking_water_id = accounts
+    let _drinking_water_id = accounts
         .create()
         .name("Drinking")
         .account_type(AccountType::Expense)
@@ -305,6 +305,15 @@ async fn main() -> anyhow::Result<()> {
         .account_type(AccountType::Expense)
         .kind(AccountKind::DepositAccount)
         .parent_id(&expenses_id)
+        .call()
+        .await?;
+
+    let telecommunications_id = accounts
+        .create()
+        .name("Telecommunications")
+        .account_type(AccountType::Expense)
+        .kind(AccountKind::DepositAccount)
+        .parent_id(&subscriptions_id)
         .call()
         .await?;
 
@@ -348,10 +357,10 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
-    let utilities_budget = budgets
+    let electricity_budget = budgets
         .create()
-        .account_id(utilities_id.clone())
-        .name("Utilities")
+        .account_id(electricity_id.clone())
+        .name("Electricity")
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
         .call()
@@ -412,7 +421,7 @@ async fn main() -> anyhow::Result<()> {
             .allocate(groceries_budget.id(), period_start, aud(dec!(600.00)))
             .await?;
         budgets
-            .allocate(utilities_budget.id(), period_start, aud(dec!(350.00)))
+            .allocate(electricity_budget.id(), period_start, aud(dec!(350.00)))
             .await?;
         budgets
             .allocate(transport_budget.id(), period_start, aud(dec!(200.00)))
@@ -632,7 +641,7 @@ async fn main() -> anyhow::Result<()> {
         "Telstra",
         "November internet bill",
         TransactionStatus::Cleared,
-        &drinking_water_id,
+        &telecommunications_id,
         dec!(89.00),
         &checking_id,
         dec!(-89.00)
@@ -827,7 +836,7 @@ async fn main() -> anyhow::Result<()> {
         "Telstra",
         "December internet bill",
         TransactionStatus::Cleared,
-        &drinking_water_id,
+        &telecommunications_id,
         dec!(89.00),
         &checking_id,
         dec!(-89.00)
@@ -1022,7 +1031,7 @@ async fn main() -> anyhow::Result<()> {
         "Telstra",
         "January internet bill",
         TransactionStatus::Cleared,
-        &drinking_water_id,
+        &telecommunications_id,
         dec!(89.00),
         &checking_id,
         dec!(-89.00)
@@ -1225,7 +1234,7 @@ async fn main() -> anyhow::Result<()> {
         "Telstra",
         "February internet bill",
         TransactionStatus::Cleared,
-        &drinking_water_id,
+        &telecommunications_id,
         dec!(89.00),
         &checking_id,
         dec!(-89.00)
@@ -1428,7 +1437,7 @@ async fn main() -> anyhow::Result<()> {
         "Telstra",
         "March internet bill",
         TransactionStatus::Cleared,
-        &drinking_water_id,
+        &telecommunications_id,
         dec!(89.00),
         &checking_id,
         dec!(-89.00)
@@ -1603,7 +1612,7 @@ async fn main() -> anyhow::Result<()> {
         "Telstra",
         "April internet bill",
         TransactionStatus::Cleared,
-        &drinking_water_id,
+        &telecommunications_id,
         dec!(89.00),
         &checking_id,
         dec!(-89.00)
