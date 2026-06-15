@@ -80,8 +80,8 @@ jobs:
       # Tauri system deps — https://v2.tauri.app/start/prerequisites/#linux
       - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev
           libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
       - uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
       - run: mise run lint:hack
 
   format:
@@ -89,8 +89,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
+        with:
+          toolchains: nightly
+          components: rustfmt
       - uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
-      - run: rustup toolchain add nightly --component rustfmt --no-self-update
       - run: mise run format
 
   machete:
@@ -98,6 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
       - uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
       - run: mise run machete
 
@@ -133,10 +137,12 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libxdo-dev
 
-      - uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
+        with:
+          cache-key: ${{ matrix.toolchain }}
       - run: rustup toolchain install ${{ matrix.toolchain }} --no-self-update
         if: matrix.toolchain != 'stable'
+      - uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
       - run: mise run test
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
@@ -153,7 +159,7 @@ jobs:
           # node_modules: empty dir; aube install inside the container populates it
           #   from the pnpm global store baked into the image.
           # target: hard-link from the host Cargo build (already warmed by
-          #   Swatinem/rust-cache) so the container reuses the pre-built binary,
+          #   setup-rust-toolchain cache) so the container reuses the pre-built binary,
           #   including wasm32-unknown-unknown artifacts for the Leptos frontend.
           mkdir -p .linux-cache/node_modules
           cp -rn --link target/. .linux-cache/target/ 2>/dev/null \
@@ -189,8 +195,8 @@ jobs:
       # Tauri system deps — https://v2.tauri.app/start/prerequisites/#linux
       - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev
           libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
       - uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925  # v4.1.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
       - run: mise run coverage
       - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
