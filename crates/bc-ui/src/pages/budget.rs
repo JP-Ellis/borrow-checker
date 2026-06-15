@@ -1,4 +1,4 @@
-//! Budget — envelope grid + quick-allocate terminal.
+//! Budget — allocation grid + quick-allocate terminal.
 
 use leptos::prelude::*;
 

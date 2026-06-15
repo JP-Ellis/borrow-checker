@@ -32,7 +32,7 @@ pub fn StatCardQa() -> impl IntoView {
                     <StatCard
                         label="uncategorised".into()
                         value="3".into()
-                        sub="need envelope"
+                        sub="not categorised"
                         tone=StatTone::Warn
                     />
                     <StatCard
