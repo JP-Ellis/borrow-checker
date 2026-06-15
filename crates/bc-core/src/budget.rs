@@ -869,6 +869,12 @@ impl BudgetStatusEngine {
                 return Ok(bc_models::Decimal::ZERO);
             }
 
+            // Custom periods have no natural boundary alignment; "previous period"
+            // is undefined so there is nothing to roll over.
+            if matches!(budget.period(), bc_models::Period::Custom { .. }) {
+                return Ok(bc_models::Decimal::ZERO);
+            }
+
             let prev_period_date = period_start
                 .checked_sub(jiff::Span::new().days(1_i32))
                 .map_err(|e| crate::BcError::BadData(format!("period underflow: {e}")))?;
@@ -1809,5 +1815,47 @@ mod budget_service_tests {
             matches!(result, Err(crate::BcError::InvalidInput(_))),
             "inverted window must return InvalidInput, got: {result:?}"
         );
+    }
+
+    #[cfg(test)]
+    impl BudgetStatusEngine {
+        /// Test accessor for `rollover_for` private method.
+        pub(crate) async fn rollover_for_test(
+            &self,
+            budget: &bc_models::Budget,
+            period_start: jiff::civil::Date,
+        ) -> crate::BcResult<bc_models::Decimal> {
+            self.rollover_for(budget, period_start).await
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rollover_for_custom_period_returns_zero(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let account = accounts
+            .create()
+            .name("Test Account")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let svc = BudgetService::new(pool.clone());
+        let budget = svc
+            .create()
+            .account_id(account)
+            .period(Period::custom(Some(30), None, None).expect("valid"))
+            .rollover(RolloverPolicy::CarryForward)
+            .call()
+            .await
+            .expect("budget created");
+
+        let engine = BudgetStatusEngine::new(pool, noop_fx());
+        let rollover = engine
+            .rollover_for_test(&budget, Date::constant(2026, 2, 1))
+            .await
+            .expect("no error");
+        assert_eq!(rollover, bc_models::Decimal::ZERO);
     }
 }
