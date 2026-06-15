@@ -160,7 +160,17 @@ pub enum Event {
         /// When the budget was archived.
         archived_at: jiff::Timestamp,
     },
-    // TODO(milestone-5B): BudgetUpdated — rename, retarget, change rollover
+    /// A budget's mutable properties were updated.
+    BudgetUpdated {
+        /// The budget's ID.
+        budget_id: BudgetId,
+        /// New display name (`Some(Some(s))` sets, `Some(None)` clears, `None` keeps existing).
+        name: Option<Option<String>>,
+        /// New allocation target (`Some(Some(a))` sets, `Some(None)` clears, `None` keeps existing).
+        target: Option<Option<Amount>>,
+        /// New rollover policy (`None` keeps existing).
+        rollover: Option<RolloverPolicy>,
+    },
     /// Funds were allocated to a budget line for a period.
     BudgetAllocated {
         /// The budget receiving the allocation.
@@ -188,6 +198,7 @@ impl Event {
             Self::DepreciationCalculated { .. } => "DepreciationCalculated",
             Self::LoanTermsSet { .. } => "LoanTermsSet",
             Self::BudgetCreated { .. } => "BudgetCreated",
+            Self::BudgetUpdated { .. } => "BudgetUpdated",
             Self::BudgetArchived { .. } => "BudgetArchived",
             Self::BudgetAllocated { .. } => "BudgetAllocated",
         }
@@ -212,6 +223,7 @@ impl Event {
             | Self::DepreciationCalculated { account_id, .. }
             | Self::LoanTermsSet { account_id, .. } => account_id.to_string(),
             Self::BudgetCreated { budget_id, .. }
+            | Self::BudgetUpdated { budget_id, .. }
             | Self::BudgetArchived { budget_id, .. }
             | Self::BudgetAllocated { budget_id, .. } => budget_id.to_string(),
         }
