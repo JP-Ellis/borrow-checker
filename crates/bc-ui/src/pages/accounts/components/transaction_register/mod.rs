@@ -24,7 +24,7 @@ enum Filter {
     All,
     /// Only uncleared/pending.
     Pending,
-    /// Only transactions without an envelope assignment.
+    /// Only transactions without a category assignment.
     Uncategorised,
 }
 
@@ -80,7 +80,7 @@ pub fn TransactionRegister(
             .into_iter()
             .filter(|tx| match active_filter.get() {
                 Filter::Pending => tx.status == TxStatus::Pending,
-                // TODO: filter by missing envelope_id once the field is available on postings
+                // TODO: filter by missing category_id once the field is available on postings
                 Filter::All | Filter::Uncategorised => true,
             })
             .collect::<Vec<_>>()
@@ -207,7 +207,7 @@ pub fn TransactionRegister(
             <div class=style::col_headers>
                 <span class=style::col_date>"date"</span>
                 <span>"payee"</span>
-                <span class=style::col_envelope>"envelope"</span>
+                <span class=style::col_category>"category"</span>
                 <span class=style::col_amt>"amount"</span>
                 <span />
             </div>

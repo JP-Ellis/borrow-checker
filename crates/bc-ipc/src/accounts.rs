@@ -288,7 +288,7 @@ impl Transaction {
 /// The user-supplied fields for a new posting leg.
 ///
 /// Omits `account_path` (derived by the backend from the account record) and
-/// cost/envelope fields (out of scope for v0).
+/// cost basis fields (out of scope for v0).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct NewPosting {

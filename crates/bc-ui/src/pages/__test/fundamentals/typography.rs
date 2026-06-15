@@ -217,7 +217,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
                         color:var(--bc-ink-soft);line-height:1.6;margin:0 0 8px">
                             "Your spending buffer sits $1,284 below the recommended six-week runway. \
                             The shortfall is driven by three irregular grocery runs and an unallocated \
-                            transfer from Joint that has not been matched to an envelope."
+                            transfer from Joint that has not been matched to a category."
                         </p>
                         <p style="font-family:var(--bc-font-mono);\
                         font-size:var(--bc-text-caption);\
@@ -241,7 +241,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
                         <p style="font-family:var(--bc-font-sans);\
                         font-size:var(--bc-text-body);\
                         color:var(--bc-ink-soft);line-height:1.6;margin:0 0 6px">
-                            "You have $3,420 in income that has not been assigned to an envelope. \
+                            "You have $3,420 in income that has not been assigned to a category. \
                             Borrow Checker holds it in a holding buffer until you decide how to allocate it."
                         </p>
                         <p style="font-family:var(--bc-font-mono);\
@@ -251,7 +251,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
                         </p>
                         <h2 style="font-family:var(--bc-font-sans);\
                         font-size:var(--bc-text-section);\
-                        font-weight:600;color:var(--bc-ink);margin:0 0 8px">"Savings Envelopes"</h2>
+                        font-weight:600;color:var(--bc-ink);margin:0 0 8px">"Savings Goals"</h2>
                         <p style="font-family:var(--bc-font-sans);\
                         font-size:var(--bc-text-body);\
                         color:var(--bc-ink-soft);line-height:1.6;margin:0 0 6px">
@@ -542,7 +542,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
                                 <span style="color:var(--bc-number)">"10_000.00"</span>
                             </div>
                             <div style="margin-top:4px">
-                                <span style="color:var(--bc-keyword)">"[budget.envelopes]"</span>
+                                <span style="color:var(--bc-keyword)">"[budget.categories]"</span>
                             </div>
                             <div style="padding-left:16px">
                                 <span style="color:var(--bc-fn)">"\"Savings:Japan 2026\""</span>
