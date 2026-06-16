@@ -18,10 +18,6 @@ use crate::period_overlap::overlapping_periods;
 /// Computed status for one budget in one display window.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "BudgetTree prefix needed for clarity at crate boundary"
-)]
 pub struct BudgetTreeItem {
     /// The budget this item represents.
     pub budget: bc_models::Budget,
@@ -47,10 +43,6 @@ pub struct BudgetTreeItem {
 /// Aggregate KPI values for the budget overview header.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "BudgetTree prefix needed for clarity at crate boundary"
-)]
 pub struct BudgetTreeSummary {
     /// Sum of effective targets across all leaf budgets (same commodity).
     pub total_effective_target: Decimal,
@@ -82,10 +74,6 @@ pub struct BudgetOverview {
 
 /// Assembles a `BudgetOverview` for a given display period and window start.
 #[derive(Clone)]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "BudgetTree prefix needed for clarity at crate boundary"
-)]
 pub struct BudgetTreeService {
     /// The SQLite connection pool.
     pool: SqlitePool,
