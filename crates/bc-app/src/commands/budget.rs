@@ -246,6 +246,7 @@ pub async fn get_budget_transactions(
 ///
 /// Pass `name = Some(None)` to clear the name, `name = None` to leave it unchanged.
 /// Both `target_minor_units` and `target_currency` must be provided together, or both omitted.
+/// Pass `tag_filter = Some(None)` to clear the tag filter, `tag_filter = None` to leave it unchanged.
 ///
 /// # Errors
 ///
@@ -255,6 +256,10 @@ pub async fn get_budget_transactions(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Tauri IPC command args map 1-to-1 to the bc-ipc contract; a wrapper struct would require extra serde round-trips"
+)]
 #[tauri::command(rename_all = "snake_case")]
 pub async fn update_budget(
     budget_id: String,
@@ -262,6 +267,8 @@ pub async fn update_budget(
     target_minor_units: Option<i64>,
     target_currency: Option<String>,
     rollover: Option<bc_ipc::RolloverPolicy>,
+    period: Option<bc_ipc::Period>,
+    tag_filter: Option<Option<String>>,
     state: State<'_, AppState>,
 ) -> Result<(), bc_ipc::BcError> {
     let bid = budget_id
@@ -285,10 +292,19 @@ pub async fn update_budget(
     };
 
     let rollover_model = rollover.map(crate::ipc::IntoModel::into_model);
+    let period_model = period.map(crate::ipc::IntoModel::into_model);
+
+    let tag: Option<Option<bc_models::TagId>> = match tag_filter {
+        None => None,
+        Some(None) => Some(None),
+        Some(Some(s)) => Some(Some(s.parse::<bc_models::TagId>().map_err(|e| {
+            bc_ipc::BcError::Validation(format!("invalid tag_filter: {e}"))
+        })?)),
+    };
 
     state
         .budgets
-        .update(&bid, name, target, rollover_model)
+        .update(&bid, name, target, rollover_model, period_model, tag)
         .await
         .map(|_| ())
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
