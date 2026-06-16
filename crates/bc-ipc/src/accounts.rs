@@ -174,6 +174,10 @@ pub struct Posting {
     pub amount: Amount,
     /// Optional inline comment shown in the TOML view.
     pub note: Option<String>,
+    /// Accrual spread start date (ISO-8601). `None` means no spreading applied.
+    pub spread_from: Option<String>,
+    /// Accrual spread end date (ISO-8601, exclusive). `None` means no spreading applied.
+    pub spread_until: Option<String>,
 }
 
 impl Posting {
@@ -184,13 +188,23 @@ impl Posting {
     /// * `account` - Account reference with ID and display name.
     /// * `amount` - Posting amount.
     /// * `note` - Optional inline comment, or `None`.
+    /// * `spread_from` - Accrual spread start date (ISO-8601), or `None`.
+    /// * `spread_until` - Accrual spread end date (ISO-8601, exclusive), or `None`.
     #[must_use]
     #[inline]
-    pub fn new(account: AccountRef, amount: Amount, note: Option<impl Into<String>>) -> Self {
+    pub fn new(
+        account: AccountRef,
+        amount: Amount,
+        note: Option<impl Into<String>>,
+        spread_from: Option<impl Into<String>>,
+        spread_until: Option<impl Into<String>>,
+    ) -> Self {
         Self {
             account,
             amount,
             note: note.map(Into::into),
+            spread_from: spread_from.map(Into::into),
+            spread_until: spread_until.map(Into::into),
         }
     }
 }
@@ -298,6 +312,10 @@ pub struct NewPosting {
     pub amount: Amount,
     /// Optional inline note.
     pub note: Option<String>,
+    /// Accrual spread start date (ISO-8601). `None` means no spreading.
+    pub spread_from: Option<String>,
+    /// Accrual spread end date (ISO-8601, exclusive). `None` means no spreading.
+    pub spread_until: Option<String>,
 }
 
 impl NewPosting {
@@ -308,17 +326,23 @@ impl NewPosting {
     /// * `account_id` - Account ID referencing an existing active account.
     /// * `amount` - Posting amount (positive = credit; negative = debit).
     /// * `note` - Optional inline note, or `None`.
+    /// * `spread_from` - Accrual spread start date (ISO-8601), or `None`.
+    /// * `spread_until` - Accrual spread end date (ISO-8601, exclusive), or `None`.
     #[must_use]
     #[inline]
     pub fn new(
         account_id: impl Into<String>,
         amount: Amount,
         note: Option<impl Into<String>>,
+        spread_from: Option<impl Into<String>>,
+        spread_until: Option<impl Into<String>>,
     ) -> Self {
         Self {
             account_id: account_id.into(),
             amount,
             note: note.map(Into::into),
+            spread_from: spread_from.map(Into::into),
+            spread_until: spread_until.map(Into::into),
         }
     }
 }
@@ -490,7 +514,13 @@ mod tests {
 
     #[test]
     fn new_posting_constructor_roundtrip() {
-        let p = NewPosting::new("acc-1", Amount::new(-1_000, "AUD", 2), Some("test note"));
+        let p = NewPosting::new(
+            "acc-1",
+            Amount::new(-1_000, "AUD", 2),
+            Some("test note"),
+            None::<&str>,
+            None::<&str>,
+        );
         assert_eq!(p.account_id, "acc-1");
         assert_eq!(p.amount.minor_units, -1_000);
         assert_eq!(p.note.as_deref(), Some("test note"));
@@ -506,8 +536,20 @@ mod tests {
             status,
             vec![],
             vec![
-                NewPosting::new("acc-a", Amount::new(-500, "AUD", 2), None::<&str>),
-                NewPosting::new("acc-b", Amount::new(500, "AUD", 2), None::<&str>),
+                NewPosting::new(
+                    "acc-a",
+                    Amount::new(-500, "AUD", 2),
+                    None::<&str>,
+                    None::<&str>,
+                    None::<&str>,
+                ),
+                NewPosting::new(
+                    "acc-b",
+                    Amount::new(500, "AUD", 2),
+                    None::<&str>,
+                    None::<&str>,
+                    None::<&str>,
+                ),
             ],
         );
         let json = serde_json::to_string(&tx).expect("serialises");
@@ -612,8 +654,20 @@ mod tests {
             status,
             vec!["category:groceries".to_owned(), "budget:food".to_owned()],
             vec![
-                NewPosting::new("acc-a", Amount::new(-3_000, "AUD", 2), None::<&str>),
-                NewPosting::new("acc-b", Amount::new(3_000, "AUD", 2), None::<&str>),
+                NewPosting::new(
+                    "acc-a",
+                    Amount::new(-3_000, "AUD", 2),
+                    None::<&str>,
+                    None::<&str>,
+                    None::<&str>,
+                ),
+                NewPosting::new(
+                    "acc-b",
+                    Amount::new(3_000, "AUD", 2),
+                    None::<&str>,
+                    None::<&str>,
+                    None::<&str>,
+                ),
             ],
         );
         let json = serde_json::to_string(&tx).expect("serialises");
