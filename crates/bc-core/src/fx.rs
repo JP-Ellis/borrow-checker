@@ -5,10 +5,6 @@ use std::sync::Arc;
 /// Error type for FX rate operations.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "FxError is the canonical public name; the module prefix clarifies the domain"
-)]
 pub enum FxError {
     /// Conversion between these two commodities is not available.
     #[error("FX conversion from {from} to {to} is not available")]
@@ -21,10 +17,6 @@ pub enum FxError {
 }
 
 /// Converts amounts between commodities.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "FxRateService is the canonical public name; the module prefix clarifies the domain"
-)]
 pub trait FxRateService: Send + Sync {
     /// Convert `amount` to `to_commodity`.
     ///
@@ -62,10 +54,6 @@ impl FxRateService for NoopFxRateService {
 /// Returns a [`NoopFxRateService`] wrapped in an [`Arc`].
 #[must_use]
 #[inline]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "noop_fx follows the same naming pattern as noop_* helpers elsewhere"
-)]
 pub fn noop_fx() -> Arc<dyn FxRateService> {
     Arc::new(NoopFxRateService)
 }
