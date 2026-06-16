@@ -51,7 +51,12 @@ pub async fn get_budget_overview(
         .summary
         .commodity
         .as_ref()
-        .map_or_else(|| "AUD".to_owned(), |c| c.as_str().to_owned());
+        .map(|c| c.as_str().to_owned())
+        .ok_or_else(|| {
+            bc_ipc::BcError::Internal(
+                "no commodity could be determined (no budgets with targets?)".to_owned(),
+            )
+        })?;
 
     let nodes: Vec<bc_ipc::BudgetTreeNode> = overview
         .nodes
@@ -128,7 +133,12 @@ pub async fn get_native_periods(
 
     let commodity = budget
         .target()
-        .map_or_else(|| "AUD".to_owned(), |t| t.commodity().as_str().to_owned());
+        .map(|t| t.commodity().as_str().to_owned())
+        .ok_or_else(|| {
+            bc_ipc::BcError::Internal(
+                "budget has no target — commodity required for amount conversion".to_owned(),
+            )
+        })?;
 
     native
         .iter()

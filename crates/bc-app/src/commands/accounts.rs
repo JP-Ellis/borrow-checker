@@ -135,11 +135,31 @@ pub async fn create_transaction(
         let account_id = p.account_id.parse::<bc_models::AccountId>().map_err(|e| {
             bc_ipc::BcError::Validation(format!("invalid account_id '{}': {e}", p.account_id))
         })?;
+        let spread_from = p
+            .spread_from
+            .as_deref()
+            .map(|s| {
+                s.parse::<jiff::civil::Date>().map_err(|e| {
+                    bc_ipc::BcError::Validation(format!("invalid spread_from '{s}': {e}"))
+                })
+            })
+            .transpose()?;
+        let spread_until = p
+            .spread_until
+            .as_deref()
+            .map(|s| {
+                s.parse::<jiff::civil::Date>().map_err(|e| {
+                    bc_ipc::BcError::Validation(format!("invalid spread_until '{s}': {e}"))
+                })
+            })
+            .transpose()?;
         let posting = bc_models::Posting::builder()
             .id(bc_models::PostingId::new())
             .account_id(account_id)
             .amount(p.amount.into_model())
             .maybe_memo(p.note.clone())
+            .maybe_spread_from(spread_from)
+            .maybe_spread_until(spread_until)
             .build();
         postings.push(posting);
     }

@@ -168,7 +168,7 @@ impl BudgetTreeService {
         assign_depths(&mut items, &account_map);
 
         // Sort into tree order (parent before children, siblings by account name).
-        let nodes = build_tree(items);
+        let nodes = build_tree(items, &account_map);
 
         let summary = compute_summary(&nodes);
 
@@ -341,17 +341,40 @@ fn assign_depths(
     }
 }
 
-/// Filters to root-level items and sorts them by account name.
-fn build_tree(items: Vec<BudgetTreeItem>) -> Vec<BudgetTreeItem> {
+/// Assembles items into a nested tree rooted at accounts that have no budgeted parent.
+///
+/// Items whose account's parent is also in the budget set become children of that
+/// parent rather than roots.  Siblings at every level are sorted by account name.
+fn build_tree(
+    items: Vec<BudgetTreeItem>,
+    _account_map: &HashMap<bc_models::AccountId, bc_models::Account>,
+) -> Vec<BudgetTreeItem> {
     let budget_account_ids: std::collections::HashSet<bc_models::AccountId> =
         items.iter().map(|i| i.account.id().clone()).collect();
 
-    let mut roots: Vec<BudgetTreeItem> = items
+    let mut by_account: HashMap<bc_models::AccountId, BudgetTreeItem> = items
         .into_iter()
-        .filter(|i| {
-            i.account
-                .parent_id()
-                .is_none_or(|pid| !budget_account_ids.contains(pid))
+        .map(|i| (i.account.id().clone(), i))
+        .collect();
+
+    let root_ids: Vec<bc_models::AccountId> = by_account
+        .keys()
+        .filter(|id| {
+            by_account.get(*id).is_none_or(|item| {
+                item.account
+                    .parent_id()
+                    .is_none_or(|pid| !budget_account_ids.contains(pid))
+            })
+        })
+        .cloned()
+        .collect();
+
+    let mut roots: Vec<BudgetTreeItem> = root_ids
+        .into_iter()
+        .filter_map(|id| {
+            let mut item = by_account.remove(&id)?;
+            item.children = collect_children(item.account.id(), &mut by_account);
+            Some(item)
         })
         .collect();
 
@@ -359,33 +382,86 @@ fn build_tree(items: Vec<BudgetTreeItem>) -> Vec<BudgetTreeItem> {
     roots
 }
 
-/// Computes aggregate KPI values from the root-level budget tree nodes.
+/// Recursively collects and nests children of `parent_id` from `by_account`.
+fn collect_children(
+    parent_id: &bc_models::AccountId,
+    by_account: &mut HashMap<bc_models::AccountId, BudgetTreeItem>,
+) -> Vec<BudgetTreeItem> {
+    let child_ids: Vec<bc_models::AccountId> = by_account
+        .values()
+        .filter(|item| item.account.parent_id() == Some(parent_id))
+        .map(|item| item.account.id().clone())
+        .collect();
+
+    let mut children: Vec<BudgetTreeItem> = child_ids
+        .into_iter()
+        .filter_map(|id| {
+            let mut item = by_account.remove(&id)?;
+            item.children = collect_children(item.account.id(), by_account);
+            Some(item)
+        })
+        .collect();
+
+    children.sort_by(|a, b| a.account.name().cmp(b.account.name()));
+    children
+}
+
+/// Computes aggregate KPI values from the full budget tree (all depths).
 fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
     let mut total_target = Decimal::ZERO;
     let mut total_actuals = Decimal::ZERO;
     let mut overspent = 0_u32;
     let mut commodity = None;
 
-    for node in nodes {
-        if let Some(t) = node.effective_target {
-            total_target = total_target.checked_add(t).unwrap_or(total_target);
-            if commodity.is_none() {
-                commodity.clone_from(&node.commodity);
-            }
-        }
-        total_actuals = total_actuals
-            .checked_add(node.actuals)
-            .unwrap_or(total_actuals);
-        if node.effective_target.is_some_and(|t| node.actuals > t) {
-            overspent = overspent.saturating_add(1);
-        }
-    }
+    accumulate_summary(
+        nodes,
+        &mut total_target,
+        &mut total_actuals,
+        &mut overspent,
+        &mut commodity,
+    );
 
     BudgetTreeSummary {
         total_effective_target: total_target,
         total_actuals,
         commodity,
         overspent_count: overspent,
+    }
+}
+
+/// Recursively accumulates KPI values, counting only leaf nodes.
+fn accumulate_summary(
+    nodes: &[BudgetTreeItem],
+    total_target: &mut Decimal,
+    total_actuals: &mut Decimal,
+    overspent: &mut u32,
+    commodity: &mut Option<bc_models::CommodityCode>,
+) {
+    for node in nodes {
+        if node.children.is_empty() {
+            // Leaf node: count directly toward totals.
+            if let Some(t) = node.effective_target {
+                *total_target = total_target.checked_add(t).unwrap_or(*total_target);
+                if commodity.is_none() {
+                    commodity.clone_from(&node.commodity);
+                }
+            }
+            *total_actuals = total_actuals
+                .checked_add(node.actuals)
+                .unwrap_or(*total_actuals);
+            if node.effective_target.is_some_and(|t| node.actuals > t) {
+                *overspent = overspent.saturating_add(1);
+            }
+        } else {
+            // Parent node: recurse into children only.
+            accumulate_summary(
+                &node.children,
+                total_target,
+                total_actuals,
+                overspent,
+                commodity,
+            );
+        }
     }
 }
 
@@ -532,5 +608,67 @@ mod tests {
         let diff = (target - dec!(128.57)).abs();
         assert!(diff < dec!(0.01), "got {target}");
         assert!(node.has_mixed_period);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn nested_budget_appears_as_child_not_lost(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let food = accounts
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("food account");
+        let restaurants = accounts
+            .create()
+            .name("Restaurants")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&food)
+            .call()
+            .await
+            .expect("restaurants account");
+
+        let budgets = BudgetService::new(pool.clone());
+        budgets
+            .create()
+            .account_id(food.clone())
+            .target(Amount::new(dec!(500), CommodityCode::new("AUD")))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("food budget");
+        budgets
+            .create()
+            .account_id(restaurants.clone())
+            .target(Amount::new(dec!(200), CommodityCode::new("AUD")))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("restaurant budget");
+
+        let svc = BudgetTreeService::new(pool.clone(), noop_fx());
+        let overview = svc
+            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1))
+            .await
+            .expect("overview");
+
+        // One root (Food) with one child (Restaurants).
+        assert_eq!(overview.nodes.len(), 1, "expected one root node");
+        let root = overview.nodes.first().expect("one node");
+        assert_eq!(root.children.len(), 1, "expected one child under Food");
+
+        let child = root.children.first().expect("one child");
+        assert_eq!(child.account.name(), "Restaurants");
+
+        // Summary counts only the leaf (Restaurants = $200); Food is a parent.
+        assert_eq!(overview.summary.total_effective_target, dec!(200));
+        assert_eq!(overview.summary.overspent_count, 0);
+
+        drop(restaurants);
     }
 }
