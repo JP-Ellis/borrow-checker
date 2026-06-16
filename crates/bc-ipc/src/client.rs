@@ -249,6 +249,14 @@ struct UpdateBudgetArgs<'a> {
     target_currency: Option<&'a str>,
     /// New rollover policy, or `None` to leave unchanged.
     rollover: Option<RolloverPolicy>,
+    /// New recurrence period, or `None` to leave unchanged.
+    period: Option<crate::Period>,
+    /// New tag filter: `Some(Some(s))` sets it, `Some(None)` clears it, `None` leaves it unchanged.
+    #[expect(
+        clippy::option_option,
+        reason = "outer Some = patch; inner None = clear the field"
+    )]
+    tag_filter: Option<Option<String>>,
 }
 
 /// Arg struct for [`archive_budget`].
@@ -371,6 +379,8 @@ pub async fn update_budget(
     target_minor_units: Option<i64>,
     target_currency: Option<&str>,
     rollover: Option<RolloverPolicy>,
+    period: Option<crate::Period>,
+    tag_filter: Option<Option<String>>,
 ) -> Result<(), BcError> {
     tauri_sys::core::invoke_result(
         commands::UPDATE_BUDGET,
@@ -380,6 +390,8 @@ pub async fn update_budget(
             target_minor_units,
             target_currency,
             rollover,
+            period,
+            tag_filter,
         },
     )
     .await

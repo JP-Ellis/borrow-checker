@@ -176,7 +176,7 @@ pub struct Posting {
     pub note: Option<String>,
     /// Accrual spread start date (ISO-8601). `None` means no spreading applied.
     pub spread_from: Option<String>,
-    /// Accrual spread end date (ISO-8601, exclusive). `None` means no spreading applied.
+    /// Accrual spread end date (ISO-8601, inclusive — the last day of the spread). `None` means no spreading applied.
     pub spread_until: Option<String>,
 }
 
@@ -189,7 +189,7 @@ impl Posting {
     /// * `amount` - Posting amount.
     /// * `note` - Optional inline comment, or `None`.
     /// * `spread_from` - Accrual spread start date (ISO-8601), or `None`.
-    /// * `spread_until` - Accrual spread end date (ISO-8601, exclusive), or `None`.
+    /// * `spread_until` - Accrual spread end date (ISO-8601, inclusive — the last day of the spread), or `None`.
     #[must_use]
     #[inline]
     pub fn new(
@@ -314,7 +314,7 @@ pub struct NewPosting {
     pub note: Option<String>,
     /// Accrual spread start date (ISO-8601). `None` means no spreading.
     pub spread_from: Option<String>,
-    /// Accrual spread end date (ISO-8601, exclusive). `None` means no spreading.
+    /// Accrual spread end date (ISO-8601, inclusive — the last day of the spread). `None` means no spreading.
     pub spread_until: Option<String>,
 }
 
@@ -327,7 +327,7 @@ impl NewPosting {
     /// * `amount` - Posting amount (positive = credit; negative = debit).
     /// * `note` - Optional inline note, or `None`.
     /// * `spread_from` - Accrual spread start date (ISO-8601), or `None`.
-    /// * `spread_until` - Accrual spread end date (ISO-8601, exclusive), or `None`.
+    /// * `spread_until` - Accrual spread end date (ISO-8601, inclusive — the last day of the spread), or `None`.
     #[must_use]
     #[inline]
     pub fn new(
