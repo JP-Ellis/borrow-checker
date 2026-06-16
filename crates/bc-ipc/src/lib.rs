@@ -13,6 +13,7 @@
 //!   `Debug`
 
 mod accounts;
+mod budget;
 #[cfg(target_arch = "wasm32")]
 pub mod client;
 pub mod commands;
@@ -34,6 +35,10 @@ pub use accounts::Posting;
 pub use accounts::SparkPoint;
 pub use accounts::Transaction;
 pub use accounts::TxStatus;
+pub use budget::BudgetSummary;
+pub use budget::BudgetTreeNode;
+pub use budget::NativePeriodRow;
+pub use budget::RolloverPolicy;
 pub use currency::AUD;
 pub use currency::BTC;
 pub use currency::Currency;
