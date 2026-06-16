@@ -285,7 +285,7 @@ impl Posting {
         self.spread_from
     }
 
-    /// Returns the accrual spread end date (exclusive), if set.
+    /// Returns the accrual spread end date (inclusive, the last day of the spread), if set.
     #[inline]
     #[must_use]
     pub fn spread_until(&self) -> Option<Date> {

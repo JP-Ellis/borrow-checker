@@ -560,7 +560,7 @@ async fn update_budget(
 
     let updated = ctx
         .budgets
-        .update(&id, new_name, new_target, new_rollover)
+        .update(&id, new_name, new_target, new_rollover, None, None)
         .await
         .map_err(CliError::Core)?;
 

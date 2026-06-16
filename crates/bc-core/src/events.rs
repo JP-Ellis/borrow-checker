@@ -172,6 +172,10 @@ pub enum Event {
         target: Option<Option<Amount>>,
         /// New rollover policy (`None` keeps existing).
         rollover: Option<RolloverPolicy>,
+        /// New recurrence period (`None` keeps existing).
+        period: Option<Period>,
+        /// New tag filter (`Some(Some(t))` sets, `Some(None)` clears, `None` keeps existing).
+        tag_filter: Option<Option<TagId>>,
     },
     /// Funds were allocated to a budget line for a period.
     BudgetAllocated {

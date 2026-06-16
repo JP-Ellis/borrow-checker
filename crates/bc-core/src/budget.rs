@@ -373,7 +373,9 @@ impl BudgetService {
 
     /// Updates the mutable properties of an active budget.
     ///
-    /// Only `name`, `target`, and `rollover` may be changed.
+    /// `name`, `target`, `rollover`, `period`, and `tag_filter` may be changed.
+    /// Pass `None` for any field to leave it unchanged.
+    /// Pass `Some(None)` for `name` or `tag_filter` to clear them.
     ///
     /// # Errors
     ///
@@ -388,6 +390,8 @@ impl BudgetService {
         name: Option<Option<String>>,
         target: Option<Option<bc_models::Amount>>,
         rollover: Option<bc_models::RolloverPolicy>,
+        period: Option<bc_models::Period>,
+        tag_filter: Option<Option<bc_models::TagId>>,
     ) -> crate::BcResult<bc_models::Budget> {
         let budget = self.get(id).await?;
 
@@ -396,6 +400,10 @@ impl BudgetService {
             .unwrap_or_else(|| budget.name().map(str::to_owned));
         let new_target = target.clone().unwrap_or_else(|| budget.target().cloned());
         let new_rollover = rollover.unwrap_or_else(|| budget.rollover());
+        let new_period = period.clone().unwrap_or_else(|| budget.period().clone());
+        let new_tag_filter = tag_filter
+            .clone()
+            .unwrap_or_else(|| budget.tag_filter().cloned());
 
         if matches!(new_rollover, bc_models::RolloverPolicy::CapAtTarget) && new_target.is_none() {
             return Err(crate::BcError::InvalidInput(
@@ -408,23 +416,31 @@ impl BudgetService {
             name: name.clone(),
             target: target.clone(),
             rollover,
+            period,
+            tag_filter,
         };
 
         let mut db_tx = self.pool.begin().await?;
         crate::events::insert_event(&event, &mut db_tx).await?;
+
+        let period_json = serde_json::to_string(&new_period)?;
 
         sqlx::query(
             "UPDATE budgets \
              SET name = ?, \
                  target_amount = ?, \
                  target_currency = ?, \
-                 rollover = ? \
+                 rollover = ?, \
+                 period = ?, \
+                 tag_filter = ? \
              WHERE id = ? AND archived_at IS NULL",
         )
         .bind(new_name.as_deref())
         .bind(new_target.as_ref().map(|a| a.value().to_string()))
         .bind(new_target.as_ref().map(|a| a.commodity().as_str()))
         .bind(crate::db::to_db_str(new_rollover)?)
+        .bind(&period_json)
+        .bind(new_tag_filter.as_ref().map(ToString::to_string))
         .bind(id.to_string())
         .execute(&mut *db_tx)
         .await?;
@@ -1610,7 +1626,14 @@ mod budget_service_tests {
             .expect("create budget");
 
         let updated = svc
-            .update(budget.id(), Some(Some("New Name".into())), None, None)
+            .update(
+                budget.id(),
+                Some(Some("New Name".into())),
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .expect("update budget");
 
@@ -1649,6 +1672,8 @@ mod budget_service_tests {
                     CommodityCode::new("AUD"),
                 ))),
                 Some(RolloverPolicy::CarryForward),
+                None,
+                None,
             )
             .await
             .expect("update budget");
@@ -1688,7 +1713,14 @@ mod budget_service_tests {
             .expect("create tracking-only budget");
 
         let result = svc
-            .update(budget.id(), None, None, Some(RolloverPolicy::CapAtTarget))
+            .update(
+                budget.id(),
+                None,
+                None,
+                Some(RolloverPolicy::CapAtTarget),
+                None,
+                None,
+            )
             .await;
 
         assert!(
