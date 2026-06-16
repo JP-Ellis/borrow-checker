@@ -1236,6 +1236,7 @@ mod tests {
     use bc_models::TagId;
     use bc_models::Transaction;
     use bc_models::TransactionStatus;
+    use jiff::Timestamp;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
@@ -1375,7 +1376,6 @@ mod tests {
     }
 
     fn make_balanced_transaction(acc_a: AccountId, acc_b: AccountId) -> Transaction {
-        use jiff::Timestamp;
         Transaction::builder()
             .id(bc_models::TransactionId::new())
             .date(date(2026, 1, 15))
