@@ -49,6 +49,10 @@ struct ListPostingRow {
     cost_date: Option<String>,
     /// Optional cost lot label.
     cost_label: Option<String>,
+    /// Start of the accrual spread window in ISO 8601 format; NULL if no spread.
+    spread_from: Option<String>,
+    /// End of the accrual spread window in ISO 8601 format; NULL if no spread.
+    spread_until: Option<String>,
 }
 
 /// Validates that the postings in a transaction sum to zero per commodity.
@@ -139,6 +143,10 @@ struct PostingRow {
     cost_date: Option<String>,
     /// Optional cost lot label.
     cost_label: Option<String>,
+    /// Start of the accrual spread window in ISO 8601 format; NULL if no spread.
+    spread_from: Option<String>,
+    /// End of the accrual spread window in ISO 8601 format; NULL if no spread.
+    spread_until: Option<String>,
 }
 
 /// Service for creating and managing transactions.
@@ -215,8 +223,9 @@ impl Service {
             sqlx::query(
                 "INSERT INTO postings \
                  (id, transaction_id, account_id, amount, commodity, memo, position, \
-                  cost_total_value, cost_total_commodity, cost_date, cost_label) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  cost_total_value, cost_total_commodity, cost_date, cost_label, \
+                  spread_from, spread_until) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(posting.id().to_string()) //  1. id
             .bind(tx_id.to_string()) //  2. transaction_id
@@ -232,6 +241,8 @@ impl Service {
             .bind(cost_commodity) //  9. cost_total_commodity
             .bind(cost_date) // 10. cost_date
             .bind(cost_label) // 11. cost_label
+            .bind(posting.spread_from().map(|d| d.to_string())) // 12. spread_from
+            .bind(posting.spread_until().map(|d| d.to_string())) // 13. spread_until
             .execute(&mut *db_tx)
             .await?;
 
@@ -256,6 +267,10 @@ impl Service {
     /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "loading a transaction with postings, cost, spread, and tags requires several queries and field mappings"
+    )]
     pub async fn find_by_id(&self, id: &TransactionId) -> BcResult<Transaction> {
         let tx_row = sqlx::query_as::<_, (String, String, Option<String>, String, String, String)>(
             "SELECT id, date, payee, description, status, created_at \
@@ -298,10 +313,11 @@ impl Service {
             })
             .collect::<BcResult<_>>()?;
 
-        // Load postings with cost columns.
+        // Load postings with cost and spread columns.
         let posting_rows: Vec<PostingRow> = sqlx::query_as(
             "SELECT id, account_id, amount, commodity, memo, \
-                    cost_total_value, cost_total_commodity, cost_date, cost_label \
+                    cost_total_value, cost_total_commodity, cost_date, cost_label, \
+                    spread_from, spread_until \
              FROM postings WHERE transaction_id = ? ORDER BY position ASC",
         )
         .bind(id.to_string())
@@ -347,6 +363,24 @@ impl Service {
                     row.cost_date,
                     row.cost_label,
                 )?;
+                let spread_from = row
+                    .spread_from
+                    .as_deref()
+                    .map(|s| {
+                        s.parse::<Date>().map_err(|e| {
+                            BcError::BadData(format!("invalid spread_from '{s}': {e}"))
+                        })
+                    })
+                    .transpose()?;
+                let spread_until = row
+                    .spread_until
+                    .as_deref()
+                    .map(|s| {
+                        s.parse::<Date>().map_err(|e| {
+                            BcError::BadData(format!("invalid spread_until '{s}': {e}"))
+                        })
+                    })
+                    .transpose()?;
                 let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
                 Ok(Posting::builder()
                     .id(posting_id)
@@ -354,6 +388,8 @@ impl Service {
                     .amount(amount)
                     .maybe_cost(cost)
                     .maybe_memo(row.memo)
+                    .maybe_spread_from(spread_from)
+                    .maybe_spread_until(spread_until)
                     .tag_ids(p_tag_ids)
                     .build())
             })
@@ -476,7 +512,8 @@ impl Service {
         // Load all postings for non-voided transactions in one query.
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
             "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.memo, \
-                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label \
+                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
+                    p.spread_from, p.spread_until \
              FROM postings p \
              JOIN transactions t ON p.transaction_id = t.id \
              WHERE t.status != ? \
@@ -528,6 +565,22 @@ impl Service {
                 row.cost_date,
                 row.cost_label,
             )?;
+            let spread_from = row
+                .spread_from
+                .as_deref()
+                .map(|s| {
+                    s.parse::<Date>()
+                        .map_err(|e| BcError::BadData(format!("invalid spread_from '{s}': {e}")))
+                })
+                .transpose()?;
+            let spread_until = row
+                .spread_until
+                .as_deref()
+                .map(|s| {
+                    s.parse::<Date>()
+                        .map_err(|e| BcError::BadData(format!("invalid spread_until '{s}': {e}")))
+                })
+                .transpose()?;
             let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
             let posting = Posting::builder()
                 .id(posting_id)
@@ -535,6 +588,8 @@ impl Service {
                 .amount(amount)
                 .maybe_cost(cost)
                 .maybe_memo(row.memo)
+                .maybe_spread_from(spread_from)
+                .maybe_spread_until(spread_until)
                 .tag_ids(p_tag_ids)
                 .build();
             postings_by_tx.entry(tx_id_str).or_default().push(posting);
@@ -637,7 +692,8 @@ impl Service {
 
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
             "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.memo, \
-                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label \
+                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
+                    p.spread_from, p.spread_until \
              FROM postings p \
              JOIN transactions t ON p.transaction_id = t.id \
              WHERE t.status != ? \
@@ -693,6 +749,22 @@ impl Service {
                 row.cost_date,
                 row.cost_label,
             )?;
+            let spread_from = row
+                .spread_from
+                .as_deref()
+                .map(|s| {
+                    s.parse::<Date>()
+                        .map_err(|e| BcError::BadData(format!("invalid spread_from '{s}': {e}")))
+                })
+                .transpose()?;
+            let spread_until = row
+                .spread_until
+                .as_deref()
+                .map(|s| {
+                    s.parse::<Date>()
+                        .map_err(|e| BcError::BadData(format!("invalid spread_until '{s}': {e}")))
+                })
+                .transpose()?;
             let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
             let posting = Posting::builder()
                 .id(posting_id)
@@ -700,6 +772,8 @@ impl Service {
                 .amount(amount)
                 .maybe_cost(cost)
                 .maybe_memo(row.memo)
+                .maybe_spread_from(spread_from)
+                .maybe_spread_until(spread_until)
                 .tag_ids(p_tag_ids)
                 .build();
             postings_by_tx.entry(tx_id_str).or_default().push(posting);
@@ -817,7 +891,8 @@ impl Service {
                  SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
              )\
              SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.memo, \
-                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label \
+                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
+                    p.spread_from, p.spread_until \
              FROM postings p \
              JOIN transactions t ON p.transaction_id = t.id \
              WHERE t.status != ? \
@@ -878,6 +953,22 @@ impl Service {
                 row.cost_date,
                 row.cost_label,
             )?;
+            let spread_from = row
+                .spread_from
+                .as_deref()
+                .map(|s| {
+                    s.parse::<Date>()
+                        .map_err(|e| BcError::BadData(format!("invalid spread_from '{s}': {e}")))
+                })
+                .transpose()?;
+            let spread_until = row
+                .spread_until
+                .as_deref()
+                .map(|s| {
+                    s.parse::<Date>()
+                        .map_err(|e| BcError::BadData(format!("invalid spread_until '{s}': {e}")))
+                })
+                .transpose()?;
             let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
             let posting = Posting::builder()
                 .id(posting_id)
@@ -885,6 +976,8 @@ impl Service {
                 .amount(amount)
                 .maybe_cost(cost)
                 .maybe_memo(row.memo)
+                .maybe_spread_from(spread_from)
+                .maybe_spread_until(spread_until)
                 .tag_ids(p_tag_ids)
                 .build();
             postings_by_tx.entry(tx_id_str).or_default().push(posting);
@@ -1033,8 +1126,9 @@ impl Service {
             sqlx::query(
                 "INSERT INTO postings \
                  (id, transaction_id, account_id, amount, commodity, memo, position, \
-                  cost_total_value, cost_total_commodity, cost_date, cost_label) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  cost_total_value, cost_total_commodity, cost_date, cost_label, \
+                  spread_from, spread_until) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(posting.id().to_string()) //  1. id
             .bind(&tx_id_str) //  2. transaction_id
@@ -1050,6 +1144,8 @@ impl Service {
             .bind(cost_commodity) //  9. cost_total_commodity
             .bind(cost_date) // 10. cost_date
             .bind(cost_label) // 11. cost_label
+            .bind(posting.spread_from().map(|d| d.to_string())) // 12. spread_from
+            .bind(posting.spread_until().map(|d| d.to_string())) // 13. spread_until
             .execute(&mut *db_tx)
             .await?;
 
@@ -1064,6 +1160,65 @@ impl Service {
 
         db_tx.commit().await?;
         tracing::info!(transaction_id = %tx_id, "transaction amended");
+        Ok(())
+    }
+
+    /// Sets the accrual spread date range on a posting.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The posting to update.
+    /// * `spread_from` - First day of the accrual window (inclusive).
+    /// * `spread_until` - Last day of the accrual window (inclusive).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::NotFound`] if no posting with `id` exists.
+    /// Returns [`crate::BcError`] on database failure.
+    #[inline]
+    pub async fn set_posting_spread(
+        &self,
+        id: &PostingId,
+        spread_from: Date,
+        spread_until: Date,
+    ) -> BcResult<()> {
+        let result =
+            sqlx::query("UPDATE postings SET spread_from = ?, spread_until = ? WHERE id = ?")
+                .bind(spread_from.to_string())
+                .bind(spread_until.to_string())
+                .bind(id.to_string())
+                .execute(&self.pool)
+                .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(BcError::NotFound(id.to_string()));
+        }
+        tracing::info!(posting_id = %id, %spread_from, %spread_until, "posting spread set");
+        Ok(())
+    }
+
+    /// Clears the accrual spread from a posting.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The posting to update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::NotFound`] if no posting with `id` exists.
+    /// Returns [`crate::BcError`] on database failure.
+    #[inline]
+    pub async fn clear_posting_spread(&self, id: &PostingId) -> BcResult<()> {
+        let result =
+            sqlx::query("UPDATE postings SET spread_from = NULL, spread_until = NULL WHERE id = ?")
+                .bind(id.to_string())
+                .execute(&self.pool)
+                .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(BcError::NotFound(id.to_string()));
+        }
+        tracing::info!(posting_id = %id, "posting spread cleared");
         Ok(())
     }
 }
@@ -1086,6 +1241,138 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_spread_persists_and_loads(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let expense = accounts
+            .create()
+            .name("Gym")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("expense");
+        let asset = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("asset");
+
+        let svc = Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 9, 1))
+            .description("Gym membership")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(expense)
+                    .amount(Amount::new(dec!(600.00), CommodityCode::new("AUD")))
+                    .spread_from(date(2026, 9, 1))
+                    .spread_until(date(2027, 3, 12))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(asset)
+                    .amount(Amount::new(dec!(-600.00), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .status(TransactionStatus::Cleared)
+            .created_at(jiff::Timestamp::now())
+            .build();
+
+        let tx_id = svc.create(tx).await.expect("create tx");
+        let loaded = svc.find_by_id(&tx_id).await.expect("get tx");
+
+        let gym_posting = loaded
+            .postings()
+            .iter()
+            .find(|p| p.spread_from().is_some())
+            .expect("gym posting");
+        assert_eq!(gym_posting.spread_from(), Some(date(2026, 9, 1)));
+        assert_eq!(gym_posting.spread_until(), Some(date(2027, 3, 12)));
+
+        let asset_posting = loaded
+            .postings()
+            .iter()
+            .find(|p| p.spread_from().is_none())
+            .expect("asset posting");
+        assert!(asset_posting.spread_until().is_none());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_and_clear_posting_spread(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let expense = accounts
+            .create()
+            .name("Gym")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("expense");
+        let asset = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("asset");
+
+        let posting_id = PostingId::new();
+        let svc = Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 9, 1))
+            .description("Gym membership")
+            .postings(vec![
+                Posting::builder()
+                    .id(posting_id.clone())
+                    .account_id(expense)
+                    .amount(Amount::new(dec!(600.00), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(asset)
+                    .amount(Amount::new(dec!(-600.00), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .status(TransactionStatus::Cleared)
+            .created_at(jiff::Timestamp::now())
+            .build();
+
+        let tx_id = svc.create(tx).await.expect("create tx");
+
+        svc.set_posting_spread(&posting_id, date(2026, 9, 1), date(2027, 3, 12))
+            .await
+            .expect("set spread");
+
+        let loaded = svc.find_by_id(&tx_id).await.expect("get after set");
+        let posting = loaded
+            .postings()
+            .iter()
+            .find(|row| row.id() == &posting_id)
+            .expect("posting");
+        assert_eq!(posting.spread_from(), Some(date(2026, 9, 1)));
+        assert_eq!(posting.spread_until(), Some(date(2027, 3, 12)));
+
+        svc.clear_posting_spread(&posting_id)
+            .await
+            .expect("clear spread");
+        let loaded2 = svc.find_by_id(&tx_id).await.expect("get after clear");
+        let posting2 = loaded2
+            .postings()
+            .iter()
+            .find(|row| row.id() == &posting_id)
+            .expect("posting");
+        assert!(posting2.spread_from().is_none());
+        assert!(posting2.spread_until().is_none());
+    }
 
     fn make_balanced_transaction(acc_a: AccountId, acc_b: AccountId) -> Transaction {
         use jiff::Timestamp;
