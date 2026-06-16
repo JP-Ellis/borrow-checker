@@ -219,6 +219,10 @@ impl IntoModel for bc_ipc::Period {
                 // TODO: use the globally-configured fortnightly anchor (Milestone 5 config).
                 // 2026-01-05 (Monday) is a placeholder; any user whose pay cycle does not
                 // align to this anchor will see misaligned fortnightly buckets.
+                tracing::warn!(
+                    anchor = "2026-01-05",
+                    "fortnightly anchor is hardcoded; user pay cycles may not align"
+                );
                 #[expect(
                     clippy::expect_used,
                     reason = "2026-01-05 is a valid date; this can never panic"
@@ -456,7 +460,10 @@ fn period_label(period: &bc_models::Period) -> String {
         bc_models::Period::FinancialYear { .. } => "financial year".to_owned(),
         bc_models::Period::FinancialQuarter { .. } => "financial quarter".to_owned(),
         bc_models::Period::Custom { .. } => "custom".to_owned(),
-        _ => "period".to_owned(),
+        p => {
+            tracing::warn!(period = ?p, "unrecognised period type in period_label; falling back to \"period\"");
+            "period".to_owned()
+        }
     }
 }
 
