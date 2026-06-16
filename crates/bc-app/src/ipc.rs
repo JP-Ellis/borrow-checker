@@ -402,10 +402,6 @@ pub(crate) fn transaction_into_ipc_with_accounts(
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Internal`] if any decimal mantissa overflows `i64`.
-#[expect(
-    dead_code,
-    reason = "called by the budget IPC command wired up in a follow-on task"
-)]
 pub(crate) fn budget_tree_item_into_ipc(
     item: &bc_core::BudgetTreeItem,
     commodity: &str,

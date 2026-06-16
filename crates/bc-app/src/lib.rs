@@ -23,6 +23,10 @@ pub(crate) struct AppState {
     pub(crate) transactions: bc_core::TransactionService,
     /// Balance engine — computes running balances and cash-flow aggregations.
     pub(crate) balance_engine: bc_core::BalanceEngine,
+    /// Budget CRUD service.
+    pub(crate) budgets: bc_core::BudgetService,
+    /// Budget tree and overview service.
+    pub(crate) budget_tree: bc_core::BudgetTreeService,
     /// Snapshot of installed plugin metadata, collected at startup.
     ///
     /// `PluginRegistry` is not `Clone` (Wasmtime components are not `Clone`),
@@ -57,6 +61,14 @@ pub fn run() {
             commands::accounts::get_posting_count,
             commands::plugins::list_plugins,
             commands::settings::get_settings,
+            commands::budget::get_budget_overview,
+            commands::budget::get_native_periods,
+            commands::budget::get_budget_transactions,
+            commands::budget::update_budget,
+            commands::budget::archive_budget,
+            commands::budget::create_budget,
+            commands::budget::set_posting_spread,
+            commands::budget::clear_posting_spread,
         ])
         .setup(|app| {
             let db_path = std::env::var("BC_DB_PATH")
@@ -65,11 +77,14 @@ pub fn run() {
             let pool = tauri::async_runtime::block_on(bc_core::open_db_at(&db_path))?;
 
             let plugins = commands::plugins::collect_plugin_info();
+            let fx = bc_core::noop_fx();
 
             app.manage(AppState {
                 accounts: bc_core::AccountService::new(pool.clone()),
                 transactions: bc_core::TransactionService::new(pool.clone()),
-                balance_engine: bc_core::BalanceEngine::new(pool),
+                balance_engine: bc_core::BalanceEngine::new(pool.clone()),
+                budgets: bc_core::BudgetService::new(pool.clone()),
+                budget_tree: bc_core::BudgetTreeService::new(pool, fx),
                 plugins,
             });
             Ok(())
