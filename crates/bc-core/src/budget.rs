@@ -715,6 +715,7 @@ impl BudgetStatusEngine {
         Ok(out)
     }
 
+    // TODO: apply spread fields to period attribution (planned follow-on)
     /// Fetches raw `(amount, commodity)` pairs for postings to `account_id` or any
     /// descendant account in `[period_start, period_end)`, optionally filtered by tag.
     ///
