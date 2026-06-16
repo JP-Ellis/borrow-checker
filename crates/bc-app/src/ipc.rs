@@ -252,6 +252,46 @@ impl IntoModel for bc_ipc::Period {
     }
 }
 
+// MARK: RolloverPolicy
+
+impl IntoIpc for bc_models::RolloverPolicy {
+    type Output = bc_ipc::RolloverPolicy;
+
+    #[inline]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "both bc_models::RolloverPolicy and bc_ipc::RolloverPolicy are #[non_exhaustive]; \
+                  the wildcard fallback to ResetToZero is intentional for future unknown variants"
+    )]
+    fn into_ipc(self) -> bc_ipc::RolloverPolicy {
+        match self {
+            bc_models::RolloverPolicy::CarryForward => bc_ipc::RolloverPolicy::CarryForward,
+            bc_models::RolloverPolicy::ResetToZero => bc_ipc::RolloverPolicy::ResetToZero,
+            bc_models::RolloverPolicy::CapAtTarget => bc_ipc::RolloverPolicy::CapAtTarget,
+            _ => bc_ipc::RolloverPolicy::ResetToZero,
+        }
+    }
+}
+
+impl IntoModel for bc_ipc::RolloverPolicy {
+    type Output = bc_models::RolloverPolicy;
+
+    #[inline]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "both bc_ipc::RolloverPolicy and bc_models::RolloverPolicy are #[non_exhaustive]; \
+                  the wildcard fallback to ResetToZero is intentional for future unknown variants"
+    )]
+    fn into_model(self) -> bc_models::RolloverPolicy {
+        match self {
+            bc_ipc::RolloverPolicy::CarryForward => bc_models::RolloverPolicy::CarryForward,
+            bc_ipc::RolloverPolicy::ResetToZero => bc_models::RolloverPolicy::ResetToZero,
+            bc_ipc::RolloverPolicy::CapAtTarget => bc_models::RolloverPolicy::CapAtTarget,
+            _ => bc_models::RolloverPolicy::ResetToZero,
+        }
+    }
+}
+
 // MARK: Posting
 
 impl IntoIpc for &bc_models::Posting {
@@ -264,8 +304,8 @@ impl IntoIpc for &bc_models::Posting {
             bc_ipc::AccountRef::new(account_id.clone(), account_id),
             self.amount().into_ipc(),
             self.memo(),
-            None::<&str>,
-            None::<&str>,
+            self.spread_from().map(|d| d.to_string()),
+            self.spread_until().map(|d| d.to_string()),
         )
     }
 }
@@ -333,8 +373,8 @@ pub(crate) fn transaction_into_ipc_with_accounts(
                 bc_ipc::AccountRef::new(account_id, account_name),
                 p.amount().into_ipc(),
                 p.memo(),
-                None::<&str>,
-                None::<&str>,
+                p.spread_from().map(|d| d.to_string()),
+                p.spread_until().map(|d| d.to_string()),
             )
         })
         .collect();
@@ -348,6 +388,80 @@ pub(crate) fn transaction_into_ipc_with_accounts(
         postings,
         vec![],
     )
+}
+
+// MARK: Budget tree
+
+/// Converts a [`bc_core::BudgetTreeItem`] into a [`bc_ipc::BudgetTreeNode`].
+///
+/// # Arguments
+///
+/// * `item` - The budget tree item to convert.
+/// * `commodity` - The ISO 4217 commodity code for the amounts (e.g. `"AUD"`).
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Internal`] if any decimal mantissa overflows `i64`.
+#[expect(
+    dead_code,
+    reason = "called by the budget IPC command wired up in a follow-on task"
+)]
+pub(crate) fn budget_tree_item_into_ipc(
+    item: &bc_core::BudgetTreeItem,
+    commodity: &str,
+) -> Result<bc_ipc::BudgetTreeNode, bc_ipc::BcError> {
+    budget_tree_node_recursive(item, commodity)
+}
+
+/// Recursive implementation of [`budget_tree_item_into_ipc`].
+fn budget_tree_node_recursive(
+    item: &bc_core::BudgetTreeItem,
+    commodity: &str,
+) -> Result<bc_ipc::BudgetTreeNode, bc_ipc::BcError> {
+    let spent = decimal_to_amount(item.actuals, commodity)?;
+    let effective_target = item
+        .effective_target
+        .map(|t| decimal_to_amount(t, commodity))
+        .transpose()?;
+
+    let native_period_label = Some(period_label(item.budget.period()));
+
+    let children: Result<Vec<_>, _> = item
+        .children
+        .iter()
+        .map(|c| budget_tree_node_recursive(c, commodity))
+        .collect();
+
+    Ok(bc_ipc::BudgetTreeNode::new(
+        item.budget.id().to_string(),
+        item.account.id().to_string(),
+        item.account.name(),
+        item.depth,
+        item.budget.name(),
+        effective_target,
+        spent,
+        native_period_label,
+        item.has_mixed_period,
+        Some(item.budget.rollover().into_ipc()),
+        item.budget.tag_filter().map(ToString::to_string),
+        item.budget.is_tracking_only(),
+        children?,
+    ))
+}
+
+/// Returns a short lowercase label for a [`bc_models::Period`] variant.
+fn period_label(period: &bc_models::Period) -> String {
+    match period {
+        bc_models::Period::Weekly => "weekly".to_owned(),
+        bc_models::Period::Fortnightly { .. } => "fortnightly".to_owned(),
+        bc_models::Period::Monthly => "monthly".to_owned(),
+        bc_models::Period::Quarterly => "quarterly".to_owned(),
+        bc_models::Period::CalendarYear => "calendar year".to_owned(),
+        bc_models::Period::FinancialYear { .. } => "financial year".to_owned(),
+        bc_models::Period::FinancialQuarter { .. } => "financial quarter".to_owned(),
+        bc_models::Period::Custom { .. } => "custom".to_owned(),
+        _ => "period".to_owned(),
+    }
 }
 
 // MARK: Transaction
