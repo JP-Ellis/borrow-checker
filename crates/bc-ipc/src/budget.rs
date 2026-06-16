@@ -25,7 +25,7 @@ pub enum RolloverPolicy {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct BudgetTreeNode {
-    /// Stable budget identifier (empty string for aggregate-only parent nodes).
+    /// Stable budget identifier. Use [`str::is_empty`] to detect aggregate-only parent nodes.
     pub id: String,
     /// Stable account identifier.
     pub account_id: String,
@@ -111,6 +111,9 @@ pub struct BudgetSummary {
 
 impl BudgetSummary {
     /// Creates a new [`BudgetSummary`].
+    ///
+    /// `total_remaining` is not validated against `total_budgeted - total_spent`;
+    /// the caller is responsible for consistency.
     #[must_use]
     #[inline]
     pub fn new(
@@ -180,6 +183,70 @@ mod tests {
         assert_eq!(reset, r#""reset_to_zero""#);
         let cap = serde_json::to_string(&RolloverPolicy::CapAtTarget).expect("ser");
         assert_eq!(cap, r#""cap_at_target""#);
+    }
+
+    #[test]
+    fn rollover_policy_roundtrips() {
+        for variant in [
+            RolloverPolicy::CarryForward,
+            RolloverPolicy::ResetToZero,
+            RolloverPolicy::CapAtTarget,
+        ] {
+            let json = serde_json::to_string(&variant).expect("ser");
+            let back: RolloverPolicy = serde_json::from_str(&json).expect("de");
+            assert_eq!(variant, back);
+        }
+    }
+
+    #[test]
+    fn budget_tree_node_serde_roundtrip() {
+        let child = BudgetTreeNode::new(
+            "child-1",
+            "acct-2",
+            "Savings",
+            1,
+            Some("Groceries"),
+            Some(Amount::new(50_000, "AUD", 2)),
+            Amount::new(12_300, "AUD", 2),
+            Some("monthly"),
+            false,
+            Some(RolloverPolicy::CarryForward),
+            None::<String>,
+            false,
+            vec![],
+        );
+        let node = BudgetTreeNode::new(
+            "parent-1",
+            "acct-1",
+            "Everyday",
+            0,
+            None::<String>,
+            None,
+            Amount::new(0, "AUD", 2),
+            None::<String>,
+            false,
+            None,
+            None::<String>,
+            false,
+            vec![child],
+        );
+        let json = serde_json::to_string(&node).expect("ser");
+        let back: BudgetTreeNode = serde_json::from_str(&json).expect("de");
+        assert_eq!(node, back);
+    }
+
+    #[test]
+    fn native_period_row_serde_roundtrip() {
+        let row = NativePeriodRow::new(
+            "w24 · 9–15 Jun",
+            "2026-06-09",
+            "2026-06-16",
+            Some(Amount::new(15_000, "AUD", 2)),
+            Amount::new(8_200, "AUD", 2),
+        );
+        let json = serde_json::to_string(&row).expect("ser");
+        let back: NativePeriodRow = serde_json::from_str(&json).expect("de");
+        assert_eq!(row, back);
     }
 
     #[test]
