@@ -826,34 +826,113 @@ impl Service {
     ///
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "loading transactions with postings, cost, and tags for an account subtree inherently requires several queries and field mappings"
-    )]
     pub async fn list_for_account_tree(
         &self,
         account_id: &AccountId,
     ) -> BcResult<impl Iterator<Item = Transaction>> {
+        self.list_for_account_tree_in_range(account_id, None, None)
+            .await
+    }
+
+    /// Lists all non-voided transactions that involve `account_id` or any of its
+    /// descendant accounts, optionally restricted to a date half-open interval
+    /// `[date_from, date_until)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The root of the account subtree to query.
+    /// * `date_from` - Inclusive lower bound on `t.date`, or `None` for no lower bound.
+    /// * `date_until` - Exclusive upper bound on `t.date`, or `None` for no upper bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or data parse failure.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "loading transactions with postings, cost, and tags for an account subtree inherently requires several queries and field mappings"
+    )]
+    async fn list_for_account_tree_in_range(
+        &self,
+        account_id: &AccountId,
+        date_from: Option<jiff::civil::Date>,
+        date_until: Option<jiff::civil::Date>,
+    ) -> BcResult<impl Iterator<Item = Transaction>> {
         let voided_str = to_db_str(TransactionStatus::Voided)?;
         let account_id_str = account_id.to_string();
+        let date_from_str = date_from.map(|d| d.to_string());
+        let date_until_str = date_until.map(|d| d.to_string());
 
         let tx_rows: Vec<(String, String, Option<String>, String, String, String)> =
-            sqlx::query_as(
-                "WITH RECURSIVE subtree(id) AS (\
-                     VALUES(?)\
-                     UNION ALL\
-                     SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
-                 )\
-                 SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
-                 FROM transactions t \
-                 WHERE t.status != ? \
-                 AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
-                 ORDER BY t.date DESC",
-            )
-            .bind(&account_id_str)
-            .bind(&voided_str)
-            .fetch_all(&self.pool)
-            .await?;
+            match (&date_from_str, &date_until_str) {
+                (Some(from), Some(until)) => sqlx::query_as(
+                    "WITH RECURSIVE subtree(id) AS (\
+                         VALUES(?)\
+                         UNION ALL\
+                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
+                     )\
+                     SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
+                     FROM transactions t \
+                     WHERE t.status != ? AND t.date >= ? AND t.date < ? \
+                     AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
+                     ORDER BY t.date DESC",
+                )
+                .bind(&account_id_str)
+                .bind(&voided_str)
+                .bind(from)
+                .bind(until)
+                .fetch_all(&self.pool)
+                .await?,
+                (Some(from), None) => sqlx::query_as(
+                    "WITH RECURSIVE subtree(id) AS (\
+                         VALUES(?)\
+                         UNION ALL\
+                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
+                     )\
+                     SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
+                     FROM transactions t \
+                     WHERE t.status != ? AND t.date >= ? \
+                     AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
+                     ORDER BY t.date DESC",
+                )
+                .bind(&account_id_str)
+                .bind(&voided_str)
+                .bind(from)
+                .fetch_all(&self.pool)
+                .await?,
+                (None, Some(until)) => sqlx::query_as(
+                    "WITH RECURSIVE subtree(id) AS (\
+                         VALUES(?)\
+                         UNION ALL\
+                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
+                     )\
+                     SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
+                     FROM transactions t \
+                     WHERE t.status != ? AND t.date < ? \
+                     AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
+                     ORDER BY t.date DESC",
+                )
+                .bind(&account_id_str)
+                .bind(&voided_str)
+                .bind(until)
+                .fetch_all(&self.pool)
+                .await?,
+                (None, None) => sqlx::query_as(
+                    "WITH RECURSIVE subtree(id) AS (\
+                         VALUES(?)\
+                         UNION ALL\
+                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
+                     )\
+                     SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
+                     FROM transactions t \
+                     WHERE t.status != ? \
+                     AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
+                     ORDER BY t.date DESC",
+                )
+                .bind(&account_id_str)
+                .bind(&voided_str)
+                .fetch_all(&self.pool)
+                .await?,
+            };
 
         if tx_rows.is_empty() {
             return Ok(vec![].into_iter());
@@ -1177,12 +1256,12 @@ impl Service {
         period_end: jiff::civil::Date,
     ) -> BcResult<Vec<Transaction>> {
         let txns: Vec<Transaction> = self
-            .list_for_account_tree(budget.account_id())
+            .list_for_account_tree_in_range(
+                budget.account_id(),
+                Some(period_start),
+                Some(period_end),
+            )
             .await?
-            .filter(|tx| {
-                let date = tx.date();
-                date >= period_start && date < period_end
-            })
             .collect();
 
         let result = if let Some(tag) = budget.tag_filter() {
@@ -1219,6 +1298,12 @@ impl Service {
         spread_from: Date,
         spread_until: Date,
     ) -> BcResult<()> {
+        if spread_from > spread_until {
+            return Err(BcError::InvalidInput(
+                "spread_from must not be after spread_until".into(),
+            ));
+        }
+
         let result =
             sqlx::query("UPDATE postings SET spread_from = ?, spread_until = ? WHERE id = ?")
                 .bind(spread_from.to_string())
