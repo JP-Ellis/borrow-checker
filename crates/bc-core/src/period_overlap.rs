@@ -100,8 +100,9 @@ pub fn overlapping_periods(
         // Advance to the next native period.
         let (next_start, next_end) = period.range_containing(native_end);
         if next_start <= native_start {
-            // Guard against infinite loops from pathological Period impls.
-            break;
+            return Err(format!(
+                "period produced a zero-length or non-advancing period at {native_start}"
+            ));
         }
         native_start = next_start;
         native_end = next_end;
@@ -177,5 +178,39 @@ mod tests {
     fn inverted_window_returns_error() {
         let result = overlapping_periods(&Period::Monthly, date(2026, 7, 1), date(2026, 6, 1));
         assert!(result.is_err(), "inverted window must return an error");
+    }
+
+    #[test]
+    fn zero_length_window_returns_error() {
+        let result = overlapping_periods(&Period::Monthly, date(2024, 3, 1), date(2024, 3, 1));
+        assert!(
+            result.is_err(),
+            "display_start == display_end must return an error"
+        );
+    }
+
+    #[test]
+    fn window_exactly_aligned_with_period_boundary() {
+        let overlaps =
+            overlapping_periods(&Period::Monthly, date(2024, 1, 1), date(2024, 2, 1)).expect("ok");
+        assert_eq!(overlaps.len(), 1);
+        let o = overlaps.first().expect("non-empty");
+        assert_eq!(o.overlap_start, o.native_start);
+        assert_eq!(o.overlap_end, o.native_end);
+        assert!((o.fraction() - 1.0_f64).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn custom_zero_days_returns_error() {
+        let period = Period::Custom {
+            days: Some(0),
+            weeks: None,
+            months: None,
+        };
+        let result = overlapping_periods(&period, date(2024, 1, 1), date(2024, 1, 31));
+        assert!(
+            result.is_err(),
+            "zero-duration Custom period must return an error"
+        );
     }
 }

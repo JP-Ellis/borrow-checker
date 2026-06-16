@@ -311,7 +311,7 @@ Example: a gym posting to `Expenses:Health:Gym`, tagged `person:me`. This counts
 
 **Posting-to-budget matching:**
 
-A posting matches a `Budget` row when `posting.account_id == budget.account_id` and either `budget.tag_filter` is `None` or the posting carries that tag. Budget matching is **exact** — a budget on `Expenses:Health` does not match postings to `Expenses:Health:Gym`; it only matches postings directly to `Expenses:Health`. Actuals roll up through the account tree for reporting, but budget assignment does not propagate to ancestors.
+A posting matches a `Budget` row when `posting.account_id` is the budget's account **or any descendant** in the account tree, and either `budget.tag_filter` is `None` or the posting carries that tag. The implementation uses a recursive CTE (`WITH RECURSIVE acct_tree`) to resolve all descendant accounts at query time. A budget on `Expenses:Health` therefore matches postings to `Expenses:Health:Gym` as well as directly to `Expenses:Health`.
 
 Resolution:
 
