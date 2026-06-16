@@ -262,12 +262,20 @@ pub fn AddTransactionForm(
             current_account_id_submit.clone(),
             primary_amt,
             None::<&str>,
+            None::<&str>,
+            None::<&str>,
         ));
         for (acc_id, amt_opt) in parsed_extras {
             let Some(amt) = amt_opt else {
                 return;
             };
-            postings.push(NewPosting::new(acc_id, amt, None::<&str>));
+            postings.push(NewPosting::new(
+                acc_id,
+                amt,
+                None::<&str>,
+                None::<&str>,
+                None::<&str>,
+            ));
         }
 
         let tx = NewTransaction::new(date, payee, status_input.get(), vec![], postings);
