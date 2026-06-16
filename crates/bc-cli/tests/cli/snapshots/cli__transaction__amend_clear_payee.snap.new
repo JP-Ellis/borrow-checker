@@ -1,5 +1,6 @@
 ---
 source: crates/bc-cli/tests/cli/transaction.rs
+assertion_line: 376
 expression: output
 ---
 success: true
