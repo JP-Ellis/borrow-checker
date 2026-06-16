@@ -22,7 +22,8 @@ pub enum RolloverPolicy {
 ///
 /// Leaf nodes represent individual budgets; parent nodes aggregate their
 /// children.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(bon::Builder, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[builder(on(String, into))]
 #[non_exhaustive]
 pub struct BudgetTreeNode {
     /// Stable budget identifier. Use [`str::is_empty`] to detect aggregate-only parent nodes.
@@ -40,8 +41,8 @@ pub struct BudgetTreeNode {
     pub effective_target: Option<Amount>,
     /// Actual spend within the display window.
     pub spent: Amount,
-    /// Native period label, e.g. `"monthly"`. `None` for aggregate parents.
-    pub native_period_label: Option<String>,
+    /// Native period label, e.g. `"monthly"`.
+    pub native_period_label: String,
     /// `true` when the budget's native period differs from the display window.
     pub has_mixed_period: bool,
     /// Rollover policy. `None` for aggregate parent nodes.
@@ -51,48 +52,8 @@ pub struct BudgetTreeNode {
     /// `true` when this budget has no allocation target (tracking-only mode).
     pub is_tracking_only: bool,
     /// Child nodes (empty for leaf rows).
+    #[builder(default)]
     pub children: Vec<BudgetTreeNode>,
-}
-
-impl BudgetTreeNode {
-    /// Creates a new [`BudgetTreeNode`].
-    #[must_use]
-    #[inline]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "budget tree node has many fields"
-    )]
-    pub fn new(
-        id: impl Into<String>,
-        account_id: impl Into<String>,
-        account_name: impl Into<String>,
-        depth: u32,
-        name: Option<impl Into<String>>,
-        effective_target: Option<Amount>,
-        spent: Amount,
-        native_period_label: Option<impl Into<String>>,
-        has_mixed_period: bool,
-        rollover: Option<RolloverPolicy>,
-        tag_filter: Option<impl Into<String>>,
-        is_tracking_only: bool,
-        children: Vec<BudgetTreeNode>,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            account_id: account_id.into(),
-            account_name: account_name.into(),
-            depth,
-            name: name.map(Into::into),
-            effective_target,
-            spent,
-            native_period_label: native_period_label.map(Into::into),
-            has_mixed_period,
-            rollover,
-            tag_filter: tag_filter.map(Into::into),
-            is_tracking_only,
-            children,
-        }
-    }
 }
 
 /// KPI summary for the budget page header.
@@ -100,11 +61,17 @@ impl BudgetTreeNode {
 #[non_exhaustive]
 pub struct BudgetSummary {
     /// Total effective budget target across all active budgets in the display window.
-    pub total_budgeted: Amount,
+    /// `None` when no commodity can be determined (e.g. all budgets are tracking-only).
+    pub total_budgeted: Option<Amount>,
     /// Total actual spend across all active budgets in the display window.
-    pub total_spent: Amount,
+    /// `None` when no commodity can be determined.
+    pub total_spent: Option<Amount>,
     /// `total_budgeted - total_spent` (may be negative when overspent).
-    pub total_remaining: Amount,
+    /// `None` when no commodity can be determined.
+    pub total_remaining: Option<Amount>,
+    /// `true` when budgets across the display window use more than one commodity,
+    /// making a single-currency total meaningless.
+    pub has_mixed_commodities: bool,
     /// Number of leaf budget lines where `spent > effective_target`.
     pub overspent_count: u32,
 }
@@ -117,15 +84,17 @@ impl BudgetSummary {
     #[must_use]
     #[inline]
     pub fn new(
-        total_budgeted: Amount,
-        total_spent: Amount,
-        total_remaining: Amount,
+        total_budgeted: Option<Amount>,
+        total_spent: Option<Amount>,
+        total_remaining: Option<Amount>,
+        has_mixed_commodities: bool,
         overspent_count: u32,
     ) -> Self {
         Self {
             total_budgeted,
             total_spent,
             total_remaining,
+            has_mixed_commodities,
             overspent_count,
         }
     }
@@ -200,36 +169,30 @@ mod tests {
 
     #[test]
     fn budget_tree_node_serde_roundtrip() {
-        let child = BudgetTreeNode::new(
-            "child-1",
-            "acct-2",
-            "Savings",
-            1,
-            Some("Groceries"),
-            Some(Amount::new(50_000, "AUD", 2)),
-            Amount::new(12_300, "AUD", 2),
-            Some("monthly"),
-            false,
-            Some(RolloverPolicy::CarryForward),
-            None::<String>,
-            false,
-            vec![],
-        );
-        let node = BudgetTreeNode::new(
-            "parent-1",
-            "acct-1",
-            "Everyday",
-            0,
-            None::<String>,
-            None,
-            Amount::new(0, "AUD", 2),
-            None::<String>,
-            false,
-            None,
-            None::<String>,
-            false,
-            vec![child],
-        );
+        let child = BudgetTreeNode::builder()
+            .id("child-1")
+            .account_id("acct-2")
+            .account_name("Savings")
+            .depth(1)
+            .name("Groceries")
+            .effective_target(Amount::new(50_000, "AUD", 2))
+            .spent(Amount::new(12_300, "AUD", 2))
+            .native_period_label("monthly")
+            .has_mixed_period(false)
+            .rollover(RolloverPolicy::CarryForward)
+            .is_tracking_only(false)
+            .build();
+        let node = BudgetTreeNode::builder()
+            .id("parent-1")
+            .account_id("acct-1")
+            .account_name("Everyday")
+            .depth(0)
+            .spent(Amount::new(0, "AUD", 2))
+            .native_period_label("monthly")
+            .has_mixed_period(false)
+            .is_tracking_only(false)
+            .children(vec![child])
+            .build();
         let json = serde_json::to_string(&node).expect("ser");
         let back: BudgetTreeNode = serde_json::from_str(&json).expect("de");
         assert_eq!(node, back);
@@ -252,7 +215,21 @@ mod tests {
     #[test]
     fn budget_summary_serde_roundtrip() {
         let zero = Amount::new(0, "AUD", 2);
-        let summary = BudgetSummary::new(zero.clone(), zero.clone(), zero.clone(), 0);
+        let summary = BudgetSummary::new(
+            Some(zero.clone()),
+            Some(zero.clone()),
+            Some(zero.clone()),
+            false,
+            0,
+        );
+        let json = serde_json::to_string(&summary).expect("ser");
+        let back: BudgetSummary = serde_json::from_str(&json).expect("de");
+        assert_eq!(summary, back);
+    }
+
+    #[test]
+    fn budget_summary_none_totals_roundtrip() {
+        let summary = BudgetSummary::new(None, None, None, true, 0);
         let json = serde_json::to_string(&summary).expect("ser");
         let back: BudgetSummary = serde_json::from_str(&json).expect("de");
         assert_eq!(summary, back);

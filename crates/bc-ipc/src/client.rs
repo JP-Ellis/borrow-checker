@@ -203,11 +203,11 @@ pub async fn get_settings() -> Result<SettingsInfo, BcError> {
 
 /// Arg struct for [`get_budget_overview`].
 #[derive(Serialize)]
-struct GetBudgetOverviewArgs {
+struct GetBudgetOverviewArgs<'a> {
     /// Display period granularity.
     period_type: crate::Period,
     /// ISO-8601 date string for the start of the display window.
-    period_start: String,
+    period_start: &'a str,
 }
 
 /// Arg struct for [`get_native_periods`].
@@ -317,7 +317,7 @@ pub async fn get_budget_overview(
         commands::GET_BUDGET_OVERVIEW,
         GetBudgetOverviewArgs {
             period_type,
-            period_start: period_start.to_owned(),
+            period_start,
         },
     )
     .await

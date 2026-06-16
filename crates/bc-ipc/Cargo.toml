@@ -13,6 +13,7 @@ license.workspace      = true
 publish = false
 
 [dependencies]
+bon       = { workspace = true }
 serde     = { workspace = true }
 thiserror = { workspace = true }
 

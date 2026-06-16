@@ -51,33 +51,38 @@ pub async fn get_budget_overview(
         .summary
         .commodity
         .as_ref()
-        .map(|c| c.as_str().to_owned())
-        .ok_or_else(|| {
-            bc_ipc::BcError::Internal(
-                "no commodity could be determined (no budgets with targets?)".to_owned(),
-            )
-        })?;
+        .map(|c| c.as_str().to_owned());
 
-    let nodes: Vec<bc_ipc::BudgetTreeNode> = overview
-        .nodes
-        .iter()
-        .map(|n| crate::ipc::budget_tree_item_into_ipc(n, &commodity))
-        .collect::<Result<Vec<_>, _>>()?;
+    let nodes: Vec<bc_ipc::BudgetTreeNode> = match &commodity {
+        Some(c) => overview
+            .nodes
+            .iter()
+            .map(|n| crate::ipc::budget_tree_item_into_ipc(n, c))
+            .collect::<Result<Vec<_>, _>>()?,
+        None => vec![],
+    };
 
-    let total_budgeted =
-        crate::ipc::decimal_to_amount(overview.summary.total_effective_target, &commodity)?;
-    let total_spent = crate::ipc::decimal_to_amount(overview.summary.total_actuals, &commodity)?;
-    let remaining_val = overview
-        .summary
-        .total_effective_target
-        .checked_sub(overview.summary.total_actuals)
-        .unwrap_or(bc_models::Decimal::ZERO);
-    let total_remaining = crate::ipc::decimal_to_amount(remaining_val, &commodity)?;
+    let (total_budgeted, total_spent, total_remaining) = match &commodity {
+        Some(c) => {
+            let budgeted =
+                crate::ipc::decimal_to_amount(overview.summary.total_effective_target, c)?;
+            let spent = crate::ipc::decimal_to_amount(overview.summary.total_actuals, c)?;
+            let remaining_val = overview
+                .summary
+                .total_effective_target
+                .checked_sub(overview.summary.total_actuals)
+                .unwrap_or(bc_models::Decimal::ZERO);
+            let remaining = crate::ipc::decimal_to_amount(remaining_val, c)?;
+            (Some(budgeted), Some(spent), Some(remaining))
+        }
+        None => (None, None, None),
+    };
 
     let summary = bc_ipc::BudgetSummary::new(
         total_budgeted,
         total_spent,
         total_remaining,
+        overview.summary.has_mixed_commodities,
         overview.summary.overspent_count,
     );
 
@@ -151,8 +156,8 @@ pub async fn get_native_periods(
             let spent = crate::ipc::decimal_to_amount(n.actuals, &commodity)?;
             Ok(bc_ipc::NativePeriodRow::new(
                 label,
-                n.native_start.to_string(),
-                n.native_end.to_string(),
+                n.overlap.native_start.to_string(),
+                n.overlap.native_end.to_string(),
                 effective_target,
                 spent,
             ))
@@ -166,16 +171,19 @@ fn format_native_period_label(n: &bc_core::NativePeriodStatus) -> String {
         clippy::arithmetic_side_effects,
         reason = "jiff::Span::get_days() on a date difference is always non-negative and bounded"
     )]
-    let overlap_days = (n.overlap_end - n.overlap_start).get_days();
+    let overlap_days = (n.overlap.overlap_end - n.overlap.overlap_start).get_days();
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "jiff::Span::get_days() on a date difference is always non-negative and bounded"
     )]
-    let native_days = (n.native_end - n.native_start).get_days();
+    let native_days = (n.overlap.native_end - n.overlap.native_start).get_days();
     if overlap_days == native_days {
-        n.native_start.to_string()
+        n.overlap.native_start.to_string()
     } else {
-        format!("{} ({overlap_days} of {native_days} days)", n.native_start)
+        format!(
+            "{} ({overlap_days} of {native_days} days)",
+            n.overlap.native_start
+        )
     }
 }
 

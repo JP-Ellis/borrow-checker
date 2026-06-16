@@ -1,6 +1,7 @@
 //! Budget tree assembly: builds per-display-window status trees from active budgets.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use bc_models::Decimal;
@@ -59,6 +60,10 @@ pub struct BudgetTreeSummary {
     pub commodity: Option<bc_models::CommodityCode>,
     /// Count of leaf budgets where `actuals > effective_target`.
     pub overspent_count: u32,
+    /// The commodity observed in leaf actuals. `None` if no actuals were recorded.
+    pub actuals_commodity: Option<bc_models::CommodityCode>,
+    /// `true` if actuals across leaf nodes use more than one commodity.
+    pub has_mixed_commodities: bool,
 }
 
 // MARK: BudgetOverview
@@ -168,7 +173,7 @@ impl BudgetTreeService {
         assign_depths(&mut items, &account_map);
 
         // Sort into tree order (parent before children, siblings by account name).
-        let nodes = build_tree(items, &account_map);
+        let nodes = build_tree(items);
 
         let summary = compute_summary(&nodes);
 
@@ -229,10 +234,7 @@ impl BudgetTreeService {
             let status = status_engine.status_for_window(budget, window).await?;
 
             result.push(NativePeriodStatus {
-                native_start: overlap.native_start,
-                native_end: overlap.native_end,
-                overlap_start: overlap.overlap_start,
-                overlap_end: overlap.overlap_end,
+                overlap,
                 effective_target,
                 actuals: status.actuals,
                 commodity: status.commodity,
@@ -297,14 +299,8 @@ impl BudgetTreeService {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct NativePeriodStatus {
-    /// Start of the native period (inclusive).
-    pub native_start: Date,
-    /// End of the native period (exclusive).
-    pub native_end: Date,
-    /// Start of the overlap with the display window (inclusive).
-    pub overlap_start: Date,
-    /// End of the overlap with the display window (exclusive).
-    pub overlap_end: Date,
+    /// The period overlap (native range and overlap range with the display window).
+    pub overlap: crate::period_overlap::PeriodOverlap,
     /// Pro-rated effective target for this overlap. `None` = tracking-only.
     pub effective_target: Option<Decimal>,
     /// Actuals within the overlap.
@@ -328,7 +324,16 @@ fn assign_depths(
     for item in items.iter_mut() {
         let mut depth = 0_u32;
         let mut current = item.account.parent_id().cloned();
+        let mut visited: HashSet<bc_models::AccountId> = HashSet::new();
         while let Some(parent_id) = current {
+            if visited.contains(&parent_id) {
+                tracing::warn!(
+                    account_id = %parent_id,
+                    "cycle detected in account parent chain; stopping depth walk"
+                );
+                break;
+            }
+            visited.insert(parent_id.clone());
             if account_map.contains_key(&parent_id) {
                 depth = depth.saturating_add(1);
             }
@@ -345,11 +350,8 @@ fn assign_depths(
 ///
 /// Items whose account's parent is also in the budget set become children of that
 /// parent rather than roots.  Siblings at every level are sorted by account name.
-fn build_tree(
-    items: Vec<BudgetTreeItem>,
-    _account_map: &HashMap<bc_models::AccountId, bc_models::Account>,
-) -> Vec<BudgetTreeItem> {
-    let budget_account_ids: std::collections::HashSet<bc_models::AccountId> =
+fn build_tree(items: Vec<BudgetTreeItem>) -> Vec<BudgetTreeItem> {
+    let budget_account_ids: HashSet<bc_models::AccountId> =
         items.iter().map(|i| i.account.id().clone()).collect();
 
     let mut by_account: HashMap<bc_models::AccountId, BudgetTreeItem> = items
@@ -358,15 +360,13 @@ fn build_tree(
         .collect();
 
     let root_ids: Vec<bc_models::AccountId> = by_account
-        .keys()
-        .filter(|id| {
-            by_account.get(*id).is_none_or(|item| {
-                item.account
-                    .parent_id()
-                    .is_none_or(|pid| !budget_account_ids.contains(pid))
-            })
+        .iter()
+        .filter(|(_, item)| {
+            item.account
+                .parent_id()
+                .is_none_or(|pid| !budget_account_ids.contains(pid))
         })
-        .cloned()
+        .map(|(id, _)| id.clone())
         .collect();
 
     let mut roots: Vec<BudgetTreeItem> = root_ids
@@ -412,6 +412,8 @@ fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
     let mut total_actuals = Decimal::ZERO;
     let mut overspent = 0_u32;
     let mut commodity = None;
+    let mut actuals_commodity: Option<bc_models::CommodityCode> = None;
+    let mut has_mixed_commodities = false;
 
     accumulate_summary(
         nodes,
@@ -419,6 +421,8 @@ fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
         &mut total_actuals,
         &mut overspent,
         &mut commodity,
+        &mut actuals_commodity,
+        &mut has_mixed_commodities,
     );
 
     BudgetTreeSummary {
@@ -426,6 +430,8 @@ fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
         total_actuals,
         commodity,
         overspent_count: overspent,
+        actuals_commodity,
+        has_mixed_commodities,
     }
 }
 
@@ -436,21 +442,30 @@ fn accumulate_summary(
     total_actuals: &mut Decimal,
     overspent: &mut u32,
     commodity: &mut Option<bc_models::CommodityCode>,
+    actuals_commodity: &mut Option<bc_models::CommodityCode>,
+    has_mixed_commodities: &mut bool,
 ) {
     for node in nodes {
         if node.children.is_empty() {
             // Leaf node: count directly toward totals.
             if let Some(t) = node.effective_target {
-                *total_target = total_target.checked_add(t).unwrap_or(*total_target);
+                *total_target = total_target.saturating_add(t);
                 if commodity.is_none() {
                     commodity.clone_from(&node.commodity);
                 }
             }
-            *total_actuals = total_actuals
-                .checked_add(node.actuals)
-                .unwrap_or(*total_actuals);
+            *total_actuals = total_actuals.saturating_add(node.actuals);
             if node.effective_target.is_some_and(|t| node.actuals > t) {
                 *overspent = overspent.saturating_add(1);
+            }
+            if let Some(ref leaf_commodity) = node.commodity {
+                match actuals_commodity {
+                    None => actuals_commodity.clone_from(&node.commodity),
+                    Some(existing) if existing != leaf_commodity => {
+                        *has_mixed_commodities = true;
+                    }
+                    Some(_) => {}
+                }
             }
         } else {
             // Parent node: recurse into children only.
@@ -460,6 +475,8 @@ fn accumulate_summary(
                 total_actuals,
                 overspent,
                 commodity,
+                actuals_commodity,
+                has_mixed_commodities,
             );
         }
     }
@@ -598,7 +615,7 @@ mod tests {
         assert_eq!(overview.nodes.len(), 1);
         let node = overview.nodes.first().expect("one node");
         // June 2026 has 5 overlapping weeks (4 full + 1 partial of 2 days).
-        // Effective target = 4 × $30 + (2/7 × $30) ≈ $128.57
+        // Effective target = 4 x $30 + (2/7 x $30) approx $128.57
         let target = node.effective_target.expect("has target");
         // Allow 1 cent tolerance for rounding.
         #[expect(
