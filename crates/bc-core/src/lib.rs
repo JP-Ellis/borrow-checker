@@ -19,6 +19,7 @@ pub(crate) mod export;
 pub mod fx;
 pub(crate) mod import;
 pub(crate) mod loan;
+pub(crate) mod period_overlap;
 pub(crate) mod settings;
 pub(crate) mod transaction;
 
@@ -53,5 +54,7 @@ pub use import::profile::Service as ImportProfileService;
 pub use import::registry::Factory as ImporterFactory;
 pub use import::registry::Registry as ImporterRegistry;
 pub use loan::Service as LoanService;
+pub use period_overlap::PeriodOverlap;
+pub use period_overlap::overlapping_periods;
 pub use settings::Store as SettingsStore;
 pub use transaction::Service as TransactionService;
