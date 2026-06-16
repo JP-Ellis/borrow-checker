@@ -1163,6 +1163,44 @@ impl Service {
         Ok(())
     }
 
+    /// Lists all non-voided transactions with a posting matching `budget`'s
+    /// account (and optional tag filter) in `[period_start, period_end)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database or data parse failure.
+    #[inline]
+    pub async fn list_for_budget(
+        &self,
+        budget: &bc_models::Budget,
+        period_start: jiff::civil::Date,
+        period_end: jiff::civil::Date,
+    ) -> BcResult<Vec<Transaction>> {
+        let txns: Vec<Transaction> = self
+            .list_for_account(budget.account_id())
+            .await?
+            .filter(|tx| {
+                let date = tx.date();
+                date >= period_start && date < period_end
+            })
+            .collect();
+
+        let result = if let Some(tag) = budget.tag_filter() {
+            txns.into_iter()
+                .filter(|tx| {
+                    tx.postings().iter().any(|p| {
+                        p.account_id() == budget.account_id()
+                            && p.tag_ids().iter().any(|tid| tid == tag)
+                    })
+                })
+                .collect()
+        } else {
+            txns
+        };
+
+        Ok(result)
+    }
+
     /// Sets the accrual spread date range on a posting.
     ///
     /// # Arguments
