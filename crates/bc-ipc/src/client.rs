@@ -14,8 +14,12 @@ use serde::Serialize;
 
 use crate::AccountNode;
 use crate::BcError;
+use crate::BudgetSummary;
+use crate::BudgetTreeNode;
+use crate::NativePeriodRow;
 use crate::NewTransaction;
 use crate::PluginInfo;
+use crate::RolloverPolicy;
 use crate::SettingsInfo;
 use crate::Transaction;
 use crate::commands;
@@ -195,4 +199,264 @@ pub async fn list_plugins() -> Result<Vec<PluginInfo>, BcError> {
 #[inline]
 pub async fn get_settings() -> Result<SettingsInfo, BcError> {
     tauri_sys::core::invoke_result::<SettingsInfo, BcError>(commands::GET_SETTINGS, NoArgs {}).await
+}
+
+/// Arg struct for [`get_budget_overview`].
+#[derive(Serialize)]
+struct GetBudgetOverviewArgs {
+    /// Display period granularity.
+    period_type: crate::Period,
+    /// ISO-8601 date string for the start of the display window.
+    period_start: String,
+}
+
+/// Arg struct for [`get_native_periods`].
+#[derive(Serialize)]
+struct GetNativePeriodsArgs<'a> {
+    /// Budget ID to query.
+    budget_id: &'a str,
+    /// ISO-8601 date string for the start of the display window.
+    display_start: &'a str,
+    /// ISO-8601 date string for the end of the display window.
+    display_end: &'a str,
+}
+
+/// Arg struct for [`get_budget_transactions`].
+#[derive(Serialize)]
+struct GetBudgetTransactionsArgs<'a> {
+    /// Budget ID to query.
+    budget_id: &'a str,
+    /// ISO-8601 date string for the start of the period.
+    period_start: &'a str,
+    /// ISO-8601 date string for the end of the period.
+    period_end: &'a str,
+}
+
+/// Arg struct for [`update_budget`].
+#[derive(Serialize)]
+struct UpdateBudgetArgs<'a> {
+    /// Budget ID to update.
+    budget_id: &'a str,
+    /// New name: `Some(Some(s))` sets name, `Some(None)` clears it, `None` leaves it unchanged.
+    #[expect(
+        clippy::option_option,
+        reason = "outer Some = patch; inner None = clear the field"
+    )]
+    name: Option<Option<String>>,
+    /// New target amount in minor currency units, or `None` to leave unchanged.
+    target_minor_units: Option<i64>,
+    /// New target currency code, or `None` to leave unchanged.
+    target_currency: Option<&'a str>,
+    /// New rollover policy, or `None` to leave unchanged.
+    rollover: Option<RolloverPolicy>,
+}
+
+/// Arg struct for [`archive_budget`].
+#[derive(Serialize)]
+struct ArchiveBudgetArgs<'a> {
+    /// Budget ID to archive.
+    budget_id: &'a str,
+}
+
+/// Arg struct for [`create_budget`].
+#[derive(Serialize)]
+struct CreateBudgetArgs<'a> {
+    /// Account ID to attach the budget to.
+    account_id: &'a str,
+    /// Optional display name for the budget.
+    name: Option<&'a str>,
+    /// Optional target amount in minor currency units.
+    target_minor_units: Option<i64>,
+    /// Optional target currency code.
+    target_currency: Option<&'a str>,
+    /// Budget period granularity.
+    period: crate::Period,
+    /// Rollover policy for unused budget amounts.
+    rollover: RolloverPolicy,
+    /// Optional tag filter expression.
+    tag_filter: Option<&'a str>,
+}
+
+/// Arg struct for [`set_posting_spread`].
+#[derive(Serialize)]
+struct SetPostingSpreadArgs<'a> {
+    /// Posting ID to update.
+    posting_id: &'a str,
+    /// ISO-8601 date string for the start of the accrual spread.
+    spread_from: &'a str,
+    /// ISO-8601 date string for the end of the accrual spread.
+    spread_until: &'a str,
+}
+
+/// Arg struct for [`clear_posting_spread`].
+#[derive(Serialize)]
+struct ClearPostingSpreadArgs<'a> {
+    /// Posting ID whose spread should be removed.
+    posting_id: &'a str,
+}
+
+/// Gets the budget overview (summary + tree) for a display window.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn get_budget_overview(
+    period_type: crate::Period,
+    period_start: &str,
+) -> Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError> {
+    tauri_sys::core::invoke_result(
+        commands::GET_BUDGET_OVERVIEW,
+        GetBudgetOverviewArgs {
+            period_type,
+            period_start: period_start.to_owned(),
+        },
+    )
+    .await
+}
+
+/// Gets native period sub-rows for one budget in a display window.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn get_native_periods(
+    budget_id: &str,
+    display_start: &str,
+    display_end: &str,
+) -> Result<Vec<NativePeriodRow>, BcError> {
+    tauri_sys::core::invoke_result(
+        commands::GET_NATIVE_PERIODS,
+        GetNativePeriodsArgs {
+            budget_id,
+            display_start,
+            display_end,
+        },
+    )
+    .await
+}
+
+/// Gets transactions matched by a budget in a date range.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn get_budget_transactions(
+    budget_id: &str,
+    period_start: &str,
+    period_end: &str,
+) -> Result<Vec<Transaction>, BcError> {
+    tauri_sys::core::invoke_result(
+        commands::GET_BUDGET_TRANSACTIONS,
+        GetBudgetTransactionsArgs {
+            budget_id,
+            period_start,
+            period_end,
+        },
+    )
+    .await
+}
+
+/// Updates mutable fields on a budget.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn update_budget(
+    budget_id: &str,
+    name: Option<Option<String>>,
+    target_minor_units: Option<i64>,
+    target_currency: Option<&str>,
+    rollover: Option<RolloverPolicy>,
+) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result(
+        commands::UPDATE_BUDGET,
+        UpdateBudgetArgs {
+            budget_id,
+            name,
+            target_minor_units,
+            target_currency,
+            rollover,
+        },
+    )
+    .await
+}
+
+/// Archives a budget.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn archive_budget(budget_id: &str) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result(commands::ARCHIVE_BUDGET, ArchiveBudgetArgs { budget_id }).await
+}
+
+/// Creates a new budget.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn create_budget(
+    account_id: &str,
+    name: Option<&str>,
+    target_minor_units: Option<i64>,
+    target_currency: Option<&str>,
+    period: crate::Period,
+    rollover: RolloverPolicy,
+    tag_filter: Option<&str>,
+) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result(
+        commands::CREATE_BUDGET,
+        CreateBudgetArgs {
+            account_id,
+            name,
+            target_minor_units,
+            target_currency,
+            period,
+            rollover,
+            tag_filter,
+        },
+    )
+    .await
+}
+
+/// Sets the accrual spread on a posting.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn set_posting_spread(
+    posting_id: &str,
+    spread_from: &str,
+    spread_until: &str,
+) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result(
+        commands::SET_POSTING_SPREAD,
+        SetPostingSpreadArgs {
+            posting_id,
+            spread_from,
+            spread_until,
+        },
+    )
+    .await
+}
+
+/// Clears the accrual spread from a posting.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn clear_posting_spread(posting_id: &str) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result(
+        commands::CLEAR_POSTING_SPREAD,
+        ClearPostingSpreadArgs { posting_id },
+    )
+    .await
 }
