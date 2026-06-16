@@ -420,7 +420,7 @@ fn budget_tree_node_recursive(
         .map(|t| decimal_to_amount(t, commodity))
         .transpose()?;
 
-    let native_period_label = Some(period_label(item.budget.period()));
+    let native_period_label = period_label(item.budget.period());
 
     let children: Result<Vec<_>, _> = item
         .children
@@ -428,21 +428,21 @@ fn budget_tree_node_recursive(
         .map(|c| budget_tree_node_recursive(c, commodity))
         .collect();
 
-    Ok(bc_ipc::BudgetTreeNode::new(
-        item.budget.id().to_string(),
-        item.account.id().to_string(),
-        item.account.name(),
-        item.depth,
-        item.budget.name(),
-        effective_target,
-        spent,
-        native_period_label,
-        item.has_mixed_period,
-        Some(item.budget.rollover().into_ipc()),
-        item.budget.tag_filter().map(ToString::to_string),
-        item.budget.is_tracking_only(),
-        children?,
-    ))
+    Ok(bc_ipc::BudgetTreeNode::builder()
+        .id(item.budget.id().to_string())
+        .account_id(item.account.id().to_string())
+        .account_name(item.account.name().to_owned())
+        .depth(item.depth)
+        .maybe_name(item.budget.name().map(ToOwned::to_owned))
+        .maybe_effective_target(effective_target)
+        .spent(spent)
+        .native_period_label(native_period_label)
+        .has_mixed_period(item.has_mixed_period)
+        .rollover(item.budget.rollover().into_ipc())
+        .maybe_tag_filter(item.budget.tag_filter().map(ToString::to_string))
+        .is_tracking_only(item.budget.is_tracking_only())
+        .children(children?)
+        .build())
 }
 
 /// Returns a short lowercase label for a [`bc_models::Period`] variant.
