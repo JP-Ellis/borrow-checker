@@ -1177,7 +1177,7 @@ impl Service {
         period_end: jiff::civil::Date,
     ) -> BcResult<Vec<Transaction>> {
         let txns: Vec<Transaction> = self
-            .list_for_account(budget.account_id())
+            .list_for_account_tree(budget.account_id())
             .await?
             .filter(|tx| {
                 let date = tx.date();
@@ -1188,10 +1188,9 @@ impl Service {
         let result = if let Some(tag) = budget.tag_filter() {
             txns.into_iter()
                 .filter(|tx| {
-                    tx.postings().iter().any(|p| {
-                        p.account_id() == budget.account_id()
-                            && p.tag_ids().iter().any(|tid| tid == tag)
-                    })
+                    tx.postings()
+                        .iter()
+                        .any(|p| p.tag_ids().iter().any(|tid| tid == tag))
                 })
                 .collect()
         } else {

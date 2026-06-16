@@ -231,7 +231,7 @@ pub struct Posting {
     /// only the proportional daily share of this amount for each display period.
     spread_from: Option<Date>,
 
-    /// Date until which this posting's amount is accrued (exclusive).
+    /// Date until which this posting's amount is accrued (inclusive, the last day of the spread).
     spread_until: Option<Date>,
 }
 
