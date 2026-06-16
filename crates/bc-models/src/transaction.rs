@@ -134,7 +134,7 @@ impl Link {
 /// ```
 // NOTE: the field docstrings propagate to the setter methods on the builder, so
 // keep them accurate and self-contained.
-#[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(bon::Builder, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Cost {
     /// Total acquisition cost expressed in the *cost commodity* — the asset
@@ -195,7 +195,7 @@ impl Cost {
 /// ```
 // NOTE: the field docstrings propagate to the setter methods on the builder, so
 // keep them accurate and self-contained.
-#[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(bon::Builder, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Posting {
     /// Stable, opaque identifier for this posting. Assigned by `bc-core` when the
@@ -224,6 +224,15 @@ pub struct Posting {
     /// transaction-level tags. Defaults to empty.
     #[builder(default)]
     tag_ids: Vec<TagId>,
+
+    /// Date from which this posting's amount is accrued (inclusive).
+    ///
+    /// When set alongside [`Posting::spread_until`], the budget engine counts
+    /// only the proportional daily share of this amount for each display period.
+    spread_from: Option<Date>,
+
+    /// Date until which this posting's amount is accrued (exclusive).
+    spread_until: Option<Date>,
 }
 
 impl Posting {
@@ -267,6 +276,20 @@ impl Posting {
     #[must_use]
     pub fn tag_ids(&self) -> &[TagId] {
         &self.tag_ids
+    }
+
+    /// Returns the accrual spread start date, if set.
+    #[inline]
+    #[must_use]
+    pub fn spread_from(&self) -> Option<Date> {
+        self.spread_from
+    }
+
+    /// Returns the accrual spread end date (exclusive), if set.
+    #[inline]
+    #[must_use]
+    pub fn spread_until(&self) -> Option<Date> {
+        self.spread_until
     }
 }
 
@@ -415,6 +438,7 @@ impl Transaction {
 mod tests {
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -553,6 +577,36 @@ mod tests {
             .build();
         assert!(tx.link_ids().is_empty());
         assert!(tx.tag_ids().is_empty());
+    }
+
+    #[test]
+    fn posting_with_spread_roundtrips_serde() {
+        let posting = Posting::builder()
+            .id(PostingId::new())
+            .account_id(crate::AccountId::new())
+            .amount(Amount::new(
+                Decimal::new(5000, 2),
+                CommodityCode::new("AUD"),
+            ))
+            .spread_from(date(2026, 9, 1))
+            .spread_until(date(2027, 3, 12))
+            .build();
+        assert_eq!(posting.spread_from(), Some(date(2026, 9, 1)));
+        assert_eq!(posting.spread_until(), Some(date(2027, 3, 12)));
+        let json = serde_json::to_string(&posting).expect("ser");
+        let back: Posting = serde_json::from_str(&json).expect("de");
+        assert_eq!(posting, back);
+    }
+
+    #[test]
+    fn posting_without_spread_has_none_fields() {
+        let posting = Posting::builder()
+            .id(PostingId::new())
+            .account_id(crate::AccountId::new())
+            .amount(Amount::new(dec!(50.00), CommodityCode::new("AUD")))
+            .build();
+        assert!(posting.spread_from().is_none());
+        assert!(posting.spread_until().is_none());
     }
 
     #[test]
