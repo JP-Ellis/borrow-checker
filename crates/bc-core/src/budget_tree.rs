@@ -1,0 +1,536 @@
+//! Budget tree assembly: builds per-display-window status trees from active budgets.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use bc_models::Decimal;
+use bc_models::Period;
+use jiff::civil::Date;
+use sqlx::SqlitePool;
+
+use crate::budget::BudgetService;
+use crate::budget::BudgetStatusEngine;
+use crate::period_overlap::overlapping_periods;
+
+// MARK: BudgetTreeItem
+
+/// Computed status for one budget in one display window.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "BudgetTree prefix needed for clarity at crate boundary"
+)]
+pub struct BudgetTreeItem {
+    /// The budget this item represents.
+    pub budget: bc_models::Budget,
+    /// The account this budget is anchored to.
+    pub account: bc_models::Account,
+    /// Tree depth (0 = root expense group, 1 = category, 2+ = sub-category).
+    pub depth: u32,
+    /// Effective target for the display window (pro-rated across native periods).
+    /// `None` for tracking-only budgets.
+    pub effective_target: Option<Decimal>,
+    /// Target commodity (from `Budget::target`).
+    pub commodity: Option<bc_models::CommodityCode>,
+    /// Actual spend within the display window.
+    pub actuals: Decimal,
+    /// `true` when the budget's native period differs from the display period.
+    pub has_mixed_period: bool,
+    /// Child budget items (nested under this account in the hierarchy).
+    pub children: Vec<BudgetTreeItem>,
+}
+
+// MARK: BudgetTreeSummary
+
+/// Aggregate KPI values for the budget overview header.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "BudgetTree prefix needed for clarity at crate boundary"
+)]
+pub struct BudgetTreeSummary {
+    /// Sum of effective targets across all leaf budgets (same commodity).
+    pub total_effective_target: Decimal,
+    /// Sum of actuals across all leaf budgets.
+    pub total_actuals: Decimal,
+    /// Dominant commodity across leaf budgets.
+    pub commodity: Option<bc_models::CommodityCode>,
+    /// Count of leaf budgets where `actuals > effective_target`.
+    pub overspent_count: u32,
+}
+
+// MARK: BudgetOverview
+
+/// The complete budget page data for one display window.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct BudgetOverview {
+    /// Aggregate KPI values.
+    pub summary: BudgetTreeSummary,
+    /// Root-level budget tree nodes.
+    pub nodes: Vec<BudgetTreeItem>,
+}
+
+// MARK: BudgetTreeService
+
+/// Assembles a `BudgetOverview` for a given display period and window start.
+#[derive(Clone)]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "BudgetTree prefix needed for clarity at crate boundary"
+)]
+pub struct BudgetTreeService {
+    /// The SQLite connection pool.
+    pool: SqlitePool,
+    /// Foreign exchange rate service for cross-commodity conversion.
+    fx: Arc<dyn crate::fx::FxRateService>,
+}
+
+impl core::fmt::Debug for BudgetTreeService {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BudgetTreeService")
+            .field("pool", &self.pool)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BudgetTreeService {
+    /// Creates a new [`BudgetTreeService`].
+    #[must_use]
+    #[inline]
+    pub fn new(pool: SqlitePool, fx: Arc<dyn crate::fx::FxRateService>) -> Self {
+        Self { pool, fx }
+    }
+
+    /// Builds the budget overview for the display period starting on `display_start`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database or data parse failure.
+    #[inline]
+    pub async fn get_overview(
+        &self,
+        display_period: &Period,
+        display_start: Date,
+    ) -> crate::BcResult<BudgetOverview> {
+        let (window_start, window_end) = display_period.range_containing(display_start);
+
+        let budget_svc = BudgetService::new(self.pool.clone());
+        let status_engine = BudgetStatusEngine::new(self.pool.clone(), Arc::clone(&self.fx));
+
+        let budgets = budget_svc.list().await?;
+        let accounts = crate::account::Service::new(self.pool.clone())
+            .list_active()
+            .await?;
+        let account_map: HashMap<bc_models::AccountId, bc_models::Account> =
+            accounts.into_iter().map(|a| (a.id().clone(), a)).collect();
+
+        let mut items: Vec<BudgetTreeItem> = Vec::with_capacity(budgets.len());
+
+        for budget in &budgets {
+            let effective_target = self
+                .compute_effective_target(
+                    &budget_svc,
+                    budget,
+                    display_period,
+                    window_start,
+                    window_end,
+                )
+                .await?;
+
+            let window =
+                bc_models::BudgetWindow::custom(window_start, window_end, "display".to_owned());
+            let status = status_engine.status_for_window(budget, window).await?;
+
+            let account = account_map
+                .get(budget.account_id())
+                .ok_or_else(|| crate::BcError::NotFound(budget.account_id().to_string()))?
+                .clone();
+
+            let has_mixed_period = !periods_equivalent(display_period, budget.period());
+            let commodity = budget.target().map(|t| t.commodity().clone());
+
+            items.push(BudgetTreeItem {
+                budget: budget.clone(),
+                account,
+                depth: 0,
+                effective_target,
+                commodity,
+                actuals: status.actuals,
+                has_mixed_period,
+                children: vec![],
+            });
+        }
+
+        // Assign depths from the account hierarchy.
+        assign_depths(&mut items, &account_map);
+
+        // Sort into tree order (parent before children, siblings by account name).
+        let nodes = build_tree(items);
+
+        let summary = compute_summary(&nodes);
+
+        Ok(BudgetOverview { summary, nodes })
+    }
+
+    /// Returns native period breakdown for one budget within `[display_start, display_end)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database or data parse failure.
+    #[inline]
+    pub async fn native_periods(
+        &self,
+        budget: &bc_models::Budget,
+        display_start: Date,
+        display_end: Date,
+    ) -> crate::BcResult<Vec<NativePeriodStatus>> {
+        let budget_svc = BudgetService::new(self.pool.clone());
+        let status_engine = BudgetStatusEngine::new(self.pool.clone(), Arc::clone(&self.fx));
+
+        let overlaps = overlapping_periods(budget.period(), display_start, display_end)
+            .map_err(crate::BcError::InvalidInput)?;
+
+        let mut result = Vec::with_capacity(overlaps.len());
+        for overlap in overlaps {
+            let alloc = budget_svc
+                .get_allocation(budget.id(), overlap.native_start)
+                .await?;
+            let full_target = alloc
+                .as_ref()
+                .map(|a| a.amount().value())
+                .or_else(|| budget.target().map(bc_models::Amount::value))
+                .unwrap_or(Decimal::ZERO);
+
+            let effective_target = budget.target().is_some().then(|| {
+                let native_days = overlap.native_days();
+                let overlap_days = overlap.overlap_days();
+                if native_days == 0_i32 {
+                    Decimal::ZERO
+                } else {
+                    #[expect(
+                        clippy::arithmetic_side_effects,
+                        reason = "Decimal div/mul for pro-rata; guarded by native_days != 0"
+                    )]
+                    {
+                        (full_target * Decimal::from(overlap_days) / Decimal::from(native_days))
+                            .round_dp(2)
+                    }
+                }
+            });
+
+            let window = bc_models::BudgetWindow::custom(
+                overlap.overlap_start,
+                overlap.overlap_end,
+                overlap.native_start.to_string(),
+            );
+            let status = status_engine.status_for_window(budget, window).await?;
+
+            result.push(NativePeriodStatus {
+                native_start: overlap.native_start,
+                native_end: overlap.native_end,
+                overlap_start: overlap.overlap_start,
+                overlap_end: overlap.overlap_end,
+                effective_target,
+                actuals: status.actuals,
+                commodity: status.commodity,
+            });
+        }
+
+        Ok(result)
+    }
+
+    /// Computes the effective target for `budget` across the display window.
+    async fn compute_effective_target(
+        &self,
+        budget_svc: &BudgetService,
+        budget: &bc_models::Budget,
+        _display_period: &Period,
+        display_start: Date,
+        display_end: Date,
+    ) -> crate::BcResult<Option<Decimal>> {
+        if budget.target().is_none() {
+            return Ok(None);
+        }
+
+        let overlaps = overlapping_periods(budget.period(), display_start, display_end)
+            .map_err(crate::BcError::InvalidInput)?;
+
+        let mut total = Decimal::ZERO;
+        for overlap in overlaps {
+            let alloc = budget_svc
+                .get_allocation(budget.id(), overlap.native_start)
+                .await?;
+            let full = alloc
+                .as_ref()
+                .map(|a| a.amount().value())
+                .or_else(|| budget.target().map(bc_models::Amount::value))
+                .unwrap_or(Decimal::ZERO);
+
+            let native_days = overlap.native_days();
+            let overlap_days = overlap.overlap_days();
+            let contribution = if native_days == 0_i32 {
+                Decimal::ZERO
+            } else {
+                #[expect(
+                    clippy::arithmetic_side_effects,
+                    reason = "Decimal div/mul for pro-rata; guarded by native_days != 0"
+                )]
+                {
+                    (full * Decimal::from(overlap_days) / Decimal::from(native_days)).round_dp(2)
+                }
+            };
+            total = total
+                .checked_add(contribution)
+                .ok_or_else(|| crate::BcError::BadData("effective target overflow".into()))?;
+        }
+
+        Ok(Some(total))
+    }
+}
+
+// MARK: NativePeriodStatus
+
+/// Status for one native period overlapping the display window.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct NativePeriodStatus {
+    /// Start of the native period (inclusive).
+    pub native_start: Date,
+    /// End of the native period (exclusive).
+    pub native_end: Date,
+    /// Start of the overlap with the display window (inclusive).
+    pub overlap_start: Date,
+    /// End of the overlap with the display window (exclusive).
+    pub overlap_end: Date,
+    /// Pro-rated effective target for this overlap. `None` = tracking-only.
+    pub effective_target: Option<Decimal>,
+    /// Actuals within the overlap.
+    pub actuals: Decimal,
+    /// Commodity of the actuals.
+    pub commodity: Option<bc_models::CommodityCode>,
+}
+
+// MARK: Helpers
+
+/// Returns `true` when `a` and `b` are the same [`Period`] variant.
+fn periods_equivalent(a: &Period, b: &Period) -> bool {
+    core::mem::discriminant(a) == core::mem::discriminant(b)
+}
+
+/// Walks each item's account parent chain and assigns a tree depth.
+fn assign_depths(
+    items: &mut [BudgetTreeItem],
+    account_map: &HashMap<bc_models::AccountId, bc_models::Account>,
+) {
+    for item in items.iter_mut() {
+        let mut depth = 0_u32;
+        let mut current = item.account.parent_id().cloned();
+        while let Some(parent_id) = current {
+            if account_map.contains_key(&parent_id) {
+                depth = depth.saturating_add(1);
+            }
+            current = account_map
+                .get(&parent_id)
+                .and_then(|a| a.parent_id())
+                .cloned();
+        }
+        item.depth = depth;
+    }
+}
+
+/// Filters to root-level items and sorts them by account name.
+fn build_tree(items: Vec<BudgetTreeItem>) -> Vec<BudgetTreeItem> {
+    let budget_account_ids: std::collections::HashSet<bc_models::AccountId> =
+        items.iter().map(|i| i.account.id().clone()).collect();
+
+    let mut roots: Vec<BudgetTreeItem> = items
+        .into_iter()
+        .filter(|i| {
+            i.account
+                .parent_id()
+                .is_none_or(|pid| !budget_account_ids.contains(pid))
+        })
+        .collect();
+
+    roots.sort_by(|a, b| a.account.name().cmp(b.account.name()));
+    roots
+}
+
+/// Computes aggregate KPI values from the root-level budget tree nodes.
+fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
+    let mut total_target = Decimal::ZERO;
+    let mut total_actuals = Decimal::ZERO;
+    let mut overspent = 0_u32;
+    let mut commodity = None;
+
+    for node in nodes {
+        if let Some(t) = node.effective_target {
+            total_target = total_target.checked_add(t).unwrap_or(total_target);
+            if commodity.is_none() {
+                commodity.clone_from(&node.commodity);
+            }
+        }
+        total_actuals = total_actuals
+            .checked_add(node.actuals)
+            .unwrap_or(total_actuals);
+        if node.effective_target.is_some_and(|t| node.actuals > t) {
+            overspent = overspent.saturating_add(1);
+        }
+    }
+
+    BudgetTreeSummary {
+        total_effective_target: total_target,
+        total_actuals,
+        commodity,
+        overspent_count: overspent,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bc_models::AccountKind;
+    use bc_models::AccountType;
+    use bc_models::Amount;
+    use bc_models::CommodityCode;
+    use bc_models::Period;
+    use bc_models::Posting;
+    use bc_models::PostingId;
+    use bc_models::RolloverPolicy;
+    use bc_models::Transaction;
+    use bc_models::TransactionStatus;
+    use jiff::civil::Date;
+    use pretty_assertions::assert_eq;
+    use rust_decimal_macros::dec;
+
+    use super::BudgetTreeService;
+    use crate::account::Service as AccountService;
+    use crate::budget::BudgetService;
+    use crate::fx::noop_fx;
+    use crate::transaction::Service as TransactionService;
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn single_monthly_budget_matches_actuals(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let restaurants = accounts
+            .create()
+            .name("Restaurants")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("account");
+        let checking = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("checking");
+
+        let budgets = BudgetService::new(pool.clone());
+        budgets
+            .create()
+            .account_id(restaurants.clone())
+            .target(Amount::new(dec!(300), CommodityCode::new("AUD")))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("budget");
+
+        let txns = TransactionService::new(pool.clone());
+        txns.create(
+            Transaction::builder()
+                .id(bc_models::TransactionId::new())
+                .date(Date::constant(2026, 6, 11))
+                .description("Dinner")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(restaurants)
+                        .amount(Amount::new(dec!(68), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking)
+                        .amount(Amount::new(dec!(-68), CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .status(TransactionStatus::Cleared)
+                .created_at(jiff::Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("create tx");
+
+        let svc = BudgetTreeService::new(pool.clone(), noop_fx());
+        let overview = svc
+            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1))
+            .await
+            .expect("overview");
+
+        assert_eq!(overview.nodes.len(), 1);
+        let node = overview.nodes.first().expect("one node");
+        assert_eq!(node.actuals, dec!(68));
+        assert_eq!(node.effective_target, Some(dec!(300)));
+        assert_eq!(overview.summary.overspent_count, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn weekly_budget_in_monthly_view_pro_rates_target(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let gym = accounts
+            .create()
+            .name("Gym")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("gym");
+        let checking = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("checking");
+
+        let budgets = BudgetService::new(pool.clone());
+        budgets
+            .create()
+            .account_id(gym.clone())
+            .target(Amount::new(dec!(30), CommodityCode::new("AUD")))
+            .period(Period::Weekly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("budget");
+
+        drop(checking);
+
+        let svc = BudgetTreeService::new(pool.clone(), noop_fx());
+        let overview = svc
+            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1))
+            .await
+            .expect("overview");
+
+        assert_eq!(overview.nodes.len(), 1);
+        let node = overview.nodes.first().expect("one node");
+        // June 2026 has 5 overlapping weeks (4 full + 1 partial of 2 days).
+        // Effective target = 4 × $30 + (2/7 × $30) ≈ $128.57
+        let target = node.effective_target.expect("has target");
+        // Allow 1 cent tolerance for rounding.
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic on bounded test values"
+        )]
+        let diff = (target - dec!(128.57)).abs();
+        assert!(diff < dec!(0.01), "got {target}");
+        assert!(node.has_mixed_period);
+    }
+}
