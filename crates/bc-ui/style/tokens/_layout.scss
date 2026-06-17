@@ -17,6 +17,7 @@
     --bc-topbar-height: 52px;
 
     /* MARK: Shadows */
-    --bc-shadow-card: 0 4px 12px color-mix(in oklch, var(--bc-ink) 8%, transparent);
+    --bc-shadow-card:   0 4px 12px color-mix(in oklch, var(--bc-ink) 8%, transparent);
+    --bc-shadow-sticky: 0 2px 4px  color-mix(in oklch, var(--bc-ink) 8%, transparent);
   }
 }

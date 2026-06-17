@@ -8,7 +8,7 @@
     padding: var(--bc-space-2) var(--bc-space-6);
     background: var(--bc-surface);
     border-bottom: 1px solid var(--bc-border);
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+    box-shadow: var(--bc-shadow-sticky);
 }
 
 .nav_btn {
