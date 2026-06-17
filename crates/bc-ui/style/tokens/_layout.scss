@@ -13,6 +13,9 @@
     --bc-sidebar-collapsed-width: var(--bc-space-9);   /* 28px */
     --bc-sidebar-toggle-size:     var(--bc-space-7);   /* 18px */
 
+    /* MARK: Top Bar */
+    --bc-topbar-height: 52px;
+
     /* MARK: Shadows */
     --bc-shadow-card: 0 4px 12px color-mix(in oklch, var(--bc-ink) 8%, transparent);
   }

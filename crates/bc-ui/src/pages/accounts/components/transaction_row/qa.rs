@@ -20,6 +20,7 @@ fn tx_simple() -> Transaction {
         vec!["shared".to_owned()],
         vec![
             Posting::new(
+                "posting-coles-debit",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                 Amount::new(-8_420, "AUD", 2),
                 None::<&str>,
@@ -27,6 +28,7 @@ fn tx_simple() -> Transaction {
                 None::<&str>,
             ),
             Posting::new(
+                "posting-coles-groceries",
                 AccountRef::new("groceries", "Expenses :: Groceries"),
                 Amount::new(8_420, "AUD", 2),
                 None::<&str>,
@@ -52,6 +54,7 @@ fn tx_multi_posting() -> Transaction {
         vec!["work".to_owned()],
         vec![
             Posting::new(
+                "posting-salary-income",
                 AccountRef::new("income-salary", "Income :: Salary"),
                 Amount::new(-846_154, "AUD", 2),
                 Some("gross pay"),
@@ -59,6 +62,7 @@ fn tx_multi_posting() -> Transaction {
                 None::<&str>,
             ),
             Posting::new(
+                "posting-salary-takehome",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                 Amount::new(428_055, "AUD", 2),
                 Some("take-home"),
@@ -84,6 +88,7 @@ fn tx_split_siblings() -> Transaction {
         vec![],
         vec![
             Posting::new(
+                "posting-amazon-debit",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                 Amount::new(-30_000, "AUD", 2),
                 None::<&str>,
@@ -91,6 +96,7 @@ fn tx_split_siblings() -> Transaction {
                 None::<&str>,
             ),
             Posting::new(
+                "posting-amazon-groceries",
                 AccountRef::new("exp-groceries", "Expenses :: Groceries"),
                 Amount::new(10_000, "AUD", 2),
                 None::<&str>,
@@ -98,6 +104,7 @@ fn tx_split_siblings() -> Transaction {
                 None::<&str>,
             ),
             Posting::new(
+                "posting-amazon-healthcare",
                 AccountRef::new("exp-healthcare", "Expenses :: Healthcare"),
                 Amount::new(10_000, "AUD", 2),
                 None::<&str>,
@@ -105,6 +112,7 @@ fn tx_split_siblings() -> Transaction {
                 None::<&str>,
             ),
             Posting::new(
+                "posting-amazon-household",
                 AccountRef::new("exp-household", "Expenses :: Household"),
                 Amount::new(10_000, "AUD", 2),
                 None::<&str>,
@@ -126,6 +134,7 @@ fn tx_split_cross_type() -> Transaction {
         vec![],
         vec![
             Posting::new(
+                "posting-cross-debit",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                 Amount::new(-30_000, "AUD", 2),
                 None::<&str>,
@@ -133,6 +142,7 @@ fn tx_split_cross_type() -> Transaction {
                 None::<&str>,
             ),
             Posting::new(
+                "posting-cross-groceries",
                 AccountRef::new("exp-groceries", "Expenses :: Groceries"),
                 Amount::new(10_000, "AUD", 2),
                 None::<&str>,
@@ -140,6 +150,7 @@ fn tx_split_cross_type() -> Transaction {
                 None::<&str>,
             ),
             Posting::new(
+                "posting-cross-healthcare",
                 AccountRef::new("exp-healthcare", "Expenses :: Healthcare"),
                 Amount::new(10_000, "AUD", 2),
                 None::<&str>,
@@ -147,6 +158,7 @@ fn tx_split_cross_type() -> Transaction {
                 None::<&str>,
             ),
             Posting::new(
+                "posting-cross-interest",
                 AccountRef::new("inc-interest", "Income :: Interest"),
                 Amount::new(10_000, "AUD", 2),
                 None::<&str>,
