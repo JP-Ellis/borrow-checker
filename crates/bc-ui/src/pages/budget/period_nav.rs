@@ -583,6 +583,31 @@ mod tests {
     }
 
     #[rstest]
+    /* Labels use "FY YYYY–YY" format regardless of FY start month — no month range shown. */
+    /* Jul start (Australian): 2025-07-01 → FY 2025–26 */
+    #[case(7, Date::constant(2025, 7, 1), "FY 2025–26")]
+    /* Jan start (calendar FY): 2026-01-01 → FY 2026–27 */
+    #[case(1, Date::constant(2026, 1, 1), "FY 2026–27")]
+    /* Apr start: 2026-04-01 → FY 2026–27 */
+    #[case(4, Date::constant(2026, 4, 1), "FY 2026–27")]
+    fn window_label_financial_year_variants(
+        #[case] start_month: u8,
+        #[case] start: Date,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(
+            window_label(
+                &Period::FinancialYear {
+                    start_month,
+                    start_day: 1,
+                },
+                start,
+            ),
+            expected
+        );
+    }
+
+    #[rstest]
     // Aus FY starting Jul 1: FQ1=Jul–Sep, FQ2=Oct–Dec, FQ3=Jan–Mar, FQ4=Apr–Jun.
     #[case(Date::constant(2026, 7, 1), "FQ1 2026/27")]
     #[case(Date::constant(2026, 10, 1), "FQ2 2026/27")]
