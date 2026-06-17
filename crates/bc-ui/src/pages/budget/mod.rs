@@ -24,7 +24,6 @@ pub struct BudgetPageCtx {
     /// Start date of the selected display window.
     pub window_start: RwSignal<jiff::civil::Date>,
     /// When `true`, budget amounts are displayed as percentages of target.
-    #[expect(dead_code, reason = "used in later tasks")]
     pub pct_mode: RwSignal<bool>,
     /// ID of the currently open detail panel, or `None` when closed.
     #[expect(dead_code, reason = "used in later tasks")]

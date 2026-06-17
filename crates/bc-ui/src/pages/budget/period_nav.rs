@@ -3,13 +3,6 @@
 //! Provides helpers for computing human-readable window labels and for
 //! stepping the display window forward or backward by one period.
 
-// On the wasm32 target, bc-ui is a binary so `pub` alone does not silence
-// dead_code. These helpers will be called by UI components in later tasks.
-#![cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "wired to components in later tasks")
-)]
-
 use bc_ipc::Period;
 use jiff::Span;
 use jiff::civil::Date;
