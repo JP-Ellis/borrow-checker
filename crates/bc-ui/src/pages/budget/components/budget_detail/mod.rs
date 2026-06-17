@@ -63,11 +63,12 @@ fn parse_target(s: &str, scale: u8) -> Option<i64> {
     let scale_factor = 10_i64.pow(u32::from(scale));
     match s.split_once('.') {
         None => {
-            let n: i64 = s.parse().ok()?;
-            if n < 0 {
+            if s.starts_with('-') {
                 return None;
             }
-            Some(n.saturating_mul(scale_factor))
+            s.parse::<i64>()
+                .ok()
+                .map(|n| n.saturating_mul(scale_factor))
         }
         Some((major, minor)) => {
             if major.starts_with('-') {
