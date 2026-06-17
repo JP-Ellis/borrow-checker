@@ -163,6 +163,7 @@ fn PostingRow(
             <Show when=move || spread_open.get()>
                 <AccrualEditor
                     posting_id=posting_id.clone()
+                    has_spread=has_spread
                     spread_from=spread_from.clone().unwrap_or_default()
                     spread_until=spread_until.clone().unwrap_or_default()
                     on_change=on_change
@@ -336,14 +337,13 @@ pub fn BudgetDetail(
     let txns: LocalResource<Result<Vec<Transaction>, bc_ipc::BcError>> =
         LocalResource::new(move || {
             let bid = budget_id_for_txns.get_value();
-            async move {
-                data_version.get();
-                let p = period.get();
-                let ws = window_start.get();
-                let end = period_nav::step_window(&p, ws, true);
-                bc_ipc::client::get_budget_transactions(&bid, &ws.to_string(), &end.to_string())
-                    .await
-            }
+            data_version.get();
+            let p = period.get();
+            let ws = window_start.get();
+            let end = period_nav::step_window(&p, ws, true);
+            let start_str = ws.to_string();
+            let end_str = end.to_string();
+            async move { bc_ipc::client::get_budget_transactions(&bid, &start_str, &end_str).await }
         });
 
     let on_change: Callback<()> = Callback::new(move |()| {
@@ -355,7 +355,7 @@ pub fn BudgetDetail(
     let rollover_label = node
         .rollover
         .as_ref()
-        .map_or_else(String::new, |r| format!("{r:?}"));
+        .map_or_else(String::new, std::string::ToString::to_string);
     let tag_filter_label = node.tag_filter.clone().unwrap_or_else(|| "none".to_owned());
 
     view! {
