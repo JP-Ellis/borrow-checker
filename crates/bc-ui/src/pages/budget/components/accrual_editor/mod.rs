@@ -18,6 +18,9 @@ pub fn AccrualEditor(
     /// ID of the posting being edited.
     #[prop(into)]
     posting_id: String,
+    /// Whether the posting currently has a spread set (controls Remove button visibility).
+    #[prop(optional)]
+    has_spread: bool,
     /// Current spread start date (ISO-8601), if one is set.
     #[prop(into, optional)]
     spread_from: Option<String>,
@@ -103,8 +106,7 @@ pub fn AccrualEditor(
                 <button class=style::btn_save disabled=move || saving.get() on:click=save>
                     {move || if saving.get() { "Saving…" } else { "Save spread" }}
                 </button>
-                {spread_from
-                    .is_some()
+                {has_spread
                     .then(|| {
                         view! {
                             <button

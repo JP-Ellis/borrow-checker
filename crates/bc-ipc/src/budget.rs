@@ -18,6 +18,16 @@ pub enum RolloverPolicy {
     CapAtTarget,
 }
 
+impl core::fmt::Display for RolloverPolicy {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::CarryForward => write!(f, "Carry forward"),
+            Self::ResetToZero => write!(f, "Reset to zero"),
+            Self::CapAtTarget => write!(f, "Cap at target"),
+        }
+    }
+}
+
 /// One node in the budget tree returned by `get_budget_overview`.
 ///
 /// Leaf nodes represent individual budgets; parent nodes aggregate their
