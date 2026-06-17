@@ -100,7 +100,10 @@ fn display_str(node: &BudgetTreeNode, pct_mode: bool) -> String {
             if target.minor_units == 0 {
                 "\u{2013}".into()
             } else {
-                format!("{}%", node.spent.minor_units * 100 / target.minor_units)
+                format!(
+                    "{}%",
+                    (node.spent.minor_units.max(0) * 100) / target.minor_units
+                )
             }
         }
         Some(target) => format!("{} / {}", node.spent.format_short(), target.format_short()),
@@ -251,7 +254,7 @@ pub fn BudgetRow(
                 <Show when=move || !collapsed.get()>
                     <For
                         each=move || children_nodes.get_value()
-                        key=|child| child.id.clone()
+                        key=|child| format!("{}:{}", child.account_id, child.depth)
                         children=move |child| view! { <BudgetRow node=child /> }
                     />
                 </Show>

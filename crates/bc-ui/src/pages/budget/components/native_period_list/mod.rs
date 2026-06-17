@@ -94,7 +94,10 @@ fn display_str(row: &NativePeriodRow, pct_mode: bool) -> String {
             if target.minor_units == 0 {
                 "\u{2013}".into()
             } else {
-                format!("{}%", row.spent.minor_units * 100 / target.minor_units)
+                format!(
+                    "{}%",
+                    (row.spent.minor_units.max(0) * 100) / target.minor_units
+                )
             }
         }
         Some(target) => format!("{} / {}", row.spent.format_short(), target.format_short()),
