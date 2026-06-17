@@ -1,6 +1,6 @@
 //! Budget page — allocation grid, period header, and accrual editor.
 
-mod components;
+pub(crate) mod components;
 
 use bc_ipc::BcError;
 use bc_ipc::BudgetSummary;

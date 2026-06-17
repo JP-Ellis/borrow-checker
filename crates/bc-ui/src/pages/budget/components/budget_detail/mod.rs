@@ -5,8 +5,14 @@
     reason = "stub component — fields will be read when this component is implemented"
 )]
 
+#[cfg(debug_assertions)]
+pub(crate) mod qa;
+
 use bc_ipc::BudgetTreeNode;
 use leptos::prelude::*;
+use stylance::import_style;
+
+import_style!(style, "detail.module.scss");
 
 /// Expanded detail panel showing transactions and accrual data for a budget.
 #[component]
@@ -19,5 +25,5 @@ pub fn BudgetDetail(
     /// The tree node whose detail is being displayed.
     node: BudgetTreeNode,
 ) -> impl IntoView {
-    view! { <div class="budget-detail" /> }
+    view! { <div class=style::root /> }
 }
