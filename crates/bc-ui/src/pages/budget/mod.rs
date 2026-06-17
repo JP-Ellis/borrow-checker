@@ -26,7 +26,6 @@ pub struct BudgetPageCtx {
     /// When `true`, budget amounts are displayed as percentages of target.
     pub pct_mode: RwSignal<bool>,
     /// ID of the currently open detail panel, or `None` when closed.
-    #[expect(dead_code, reason = "used in later tasks")]
     pub open_detail_id: RwSignal<Option<String>>,
     /// Bumped after any mutation to trigger data re-fetch across all subscribers.
     pub data_version: RwSignal<u32>,
