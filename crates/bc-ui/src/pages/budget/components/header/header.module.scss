@@ -1,1 +1,93 @@
-.root {}
+.header {
+    padding: var(--bc-space-4) var(--bc-space-6) 0;
+    border-bottom: 1px solid var(--bc-border);
+    background: var(--bc-surface);
+}
+
+.nav_row {
+    display: flex;
+    align-items: center;
+    gap: var(--bc-space-2);
+    margin-bottom: var(--bc-space-4);
+}
+
+.nav_btn {
+    background: none;
+    border: 1px solid var(--bc-border);
+    border-radius: var(--bc-radius-control);
+    padding: var(--bc-space-1) var(--bc-space-3);
+    font-family: var(--bc-font-mono);
+    color: var(--bc-ink);
+    cursor: pointer;
+}
+
+.nav_label {
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-body);
+    font-weight: 600;
+    min-width: 140px;
+    text-align: center;
+}
+
+.period_select {
+    margin-left: auto;
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-caption);
+    border: 1px solid var(--bc-border);
+    border-radius: var(--bc-radius-control);
+    padding: var(--bc-space-1) var(--bc-space-2);
+    background: var(--bc-bg);
+    color: var(--bc-ink);
+}
+
+.agg_btn {
+    background: none;
+    border: 1px solid var(--bc-border);
+    border-radius: var(--bc-radius-control);
+    padding: var(--bc-space-1) var(--bc-space-3);
+    font-family: var(--bc-font-mono);
+    color: var(--bc-ink-mute);
+    cursor: pointer;
+}
+
+.agg_btn_active {
+    background: none;
+    border: 1px solid var(--bc-accent);
+    border-radius: var(--bc-radius-control);
+    padding: var(--bc-space-1) var(--bc-space-3);
+    font-family: var(--bc-font-mono);
+    color: var(--bc-accent);
+    cursor: pointer;
+}
+
+.kpi_row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border-top: 1px solid var(--bc-border);
+}
+
+.kpi_tile {
+    padding: var(--bc-space-3) var(--bc-space-4);
+    border-right: 1px solid var(--bc-border);
+
+    &:last-child {
+        border-right: none;
+    }
+}
+
+.kpi_label {
+    display: block;
+    font-size: var(--bc-text-eyebrow);
+    color: var(--bc-ink-mute);
+    margin-bottom: var(--bc-space-1);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.kpi_value {
+    display: block;
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-display);
+    font-weight: 600;
+    color: var(--bc-ink);
+}
