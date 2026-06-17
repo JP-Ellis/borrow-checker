@@ -566,6 +566,23 @@ mod tests {
     }
 
     #[rstest]
+    /* January FY (e.g. US calendar FY): start_month=1. */
+    #[case(Date::constant(2026, 1, 1), "FY 2026–27")]
+    #[case(Date::constant(2025, 1, 1), "FY 2025–26")]
+    fn window_label_financial_year_january(#[case] start: Date, #[case] expected: &str) {
+        assert_eq!(
+            window_label(
+                &Period::FinancialYear {
+                    start_month: 1,
+                    start_day: 1,
+                },
+                start,
+            ),
+            expected
+        );
+    }
+
+    #[rstest]
     // Aus FY starting Jul 1: FQ1=Jul–Sep, FQ2=Oct–Dec, FQ3=Jan–Mar, FQ4=Apr–Jun.
     #[case(Date::constant(2026, 7, 1), "FQ1 2026/27")]
     #[case(Date::constant(2026, 10, 1), "FQ2 2026/27")]
@@ -652,9 +669,59 @@ mod tests {
     }
 
     #[rstest]
+    /* January FY (e.g. US calendar FY): FY2026 = Jan 2026–Dec 2026. */
+    #[case(Date::constant(2026, 1, 1), true, Date::constant(2027, 1, 1))]
+    #[case(Date::constant(2027, 1, 1), false, Date::constant(2026, 1, 1))]
+    fn step_window_financial_year_january(
+        #[case] start: Date,
+        #[case] forward: bool,
+        #[case] expected: Date,
+    ) {
+        assert_eq!(
+            step_window(
+                &Period::FinancialYear {
+                    start_month: 1,
+                    start_day: 1,
+                },
+                start,
+                forward
+            ),
+            expected
+        );
+    }
+
+    #[rstest]
+    /* January FQ: Q1 Jan, Q2 Apr, Q3 Jul, Q4 Oct. */
+    #[case(Date::constant(2026, 1, 1), true, Date::constant(2026, 4, 1))]
+    #[case(Date::constant(2026, 4, 1), true, Date::constant(2026, 7, 1))]
+    #[case(Date::constant(2026, 7, 1), true, Date::constant(2026, 10, 1))]
+    #[case(Date::constant(2026, 10, 1), true, Date::constant(2027, 1, 1))]
+    /* Cross-FY-boundary backward: FQ1 Jan 2026 → FQ4 Oct 2025. */
+    #[case(Date::constant(2026, 1, 1), false, Date::constant(2025, 10, 1))]
+    fn step_window_financial_quarter_january(
+        #[case] start: Date,
+        #[case] forward: bool,
+        #[case] expected: Date,
+    ) {
+        assert_eq!(
+            step_window(
+                &Period::FinancialQuarter {
+                    start_month: 1,
+                    start_day: 1,
+                },
+                start,
+                forward
+            ),
+            expected
+        );
+    }
+
+    #[rstest]
     #[case(Date::constant(2026, 7, 1), true, Date::constant(2026, 10, 1))]
     #[case(Date::constant(2026, 10, 1), true, Date::constant(2027, 1, 1))]
     #[case(Date::constant(2027, 1, 1), false, Date::constant(2026, 10, 1))]
+    /* Cross-FY-boundary backward: FQ1 Jul 2026 → FQ4 Apr 2026 (same year). */
+    #[case(Date::constant(2026, 7, 1), false, Date::constant(2026, 4, 1))]
     fn step_window_financial_quarter(
         #[case] start: Date,
         #[case] forward: bool,

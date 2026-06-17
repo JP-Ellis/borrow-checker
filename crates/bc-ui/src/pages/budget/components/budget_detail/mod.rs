@@ -70,10 +70,10 @@ fn parse_target(s: &str, scale: u8) -> Option<i64> {
             Some(n.saturating_mul(scale_factor))
         }
         Some((major, minor)) => {
-            let maj: i64 = major.parse().ok()?;
-            if maj < 0 {
+            if major.starts_with('-') {
                 return None;
             }
+            let maj: i64 = major.parse().ok()?;
             let scale_usize = usize::from(scale);
             let minor_trimmed = &minor[..minor.len().min(scale_usize)];
             let min_str = format!("{minor_trimmed:0<scale_usize$}");
