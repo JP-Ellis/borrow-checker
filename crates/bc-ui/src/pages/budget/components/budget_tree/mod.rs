@@ -26,7 +26,7 @@ pub fn BudgetTree(
             </div>
             <For
                 each=move || nodes.clone()
-                key=|node| node.id.clone()
+                key=|node| format!("{}:{}", node.account_id, node.depth)
                 children=move |node| view! { <BudgetRow node=node /> }
             />
         </div>
