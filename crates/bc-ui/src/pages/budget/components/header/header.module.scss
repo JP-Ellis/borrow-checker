@@ -19,6 +19,7 @@
     font-family: var(--bc-font-mono);
     color: var(--bc-ink);
     cursor: pointer;
+    @include interactive.button-interactive();
 }
 
 .nav_label {
@@ -40,24 +41,25 @@
     color: var(--bc-ink);
 }
 
-.agg_btn {
+%agg_btn_base {
     background: none;
-    border: 1px solid var(--bc-border);
     border-radius: var(--bc-radius-control);
     padding: var(--bc-space-1) var(--bc-space-3);
     font-family: var(--bc-font-mono);
-    color: var(--bc-ink-mute);
     cursor: pointer;
+    @include interactive.button-interactive();
+}
+
+.agg_btn {
+    @extend %agg_btn_base;
+    border: 1px solid var(--bc-border);
+    color: var(--bc-ink-mute);
 }
 
 .agg_btn_active {
-    background: none;
+    @extend %agg_btn_base;
     border: 1px solid var(--bc-accent);
-    border-radius: var(--bc-radius-control);
-    padding: var(--bc-space-1) var(--bc-space-3);
-    font-family: var(--bc-font-mono);
     color: var(--bc-accent);
-    cursor: pointer;
 }
 
 .kpi_row {
@@ -90,4 +92,20 @@
     font-size: var(--bc-text-display);
     font-weight: 600;
     color: var(--bc-ink);
+}
+
+.kpi_value_good {
+    display: block;
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-display);
+    font-weight: 600;
+    color: var(--bc-good);
+}
+
+.kpi_value_bad {
+    display: block;
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-display);
+    font-weight: 600;
+    color: var(--bc-bad);
 }

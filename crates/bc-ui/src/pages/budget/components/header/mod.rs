@@ -35,6 +35,19 @@ fn parse_period(val: &str) -> Period {
     }
 }
 
+/// Converts a [`Period`] back to the `<select>` option value string.
+fn period_to_str(p: &Period) -> &'static str {
+    match p {
+        Period::Weekly => "weekly",
+        Period::Fortnightly => "fortnightly",
+        Period::Quarterly => "quarterly",
+        Period::FinancialQuarter { .. } => "financial_quarter",
+        Period::FinancialYear { .. } => "financial_year",
+        Period::CalendarYear => "calendar_year",
+        Period::Monthly | Period::Daily | _ => "monthly",
+    }
+}
+
 /// Formats an optional [`Amount`] for display, returning `"–"` when `None`.
 fn format_amount(amount: Option<&Amount>) -> String {
     amount.map_or_else(|| "\u{2013}".into(), Amount::format_short)
@@ -44,14 +57,19 @@ fn format_amount(amount: Option<&Amount>) -> String {
 #[component]
 fn KpiTile(
     /// Short uppercase label describing the metric.
+    #[prop(into)]
     label: &'static str,
     /// Formatted value string to display in large monospace text.
     value: String,
+    /// CSS class for the value span. Defaults to `style::kpi_value`.
+    #[prop(optional)]
+    value_class: Option<&'static str>,
 ) -> impl IntoView {
+    let vclass = value_class.unwrap_or(style::kpi_value);
     view! {
         <div class=style::kpi_tile>
             <span class=style::kpi_label>{label}</span>
-            <span class=style::kpi_value>{value}</span>
+            <span class=vclass>{value}</span>
         </div>
     }
 }
@@ -65,23 +83,18 @@ fn KpiTileRow(
     let budgeted = format_amount(summary.as_ref().and_then(|s| s.total_budgeted.as_ref()));
     let spent = format_amount(summary.as_ref().and_then(|s| s.total_spent.as_ref()));
     let remaining = format_amount(summary.as_ref().and_then(|s| s.total_remaining.as_ref()));
-    let overspent = summary.as_ref().map_or_else(
-        || "\u{2013}".into(),
-        |s| {
-            if s.overspent_count == 0 {
-                "\u{2013}".into()
-            } else {
-                format!("{} lines", s.overspent_count)
-            }
-        },
-    );
+    let (net, net_class) = match summary.as_ref().and_then(|s| s.total_remaining.as_ref()) {
+        None => ("\u{2013}".to_owned(), style::kpi_value),
+        Some(a) if a.minor_units < 0 => (a.format_short(), style::kpi_value_bad),
+        Some(a) => (a.format_short(), style::kpi_value_good),
+    };
 
     view! {
         <div class=style::kpi_row>
             <KpiTile label="Budgeted" value=budgeted />
             <KpiTile label="Spent" value=spent />
             <KpiTile label="Remaining" value=remaining />
-            <KpiTile label="Overspent" value=overspent />
+            <KpiTile label="Net" value=net value_class=net_class />
         </div>
     }
 }
@@ -143,6 +156,7 @@ pub fn BudgetHeader(
 
                 <select
                     class=style::period_select
+                    prop:value=move || period_to_str(&period.get())
                     on:change=move |ev| {
                         let val = event_target_value(&ev);
                         period.set(parse_period(&val));
@@ -150,9 +164,7 @@ pub fn BudgetHeader(
                 >
                     <option value="weekly">"Weekly"</option>
                     <option value="fortnightly">"Fortnightly"</option>
-                    <option value="monthly" selected=true>
-                        "Monthly"
-                    </option>
+                    <option value="monthly">"Monthly"</option>
                     <option value="quarterly">"Quarterly"</option>
                     <option value="financial_quarter">"Financial Quarter"</option>
                     <option value="financial_year">"Financial Year"</option>
@@ -175,7 +187,7 @@ pub fn BudgetHeader(
                         <KpiTile label="Budgeted" value="\u{2013}".into() />
                         <KpiTile label="Spent" value="\u{2013}".into() />
                         <KpiTile label="Remaining" value="\u{2013}".into() />
-                        <KpiTile label="Overspent" value="\u{2013}".into() />
+                        <KpiTile label="Net" value="\u{2013}".into() />
                     </div>
                 }
             }>
