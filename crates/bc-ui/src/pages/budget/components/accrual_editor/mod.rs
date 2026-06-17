@@ -1,10 +1,4 @@
 //! Inline accrual spread editor for a posting.
-// MARK: Stubs
-// Stubs only — props are intentionally unused until later tasks.
-#![allow(
-    dead_code,
-    reason = "stub component — fields will be read when this component is implemented"
-)]
 
 #[cfg(debug_assertions)]
 pub(crate) mod qa;
@@ -18,8 +12,7 @@ import_style!(style, "accrual.module.scss");
 #[component]
 #[expect(
     clippy::needless_pass_by_value,
-    unused_variables,
-    reason = "stub — props will be consumed in later tasks"
+    reason = "Leptos component props require owned types"
 )]
 pub fn AccrualEditor(
     /// ID of the posting being edited.
@@ -34,5 +27,99 @@ pub fn AccrualEditor(
     /// Callback invoked after a successful save or clear.
     on_change: Callback<()>,
 ) -> impl IntoView {
-    view! { <div class=style::root /> }
+    let from_input = RwSignal::new(spread_from.clone().unwrap_or_default());
+    let until_input = RwSignal::new(spread_until.clone().unwrap_or_default());
+    let saving = RwSignal::new(false);
+    let error: RwSignal<Option<String>> = RwSignal::new(None);
+
+    let posting_id_for_save = posting_id.clone();
+    let save = move |_| {
+        let pid = posting_id_for_save.clone();
+        let from = from_input.get();
+        let until = until_input.get();
+        saving.set(true);
+        error.set(None);
+        leptos::task::spawn_local(async move {
+            match bc_ipc::client::set_posting_spread(&pid, &from, &until).await {
+                Ok(()) => {
+                    saving.set(false);
+                    on_change.run(());
+                }
+                Err(e) => {
+                    saving.set(false);
+                    error.set(Some(e.to_string()));
+                }
+            }
+        });
+    };
+
+    let posting_id_for_clear = StoredValue::new(posting_id.clone());
+    let clear = move |_| {
+        let pid = posting_id_for_clear.get_value();
+        saving.set(true);
+        error.set(None);
+        leptos::task::spawn_local(async move {
+            match bc_ipc::client::clear_posting_spread(&pid).await {
+                Ok(()) => {
+                    saving.set(false);
+                    on_change.run(());
+                }
+                Err(e) => {
+                    saving.set(false);
+                    error.set(Some(e.to_string()));
+                }
+            }
+        });
+    };
+
+    let has_spread = spread_from.is_some();
+
+    view! {
+        <div class=style::editor>
+            <div class=style::field_row>
+                <label class=style::field_label>"From"</label>
+                <input
+                    type="date"
+                    class=style::date_input
+                    prop:value=move || from_input.get()
+                    on:input=move |ev| from_input.set(event_target_value(&ev))
+                />
+            </div>
+            <div class=style::field_row>
+                <label class=style::field_label>"Until (exclusive)"</label>
+                <input
+                    type="date"
+                    class=style::date_input
+                    prop:value=move || until_input.get()
+                    on:input=move |ev| until_input.set(event_target_value(&ev))
+                />
+            </div>
+            {move || {
+                error
+                    .get()
+                    .map(|msg| {
+                        view! { <p class=style::err>{msg}</p> }
+                    })
+            }}
+            <div class=style::btn_row>
+                <button class=style::btn_save disabled=move || saving.get() on:click=save>
+                    {move || if saving.get() { "Saving…" } else { "Save spread" }}
+                </button>
+                {move || {
+                    has_spread
+                        .then(|| {
+                            view! {
+                                <button
+                                    class=style::btn_remove
+                                    disabled=move || saving.get()
+                                    on:click=clear
+                                >
+                                    "Remove spread"
+                                </button>
+                            }
+                        })
+                }}
+            </div>
+        </div>
+    }
 }
