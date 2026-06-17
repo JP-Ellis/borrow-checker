@@ -1,6 +1,7 @@
 //! Route entries for page-level QA pages (`/__test/page/*`).
 
 pub mod accounts;
+pub mod budget;
 pub mod plugins;
 pub mod settings;
 
@@ -21,6 +22,7 @@ pub fn PageRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
         <ParentRoute path=path!("/page") view=|| view! { <Outlet /> }>
             <Route path=path!("") view=PageIndex />
             <accounts::AccountsRoutes />
+            <budget::BudgetRoutes />
             <plugins::PluginsRoutes />
             <settings::SettingsRoutes />
         </ParentRoute>
@@ -43,6 +45,7 @@ pub fn PageIndex() -> impl IntoView {
                     path=accounts::PATH
                     description=accounts::DESCRIPTION
                 />
+                <QaCard title=budget::TITLE path=budget::PATH description=budget::DESCRIPTION />
                 <QaCard title=plugins::TITLE path=plugins::PATH description=plugins::DESCRIPTION />
                 <QaCard
                     title=settings::TITLE

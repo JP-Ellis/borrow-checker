@@ -6,7 +6,13 @@
     reason = "stub component — fields will be read when this component is implemented"
 )]
 
+#[cfg(debug_assertions)]
+pub(crate) mod qa;
+
 use leptos::prelude::*;
+use stylance::import_style;
+
+import_style!(style, "accrual.module.scss");
 
 /// Inline editor for setting or clearing the accrual spread on a posting.
 #[component]
@@ -28,5 +34,5 @@ pub fn AccrualEditor(
     /// Callback invoked after a successful save or clear.
     on_change: Callback<()>,
 ) -> impl IntoView {
-    view! { <div class="accrual-editor" /> }
+    view! { <div class=style::root /> }
 }
