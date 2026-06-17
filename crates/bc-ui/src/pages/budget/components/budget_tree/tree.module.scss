@@ -1,1 +1,21 @@
-.root {}
+.tree { width: 100%; }
+
+.col_headers {
+  display: grid;
+  grid-template-columns: 1fr 200px 140px;
+  padding: var(--bc-space-1) var(--bc-space-4);
+  background: var(--bc-surface);
+  border-bottom: 2px solid var(--bc-border);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-ink-mute);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* grows via 1fr */
+.col_account {}
+
+/* fixed 200px */
+.col_progress {}
+
+.col_amounts { text-align: right; }
