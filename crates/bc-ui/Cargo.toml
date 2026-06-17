@@ -35,6 +35,7 @@ publish = false
 [dependencies]
 bc-ipc                   = { workspace = true }
 console_error_panic_hook = "0.1"
+jiff                     = { workspace = true }
 js-sys                   = "0.3"
 leptos                   = { version = "0.8", features = ["csr"] }
 leptos_router            = { version = "0.8", default-features = false }
