@@ -125,13 +125,13 @@ pub fn NativePeriodList(
     let rows: LocalResource<Result<Vec<NativePeriodRow>, BcError>> =
         LocalResource::new(move || {
             let bid = budget_id.clone();
-            async move {
-                data_version.get();
-                let p = period.get();
-                let start = window_start.get();
-                let end = period_nav::step_window(&p, start, true);
-                bc_ipc::client::get_native_periods(&bid, &start.to_string(), &end.to_string()).await
-            }
+            data_version.get();
+            let p = period.get();
+            let start = window_start.get();
+            let end = period_nav::step_window(&p, start, true);
+            let start_str = start.to_string();
+            let end_str = end.to_string();
+            async move { bc_ipc::client::get_native_periods(&bid, &start_str, &end_str).await }
         });
 
     let indent_style = format!("--row-depth:{depth}");
