@@ -53,9 +53,9 @@ pub fn AccrualEditor(
         });
     };
 
-    let posting_id_for_clear = StoredValue::new(posting_id.clone());
+    let posting_id_for_clear = posting_id.clone();
     let clear = move |_| {
-        let pid = posting_id_for_clear.get_value();
+        let pid = posting_id_for_clear.clone();
         saving.set(true);
         error.set(None);
         leptos::task::spawn_local(async move {
@@ -71,8 +71,6 @@ pub fn AccrualEditor(
             }
         });
     };
-
-    let has_spread = spread_from.is_some();
 
     view! {
         <div class=style::editor>
@@ -105,20 +103,19 @@ pub fn AccrualEditor(
                 <button class=style::btn_save disabled=move || saving.get() on:click=save>
                     {move || if saving.get() { "Saving…" } else { "Save spread" }}
                 </button>
-                {move || {
-                    has_spread
-                        .then(|| {
-                            view! {
-                                <button
-                                    class=style::btn_remove
-                                    disabled=move || saving.get()
-                                    on:click=clear
-                                >
-                                    "Remove spread"
-                                </button>
-                            }
-                        })
-                }}
+                {spread_from
+                    .is_some()
+                    .then(|| {
+                        view! {
+                            <button
+                                class=style::btn_remove
+                                disabled=move || saving.get()
+                                on:click=clear
+                            >
+                                "Remove spread"
+                            </button>
+                        }
+                    })}
             </div>
         </div>
     }
