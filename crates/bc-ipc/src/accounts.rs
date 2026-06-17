@@ -168,6 +168,8 @@ impl AccountRef {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Posting {
+    /// Stable posting identifier (UUID string).
+    pub id: String,
     /// Account reference — carries the stable ID and human-readable display name.
     pub account: AccountRef,
     /// Posting amount. Positive = credit; negative = debit.
@@ -185,6 +187,7 @@ impl Posting {
     ///
     /// # Arguments
     ///
+    /// * `id` - Stable posting identifier (UUID string).
     /// * `account` - Account reference with ID and display name.
     /// * `amount` - Posting amount.
     /// * `note` - Optional inline comment, or `None`.
@@ -193,6 +196,7 @@ impl Posting {
     #[must_use]
     #[inline]
     pub fn new(
+        id: impl Into<String>,
         account: AccountRef,
         amount: Amount,
         note: Option<impl Into<String>>,
@@ -200,6 +204,7 @@ impl Posting {
         spread_until: Option<impl Into<String>>,
     ) -> Self {
         Self {
+            id: id.into(),
             account,
             amount,
             note: note.map(Into::into),

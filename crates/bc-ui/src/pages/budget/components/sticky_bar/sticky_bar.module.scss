@@ -1,6 +1,6 @@
 .sticky_bar {
     position: sticky;
-    top: 48px; /* height of app top bar */
+    top: var(--bc-topbar-height);
     z-index: 10;
     display: flex;
     align-items: center;
@@ -20,6 +20,7 @@
     font-size: var(--bc-text-caption);
     color: var(--bc-ink);
     cursor: pointer;
+    @include interactive.button-interactive();
 }
 
 .label {

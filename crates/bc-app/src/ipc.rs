@@ -305,6 +305,7 @@ impl IntoIpc for &bc_models::Posting {
     fn into_ipc(self) -> bc_ipc::Posting {
         let account_id = self.account_id().to_string();
         bc_ipc::Posting::new(
+            self.id().to_string(),
             bc_ipc::AccountRef::new(account_id.clone(), account_id),
             self.amount().into_ipc(),
             self.memo(),
@@ -374,6 +375,7 @@ pub(crate) fn transaction_into_ipc_with_accounts(
             let account_id = p.account_id().to_string();
             let account_name = build_account_path(&account_id, account_map);
             bc_ipc::Posting::new(
+                p.id().to_string(),
                 bc_ipc::AccountRef::new(account_id, account_name),
                 p.amount().into_ipc(),
                 p.memo(),
