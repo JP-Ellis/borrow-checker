@@ -7,18 +7,28 @@ use bc_ipc::BudgetTreeNode;
 use leptos::prelude::*;
 use stylance::import_style;
 
+use crate::pages::budget::components::budget_row::BudgetRow;
+
 import_style!(style, "tree.module.scss");
 
 /// Renders the complete hierarchy of budget allocation rows.
 #[component]
-#[expect(
-    clippy::needless_pass_by_value,
-    unused_variables,
-    reason = "stub — props will be consumed in later tasks"
-)]
 pub fn BudgetTree(
     /// Flat list of tree nodes returned by the overview IPC call.
     nodes: Vec<BudgetTreeNode>,
 ) -> impl IntoView {
-    view! { <div class=style::root /> }
+    view! {
+        <div class=style::tree>
+            <div class=style::col_headers>
+                <span class=style::col_account>"ACCOUNT"</span>
+                <span class=style::col_progress>"PROGRESS"</span>
+                <span class=style::col_amounts>"SPENT / TARGET"</span>
+            </div>
+            <For
+                each=move || nodes.clone()
+                key=|node| node.id.clone()
+                children=move |node| view! { <BudgetRow node=node /> }
+            />
+        </div>
+    }
 }
