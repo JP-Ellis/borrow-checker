@@ -1,1 +1,10 @@
-.root {}
+.editor { padding: var(--bc-space-2) 0; display: flex; flex-direction: column; gap: var(--bc-space-2); }
+.field_row { display: flex; align-items: center; gap: var(--bc-space-2); }
+.field_label { font-size: var(--bc-text-caption); color: var(--bc-ink-mute); min-width: 110px; }
+.date_input { font-family: var(--bc-font-mono); font-size: var(--bc-text-caption); border: 1px solid var(--bc-border); border-radius: var(--bc-radius-control); padding: var(--bc-space-1) var(--bc-space-2); background: var(--bc-bg); color: var(--bc-ink); }
+.btn_row { display: flex; gap: var(--bc-space-2); margin-top: var(--bc-space-1); }
+.btn_save { font-family: var(--bc-font-mono); font-size: var(--bc-text-caption); border: none; border-radius: var(--bc-radius-control); padding: var(--bc-space-1) var(--bc-space-3); background: var(--bc-accent); color: var(--bc-bg); cursor: pointer; }
+.btn_save:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn_remove { font-family: var(--bc-font-mono); font-size: var(--bc-text-caption); border: 1px solid var(--bc-bad); border-radius: var(--bc-radius-control); padding: var(--bc-space-1) var(--bc-space-3); background: none; color: var(--bc-bad); cursor: pointer; }
+.btn_remove:disabled { opacity: 0.5; cursor: not-allowed; }
+.err { font-size: var(--bc-text-caption); color: var(--bc-bad); }
