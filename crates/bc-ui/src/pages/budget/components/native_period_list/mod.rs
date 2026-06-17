@@ -5,7 +5,13 @@
     reason = "stub component — fields will be read when this component is implemented"
 )]
 
+#[cfg(debug_assertions)]
+pub(crate) mod qa;
+
 use leptos::prelude::*;
+use stylance::import_style;
+
+import_style!(style, "native.module.scss");
 
 /// Inline expandable list showing native period breakdown for a mixed-period budget.
 #[component]
@@ -21,5 +27,5 @@ pub fn NativePeriodList(
     /// Nesting depth of this list (used for indentation).
     depth: u32,
 ) -> impl IntoView {
-    view! { <div class="native-period-list" /> }
+    view! { <div class=style::root /> }
 }
