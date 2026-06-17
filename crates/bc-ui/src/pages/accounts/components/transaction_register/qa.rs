@@ -21,6 +21,7 @@ fn sample_transactions() -> Vec<Transaction> {
             vec!["shared".to_owned()],
             vec![
                 Posting::new(
+                    "posting-coles-debit",
                     AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                     Amount::new(-8_420, "AUD", 2),
                     None::<&str>,
@@ -28,6 +29,7 @@ fn sample_transactions() -> Vec<Transaction> {
                     None::<&str>,
                 ),
                 Posting::new(
+                    "posting-coles-groceries",
                     AccountRef::new("groceries", "Expenses :: Groceries"),
                     Amount::new(8_420, "AUD", 2),
                     None::<&str>,
@@ -49,6 +51,7 @@ fn sample_transactions() -> Vec<Transaction> {
             vec!["work".to_owned()],
             vec![
                 Posting::new(
+                    "posting-salary-income",
                     AccountRef::new("income-salary", "Income :: Salary"),
                     Amount::new(-846_154, "AUD", 2),
                     Some("gross pay"),
@@ -56,6 +59,7 @@ fn sample_transactions() -> Vec<Transaction> {
                     None::<&str>,
                 ),
                 Posting::new(
+                    "posting-salary-takehome",
                     AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                     Amount::new(428_055, "AUD", 2),
                     Some("take-home"),

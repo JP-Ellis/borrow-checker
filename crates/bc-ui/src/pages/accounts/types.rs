@@ -107,6 +107,7 @@ mod tests {
                 vec!["shared".to_owned()],
                 vec![
                     Posting::new(
+                        "posting-coles-debit",
                         AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                         Amount::new(-8_420, "AUD", 2),
                         None::<&str>,
@@ -114,6 +115,7 @@ mod tests {
                         None::<&str>,
                     ),
                     Posting::new(
+                        "posting-coles-groceries",
                         AccountRef::new("groceries", "Expenses :: Groceries"),
                         Amount::new(8_420, "AUD", 2),
                         None::<&str>,
@@ -138,6 +140,7 @@ mod tests {
                 vec!["work".to_owned()],
                 vec![
                     Posting::new(
+                        "posting-salary-income",
                         AccountRef::new("income-salary", "Income :: Salary"),
                         Amount::new(-846_154, "AUD", 2),
                         Some("gross pay"),
@@ -145,6 +148,7 @@ mod tests {
                         None::<&str>,
                     ),
                     Posting::new(
+                        "posting-salary-tax",
                         AccountRef::new("liabilities-tax", "Liabilities :: Tax Withheld"),
                         Amount::new(327_692, "AUD", 2),
                         Some("PAYG withholding"),
@@ -152,6 +156,7 @@ mod tests {
                         None::<&str>,
                     ),
                     Posting::new(
+                        "posting-salary-super",
                         AccountRef::new("assets-super", "Assets :: Super :: Employer"),
                         Amount::new(90_407, "AUD", 2),
                         Some("11.5% SGC"),
@@ -159,6 +164,7 @@ mod tests {
                         None::<&str>,
                     ),
                     Posting::new(
+                        "posting-salary-takehome",
                         AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                         Amount::new(428_055, "AUD", 2),
                         Some("take-home"),
