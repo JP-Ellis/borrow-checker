@@ -1,1 +1,44 @@
-.root {}
+.sticky_bar {
+    position: sticky;
+    top: 48px; /* height of app top bar */
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: var(--bc-space-2);
+    padding: var(--bc-space-2) var(--bc-space-6);
+    background: var(--bc-surface);
+    border-bottom: 1px solid var(--bc-border);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+}
+
+.nav_btn {
+    background: none;
+    border: 1px solid var(--bc-border);
+    border-radius: var(--bc-radius-control);
+    padding: var(--bc-space-1) var(--bc-space-2);
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-caption);
+    color: var(--bc-ink);
+    cursor: pointer;
+}
+
+.label {
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-caption);
+    font-weight: 600;
+    min-width: 120px;
+    text-align: center;
+}
+
+.kpi_compact {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: var(--bc-space-1);
+}
+
+.kpi_item {
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-caption);
+    color: var(--bc-ink-soft);
+}
