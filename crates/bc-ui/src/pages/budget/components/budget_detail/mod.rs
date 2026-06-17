@@ -18,44 +18,63 @@ import_style!(style, "detail.module.scss");
 
 // MARK: Helpers
 
-/// Formats an [`Amount`] as a decimal string with explicit scale.
-///
-/// Returns an empty string if `amount` is `None`.
+/// Formats an [`Amount`] as a decimal string using pure integer arithmetic.
 #[must_use]
 #[inline]
 #[expect(
-    clippy::as_conversions,
-    clippy::cast_precision_loss,
-    clippy::float_arithmetic,
-    reason = "scale is u8 (0..=38); 10^scale fits in i64; f64 display precision sufficient for monetary amounts"
+    clippy::arithmetic_side_effects,
+    clippy::integer_division,
+    clippy::integer_division_remainder_used,
+    clippy::modulo_arithmetic,
+    reason = "scale is u8 ≤ 38; 10^scale fits in i64; division and remainder are intentional for major/minor unit extraction"
 )]
 fn format_target(amount: &Amount) -> String {
+    let scale = usize::from(amount.scale);
     let scale_factor = 10_i64.pow(u32::from(amount.scale));
-    format!(
-        "{:.prec$}",
-        amount.minor_units as f64 / scale_factor as f64,
-        prec = usize::from(amount.scale)
-    )
+    let major = amount.minor_units / scale_factor;
+    let minor = amount.minor_units.abs() % scale_factor;
+    if scale == 0 {
+        format!("{major}")
+    } else {
+        /* Prefix "-" when major==0 but the value is negative (e.g. -$0.50). */
+        let sign = if amount.minor_units < 0 && major == 0 {
+            "-"
+        } else {
+            ""
+        };
+        format!("{sign}{major}.{minor:0>scale$}")
+    }
 }
 
-/// Parses a target input string into minor units using the scale from an existing [`Amount`].
+/// Parses a target input string into minor units using the given scale.
 ///
 /// Returns `None` when the string is empty or cannot be parsed as a valid decimal.
+/// Negative inputs are not supported (budget targets are always non-negative).
 #[must_use]
 #[inline]
 #[expect(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::float_arithmetic,
-    reason = "scale is u8 ≤ 38; f64 sufficient for monetary display; truncation to i64 intentional for minor-unit conversion"
+    clippy::string_slice,
+    reason = "minor is produced by split_once('.') on a user-typed decimal string; indexing by byte count is safe for ASCII digit input"
 )]
 fn parse_target(s: &str, scale: u8) -> Option<i64> {
     if s.is_empty() {
         return None;
     }
-    let v: f64 = s.parse().ok()?;
-    let scale_factor = 10_f64.powi(i32::from(scale));
-    Some((v * scale_factor).round() as i64)
+    let scale_factor = 10_i64.pow(u32::from(scale));
+    match s.split_once('.') {
+        None => s
+            .parse::<i64>()
+            .ok()
+            .map(|n| n.saturating_mul(scale_factor)),
+        Some((major, minor)) => {
+            let maj: i64 = major.parse().ok()?;
+            let scale_usize = usize::from(scale);
+            let minor_trimmed = &minor[..minor.len().min(scale_usize)];
+            let min_str = format!("{minor_trimmed:0<scale_usize$}");
+            let min: i64 = min_str.parse().ok()?;
+            Some(maj.saturating_mul(scale_factor).saturating_add(min))
+        }
+    }
 }
 
 /// Sums the positive posting amounts for a transaction's display total.
@@ -93,12 +112,22 @@ fn PostingRow(
     let has_spread = posting.spread_from.is_some();
     let spread_from = posting.spread_from.clone();
     let spread_until = posting.spread_until.clone();
-    let posting_id = posting.account.id.clone();
+    let posting_id = posting.id.clone();
 
     let spread_label = match (&posting.spread_from, &posting.spread_until) {
-        (Some(f), Some(u)) => format!("{f} – {u}"),
+        (Some(f), Some(u)) => format!("{f} \u{2013} {u}"),
         (Some(f), None) => f.clone(),
         _ => String::new(),
+    };
+
+    let btn_label = move || {
+        if spread_open.get() {
+            "Hide spread"
+        } else if has_spread {
+            "Edit spread"
+        } else {
+            "Add spread"
+        }
     };
 
     view! {
@@ -109,31 +138,29 @@ fn PostingRow(
             </div>
             {has_spread
                 .then(|| {
-                    let pid = posting_id.clone();
-                    let sf = spread_from.clone();
-                    let su = spread_until.clone();
-                    let sl = spread_label.clone();
                     view! {
                         <div class=style::spread_badge_row>
-                            <span class=style::accrual_badge>"⟳ accrued"</span>
-                            <span class=style::spread_dates>{sl}</span>
-                            <button
-                                class=style::spread_edit_btn
-                                on:click=move |_| spread_open.update(|o| *o = !*o)
-                            >
-                                "Edit spread"
-                            </button>
+                            <span class=style::accrual_badge>"\u{27F3} accrued"</span>
+                            <span class=style::spread_dates>{spread_label.clone()}</span>
                         </div>
-                        <Show when=move || spread_open.get()>
-                            <AccrualEditor
-                                posting_id=pid.clone()
-                                spread_from=sf.clone().unwrap_or_default()
-                                spread_until=su.clone().unwrap_or_default()
-                                on_change=on_change
-                            />
-                        </Show>
                     }
                 })}
+            <div class=style::spread_badge_row>
+                <button
+                    class=style::spread_edit_btn
+                    on:click=move |_| spread_open.update(|o| *o = !*o)
+                >
+                    {btn_label}
+                </button>
+            </div>
+            <Show when=move || spread_open.get()>
+                <AccrualEditor
+                    posting_id=posting_id.clone()
+                    spread_from=spread_from.clone().unwrap_or_default()
+                    spread_until=spread_until.clone().unwrap_or_default()
+                    on_change=on_change
+                />
+            </Show>
         </div>
     }
 }
@@ -166,7 +193,7 @@ fn TxRow(
                 <div class=style::txn_detail>
                     <For
                         each=move || postings.get_value()
-                        key=|p| p.account.id.clone()
+                        key=|p| p.id.clone()
                         children=move |p| {
                             view! { <PostingRow posting=p on_change=on_change /> }
                         }
@@ -197,11 +224,11 @@ pub fn BudgetDetail(
     /// The tree node whose detail is being displayed.
     node: BudgetTreeNode,
 ) -> impl IntoView {
-    let ctx = use_context::<BudgetPageCtx>();
-    let data_version = ctx.map(|c| c.data_version);
-    let open_detail_id = ctx.map(|c| c.open_detail_id);
-    let period = ctx.map(|c| c.display_period);
-    let window_start = ctx.map(|c| c.window_start);
+    let ctx = expect_context::<BudgetPageCtx>();
+    let data_version = ctx.data_version;
+    let open_detail_id = ctx.open_detail_id;
+    let period = ctx.display_period;
+    let window_start = ctx.window_start;
 
     /* --- initial field values --- */
     let initial_name = StoredValue::new(
@@ -218,11 +245,11 @@ pub fn BudgetDetail(
 
     let target_scale = node.effective_target.as_ref().map_or(2_u8, |a| a.scale);
 
-    let target_currency: StoredValue<Option<String>> = StoredValue::new(
-        node.effective_target
-            .as_ref()
-            .map(|a| a.currency_code.clone()),
-    );
+    let target_currency: StoredValue<String> =
+        StoredValue::new(node.effective_target.as_ref().map_or_else(
+            || node.spent.currency_code.clone(),
+            |a| a.currency_code.clone(),
+        ));
 
     /* --- local reactive state --- */
     let name_input = RwSignal::new(initial_name.get_value());
@@ -250,7 +277,7 @@ pub fn BudgetDetail(
                 &budget_id,
                 Some(Some(name_val)),
                 target_parsed,
-                currency.as_deref(),
+                Some(currency.as_str()),
                 None,
                 None,
                 None,
@@ -260,9 +287,7 @@ pub fn BudgetDetail(
             match result {
                 Ok(()) => {
                     dirty.set(false);
-                    if let Some(dv) = data_version {
-                        dv.update(|v| *v = v.saturating_add(1));
-                    }
+                    data_version.update(|v| *v = v.saturating_add(1));
                 }
                 Err(e) => {
                     save_error.set(Some(e.to_string()));
@@ -288,12 +313,8 @@ pub fn BudgetDetail(
             match bc_ipc::client::archive_budget(&budget_id).await {
                 Ok(()) => {
                     archiving.set(false);
-                    if let Some(id_sig) = open_detail_id {
-                        id_sig.set(None);
-                    }
-                    if let Some(dv) = data_version {
-                        dv.update(|v| *v = v.saturating_add(1));
-                    }
+                    open_detail_id.set(None);
+                    data_version.update(|v| *v = v.saturating_add(1));
                 }
                 Err(e) => {
                     archiving.set(false);
@@ -308,22 +329,10 @@ pub fn BudgetDetail(
     let txns: LocalResource<Result<Vec<Transaction>, bc_ipc::BcError>> =
         LocalResource::new(move || {
             let bid = budget_id_for_txns.get_value();
-            let _version: Option<u32> = data_version.map(|dv| dv.get());
             async move {
-                let p = period.map_or(bc_ipc::Period::Monthly, |s| s.get());
-                let ws = window_start.map_or_else(
-                    || {
-                        let now = jiff::Zoned::now();
-                        let today = now.date();
-                        #[expect(
-                            clippy::expect_used,
-                            reason = "first of current month from a valid jiff date is always valid"
-                        )]
-                        jiff::civil::Date::new(today.year(), today.month(), 1)
-                            .expect("first of month is always valid")
-                    },
-                    |s| s.get(),
-                );
+                data_version.get();
+                let p = period.get();
+                let ws = window_start.get();
                 let end = period_nav::step_window(&p, ws, true);
                 bc_ipc::client::get_budget_transactions(&bid, &ws.to_string(), &end.to_string())
                     .await
@@ -331,9 +340,7 @@ pub fn BudgetDetail(
         });
 
     let on_change: Callback<()> = Callback::new(move |()| {
-        if let Some(dv) = data_version {
-            dv.update(|v| *v = v.saturating_add(1));
-        }
+        data_version.update(|v| *v = v.saturating_add(1));
     });
 
     /* --- static display strings --- */
