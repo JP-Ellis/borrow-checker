@@ -48,7 +48,7 @@
     font-size: var(--bc-text-caption);
     border: 1px solid var(--bc-border);
     border-radius: var(--bc-radius-control);
-    padding: 1px var(--bc-space-2);
+    padding: 0 var(--bc-space-2);
     background: var(--bc-bg);
     color: var(--bc-ink);
 }
@@ -218,7 +218,7 @@
     justify-content: space-between;
     font-size: var(--bc-text-caption);
     color: var(--bc-ink-mute);
-    margin-bottom: 2px;
+    margin-bottom: 0;
 }
 
 .posting_amount {
@@ -251,7 +251,7 @@
     background: none;
     border: 1px solid var(--bc-border);
     border-radius: var(--bc-radius-control);
-    padding: 1px var(--bc-space-2);
+    padding: 0 var(--bc-space-2);
     font-family: var(--bc-font-mono);
     font-size: var(--bc-text-eyebrow);
     color: var(--bc-ink-mute);
