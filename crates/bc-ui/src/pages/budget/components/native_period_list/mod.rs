@@ -78,11 +78,26 @@ fn fill_percent(row: &NativePeriodRow) -> u32 {
 }
 
 /// Formats the amounts column string for a native period row.
-fn display_str(row: &NativePeriodRow) -> String {
-    if let Some(target) = &row.effective_target {
-        format!("{} / {}", row.spent.format_short(), target.format_short())
-    } else {
-        format!("{} \u{00b7} tracking", row.spent.format_short())
+///
+/// In `pct_mode`, returns `"N%"` (integer, spent ÷ target × 100).
+/// Falls back to absolute amounts when tracking-only or when target is zero.
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::integer_division,
+    clippy::integer_division_remainder_used,
+    reason = "pct calculation: minor-unit values are bounded; integer division is intentional for percentage display"
+)]
+fn display_str(row: &NativePeriodRow, pct_mode: bool) -> String {
+    match &row.effective_target {
+        None => format!("{} \u{00b7} tracking", row.spent.format_short()),
+        Some(target) if pct_mode => {
+            if target.minor_units == 0 {
+                "\u{2013}".into()
+            } else {
+                format!("{}%", row.spent.minor_units * 100 / target.minor_units)
+            }
+        }
+        Some(target) => format!("{} / {}", row.spent.format_short(), target.format_short()),
     }
 }
 
@@ -101,11 +116,14 @@ pub fn NativePeriodList(
     let ctx = expect_context::<BudgetPageCtx>();
     let period = ctx.display_period;
     let window_start = ctx.window_start;
+    let pct_mode = ctx.pct_mode;
+    let data_version = ctx.data_version;
 
     let rows: LocalResource<Result<Vec<NativePeriodRow>, BcError>> =
         LocalResource::new(move || {
             let bid = budget_id.clone();
             async move {
+                data_version.get();
                 let p = period.get();
                 let start = window_start.get();
                 let end = period_nav::step_window(&p, start, true);
@@ -113,18 +131,14 @@ pub fn NativePeriodList(
             }
         });
 
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "depth is bounded (u32 with small values) and 32 + depth * 16 cannot realistically overflow"
-    )]
-    let pad_left = 32_u32 + depth * 16_u32;
-    let indent_style = format!("padding-left: {pad_left}px");
+    let indent_style = format!("--row-depth:{depth}");
 
     view! {
         <Suspense fallback=move || {
             view! { <div class=style::loading>"Loading periods…"</div> }
         }>
             {move || {
+                let pct = pct_mode.get();
                 rows.get()
                     .map(|result| match result {
                         Err(e) => {
@@ -136,9 +150,9 @@ pub fn NativePeriodList(
                                 .into_iter()
                                 .map(|row| {
                                     let status = row_status(&row);
-                                    let pct = fill_percent(&row);
-                                    let fill_style = format!("width: {pct}%; height: 100%");
-                                    let amounts = display_str(&row);
+                                    let fill_pct = fill_percent(&row);
+                                    let fill_style = format!("width: {fill_pct}%; height: 100%");
+                                    let amounts = display_str(&row, pct);
                                     let label = row.label.clone();
                                     let status_class = match status {
                                         Status::Good => style::status_good,

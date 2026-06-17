@@ -2,11 +2,13 @@
   display: grid;
   grid-template-columns: 1fr 200px 140px;
   align-items: center;
-  padding: var(--bc-space-1) var(--bc-space-4);
+  padding-top: var(--bc-space-2);
+  padding-right: var(--bc-space-4);
+  padding-bottom: var(--bc-space-2);
+  padding-left: calc(var(--bc-space-8) + var(--row-depth, 0) * var(--bc-space-4));
   border-bottom: 1px solid var(--bc-border);
   background: var(--bc-bg);
   font-size: var(--bc-text-caption);
-  cursor: pointer;
 }
 
 .sub_row:hover { background: var(--bc-surface-alt); }

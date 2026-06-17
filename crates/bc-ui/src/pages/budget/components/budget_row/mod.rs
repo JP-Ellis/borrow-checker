@@ -81,13 +81,29 @@ fn fill_percent(node: &BudgetTreeNode) -> u32 {
 }
 
 /// Formats the amounts column string for a node.
-fn display_str(node: &BudgetTreeNode) -> String {
+///
+/// In `pct_mode`, returns `"N%"` (integer, spent ÷ target × 100).
+/// Falls back to absolute amounts when tracking-only or when target is zero.
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::integer_division,
+    clippy::integer_division_remainder_used,
+    reason = "pct calculation: minor-unit values are bounded; integer division is intentional for percentage display"
+)]
+fn display_str(node: &BudgetTreeNode, pct_mode: bool) -> String {
     if node.is_tracking_only {
-        format!("{} \u{00b7} tracking", node.spent.format_short())
-    } else if let Some(target) = &node.effective_target {
-        format!("{} / {}", node.spent.format_short(), target.format_short())
-    } else {
-        node.spent.format_short()
+        return format!("{} \u{00b7} tracking", node.spent.format_short());
+    }
+    match &node.effective_target {
+        None => node.spent.format_short(),
+        Some(target) if pct_mode => {
+            if target.minor_units == 0 {
+                "\u{2013}".into()
+            } else {
+                format!("{}%", node.spent.minor_units * 100 / target.minor_units)
+            }
+        }
+        Some(target) => format!("{} / {}", node.spent.format_short(), target.format_short()),
     }
 }
 
@@ -116,19 +132,14 @@ pub fn BudgetRow(
     let depth = node.depth;
     let pct = fill_percent(&node);
 
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "depth is bounded (u32 with small values) and 32 + depth * 16 cannot realistically overflow"
-    )]
-    let pad_left = 32_u32 + depth * 16_u32;
-    let indent_style = format!("padding-left: {pad_left}px");
+    let indent_style = format!("--row-depth:{depth}");
     let fill_style = format!("width: {pct}%; height: 100%");
 
     let display_name = node
         .name
         .clone()
         .unwrap_or_else(|| node.account_name.clone());
-    let amounts = display_str(&node);
+    let node_sv = StoredValue::new(node.clone());
     let has_mixed = node.has_mixed_period;
     let native_label = node.native_period_label.clone();
     let node_id = node.id.clone();
@@ -219,7 +230,12 @@ pub fn BudgetRow(
                     <div class=style::bar_track>
                         <div class=bar_class style=fill_style />
                     </div>
-                    <span class=style::amounts>{amounts}</span>
+                    <span class=style::amounts>
+                        {move || display_str(
+                            &node_sv.get_value(),
+                            ctx.is_some_and(|c| c.pct_mode.get()),
+                        )}
+                    </span>
                 </div>
 
                 {has_mixed
@@ -280,7 +296,12 @@ pub fn BudgetRow(
                     <div class=style::bar_track>
                         <div class=bar_class style=fill_style />
                     </div>
-                    <span class=style::amounts>{amounts}</span>
+                    <span class=style::amounts>
+                        {move || display_str(
+                            &node_sv.get_value(),
+                            ctx.is_some_and(|c| c.pct_mode.get()),
+                        )}
+                    </span>
                 </div>
 
                 {has_mixed
