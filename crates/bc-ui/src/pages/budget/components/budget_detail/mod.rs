@@ -36,7 +36,7 @@ fn format_target(amount: &Amount) -> String {
     if scale == 0 {
         format!("{major}")
     } else {
-        /* Prefix "-" when major==0 but the value is negative (e.g. -$0.50). */
+        // Prefix "-" when major==0 but the value is negative (e.g. -$0.50).
         let sign = if amount.minor_units < 0 && major == 0 {
             "-"
         } else {
@@ -62,12 +62,18 @@ fn parse_target(s: &str, scale: u8) -> Option<i64> {
     }
     let scale_factor = 10_i64.pow(u32::from(scale));
     match s.split_once('.') {
-        None => s
-            .parse::<i64>()
-            .ok()
-            .map(|n| n.saturating_mul(scale_factor)),
+        None => {
+            let n: i64 = s.parse().ok()?;
+            if n < 0 {
+                return None;
+            }
+            Some(n.saturating_mul(scale_factor))
+        }
         Some((major, minor)) => {
             let maj: i64 = major.parse().ok()?;
+            if maj < 0 {
+                return None;
+            }
             let scale_usize = usize::from(scale);
             let minor_trimmed = &minor[..minor.len().min(scale_usize)];
             let min_str = format!("{minor_trimmed:0<scale_usize$}");
