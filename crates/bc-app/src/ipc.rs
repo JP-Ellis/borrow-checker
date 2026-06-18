@@ -400,38 +400,39 @@ pub(crate) fn transaction_into_ipc_with_accounts(
 
 /// Converts a [`bc_core::BudgetTreeItem`] into a [`bc_ipc::BudgetTreeNode`].
 ///
-/// # Arguments
-///
-/// * `item` - The budget tree item to convert.
-/// * `commodity` - The ISO 4217 commodity code for the amounts (e.g. `"AUD"`).
-///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Internal`] if any decimal mantissa overflows `i64`.
 pub(crate) fn budget_tree_item_into_ipc(
     item: &bc_core::BudgetTreeItem,
-    commodity: &str,
 ) -> Result<bc_ipc::BudgetTreeNode, bc_ipc::BcError> {
-    budget_tree_node_recursive(item, commodity)
+    budget_tree_node_recursive(item)
 }
 
 /// Recursive implementation of [`budget_tree_item_into_ipc`].
 fn budget_tree_node_recursive(
     item: &bc_core::BudgetTreeItem,
-    commodity: &str,
 ) -> Result<bc_ipc::BudgetTreeNode, bc_ipc::BcError> {
-    let spent = decimal_to_amount(item.actuals, commodity)?;
-    let effective_target = item
-        .effective_target
-        .map(|t| decimal_to_amount(t, commodity))
-        .transpose()?;
+    let spent = if let Some(a) = item.actuals.first() {
+        a.into_ipc()
+    } else {
+        let c = item
+            .commodity
+            .as_ref()
+            .map_or("", bc_models::CommodityCode::as_str);
+        decimal_to_amount(rust_decimal::Decimal::ZERO, c)?
+    };
+    let effective_target = match (item.effective_target, &item.commodity) {
+        (Some(t), Some(c)) => Some(decimal_to_amount(t, c.as_str())?),
+        _ => None,
+    };
 
     let native_period_label = period_label(item.budget.period());
 
     let children: Result<Vec<_>, _> = item
         .children
         .iter()
-        .map(|c| budget_tree_node_recursive(c, commodity))
+        .map(budget_tree_node_recursive)
         .collect();
 
     Ok(bc_ipc::BudgetTreeNode::builder()
