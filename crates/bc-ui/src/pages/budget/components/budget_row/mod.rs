@@ -10,17 +10,18 @@ use stylance::import_style;
 use crate::pages::budget::BudgetPageCtx;
 use crate::pages::budget::components::budget_detail::BudgetDetail;
 use crate::pages::budget::components::native_period_list::NativePeriodList;
+use crate::pages::budget::period_nav;
 
 import_style!(style, "row.module.scss");
 
 /// Row status derived from spend vs. target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Status {
-    /// Spend is ≤ 80% of target.
+    /// Spend is ≤ 85% of target.
     Good,
-    /// Spend is > 80% but ≤ 100% of target.
+    /// Spend is > 85% but ≤ 105% of target (allowing minor overage).
     Warn,
-    /// Spend exceeds the target.
+    /// Spend exceeds 105% of target.
     Bad,
     /// Budget has a target but nothing has been spent yet.
     Dim,
@@ -30,9 +31,8 @@ enum Status {
 
 /// Derives a [`Status`] from the node's spend and target figures.
 ///
-/// Uses integer arithmetic for the 80% threshold to avoid floating-point.
-/// The comparison `spent * 5 > target * 4` is equivalent to `spent/target > 0.8`
-/// and safe because budget minor-unit values fit comfortably in i64.
+/// Uses integer arithmetic to avoid floating-point.
+/// Good: spent/target ≤ 0.85, Warn: > 0.85 and ≤ 1.05, Bad: > 1.05.
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "budget minor-unit values are bounded and will not overflow i64"
@@ -44,10 +44,13 @@ fn row_status(node: &BudgetTreeNode) -> Status {
     match &node.effective_target {
         None => Status::Mute,
         Some(_) if node.spent.minor_units == 0 => Status::Dim,
-        Some(target) if node.spent.minor_units > target.minor_units => Status::Bad,
         Some(target) => {
-            /* 80% check via integer: spent * 5 > target * 4 ↔ spent/target > 0.8 */
-            if node.spent.minor_units * 5 > target.minor_units * 4 {
+            let spent = node.spent.minor_units;
+            let tgt = target.minor_units;
+            /* Integer thresholds: > 105% → Bad, > 85% → Warn, else Good. */
+            if spent * 100 > tgt * 105 {
+                Status::Bad
+            } else if spent * 100 > tgt * 85 {
                 Status::Warn
             } else {
                 Status::Good
@@ -56,16 +59,18 @@ fn row_status(node: &BudgetTreeNode) -> Status {
     }
 }
 
-/// Progress bar fill percentage (0–100), computed with integer arithmetic.
+/// Raw fill percentage (0–125), computed with integer arithmetic.
 ///
 /// Returns 0 when there is no target or when target minor-units are zero.
+/// Capped at 125 so that an overshoot of > 25 % collapses to the same
+/// maximum bar width and is distinguished only by the status colour.
 #[expect(
     clippy::arithmetic_side_effects,
     clippy::integer_division,
     clippy::integer_division_remainder_used,
     clippy::as_conversions,
     clippy::cast_sign_loss,
-    reason = "budget minor-unit arithmetic is bounded; .max(0) guarantees non-negative before cast; integer division for percentage is intentional; clamped to [0,100]"
+    reason = "budget minor-unit arithmetic is bounded; .max(0) guarantees non-negative before cast; integer division for percentage is intentional; clamped to [0,125]"
 )]
 fn fill_percent(node: &BudgetTreeNode) -> u32 {
     let Some(target) = node.effective_target.as_ref() else {
@@ -76,8 +81,52 @@ fn fill_percent(node: &BudgetTreeNode) -> u32 {
     }
     let spent = node.spent.minor_units.max(0) as u64;
     let tgt = target.minor_units as u64;
-    let pct = (spent * 100 / tgt).min(100);
+    let pct = (spent * 125 / tgt).min(125);
     pct as u32
+}
+
+/// Maps a raw fill percentage (0–125) to the bar's visual position (0–100).
+///
+/// The bar track represents 0–125 % of the budget target:
+/// 100 % budget spend = 80 % of the visual bar width.
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::integer_division,
+    clippy::integer_division_remainder_used,
+    reason = "pct is 0–125; multiplication by 4 fits u32; division by 5 is intentional"
+)]
+fn bar_display_pct(pct: u32) -> u32 {
+    pct * 4 / 5
+}
+
+/// Returns the CSS `left` style for the prorated-time marker, or `None` when
+/// the display window does not include today (period is past or future).
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::integer_division,
+    clippy::integer_division_remainder_used,
+    clippy::as_conversions,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "elapsed and total are bounded day counts; today >= start ensures non-negative elapsed; .min(100) constrains to [0,100] which fits u32"
+)]
+fn prorated_marker_style(ctx: Option<BudgetPageCtx>) -> Option<String> {
+    let c = ctx?;
+    let today = jiff::Zoned::now().date();
+    let start = c.window_start.get_untracked();
+    let period = c.display_period.get_untracked();
+    let end = period_nav::period_end(&period, start);
+    if today < start || today >= end {
+        return None;
+    }
+    let total = i64::from((end - start).get_days());
+    if total <= 0 {
+        return None;
+    }
+    let elapsed = i64::from((today - start).get_days());
+    let time_pct = (elapsed * 100 / total).min(100) as u32;
+    let display = bar_display_pct(time_pct);
+    Some(format!("left: {display}%"))
 }
 
 /// Formats the amounts column string for a node.
@@ -136,7 +185,9 @@ pub fn BudgetRow(
     let pct = fill_percent(&node);
 
     let indent_style = format!("--row-depth:{depth}");
-    let fill_style = format!("width: {pct}%; height: 100%");
+    let fill_display = bar_display_pct(pct);
+    let fill_style = format!("width: {fill_display}%; height: 100%");
+    let prorated_style = prorated_marker_style(ctx);
 
     let display_name = node
         .name
@@ -231,7 +282,11 @@ pub fn BudgetRow(
                             })}
                     </span>
                     <div class=style::bar_track>
-                        <div class=bar_class style=fill_style />
+                        <div class=bar_class style=fill_style.clone() />
+                        <div class=style::bar_target_mark />
+                        {prorated_style
+                            .clone()
+                            .map(|s| view! { <div class=style::bar_prorated_mark style=s /> })}
                     </div>
                     <span class=style::amounts>
                         {move || display_str(
@@ -297,7 +352,11 @@ pub fn BudgetRow(
                             })}
                     </span>
                     <div class=style::bar_track>
-                        <div class=bar_class style=fill_style />
+                        <div class=bar_class style=fill_style.clone() />
+                        <div class=style::bar_target_mark />
+                        {prorated_style
+                            .clone()
+                            .map(|s| view! { <div class=style::bar_prorated_mark style=s /> })}
                     </div>
                     <span class=style::amounts>
                         {move || display_str(
