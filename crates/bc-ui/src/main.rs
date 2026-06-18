@@ -40,13 +40,6 @@ mod format;
 #[cfg(any(target_arch = "wasm32", test))]
 mod label;
 
-/// Period navigation helpers — pure date math, no WASM APIs, testable natively.
-/// On wasm32, accessed via `pages::budget::period_nav`. On native, loaded here
-/// so the unit tests in the module run under `cargo nextest`.
-#[cfg(all(not(target_arch = "wasm32"), test))]
-#[path = "pages/budget/period_nav.rs"]
-pub mod period_nav_test_shim;
-
 #[cfg(target_arch = "wasm32")]
 mod app;
 #[cfg(target_arch = "wasm32")]

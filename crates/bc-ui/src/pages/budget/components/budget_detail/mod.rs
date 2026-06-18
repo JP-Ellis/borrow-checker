@@ -10,6 +10,7 @@ use bc_ipc::Transaction;
 use leptos::prelude::*;
 use stylance::import_style;
 
+use crate::components::num::to_decimal_string;
 use crate::pages::budget::BudgetPageCtx;
 use crate::pages::budget::components::accrual_editor::AccrualEditor;
 use crate::pages::budget::period_nav;
@@ -18,32 +19,15 @@ import_style!(style, "detail.module.scss");
 
 // MARK: Helpers
 
-/// Formats an [`Amount`] as a decimal string using pure integer arithmetic.
+/// Formats an [`Amount`] as a plain decimal string suitable for an `<input>` field.
+///
+/// Does not use `Intl.NumberFormat` — input fields must receive a bare decimal
+/// without currency symbols or grouping separators. Budget targets are always
+/// non-negative, so the unsigned absolute value is sufficient.
 #[must_use]
 #[inline]
-#[expect(
-    clippy::arithmetic_side_effects,
-    clippy::integer_division,
-    clippy::integer_division_remainder_used,
-    clippy::modulo_arithmetic,
-    reason = "scale is u8 ≤ 38; 10^scale fits in i64; division and remainder are intentional for major/minor unit extraction"
-)]
 fn format_target(amount: &Amount) -> String {
-    let scale = usize::from(amount.scale);
-    let scale_factor = 10_i64.pow(u32::from(amount.scale));
-    let major = amount.minor_units / scale_factor;
-    let minor = amount.minor_units.abs() % scale_factor;
-    if scale == 0 {
-        format!("{major}")
-    } else {
-        // Prefix "-" when major==0 but the value is negative (e.g. -$0.50).
-        let sign = if amount.minor_units < 0 && major == 0 {
-            "-"
-        } else {
-            ""
-        };
-        format!("{sign}{major}.{minor:0>scale$}")
-    }
+    to_decimal_string(amount.minor_units.unsigned_abs(), amount.scale)
 }
 
 /// Parses a target input string into minor units using the given scale.
