@@ -359,7 +359,7 @@ pub fn BudgetDetail(
     let tag_filter_label = node.tag_filter.clone().unwrap_or_else(|| "none".to_owned());
 
     view! {
-        <div class=style::panel>
+        <div class=style::panel aria-label="budget detail">
 
             <div class=style::left_col>
                 <div class=style::section_header>"Settings"</div>
