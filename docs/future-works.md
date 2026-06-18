@@ -125,3 +125,71 @@ When the budget UI is built out, add:
   that delegate to `bc-core` services.
 - Wire up from the Leptos frontend to call these commands when budget
   management actions occur on the budget page.
+
+______________________________________________________________________
+
+## Budget detail — reuse TransactionRow from accounts page
+
+**Identified in:** PR #159 (feat/bc-ui: budget page implementation)
+**File:** `crates/bc-ui/src/pages/budget/components/budget_detail/mod.rs`
+
+The budget detail panel has its own `TxRow` component instead of reusing
+`TransactionRow` from the accounts page. This leads to UI inconsistency and
+duplicated logic.
+
+The accounts `TransactionRow` requires `viewing_account_id`, `selected`,
+`expanded`, and `on_toggle` props (keyboard navigation). To reuse it in the
+budget context:
+
+- Pass `node.account_id` as `viewing_account_id` so the amount shown is the
+  posting relevant to this budget's account, not a sum of all positive postings.
+- Manage `selected` and `expanded` signals locally in `BudgetDetail` (or make
+  those props optional with sensible defaults).
+
+This also eliminates `tx_display_amount` once the account-relative posting
+amount is sourced from `TransactionRow`'s existing logic.
+
+______________________________________________________________________
+
+## IPC date types — use `jiff::civil::Date` instead of `String`
+
+**Identified in:** PR #159 (feat/bc-ui: budget page implementation)
+**File:** `crates/bc-ipc/src/budget.rs`, `crates/bc-ipc/src/transaction.rs`
+
+`NativePeriodRow.period_start`, `NativePeriodRow.period_end`, and
+`Transaction.date` are currently typed as `String`. Since `jiff` works on
+`wasm32-unknown-unknown` (the `["js"]` feature is already a target-specific
+dependency in `bc-ui`), these fields should use `jiff::civil::Date` directly.
+
+This would:
+
+- Remove manual string parsing in `bc-ui` (e.g. in `period_nav` and anywhere
+  dates are compared or formatted).
+- Make the IPC contract self-documenting — callers get a typed date rather than
+  an opaque string.
+
+Requires adding `jiff` (with `serde` feature) as a dependency of `bc-ipc`, and
+updating `bc-core` to pass `jiff::civil::Date` values when constructing these
+types from SQLite results.
+
+______________________________________________________________________
+
+## bc-ui — WASM test runner for period_nav unit tests
+
+**Identified in:** PR #159 (feat/bc-ui: budget page implementation)
+**File:** `crates/bc-ui/src/pages/budget/period_nav.rs`
+
+`period_nav.rs` contains pure date-arithmetic unit tests (`#[test]`) that
+previously ran natively via a `#[path]` shim in `main.rs`. The shim was removed
+(PR #159) because `#[path]` is fragile and the reviewer flagged it as a
+last-resort tool.
+
+The correct solution is a WASM test runner (`wasm-bindgen-test` or `wasm-pack test`) so the tests run in the actual target environment. Until that
+infrastructure exists, `period_nav` unit tests do not run anywhere — coverage
+comes only from the E2E suite.
+
+When implementing:
+
+- Convert `#[test]` annotations in `period_nav.rs` to `#[wasm_bindgen_test]`.
+- Add a `mise run test:wasm` task that invokes `wasm-pack test --headless --firefox` (or similar) against `bc-ui`.
+- Gate the `wasm-bindgen-test` dev-dependency on `target_arch = "wasm32"`.

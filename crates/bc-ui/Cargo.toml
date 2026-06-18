@@ -30,7 +30,11 @@ publish = false
   [package.metadata.stylance]
   output_file  = "./style/bundle.scss"
   folders      = ["./src/"]
-  scss_prelude = "@use './tokens/breakpoints' as bp; @use './mixins/focus'; @use './mixins/interactive';"
+  scss_prelude = """
+    @use './tokens/breakpoints' as bp;
+    @use './mixins/focus';
+    @use './mixins/interactive';
+    """
 
 [dependencies]
 bc-ipc                   = { workspace = true }

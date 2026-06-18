@@ -61,7 +61,7 @@ fn period_start(period: &Period, date: Date) -> Date {
     clippy::expect_used,
     reason = "Date::new arguments are computed from valid calendar offsets; overflow is not possible"
 )]
-fn period_end(period: &Period, start: Date) -> Date {
+pub(crate) fn period_end(period: &Period, start: Date) -> Date {
     match period {
         Period::Weekly => start.saturating_add(Span::new().days(7_i64)),
         Period::Fortnightly => start.saturating_add(Span::new().days(14_i64)),

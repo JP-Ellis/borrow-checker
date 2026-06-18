@@ -56,11 +56,32 @@
 }
 
 .bar_track {
+  position: relative;
   height: 3px;
   background: var(--bc-surface-alt);
   border-radius: 2px;
   margin: 0 var(--bc-space-3);
   overflow: hidden;
+}
+
+/* Vertical line at the 100 % budget mark (= 80 % of the visual bar). */
+.bar_target_mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 80%;
+  width: 1px;
+  background: var(--bc-ink-dim);
+}
+
+/* Vertical line showing time elapsed through the current period. */
+.bar_prorated_mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--bc-accent);
+  opacity: 0.7;
 }
 
 .bar_good {
