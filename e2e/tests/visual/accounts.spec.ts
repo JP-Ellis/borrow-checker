@@ -62,7 +62,11 @@ describe('Visual — accounts shell', () => {
                     const drawer = await $('#bc-sidebar-drawer');
                     await drawer.$('span=Assets').waitForExist({ timeout: 15_000 });
 
-                    await trigger.click();
+                    /* Re-fetch trigger after IPC settle: the reactive re-mount that
+                     * fires when list_accounts resolves may replace the element in
+                     * the DOM, making the earlier reference stale and causing the
+                     * click to be silently swallowed. */
+                    await (await $('[aria-label="Open account navigation"]')).click();
                     await drawer.waitForDisplayed({ timeout: 10_000 });
                     const checkingInDrawer = await drawer.$('span=Checking');
                     await checkingInDrawer.waitForDisplayed({ timeout: 10_000 });
