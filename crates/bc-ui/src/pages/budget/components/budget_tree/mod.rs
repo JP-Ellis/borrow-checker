@@ -18,7 +18,7 @@ pub fn BudgetTree(
     nodes: Vec<BudgetTreeNode>,
 ) -> impl IntoView {
     view! {
-        <div class=style::tree>
+        <div class=style::tree aria-label="budget tree">
             <div class=style::col_headers>
                 <span class=style::col_account>"ACCOUNT"</span>
                 <span class=style::col_progress>"PROGRESS"</span>
