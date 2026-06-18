@@ -1,3 +1,5 @@
+@use 'focus';
+
 @mixin button-interactive($bg-hover: var(--bc-surface-alt)) {
   &:hover:not(:disabled) { background: $bg-hover; }
   &:focus-visible { @include focus.focus-ring(); }
