@@ -46,7 +46,19 @@ async function navigateToBudget(): Promise<void> {
     );
 
     const tree = await $('[aria-label="budget tree"]');
-    await tree.waitForDisplayed({ timeout: 15_000 });
+
+    /* Wait for the tree. On timeout, capture page text to diagnose whether
+     * the budget page is stuck in loading / error / empty state. */
+    try {
+        await tree.waitForDisplayed({ timeout: 15_000 });
+    } catch {
+        const body = await (await $('body')).getText().catch(() => '<body unavailable>');
+        throw new Error(
+            `[aria-label="budget tree"] not displayed after 15 s.\n` +
+            `Page shows: ${body.slice(0, 800)}`,
+        );
+    }
+
     await browser.waitUntil(
         async () => (await tree.getText()).includes('Groceries'),
         { timeout: 15_000, timeoutMsg: 'Budget tree did not populate within 15 s' },

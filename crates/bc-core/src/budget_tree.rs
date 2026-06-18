@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use bc_models::Amount;
 use bc_models::Decimal;
 use bc_models::Period;
 use jiff::civil::Date;
@@ -30,8 +31,9 @@ pub struct BudgetTreeItem {
     pub effective_target: Option<Decimal>,
     /// Target commodity (from `Budget::target`).
     pub commodity: Option<bc_models::CommodityCode>,
-    /// Actual spend within the display window.
-    pub actuals: Decimal,
+    /// Actual spend within the display window, grouped by commodity.
+    /// Empty when no transactions have been posted against the account.
+    pub actuals: Vec<Amount>,
     /// `true` when the budget's native period differs from the display period.
     pub has_mixed_period: bool,
     /// Child budget items (nested under this account in the hierarchy).
@@ -46,16 +48,13 @@ pub struct BudgetTreeItem {
 pub struct BudgetTreeSummary {
     /// Sum of effective targets across all leaf budgets (same commodity).
     pub total_effective_target: Decimal,
-    /// Sum of actuals across all leaf budgets.
-    pub total_actuals: Decimal,
+    /// Sum of actuals across all leaf budgets, grouped by commodity.
+    /// Multiple entries indicate a multi-currency overview.
+    pub total_actuals: Vec<Amount>,
     /// Dominant commodity across leaf budgets.
     pub commodity: Option<bc_models::CommodityCode>,
     /// Count of leaf budgets where `actuals > effective_target`.
     pub overspent_count: u32,
-    /// The commodity observed in leaf actuals. `None` if no actuals were recorded.
-    pub actuals_commodity: Option<bc_models::CommodityCode>,
-    /// `true` if actuals across leaf nodes use more than one commodity.
-    pub has_mixed_commodities: bool,
 }
 
 // MARK: BudgetOverview
@@ -144,6 +143,10 @@ impl BudgetTreeService {
 
             let has_mixed_period = !periods_equivalent(display_period, budget.period());
             let commodity = budget.target().map(|t| t.commodity().clone());
+            let actuals = match status.commodity {
+                Some(c) => vec![Amount::new(status.actuals, c)],
+                None => vec![],
+            };
 
             items.push(BudgetTreeItem {
                 budget: budget.clone(),
@@ -151,7 +154,7 @@ impl BudgetTreeService {
                 depth: 0,
                 effective_target,
                 commodity,
-                actuals: status.actuals,
+                actuals,
                 has_mixed_period,
                 children: vec![],
             });
@@ -394,14 +397,29 @@ fn collect_children(
     children
 }
 
+/// Merges `new` into `amounts`, adding to an existing entry with the same commodity
+/// or appending a new entry.
+fn merge_amount(amounts: &mut Vec<Amount>, new: Amount) {
+    match amounts
+        .iter_mut()
+        .find(|a| a.commodity() == new.commodity())
+    {
+        Some(existing) => {
+            *existing = Amount::new(
+                existing.value().saturating_add(new.value()),
+                existing.commodity().clone(),
+            );
+        }
+        None => amounts.push(new),
+    }
+}
+
 /// Computes aggregate KPI values from the full budget tree (all depths).
 fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
     let mut total_target = Decimal::ZERO;
-    let mut total_actuals = Decimal::ZERO;
+    let mut total_actuals: Vec<Amount> = Vec::new();
     let mut overspent = 0_u32;
     let mut commodity = None;
-    let mut actuals_commodity: Option<bc_models::CommodityCode> = None;
-    let mut has_mixed_commodities = false;
 
     accumulate_summary(
         nodes,
@@ -409,8 +427,6 @@ fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
         &mut total_actuals,
         &mut overspent,
         &mut commodity,
-        &mut actuals_commodity,
-        &mut has_mixed_commodities,
     );
 
     BudgetTreeSummary {
@@ -418,8 +434,6 @@ fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
         total_actuals,
         commodity,
         overspent_count: overspent,
-        actuals_commodity,
-        has_mixed_commodities,
     }
 }
 
@@ -427,11 +441,9 @@ fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
 fn accumulate_summary(
     nodes: &[BudgetTreeItem],
     total_target: &mut Decimal,
-    total_actuals: &mut Decimal,
+    total_actuals: &mut Vec<Amount>,
     overspent: &mut u32,
     commodity: &mut Option<bc_models::CommodityCode>,
-    actuals_commodity: &mut Option<bc_models::CommodityCode>,
-    has_mixed_commodities: &mut bool,
 ) {
     for node in nodes {
         if node.children.is_empty() {
@@ -442,18 +454,12 @@ fn accumulate_summary(
                     commodity.clone_from(&node.commodity);
                 }
             }
-            *total_actuals = total_actuals.saturating_add(node.actuals);
-            if node.effective_target.is_some_and(|t| node.actuals > t) {
-                *overspent = overspent.saturating_add(1);
+            for amount in &node.actuals {
+                merge_amount(total_actuals, amount.clone());
             }
-            if let Some(ref leaf_commodity) = node.commodity {
-                match actuals_commodity {
-                    None => actuals_commodity.clone_from(&node.commodity),
-                    Some(existing) if existing != leaf_commodity => {
-                        *has_mixed_commodities = true;
-                    }
-                    Some(_) => {}
-                }
+            let node_total: Decimal = node.actuals.iter().map(Amount::value).sum();
+            if node.effective_target.is_some_and(|t| node_total > t) {
+                *overspent = overspent.saturating_add(1);
             }
         } else {
             // Parent node: recurse into children only.
@@ -463,8 +469,6 @@ fn accumulate_summary(
                 total_actuals,
                 overspent,
                 commodity,
-                actuals_commodity,
-                has_mixed_commodities,
             );
         }
     }
@@ -556,7 +560,10 @@ mod tests {
 
         assert_eq!(overview.nodes.len(), 1);
         let node = overview.nodes.first().expect("one node");
-        assert_eq!(node.actuals, dec!(68));
+        assert_eq!(
+            node.actuals,
+            vec![Amount::new(dec!(68), CommodityCode::new("AUD"))]
+        );
         assert_eq!(node.effective_target, Some(dec!(300)));
         assert_eq!(overview.summary.overspent_count, 0);
     }
