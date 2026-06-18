@@ -865,11 +865,11 @@ impl Service {
         let tx_rows: Vec<(String, String, Option<String>, String, String, String)> =
             match (&date_from_str, &date_until_str) {
                 (Some(from), Some(until)) => sqlx::query_as(
-                    "WITH RECURSIVE subtree(id) AS (\
-                         VALUES(?)\
-                         UNION ALL\
-                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
-                     )\
+                    "WITH RECURSIVE subtree(id) AS ( \
+                         VALUES(?) \
+                         UNION ALL \
+                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
+                     ) \
                      SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
                      FROM transactions t \
                      WHERE t.status != ? AND t.date >= ? AND t.date < ? \
@@ -883,11 +883,11 @@ impl Service {
                 .fetch_all(&self.pool)
                 .await?,
                 (Some(from), None) => sqlx::query_as(
-                    "WITH RECURSIVE subtree(id) AS (\
-                         VALUES(?)\
-                         UNION ALL\
-                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
-                     )\
+                    "WITH RECURSIVE subtree(id) AS ( \
+                         VALUES(?) \
+                         UNION ALL \
+                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
+                     ) \
                      SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
                      FROM transactions t \
                      WHERE t.status != ? AND t.date >= ? \
@@ -900,11 +900,11 @@ impl Service {
                 .fetch_all(&self.pool)
                 .await?,
                 (None, Some(until)) => sqlx::query_as(
-                    "WITH RECURSIVE subtree(id) AS (\
-                         VALUES(?)\
-                         UNION ALL\
-                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
-                     )\
+                    "WITH RECURSIVE subtree(id) AS ( \
+                         VALUES(?) \
+                         UNION ALL \
+                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
+                     ) \
                      SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
                      FROM transactions t \
                      WHERE t.status != ? AND t.date < ? \
@@ -917,11 +917,11 @@ impl Service {
                 .fetch_all(&self.pool)
                 .await?,
                 (None, None) => sqlx::query_as(
-                    "WITH RECURSIVE subtree(id) AS (\
-                         VALUES(?)\
-                         UNION ALL\
-                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
-                     )\
+                    "WITH RECURSIVE subtree(id) AS ( \
+                         VALUES(?) \
+                         UNION ALL \
+                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
+                     ) \
                      SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
                      FROM transactions t \
                      WHERE t.status != ? \
@@ -939,11 +939,11 @@ impl Service {
         }
 
         let tx_tag_rows: Vec<(String, String)> = sqlx::query_as(
-            "WITH RECURSIVE subtree(id) AS (\
-                 VALUES(?)\
-                 UNION ALL\
-                 SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
-             )\
+            "WITH RECURSIVE subtree(id) AS ( \
+                 VALUES(?) \
+                 UNION ALL \
+                 SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
+             ) \
              SELECT tt.transaction_id, tt.tag_id \
              FROM transaction_tags tt \
              JOIN transactions t ON tt.transaction_id = t.id \
@@ -964,11 +964,11 @@ impl Service {
         }
 
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
-            "WITH RECURSIVE subtree(id) AS (\
-                 VALUES(?)\
-                 UNION ALL\
-                 SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
-             )\
+            "WITH RECURSIVE subtree(id) AS ( \
+                 VALUES(?) \
+                 UNION ALL \
+                 SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
+             ) \
              SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.memo, \
                     p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
@@ -985,11 +985,11 @@ impl Service {
         .await?;
 
         let posting_tag_rows: Vec<(String, String)> = sqlx::query_as(
-            "WITH RECURSIVE subtree(id) AS (\
-                 VALUES(?)\
-                 UNION ALL\
-                 SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id\
-             )\
+            "WITH RECURSIVE subtree(id) AS ( \
+                 VALUES(?) \
+                 UNION ALL \
+                 SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
+             ) \
              SELECT pt.posting_id, pt.tag_id \
              FROM posting_tags pt \
              JOIN postings p ON pt.posting_id = p.id \
