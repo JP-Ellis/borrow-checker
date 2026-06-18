@@ -19,7 +19,7 @@
     "@wdio/spec-reporter": "9.28.0",
     "@wdio/types": "9.28.0",
     "@wdio/visual-service": "9.2.3",
-    "better-sqlite3": "12.10.0",
+    "better-sqlite3": "12.11.1",
     "ts-node": "10.9.2",
     "typescript": "6.0.3"
   },
