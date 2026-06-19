@@ -12,3 +12,20 @@ pub mod import;
 pub mod plugin;
 pub mod report;
 pub mod transaction;
+
+/// Parses a `YYYY-MM-DD` date string, or returns today's date when `None`.
+///
+/// # Arguments
+///
+/// * `s` - Optional date string in `YYYY-MM-DD` format.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError::Arg`] if the string cannot be parsed.
+pub(crate) fn parse_date_or_today(s: Option<&str>) -> crate::error::CliResult<jiff::civil::Date> {
+    match s {
+        Some(d) => <jiff::civil::Date as core::str::FromStr>::from_str(d)
+            .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{d}': {e}"))),
+        None => Ok(jiff::Zoned::now().date()),
+    }
+}
