@@ -98,7 +98,7 @@ pub fn TransactionRow(
     /// Called to toggle expansion.
     on_toggle: Callback<()>,
 ) -> impl IntoView {
-    let date = format_date_display(&tx.date.to_string());
+    let date = format_date_display(tx.date);
     let initial = payee_initial(&tx.payee).to_string();
     let amount = headline_amount(&tx, &viewing_account_id);
     let currency = bc_ipc::currency_from_code(&amount.currency_code).unwrap_or(&bc_ipc::USD);
@@ -212,7 +212,7 @@ fn TransactionDetail(
     // StoredValue<T> is Copy, which allows reactive closures (Fn) to read
     // the data repeatedly without consuming it.
     let tx_id = StoredValue::new(stored_tx.with_value(|t| t.id.clone()));
-    let tx_date = StoredValue::new(stored_tx.with_value(|t| t.date.to_string()));
+    let tx_date = StoredValue::new(stored_tx.with_value(|t| t.date));
     let tx_payee = StoredValue::new(stored_tx.with_value(|t| t.payee.clone()));
     let tx_status = StoredValue::new(stored_tx.with_value(|t| t.status.label().to_owned()));
     let stored_tags = StoredValue::new(stored_tx.with_value(|t| t.tags.clone()));
@@ -266,7 +266,7 @@ fn TransactionDetail(
                             <TomlKv>
                                 <KvKey slot>"date"</KvKey>
                                 <KvValue slot kind=KvKind::Date>
-                                    {tx_date.get_value()}
+                                    {tx_date.get_value().to_string()}
                                 </KvValue>
                             </TomlKv>
                             <TomlKv>
