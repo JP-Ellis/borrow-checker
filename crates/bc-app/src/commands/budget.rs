@@ -21,12 +21,12 @@ use crate::ipc::IntoModel as _;
 /// # Arguments
 ///
 /// * `period_type` - The display period type (monthly, weekly, etc.).
-/// * `period_start` - ISO-8601 date string; the display window starts on or before this date.
+/// * `period_start` - The display window start date.
 /// * `state` - Tauri managed application state.
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError`] if the period or date is invalid, or if a service call fails.
+/// Returns [`bc_ipc::BcError`] if the period is invalid or if a service call fails.
 #[expect(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
@@ -34,17 +34,14 @@ use crate::ipc::IntoModel as _;
 #[tauri::command(rename_all = "snake_case")]
 pub async fn get_budget_overview(
     period_type: bc_ipc::Period,
-    period_start: String,
+    period_start: jiff::civil::Date,
     state: State<'_, AppState>,
 ) -> Result<(bc_ipc::BudgetSummary, Vec<bc_ipc::BudgetTreeNode>), bc_ipc::BcError> {
     let period = period_type.into_model();
-    let start = period_start
-        .parse::<jiff::civil::Date>()
-        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid period_start: {e}")))?;
 
     let overview = state
         .budget_tree
-        .get_overview(&period, start)
+        .get_overview(&period, period_start)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
@@ -100,13 +97,13 @@ pub async fn get_budget_overview(
 /// # Arguments
 ///
 /// * `budget_id` - The budget to expand.
-/// * `display_start` - ISO-8601 start of the display window (inclusive).
-/// * `display_end` - ISO-8601 end of the display window (exclusive).
+/// * `display_start` - The display window start date (inclusive).
+/// * `display_end` - The display window end date (exclusive).
 /// * `state` - Tauri managed application state.
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError`] if any ID or date is invalid, or if a service call fails.
+/// Returns [`bc_ipc::BcError`] if the budget ID is invalid, or if a service call fails.
 #[expect(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
@@ -114,19 +111,13 @@ pub async fn get_budget_overview(
 #[tauri::command(rename_all = "snake_case")]
 pub async fn get_native_periods(
     budget_id: String,
-    display_start: String,
-    display_end: String,
+    display_start: jiff::civil::Date,
+    display_end: jiff::civil::Date,
     state: State<'_, AppState>,
 ) -> Result<Vec<bc_ipc::NativePeriodRow>, bc_ipc::BcError> {
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
-    let start = display_start
-        .parse::<jiff::civil::Date>()
-        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid display_start: {e}")))?;
-    let end = display_end
-        .parse::<jiff::civil::Date>()
-        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid display_end: {e}")))?;
 
     let budget = state
         .budgets
@@ -136,7 +127,7 @@ pub async fn get_native_periods(
 
     let native = state
         .budget_tree
-        .native_periods(&budget, start, end)
+        .native_periods(&budget, display_start, display_end)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
@@ -198,13 +189,13 @@ fn format_native_period_label(n: &bc_core::NativePeriodStatus) -> String {
 /// # Arguments
 ///
 /// * `budget_id` - The budget to query.
-/// * `period_start` - ISO-8601 start date (inclusive).
-/// * `period_end` - ISO-8601 end date (exclusive).
+/// * `period_start` - The period start date (inclusive).
+/// * `period_end` - The period end date (exclusive).
 /// * `state` - Tauri managed application state.
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError`] if any ID or date is invalid, or if a service call fails.
+/// Returns [`bc_ipc::BcError`] if the budget ID is invalid, or if a service call fails.
 #[expect(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
@@ -212,19 +203,13 @@ fn format_native_period_label(n: &bc_core::NativePeriodStatus) -> String {
 #[tauri::command(rename_all = "snake_case")]
 pub async fn get_budget_transactions(
     budget_id: String,
-    period_start: String,
-    period_end: String,
+    period_start: jiff::civil::Date,
+    period_end: jiff::civil::Date,
     state: State<'_, AppState>,
 ) -> Result<Vec<bc_ipc::Transaction>, bc_ipc::BcError> {
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
-    let start = period_start
-        .parse::<jiff::civil::Date>()
-        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid period_start: {e}")))?;
-    let end = period_end
-        .parse::<jiff::civil::Date>()
-        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid period_end: {e}")))?;
 
     let budget = state
         .budgets
@@ -234,7 +219,7 @@ pub async fn get_budget_transactions(
 
     let txns = state
         .transactions
-        .list_for_budget(&budget, start, end)
+        .list_for_budget(&budget, period_start, period_end)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
@@ -424,13 +409,13 @@ pub async fn create_budget(
 /// # Arguments
 ///
 /// * `posting_id` - The posting to update.
-/// * `spread_from` - ISO-8601 first day of the accrual window (inclusive).
-/// * `spread_until` - ISO-8601 last day of the accrual window (inclusive).
+/// * `spread_from` - The first day of the accrual window (inclusive).
+/// * `spread_until` - The last day of the accrual window (inclusive).
 /// * `state` - Tauri managed application state.
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError`] if any ID or date is invalid, or the service call fails.
+/// Returns [`bc_ipc::BcError`] if the posting ID is invalid, or the service call fails.
 #[expect(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
@@ -438,23 +423,17 @@ pub async fn create_budget(
 #[tauri::command(rename_all = "snake_case")]
 pub async fn set_posting_spread(
     posting_id: String,
-    spread_from: String,
-    spread_until: String,
+    spread_from: jiff::civil::Date,
+    spread_until: jiff::civil::Date,
     state: State<'_, AppState>,
 ) -> Result<(), bc_ipc::BcError> {
     let pid = posting_id
         .parse::<bc_models::PostingId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid posting_id: {e}")))?;
-    let from = spread_from
-        .parse::<jiff::civil::Date>()
-        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid spread_from: {e}")))?;
-    let until = spread_until
-        .parse::<jiff::civil::Date>()
-        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid spread_until: {e}")))?;
 
     state
         .transactions
-        .set_posting_spread(&pid, from, until)
+        .set_posting_spread(&pid, spread_from, spread_until)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
 }
