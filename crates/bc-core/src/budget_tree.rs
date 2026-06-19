@@ -35,6 +35,8 @@ pub struct BudgetTreeItem {
     pub actuals: Vec<Amount>,
     /// `true` when the budget's native period differs from the display period.
     pub has_mixed_period: bool,
+    /// The governing revision at the display window start, if any.
+    pub governing: Option<bc_models::BudgetRevision>,
     /// Child budget items (nested under this account in the hierarchy).
     pub children: Vec<BudgetTreeItem>,
 }
@@ -163,6 +165,7 @@ impl BudgetTreeService {
                 commodity,
                 actuals,
                 has_mixed_period,
+                governing: gov.cloned(),
                 children: vec![],
             });
         }
