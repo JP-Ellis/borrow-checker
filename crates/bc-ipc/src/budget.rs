@@ -28,6 +28,69 @@ impl core::fmt::Display for RolloverPolicy {
     }
 }
 
+/// The intersection of a revision's reign with a display window.
+///
+/// `start`/`end` are the inclusive/exclusive bounds of the slice of the window
+/// this revision governs. `covers_full_window` is `true` only when that slice is
+/// the entire window (the revision alone governs it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct WindowOverlap {
+    /// First day this revision is active within the window (inclusive).
+    pub start: jiff::civil::Date,
+    /// Exclusive end of the active range within the window.
+    pub end: jiff::civil::Date,
+    /// `true` when the active range spans the entire display window.
+    pub covers_full_window: bool,
+}
+
+impl WindowOverlap {
+    /// Creates a new [`WindowOverlap`].
+    #[must_use]
+    #[inline]
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by downstream tasks"))]
+    pub fn new(start: jiff::civil::Date, end: jiff::civil::Date, covers_full_window: bool) -> Self {
+        Self {
+            start,
+            end,
+            covers_full_window,
+        }
+    }
+}
+
+/// One revision in a budget's timeline, as seen against a display window.
+///
+/// A revision governs `[effective_from, reign_end)` (open-ended for the latest
+/// revision). `window_overlap` is `Some` when that reign intersects the display
+/// window — `covers_full_window` distinguishes a revision governing the whole
+/// window from one governing only a sub-range; `None` means it is inactive in
+/// the current window.
+#[derive(bon::Builder, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[builder(on(String, into))]
+#[non_exhaustive]
+pub struct BudgetRevisionView {
+    /// Revision identifier (`BudgetRevisionId`).
+    pub id: String,
+    /// Exact stored date this revision takes effect.
+    pub effective_from: jiff::civil::Date,
+    /// The next revision's `effective_from`, or `None` for the latest revision.
+    pub reign_end: Option<jiff::civil::Date>,
+    /// Display label; `None` falls back to the account name.
+    pub name: Option<String>,
+    /// Per-period target, or `None` for tracking-only.
+    pub target: Option<Amount>,
+    /// Recurrence period.
+    pub period: crate::Period,
+    /// Compact period label, e.g. `"weekly"`.
+    pub period_label: String,
+    /// Rollover policy.
+    pub rollover: RolloverPolicy,
+    /// Tag filter id string, or `None` if unfiltered.
+    pub tag_filter: Option<String>,
+    /// Overlap of this revision's reign with the display window.
+    pub window_overlap: Option<WindowOverlap>,
+}
+
 /// One node in the budget tree returned by `get_budget_overview`.
 ///
 /// Leaf nodes represent individual budgets; parent nodes aggregate their
@@ -153,6 +216,7 @@ mod tests {
 
     use super::*;
     use crate::Amount;
+    use crate::Period;
 
     #[test]
     fn rollover_policy_serialises_as_snake_case() {
@@ -243,5 +307,59 @@ mod tests {
         let json = serde_json::to_string(&summary).expect("ser");
         let back: BudgetSummary = serde_json::from_str(&json).expect("de");
         assert_eq!(summary, back);
+    }
+
+    #[test]
+    fn window_overlap_serde_roundtrip() {
+        let o = WindowOverlap::new(
+            jiff::civil::Date::constant(2026, 1, 1),
+            jiff::civil::Date::constant(2026, 4, 1),
+            false,
+        );
+        let json = serde_json::to_string(&o).expect("ser");
+        let back: WindowOverlap = serde_json::from_str(&json).expect("de");
+        assert_eq!(o, back);
+    }
+
+    #[test]
+    fn budget_revision_view_serde_roundtrip() {
+        let view = BudgetRevisionView::builder()
+            .id("budget_rev_1")
+            .effective_from(jiff::civil::Date::constant(2027, 1, 1))
+            .reign_end(jiff::civil::Date::constant(2027, 9, 1))
+            .name("Groceries")
+            .target(Amount::new(25_000, "AUD", 2))
+            .period(Period::Weekly)
+            .period_label("weekly")
+            .rollover(RolloverPolicy::CarryForward)
+            .tag_filter("tag_abc")
+            .window_overlap(WindowOverlap::new(
+                jiff::civil::Date::constant(2027, 1, 1),
+                jiff::civil::Date::constant(2027, 9, 1),
+                true,
+            ))
+            .build();
+        let json = serde_json::to_string(&view).expect("ser");
+        let back: BudgetRevisionView = serde_json::from_str(&json).expect("de");
+        assert_eq!(view, back);
+    }
+
+    #[test]
+    fn budget_revision_view_optional_fields_roundtrip() {
+        // tracking-only, no name, no reign_end, not active in window.
+        let view = BudgetRevisionView::builder()
+            .id("budget_rev_2")
+            .effective_from(jiff::civil::Date::constant(2026, 1, 1))
+            .period(Period::Monthly)
+            .period_label("monthly")
+            .rollover(RolloverPolicy::ResetToZero)
+            .build();
+        assert!(view.target.is_none());
+        assert!(view.name.is_none());
+        assert!(view.reign_end.is_none());
+        assert!(view.window_overlap.is_none());
+        let json = serde_json::to_string(&view).expect("ser");
+        let back: BudgetRevisionView = serde_json::from_str(&json).expect("de");
+        assert_eq!(view, back);
     }
 }
