@@ -662,6 +662,23 @@ mod tests {
         let json = serde_json::to_string(&event).expect("ser");
         let back: Event = serde_json::from_str(&json).expect("de");
         assert_eq!(back.kind(), "BudgetRevisionSet");
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "Event is #[non_exhaustive]; wildcard arm required"
+        )]
+        match back {
+            Event::BudgetRevisionSet { effective_from, target, .. } => {
+                assert_eq!(effective_from, jiff::civil::Date::constant(2027, 1, 1));
+                assert_eq!(
+                    target,
+                    Some(bc_models::Amount::new(
+                        bc_models::Decimal::from(250_i32),
+                        bc_models::CommodityCode::new("AUD"),
+                    ))
+                );
+            }
+            other => panic!("expected BudgetRevisionSet, got {other:?}"),
+        }
     }
 
     #[sqlx::test(migrations = "./migrations")]
