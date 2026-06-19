@@ -408,6 +408,12 @@ impl BudgetService {
         revision: bc_models::BudgetRevision,
     ) -> crate::BcResult<bc_models::BudgetRevision> {
         let _ = self.get(budget_id).await?;
+        if revision.budget_id() != budget_id {
+            return Err(crate::BcError::InvalidInput(format!(
+                "revision belongs to budget {}, not {budget_id}",
+                revision.budget_id()
+            )));
+        }
         if revision.rollover() == bc_models::RolloverPolicy::CapAtTarget
             && revision.target().is_none()
         {
@@ -473,13 +479,13 @@ impl BudgetService {
         revision_id: &bc_models::BudgetRevisionId,
     ) -> crate::BcResult<()> {
         let existing = self.revisions(budget_id).await?;
+        if !existing.iter().any(|r| r.id() == revision_id) {
+            return Err(crate::BcError::NotFound(revision_id.to_string()));
+        }
         if existing.len() <= 1 {
             return Err(crate::BcError::InvalidInput(
                 "cannot remove the last revision; archive the budget instead".to_owned(),
             ));
-        }
-        if !existing.iter().any(|r| r.id() == revision_id) {
-            return Err(crate::BcError::NotFound(revision_id.to_string()));
         }
         let event = crate::events::Event::BudgetRevisionRemoved {
             budget_id: budget_id.clone(),
