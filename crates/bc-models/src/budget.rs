@@ -1,17 +1,18 @@
 //! Budget domain types.
 //!
-//! A [`Budget`] attaches an allocation target, period, and optional tag filter
-//! to any account. The account tree (specifically `Expense`-type accounts) is
-//! the category hierarchy; budgets are linked entities on top of it.
+//! A [`Budget`] is a permanent anchor linking a budget to an account.
+//! Configuration (target, period, rollover, tag filter, name) lives in
+//! time-ordered [`BudgetRevision`]s. This design makes history immutable
+//! and auditable: revising a budget creates a new revision rather than
+//! mutating existing data.
 //!
-//! [`BudgetAllocation`] records the amount explicitly budgeted for a specific
-//! budget line in a given period (zero-based budgeting workflow).
+//! [`RolloverPolicy`] controls what happens to unspent funds at period end.
 
 use jiff::Timestamp;
 use jiff::civil::Date;
 
 crate::define_id!(BudgetId, "budget");
-crate::define_id!(BudgetAllocationId, "budget_alloc");
+crate::define_id!(BudgetRevisionId, "budget_rev");
 
 /// Determines what happens to unspent (or overspent) funds at the end of a period.
 ///
@@ -35,81 +36,22 @@ pub enum RolloverPolicy {
     CapAtTarget,
 }
 
-/// A budget line anchored to an account.
+/// A budget anchor: the permanent identity of a budget.
 ///
-/// A `Budget` attaches allocation targets, period rules, and an optional tag
-/// filter to a specific account. The account is the category; the budget adds
-/// planning metadata on top of it.
-///
-/// Budget anchoring is **permanent** — a `Budget` cannot be re-anchored to a
-/// different account after creation. To restructure categories, archive the
-/// budget and create a replacement on the new account.
-///
-/// When [`Budget::tag_filter`] is `None`, all postings to [`Budget::account_id`]
-/// count against this budget. When `Some(tag)`, only postings carrying that tag
-/// or a descendant tag count (descendant-or-equal semantics).
-///
-/// When [`Budget::target`] is `None` the budget operates in *tracking-only* mode:
-/// transactions are categorised but no allocation target is enforced.
-///
-/// # Example
-///
-/// ```
-/// use bc_models::{Budget, AccountId, RolloverPolicy, Period};
-/// use jiff::Timestamp;
-///
-/// let budget = Budget::builder()
-///     .account_id(AccountId::new())
-///     .period(Period::Monthly)
-///     .rollover(RolloverPolicy::ResetToZero)
-///     .created_at(Timestamp::now())
-///     .build();
-///
-/// assert!(budget.target().is_none());
-/// assert!(budget.tag_filter().is_none());
-/// ```
+/// The anchor carries only identity and lifecycle. All configuration
+/// (target, period, rollover, tag filter, name) lives in time-ordered
+/// [`BudgetRevision`]s. `account_id` is immutable — re-anchoring to a different
+/// account is a different budget; archive and recreate instead.
 #[derive(bon::Builder, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Budget {
-    /// Stable, opaque identifier for this budget (a prefixed `UUIDv7`).
-    ///
-    /// Auto-generated when not supplied; only set this when re-hydrating a
-    /// record from storage.
+    /// Stable, opaque identifier (a prefixed `UUIDv7`).
     #[builder(default)]
     id: BudgetId,
-
-    /// The account this budget is anchored to.
-    ///
-    /// Permanent after creation — archive and recreate to change the account.
+    /// The account this budget is permanently anchored to.
     account_id: crate::AccountId,
-
-    /// Optional tag filter.
-    ///
-    /// `None` — all postings to `account_id` count.
-    /// `Some(tag)` — only postings carrying `tag` or a descendant of `tag`
-    /// count against this budget.
-    tag_filter: Option<crate::TagId>,
-
-    /// Display name for this budget line.
-    ///
-    /// When `None`, the account name is used as the display label.
-    #[builder(into)]
-    name: Option<String>,
-
-    /// Optional allocation target per period.
-    ///
-    /// `None` places the budget in tracking-only mode.
-    target: Option<crate::money::Amount>,
-
-    /// The recurring period over which the allocation target is measured.
-    period: crate::period::Period,
-
-    /// What happens to unspent funds at the end of each period.
-    rollover: RolloverPolicy,
-
-    /// Timestamp recorded when this budget was first persisted.
+    /// Timestamp recorded when this budget was first created.
     created_at: Timestamp,
-
     /// Timestamp at which this budget was archived, or `None` if still active.
     archived_at: Option<Timestamp>,
 }
@@ -129,11 +71,78 @@ impl Budget {
         &self.account_id
     }
 
-    /// Returns the tag filter, if any.
+    /// Returns the creation timestamp.
     #[inline]
     #[must_use]
-    pub fn tag_filter(&self) -> Option<&crate::TagId> {
-        self.tag_filter.as_ref()
+    pub fn created_at(&self) -> &Timestamp {
+        &self.created_at
+    }
+
+    /// Returns the archive timestamp, if archived.
+    #[inline]
+    #[must_use]
+    pub fn archived_at(&self) -> Option<&Timestamp> {
+        self.archived_at.as_ref()
+    }
+
+    /// Returns `true` if this budget has been archived.
+    #[inline]
+    #[must_use]
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
+    }
+}
+
+/// A single effective-dated configuration of a budget.
+///
+/// The revision governing a date `d` is the one with the greatest
+/// `effective_from <= d`. Each revision tiles its own period grid starting at
+/// `effective_from` (see [`crate::budget_timeline`]).
+#[derive(bon::Builder, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct BudgetRevision {
+    /// Stable, opaque identifier (a prefixed `UUIDv7`).
+    #[builder(default)]
+    id: BudgetRevisionId,
+    /// The anchor this revision belongs to.
+    budget_id: BudgetId,
+    /// Exact date this configuration begins (inclusive).
+    effective_from: Date,
+    /// Display label; falls back to the account name when `None`.
+    #[builder(into)]
+    name: Option<String>,
+    /// Allocation target per period; `None` = tracking-only.
+    target: Option<crate::money::Amount>,
+    /// Recurring period over which the target is measured.
+    period: crate::period::Period,
+    /// What happens to unspent funds at period end.
+    rollover: RolloverPolicy,
+    /// Optional tag filter (descendant-or-equal semantics); `None` = all postings.
+    tag_filter: Option<crate::TagId>,
+    /// Timestamp recorded when this revision was persisted.
+    created_at: Timestamp,
+}
+
+impl BudgetRevision {
+    /// Returns the revision ID.
+    #[inline]
+    #[must_use]
+    pub fn id(&self) -> &BudgetRevisionId {
+        &self.id
+    }
+
+    /// Returns the anchor ID this revision belongs to.
+    #[inline]
+    #[must_use]
+    pub fn budget_id(&self) -> &BudgetId {
+        &self.budget_id
+    }
+
+    /// Returns the effective-from date.
+    #[inline]
+    #[must_use]
+    pub fn effective_from(&self) -> Date {
+        self.effective_from
     }
 
     /// Returns the display name, if set.
@@ -150,13 +159,6 @@ impl Budget {
         self.target.as_ref()
     }
 
-    /// Returns `true` when no allocation target is set (tracking-only mode).
-    #[inline]
-    #[must_use]
-    pub fn is_tracking_only(&self) -> bool {
-        self.target.is_none()
-    }
-
     /// Returns the budget period.
     #[inline]
     #[must_use]
@@ -171,95 +173,11 @@ impl Budget {
         self.rollover
     }
 
-    /// Returns the creation timestamp.
+    /// Returns the tag filter, if any.
     #[inline]
     #[must_use]
-    pub fn created_at(&self) -> &Timestamp {
-        &self.created_at
-    }
-
-    /// Returns `true` if this budget has been archived.
-    #[inline]
-    #[must_use]
-    pub fn is_archived(&self) -> bool {
-        self.archived_at.is_some()
-    }
-
-    /// Returns the archive timestamp, if archived.
-    #[inline]
-    #[must_use]
-    pub fn archived_at(&self) -> Option<&Timestamp> {
-        self.archived_at.as_ref()
-    }
-}
-
-/// A record of the amount explicitly budgeted for a budget line in a specific period.
-///
-/// Used in zero-based budgeting: before the period starts, the user allocates
-/// funds to each budget line. Actuals accumulate as transactions are recorded.
-///
-/// # Example
-///
-/// ```
-/// use bc_models::{BudgetAllocation, BudgetId, Amount, CommodityCode, Decimal};
-/// use jiff::{Timestamp, civil::Date};
-///
-/// let alloc = BudgetAllocation::builder()
-///     .budget_id(BudgetId::new())
-///     .period_start(Date::constant(2026, 1, 1))
-///     .amount(Amount::new(Decimal::from(500), CommodityCode::new("AUD")))
-///     .created_at(Timestamp::now())
-///     .build();
-///
-/// assert_eq!(alloc.period_start(), Date::constant(2026, 1, 1));
-/// ```
-#[derive(bon::Builder, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[non_exhaustive]
-pub struct BudgetAllocation {
-    /// Stable, opaque identifier (a prefixed `UUIDv7`).
-    #[builder(default)]
-    id: BudgetAllocationId,
-
-    /// The budget this allocation applies to.
-    budget_id: BudgetId,
-
-    /// The calendar date on which this budget period begins.
-    period_start: Date,
-
-    /// The amount budgeted for this period.
-    amount: crate::money::Amount,
-
-    /// Timestamp recorded when this allocation was first persisted.
-    created_at: Timestamp,
-}
-
-impl BudgetAllocation {
-    /// Returns the allocation ID.
-    #[inline]
-    #[must_use]
-    pub fn id(&self) -> &BudgetAllocationId {
-        &self.id
-    }
-
-    /// Returns the budget ID this allocation belongs to.
-    #[inline]
-    #[must_use]
-    pub fn budget_id(&self) -> &BudgetId {
-        &self.budget_id
-    }
-
-    /// Returns the start date of the budget period this allocation covers.
-    #[inline]
-    #[must_use]
-    pub fn period_start(&self) -> Date {
-        self.period_start
-    }
-
-    /// Returns the budgeted amount.
-    #[inline]
-    #[must_use]
-    pub fn amount(&self) -> &crate::money::Amount {
-        &self.amount
+    pub fn tag_filter(&self) -> Option<&crate::TagId> {
+        self.tag_filter.as_ref()
     }
 
     /// Returns the creation timestamp.
@@ -267,6 +185,13 @@ impl BudgetAllocation {
     #[must_use]
     pub fn created_at(&self) -> &Timestamp {
         &self.created_at
+    }
+
+    /// Returns `true` when no target is set (tracking-only mode).
+    #[inline]
+    #[must_use]
+    pub fn is_tracking_only(&self) -> bool {
+        self.target.is_none()
     }
 }
 
@@ -299,23 +224,6 @@ mod tests {
     }
 
     #[test]
-    fn budget_allocation_id_round_trips_display_from_str() {
-        let id = BudgetAllocationId::new();
-        let s = id.to_string();
-        let parsed: BudgetAllocationId = s.parse().expect("should parse");
-        assert_eq!(id, parsed);
-    }
-
-    #[test]
-    fn budget_allocation_id_has_budget_alloc_prefix() {
-        let id = BudgetAllocationId::new();
-        assert!(
-            id.to_string().starts_with("budget_alloc_"),
-            "expected budget_alloc_ prefix, got {id}"
-        );
-    }
-
-    #[test]
     fn rollover_policy_serialises_as_snake_case() {
         let carry = serde_json::to_string(&RolloverPolicy::CarryForward).expect("ser");
         let reset = serde_json::to_string(&RolloverPolicy::ResetToZero).expect("ser");
@@ -326,70 +234,10 @@ mod tests {
     }
 
     #[test]
-    fn budget_without_target_is_tracking_only() {
-        let budget = Budget::builder()
-            .account_id(crate::AccountId::new())
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .created_at(jiff::Timestamp::now())
-            .build();
-        assert!(budget.is_tracking_only());
-        assert!(budget.target().is_none());
-        assert!(budget.tag_filter().is_none());
-    }
-
-    #[test]
-    fn budget_with_target_is_not_tracking_only() {
-        let budget = Budget::builder()
-            .account_id(crate::AccountId::new())
-            .target(Amount::new(
-                Decimal::from(500_i32),
-                CommodityCode::new("AUD"),
-            ))
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .created_at(jiff::Timestamp::now())
-            .build();
-        assert!(!budget.is_tracking_only());
-    }
-
-    #[test]
-    fn budget_with_tag_filter_stores_tag_id() {
-        let tag_id = crate::TagId::new();
-        let budget = Budget::builder()
-            .account_id(crate::AccountId::new())
-            .tag_filter(tag_id.clone())
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .created_at(jiff::Timestamp::now())
-            .build();
-        assert_eq!(budget.tag_filter(), Some(&tag_id));
-    }
-
-    #[test]
-    fn budget_allocation_stores_fields() {
-        let budget_id = BudgetId::new();
-        let alloc = BudgetAllocation::builder()
-            .budget_id(budget_id.clone())
-            .period_start(Date::constant(2026, 1, 1))
-            .amount(Amount::new(
-                Decimal::from(600_i32),
-                CommodityCode::new("AUD"),
-            ))
-            .created_at(jiff::Timestamp::now())
-            .build();
-        assert_eq!(alloc.budget_id(), &budget_id);
-        assert_eq!(alloc.period_start(), Date::constant(2026, 1, 1));
-        assert!(alloc.id().to_string().starts_with("budget_alloc_"));
-    }
-
-    #[test]
     fn budget_with_archived_at_is_archived() {
         let now = jiff::Timestamp::now();
         let budget = Budget::builder()
             .account_id(crate::AccountId::new())
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
             .created_at(now)
             .archived_at(now)
             .build();
@@ -402,8 +250,6 @@ mod tests {
         let ts = jiff::Timestamp::now();
         let a = Budget::builder()
             .account_id(crate::AccountId::new())
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
             .created_at(ts)
             .build();
         let b = a.clone();
@@ -411,19 +257,50 @@ mod tests {
     }
 
     #[test]
-    fn budget_allocation_partial_eq() {
-        let budget_id = BudgetId::new();
-        let ts = jiff::Timestamp::now();
-        let a = BudgetAllocation::builder()
-            .budget_id(budget_id.clone())
-            .period_start(Date::constant(2026, 1, 1))
-            .amount(Amount::new(
-                Decimal::from(500_i32),
+    fn budget_revision_id_has_prefix() {
+        let id = BudgetRevisionId::new();
+        assert!(id.to_string().starts_with("budget_rev_"), "got {id}");
+    }
+
+    #[test]
+    fn budget_anchor_holds_identity_only() {
+        let now = jiff::Timestamp::now();
+        let b = Budget::builder()
+            .account_id(crate::AccountId::new())
+            .created_at(now)
+            .build();
+        assert!(b.id().to_string().starts_with("budget_"));
+        assert!(!b.is_archived());
+    }
+
+    #[test]
+    fn budget_revision_tracking_only_when_no_target() {
+        let rev = BudgetRevision::builder()
+            .budget_id(BudgetId::new())
+            .effective_from(Date::constant(2026, 1, 1))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .created_at(jiff::Timestamp::now())
+            .build();
+        assert!(rev.is_tracking_only());
+        assert!(rev.tag_filter().is_none());
+        assert_eq!(rev.effective_from(), Date::constant(2026, 1, 1));
+    }
+
+    #[test]
+    fn budget_revision_with_target_is_not_tracking_only() {
+        let rev = BudgetRevision::builder()
+            .budget_id(BudgetId::new())
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(
+                Decimal::from(250_i32),
                 CommodityCode::new("AUD"),
             ))
-            .created_at(ts)
+            .period(Period::Weekly)
+            .rollover(RolloverPolicy::CarryForward)
+            .created_at(jiff::Timestamp::now())
             .build();
-        let b = a.clone();
-        assert_eq!(a, b);
+        assert!(!rev.is_tracking_only());
+        assert_eq!(rev.period(), &Period::Weekly);
     }
 }
