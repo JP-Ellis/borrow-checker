@@ -1,4 +1,4 @@
-//! Budget management sub-commands: list, create, archive, allocate, status.
+//! Budget management sub-commands: list, create, archive, status.
 
 use core::str::FromStr as _;
 
@@ -75,21 +75,6 @@ pub enum Command {
     Archive {
         /// Budget ID to archive.
         id: String,
-    },
-    /// Allocate funds to a budget for a period (deprecated — targets are now set via revisions).
-    Allocate {
-        /// Budget ID to allocate to.
-        #[arg(long)]
-        budget: String,
-        /// Amount to allocate (decimal, e.g. 500 or 499.99).
-        #[arg(long)]
-        amount: rust_decimal::Decimal,
-        /// Commodity code (e.g. AUD, USD).
-        #[arg(long)]
-        commodity: String,
-        /// Period start date (YYYY-MM-DD). Defaults to the current period start.
-        #[arg(long)]
-        period_start: Option<String>,
     },
     /// Show budget status for all active budgets.
     Status {
@@ -227,12 +212,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             )
             .await
         }
-        Command::Allocate {
-            budget,
-            amount,
-            commodity,
-            period_start,
-        } => allocate(ctx, budget, amount, commodity, period_start),
         Command::Status { as_of } => status(ctx, as_of).await,
     }
 }
@@ -397,24 +376,6 @@ async fn archive(ctx: &AppContext, id: String) -> CliResult<()> {
         println!("Archived budget: {id}");
     }
     Ok(())
-}
-
-/// Period-specific allocation is superseded by revision-based targets.
-///
-/// This command is kept as a stub so existing scripts fail gracefully with a
-/// clear message rather than a parse error.
-fn allocate(
-    _ctx: &AppContext,
-    _budget: String,
-    _amount: rust_decimal::Decimal,
-    _commodity: String,
-    _period_start: Option<String>,
-) -> CliResult<()> {
-    Err(CliError::Arg(
-        "budget allocate is no longer supported; \
-         set the target via `budget update --target` or `budget create --target` instead"
-            .to_owned(),
-    ))
 }
 
 /// Show budget status for all active budgets as of a given date.

@@ -6,18 +6,17 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Manage budgets: create, list, allocate, archive, status
+Manage budgets: create, list, archive, status
 
 Usage: borrow-checker budget [OPTIONS] <COMMAND>
 
 Commands:
-  list      List all active budgets
-  create    Create a new budget anchored to an account
-  archive   Archive a budget (hides it; data is preserved)
-  allocate  Allocate funds to a budget for a period (deprecated — targets are now set via revisions)
-  status    Show budget status for all active budgets
-  update    Update a budget's name, target, or rollover policy
-  help      Print this message or the help of the given subcommand(s)
+  list     List all active budgets
+  create   Create a new budget anchored to an account
+  archive  Archive a budget (hides it; data is preserved)
+  status   Show budget status for all active budgets
+  update   Update a budget's name, target, or rollover policy
+  help     Print this message or the help of the given subcommand(s)
 
 Options:
       --json
