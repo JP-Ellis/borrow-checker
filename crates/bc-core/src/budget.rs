@@ -1151,7 +1151,10 @@ mod budget_service_tests {
         // A week in 2026 uses the $200 revision.
         let s = engine.status_for(&budget, Date::constant(2026, 6, 3)).await.expect("status");
         assert_eq!(s.allocated, dec!(200));
-        assert_eq!(s.governing.as_ref().unwrap().effective_from(), Date::constant(2026, 1, 1));
+        assert_eq!(
+            s.governing.as_ref().expect("governing revision set").effective_from(),
+            Date::constant(2026, 1, 1)
+        );
         // A week in 2027 uses the $250 revision.
         let s2 = engine.status_for(&budget, Date::constant(2027, 6, 3)).await.expect("status");
         assert_eq!(s2.allocated, dec!(250));
