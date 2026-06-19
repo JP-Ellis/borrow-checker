@@ -14,6 +14,7 @@ use serde::Serialize;
 
 use crate::AccountNode;
 use crate::BcError;
+use crate::BudgetRevisionView;
 use crate::BudgetSummary;
 use crate::BudgetTreeNode;
 use crate::NativePeriodRow;
@@ -232,33 +233,6 @@ struct GetBudgetTransactionsArgs<'a> {
     period_end: jiff::civil::Date,
 }
 
-/// Arg struct for [`update_budget`].
-#[derive(Serialize)]
-struct UpdateBudgetArgs<'a> {
-    /// Budget ID to update.
-    budget_id: &'a str,
-    /// New name: `Some(Some(s))` sets name, `Some(None)` clears it, `None` leaves it unchanged.
-    #[expect(
-        clippy::option_option,
-        reason = "outer Some = patch; inner None = clear the field"
-    )]
-    name: Option<Option<String>>,
-    /// New target amount in minor currency units, or `None` to leave unchanged.
-    target_minor_units: Option<i64>,
-    /// New target currency code, or `None` to leave unchanged.
-    target_currency: Option<&'a str>,
-    /// New rollover policy, or `None` to leave unchanged.
-    rollover: Option<RolloverPolicy>,
-    /// New recurrence period, or `None` to leave unchanged.
-    period: Option<crate::Period>,
-    /// New tag filter: `Some(Some(s))` sets it, `Some(None)` clears it, `None` leaves it unchanged.
-    #[expect(
-        clippy::option_option,
-        reason = "outer Some = patch; inner None = clear the field"
-    )]
-    tag_filter: Option<Option<String>>,
-}
-
 /// Arg struct for [`archive_budget`].
 #[derive(Serialize)]
 struct ArchiveBudgetArgs<'a> {
@@ -271,6 +245,8 @@ struct ArchiveBudgetArgs<'a> {
 struct CreateBudgetArgs<'a> {
     /// Account ID to attach the budget to.
     account_id: &'a str,
+    /// Effective date for the budget's first revision.
+    effective_from: jiff::civil::Date,
     /// Optional display name for the budget.
     name: Option<&'a str>,
     /// Optional target amount in minor currency units.
@@ -367,36 +343,6 @@ pub async fn get_budget_transactions(
     .await
 }
 
-/// Updates mutable fields on a budget.
-///
-/// # Errors
-///
-/// Returns [`BcError`] if the backend call fails.
-#[inline]
-pub async fn update_budget(
-    budget_id: &str,
-    name: Option<Option<String>>,
-    target_minor_units: Option<i64>,
-    target_currency: Option<&str>,
-    rollover: Option<RolloverPolicy>,
-    period: Option<crate::Period>,
-    tag_filter: Option<Option<String>>,
-) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result(
-        commands::UPDATE_BUDGET,
-        UpdateBudgetArgs {
-            budget_id,
-            name,
-            target_minor_units,
-            target_currency,
-            rollover,
-            period,
-            tag_filter,
-        },
-    )
-    .await
-}
-
 /// Archives a budget.
 ///
 /// # Errors
@@ -407,6 +353,60 @@ pub async fn archive_budget(budget_id: &str) -> Result<(), BcError> {
     tauri_sys::core::invoke_result(commands::ARCHIVE_BUDGET, ArchiveBudgetArgs { budget_id }).await
 }
 
+/// Arg struct for [`list_budget_revisions`].
+#[derive(Serialize)]
+struct ListBudgetRevisionsArgs<'a> {
+    /// Budget whose revisions to list.
+    budget_id: &'a str,
+    /// Display window start (inclusive).
+    display_start: jiff::civil::Date,
+    /// Display window end (exclusive).
+    display_end: jiff::civil::Date,
+}
+
+/// Arg struct for [`resolve_effective_date`].
+#[derive(Serialize)]
+struct ResolveEffectiveDateArgs<'a> {
+    /// Budget providing the revision grid.
+    budget_id: &'a str,
+    /// Candidate effective date to snap.
+    date: jiff::civil::Date,
+    /// Revision id to exclude (the one being amended), or `None`.
+    exclude_revision_id: Option<&'a str>,
+}
+
+/// Arg struct for [`revise_budget`].
+#[derive(Serialize)]
+struct ReviseBudgetArgs<'a> {
+    /// Budget to revise.
+    budget_id: &'a str,
+    /// Existing revision id to amend, or `None` to add a new revision.
+    revision_id: Option<&'a str>,
+    /// Resolved (exact) effective date.
+    effective_from: jiff::civil::Date,
+    /// Display name, or `None` for the account-name fallback.
+    name: Option<&'a str>,
+    /// Target amount in minor units, or `None` for tracking-only.
+    target_minor_units: Option<i64>,
+    /// Target currency code, paired with `target_minor_units`.
+    target_currency: Option<&'a str>,
+    /// Rollover policy.
+    rollover: RolloverPolicy,
+    /// Recurrence period.
+    period: crate::Period,
+    /// Tag filter id, or `None`.
+    tag_filter: Option<&'a str>,
+}
+
+/// Arg struct for [`remove_budget_revision`].
+#[derive(Serialize)]
+struct RemoveBudgetRevisionArgs<'a> {
+    /// Budget owning the revision.
+    budget_id: &'a str,
+    /// Revision to remove.
+    revision_id: &'a str,
+}
+
 /// Creates a new budget.
 ///
 /// # Errors
@@ -415,6 +415,7 @@ pub async fn archive_budget(budget_id: &str) -> Result<(), BcError> {
 #[inline]
 pub async fn create_budget(
     account_id: &str,
+    effective_from: jiff::civil::Date,
     name: Option<&str>,
     target_minor_units: Option<i64>,
     target_currency: Option<&str>,
@@ -426,6 +427,7 @@ pub async fn create_budget(
         commands::CREATE_BUDGET,
         CreateBudgetArgs {
             account_id,
+            effective_from,
             name,
             target_minor_units,
             target_currency,
@@ -469,6 +471,105 @@ pub async fn clear_posting_spread(posting_id: &str) -> Result<(), BcError> {
     tauri_sys::core::invoke_result(
         commands::CLEAR_POSTING_SPREAD,
         ClearPostingSpreadArgs { posting_id },
+    )
+    .await
+}
+
+/// Lists a budget's revisions for a display window.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn list_budget_revisions(
+    budget_id: &str,
+    display_start: jiff::civil::Date,
+    display_end: jiff::civil::Date,
+) -> Result<Vec<BudgetRevisionView>, BcError> {
+    tauri_sys::core::invoke_result(
+        commands::LIST_BUDGET_REVISIONS,
+        ListBudgetRevisionsArgs {
+            budget_id,
+            display_start,
+            display_end,
+        },
+    )
+    .await
+}
+
+/// Resolves a snap effective date to the next grid boundary.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn resolve_effective_date(
+    budget_id: &str,
+    date: jiff::civil::Date,
+    exclude_revision_id: Option<&str>,
+) -> Result<jiff::civil::Date, BcError> {
+    tauri_sys::core::invoke_result(
+        commands::RESOLVE_EFFECTIVE_DATE,
+        ResolveEffectiveDateArgs {
+            budget_id,
+            date,
+            exclude_revision_id,
+        },
+    )
+    .await
+}
+
+/// Adds or amends a budget revision.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "IPC wrapper mirrors the Tauri command's flat argument list"
+)]
+#[inline]
+pub async fn revise_budget(
+    budget_id: &str,
+    revision_id: Option<&str>,
+    effective_from: jiff::civil::Date,
+    name: Option<&str>,
+    target_minor_units: Option<i64>,
+    target_currency: Option<&str>,
+    rollover: RolloverPolicy,
+    period: crate::Period,
+    tag_filter: Option<&str>,
+) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result(
+        commands::REVISE_BUDGET,
+        ReviseBudgetArgs {
+            budget_id,
+            revision_id,
+            effective_from,
+            name,
+            target_minor_units,
+            target_currency,
+            rollover,
+            period,
+            tag_filter,
+        },
+    )
+    .await
+}
+
+/// Removes a budget revision.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn remove_budget_revision(budget_id: &str, revision_id: &str) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result(
+        commands::REMOVE_BUDGET_REVISION,
+        RemoveBudgetRevisionArgs {
+            budget_id,
+            revision_id,
+        },
     )
     .await
 }

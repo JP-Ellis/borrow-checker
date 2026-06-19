@@ -36,14 +36,23 @@ pub const GET_NATIVE_PERIODS: &str = "get_native_periods";
 /// Command: get transactions matched by a budget in a date range.
 pub const GET_BUDGET_TRANSACTIONS: &str = "get_budget_transactions";
 
-/// Command: update mutable fields on a budget.
-pub const UPDATE_BUDGET: &str = "update_budget";
-
 /// Command: archive a budget.
 pub const ARCHIVE_BUDGET: &str = "archive_budget";
 
 /// Command: create a new budget on an account.
 pub const CREATE_BUDGET: &str = "create_budget";
+
+/// Lists a budget's revisions for a display window.
+pub const LIST_BUDGET_REVISIONS: &str = "list_budget_revisions";
+
+/// Resolves a snap effective date to the next grid boundary.
+pub const RESOLVE_EFFECTIVE_DATE: &str = "resolve_effective_date";
+
+/// Adds or amends a budget revision.
+pub const REVISE_BUDGET: &str = "revise_budget";
+
+/// Removes a budget revision.
+pub const REMOVE_BUDGET_REVISION: &str = "remove_budget_revision";
 
 /// Command: set an accrual spread on a posting.
 pub const SET_POSTING_SPREAD: &str = "set_posting_spread";
