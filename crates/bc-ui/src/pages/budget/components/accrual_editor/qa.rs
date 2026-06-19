@@ -14,7 +14,12 @@ pub fn AccrualEditorQa() -> impl IntoView {
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
                     "no existing spread (save only)"
                 </p>
-                <AccrualEditor posting_id="posting-001" on_change=Callback::new(|()| {}) />
+                <AccrualEditor
+                    posting_id="posting-001"
+                    spread_from=None
+                    spread_until=None
+                    on_change=Callback::new(|()| {})
+                />
             </section>
 
             <section>
@@ -23,8 +28,8 @@ pub fn AccrualEditorQa() -> impl IntoView {
                 </p>
                 <AccrualEditor
                     posting_id="posting-002"
-                    spread_from="2026-06-01"
-                    spread_until="2026-06-30"
+                    spread_from=Some(jiff::civil::Date::constant(2026, 6, 1))
+                    spread_until=Some(jiff::civil::Date::constant(2026, 6, 30))
                     on_change=Callback::new(|()| {})
                 />
             </section>
@@ -56,8 +61,8 @@ fn AccrualEditorSavingState() -> impl IntoView {
         <div style="opacity:0.6;pointer-events:none">
             <AccrualEditor
                 posting_id="posting-003"
-                spread_from="2026-07-01"
-                spread_until="2026-07-31"
+                spread_from=Some(jiff::civil::Date::constant(2026, 7, 1))
+                spread_until=Some(jiff::civil::Date::constant(2026, 7, 31))
                 on_change=Callback::new(|()| {})
             />
         </div>
@@ -77,8 +82,8 @@ fn AccrualEditorErrorState() -> impl IntoView {
         <div>
             <AccrualEditor
                 posting_id="posting-invalid-error-qa"
-                spread_from="2026-08-01"
-                spread_until="2026-08-31"
+                spread_from=Some(jiff::civil::Date::constant(2026, 8, 1))
+                spread_until=Some(jiff::civil::Date::constant(2026, 8, 31))
                 on_change=Callback::new(|()| {})
             />
             <p style="font-size:10px;color:var(--bc-ink-mute);margin-top:4px;">
