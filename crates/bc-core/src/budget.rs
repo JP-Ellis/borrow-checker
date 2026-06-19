@@ -4,25 +4,13 @@ use sqlx::SqlitePool;
 
 // MARK: BudgetService
 
-/// Internal row type returned from the `budgets` table.
+/// Internal row type returned from the `budgets` table (anchor columns only).
 #[derive(sqlx::FromRow)]
 struct BudgetRow {
     /// Raw budget ID string.
     id: String,
     /// Raw account ID string this budget is anchored to.
     account_id: String,
-    /// Optional raw tag ID string for sub-budget filtering.
-    tag_filter: Option<String>,
-    /// Optional display name override.
-    name: Option<String>,
-    /// Decimal string for the allocation target amount; NULL = tracking-only.
-    target_amount: Option<String>,
-    /// Commodity code for the target amount; NULL when `target_amount` is NULL.
-    target_currency: Option<String>,
-    /// JSON-serialised [`bc_models::Period`].
-    period: String,
-    /// Snake-case rollover policy string.
-    rollover: String,
     /// ISO 8601 creation timestamp.
     created_at: String,
     /// ISO 8601 archive timestamp; NULL if still active.
@@ -43,31 +31,93 @@ impl TryFrom<BudgetRow> for bc_models::Budget {
             .id
             .parse::<bc_models::BudgetId>()
             .map_err(|e| crate::BcError::BadData(format!("invalid budget id '{}': {e}", row.id)))?;
-
         let account_id = row
             .account_id
             .parse::<bc_models::AccountId>()
             .map_err(|e| {
                 crate::BcError::BadData(format!("invalid account_id '{}': {e}", row.account_id))
             })?;
-
-        let tag_filter = row
-            .tag_filter
+        let created_at = row.created_at.parse::<jiff::Timestamp>().map_err(|e| {
+            crate::BcError::BadData(format!("invalid created_at '{}': {e}", row.created_at))
+        })?;
+        let archived_at = row
+            .archived_at
             .as_deref()
             .map(|s| {
-                s.parse::<bc_models::TagId>()
-                    .map_err(|e| crate::BcError::BadData(format!("invalid tag_filter '{s}': {e}")))
+                s.parse::<jiff::Timestamp>()
+                    .map_err(|e| crate::BcError::BadData(format!("invalid archived_at '{s}': {e}")))
             })
             .transpose()?;
+        Ok(bc_models::Budget::builder()
+            .id(id)
+            .account_id(account_id)
+            .created_at(created_at)
+            .maybe_archived_at(archived_at)
+            .build())
+    }
+}
 
+/// Internal row type for budget revision queries.
+#[derive(sqlx::FromRow)]
+struct BudgetRevisionRow {
+    /// Raw revision ID string.
+    id: String,
+    /// Raw budget ID string this revision belongs to.
+    budget_id: String,
+    /// YYYY-MM-DD effective-from date.
+    effective_from: String,
+    /// Optional display name.
+    name: Option<String>,
+    /// Decimal string for the target amount; NULL = tracking-only.
+    target_amount: Option<String>,
+    /// Commodity code for the target; NULL when `target_amount` is NULL.
+    target_currency: Option<String>,
+    /// JSON-serialised [`bc_models::Period`].
+    period: String,
+    /// Snake-case rollover policy string.
+    rollover: String,
+    /// Optional raw tag ID string for sub-budget filtering.
+    tag_filter: Option<String>,
+    /// ISO 8601 creation timestamp.
+    created_at: String,
+}
+
+impl TryFrom<BudgetRevisionRow> for bc_models::BudgetRevision {
+    type Error = crate::BcError;
+
+    /// Converts a raw database row into a domain [`bc_models::BudgetRevision`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::BadData`] if any stored value cannot be parsed.
+    #[inline]
+    fn try_from(row: BudgetRevisionRow) -> crate::BcResult<Self> {
+        let id = row
+            .id
+            .parse::<bc_models::BudgetRevisionId>()
+            .map_err(|e| {
+                crate::BcError::BadData(format!("invalid revision id '{}': {e}", row.id))
+            })?;
+        let budget_id = row.budget_id.parse::<bc_models::BudgetId>().map_err(|e| {
+            crate::BcError::BadData(format!("invalid budget_id '{}': {e}", row.budget_id))
+        })?;
+        let effective_from =
+            row.effective_from
+                .parse::<jiff::civil::Date>()
+                .map_err(|e| {
+                    crate::BcError::BadData(format!(
+                        "invalid effective_from '{}': {e}",
+                        row.effective_from
+                    ))
+                })?;
         let target = match (row.target_amount, row.target_currency) {
-            (Some(amt_str), Some(cur_str)) => {
-                let qty = amt_str.parse::<bc_models::Decimal>().map_err(|e| {
-                    crate::BcError::BadData(format!("invalid target_amount '{amt_str}': {e}"))
+            (Some(a), Some(c)) => {
+                let qty = a.parse::<bc_models::Decimal>().map_err(|e| {
+                    crate::BcError::BadData(format!("invalid target_amount '{a}': {e}"))
                 })?;
                 Some(bc_models::Amount::new(
                     qty,
-                    bc_models::CommodityCode::new(&cur_str),
+                    bc_models::CommodityCode::new(&c),
                 ))
             }
             (None, None) => None,
@@ -77,100 +127,36 @@ impl TryFrom<BudgetRow> for bc_models::Budget {
                 ));
             }
         };
-
         let period: bc_models::Period = serde_json::from_str(&row.period).map_err(|e| {
             crate::BcError::BadData(format!("invalid period '{}': {e}", row.period))
         })?;
-
         let rollover = crate::db::from_db_str::<bc_models::RolloverPolicy>(&row.rollover)?;
-
+        let tag_filter = row
+            .tag_filter
+            .as_deref()
+            .map(|s| {
+                s.parse::<bc_models::TagId>()
+                    .map_err(|e| crate::BcError::BadData(format!("invalid tag_filter '{s}': {e}")))
+            })
+            .transpose()?;
         let created_at = row.created_at.parse::<jiff::Timestamp>().map_err(|e| {
             crate::BcError::BadData(format!("invalid created_at '{}': {e}", row.created_at))
         })?;
-
-        let archived_at = row
-            .archived_at
-            .as_deref()
-            .map(|s| {
-                s.parse::<jiff::Timestamp>()
-                    .map_err(|e| crate::BcError::BadData(format!("invalid archived_at '{s}': {e}")))
-            })
-            .transpose()?;
-
-        Ok(bc_models::Budget::builder()
+        Ok(bc_models::BudgetRevision::builder()
             .id(id)
-            .account_id(account_id)
-            .maybe_tag_filter(tag_filter)
+            .budget_id(budget_id)
+            .effective_from(effective_from)
             .maybe_name(row.name)
             .maybe_target(target)
             .period(period)
             .rollover(rollover)
-            .created_at(created_at)
-            .maybe_archived_at(archived_at)
-            .build())
-    }
-}
-
-/// Internal row type for budget allocation queries.
-#[derive(sqlx::FromRow)]
-struct BudgetAllocationRow {
-    /// Raw allocation ID string.
-    id: String,
-    /// Raw budget ID string this allocation belongs to.
-    budget_id: String,
-    /// YYYY-MM-DD canonical period start date.
-    period_start: String,
-    /// Decimal string of the allocated amount.
-    amount: String,
-    /// Commodity code for the allocation amount.
-    commodity: String,
-    /// ISO 8601 creation timestamp.
-    created_at: String,
-}
-
-impl TryFrom<BudgetAllocationRow> for bc_models::BudgetAllocation {
-    type Error = crate::BcError;
-
-    /// Converts a raw database row into a domain [`bc_models::BudgetAllocation`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::BcError::BadData`] if any stored value cannot be parsed.
-    #[inline]
-    fn try_from(row: BudgetAllocationRow) -> crate::BcResult<Self> {
-        let id = row
-            .id
-            .parse::<bc_models::BudgetAllocationId>()
-            .map_err(|e| {
-                crate::BcError::BadData(format!("invalid budget_alloc id '{}': {e}", row.id))
-            })?;
-        let budget_id = row.budget_id.parse::<bc_models::BudgetId>().map_err(|e| {
-            crate::BcError::BadData(format!("invalid budget_id '{}': {e}", row.budget_id))
-        })?;
-        let period_start = row.period_start.parse::<jiff::civil::Date>().map_err(|e| {
-            crate::BcError::BadData(format!("invalid period_start '{}': {e}", row.period_start))
-        })?;
-        let value = row.amount.parse::<bc_models::Decimal>().map_err(|e| {
-            crate::BcError::BadData(format!("invalid amount '{}': {e}", row.amount))
-        })?;
-        let created_at = row.created_at.parse::<jiff::Timestamp>().map_err(|e| {
-            crate::BcError::BadData(format!("invalid created_at '{}': {e}", row.created_at))
-        })?;
-
-        Ok(bc_models::BudgetAllocation::builder()
-            .id(id)
-            .budget_id(budget_id)
-            .period_start(period_start)
-            .amount(bc_models::Amount::new(
-                value,
-                bc_models::CommodityCode::new(row.commodity),
-            ))
+            .maybe_tag_filter(tag_filter)
             .created_at(created_at)
             .build())
     }
 }
 
-/// Budget CRUD and allocation service.
+/// Budget CRUD service (anchor + revision management).
 #[derive(Debug, Clone)]
 pub struct BudgetService {
     /// The SQLite connection pool.
@@ -188,88 +174,105 @@ impl BudgetService {
 
     // MARK: Budget management
 
-    /// Creates a new budget anchored to `account_id`.
+    /// Creates a new budget anchor and its initial revision.
     ///
     /// # Errors
     ///
     /// Returns [`crate::BcError::InvalidInput`] if `rollover` is `CapAtTarget` and
     /// `target` is `None`.
-    /// Returns [`crate::BcError`] on event append or database insert failure (including
-    /// uniqueness constraint violations — duplicate untagged or tagged budget).
+    /// Returns [`crate::BcError`] on event append or database insert failure.
     #[builder]
     #[inline]
     pub async fn create(
         &self,
         account_id: bc_models::AccountId,
+        effective_from: jiff::civil::Date,
         tag_filter: Option<bc_models::TagId>,
         #[builder(into)] name: Option<String>,
         target: Option<bc_models::Amount>,
         period: bc_models::Period,
         rollover: bc_models::RolloverPolicy,
-    ) -> crate::BcResult<bc_models::Budget> {
+    ) -> crate::BcResult<(bc_models::Budget, bc_models::BudgetRevision)> {
         if rollover == bc_models::RolloverPolicy::CapAtTarget && target.is_none() {
             return Err(crate::BcError::InvalidInput(
                 "CapAtTarget rollover policy requires a target amount".to_owned(),
             ));
         }
 
-        let id = bc_models::BudgetId::new();
+        let budget_id = bc_models::BudgetId::new();
+        let revision_id = bc_models::BudgetRevisionId::new();
         let now = jiff::Timestamp::now();
 
         let event = crate::events::Event::BudgetCreated {
-            budget_id: id.clone(),
+            budget_id: budget_id.clone(),
             account_id: account_id.clone(),
-            tag_filter: tag_filter.clone(),
+            created_at: now,
+            revision_id: revision_id.clone(),
+            effective_from,
             name: name.clone(),
             target: target.clone(),
             period: period.clone(),
             rollover,
-            created_at: now,
+            tag_filter: tag_filter.clone(),
         };
 
         let mut db_tx = self.pool.begin().await?;
         crate::events::insert_event(&event, &mut db_tx).await?;
 
+        sqlx::query("INSERT INTO budgets (id, account_id, created_at) VALUES (?, ?, ?)")
+            .bind(budget_id.to_string())
+            .bind(account_id.to_string())
+            .bind(now.to_string())
+            .execute(&mut *db_tx)
+            .await?;
+
         let period_json = serde_json::to_string(&period)?;
         let rollover_db = crate::db::to_db_str(rollover)?;
-        let (target_amount, target_currency) = target.as_ref().map_or((None, None), |a| {
+        let (t_amt, t_cur) = target.as_ref().map_or((None, None), |a| {
             (Some(a.value().to_string()), Some(a.commodity().to_string()))
         });
-
         sqlx::query(
-            "INSERT INTO budgets \
-             (id, account_id, tag_filter, name, target_amount, target_currency, \
-              period, rollover, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO budget_revisions \
+             (id, budget_id, effective_from, name, target_amount, target_currency, \
+              period, rollover, tag_filter, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(id.to_string())
-        .bind(account_id.to_string())
-        .bind(tag_filter.as_ref().map(ToString::to_string))
+        .bind(revision_id.to_string())
+        .bind(budget_id.to_string())
+        .bind(effective_from.to_string())
         .bind(&name)
-        .bind(&target_amount)
-        .bind(&target_currency)
+        .bind(&t_amt)
+        .bind(&t_cur)
         .bind(&period_json)
         .bind(&rollover_db)
+        .bind(tag_filter.as_ref().map(ToString::to_string))
         .bind(now.to_string())
         .execute(&mut *db_tx)
         .await?;
 
         db_tx.commit().await?;
-        tracing::info!(budget_id = %id, %account_id, "budget created");
+        tracing::info!(%budget_id, %account_id, "budget created");
 
-        Ok(bc_models::Budget::builder()
-            .id(id)
+        let budget = bc_models::Budget::builder()
+            .id(budget_id.clone())
             .account_id(account_id)
-            .maybe_tag_filter(tag_filter)
+            .created_at(now)
+            .build();
+        let revision = bc_models::BudgetRevision::builder()
+            .id(revision_id)
+            .budget_id(budget_id)
+            .effective_from(effective_from)
             .maybe_name(name)
             .maybe_target(target)
             .period(period)
             .rollover(rollover)
+            .maybe_tag_filter(tag_filter)
             .created_at(now)
-            .build())
+            .build();
+        Ok((budget, revision))
     }
 
-    /// Lists all active (non-archived) budgets, ordered by `account_id` then `tag_filter`.
+    /// Lists all active (non-archived) budget anchors, ordered by `created_at`.
     ///
     /// # Errors
     ///
@@ -277,11 +280,8 @@ impl BudgetService {
     #[inline]
     pub async fn list(&self) -> crate::BcResult<Vec<bc_models::Budget>> {
         let rows = sqlx::query_as::<_, BudgetRow>(
-            "SELECT id, account_id, tag_filter, name, target_amount, target_currency, \
-              period, rollover, created_at, archived_at \
-             FROM budgets \
-             WHERE archived_at IS NULL \
-             ORDER BY account_id ASC, tag_filter ASC NULLS FIRST",
+            "SELECT id, account_id, created_at, archived_at FROM budgets \
+             WHERE archived_at IS NULL ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -289,7 +289,7 @@ impl BudgetService {
         rows.into_iter().map(bc_models::Budget::try_from).collect()
     }
 
-    /// Lists all active budgets anchored to a specific account.
+    /// Lists all active budget anchors for a specific account.
     ///
     /// # Errors
     ///
@@ -300,11 +300,8 @@ impl BudgetService {
         account_id: &bc_models::AccountId,
     ) -> crate::BcResult<Vec<bc_models::Budget>> {
         let rows = sqlx::query_as::<_, BudgetRow>(
-            "SELECT id, account_id, tag_filter, name, target_amount, target_currency, \
-              period, rollover, created_at, archived_at \
-             FROM budgets \
-             WHERE account_id = ? AND archived_at IS NULL \
-             ORDER BY tag_filter ASC NULLS FIRST",
+            "SELECT id, account_id, created_at, archived_at FROM budgets \
+             WHERE account_id = ? AND archived_at IS NULL ORDER BY created_at ASC",
         )
         .bind(account_id.to_string())
         .fetch_all(&self.pool)
@@ -313,7 +310,7 @@ impl BudgetService {
         rows.into_iter().map(bc_models::Budget::try_from).collect()
     }
 
-    /// Fetches an active budget by ID.
+    /// Fetches an active budget anchor by ID.
     ///
     /// # Errors
     ///
@@ -322,9 +319,7 @@ impl BudgetService {
     #[inline]
     pub async fn get(&self, id: &bc_models::BudgetId) -> crate::BcResult<bc_models::Budget> {
         let row = sqlx::query_as::<_, BudgetRow>(
-            "SELECT id, account_id, tag_filter, name, target_amount, target_currency, \
-              period, rollover, created_at, archived_at \
-             FROM budgets \
+            "SELECT id, account_id, created_at, archived_at FROM budgets \
              WHERE id = ? AND archived_at IS NULL",
         )
         .bind(id.to_string())
@@ -371,184 +366,134 @@ impl BudgetService {
         Ok(())
     }
 
-    /// Updates the mutable properties of an active budget.
-    ///
-    /// `name`, `target`, `rollover`, `period`, and `tag_filter` may be changed.
-    /// Pass `None` for any field to leave it unchanged.
-    /// Pass `Some(None)` for `name` or `tag_filter` to clear them.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::BcError::NotFound`] if no active budget exists with `id`.
-    /// Returns [`crate::BcError::InvalidInput`] if `rollover` is `CapAtTarget` but
-    /// no target is set after applying the update.
-    /// Returns [`crate::BcError`] on event or database failure.
-    #[inline]
-    pub async fn update(
-        &self,
-        id: &bc_models::BudgetId,
-        name: Option<Option<String>>,
-        target: Option<Option<bc_models::Amount>>,
-        rollover: Option<bc_models::RolloverPolicy>,
-        period: Option<bc_models::Period>,
-        tag_filter: Option<Option<bc_models::TagId>>,
-    ) -> crate::BcResult<bc_models::Budget> {
-        let budget = self.get(id).await?;
+    // MARK: Revision management
 
-        let new_name = name
-            .clone()
-            .unwrap_or_else(|| budget.name().map(str::to_owned));
-        let new_target = target.clone().unwrap_or_else(|| budget.target().cloned());
-        let new_rollover = rollover.unwrap_or_else(|| budget.rollover());
-        let new_period = period.clone().unwrap_or_else(|| budget.period().clone());
-        let new_tag_filter = tag_filter
-            .clone()
-            .unwrap_or_else(|| budget.tag_filter().cloned());
-
-        if matches!(new_rollover, bc_models::RolloverPolicy::CapAtTarget) && new_target.is_none() {
-            return Err(crate::BcError::InvalidInput(
-                "rollover policy CapAtTarget requires a non-None target".into(),
-            ));
-        }
-
-        let event = crate::events::Event::BudgetUpdated {
-            budget_id: id.clone(),
-            name: name.clone(),
-            target: target.clone(),
-            rollover,
-            period,
-            tag_filter,
-        };
-
-        let mut db_tx = self.pool.begin().await?;
-        crate::events::insert_event(&event, &mut db_tx).await?;
-
-        let period_json = serde_json::to_string(&new_period)?;
-
-        sqlx::query(
-            "UPDATE budgets \
-             SET name = ?, \
-                 target_amount = ?, \
-                 target_currency = ?, \
-                 rollover = ?, \
-                 period = ?, \
-                 tag_filter = ? \
-             WHERE id = ? AND archived_at IS NULL",
-        )
-        .bind(new_name.as_deref())
-        .bind(new_target.as_ref().map(|a| a.value().to_string()))
-        .bind(new_target.as_ref().map(|a| a.commodity().as_str()))
-        .bind(crate::db::to_db_str(new_rollover)?)
-        .bind(&period_json)
-        .bind(new_tag_filter.as_ref().map(ToString::to_string))
-        .bind(id.to_string())
-        .execute(&mut *db_tx)
-        .await?;
-
-        db_tx.commit().await?;
-        tracing::info!(budget_id = %id, "budget updated");
-
-        self.get(id).await
-    }
-
-    // MARK: Allocation management
-
-    /// Records (or replaces) the allocation for `budget_id` in the period starting on `period_start`.
-    ///
-    /// If an allocation already exists for that period, it is replaced (upsert).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::BcError::NotFound`] if the budget does not exist or is archived.
-    /// Returns [`crate::BcError`] on event append or database failure.
-    #[inline]
-    pub async fn allocate(
-        &self,
-        budget_id: &bc_models::BudgetId,
-        period_start: jiff::civil::Date,
-        amount: bc_models::Amount,
-    ) -> crate::BcResult<bc_models::BudgetAllocation> {
-        // Verify budget exists.
-        let budget = self.get(budget_id).await?;
-
-        // Validate allocation commodity matches budget target (when target is present).
-        if let Some(target) = budget.target()
-            && target.commodity() != amount.commodity()
-        {
-            return Err(crate::BcError::InvalidInput(format!(
-                "allocation commodity '{}' does not match budget target commodity '{}'",
-                amount.commodity(),
-                target.commodity(),
-            )));
-        }
-
-        // Validate that period_start is the canonical start of a period.
-        let canonical = budget.period().range_containing(period_start).0;
-        if canonical != period_start {
-            return Err(crate::BcError::InvalidInput(format!(
-                "'{period_start}' is not a canonical period start for {:?} period; \
-                 did you mean '{canonical}'?",
-                budget.period(),
-            )));
-        }
-
-        let id = bc_models::BudgetAllocationId::new();
-        let candidate_created_at = jiff::Timestamp::now();
-
-        let event = crate::events::Event::BudgetAllocated {
-            budget_id: budget_id.clone(),
-            period_start,
-            amount: amount.clone(),
-        };
-
-        let mut db_tx = self.pool.begin().await?;
-        crate::events::insert_event(&event, &mut db_tx).await?;
-
-        let row = sqlx::query_as::<_, BudgetAllocationRow>(
-            "INSERT INTO budget_allocations \
-             (id, budget_id, period_start, amount, commodity, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?) \
-             ON CONFLICT (budget_id, period_start) \
-             DO UPDATE SET amount = excluded.amount, commodity = excluded.commodity \
-             RETURNING *",
-        )
-        .bind(id.to_string())
-        .bind(budget_id.to_string())
-        .bind(period_start.to_string())
-        .bind(amount.value().to_string())
-        .bind(amount.commodity().as_str())
-        .bind(candidate_created_at.to_string())
-        .fetch_one(&mut *db_tx)
-        .await?;
-
-        db_tx.commit().await?;
-        tracing::info!(budget_id = %budget_id, %period_start, "budget allocated");
-
-        bc_models::BudgetAllocation::try_from(row)
-    }
-
-    /// Retrieves the allocation for a budget in a specific period, if one exists.
+    /// Lists all revisions for a budget, ordered ascending by `effective_from`.
     ///
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on database or data parse failure.
     #[inline]
-    pub async fn get_allocation(
+    pub async fn revisions(
         &self,
         budget_id: &bc_models::BudgetId,
-        period_start: jiff::civil::Date,
-    ) -> crate::BcResult<Option<bc_models::BudgetAllocation>> {
-        let row: Option<BudgetAllocationRow> = sqlx::query_as(
-            "SELECT id, budget_id, period_start, amount, commodity, created_at \
-             FROM budget_allocations \
-             WHERE budget_id = ? AND period_start = ?",
+    ) -> crate::BcResult<Vec<bc_models::BudgetRevision>> {
+        let rows = sqlx::query_as::<_, BudgetRevisionRow>(
+            "SELECT id, budget_id, effective_from, name, target_amount, target_currency, \
+              period, rollover, tag_filter, created_at FROM budget_revisions \
+             WHERE budget_id = ? ORDER BY effective_from ASC",
         )
         .bind(budget_id.to_string())
-        .bind(period_start.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
 
-        row.map(bc_models::BudgetAllocation::try_from).transpose()
+        rows.into_iter()
+            .map(bc_models::BudgetRevision::try_from)
+            .collect()
+    }
+
+    /// Upserts a revision for an active budget (add new effective date, or amend existing).
+    ///
+    /// Conflict resolution is by `revision_id` (ON CONFLICT(id) DO UPDATE).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::InvalidInput`] if `CapAtTarget` rollover has no target.
+    /// Returns [`crate::BcError::NotFound`] if the budget is missing or archived.
+    /// Returns [`crate::BcError`] on event or database failure.
+    #[inline]
+    pub async fn revise(
+        &self,
+        budget_id: &bc_models::BudgetId,
+        revision: bc_models::BudgetRevision,
+    ) -> crate::BcResult<bc_models::BudgetRevision> {
+        let _ = self.get(budget_id).await?;
+        if revision.rollover() == bc_models::RolloverPolicy::CapAtTarget
+            && revision.target().is_none()
+        {
+            return Err(crate::BcError::InvalidInput(
+                "CapAtTarget rollover policy requires a target amount".to_owned(),
+            ));
+        }
+        let event = crate::events::Event::BudgetRevisionSet {
+            budget_id: budget_id.clone(),
+            revision_id: revision.id().clone(),
+            effective_from: revision.effective_from(),
+            name: revision.name().map(str::to_owned),
+            target: revision.target().cloned(),
+            period: revision.period().clone(),
+            rollover: revision.rollover(),
+            tag_filter: revision.tag_filter().cloned(),
+        };
+        let mut db_tx = self.pool.begin().await?;
+        crate::events::insert_event(&event, &mut db_tx).await?;
+        let period_json = serde_json::to_string(revision.period())?;
+        let (t_amt, t_cur) = revision.target().map_or((None, None), |a| {
+            (Some(a.value().to_string()), Some(a.commodity().to_string()))
+        });
+        sqlx::query(
+            "INSERT INTO budget_revisions \
+             (id, budget_id, effective_from, name, target_amount, target_currency, \
+              period, rollover, tag_filter, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET \
+               effective_from = excluded.effective_from, name = excluded.name, \
+               target_amount = excluded.target_amount, target_currency = excluded.target_currency, \
+               period = excluded.period, rollover = excluded.rollover, \
+               tag_filter = excluded.tag_filter",
+        )
+        .bind(revision.id().to_string())
+        .bind(budget_id.to_string())
+        .bind(revision.effective_from().to_string())
+        .bind(revision.name())
+        .bind(&t_amt)
+        .bind(&t_cur)
+        .bind(&period_json)
+        .bind(crate::db::to_db_str(revision.rollover())?)
+        .bind(revision.tag_filter().map(ToString::to_string))
+        .bind(revision.created_at().to_string())
+        .execute(&mut *db_tx)
+        .await?;
+        db_tx.commit().await?;
+        tracing::info!(%budget_id, revision_id = %revision.id(), "budget revised");
+        Ok(revision)
+    }
+
+    /// Removes a revision from a budget; rejects removing the last remaining revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::InvalidInput`] if it is the only revision (archive instead).
+    /// Returns [`crate::BcError::NotFound`] if the revision does not exist on this budget.
+    /// Returns [`crate::BcError`] on event or database failure.
+    #[inline]
+    pub async fn remove_revision(
+        &self,
+        budget_id: &bc_models::BudgetId,
+        revision_id: &bc_models::BudgetRevisionId,
+    ) -> crate::BcResult<()> {
+        let existing = self.revisions(budget_id).await?;
+        if existing.len() <= 1 {
+            return Err(crate::BcError::InvalidInput(
+                "cannot remove the last revision; archive the budget instead".to_owned(),
+            ));
+        }
+        if !existing.iter().any(|r| r.id() == revision_id) {
+            return Err(crate::BcError::NotFound(revision_id.to_string()));
+        }
+        let event = crate::events::Event::BudgetRevisionRemoved {
+            budget_id: budget_id.clone(),
+            revision_id: revision_id.clone(),
+        };
+        let mut db_tx = self.pool.begin().await?;
+        crate::events::insert_event(&event, &mut db_tx).await?;
+        sqlx::query("DELETE FROM budget_revisions WHERE id = ? AND budget_id = ?")
+            .bind(revision_id.to_string())
+            .bind(budget_id.to_string())
+            .execute(&mut *db_tx)
+            .await?;
+        db_tx.commit().await?;
+        Ok(())
     }
 }
 
@@ -984,86 +929,13 @@ mod budget_service_tests {
     use bc_models::CommodityCode;
     use bc_models::Decimal;
     use bc_models::Period;
-    use bc_models::Posting;
-    use bc_models::PostingId;
     use bc_models::RolloverPolicy;
-    use bc_models::TagId;
-    use bc_models::Transaction;
-    use bc_models::TransactionStatus;
     use jiff::Timestamp;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
-    use rust_decimal_macros::dec;
 
     use super::BudgetService;
-    use super::BudgetStatusEngine;
     use crate::account::Service as AccountService;
-    use crate::fx::noop_fx;
-    use crate::transaction::Service as TransactionService;
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn create_budget_returns_budget_with_id(pool: sqlx::SqlitePool) {
-        let accounts = AccountService::new(pool.clone());
-        let groceries = accounts
-            .create()
-            .name("Groceries")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
-        let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(groceries.clone())
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("create budget");
-
-        assert!(budget.id().to_string().starts_with("budget_"));
-        assert_eq!(budget.account_id(), &groceries);
-        assert!(budget.is_tracking_only());
-        assert!(budget.tag_filter().is_none());
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn create_budget_with_target(pool: sqlx::SqlitePool) {
-        let accounts = AccountService::new(pool.clone());
-        let groceries = accounts
-            .create()
-            .name("Groceries")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
-        let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(groceries.clone())
-            .target(Amount::new(
-                Decimal::from(600_i32),
-                CommodityCode::new("AUD"),
-            ))
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("create budget");
-
-        assert!(!budget.is_tracking_only());
-        assert_eq!(
-            budget.target(),
-            Some(&Amount::new(
-                Decimal::from(600_i32),
-                CommodityCode::new("AUD")
-            ))
-        );
-    }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn list_returns_only_active_budgets(pool: sqlx::SqlitePool) {
@@ -1078,9 +950,10 @@ mod budget_service_tests {
             .expect("create account");
 
         let svc = BudgetService::new(pool.clone());
-        let b = svc
+        let (b, _) = svc
             .create()
             .account_id(acc)
+            .effective_from(Date::constant(2026, 1, 1))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
             .call()
@@ -1091,85 +964,6 @@ mod budget_service_tests {
 
         let list = svc.list().await.expect("list");
         assert!(list.is_empty(), "archived budget should not appear");
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn allocate_and_get_allocation(pool: sqlx::SqlitePool) {
-        let accounts = AccountService::new(pool.clone());
-        let acc = accounts
-            .create()
-            .name("Groceries")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
-        let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(acc)
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("create budget");
-
-        let alloc = svc
-            .allocate(
-                budget.id(),
-                Date::constant(2026, 3, 1),
-                Amount::new(Decimal::from(600_i32), CommodityCode::new("AUD")),
-            )
-            .await
-            .expect("allocate");
-
-        assert_eq!(alloc.period_start(), Date::constant(2026, 3, 1));
-        assert_eq!(alloc.budget_id(), budget.id());
-
-        let fetched = svc
-            .get_allocation(budget.id(), Date::constant(2026, 3, 1))
-            .await
-            .expect("get_allocation");
-        assert_eq!(
-            fetched.expect("allocation should exist").amount(),
-            &Amount::new(Decimal::from(600_i32), CommodityCode::new("AUD"))
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn duplicate_untagged_budget_on_same_account_fails(pool: sqlx::SqlitePool) {
-        let accounts = AccountService::new(pool.clone());
-        let acc = accounts
-            .create()
-            .name("Groceries")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
-        let svc = BudgetService::new(pool.clone());
-        svc.create()
-            .account_id(acc.clone())
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("first create should succeed");
-
-        let result = svc
-            .create()
-            .account_id(acc)
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await;
-
-        assert!(
-            result.is_err(),
-            "second untagged budget should fail uniqueness constraint"
-        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1185,9 +979,10 @@ mod budget_service_tests {
             .expect("create account");
 
         let svc = BudgetService::new(pool.clone());
-        let budget = svc
+        let (budget, _) = svc
             .create()
             .account_id(acc)
+            .effective_from(Date::constant(2026, 1, 1))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
             .call()
@@ -1206,787 +1001,81 @@ mod budget_service_tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn carry_forward_rollover_adds_surplus_to_next_period(pool: sqlx::SqlitePool) {
+    async fn create_makes_anchor_and_initial_revision(pool: sqlx::SqlitePool) {
         let accounts = AccountService::new(pool.clone());
-        let budget_account = accounts
-            .create()
-            .name("Groceries")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create budget account");
-        let offset_account = accounts
-            .create()
-            .name("Checking")
-            .account_type(AccountType::Asset)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create offset account");
-
+        let acc = accounts.create().name("Groceries")
+            .account_type(AccountType::Expense).kind(AccountKind::DepositAccount)
+            .call().await.expect("account");
         let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(budget_account.clone())
-            .target(Amount::new(
-                Decimal::from(100_i32),
-                CommodityCode::new("AUD"),
-            ))
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::CarryForward)
-            .call()
-            .await
-            .expect("create budget");
-
-        svc.allocate(
-            budget.id(),
-            Date::constant(2030, 7, 1),
-            Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
-        )
-        .await
-        .expect("allocate July");
-
-        let txns = TransactionService::new(pool.clone());
-        let tx = Transaction::builder()
-            .id(bc_models::TransactionId::new())
-            .date(Date::constant(2030, 7, 15))
-            .description("Weekly shop")
-            .postings(vec![
-                Posting::builder()
-                    .id(PostingId::new())
-                    .account_id(budget_account)
-                    .amount(Amount::new(dec!(60), CommodityCode::new("AUD")))
-                    .build(),
-                Posting::builder()
-                    .id(PostingId::new())
-                    .account_id(offset_account)
-                    .amount(Amount::new(dec!(-60), CommodityCode::new("AUD")))
-                    .build(),
-            ])
-            .status(TransactionStatus::Cleared)
-            .created_at(Timestamp::now())
-            .build();
-        txns.create(tx).await.expect("create transaction");
-
-        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
-        let statuses = engine
-            .status_all(&[budget], Date::constant(2030, 8, 15))
-            .await
-            .expect("status_all August");
-
-        assert_eq!(statuses.len(), 1, "expected exactly one status");
-        let aug = statuses
-            .first()
-            .expect("statuses is non-empty; checked above");
-        assert_eq!(
-            aug.rollover,
-            dec!(40),
-            "rollover should be 40 AUD (100 allocated - 60 spent in July)"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn carry_forward_rollover_includes_first_period_when_created_on_period_start(
-        pool: sqlx::SqlitePool,
-    ) {
-        let accounts = AccountService::new(pool.clone());
-        let budget_account = accounts
-            .create()
-            .name("Groceries")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create budget account");
-        let offset_account = accounts
-            .create()
-            .name("Checking")
-            .account_type(AccountType::Asset)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create offset account");
-
-        let svc = BudgetService::new(pool.clone());
-
-        let created_budget = svc
-            .create()
-            .account_id(budget_account.clone())
-            .target(Amount::new(
-                Decimal::from(100_i32),
-                CommodityCode::new("AUD"),
-            ))
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::CarryForward)
-            .call()
-            .await
-            .expect("create budget");
-
-        // Backdate created_at to 2030-07-01 so budget_epoch = 2030-07-01.
-        sqlx::query("UPDATE budgets SET created_at = '2030-07-01T00:00:00Z' WHERE id = ?")
-            .bind(created_budget.id().to_string())
-            .execute(&pool)
-            .await
-            .expect("backdate created_at");
-
-        let budget = svc.get(created_budget.id()).await.expect("re-fetch budget");
-
-        svc.allocate(
-            budget.id(),
-            Date::constant(2030, 7, 1),
-            Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
-        )
-        .await
-        .expect("allocate July");
-
-        let txns = TransactionService::new(pool.clone());
-        let tx = Transaction::builder()
-            .id(bc_models::TransactionId::new())
-            .date(Date::constant(2030, 7, 15))
-            .description("Weekly shop")
-            .postings(vec![
-                Posting::builder()
-                    .id(PostingId::new())
-                    .account_id(budget_account)
-                    .amount(Amount::new(dec!(60), CommodityCode::new("AUD")))
-                    .build(),
-                Posting::builder()
-                    .id(PostingId::new())
-                    .account_id(offset_account)
-                    .amount(Amount::new(dec!(-60), CommodityCode::new("AUD")))
-                    .build(),
-            ])
-            .status(bc_models::TransactionStatus::Cleared)
-            .created_at(Timestamp::now())
-            .build();
-        txns.create(tx).await.expect("create transaction");
-
-        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
-        let statuses = engine
-            .status_all(&[budget], Date::constant(2030, 8, 15))
-            .await
-            .expect("status_all August");
-
-        let aug = statuses.first().expect("one status");
-        assert_eq!(
-            aug.rollover,
-            dec!(40),
-            "July surplus (100 - 60 = 40) must carry into August even when budget was \
-             created on 2030-07-01 (the first day of the period)"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn carry_forward_rollover_survives_gap_period(pool: sqlx::SqlitePool) {
-        // Period A: allocate 100, spend 60 → surplus 40.
-        // Period B: no allocation, no activity (gap).
-        // Period C: rollover should be 40, not 0.
-        let accounts = AccountService::new(pool.clone());
-        let budget_account = accounts
-            .create()
-            .name("Entertainment")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create budget account");
-        let offset_account = accounts
-            .create()
-            .name("Checking")
-            .account_type(AccountType::Asset)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create offset account");
-
-        let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(budget_account.clone())
-            .target(Amount::new(
-                Decimal::from(100_i32),
-                CommodityCode::new("AUD"),
-            ))
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::CarryForward)
-            .call()
-            .await
-            .expect("create budget");
-
-        // Period A: July 2030 — allocate 100, spend 60.
-        svc.allocate(
-            budget.id(),
-            Date::constant(2030, 7, 1),
-            Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
-        )
-        .await
-        .expect("allocate July");
-
-        let txns = TransactionService::new(pool.clone());
-        let tx = Transaction::builder()
-            .id(bc_models::TransactionId::new())
-            .date(Date::constant(2030, 7, 15))
-            .description("Concert")
-            .postings(vec![
-                Posting::builder()
-                    .id(PostingId::new())
-                    .account_id(budget_account)
-                    .amount(Amount::new(dec!(60), CommodityCode::new("AUD")))
-                    .build(),
-                Posting::builder()
-                    .id(PostingId::new())
-                    .account_id(offset_account)
-                    .amount(Amount::new(dec!(-60), CommodityCode::new("AUD")))
-                    .build(),
-            ])
-            .status(bc_models::TransactionStatus::Cleared)
-            .created_at(Timestamp::now())
-            .build();
-        txns.create(tx).await.expect("create transaction");
-
-        // Period B (August 2030): no allocation, no activity — pure gap.
-        // Period C: September 2030 — should see 40 rollover from July.
-        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
-        let statuses = engine
-            .status_all(&[budget], Date::constant(2030, 9, 15))
-            .await
-            .expect("status_all September");
-
-        let sep = statuses.first().expect("one status");
-        assert_eq!(
-            sep.rollover,
-            dec!(40),
-            "40 AUD surplus from July must survive an empty August and appear in September"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn cap_at_target_clamps_rollover_to_target(pool: sqlx::SqlitePool) {
-        let accounts = AccountService::new(pool.clone());
-        let budget_account = accounts
-            .create()
-            .name("Entertainment")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create budget account");
-
-        let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(budget_account)
-            .target(Amount::new(
-                Decimal::from(100_i32),
-                CommodityCode::new("AUD"),
-            ))
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::CapAtTarget)
-            .call()
-            .await
-            .expect("create budget");
-
-        svc.allocate(
-            budget.id(),
-            Date::constant(2030, 7, 1),
-            Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
-        )
-        .await
-        .expect("allocate July");
-
-        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
-        let statuses = engine
-            .status_all(&[budget], Date::constant(2030, 8, 15))
-            .await
-            .expect("status_all August");
-
-        assert_eq!(statuses.len(), 1, "expected exactly one status");
-        let aug = statuses
-            .first()
-            .expect("statuses is non-empty; checked above");
-        assert_eq!(
-            aug.rollover,
-            dec!(100),
-            "rollover capped at target (100), not 200"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn duplicate_tagged_budget_on_same_account_fails(pool: sqlx::SqlitePool) {
-        let accounts = AccountService::new(pool.clone());
-        let acc = accounts
-            .create()
-            .name("Dining")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
-        let tag_id = TagId::new();
-        sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, 'restaurant', ?)")
-            .bind(tag_id.to_string())
-            .bind(Timestamp::now().to_string())
-            .execute(&pool)
-            .await
-            .expect("insert tag");
-
-        let svc = BudgetService::new(pool.clone());
-        svc.create()
+        let (budget, rev) = svc.create()
             .account_id(acc.clone())
-            .tag_filter(tag_id.clone())
-            .target(Amount::new(
-                Decimal::from(200_i32),
-                CommodityCode::new("AUD"),
-            ))
-            .period(Period::Monthly)
+            .effective_from(Date::constant(2026, 1, 1))
+            .period(Period::Weekly)
             .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("first tagged budget should succeed");
-
-        let result = svc
-            .create()
-            .account_id(acc)
-            .tag_filter(tag_id)
-            .target(Amount::new(
-                Decimal::from(200_i32),
-                CommodityCode::new("AUD"),
-            ))
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await;
-
-        assert!(
-            result.is_err(),
-            "duplicate tagged budget on same account should fail"
-        );
+            .call().await.expect("create");
+        assert_eq!(budget.account_id(), &acc);
+        assert!(!budget.is_archived());
+        assert_eq!(rev.budget_id(), budget.id());
+        assert_eq!(rev.effective_from(), Date::constant(2026, 1, 1));
+        let all = svc.revisions(budget.id()).await.expect("revisions");
+        assert_eq!(all.len(), 1);
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn can_create_untagged_budget_after_archiving_previous(pool: sqlx::SqlitePool) {
+    async fn revise_adds_second_revision_ordered(pool: sqlx::SqlitePool) {
         let accounts = AccountService::new(pool.clone());
-        let acc = accounts
-            .create()
-            .name("Transport")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
+        let acc = accounts.create().name("Salary")
+            .account_type(AccountType::Income).kind(AccountKind::DepositAccount)
+            .call().await.expect("account");
         let svc = BudgetService::new(pool.clone());
-        let first = svc
-            .create()
-            .account_id(acc.clone())
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("create first untagged budget");
-
-        svc.archive(first.id()).await.expect("archive first budget");
-
-        let second = svc
-            .create()
-            .account_id(acc)
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await;
-
-        assert!(
-            second.is_ok(),
-            "creating a new untagged budget after archiving the previous one should succeed"
-        );
+        let (budget, _) = svc.create()
+            .account_id(acc).effective_from(Date::constant(2026, 1, 1))
+            .period(Period::Monthly).rollover(RolloverPolicy::ResetToZero)
+            .call().await.expect("create");
+        let future = bc_models::BudgetRevision::builder()
+            .budget_id(budget.id().clone())
+            .effective_from(Date::constant(2027, 1, 1))
+            .target(Amount::new(Decimal::from(9000_i32), CommodityCode::new("AUD")))
+            .period(Period::Monthly).rollover(RolloverPolicy::ResetToZero)
+            .created_at(Timestamp::now()).build();
+        svc.revise(budget.id(), future).await.expect("revise");
+        let all = svc.revisions(budget.id()).await.expect("revisions");
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].effective_from(), Date::constant(2026, 1, 1));
+        assert_eq!(all[1].effective_from(), Date::constant(2027, 1, 1));
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn update_budget_name(pool: sqlx::SqlitePool) {
+    async fn cannot_remove_last_revision(pool: sqlx::SqlitePool) {
         let accounts = AccountService::new(pool.clone());
-        let acc = accounts
-            .create()
-            .name("Groceries")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
+        let acc = accounts.create().name("Food")
+            .account_type(AccountType::Expense).kind(AccountKind::DepositAccount)
+            .call().await.expect("account");
         let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(acc)
-            .name("Old Name")
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("create budget");
-
-        let updated = svc
-            .update(
-                budget.id(),
-                Some(Some("New Name".into())),
-                None,
-                None,
-                None,
-                None,
-            )
-            .await
-            .expect("update budget");
-
-        assert_eq!(updated.name(), Some("New Name"), "name updated");
-        assert_eq!(updated.rollover(), budget.rollover(), "rollover unchanged");
+        let (budget, rev) = svc.create()
+            .account_id(acc).effective_from(Date::constant(2026, 1, 1))
+            .period(Period::Weekly).rollover(RolloverPolicy::ResetToZero)
+            .call().await.expect("create");
+        let err = svc.remove_revision(budget.id(), rev.id()).await;
+        assert!(matches!(err, Err(crate::BcError::InvalidInput(_))), "got {err:?}");
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn update_budget_target_and_rollover(pool: sqlx::SqlitePool) {
+    async fn revise_capattarget_without_target_rejected(pool: sqlx::SqlitePool) {
         let accounts = AccountService::new(pool.clone());
-        let acc = accounts
-            .create()
-            .name("Entertainment")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
+        let acc = accounts.create().name("Fun")
+            .account_type(AccountType::Expense).kind(AccountKind::DepositAccount)
+            .call().await.expect("account");
         let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(acc)
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("create budget");
-
-        let updated = svc
-            .update(
-                budget.id(),
-                None,
-                Some(Some(Amount::new(
-                    Decimal::from(200_i32),
-                    CommodityCode::new("AUD"),
-                ))),
-                Some(RolloverPolicy::CarryForward),
-                None,
-                None,
-            )
-            .await
-            .expect("update budget");
-
-        assert_eq!(
-            updated.target().map(bc_models::Amount::value),
-            Some(Decimal::from(200_i32)),
-            "target set to 200 AUD"
-        );
-        assert_eq!(
-            updated.rollover(),
-            RolloverPolicy::CarryForward,
-            "rollover updated"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn update_cap_at_target_without_target_fails(pool: sqlx::SqlitePool) {
-        let accounts = AccountService::new(pool.clone());
-        let acc = accounts
-            .create()
-            .name("Savings")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
-        let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(acc)
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("create tracking-only budget");
-
-        let result = svc
-            .update(
-                budget.id(),
-                None,
-                None,
-                Some(RolloverPolicy::CapAtTarget),
-                None,
-                None,
-            )
-            .await;
-
-        assert!(
-            matches!(result, Err(crate::BcError::InvalidInput(_))),
-            "CapAtTarget without target must fail with InvalidInput"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn allocate_rejects_non_canonical_period_start(pool: sqlx::SqlitePool) {
-        let accounts = AccountService::new(pool.clone());
-        let acc = accounts
-            .create()
-            .name("Groceries")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
-        let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(acc)
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("create budget");
-
-        // 2026-03-15 is mid-month; canonical start for Monthly is 2026-03-01.
-        let result = svc
-            .allocate(
-                budget.id(),
-                Date::constant(2026, 3, 15),
-                Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
-            )
-            .await;
-
-        assert!(
-            matches!(result, Err(crate::BcError::InvalidInput(_))),
-            "mid-period date must be rejected with InvalidInput, got: {result:?}"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn reallocate_returns_id_that_exists_in_db(pool: sqlx::SqlitePool) {
-        let accounts = AccountService::new(pool.clone());
-        let acc = accounts
-            .create()
-            .name("Groceries")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
-        let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(acc)
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("create budget");
-
-        let first = svc
-            .allocate(
-                budget.id(),
-                Date::constant(2026, 3, 1),
-                Amount::new(Decimal::from(500_i32), CommodityCode::new("AUD")),
-            )
-            .await
-            .expect("first allocation");
-
-        let second = svc
-            .allocate(
-                budget.id(),
-                Date::constant(2026, 3, 1),
-                Amount::new(Decimal::from(300_i32), CommodityCode::new("AUD")),
-            )
-            .await
-            .expect("re-allocation (upsert)");
-
-        // The first allocation's ID must survive the upsert.
-        assert_eq!(
-            first.id(),
-            second.id(),
-            "re-allocation must return the original row's ID, not a freshly-generated one"
-        );
-
-        // Verify the returned ID actually exists in the database.
-        let fetched = svc
-            .get_allocation(budget.id(), Date::constant(2026, 3, 1))
-            .await
-            .expect("get_allocation succeeds")
-            .expect("allocation exists");
-
-        assert_eq!(fetched.id(), second.id(), "fetched ID matches returned ID");
-        assert_eq!(
-            fetched.amount().value(),
-            Decimal::from(300_i32),
-            "amount updated to 300"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn status_for_window_rejects_inverted_window(pool: sqlx::SqlitePool) {
-        let accounts = AccountService::new(pool.clone());
-        let acc = accounts
-            .create()
-            .name("Groceries")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
-        let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(acc)
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("create budget");
-
-        // end (Jan 1) is before start (Feb 1) — inverted window.
-        let window = bc_models::BudgetWindow::custom(
-            Date::constant(2026, 2, 1),
-            Date::constant(2026, 1, 1),
-            "inverted",
-        );
-
-        let engine = BudgetStatusEngine::new(pool, noop_fx());
-        let result = engine.status_for_window(&budget, window).await;
-
-        assert!(
-            matches!(result, Err(crate::BcError::InvalidInput(_))),
-            "inverted window must return InvalidInput, got: {result:?}"
-        );
-    }
-
-    #[cfg(test)]
-    impl BudgetStatusEngine {
-        /// Test accessor for `rollover_for` private method.
-        pub(crate) async fn rollover_for_test(
-            &self,
-            budget: &bc_models::Budget,
-            period_start: jiff::civil::Date,
-        ) -> crate::BcResult<bc_models::Decimal> {
-            self.rollover_for(budget, period_start).await
-        }
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn budget_actuals_include_child_accounts(pool: sqlx::SqlitePool) {
-        let accounts = AccountService::new(pool.clone());
-
-        let parent_account = accounts
-            .create()
-            .name("Food")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create parent expense account");
-
-        let child_account = accounts
-            .create()
-            .name("Groceries")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .parent_id(&parent_account)
-            .call()
-            .await
-            .expect("create child expense account");
-
-        let asset_account = accounts
-            .create()
-            .name("Checking")
-            .account_type(AccountType::Asset)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create asset account");
-
-        let txns = TransactionService::new(pool.clone());
-        let tx = Transaction::builder()
-            .id(bc_models::TransactionId::new())
-            .date(Date::constant(2026, 3, 15))
-            .description("Grocery run")
-            .postings(vec![
-                Posting::builder()
-                    .id(PostingId::new())
-                    .account_id(child_account)
-                    .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
-                    .build(),
-                Posting::builder()
-                    .id(PostingId::new())
-                    .account_id(asset_account)
-                    .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
-                    .build(),
-            ])
-            .status(TransactionStatus::Cleared)
-            .created_at(Timestamp::now())
-            .build();
-        txns.create(tx).await.expect("create transaction");
-
-        let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(parent_account)
-            .target(Amount::new(
-                Decimal::from(500_i32),
-                CommodityCode::new("AUD"),
-            ))
-            .period(Period::Monthly)
-            .rollover(RolloverPolicy::ResetToZero)
-            .call()
-            .await
-            .expect("create budget on parent account");
-
-        let engine = BudgetStatusEngine::new(pool, noop_fx());
-        let status = engine
-            .status_for(&budget, Date::constant(2026, 3, 15))
-            .await
-            .expect("status_for succeeds");
-
-        assert_eq!(
-            status.actuals,
-            Decimal::from(100_i32),
-            "actuals must include postings to child accounts"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn rollover_for_custom_period_returns_zero(pool: sqlx::SqlitePool) {
-        let accounts = AccountService::new(pool.clone());
-        let account = accounts
-            .create()
-            .name("Test Account")
-            .account_type(AccountType::Expense)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account");
-
-        let svc = BudgetService::new(pool.clone());
-        let budget = svc
-            .create()
-            .account_id(account)
-            .period(Period::custom(Some(30), None, None).expect("valid"))
-            .rollover(RolloverPolicy::CarryForward)
-            .call()
-            .await
-            .expect("budget created");
-
-        let engine = BudgetStatusEngine::new(pool, noop_fx());
-        let rollover = engine
-            .rollover_for_test(&budget, Date::constant(2026, 2, 1))
-            .await
-            .expect("no error");
-        assert_eq!(rollover, bc_models::Decimal::ZERO);
+        let (budget, _) = svc.create()
+            .account_id(acc).effective_from(Date::constant(2026, 1, 1))
+            .period(Period::Weekly).rollover(RolloverPolicy::ResetToZero)
+            .call().await.expect("create");
+        let bad = bc_models::BudgetRevision::builder()
+            .budget_id(budget.id().clone())
+            .effective_from(Date::constant(2026, 6, 1))
+            .period(Period::Weekly).rollover(RolloverPolicy::CapAtTarget)
+            .created_at(Timestamp::now()).build();
+        assert!(matches!(svc.revise(budget.id(), bad).await, Err(crate::BcError::InvalidInput(_))));
     }
 }
