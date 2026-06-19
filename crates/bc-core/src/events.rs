@@ -359,7 +359,6 @@ pub(crate) async fn insert_event(event: &Event, conn: &mut sqlx::SqliteConnectio
 #[cfg(test)]
 mod tests {
     use bc_models::AccountId;
-    use bc_models::CommodityCode;
     use pretty_assertions::assert_eq;
 
     use super::*;

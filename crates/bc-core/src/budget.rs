@@ -407,7 +407,7 @@ impl BudgetService {
         budget_id: &bc_models::BudgetId,
         revision: bc_models::BudgetRevision,
     ) -> crate::BcResult<bc_models::BudgetRevision> {
-        let _ = self.get(budget_id).await?;
+        drop(self.get(budget_id).await?);
         if revision.budget_id() != budget_id {
             return Err(crate::BcError::InvalidInput(format!(
                 "revision belongs to budget {}, not {budget_id}",
@@ -882,7 +882,7 @@ impl BudgetStatusEngine {
             // The previous period is the last resolved period strictly before period_start.
             let prev_periods = bc_models::periods_overlapping(
                 revisions, earliest.unwrap_or(period_start), period_start);
-            let Some(prev) = prev_periods.into_iter().filter(|p| p.end <= period_start).next_back()
+            let Some(prev) = prev_periods.into_iter().rfind(|p| p.end <= period_start)
             else { return Ok(bc_models::Decimal::ZERO) };
             // Both-sides rule: source must also carry.
             if matches!(prev.revision.rollover(), bc_models::RolloverPolicy::ResetToZero) {
@@ -1042,8 +1042,11 @@ mod budget_service_tests {
         svc.revise(budget.id(), future).await.expect("revise");
         let all = svc.revisions(budget.id()).await.expect("revisions");
         assert_eq!(all.len(), 2);
-        assert_eq!(all[0].effective_from(), Date::constant(2026, 1, 1));
-        assert_eq!(all[1].effective_from(), Date::constant(2027, 1, 1));
+        #[expect(clippy::indexing_slicing, reason = "index known valid: asserted len == 2 above")]
+        {
+            assert_eq!(all[0].effective_from(), Date::constant(2026, 1, 1));
+            assert_eq!(all[1].effective_from(), Date::constant(2027, 1, 1));
+        }
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1080,16 +1083,12 @@ mod budget_service_tests {
         assert!(matches!(svc.revise(budget.id(), bad).await, Err(crate::BcError::InvalidInput(_))));
     }
 
-    #[rstest::rstest]
-    #[case(RolloverPolicy::CarryForward, RolloverPolicy::CarryForward, dec!(40))]
-    #[case(RolloverPolicy::CarryForward, RolloverPolicy::ResetToZero, dec!(0))]
-    #[case(RolloverPolicy::ResetToZero, RolloverPolicy::CarryForward, dec!(0))]
-    #[sqlx::test(migrations = "./migrations")]
-    async fn rollover_across_boundary_respects_both_sides(
+    /// Shared setup for rollover-across-boundary tests.
+    async fn rollover_across_boundary_case(
         pool: sqlx::SqlitePool,
-        #[case] src_policy: RolloverPolicy,
-        #[case] dst_policy: RolloverPolicy,
-        #[case] expected: Decimal,
+        src_policy: RolloverPolicy,
+        dst_policy: RolloverPolicy,
+        expected: Decimal,
     ) {
         // Revision 1 (src): Jul 2030 monthly, target 100, spend 60 -> surplus 40.
         // Revision 2 (dst): Aug 1 2030 monthly. Rollover into Aug depends on policies.
@@ -1128,6 +1127,36 @@ mod budget_service_tests {
         let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
         let status = engine.status_for(&budget, Date::constant(2030, 8, 15)).await.expect("status");
         assert_eq!(status.rollover, expected);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rollover_carry_into_carry_preserves_surplus(pool: sqlx::SqlitePool) {
+        rollover_across_boundary_case(
+            pool,
+            RolloverPolicy::CarryForward,
+            RolloverPolicy::CarryForward,
+            dec!(40),
+        ).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rollover_carry_into_reset_drops_surplus(pool: sqlx::SqlitePool) {
+        rollover_across_boundary_case(
+            pool,
+            RolloverPolicy::CarryForward,
+            RolloverPolicy::ResetToZero,
+            dec!(0),
+        ).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rollover_reset_into_carry_drops_surplus(pool: sqlx::SqlitePool) {
+        rollover_across_boundary_case(
+            pool,
+            RolloverPolicy::ResetToZero,
+            RolloverPolicy::CarryForward,
+            dec!(0),
+        ).await;
     }
 
     #[sqlx::test(migrations = "./migrations")]

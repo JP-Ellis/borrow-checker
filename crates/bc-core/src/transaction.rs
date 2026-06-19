@@ -1242,8 +1242,21 @@ impl Service {
         Ok(())
     }
 
-    /// Lists all non-voided transactions with a posting matching `budget`'s
-    /// account (and optional tag filter) in `[period_start, period_end)`.
+    /// Lists all non-voided transactions with a posting against `account_id`
+    /// (optionally filtered to postings tagged with `tag_filter`) in
+    /// `[period_start, period_end)`.
+    ///
+    /// Because the tag filter is now time-varying (it lives on a
+    /// [`bc_models::BudgetRevision`]), callers must resolve the governing
+    /// revision themselves and pass the filter explicitly.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account whose posting tree to search.
+    /// * `tag_filter` - Optional tag; only postings tagged with this tag (or a
+    ///   descendant) are included.  `None` = no filter (all postings match).
+    /// * `period_start` - Inclusive start of the date range.
+    /// * `period_end` - Exclusive end of the date range.
     ///
     /// # Errors
     ///
@@ -1251,20 +1264,21 @@ impl Service {
     #[inline]
     pub async fn list_for_budget(
         &self,
-        budget: &bc_models::Budget,
+        account_id: &bc_models::AccountId,
+        tag_filter: Option<&bc_models::TagId>,
         period_start: jiff::civil::Date,
         period_end: jiff::civil::Date,
     ) -> BcResult<Vec<Transaction>> {
         let txns: Vec<Transaction> = self
             .list_for_account_tree_in_range(
-                budget.account_id(),
+                account_id,
                 Some(period_start),
                 Some(period_end),
             )
             .await?
             .collect();
 
-        let result = if let Some(tag) = budget.tag_filter() {
+        let result = if let Some(tag) = tag_filter {
             txns.into_iter()
                 .filter(|tx| {
                     tx.postings()
