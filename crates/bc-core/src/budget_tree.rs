@@ -12,7 +12,6 @@ use sqlx::SqlitePool;
 
 use crate::budget::BudgetService;
 use crate::budget::BudgetStatusEngine;
-use crate::period_overlap::overlapping_periods;
 
 // MARK: BudgetTreeItem
 
@@ -122,15 +121,14 @@ impl BudgetTreeService {
         let mut items: Vec<BudgetTreeItem> = Vec::with_capacity(budgets.len());
 
         for budget in &budgets {
-            let effective_target = self
-                .compute_effective_target(
-                    &budget_svc,
-                    budget,
-                    display_period,
-                    window_start,
-                    window_end,
-                )
-                .await?;
+            let revs = budget_svc.revisions(budget.id()).await?;
+            let gov = bc_models::governing_revision(&revs, window_start);
+            let effective_target = Self::compute_effective_target(
+                &revs,
+                display_start,
+                window_start,
+                window_end,
+            )?;
 
             let window =
                 bc_models::BudgetWindow::custom(window_start, window_end, "display".to_owned());
@@ -141,8 +139,17 @@ impl BudgetTreeService {
                 .ok_or_else(|| crate::BcError::NotFound(budget.account_id().to_string()))?
                 .clone();
 
-            let has_mixed_period = !periods_equivalent(display_period, budget.period());
-            let commodity = budget.target().map(|t| t.commodity().clone());
+            let gov_period = gov.map(bc_models::BudgetRevision::period);
+            let has_mixed_period = {
+                let overlapping_revs = bc_models::periods_overlapping(&revs, window_start, window_end);
+                let distinct_rev_ids: HashSet<_> = overlapping_revs
+                    .iter()
+                    .map(|p| p.revision.id())
+                    .collect();
+                distinct_rev_ids.len() > 1
+                    || !gov_period.is_none_or(|p| periods_equivalent(display_period, p))
+            };
+            let commodity = gov.and_then(|r| r.target()).map(|t| t.commodity().clone());
             let actuals = match status.commodity {
                 Some(c) => vec![Amount::new(status.actuals, c)],
                 None => vec![],
@@ -186,21 +193,32 @@ impl BudgetTreeService {
         let budget_svc = BudgetService::new(self.pool.clone());
         let status_engine = BudgetStatusEngine::new(self.pool.clone(), Arc::clone(&self.fx));
 
-        let overlaps = overlapping_periods(budget.period(), display_start, display_end)
-            .map_err(crate::BcError::InvalidInput)?;
+        let revs = budget_svc.revisions(budget.id()).await?;
 
-        let mut result = Vec::with_capacity(overlaps.len());
-        for overlap in overlaps {
-            let alloc = budget_svc
-                .get_allocation(budget.id(), overlap.native_start)
-                .await?;
-            let full_target = alloc
-                .as_ref()
-                .map(|a| a.amount().value())
-                .or_else(|| budget.target().map(bc_models::Amount::value))
-                .unwrap_or(Decimal::ZERO);
+        // Enumerate every revision-governed natural period that overlaps the display window.
+        // `bc_models::periods_overlapping` tiles each revision's grid from its `effective_from`,
+        // returning the natural period boundaries (`rp.start..rp.end`).
+        // We clip each to `[display_start, display_end)` to get the actual overlap span.
+        let resolved = bc_models::periods_overlapping(&revs, display_start, display_end);
 
-            let effective_target = budget.target().is_some().then(|| {
+        let mut result = Vec::new();
+        for rp in resolved {
+            let gov_rev = rp.revision;
+            let full_target = gov_rev.target().map_or(Decimal::ZERO, bc_models::Amount::value);
+
+            // Clip the natural period to the display window.
+            let overlap_start = rp.start.max(display_start);
+            let overlap_end = rp.end.min(display_end);
+
+            let overlap = crate::period_overlap::PeriodOverlap {
+                native_start: rp.start,
+                native_end: rp.end,
+                overlap_start,
+                overlap_end,
+            };
+
+            let has_target = gov_rev.target().is_some();
+            let effective_target = has_target.then(|| {
                 let native_days = overlap.native_days();
                 let overlap_days = overlap.overlap_days();
                 if native_days == 0_i32 {
@@ -235,36 +253,71 @@ impl BudgetTreeService {
         Ok(result)
     }
 
-    /// Computes the effective target for `budget` across the display window.
-    async fn compute_effective_target(
-        &self,
-        budget_svc: &BudgetService,
-        budget: &bc_models::Budget,
-        _display_period: &Period,
+    /// Computes the effective target for a budget across the display window.
+    ///
+    /// Iterates over every revision-governed sub-period within `[window_start, window_end)`,
+    /// pro-rates each revision's target by the fraction of its native period that falls inside
+    /// the window, and sums the contributions.  Returns `None` for tracking-only budgets
+    /// (i.e. when every governing revision has no target).
+    ///
+    /// # Arguments
+    ///
+    /// * `revs` - Revisions for the budget, sorted ascending by `effective_from`.
+    /// * `display_start` - The display period start (used to select the governing revision).
+    /// * `window_start` - Inclusive start of the display window.
+    /// * `window_end` - Exclusive end of the display window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on invalid window range or arithmetic overflow.
+    fn compute_effective_target(
+        revs: &[bc_models::BudgetRevision],
         display_start: Date,
-        display_end: Date,
+        window_start: Date,
+        window_end: Date,
     ) -> crate::BcResult<Option<Decimal>> {
-        if budget.target().is_none() {
+        // If no revision governs the display start, and there are no revisions at all,
+        // there is nothing to compute.
+        let gov = bc_models::governing_revision(revs, display_start);
+        if gov.is_none() && revs.is_empty() {
             return Ok(None);
         }
 
-        let overlaps = overlapping_periods(budget.period(), display_start, display_end)
-            .map_err(crate::BcError::InvalidInput)?;
+        // Walk every revision-governed sub-period in the window.
+        let resolved = bc_models::periods_overlapping(revs, window_start, window_end);
+        if resolved.is_empty() {
+            return Ok(None);
+        }
+
+        // Return None only if every governing revision is tracking-only.
+        let any_has_target = resolved.iter().any(|rp| rp.revision.target().is_some());
+        if !any_has_target {
+            return Ok(None);
+        }
 
         let mut total = Decimal::ZERO;
-        for overlap in overlaps {
-            let alloc = budget_svc
-                .get_allocation(budget.id(), overlap.native_start)
-                .await?;
-            let full = alloc
-                .as_ref()
-                .map(|a| a.amount().value())
-                .or_else(|| budget.target().map(bc_models::Amount::value))
-                .unwrap_or(Decimal::ZERO);
+        for rp in &resolved {
+            let rev = rp.revision;
+            let full = rev.target().map_or(Decimal::ZERO, bc_models::Amount::value);
 
-            let native_days = overlap.native_days();
-            let overlap_days = overlap.overlap_days();
-            let contribution = if native_days == 0_i32 {
+            // `rp.start..rp.end` is the natural period boundary for this revision-governed
+            // period (one week, one month, etc.).  Clip it to the display window to get the
+            // actual overlap, then pro-rate against the full native period.
+            let overlap_start = rp.start.max(window_start);
+            let overlap_end = rp.end.min(window_end);
+
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "Date subtraction is bounded by calendar range"
+            )]
+            let native_days = (rp.end - rp.start).get_days();
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "Date subtraction is bounded by calendar range"
+            )]
+            let overlap_days = (overlap_end - overlap_start).get_days();
+
+            let contribution = if native_days == 0_i32 || overlap_days <= 0_i32 {
                 Decimal::ZERO
             } else {
                 #[expect(
@@ -520,6 +573,7 @@ mod tests {
         budgets
             .create()
             .account_id(restaurants.clone())
+            .effective_from(Date::constant(2026, 1, 1))
             .target(Amount::new(dec!(300), CommodityCode::new("AUD")))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
@@ -592,6 +646,7 @@ mod tests {
         budgets
             .create()
             .account_id(gym.clone())
+            .effective_from(Date::constant(2026, 1, 1))
             .target(Amount::new(dec!(30), CommodityCode::new("AUD")))
             .period(Period::Weekly)
             .rollover(RolloverPolicy::ResetToZero)
@@ -647,6 +702,7 @@ mod tests {
         budgets
             .create()
             .account_id(food.clone())
+            .effective_from(Date::constant(2026, 1, 1))
             .target(Amount::new(dec!(500), CommodityCode::new("AUD")))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
@@ -656,6 +712,7 @@ mod tests {
         budgets
             .create()
             .account_id(restaurants.clone())
+            .effective_from(Date::constant(2026, 1, 1))
             .target(Amount::new(dec!(200), CommodityCode::new("AUD")))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
