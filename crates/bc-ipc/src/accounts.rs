@@ -507,6 +507,22 @@ impl Period {
             | Self::FinancialQuarter { .. } => 6,
         }
     }
+
+    /// Returns a compact human-readable label for this period.
+    #[must_use]
+    #[inline]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Fortnightly => "fortnightly",
+            Self::Monthly => "monthly",
+            Self::Quarterly => "quarterly",
+            Self::CalendarYear => "calendar year",
+            Self::FinancialYear { .. } => "financial year",
+            Self::FinancialQuarter { .. } => "financial quarter",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -682,6 +698,20 @@ mod tests {
         assert_eq!(
             tx2.tags.first().map(String::as_str),
             Some("category:groceries")
+        );
+    }
+
+    #[test]
+    fn period_label_is_human_readable() {
+        assert_eq!(Period::Weekly.label(), "weekly");
+        assert_eq!(Period::Monthly.label(), "monthly");
+        assert_eq!(
+            Period::FinancialYear {
+                start_month: 7,
+                start_day: 1
+            }
+            .label(),
+            "financial year"
         );
     }
 }
