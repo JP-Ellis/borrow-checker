@@ -131,12 +131,19 @@ pub async fn get_native_periods(
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
-    let commodity = budget
-        .target()
+    let revs = state
+        .budgets
+        .revisions(&bid)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let gov = bc_core::governing_revision(&revs, display_start);
+    let commodity = gov
+        .and_then(|r| r.target())
         .map(|t| t.commodity().as_str().to_owned())
         .ok_or_else(|| {
             bc_ipc::BcError::Internal(
-                "budget has no target — commodity required for amount conversion".to_owned(),
+                "budget has no target at display_start — commodity required for amount conversion"
+                    .to_owned(),
             )
         })?;
 
@@ -217,9 +224,17 @@ pub async fn get_budget_transactions(
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
+    let revs = state
+        .budgets
+        .revisions(&bid)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let gov = bc_core::governing_revision(&revs, period_start);
+    let tag_filter = gov.and_then(|r| r.tag_filter());
+
     let txns = state
         .transactions
-        .list_for_budget(&budget, period_start, period_end)
+        .list_for_budget(budget.account_id(), tag_filter, period_start, period_end)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
@@ -299,9 +314,32 @@ pub async fn update_budget(
         })?)),
     };
 
+    let existing_revs = state
+        .budgets
+        .revisions(&bid)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let earliest = existing_revs.into_iter().next().ok_or_else(|| {
+        bc_ipc::BcError::Internal("budget has no revisions".to_owned())
+    })?;
+
+    let revised = bc_models::BudgetRevision::builder()
+        .id(earliest.id().clone())
+        .budget_id(bid.clone())
+        .effective_from(earliest.effective_from())
+        .maybe_name(name.unwrap_or_else(|| earliest.name().map(str::to_owned)))
+        .maybe_target(
+            target.unwrap_or_else(|| earliest.target().cloned()),
+        )
+        .period(period_model.unwrap_or_else(|| earliest.period().clone()))
+        .rollover(rollover_model.unwrap_or(earliest.rollover()))
+        .maybe_tag_filter(tag.unwrap_or_else(|| earliest.tag_filter().cloned()))
+        .created_at(*earliest.created_at())
+        .build();
+
     state
         .budgets
-        .update(&bid, name, target, rollover_model, period_model, tag)
+        .revise(&bid, revised)
         .await
         .map(|_| ())
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
@@ -387,10 +425,13 @@ pub async fn create_budget(
         })
         .transpose()?;
 
+    let today = jiff::Zoned::now().date();
+
     state
         .budgets
         .create()
         .account_id(aid)
+        .effective_from(today)
         .maybe_name(name)
         .maybe_target(target)
         .period(period.into_model())
