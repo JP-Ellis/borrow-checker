@@ -140,81 +140,64 @@ fn allocate_to_budget() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
+/// Revising a budget target overwrites the previous target in the governing revision.
 #[test]
-fn reallocate_updates_amount() {
+fn revise_target_overwrites_amount() {
     let ctx = TestContext::new();
     let acc_id = create_expense_account(&ctx);
     let budget_id = create_budget(&ctx, &acc_id);
 
+    // Update to 300 AUD.
     let first_out = ctx
         .command()
         .args([
             "--json",
             "budget",
-            "allocate",
-            "--budget",
+            "update",
+            "--id",
             &budget_id,
-            "--amount",
-            "500",
+            "--target",
+            "300",
             "--commodity",
             "AUD",
-            "--period-start",
-            "2030-01-01",
         ])
         .output()
-        .expect("first allocate executed");
+        .expect("first update executed");
     assert!(
         first_out.status.success(),
-        "first allocate should succeed: {}",
+        "first update should succeed: {}",
         String::from_utf8_lossy(&first_out.stderr)
     );
 
-    let mut second_cmd = ctx.command();
-    second_cmd.args([
-        "budget",
-        "allocate",
-        "--budget",
-        &budget_id,
-        "--amount",
-        "300",
-        "--commodity",
-        "AUD",
-        "--period-start",
-        "2030-01-01",
-    ]);
-    cmd_snapshot!(ctx, &mut second_cmd);
-
-    // Verify the allocation is overwritten (not accumulated).
-    let third_out = ctx
+    // Update to 200 AUD; verify the target is overwritten (not accumulated).
+    let second_out = ctx
         .command()
         .args([
             "--json",
             "budget",
-            "allocate",
-            "--budget",
+            "update",
+            "--id",
             &budget_id,
-            "--amount",
+            "--target",
             "200",
             "--commodity",
             "AUD",
-            "--period-start",
-            "2030-01-01",
         ])
         .output()
-        .expect("third allocate executed");
+        .expect("second update executed");
     assert!(
-        third_out.status.success(),
-        "third allocate should succeed: {}",
-        String::from_utf8_lossy(&third_out.stderr)
+        second_out.status.success(),
+        "second update should succeed: {}",
+        String::from_utf8_lossy(&second_out.stderr)
     );
-    let alloc_json: serde_json::Value =
-        serde_json::from_slice(&third_out.stdout).expect("valid JSON");
-    let amount_value = alloc_json
-        .get("amount")
-        .and_then(|a| a.get("value"))
+    let rev_json: serde_json::Value =
+        serde_json::from_slice(&second_out.stdout).expect("valid JSON");
+    let target_value = rev_json
+        .get("target")
+        .and_then(|t| t.get("value"))
         .and_then(serde_json::Value::as_str)
-        .expect("amount.value");
-    assert_eq!(amount_value, "200");
+        .expect("target.value");
+    assert_eq!(target_value, "200");
 }
 
 #[test]
@@ -280,35 +263,15 @@ fn budget_status_empty() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
+/// Status shows the governing revision's target as the allocated amount.
 #[test]
-fn budget_status_with_allocation() {
+fn budget_status_with_target() {
     let ctx = TestContext::new();
     let acc_id = create_expense_account(&ctx);
-    let budget_id = create_budget(&ctx, &acc_id);
+    let _budget_id = create_budget(&ctx, &acc_id);
 
-    let alloc_out = ctx
-        .command()
-        .args([
-            "--json",
-            "budget",
-            "allocate",
-            "--budget",
-            &budget_id,
-            "--amount",
-            "500",
-            "--commodity",
-            "AUD",
-            "--period-start",
-            "2030-01-01",
-        ])
-        .output()
-        .expect("allocate executed");
-    assert!(
-        alloc_out.status.success(),
-        "allocate should succeed: {}",
-        String::from_utf8_lossy(&alloc_out.stderr)
-    );
-
+    // The budget was created with a 500 AUD monthly target; status should
+    // reflect that directly from the governing revision.
     let mut cmd = ctx.command();
     cmd.args(["budget", "status", "--as-of", "2030-01-15"]);
     cmd_snapshot!(ctx, &mut cmd);
