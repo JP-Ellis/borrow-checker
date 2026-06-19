@@ -116,10 +116,10 @@ impl BudgetSummary {
 pub struct NativePeriodRow {
     /// Human-readable label, e.g. `"w24 · 9–15 Jun"` or `"Oct 2026 (31 of 365 days)"`.
     pub label: String,
-    /// ISO-8601 start of this native period (inclusive), e.g. `"2026-06-09"`.
-    pub period_start: String,
-    /// ISO-8601 end of this native period (exclusive), e.g. `"2026-06-16"`.
-    pub period_end: String,
+    /// Start of this native period (inclusive).
+    pub period_start: jiff::civil::Date,
+    /// End of this native period (exclusive).
+    pub period_end: jiff::civil::Date,
     /// Effective target for the overlap of this native period with the display window.
     pub effective_target: Option<Amount>,
     /// Actual spend within this native period.
@@ -132,15 +132,15 @@ impl NativePeriodRow {
     #[inline]
     pub fn new(
         label: impl Into<String>,
-        period_start: impl Into<String>,
-        period_end: impl Into<String>,
+        period_start: jiff::civil::Date,
+        period_end: jiff::civil::Date,
         effective_target: Option<Amount>,
         spent: Amount,
     ) -> Self {
         Self {
             label: label.into(),
-            period_start: period_start.into(),
-            period_end: period_end.into(),
+            period_start,
+            period_end,
             effective_target,
             spent,
         }
@@ -212,8 +212,8 @@ mod tests {
     fn native_period_row_serde_roundtrip() {
         let row = NativePeriodRow::new(
             "w24 · 9–15 Jun",
-            "2026-06-09",
-            "2026-06-16",
+            jiff::civil::Date::constant(2026, 6, 9),
+            jiff::civil::Date::constant(2026, 6, 16),
             Some(Amount::new(15_000, "AUD", 2)),
             Amount::new(8_200, "AUD", 2),
         );

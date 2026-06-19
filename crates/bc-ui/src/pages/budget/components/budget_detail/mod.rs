@@ -101,11 +101,11 @@ fn PostingRow(
 ) -> impl IntoView {
     let spread_open = RwSignal::new(false);
     let has_spread = posting.spread_from.is_some();
-    let spread_from = posting.spread_from.clone();
-    let spread_until = posting.spread_until.clone();
+    let spread_from = posting.spread_from.map(|d| d.to_string());
+    let spread_until = posting.spread_until.map(|d| d.to_string());
     let posting_id = posting.id.clone();
 
-    let spread_label = match (&posting.spread_from, &posting.spread_until) {
+    let spread_label = match (&spread_from, &spread_until) {
         (Some(f), Some(u)) => format!("{f} \u{2013} {u}"),
         (Some(f), None) => f.clone(),
         _ => String::new(),
@@ -177,7 +177,7 @@ fn TxRow(
                 class=move || if expanded.get() { style::txn_row_expanded } else { style::txn_row }
                 on:click=move |_| expanded.update(|e| *e = !*e)
             >
-                <span class=style::txn_date>{tx.date.clone()}</span>
+                <span class=style::txn_date>{tx.date.to_string()}</span>
                 <span>{tx.payee.clone()}</span>
                 <span class=style::txn_amt>{display_amount.format_short()}</span>
             </div>

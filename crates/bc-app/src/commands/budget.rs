@@ -160,8 +160,8 @@ pub async fn get_native_periods(
             let spent = crate::ipc::decimal_to_amount(n.actuals, &commodity)?;
             Ok(bc_ipc::NativePeriodRow::new(
                 label,
-                n.overlap.native_start.to_string(),
-                n.overlap.native_end.to_string(),
+                n.overlap.native_start,
+                n.overlap.native_end,
                 effective_target,
                 spent,
             ))

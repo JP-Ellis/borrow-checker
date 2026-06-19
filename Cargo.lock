@@ -427,6 +427,7 @@ name = "bc-ipc"
 version = "0.1.0"
 dependencies = [
  "bon",
+ "jiff",
  "pretty_assertions",
  "rstest",
  "serde",

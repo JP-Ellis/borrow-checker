@@ -15,8 +15,8 @@ use crate::pages::budget::BudgetPageCtx;
 /// Builds a fixture [`NativePeriodRow`] with an explicit target.
 fn row_with_target(
     label: &str,
-    period_start: &str,
-    period_end: &str,
+    period_start: jiff::civil::Date,
+    period_end: jiff::civil::Date,
     spent: i64,
     target: i64,
 ) -> NativePeriodRow {
@@ -30,7 +30,12 @@ fn row_with_target(
 }
 
 /// Builds a fixture [`NativePeriodRow`] with no target (tracking).
-fn row_no_target(label: &str, period_start: &str, period_end: &str, spent: i64) -> NativePeriodRow {
+fn row_no_target(
+    label: &str,
+    period_start: jiff::civil::Date,
+    period_end: jiff::civil::Date,
+    spent: i64,
+) -> NativePeriodRow {
     NativePeriodRow::new(
         label,
         period_start,
@@ -55,22 +60,33 @@ pub fn NativePeriodListQa() -> impl IntoView {
     provide_context(ctx);
 
     /* Fixture rows for the inline static preview. */
-    let row_good = row_with_target("w24 · 9–15 Jun", "2026-06-09", "2026-06-16", 41_600, 80_000);
+    let row_good = row_with_target(
+        "w24 · 9–15 Jun",
+        jiff::civil::Date::constant(2026, 6, 9),
+        jiff::civil::Date::constant(2026, 6, 16),
+        41_600,
+        80_000,
+    );
     let row_warn = row_with_target(
         "w25 · 16–22 Jun",
-        "2026-06-16",
-        "2026-06-23",
+        jiff::civil::Date::constant(2026, 6, 16),
+        jiff::civil::Date::constant(2026, 6, 23),
         68_000,
         80_000,
     );
     let row_bad = row_with_target(
         "w26 · 23–29 Jun",
-        "2026-06-23",
-        "2026-06-30",
+        jiff::civil::Date::constant(2026, 6, 23),
+        jiff::civil::Date::constant(2026, 6, 30),
         96_000,
         80_000,
     );
-    let row_mute = row_no_target("w23 · 2–8 Jun", "2026-06-02", "2026-06-09", 12_400);
+    let row_mute = row_no_target(
+        "w23 · 2–8 Jun",
+        jiff::civil::Date::constant(2026, 6, 2),
+        jiff::civil::Date::constant(2026, 6, 9),
+        12_400,
+    );
 
     view! {
         <div style="padding: 24px; max-width: 900px">
