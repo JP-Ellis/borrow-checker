@@ -25,17 +25,15 @@ pub fn AccrualEditor(
     /// Whether the posting currently has a spread set (controls Remove button visibility).
     #[prop(optional)]
     has_spread: bool,
-    /// Current spread start date (ISO-8601), if one is set.
-    #[prop(into, optional)]
-    spread_from: Option<String>,
-    /// Current spread end date (ISO-8601), if one is set.
-    #[prop(into, optional)]
-    spread_until: Option<String>,
+    /// Current spread start date, if one is set.
+    spread_from: Option<jiff::civil::Date>,
+    /// Current spread end date, if one is set.
+    spread_until: Option<jiff::civil::Date>,
     /// Callback invoked after a successful save or clear.
     on_change: Callback<()>,
 ) -> impl IntoView {
-    let from_input = RwSignal::new(spread_from.clone().unwrap_or_default());
-    let until_input = RwSignal::new(spread_until.clone().unwrap_or_default());
+    let from_input = RwSignal::new(spread_from.map_or_else(String::new, |d| d.to_string()));
+    let until_input = RwSignal::new(spread_until.map_or_else(String::new, |d| d.to_string()));
     let saving = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
 
