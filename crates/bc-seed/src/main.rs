@@ -1,7 +1,8 @@
 //! Seed a SQLite database with a realistic 6-month dataset for E2E tests.
 //!
-//! Creates a full account hierarchy, account-anchored budgets with allocations,
-//! and ~79 transactions covering 6 historical months plus the current month.
+//! Creates a full account hierarchy, account-anchored budgets with initial
+//! revisions, and ~79 transactions covering 6 historical months plus the
+//! current month.
 //!
 //! Usage:
 //!   bc-seed [--db-path <PATH>] [--force].
@@ -28,6 +29,8 @@ use bc_models::Decimal;
 use bc_models::Period;
 use bc_models::Posting;
 use bc_models::PostingId;
+use bc_models::BudgetRevision;
+use bc_models::BudgetRevisionId;
 use bc_models::RolloverPolicy;
 use bc_models::Transaction;
 use bc_models::TransactionId;
@@ -348,97 +351,120 @@ async fn main() -> anyhow::Result<()> {
     // BUDGETS (7 total: one per expense leaf account)
     // =========================================================================
 
-    let groceries_budget = budgets
+    let (groceries_budget, _groceries_rev) = budgets
         .create()
         .account_id(groceries_id.clone())
         .name("Groceries")
+        .effective_from(Date::constant(2026, 1, 1))
+        .target(aud(dec!(600.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
-    let electricity_budget = budgets
+    let (electricity_budget, _electricity_rev) = budgets
         .create()
         .account_id(electricity_id.clone())
         .name("Electricity")
+        .effective_from(Date::constant(2026, 1, 1))
+        .target(aud(dec!(350.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
-    let transport_budget = budgets
+    let (_transport_budget, _transport_rev) = budgets
         .create()
         .account_id(transport_id.clone())
         .name("Transport")
+        .effective_from(Date::constant(2026, 1, 1))
+        .target(aud(dec!(200.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
-    let dining_budget = budgets
+    let (_dining_budget, _dining_rev) = budgets
         .create()
         .account_id(dining_id.clone())
         .name("Dining")
+        .effective_from(Date::constant(2026, 1, 1))
+        .target(aud(dec!(300.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
-    let entertainment_budget = budgets
+    let (_entertainment_budget, _entertainment_rev) = budgets
         .create()
         .account_id(entertainment_id.clone())
         .name("Entertainment")
+        .effective_from(Date::constant(2026, 1, 1))
+        .target(aud(dec!(150.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
-    let subscriptions_budget = budgets
+    let (_subscriptions_budget, _subscriptions_rev) = budgets
         .create()
         .account_id(subscriptions_id.clone())
         .name("Subscriptions")
+        .effective_from(Date::constant(2026, 1, 1))
+        .target(aud(dec!(60.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
-    let healthcare_budget = budgets
+    let (_healthcare_budget, _healthcare_rev) = budgets
         .create()
         .account_id(healthcare_id.clone())
         .name("Healthcare")
+        .effective_from(Date::constant(2026, 1, 1))
+        .target(aud(dec!(200.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
         .call()
         .await?;
 
     // =========================================================================
-    // ALLOCATIONS (49 total: 7 budgets × 7 months)
+    // REVISIONS (mid-year config changes to demonstrate versioning)
     // =========================================================================
 
-    for months_ago in (0_i64..=6_i64).rev() {
-        let period_start = month_start(months_ago);
-        budgets
-            .allocate(groceries_budget.id(), period_start, aud(dec!(600.00)))
-            .await?;
-        budgets
-            .allocate(electricity_budget.id(), period_start, aud(dec!(350.00)))
-            .await?;
-        budgets
-            .allocate(transport_budget.id(), period_start, aud(dec!(200.00)))
-            .await?;
-        budgets
-            .allocate(dining_budget.id(), period_start, aud(dec!(300.00)))
-            .await?;
-        budgets
-            .allocate(entertainment_budget.id(), period_start, aud(dec!(150.00)))
-            .await?;
-        budgets
-            .allocate(subscriptions_budget.id(), period_start, aud(dec!(60.00)))
-            .await?;
-        budgets
-            .allocate(healthcare_budget.id(), period_start, aud(dec!(200.00)))
-            .await?;
-    }
+    // Groceries budget increases from $600 to $700 from July 2026 onwards.
+    budgets
+        .revise(
+            groceries_budget.id(),
+            BudgetRevision::builder()
+                .id(BudgetRevisionId::new())
+                .budget_id(groceries_budget.id().clone())
+                .effective_from(Date::constant(2026, 7, 1))
+                .name("Groceries")
+                .target(aud(dec!(700.00)))
+                .period(Period::Monthly)
+                .rollover(RolloverPolicy::ResetToZero)
+                .created_at(jiff::Timestamp::now())
+                .build(),
+        )
+        .await?;
+
+    // Electricity budget drops from $350 to $280 in July 2026 (winter rate lower).
+    budgets
+        .revise(
+            electricity_budget.id(),
+            BudgetRevision::builder()
+                .id(BudgetRevisionId::new())
+                .budget_id(electricity_budget.id().clone())
+                .effective_from(Date::constant(2026, 7, 1))
+                .name("Electricity")
+                .target(aud(dec!(280.00)))
+                .period(Period::Monthly)
+                .rollover(RolloverPolicy::ResetToZero)
+                .created_at(jiff::Timestamp::now())
+                .build(),
+        )
+        .await?;
 
     // =========================================================================
     // TRANSACTIONS (~79 total across 6 historical months + current month)
@@ -1707,7 +1733,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Created database at {}", args.db_path.display());
     println!("Accounts:     26 (5 root + 21 leaf)");
     println!("Budgets:       7 (one per expense leaf account)");
-    println!("Allocations:  49 (7 budgets × 7 months)");
+    println!("Revisions:     9 (7 initial + 2 mid-year bumps for groceries and electricity)");
     println!(
         "Transactions: ~79 (cleared, pending, voided across 6 historical months + current month)"
     );
