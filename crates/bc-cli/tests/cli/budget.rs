@@ -80,6 +80,8 @@ fn create_budget(ctx: &TestContext, acc_id: &str) -> String {
             "monthly",
             "--rollover",
             "reset-to-zero",
+            "--effective",
+            "2026-01-01",
         ])
         .output()
         .expect("budget create executed");
