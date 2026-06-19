@@ -32,13 +32,16 @@ pub fn headline_amount(tx: &Transaction, account_id: &str) -> Amount {
         .map_or_else(|| Amount::new(0, "AUD", 2), |p| p.amount.clone())
 }
 
-/// Formats an ISO-8601 date string (`"2026-04-30"`) for display.
+/// Formats a [`jiff::civil::Date`] for display.
 ///
-/// On WASM: delegates to the browser's `Intl.DateTimeFormat`.
-/// Fallback (native test builds): returns `"MM/DD"` extracted from the string.
+/// On WASM: delegates to the browser's `Intl.DateTimeFormat` using UTC timezone.
+/// Having a typed `Date` means callers can also access `date.year()`,
+/// `date.month()`, and `date.day()` directly to build locale-aware `Intl.*`
+/// expressions without any intermediate string.
+/// Fallback (native test builds): returns `"MM/DD"`.
 #[must_use]
 #[inline]
-pub fn format_date_display(iso: &str) -> String {
+pub fn format_date_display(date: jiff::civil::Date) -> String {
     #[cfg(target_arch = "wasm32")]
     {
         use js_sys::Array;
@@ -59,25 +62,25 @@ pub fn format_date_display(iso: &str) -> String {
             &JsValue::from_str("day"),
             &JsValue::from_str("2-digit"),
         ));
+        drop(Reflect::set(
+            &options,
+            &JsValue::from_str("timeZone"),
+            &JsValue::from_str("UTC"),
+        ));
 
-        let ts = Date::parse(iso);
-        let date = Date::new(&JsValue::from_f64(ts));
+        let ts = Date::parse(&date.to_string());
+        let js_date = Date::new(&JsValue::from_f64(ts));
         let fmt = DateTimeFormat::new(&Array::new(), &options);
         let format_fn = fmt.format();
         format_fn
-            .call1(&JsValue::NULL, &date)
+            .call1(&JsValue::NULL, &js_date)
             .ok()
             .and_then(|v| v.as_string())
-            .unwrap_or_else(|| iso.to_owned())
+            .unwrap_or_else(|| date.to_string())
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let mut parts = iso.splitn(3, '-');
-        let _year = parts.next();
-        match (parts.next(), parts.next()) {
-            (Some(m), Some(d)) => format!("{m}/{d}"),
-            _ => iso.to_owned(),
-        }
+        format!("{:02}/{:02}", date.month(), date.day())
     }
 }
 
@@ -221,11 +224,9 @@ mod tests {
 
     #[test]
     fn format_date_display_standard() {
-        assert_eq!(format_date_display("2026-04-30"), "04/30");
-    }
-
-    #[test]
-    fn format_date_display_invalid_passthrough() {
-        assert_eq!(format_date_display("not-a-date"), "not-a-date");
+        assert_eq!(
+            format_date_display(jiff::civil::Date::constant(2026, 4, 30)),
+            "04/30"
+        );
     }
 }
