@@ -35,10 +35,7 @@ pub struct ResolvedPeriod<'a> {
 #[must_use]
 #[inline]
 pub fn governing_revision(revisions: &[BudgetRevision], date: Date) -> Option<&BudgetRevision> {
-    revisions
-        .iter()
-        .rev()
-        .find(|r| r.effective_from() <= date)
+    revisions.iter().rev().find(|r| r.effective_from() <= date)
 }
 
 /// Enumerates the revision-defined periods overlapping `[from, to)`.
@@ -75,7 +72,9 @@ pub fn periods_overlapping<'a>(
     }
     for (i, rev) in revisions.iter().enumerate() {
         let reign_start = rev.effective_from();
-        let reign_end = revisions.get(i.saturating_add(1)).map(BudgetRevision::effective_from);
+        let reign_end = revisions
+            .get(i.saturating_add(1))
+            .map(BudgetRevision::effective_from);
         if reign_start >= to {
             break;
         }
@@ -92,7 +91,12 @@ pub fn periods_overlapping<'a>(
                 _ => (natural_end, false),
             };
             if cursor < to && p_end > from {
-                out.push(ResolvedPeriod { start: cursor, end: p_end, revision: rev, is_stub });
+                out.push(ResolvedPeriod {
+                    start: cursor,
+                    end: p_end,
+                    revision: rev,
+                    is_stub,
+                });
             }
             if p_end >= to {
                 break;
@@ -111,11 +115,15 @@ pub fn periods_overlapping<'a>(
 #[cfg(test)]
 mod tests {
     use jiff::Timestamp;
-    use jiff::civil::{Date, date};
+    use jiff::civil::Date;
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::{BudgetId, BudgetRevision, Period, RolloverPolicy};
+    use crate::BudgetId;
+    use crate::BudgetRevision;
+    use crate::Period;
+    use crate::RolloverPolicy;
 
     fn rev(eff: Date, period: Period) -> BudgetRevision {
         BudgetRevision::builder()
@@ -133,9 +141,22 @@ mod tests {
         reason = "unwrap in tests is acceptable to assert the expected Some state"
     )]
     fn governing_picks_greatest_effective_from_le_date() {
-        let revs = vec![rev(date(2026, 1, 1), Period::Weekly), rev(date(2027, 1, 1), Period::Monthly)];
-        assert_eq!(governing_revision(&revs, date(2026, 6, 1)).unwrap().period(), &Period::Weekly);
-        assert_eq!(governing_revision(&revs, date(2027, 6, 1)).unwrap().period(), &Period::Monthly);
+        let revs = vec![
+            rev(date(2026, 1, 1), Period::Weekly),
+            rev(date(2027, 1, 1), Period::Monthly),
+        ];
+        assert_eq!(
+            governing_revision(&revs, date(2026, 6, 1))
+                .unwrap()
+                .period(),
+            &Period::Weekly
+        );
+        assert_eq!(
+            governing_revision(&revs, date(2027, 6, 1))
+                .unwrap()
+                .period(),
+            &Period::Monthly
+        );
         assert!(governing_revision(&revs, date(2025, 1, 1)).is_none());
     }
 
@@ -148,8 +169,14 @@ mod tests {
         let revs = vec![rev(date(2026, 1, 1), Period::Weekly)];
         let ps = periods_overlapping(&revs, date(2026, 1, 1), date(2026, 1, 22));
         assert_eq!(ps.len(), 3);
-        assert_eq!((ps[0].start, ps[0].end), (date(2026, 1, 1), date(2026, 1, 8)));
-        assert_eq!((ps[2].start, ps[2].end), (date(2026, 1, 15), date(2026, 1, 22)));
+        assert_eq!(
+            (ps[0].start, ps[0].end),
+            (date(2026, 1, 1), date(2026, 1, 8))
+        );
+        assert_eq!(
+            (ps[2].start, ps[2].end),
+            (date(2026, 1, 15), date(2026, 1, 22))
+        );
         assert!(ps.iter().all(|p| !p.is_stub));
     }
 
@@ -161,7 +188,10 @@ mod tests {
     fn boundary_truncates_prior_reign_to_stub() {
         // Weekly from Jan 1; switch Jan 10 (mid-week). The week [Jan 8, Jan 15)
         // is cut to a stub [Jan 8, Jan 10); a fresh grid starts at Jan 10.
-        let revs = vec![rev(date(2026, 1, 1), Period::Weekly), rev(date(2026, 1, 10), Period::Weekly)];
+        let revs = vec![
+            rev(date(2026, 1, 1), Period::Weekly),
+            rev(date(2026, 1, 10), Period::Weekly),
+        ];
         let ps = periods_overlapping(&revs, date(2026, 1, 1), date(2026, 1, 17));
         // Reign 1 periods: [1,8) full, [8,10) stub.
         let stub = ps.iter().find(|p| p.start == date(2026, 1, 8)).unwrap();
@@ -183,6 +213,9 @@ mod tests {
         let ps = periods_overlapping(&revs, date(2026, 1, 9), date(2026, 1, 13));
         // window overlaps [8,15) only.
         assert_eq!(ps.len(), 1);
-        assert_eq!((ps[0].start, ps[0].end), (date(2026, 1, 8), date(2026, 1, 15)));
+        assert_eq!(
+            (ps[0].start, ps[0].end),
+            (date(2026, 1, 8), date(2026, 1, 15))
+        );
     }
 }

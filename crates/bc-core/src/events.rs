@@ -635,7 +635,11 @@ mod tests {
             reason = "Event is #[non_exhaustive]; wildcard arm required"
         )]
         match back {
-            Event::BudgetCreated { name, effective_from, .. } => {
+            Event::BudgetCreated {
+                name,
+                effective_from,
+                ..
+            } => {
                 assert_eq!(name, Some("Groceries".to_owned()));
                 assert_eq!(effective_from, jiff::civil::Date::constant(2026, 1, 1));
             }
@@ -666,7 +670,11 @@ mod tests {
             reason = "Event is #[non_exhaustive]; wildcard arm required"
         )]
         match back {
-            Event::BudgetRevisionSet { effective_from, target, .. } => {
+            Event::BudgetRevisionSet {
+                effective_from,
+                target,
+                ..
+            } => {
                 assert_eq!(effective_from, jiff::civil::Date::constant(2027, 1, 1));
                 assert_eq!(
                     target,
