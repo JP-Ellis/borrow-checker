@@ -396,6 +396,8 @@ impl BudgetService {
     /// # Errors
     ///
     /// Returns [`crate::BcError::InvalidInput`] if `CapAtTarget` rollover has no target.
+    /// Returns [`crate::BcError::InvalidInput`] if a different revision already occupies the
+    /// same `effective_from` date (amending a revision in place — same id — is always allowed).
     /// Returns [`crate::BcError::NotFound`] if the budget is missing or archived.
     /// Returns [`crate::BcError`] on event or database failure.
     #[inline]
@@ -417,6 +419,17 @@ impl BudgetService {
             return Err(crate::BcError::InvalidInput(
                 "CapAtTarget rollover policy requires a target amount".to_owned(),
             ));
+        }
+        let existing = self.revisions(budget_id).await?;
+        if let Some(conflict) = existing
+            .iter()
+            .find(|r| r.effective_from() == revision.effective_from() && r.id() != revision.id())
+        {
+            return Err(crate::BcError::InvalidInput(format!(
+                "a revision already exists for effective date {} (id: {})",
+                conflict.effective_from(),
+                conflict.id()
+            )));
         }
         let event = crate::events::Event::BudgetRevisionSet {
             budget_id: budget_id.clone(),
@@ -1476,5 +1489,99 @@ mod budget_service_tests {
         );
         let s = engine.status_for_window(&budget, w).await.expect("status");
         assert_eq!(s.allocated, dec!(30));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn revise_duplicate_effective_from_on_different_id_is_rejected(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Rent")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("account");
+
+        let svc = BudgetService::new(pool.clone());
+        // Create budget with revision A effective 2026-01-01.
+        let (budget, _rev_a) = svc
+            .create()
+            .account_id(acc)
+            .effective_from(Date::constant(2026, 1, 1))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create");
+
+        // Add revision B effective 2027-01-01.
+        let rev_b = bc_models::BudgetRevision::builder()
+            .budget_id(budget.id().clone())
+            .effective_from(Date::constant(2027, 1, 1))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .created_at(Timestamp::now())
+            .build();
+        svc.revise(budget.id(), rev_b)
+            .await
+            .expect("add revision B");
+
+        // Attempt to revise with a THIRD revision (fresh id) using the same
+        // effective_from as revision B — must be rejected.
+        let rev_c = bc_models::BudgetRevision::builder()
+            .budget_id(budget.id().clone())
+            .effective_from(Date::constant(2027, 1, 1))
+            .period(Period::Weekly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .created_at(Timestamp::now())
+            .build();
+        let result = svc.revise(budget.id(), rev_c).await;
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidInput(_))),
+            "duplicate effective_from with a different id should be InvalidInput, got: {result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn status_for_window_zero_day_window_returns_zero_status(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Utilities")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("account");
+
+        let svc = BudgetService::new(pool.clone());
+        let (budget, _) = svc
+            .create()
+            .account_id(acc)
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(
+                Decimal::from(500_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create");
+
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+        let zero_window = bc_models::BudgetWindow::custom(
+            Date::constant(2026, 6, 15),
+            Date::constant(2026, 6, 15),
+            "zero",
+        );
+        let status = engine
+            .status_for_window(&budget, zero_window)
+            .await
+            .expect("zero-day window should not error");
+        assert_eq!(status.allocated, Decimal::ZERO);
+        assert_eq!(status.actuals, Decimal::ZERO);
+        assert_eq!(status.available, Decimal::ZERO);
     }
 }

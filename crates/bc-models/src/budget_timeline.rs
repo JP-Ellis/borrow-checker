@@ -218,4 +218,27 @@ mod tests {
             (date(2026, 1, 8), date(2026, 1, 15))
         );
     }
+
+    #[test]
+    fn zero_day_window_returns_empty() {
+        // from == to: the guard `from >= to` fires immediately.
+        let revs = vec![rev(date(2026, 6, 1), Period::Monthly)];
+        let d = date(2026, 6, 15);
+        assert_eq!(
+            periods_overlapping(&revs, d, d),
+            vec![],
+            "from == to must yield an empty result"
+        );
+    }
+
+    #[test]
+    fn inverted_window_returns_empty() {
+        // from > to: also caught by the `from >= to` guard.
+        let revs = vec![rev(date(2026, 6, 1), Period::Monthly)];
+        assert_eq!(
+            periods_overlapping(&revs, date(2026, 6, 20), date(2026, 6, 10)),
+            vec![],
+            "from > to must yield an empty result"
+        );
+    }
 }
