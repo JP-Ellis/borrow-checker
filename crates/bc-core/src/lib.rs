@@ -61,6 +61,5 @@ pub use import::registry::Factory as ImporterFactory;
 pub use import::registry::Registry as ImporterRegistry;
 pub use loan::Service as LoanService;
 pub use period_overlap::PeriodOverlap;
-pub use period_overlap::overlapping_periods;
 pub use settings::Store as SettingsStore;
 pub use transaction::Service as TransactionService;
