@@ -93,6 +93,7 @@ macro_rules! define_id {
 
 mod account;
 mod budget;
+mod budget_timeline;
 mod budget_window;
 mod commodity;
 mod event;
@@ -113,6 +114,9 @@ pub use account::Type as AccountType;
 pub use account::ValidationError as AccountValidationError;
 pub use budget::Budget;
 pub use budget::BudgetBuilder;
+pub use budget_timeline::ResolvedPeriod;
+pub use budget_timeline::governing_revision;
+pub use budget_timeline::periods_overlapping;
 pub use budget::BudgetId;
 pub use budget::BudgetRevision;
 pub use budget::BudgetRevisionBuilder;
