@@ -16,7 +16,7 @@ BorrowChecker is a distributable, open-source personal finance application writt
 - No lock-in: data is always exportable to open formats
 - Plain-text compatibility: ledger and beancount files are first-class citizens
 - Extensible: a WASM plugin system lets the community add importers, processors, and reports
-- Multiple surfaces: CLI for scripting, TUI for terminal power users, Tauri GUI for everyone else
+- Multiple surfaces: CLI for scripting and automation, Tauri GUI for interactive use
 
 ______________________________________________________________________
 
@@ -31,7 +31,7 @@ ______________________________________________________________________
 - Fortnightly and financial-year periods as first-class budget intervals
 - WASM plugin system with explicit ABI versioning and a graceful deprecation/grace-period policy
 - Transaction processor pipeline (generalisation of categorisation)
-- CLI, TUI, and Tauri GUI developed in parallel from the start
+- CLI and Tauri GUI as the two primary surfaces
 - Structured CLI output (`--json`) for scripting and automation
 
 ## 3. Non-Goals (v1)
@@ -64,7 +64,6 @@ borrow-checker/
 │   ├── bc-plugins/             # WASM host runtime + plugin ABI bridge
 │   ├── bc-sdk/                 # plugin author SDK (published to crates.io separately)
 │   ├── bc-cli/                 # CLI binary
-│   ├── bc-tui/                 # ratatui TUI
 │   └── bc-app/                 # Tauri GUI
 └── plugins/                    # first-party example/bundled plugins
 ```
@@ -74,7 +73,7 @@ borrow-checker/
 **Dependency relationships:**
 
 - `bc-models` has no internal dependencies — it is the shared vocabulary for the whole workspace
-- `bc-core` depends on `bc-models`; `bc-cli`, `bc-tui`, `bc-app` depend on `bc-core`
+- `bc-core` depends on `bc-models`; `bc-cli`, `bc-app` depend on `bc-core`
 - `bc-format-*` crates depend on `bc-models` (domain types) and `bc-core` (import profiles, config)
 - `bc-plugins` depends on `bc-core` (bridges WASM into the engine)
 - `bc-sdk` is standalone — plugin authors only need it, not the full workspace
@@ -377,13 +376,7 @@ borrow-checker completions <bash|elvish|fish|powershell|zsh>
 
 All commands support `--json` for structured output. Shell completions are generated on demand via `borrow-checker completions <bash|elvish|fish|powershell|zsh>`.
 
-### 8.2 TUI (`bc-tui`)
-
-Built with [ratatui](https://ratatui.rs/).
-
-Layout: **sidebar + main panel**. Account tree on the left; keyboard-first navigation. Views: Transactions, Budget, Reports. Vim-inspired key bindings with a discoverable `?` help overlay.
-
-### 8.3 Tauri GUI (`bc-app`)
+### 8.2 Tauri GUI (`bc-app`)
 
 Layout: **icon rail + context-sensitive content**.
 
@@ -402,7 +395,6 @@ ______________________________________________________________________
 | 1 | Core engine (`bc-core`, SQLite, event log) | 0 |
 | 2 | Format compatibility (`bc-format-*` crates) | 1 |
 | 3 | CLI (`bc-cli`) | 1, 2 |
-| 4 | TUI (`bc-tui`) | 1, 5\* |
 | 5 | Budgeting (account-anchored budgets, tag-filtered sub-budgets, allocation, all periods) | 1 |
 | 5A | Illiquid asset tracking (valuations, depreciation, loan terms) | 1, 5 |
 | 6 | Plugin Phase 1: Importers | 2, 3 |
@@ -411,8 +403,6 @@ ______________________________________________________________________
 | 9 | Plugin Phase 3: Report Generators | 8 |
 | 10 | Plugin Phase 4: UI Extensions | 7, 9 |
 | 11 | Sync & multi-device (event replication, Android) | 10 |
-
-_\* Milestone 4 (TUI) can start after Milestone 1 with basic transaction views. Budget and report views within the TUI are deferred until Milestone 5 is complete._
 
 ______________________________________________________________________
 
@@ -423,7 +413,6 @@ ______________________________________________________________________
 | Storage | SQLite via `sqlx` | Portable, zero-server, fast for single-user workloads |
 | Event log | Append-only SQLite table | Audit trail, undo/redo, future sync without full CQRS overhead |
 | WASM runtime | extism (wasmtime-backed) | Higher-level than raw wasmtime; handles ABI plumbing |
-| TUI framework | ratatui | De-facto standard in the Rust ecosystem |
 | GUI framework | Tauri | Rust-native, small binary, web frontend flexibility |
 | Plugin ABI versioning | Integer ABI + N+2 grace period | Simple, explicit, protects the community ecosystem |
 | Budget default | Zero-based; expense accounts are categories | Most intentional model; degrades gracefully to category tracking; round-trips cleanly with ledger/beancount |

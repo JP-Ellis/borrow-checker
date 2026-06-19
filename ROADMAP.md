@@ -2,7 +2,7 @@
 
 > A living document. Status: ◻️ planned · 🔄 in progress · ✅ complete
 
-BorrowChecker is a Rust-based personal finance application with ledger/beancount compatibility, a WASM plugin system, and three interfaces: CLI, TUI, and Tauri GUI.
+BorrowChecker is a Rust-based personal finance application with ledger/beancount compatibility, a WASM plugin system, and two interfaces: CLI and Tauri GUI.
 
 ______________________________________________________________________
 
@@ -67,22 +67,6 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## Milestone 4 — TUI
-
-**Status:** ✅
-**Crate:** `bc-tui`
-**Depends on:** Milestone 1 (core views); budget/report views depend on Milestone 5
-
-- [x] Sidebar + main panel layout (ratatui)
-- [x] Account tree navigation (keyboard-first)
-- [x] Transaction list + detail view
-- [x] Vim-inspired key bindings
-- [x] `?` help overlay
-- [x] Budget envelope view _(requires Milestone 5)_
-- [x] Reports view _(requires Milestone 5)_
-
-______________________________________________________________________
-
 ## Milestone 5 — Budgeting
 
 **Status:** ✅
@@ -98,7 +82,7 @@ ______________________________________________________________________
 - [x] Budget vs. actuals tracking
 - [x] Mixed-period display normalisation
 - [x] Budget views in CLI
-- [ ] Budget views in TUI _(out of scope for Milestone 5; planned for Milestone 4 (TUI))_
+- [ ] Budget views in GUI _(out of scope for Milestone 5; planned for Milestone 7)_
 
 ______________________________________________________________________
 
@@ -123,7 +107,7 @@ ______________________________________________________________________
 - [x] `RepaymentFrequency` enum: `Weekly`, `Fortnightly`, `Monthly`, `Quarterly`, `Custom`
 - [x] Net worth calculation includes all `AccountKind` variants (zero balance if no value recorded)
 - [x] CLI support: record valuation, trigger depreciation, set loan terms
-- [ ] TUI support: record valuation, trigger depreciation, set loan terms (blocked on Milestone 4)
+- [ ] GUI support: record valuation, trigger depreciation, set loan terms _(blocked on Milestone 7)_
 - [x] CLI `asset book-value` command
 
 ______________________________________________________________________
@@ -169,7 +153,7 @@ ______________________________________________________________________
 - [ ] Pipeline ordering + priority configuration
 - [ ] Processor plugin interface + `bc-sdk` ABI v2
 - [ ] Built-in processors: merchant normalisation, auto-categorisation
-- [ ] Review queue for flagged transactions (CLI + TUI + GUI)
+- [ ] Review queue for flagged transactions (CLI + GUI)
 
 ______________________________________________________________________
 
