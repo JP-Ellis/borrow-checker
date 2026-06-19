@@ -151,29 +151,6 @@ amount is sourced from `TransactionRow`'s existing logic.
 
 ______________________________________________________________________
 
-## IPC date types — use `jiff::civil::Date` instead of `String`
-
-**Identified in:** PR #159 (feat/bc-ui: budget page implementation)
-**File:** `crates/bc-ipc/src/budget.rs`, `crates/bc-ipc/src/transaction.rs`
-
-`NativePeriodRow.period_start`, `NativePeriodRow.period_end`, and
-`Transaction.date` are currently typed as `String`. Since `jiff` works on
-`wasm32-unknown-unknown` (the `["js"]` feature is already a target-specific
-dependency in `bc-ui`), these fields should use `jiff::civil::Date` directly.
-
-This would:
-
-- Remove manual string parsing in `bc-ui` (e.g. in `period_nav` and anywhere
-  dates are compared or formatted).
-- Make the IPC contract self-documenting — callers get a typed date rather than
-  an opaque string.
-
-Requires adding `jiff` (with `serde` feature) as a dependency of `bc-ipc`, and
-updating `bc-core` to pass `jiff::civil::Date` values when constructing these
-types from SQLite results.
-
-______________________________________________________________________
-
 ## bc-ui — WASM test runner for period_nav unit tests
 
 **Identified in:** PR #159 (feat/bc-ui: budget page implementation)
