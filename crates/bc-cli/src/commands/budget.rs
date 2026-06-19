@@ -72,7 +72,7 @@ pub enum Command {
         /// Budget ID to archive.
         id: String,
     },
-    /// Allocate funds to a budget for a period.
+    /// Allocate funds to a budget for a period (deprecated — targets are now set via revisions).
     Allocate {
         /// Budget ID to allocate to.
         #[arg(long)]
@@ -226,7 +226,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             amount,
             commodity,
             period_start,
-        } => allocate(ctx, budget, amount, commodity, period_start).await,
+        } => allocate(ctx, budget, amount, commodity, period_start),
         Command::Status { as_of } => status(ctx, as_of).await,
     }
 }
@@ -247,31 +247,37 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
         return Ok(());
     }
 
-    let rows: Vec<Vec<String>> = budgets
-        .iter()
-        .map(|b| {
-            let period_str = period_display(b.period());
-            let target_str = b.target().map_or_else(
+    let today = jiff::Zoned::now().date();
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(budgets.len());
+    for b in &budgets {
+        let revs = ctx.budgets.revisions(b.id()).await?;
+        let rev = bc_core::governing_revision(&revs, today);
+        let period_str = rev.map_or_else(|| "\u{2014}".to_owned(), |r| period_display(r.period()));
+        let target_str = rev
+            .and_then(bc_models::BudgetRevision::target)
+            .map_or_else(
                 || "\u{2014}".to_owned(),
                 |a| format!("{} {}", a.value(), a.commodity()),
             );
-            let rollover_str = match b.rollover() {
-                bc_models::RolloverPolicy::CarryForward => "carry-forward",
-                bc_models::RolloverPolicy::ResetToZero => "reset-to-zero",
-                bc_models::RolloverPolicy::CapAtTarget => "cap-at-target",
-                _ => "unknown",
-            };
-            let name_str = b.name().unwrap_or("\u{2014}").to_owned();
-            vec![
-                b.id().to_string(),
-                b.account_id().to_string(),
-                name_str,
-                period_str,
-                target_str,
-                rollover_str.to_owned(),
-            ]
-        })
-        .collect();
+        let rollover_str = rev.map_or("\u{2014}", |r| match r.rollover() {
+            bc_models::RolloverPolicy::CarryForward => "carry-forward",
+            bc_models::RolloverPolicy::ResetToZero => "reset-to-zero",
+            bc_models::RolloverPolicy::CapAtTarget => "cap-at-target",
+            _ => "unknown",
+        });
+        let name_str = rev
+            .and_then(bc_models::BudgetRevision::name)
+            .unwrap_or("\u{2014}")
+            .to_owned();
+        rows.push(vec![
+            b.id().to_string(),
+            b.account_id().to_string(),
+            name_str,
+            period_str,
+            target_str,
+            rollover_str.to_owned(),
+        ]);
+    }
     crate::output::print_table(
         &["ID", "ACCOUNT", "NAME", "PERIOD", "TARGET", "ROLLOVER"],
         &rows,
@@ -341,10 +347,12 @@ async fn create(
         .zip(commodity.as_deref())
         .map(|(amt, c)| Amount::new(amt, CommodityCode::new(c)));
 
-    let budget = ctx
+    let today = jiff::Zoned::now().date();
+    let (budget, revision) = ctx
         .budgets
         .create()
         .account_id(account_id)
+        .effective_from(today)
         .maybe_tag_filter(tag_filter_id)
         .maybe_name(name)
         .maybe_target(target_amount)
@@ -361,7 +369,7 @@ async fn create(
     {
         println!(
             "Created budget: {} on account {} ({})",
-            budget.name().unwrap_or("(unnamed)"),
+            revision.name().unwrap_or("(unnamed)"),
             budget.account_id(),
             budget.id()
         );
@@ -386,62 +394,22 @@ async fn archive(ctx: &AppContext, id: String) -> CliResult<()> {
     Ok(())
 }
 
-/// Allocate funds to a budget for a specific period.
-async fn allocate(
-    ctx: &AppContext,
-    budget: String,
-    amount: rust_decimal::Decimal,
-    commodity: String,
-    period_start_str: Option<String>,
+/// Period-specific allocation is superseded by revision-based targets.
+///
+/// This command is kept as a stub so existing scripts fail gracefully with a
+/// clear message rather than a parse error.
+fn allocate(
+    _ctx: &AppContext,
+    _budget: String,
+    _amount: rust_decimal::Decimal,
+    _commodity: String,
+    _period_start: Option<String>,
 ) -> CliResult<()> {
-    let budget_id = bc_models::BudgetId::from_str(&budget)
-        .map_err(|e| CliError::Arg(format!("invalid budget ID '{budget}': {e}")))?;
-    let b = ctx.budgets.get(&budget_id).await?;
-
-    let period_start = if let Some(s) = period_start_str {
-        let date = s
-            .parse::<Date>()
-            .map_err(|e| CliError::Arg(format!("invalid period-start '{s}': {e}")))?;
-        let canonical = b.period().range_containing(date).0;
-        if canonical != date {
-            return Err(CliError::Arg(format!(
-                "'{date}' is not a canonical period start for this budget's {:?} period; \
-                 did you mean '{canonical}'?",
-                b.period(),
-            )));
-        }
-        date
-    } else {
-        let today = jiff::Timestamp::now()
-            .to_zoned(jiff::tz::TimeZone::system())
-            .date();
-        b.period().range_containing(today).0
-    };
-
-    let alloc = ctx
-        .budgets
-        .allocate(
-            &budget_id,
-            period_start,
-            Amount::new(amount, CommodityCode::new(commodity)),
-        )
-        .await?;
-
-    if ctx.json {
-        return crate::output::print_json(&alloc);
-    }
-
-    #[expect(clippy::print_stdout, reason = "CLI output")]
-    {
-        println!(
-            "Allocated {} {} to budget '{}' for period starting {}",
-            alloc.amount().value(),
-            alloc.amount().commodity(),
-            b.name().unwrap_or("(unnamed)"),
-            period_start,
-        );
-    }
-    Ok(())
+    Err(CliError::Arg(
+        "budget allocate is no longer supported; \
+         set the target via `budget update --target` or `budget create --target` instead"
+            .to_owned(),
+    ))
 }
 
 /// Show budget status for all active budgets as of a given date.
@@ -450,9 +418,7 @@ async fn status(ctx: &AppContext, as_of_str: Option<String>) -> CliResult<()> {
         s.parse::<Date>()
             .map_err(|e| CliError::Arg(format!("invalid as-of date '{s}': {e}")))?
     } else {
-        jiff::Timestamp::now()
-            .to_zoned(jiff::tz::TimeZone::system())
-            .date()
+        jiff::Zoned::now().date()
     };
 
     let budgets = ctx.budgets.list().await?;
@@ -474,10 +440,11 @@ async fn status(ctx: &AppContext, as_of_str: Option<String>) -> CliResult<()> {
         .iter()
         .map(|s| {
             let display_end = s
-                .period_end
+                .window
+                .end
                 .checked_sub(jiff::Span::new().days(1_i32))
-                .unwrap_or(s.period_end);
-            let period_str = format!("{} \u{2013} {}", s.period_start, display_end);
+                .unwrap_or(s.window.end);
+            let period_str = format!("{} \u{2013} {}", s.window.start, display_end);
             let commodity_str = s
                 .commodity
                 .as_ref()
@@ -489,20 +456,25 @@ async fn status(ctx: &AppContext, as_of_str: Option<String>) -> CliResult<()> {
                     format!("{v} {commodity_str}")
                 }
             };
+            let is_tracking_only = s
+                .governing
+                .as_ref()
+                .is_none_or(bc_models::BudgetRevision::is_tracking_only);
             let alloc_str = if s.allocated.is_zero() && s.rollover.is_zero() {
                 "\u{2014}".to_owned()
             } else {
                 fmt(s.allocated)
             };
             let actuals_str = fmt(s.actuals);
-            let avail_str = if s.budget.is_tracking_only() && s.rollover.is_zero() {
+            let avail_str = if is_tracking_only && s.rollover.is_zero() {
                 "\u{2014}".to_owned()
             } else {
                 fmt(s.available)
             };
             let name_str = s
-                .budget
-                .name()
+                .governing
+                .as_ref()
+                .and_then(bc_models::BudgetRevision::name)
                 .map_or_else(|| s.budget.account_id().to_string(), str::to_owned);
             vec![name_str, period_str, alloc_str, actuals_str, avail_str]
         })
@@ -532,37 +504,58 @@ async fn update_budget(
     let id = bc_models::BudgetId::from_str(&id_str)
         .map_err(|e| CliError::Arg(format!("invalid budget id '{id_str}': {e}")))?;
 
-    let new_name: Option<Option<String>> = if clear_name {
-        Some(None)
+    let today = jiff::Zoned::now().date();
+    let revs = ctx.budgets.revisions(&id).await?;
+    let base_rev = bc_core::governing_revision(&revs, today)
+        .or_else(|| revs.first())
+        .ok_or_else(|| {
+            CliError::Core(bc_core::BcError::NotFound(format!(
+                "no revision found for budget {id}"
+            )))
+        })?;
+
+    let new_name: Option<String> = if clear_name {
+        None
     } else {
-        name.map(Some)
+        name.or_else(|| base_rev.name().map(str::to_owned))
     };
 
-    let new_target: Option<Option<bc_models::Amount>> = if clear_target {
-        Some(None)
+    let new_target: Option<bc_models::Amount> = if clear_target {
+        None
     } else if let Some(dec) = target {
         let code = commodity
             .as_deref()
             .ok_or_else(|| CliError::Arg("--commodity is required when --target is set".into()))?;
-        Some(Some(bc_models::Amount::new(
+        Some(bc_models::Amount::new(
             dec,
             bc_models::CommodityCode::new(code),
-        )))
+        ))
     } else {
-        None
+        base_rev.target().cloned()
     };
 
-    let new_rollover: Option<bc_models::RolloverPolicy> = rollover.map(|r| match r {
-        RolloverArg::CarryForward => bc_models::RolloverPolicy::CarryForward,
-        RolloverArg::ResetToZero => bc_models::RolloverPolicy::ResetToZero,
-        RolloverArg::CapAtTarget => bc_models::RolloverPolicy::CapAtTarget,
-    });
+    let new_rollover = rollover.map_or_else(
+        || base_rev.rollover(),
+        |r| match r {
+            RolloverArg::CarryForward => bc_models::RolloverPolicy::CarryForward,
+            RolloverArg::ResetToZero => bc_models::RolloverPolicy::ResetToZero,
+            RolloverArg::CapAtTarget => bc_models::RolloverPolicy::CapAtTarget,
+        },
+    );
 
-    let updated = ctx
-        .budgets
-        .update(&id, new_name, new_target, new_rollover, None, None)
-        .await
-        .map_err(CliError::Core)?;
+    let revised = bc_models::BudgetRevision::builder()
+        .id(base_rev.id().clone())
+        .budget_id(base_rev.budget_id().clone())
+        .effective_from(base_rev.effective_from())
+        .maybe_name(new_name)
+        .maybe_target(new_target)
+        .period(base_rev.period().clone())
+        .rollover(new_rollover)
+        .maybe_tag_filter(base_rev.tag_filter().cloned())
+        .created_at(*base_rev.created_at())
+        .build();
+
+    let updated = ctx.budgets.revise(&id, revised).await.map_err(CliError::Core)?;
 
     if ctx.json {
         return crate::output::print_json(&updated);
@@ -570,7 +563,7 @@ async fn update_budget(
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        println!("Updated budget {}", updated.id());
+        println!("Updated budget {id}");
         if let Some(n) = updated.name() {
             println!("  name:    {n}");
         }

@@ -1,10 +1,10 @@
 ---
 source: crates/bc-cli/tests/cli/budget.rs
-assertion_line: 192
+assertion_line: 140
 expression: output
 ---
-success: true
-exit_code: 0
+success: false
+exit_code: 1
 ----- stdout -----
-Allocated 500 AUD to budget 'Groceries Budget' for period starting 2030-01-01
 ----- stderr -----
+error: budget allocate is no longer supported; set the target via `budget update --target` or `budget create --target` instead
