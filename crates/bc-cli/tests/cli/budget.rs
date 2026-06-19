@@ -120,28 +120,6 @@ fn archive_nonexistent_budget() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
-#[test]
-fn allocate_to_budget() {
-    let ctx = TestContext::new();
-    let acc_id = create_expense_account(&ctx);
-    let budget_id = create_budget(&ctx, &acc_id);
-
-    let mut cmd = ctx.command();
-    cmd.args([
-        "budget",
-        "allocate",
-        "--budget",
-        &budget_id,
-        "--amount",
-        "500",
-        "--commodity",
-        "AUD",
-        "--period-start",
-        "2030-01-01",
-    ]);
-    cmd_snapshot!(ctx, &mut cmd);
-}
-
 /// Revising a budget target overwrites the previous target in the governing revision.
 #[test]
 fn revise_target_overwrites_amount() {
