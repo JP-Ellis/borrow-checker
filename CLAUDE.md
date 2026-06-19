@@ -41,7 +41,6 @@ crates/
   bc-ipc/          # IPC message types shared between bc-app (native) and bc-ui (WASM)
   bc-app/          # Tauri 2 desktop wrapper (native binary)
   bc-cli/          # CLI binary (borrow-checker)
-  bc-tui/          # TUI binary (borrow-checker-tui, ratatui)
   bc-ui/           # Leptos WASM frontend (served in Tauri WebView)
   bc-plugins/      # Wasmtime host runtime for importer plugins
   bc-sdk/          # Plugin author SDK (compiles to wasm32-wasip2)
@@ -56,7 +55,7 @@ e2e/               # WebdriverIO + tauri-driver desktop app tests
 ```text
 bc-models  ←─ referenced by everything
 bc-config  ←─ bc-core, bc-app
-bc-core    ←─ bc-app, bc-cli, bc-tui   (SQLite + event log)
+bc-core    ←─ bc-app, bc-cli           (SQLite + event log)
 bc-ipc     ←─ bc-app (native side) + bc-ui (WASM side)
 bc-plugins ←─ bc-app                   (Wasmtime host)
 bc-sdk     ←─ plugins/*                (compiled to wasm32-wasip2)

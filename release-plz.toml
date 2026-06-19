@@ -21,10 +21,6 @@ name    = "bc-cli"
 publish = false
 
 [[package]]
-name    = "bc-tui"
-publish = false
-
-[[package]]
 name    = "bc-app"
 publish = false
 
