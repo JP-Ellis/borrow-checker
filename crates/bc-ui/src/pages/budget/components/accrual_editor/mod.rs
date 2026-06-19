@@ -14,6 +14,10 @@ import_style!(style, "accrual.module.scss");
     clippy::needless_pass_by_value,
     reason = "Leptos component props require owned types"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "date-parse error handling before spawn_local adds lines; component view! macro cannot be split further"
+)]
 pub fn AccrualEditor(
     /// ID of the posting being edited.
     #[prop(into)]
@@ -38,12 +42,26 @@ pub fn AccrualEditor(
     let posting_id_for_save = posting_id.clone();
     let save = move |_| {
         let pid = posting_id_for_save.clone();
-        let from = from_input.get();
-        let until = until_input.get();
+        let from_str = from_input.get();
+        let until_str = until_input.get();
+        let from = match from_str.parse::<jiff::civil::Date>() {
+            Ok(d) => d,
+            Err(e) => {
+                error.set(Some(format!("Invalid start date: {e}")));
+                return;
+            }
+        };
+        let until = match until_str.parse::<jiff::civil::Date>() {
+            Ok(d) => d,
+            Err(e) => {
+                error.set(Some(format!("Invalid end date: {e}")));
+                return;
+            }
+        };
         saving.set(true);
         error.set(None);
         leptos::task::spawn_local(async move {
-            match bc_ipc::client::set_posting_spread(&pid, &from, &until).await {
+            match bc_ipc::client::set_posting_spread(&pid, from, until).await {
                 Ok(()) => {
                     saving.set(false);
                     on_change.run(());

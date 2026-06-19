@@ -76,8 +76,7 @@ pub fn Budget() -> impl IntoView {
             ctx.data_version.get();
             let period = ctx.display_period.get();
             let start = ctx.window_start.get();
-            let date_str = start.to_string();
-            async move { bc_ipc::client::get_budget_overview(period, &date_str).await }
+            async move { bc_ipc::client::get_budget_overview(period, start).await }
         });
 
     view! {
