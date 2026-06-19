@@ -35,6 +35,7 @@ pub use accounts::Posting;
 pub use accounts::SparkPoint;
 pub use accounts::Transaction;
 pub use accounts::TxStatus;
+pub use budget::BudgetRevisionView;
 pub use budget::BudgetSummary;
 pub use budget::BudgetTreeNode;
 pub use budget::NativePeriodRow;

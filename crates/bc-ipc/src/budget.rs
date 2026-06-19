@@ -48,7 +48,6 @@ impl WindowOverlap {
     /// Creates a new [`WindowOverlap`].
     #[must_use]
     #[inline]
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by downstream tasks"))]
     pub fn new(start: jiff::civil::Date, end: jiff::civil::Date, covers_full_window: bool) -> Self {
         Self {
             start,
