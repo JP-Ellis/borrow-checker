@@ -66,6 +66,9 @@ pub enum Command {
         /// Rollover policy.
         #[arg(long, value_enum, default_value = "reset-to-zero")]
         rollover: RolloverArg,
+        /// Date the initial revision takes effect (YYYY-MM-DD); defaults to today.
+        #[arg(long)]
+        effective: Option<String>,
     },
     /// Archive a budget (hides it; data is preserved).
     Archive {
@@ -181,6 +184,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             fy_start_month,
             fy_start_day,
             rollover,
+            effective,
         } => {
             create(
                 ctx,
@@ -196,6 +200,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
                 fy_start_month,
                 fy_start_day,
                 rollover,
+                effective,
             )
             .await
         }
@@ -304,6 +309,7 @@ async fn create(
     fy_start_month: Option<u8>,
     fy_start_day: u8,
     rollover_arg: RolloverArg,
+    effective: Option<String>,
 ) -> CliResult<()> {
     let account_id = bc_models::AccountId::from_str(&account)
         .map_err(|e| CliError::Arg(format!("invalid account ID '{account}': {e}")))?;
@@ -347,12 +353,12 @@ async fn create(
         .zip(commodity.as_deref())
         .map(|(amt, c)| Amount::new(amt, CommodityCode::new(c)));
 
-    let today = jiff::Zoned::now().date();
+    let effective_from = parse_date_or_today(effective.as_deref())?;
     let (budget, revision) = ctx
         .budgets
         .create()
         .account_id(account_id)
-        .effective_from(today)
+        .effective_from(effective_from)
         .maybe_tag_filter(tag_filter_id)
         .maybe_name(name)
         .maybe_target(target_amount)
@@ -672,5 +678,22 @@ fn period_display(period: &bc_models::Period) -> String {
             tracing::warn!("unrecognised Period variant in period_display");
             "Unknown".to_owned()
         }
+    }
+}
+
+/// Parses a `YYYY-MM-DD` date string or returns today's date.
+///
+/// # Arguments
+///
+/// * `s` - Optional date string in `YYYY-MM-DD` format.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] if the string cannot be parsed.
+fn parse_date_or_today(s: Option<&str>) -> CliResult<Date> {
+    match s {
+        Some(d) => Date::from_str(d)
+            .map_err(|e| CliError::Arg(format!("invalid date '{d}': {e}"))),
+        None => Ok(jiff::Zoned::now().date()),
     }
 }
