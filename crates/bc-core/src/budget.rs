@@ -505,28 +505,25 @@ impl BudgetService {
 
 // MARK: BudgetStatusEngine
 
-/// Computed budget status for one budget in one period.
+/// Computed budget status for one budget over a viewing window.
 #[derive(Debug, Clone, serde::Serialize)]
 #[non_exhaustive]
 pub struct BudgetStatus {
-    /// The budget this status is for.
+    /// The budget anchor this status is for.
     pub budget: bc_models::Budget,
-    /// Period start date (inclusive).
-    pub period_start: jiff::civil::Date,
-    /// Period end date (exclusive).
-    pub period_end: jiff::civil::Date,
-    /// The viewing window for which this status was computed.
+    /// The viewing window.
     pub window: bc_models::BudgetWindow,
-    /// Allocated amount, pro-rated to the window duration.
+    /// Revision governing the window start (config the consumer should display).
+    pub governing: Option<bc_models::BudgetRevision>,
+    /// Sum of revision targets across the window's resolved periods (pro-rated to overlap).
     pub allocated: bc_models::Decimal,
-    /// Commodity of all monetary values in this status (from the budget's target commodity,
-    /// or `None` for tracking-only multi-commodity budgets).
+    /// Commodity of the monetary values, if determinable.
     pub commodity: Option<bc_models::CommodityCode>,
-    /// Sum of postings matched to this budget in the period.
+    /// Sum of matched postings in the window.
     pub actuals: bc_models::Decimal,
-    /// Balance rolled over from the previous period (zero for `ResetToZero` policy).
+    /// Rollover into the first resolved period in the window.
     pub rollover: bc_models::Decimal,
-    /// Funds available: `allocated + rollover - actuals`.
+    /// `allocated + rollover - actuals`.
     pub available: bc_models::Decimal,
 }
 
@@ -557,11 +554,13 @@ impl BudgetStatusEngine {
 
     /// Computes the budget status for `budget` over an explicit [`bc_models::BudgetWindow`].
     ///
-    /// The allocation is pro-rated: `prorated = allocation × (window_days / natural_period_days)`.
-    /// Actuals are summed only within `[window.start, window.end)`.
+    /// Allocations are summed across all resolved periods overlapping the window, with each
+    /// segment pro-rated to its overlap with the window. Actuals are summed only within
+    /// `[window.start, window.end)`. Rollover is carried into the first resolved period.
     ///
     /// # Errors
     ///
+    /// Returns [`crate::BcError::InvalidInput`] if `window.end < window.start`.
     /// Returns [`crate::BcError`] on database or data parse failure.
     #[inline]
     pub async fn status_for_window(
@@ -569,69 +568,48 @@ impl BudgetStatusEngine {
         budget: &bc_models::Budget,
         window: bc_models::BudgetWindow,
     ) -> crate::BcResult<BudgetStatus> {
-        let (period_start, period_end) = budget.period().range_containing(window.start);
-
-        let svc = BudgetService::new(self.pool.clone());
-        let allocation = svc.get_allocation(budget.id(), period_start).await?;
-        let full_allocated = allocation
-            .as_ref()
-            .map_or(bc_models::Decimal::ZERO, |a| a.amount().value());
-
-        let window_days = window.days();
-        if window_days < 0 {
+        if window.days() < 0 {
             return Err(crate::BcError::InvalidInput(format!(
-                "BudgetWindow has end before start: {} to {}",
-                window.start, window.end,
-            )));
+                "BudgetWindow has end before start: {} to {}", window.start, window.end)));
         }
-        if window_days == 0 {
-            tracing::debug!(
-                budget_id = %budget.id(),
-                window_start = %window.start,
-                "zero-day window: allocated will be 0"
-            );
-        }
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "Date - Date returns a Span; get_days() is safe for any realistic period"
-        )]
-        let period_days = i64::from((period_end - period_start).get_days());
+        let svc = BudgetService::new(self.pool.clone());
+        let revisions = svc.revisions(budget.id()).await?;
+        let account_id = budget.account_id().clone();
 
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "Decimal / and * panic on overflow/divide-by-zero; guarded by period_days != 0 check"
-        )]
-        let allocated = if period_days == 0 {
-            bc_models::Decimal::ZERO
-        } else {
-            let ratio =
-                bc_models::Decimal::from(window_days) / bc_models::Decimal::from(period_days);
-            (full_allocated * ratio).round_dp(2)
+        let periods = bc_models::periods_overlapping(&revisions, window.start, window.end);
+
+        let mut allocated = bc_models::Decimal::ZERO;
+        let mut actuals = bc_models::Decimal::ZERO;
+        let mut commodity: Option<bc_models::CommodityCode> = None;
+        for p in &periods {
+            // Clip to window for actuals and proration.
+            let seg_start = p.start.max(window.start);
+            let seg_end = p.end.min(window.end);
+            allocated = allocated
+                .checked_add(Self::period_target_prorated(p.revision, seg_start, seg_end))
+                .ok_or_else(|| crate::BcError::BadData("allocated overflow".into()))?;
+            let (a, c) = self.sum_actuals(&account_id, p.revision, seg_start, seg_end).await?;
+            actuals = actuals.checked_add(a)
+                .ok_or_else(|| crate::BcError::BadData("actuals overflow".into()))?;
+            if commodity.is_none() { commodity = c; }
+        }
+
+        let governing = bc_models::governing_revision(&revisions, window.start).cloned();
+        let rollover = match periods.first() {
+            Some(first) => self.rollover_into(&account_id, &revisions, first.start).await?,
+            None => bc_models::Decimal::ZERO,
         };
-
-        let (actuals, commodity) = self.sum_actuals(budget, window.start, window.end).await?;
-        let rollover = self.rollover_for(budget, period_start).await?;
-
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "budget arithmetic on Decimal values"
-        )]
+        #[expect(clippy::arithmetic_side_effects, reason = "decimal budget arithmetic")]
         let available = allocated + rollover - actuals;
 
-        Ok(BudgetStatus {
-            budget: budget.clone(),
-            period_start,
-            period_end,
-            window,
-            allocated,
-            commodity,
-            actuals,
-            rollover,
-            available,
-        })
+        Ok(BudgetStatus { budget: budget.clone(), window, governing, allocated, commodity, actuals, rollover, available })
     }
 
     /// Computes the budget status for `budget` as of `as_of`.
+    ///
+    /// Builds the natural period containing `as_of` under the governing revision at that date,
+    /// then delegates to [`Self::status_for_window`]. If no revision governs `as_of` (date
+    /// precedes all revisions), returns an empty status with all fields zero.
     ///
     /// # Errors
     ///
@@ -642,10 +620,27 @@ impl BudgetStatusEngine {
         budget: &bc_models::Budget,
         as_of: jiff::civil::Date,
     ) -> crate::BcResult<BudgetStatus> {
-        let (start, end) = budget.period().range_containing(as_of);
+        let svc = BudgetService::new(self.pool.clone());
+        let revisions = svc.revisions(budget.id()).await?;
+        let (start, end) = match bc_models::governing_revision(&revisions, as_of) {
+            Some(rev) => {
+                // Re-anchored period containing as_of within this reign.
+                let mut s = rev.effective_from();
+                loop {
+                    let e = rev.period().advance(s);
+                    if e > as_of { break (s, e); }
+                    s = e;
+                }
+            }
+            None => return Ok(BudgetStatus {
+                budget: budget.clone(),
+                window: bc_models::BudgetWindow::custom(as_of, as_of, "n/a"),
+                governing: None, allocated: bc_models::Decimal::ZERO, commodity: None,
+                actuals: bc_models::Decimal::ZERO, rollover: bc_models::Decimal::ZERO,
+                available: bc_models::Decimal::ZERO }),
+        };
         let label = format!("{start} \u{2013} {end}");
-        self.status_for_window(budget, bc_models::BudgetWindow::custom(start, end, label))
-            .await
+        self.status_for_window(budget, bc_models::BudgetWindow::custom(start, end, label)).await
     }
 
     /// Computes budget status for multiple budgets as of `as_of`.
@@ -1133,5 +1128,58 @@ mod budget_service_tests {
         let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
         let status = engine.status_for(&budget, Date::constant(2030, 8, 15)).await.expect("status");
         assert_eq!(status.rollover, expected);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn future_revision_dormant_until_effective(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts.create().name("Groceries")
+            .account_type(AccountType::Expense).kind(AccountKind::DepositAccount)
+            .call().await.expect("acc");
+        let svc = BudgetService::new(pool.clone());
+        let (budget, _) = svc.create().account_id(acc)
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(Decimal::from(200_i32), CommodityCode::new("AUD")))
+            .period(Period::Weekly).rollover(RolloverPolicy::ResetToZero)
+            .call().await.expect("create");
+        svc.revise(budget.id(), bc_models::BudgetRevision::builder()
+            .budget_id(budget.id().clone()).effective_from(Date::constant(2027, 1, 1))
+            .target(Amount::new(Decimal::from(250_i32), CommodityCode::new("AUD")))
+            .period(Period::Weekly).rollover(RolloverPolicy::ResetToZero)
+            .created_at(Timestamp::now()).build()).await.expect("revise");
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+        // A week in 2026 uses the $200 revision.
+        let s = engine.status_for(&budget, Date::constant(2026, 6, 3)).await.expect("status");
+        assert_eq!(s.allocated, dec!(200));
+        assert_eq!(s.governing.as_ref().unwrap().effective_from(), Date::constant(2026, 1, 1));
+        // A week in 2027 uses the $250 revision.
+        let s2 = engine.status_for(&budget, Date::constant(2027, 6, 3)).await.expect("status");
+        assert_eq!(s2.allocated, dec!(250));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn window_spanning_boundary_aggregates_periods(pool: sqlx::SqlitePool) {
+        // Monthly $300 from Jan; $600 from Apr 1. A Q1+Q2-ish window sums both.
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts.create().name("Groceries")
+            .account_type(AccountType::Expense).kind(AccountKind::DepositAccount)
+            .call().await.expect("acc");
+        let svc = BudgetService::new(pool.clone());
+        let (budget, _) = svc.create().account_id(acc)
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(Decimal::from(300_i32), CommodityCode::new("AUD")))
+            .period(Period::Monthly).rollover(RolloverPolicy::ResetToZero)
+            .call().await.expect("create");
+        svc.revise(budget.id(), bc_models::BudgetRevision::builder()
+            .budget_id(budget.id().clone()).effective_from(Date::constant(2026, 4, 1))
+            .target(Amount::new(Decimal::from(600_i32), CommodityCode::new("AUD")))
+            .period(Period::Monthly).rollover(RolloverPolicy::ResetToZero)
+            .created_at(Timestamp::now()).build()).await.expect("revise");
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+        // Window Feb 1 .. May 1 = Feb,Mar @300 + Apr @600 = 1200.
+        let w = bc_models::BudgetWindow::custom(
+            Date::constant(2026, 2, 1), Date::constant(2026, 5, 1), "FebApr");
+        let s = engine.status_for_window(&budget, w).await.expect("status");
+        assert_eq!(s.allocated, dec!(1200));
     }
 }
