@@ -142,7 +142,7 @@ pub async fn get_native_periods(
         .map(|t| t.commodity().as_str().to_owned())
         .ok_or_else(|| {
             bc_ipc::BcError::Internal(
-                "budget has no target at display_start — commodity required for amount conversion"
+                "budget has no target for the selected period — commodity required for amount conversion"
                     .to_owned(),
             )
         })?;
@@ -319,22 +319,26 @@ pub async fn update_budget(
         .revisions(&bid)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    let earliest = existing_revs.into_iter().next().ok_or_else(|| {
-        bc_ipc::BcError::Internal("budget has no revisions".to_owned())
-    })?;
+    // Placeholder amend-in-place: edit the revision governing today (falling back
+    // to the earliest revision when today precedes them all). This is a
+    // compile-only stand-in; the real add/amend/remove-with-effective-date UX is
+    // the budget-versioning follow-up. A multi-revision budget edited here only
+    // changes the currently-governing revision, not the whole timeline.
+    let today = jiff::Zoned::now().date();
+    let target_rev = bc_core::governing_revision(&existing_revs, today)
+        .or_else(|| existing_revs.first())
+        .ok_or_else(|| bc_ipc::BcError::Internal("budget has no revisions".to_owned()))?;
 
     let revised = bc_models::BudgetRevision::builder()
-        .id(earliest.id().clone())
+        .id(target_rev.id().clone())
         .budget_id(bid.clone())
-        .effective_from(earliest.effective_from())
-        .maybe_name(name.unwrap_or_else(|| earliest.name().map(str::to_owned)))
-        .maybe_target(
-            target.unwrap_or_else(|| earliest.target().cloned()),
-        )
-        .period(period_model.unwrap_or_else(|| earliest.period().clone()))
-        .rollover(rollover_model.unwrap_or(earliest.rollover()))
-        .maybe_tag_filter(tag.unwrap_or_else(|| earliest.tag_filter().cloned()))
-        .created_at(*earliest.created_at())
+        .effective_from(target_rev.effective_from())
+        .maybe_name(name.unwrap_or_else(|| target_rev.name().map(str::to_owned)))
+        .maybe_target(target.unwrap_or_else(|| target_rev.target().cloned()))
+        .period(period_model.unwrap_or_else(|| target_rev.period().clone()))
+        .rollover(rollover_model.unwrap_or(target_rev.rollover()))
+        .maybe_tag_filter(tag.unwrap_or_else(|| target_rev.tag_filter().cloned()))
+        .created_at(*target_rev.created_at())
         .build();
 
     state
