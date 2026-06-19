@@ -449,7 +449,13 @@ fn budget_tree_node_recursive(
         .spent(spent)
         .native_period_label(native_period_label)
         .has_mixed_period(item.has_mixed_period)
-        .rollover(gov.map_or(bc_models::RolloverPolicy::ResetToZero, bc_models::BudgetRevision::rollover).into_ipc())
+        .rollover(
+            gov.map_or(
+                bc_models::RolloverPolicy::ResetToZero,
+                bc_models::BudgetRevision::rollover,
+            )
+            .into_ipc(),
+        )
         .maybe_tag_filter(gov.and_then(|r| r.tag_filter()).map(ToString::to_string))
         .is_tracking_only(gov.is_none_or(bc_models::BudgetRevision::is_tracking_only))
         .children(children?)

@@ -1270,11 +1270,7 @@ impl Service {
         period_end: jiff::civil::Date,
     ) -> BcResult<Vec<Transaction>> {
         let txns: Vec<Transaction> = self
-            .list_for_account_tree_in_range(
-                account_id,
-                Some(period_start),
-                Some(period_end),
-            )
+            .list_for_account_tree_in_range(account_id, Some(period_start), Some(period_end))
             .await?
             .collect();
 
