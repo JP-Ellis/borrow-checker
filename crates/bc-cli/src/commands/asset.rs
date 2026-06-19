@@ -517,4 +517,3 @@ async fn book_value(ctx: &AppContext, account: String, commodity: String) -> Cli
     }
     Ok(())
 }
-

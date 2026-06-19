@@ -259,12 +259,10 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
         let revs = ctx.budgets.revisions(b.id()).await?;
         let rev = bc_core::governing_revision(&revs, today);
         let period_str = rev.map_or_else(|| "\u{2014}".to_owned(), |r| period_display(r.period()));
-        let target_str = rev
-            .and_then(bc_models::BudgetRevision::target)
-            .map_or_else(
-                || "\u{2014}".to_owned(),
-                |a| format!("{} {}", a.value(), a.commodity()),
-            );
+        let target_str = rev.and_then(bc_models::BudgetRevision::target).map_or_else(
+            || "\u{2014}".to_owned(),
+            |a| format!("{} {}", a.value(), a.commodity()),
+        );
         let rollover_str = rev.map_or("\u{2014}", |r| match r.rollover() {
             bc_models::RolloverPolicy::CarryForward => "carry-forward",
             bc_models::RolloverPolicy::ResetToZero => "reset-to-zero",
@@ -562,7 +560,11 @@ async fn update_budget(
         .created_at(*base_rev.created_at())
         .build();
 
-    let updated = ctx.budgets.revise(&id, revised).await.map_err(CliError::Core)?;
+    let updated = ctx
+        .budgets
+        .revise(&id, revised)
+        .await
+        .map_err(CliError::Core)?;
 
     if ctx.json {
         return crate::output::print_json(&updated);
@@ -681,4 +683,3 @@ fn period_display(period: &bc_models::Period) -> String {
         }
     }
 }
-

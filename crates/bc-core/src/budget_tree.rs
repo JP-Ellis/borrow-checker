@@ -125,12 +125,8 @@ impl BudgetTreeService {
         for budget in &budgets {
             let revs = budget_svc.revisions(budget.id()).await?;
             let gov = bc_models::governing_revision(&revs, window_start);
-            let effective_target = Self::compute_effective_target(
-                &revs,
-                display_start,
-                window_start,
-                window_end,
-            )?;
+            let effective_target =
+                Self::compute_effective_target(&revs, display_start, window_start, window_end)?;
 
             let window =
                 bc_models::BudgetWindow::custom(window_start, window_end, "display".to_owned());
@@ -143,11 +139,10 @@ impl BudgetTreeService {
 
             let gov_period = gov.map(bc_models::BudgetRevision::period);
             let has_mixed_period = {
-                let overlapping_revs = bc_models::periods_overlapping(&revs, window_start, window_end);
-                let distinct_rev_ids: HashSet<_> = overlapping_revs
-                    .iter()
-                    .map(|p| p.revision.id())
-                    .collect();
+                let overlapping_revs =
+                    bc_models::periods_overlapping(&revs, window_start, window_end);
+                let distinct_rev_ids: HashSet<_> =
+                    overlapping_revs.iter().map(|p| p.revision.id()).collect();
                 distinct_rev_ids.len() > 1
                     || !gov_period.is_none_or(|p| periods_equivalent(display_period, p))
             };
@@ -207,7 +202,9 @@ impl BudgetTreeService {
         let mut result = Vec::new();
         for rp in resolved {
             let gov_rev = rp.revision;
-            let full_target = gov_rev.target().map_or(Decimal::ZERO, bc_models::Amount::value);
+            let full_target = gov_rev
+                .target()
+                .map_or(Decimal::ZERO, bc_models::Amount::value);
 
             // Clip the natural period to the display window.
             let overlap_start = rp.start.max(display_start);
