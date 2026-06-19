@@ -122,6 +122,7 @@ pub use budget::RolloverPolicy;
 pub use budget_timeline::ResolvedPeriod;
 pub use budget_timeline::governing_revision;
 pub use budget_timeline::periods_overlapping;
+pub use budget_timeline::snap_to_grid_boundary;
 pub use budget_window::BudgetWindow;
 pub use commodity::Commodity;
 pub use commodity::CommodityBuilder;

@@ -38,6 +38,64 @@ pub fn governing_revision(revisions: &[BudgetRevision], date: Date) -> Option<&B
     revisions.iter().rev().find(|r| r.effective_from() <= date)
 }
 
+/// Snaps `date` forward to the next period-grid boundary of the revision that
+/// governs it, leaving it unchanged when no revision precedes it.
+///
+/// The "relevant grid" is the revision with the greatest `effective_from <= date`
+/// (ignoring `exclude`, so a revision being re-dated does not anchor on itself).
+/// Boundaries are `effective_from`, `advance(effective_from)`, `advance²(..)`, …;
+/// the result is the smallest such boundary `>= date`.
+///
+/// # Arguments
+///
+/// * `revisions` - Revisions sorted ascending by `effective_from`.
+/// * `date` - The candidate effective date to snap.
+/// * `exclude` - A revision id to ignore when choosing the governing grid (the
+///   revision currently being amended), or `None`.
+///
+/// # Returns
+///
+/// The snapped boundary date, or `date` unchanged when no governing revision
+/// precedes it.
+///
+/// # Example
+///
+/// ```
+/// use bc_models::{BudgetId, BudgetRevision, Period, RolloverPolicy, snap_to_grid_boundary};
+/// use jiff::Timestamp;
+/// use jiff::civil::date;
+///
+/// let rev = BudgetRevision::builder()
+///     .budget_id(BudgetId::new())
+///     .effective_from(date(2026, 1, 5))
+///     .period(Period::Weekly)
+///     .rollover(RolloverPolicy::ResetToZero)
+///     .created_at(Timestamp::now())
+///     .build();
+/// assert_eq!(snap_to_grid_boundary(&[rev], date(2026, 1, 15), None), date(2026, 1, 19));
+/// ```
+#[must_use]
+#[inline]
+pub fn snap_to_grid_boundary(
+    revisions: &[BudgetRevision],
+    date: Date,
+    exclude: Option<&crate::BudgetRevisionId>,
+) -> Date {
+    let governing = revisions
+        .iter()
+        .filter(|r| exclude != Some(r.id()))
+        .filter(|r| r.effective_from() <= date)
+        .max_by_key(|r| r.effective_from());
+    let Some(rev) = governing else {
+        return date;
+    };
+    let mut cursor = rev.effective_from();
+    while cursor < date {
+        cursor = rev.period().advance(cursor);
+    }
+    cursor
+}
+
 /// Enumerates the revision-defined periods overlapping `[from, to)`.
 ///
 /// Each revision tiles its own grid from its `effective_from`, stepping by the
@@ -239,6 +297,49 @@ mod tests {
             periods_overlapping(&revs, date(2026, 6, 20), date(2026, 6, 10)),
             vec![],
             "from > to must yield an empty result"
+        );
+    }
+
+    #[test]
+    fn snap_advances_mid_period_date_to_next_boundary() {
+        // Weekly grid anchored Mon 5 Jan 2026; 15 Jan is mid-week.
+        let revs = vec![rev(date(2026, 1, 5), Period::Weekly)];
+        // Boundaries: 5, 12, 19, ... -> first >= 15 Jan is 19 Jan.
+        assert_eq!(
+            snap_to_grid_boundary(&revs, date(2026, 1, 15), None),
+            date(2026, 1, 19)
+        );
+    }
+
+    #[test]
+    fn snap_returns_date_unchanged_when_already_on_boundary() {
+        let revs = vec![rev(date(2026, 1, 5), Period::Weekly)];
+        assert_eq!(
+            snap_to_grid_boundary(&revs, date(2026, 1, 12), None),
+            date(2026, 1, 12)
+        );
+    }
+
+    #[test]
+    fn snap_is_noop_when_date_precedes_all_revisions() {
+        let revs = vec![rev(date(2026, 1, 5), Period::Weekly)];
+        assert_eq!(
+            snap_to_grid_boundary(&revs, date(2025, 12, 1), None),
+            date(2025, 12, 1)
+        );
+    }
+
+    #[test]
+    fn snap_excludes_the_revision_being_amended() {
+        // Amending r2's own effective date must snap to r1's grid, not r2's.
+        let r1 = rev(date(2026, 1, 5), Period::Weekly); // boundaries 5,12,19,26,...
+        let r2 = rev(date(2026, 1, 20), Period::Monthly);
+        let r2_id = r2.id().clone();
+        let revs = vec![r1, r2];
+        // Snap 22 Jan excluding r2 -> uses r1 weekly grid -> 26 Jan.
+        assert_eq!(
+            snap_to_grid_boundary(&revs, date(2026, 1, 22), Some(&r2_id)),
+            date(2026, 1, 26)
         );
     }
 }
