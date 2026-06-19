@@ -6675,18 +6675,18 @@ dependencies = [
 
 [[package]]
 name = "stylance"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f030dff936e0dd62d401978839545310a9bd1526001e17caf1519a4a51f90ca"
+checksum = "252bdc37547d27ee7ccd20e028dced7acfdb64b561ac4d8a58393cf1adec0f14"
 dependencies = [
  "stylance-macros",
 ]
 
 [[package]]
 name = "stylance-core"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11993ed1c0176600f421d9f3f51c2cfa7daa1cbda4429aa9ec95619f536d9e8f"
+checksum = "cd267d69de4c0bcb01423fdd641a3007798842c19fe4da6b6acac0efa9ed0b41"
 dependencies = [
  "anyhow",
  "serde",
@@ -6697,9 +6697,9 @@ dependencies = [
 
 [[package]]
 name = "stylance-macros"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a26b7adc2d224cdcf9c0011ea5ad0ea5b83f5a8f28b5c9c11f1e2bae89efd744"
+checksum = "6c7a1fdbb4d152b969919646561e8a2d3beb0b03b1014570fd573e55a3b3b627"
 dependencies = [
  "anyhow",
  "proc-macro2",
