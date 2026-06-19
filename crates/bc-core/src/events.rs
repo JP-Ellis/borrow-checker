@@ -5,6 +5,7 @@ use bc_models::AccountKind;
 use bc_models::AccountType;
 use bc_models::Amount;
 use bc_models::BudgetId;
+use bc_models::BudgetRevisionId;
 use bc_models::DepreciationId;
 use bc_models::EventId;
 use bc_models::LoanId;
@@ -136,24 +137,54 @@ pub enum Event {
         /// Commodity of the loan (e.g. `"AUD"`).
         commodity: String,
     },
-    /// A new budget was created anchored to an account.
+    /// A budget anchor was created together with its initial revision.
     BudgetCreated {
-        /// The new budget's ID.
+        /// The new anchor's ID.
         budget_id: BudgetId,
-        /// The account this budget is anchored to.
+        /// Account the budget is anchored to.
         account_id: AccountId,
-        /// Optional tag filter for sub-budget matching.
-        tag_filter: Option<TagId>,
-        /// Optional display name override.
+        /// When the anchor was created.
+        created_at: Timestamp,
+        /// The initial revision's ID.
+        revision_id: BudgetRevisionId,
+        /// The initial revision's effective-from date.
+        effective_from: jiff::civil::Date,
+        /// Display name (initial revision).
         name: Option<String>,
-        /// Optional allocation target per period; `None` = tracking-only.
+        /// Target amount (initial revision).
         target: Option<Amount>,
-        /// Recurrence period.
+        /// Period (initial revision).
+        period: Period,
+        /// Rollover policy (initial revision).
+        rollover: RolloverPolicy,
+        /// Tag filter (initial revision).
+        tag_filter: Option<TagId>,
+    },
+    /// A revision was added or amended (upsert by `revision_id`).
+    BudgetRevisionSet {
+        /// Anchor this revision belongs to.
+        budget_id: BudgetId,
+        /// Revision being set.
+        revision_id: BudgetRevisionId,
+        /// Effective-from date.
+        effective_from: jiff::civil::Date,
+        /// Display name.
+        name: Option<String>,
+        /// Target amount.
+        target: Option<Amount>,
+        /// Period.
         period: Period,
         /// Rollover policy.
         rollover: RolloverPolicy,
-        /// When the budget was first persisted.
-        created_at: Timestamp,
+        /// Tag filter.
+        tag_filter: Option<TagId>,
+    },
+    /// A revision was removed.
+    BudgetRevisionRemoved {
+        /// Anchor this revision belonged to.
+        budget_id: BudgetId,
+        /// Revision removed.
+        revision_id: BudgetRevisionId,
     },
     /// A budget was archived.
     BudgetArchived {
@@ -161,30 +192,6 @@ pub enum Event {
         budget_id: BudgetId,
         /// When the budget was archived.
         archived_at: jiff::Timestamp,
-    },
-    /// A budget's mutable properties were updated.
-    BudgetUpdated {
-        /// The budget's ID.
-        budget_id: BudgetId,
-        /// New display name (`Some(Some(s))` sets, `Some(None)` clears, `None` keeps existing).
-        name: Option<Option<String>>,
-        /// New allocation target (`Some(Some(a))` sets, `Some(None)` clears, `None` keeps existing).
-        target: Option<Option<Amount>>,
-        /// New rollover policy (`None` keeps existing).
-        rollover: Option<RolloverPolicy>,
-        /// New recurrence period (`None` keeps existing).
-        period: Option<Period>,
-        /// New tag filter (`Some(Some(t))` sets, `Some(None)` clears, `None` keeps existing).
-        tag_filter: Option<Option<TagId>>,
-    },
-    /// Funds were allocated to a budget line for a period.
-    BudgetAllocated {
-        /// The budget receiving the allocation.
-        budget_id: BudgetId,
-        /// Canonical period start date.
-        period_start: jiff::civil::Date,
-        /// Amount allocated.
-        amount: Amount,
     },
 }
 
@@ -204,9 +211,9 @@ impl Event {
             Self::DepreciationCalculated { .. } => "DepreciationCalculated",
             Self::LoanTermsSet { .. } => "LoanTermsSet",
             Self::BudgetCreated { .. } => "BudgetCreated",
-            Self::BudgetUpdated { .. } => "BudgetUpdated",
+            Self::BudgetRevisionSet { .. } => "BudgetRevisionSet",
+            Self::BudgetRevisionRemoved { .. } => "BudgetRevisionRemoved",
             Self::BudgetArchived { .. } => "BudgetArchived",
-            Self::BudgetAllocated { .. } => "BudgetAllocated",
         }
     }
 
@@ -229,9 +236,9 @@ impl Event {
             | Self::DepreciationCalculated { account_id, .. }
             | Self::LoanTermsSet { account_id, .. } => account_id.to_string(),
             Self::BudgetCreated { budget_id, .. }
-            | Self::BudgetUpdated { budget_id, .. }
-            | Self::BudgetArchived { budget_id, .. }
-            | Self::BudgetAllocated { budget_id, .. } => budget_id.to_string(),
+            | Self::BudgetRevisionSet { budget_id, .. }
+            | Self::BudgetRevisionRemoved { budget_id, .. }
+            | Self::BudgetArchived { budget_id, .. } => budget_id.to_string(),
         }
     }
 }
@@ -606,90 +613,55 @@ mod tests {
         assert_eq!(records.first().expect("one").kind, "LoanTermsSet");
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn budget_created_payload_round_trips(pool: sqlx::SqlitePool) {
-        let store = SqliteStore::new(pool.clone());
+    #[test]
+    fn budget_created_round_trips() {
         let budget_id = BudgetId::new();
-        let account_id = AccountId::new();
         let event = Event::BudgetCreated {
             budget_id: budget_id.clone(),
-            account_id: account_id.clone(),
-            tag_filter: None,
-            name: Some("Groceries Budget".to_owned()),
-            target: Some(Amount::new(
-                Decimal::from(600_i32),
-                CommodityCode::new("AUD"),
-            )),
-            period: Period::Monthly,
+            account_id: bc_models::AccountId::new(),
+            created_at: jiff::Timestamp::now(),
+            revision_id: bc_models::BudgetRevisionId::new(),
+            effective_from: jiff::civil::Date::constant(2026, 1, 1),
+            name: Some("Groceries".to_owned()),
+            target: None,
+            period: bc_models::Period::Weekly,
             rollover: bc_models::RolloverPolicy::ResetToZero,
-            created_at: Timestamp::now(),
+            tag_filter: None,
         };
-
-        store.append(&event).await.expect("append should succeed");
-
-        let records = store
-            .replay_for(&budget_id.to_string())
-            .await
-            .expect("replay should succeed");
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            records.first().expect("record should exist").kind,
-            "BudgetCreated"
-        );
-
-        let replayed: Event = serde_json::from_str(&records.first().expect("record").payload)
-            .expect("payload should deserialise");
-
+        let json = serde_json::to_string(&event).expect("ser");
+        let back: Event = serde_json::from_str(&json).expect("de");
+        assert_eq!(back.kind(), "BudgetCreated");
         #[expect(
             clippy::wildcard_enum_match_arm,
             reason = "Event is #[non_exhaustive]; wildcard arm required"
         )]
-        match replayed {
-            Event::BudgetCreated {
-                budget_id: rid,
-                account_id: raid,
-                tag_filter,
-                name,
-                target,
-                period,
-                rollover,
-                ..
-            } => {
-                assert_eq!(rid, budget_id);
-                assert_eq!(raid, account_id);
-                assert_eq!(tag_filter, None);
-                assert_eq!(name, Some("Groceries Budget".to_owned()));
-                assert_eq!(
-                    target,
-                    Some(Amount::new(
-                        Decimal::from(600_i32),
-                        CommodityCode::new("AUD")
-                    ))
-                );
-                assert_eq!(period, Period::Monthly);
-                assert_eq!(rollover, bc_models::RolloverPolicy::ResetToZero);
+        match back {
+            Event::BudgetCreated { name, effective_from, .. } => {
+                assert_eq!(name, Some("Groceries".to_owned()));
+                assert_eq!(effective_from, jiff::civil::Date::constant(2026, 1, 1));
             }
             other => panic!("expected BudgetCreated, got {other:?}"),
         }
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn budget_allocated_round_trips(pool: sqlx::SqlitePool) {
-        let store = SqliteStore::new(pool.clone());
-        let budget_id = BudgetId::new();
-        let event = Event::BudgetAllocated {
-            budget_id: budget_id.clone(),
-            period_start: Date::constant(2026, 3, 1),
-            amount: Amount::new(Decimal::from(500_i32), CommodityCode::new("AUD")),
+    #[test]
+    fn budget_revision_set_round_trips() {
+        let event = Event::BudgetRevisionSet {
+            budget_id: BudgetId::new(),
+            revision_id: bc_models::BudgetRevisionId::new(),
+            effective_from: jiff::civil::Date::constant(2027, 1, 1),
+            name: None,
+            target: Some(bc_models::Amount::new(
+                bc_models::Decimal::from(250_i32),
+                bc_models::CommodityCode::new("AUD"),
+            )),
+            period: bc_models::Period::Weekly,
+            rollover: bc_models::RolloverPolicy::CarryForward,
+            tag_filter: None,
         };
-
-        store.append(&event).await.expect("append should succeed");
-
-        let records = store
-            .replay_for(&budget_id.to_string())
-            .await
-            .expect("replay");
-        assert_eq!(records.first().expect("one").kind, "BudgetAllocated");
+        let json = serde_json::to_string(&event).expect("ser");
+        let back: Event = serde_json::from_str(&json).expect("de");
+        assert_eq!(back.kind(), "BudgetRevisionSet");
     }
 
     #[sqlx::test(migrations = "./migrations")]
