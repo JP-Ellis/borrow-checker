@@ -9,6 +9,7 @@ use bc_models::RolloverPolicy;
 use clap::Subcommand;
 use jiff::civil::Date;
 
+use crate::commands::parse_date_or_today;
 use crate::context::AppContext;
 use crate::error::CliError;
 use crate::error::CliResult;
@@ -681,19 +682,3 @@ fn period_display(period: &bc_models::Period) -> String {
     }
 }
 
-/// Parses a `YYYY-MM-DD` date string or returns today's date.
-///
-/// # Arguments
-///
-/// * `s` - Optional date string in `YYYY-MM-DD` format.
-///
-/// # Errors
-///
-/// Returns [`CliError::Arg`] if the string cannot be parsed.
-fn parse_date_or_today(s: Option<&str>) -> CliResult<Date> {
-    match s {
-        Some(d) => Date::from_str(d)
-            .map_err(|e| CliError::Arg(format!("invalid date '{d}': {e}"))),
-        None => Ok(jiff::Zoned::now().date()),
-    }
-}

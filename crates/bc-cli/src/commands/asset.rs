@@ -6,6 +6,7 @@ use bc_models::AccountId;
 use bc_models::ValuationSource;
 use clap::Subcommand;
 
+use crate::commands::parse_date_or_today;
 use crate::context::AppContext;
 use crate::error::CliResult;
 
@@ -517,19 +518,3 @@ async fn book_value(ctx: &AppContext, account: String, commodity: String) -> Cli
     Ok(())
 }
 
-/// Parses a `YYYY-MM-DD` date string or returns today's date.
-///
-/// # Arguments
-///
-/// * `s` - Optional date string in `YYYY-MM-DD` format.
-///
-/// # Errors
-///
-/// Returns [`crate::error::CliError::Arg`] if the string cannot be parsed.
-fn parse_date_or_today(s: Option<&str>) -> CliResult<jiff::civil::Date> {
-    match s {
-        Some(d) => jiff::civil::Date::from_str(d)
-            .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{d}': {e}"))),
-        None => Ok(jiff::Zoned::now().date()),
-    }
-}
