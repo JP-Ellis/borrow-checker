@@ -203,11 +203,11 @@ pub async fn get_settings() -> Result<SettingsInfo, BcError> {
 
 /// Arg struct for [`get_budget_overview`].
 #[derive(Serialize)]
-struct GetBudgetOverviewArgs<'a> {
+struct GetBudgetOverviewArgs {
     /// Display period granularity.
     period_type: crate::Period,
-    /// ISO-8601 date string for the start of the display window.
-    period_start: &'a str,
+    /// Start of the display window.
+    period_start: jiff::civil::Date,
 }
 
 /// Arg struct for [`get_native_periods`].
@@ -215,10 +215,10 @@ struct GetBudgetOverviewArgs<'a> {
 struct GetNativePeriodsArgs<'a> {
     /// Budget ID to query.
     budget_id: &'a str,
-    /// ISO-8601 date string for the start of the display window.
-    display_start: &'a str,
-    /// ISO-8601 date string for the end of the display window.
-    display_end: &'a str,
+    /// Start of the display window.
+    display_start: jiff::civil::Date,
+    /// End of the display window.
+    display_end: jiff::civil::Date,
 }
 
 /// Arg struct for [`get_budget_transactions`].
@@ -226,10 +226,10 @@ struct GetNativePeriodsArgs<'a> {
 struct GetBudgetTransactionsArgs<'a> {
     /// Budget ID to query.
     budget_id: &'a str,
-    /// ISO-8601 date string for the start of the period.
-    period_start: &'a str,
-    /// ISO-8601 date string for the end of the period.
-    period_end: &'a str,
+    /// Start of the period.
+    period_start: jiff::civil::Date,
+    /// End of the period.
+    period_end: jiff::civil::Date,
 }
 
 /// Arg struct for [`update_budget`].
@@ -290,10 +290,10 @@ struct CreateBudgetArgs<'a> {
 struct SetPostingSpreadArgs<'a> {
     /// Posting ID to update.
     posting_id: &'a str,
-    /// ISO-8601 date string for the start of the accrual spread.
-    spread_from: &'a str,
-    /// ISO-8601 date string for the end of the accrual spread.
-    spread_until: &'a str,
+    /// Start of the accrual spread.
+    spread_from: jiff::civil::Date,
+    /// End of the accrual spread.
+    spread_until: jiff::civil::Date,
 }
 
 /// Arg struct for [`clear_posting_spread`].
@@ -311,7 +311,7 @@ struct ClearPostingSpreadArgs<'a> {
 #[inline]
 pub async fn get_budget_overview(
     period_type: crate::Period,
-    period_start: &str,
+    period_start: jiff::civil::Date,
 ) -> Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError> {
     tauri_sys::core::invoke_result(
         commands::GET_BUDGET_OVERVIEW,
@@ -331,8 +331,8 @@ pub async fn get_budget_overview(
 #[inline]
 pub async fn get_native_periods(
     budget_id: &str,
-    display_start: &str,
-    display_end: &str,
+    display_start: jiff::civil::Date,
+    display_end: jiff::civil::Date,
 ) -> Result<Vec<NativePeriodRow>, BcError> {
     tauri_sys::core::invoke_result(
         commands::GET_NATIVE_PERIODS,
@@ -353,8 +353,8 @@ pub async fn get_native_periods(
 #[inline]
 pub async fn get_budget_transactions(
     budget_id: &str,
-    period_start: &str,
-    period_end: &str,
+    period_start: jiff::civil::Date,
+    period_end: jiff::civil::Date,
 ) -> Result<Vec<Transaction>, BcError> {
     tauri_sys::core::invoke_result(
         commands::GET_BUDGET_TRANSACTIONS,
@@ -445,8 +445,8 @@ pub async fn create_budget(
 #[inline]
 pub async fn set_posting_spread(
     posting_id: &str,
-    spread_from: &str,
-    spread_until: &str,
+    spread_from: jiff::civil::Date,
+    spread_until: jiff::civil::Date,
 ) -> Result<(), BcError> {
     tauri_sys::core::invoke_result(
         commands::SET_POSTING_SPREAD,
