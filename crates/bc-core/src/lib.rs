@@ -29,6 +29,7 @@ pub use asset::Service as AssetService;
 pub use balance::Engine as BalanceEngine;
 pub use balance::PostingBucket;
 pub use bc_models::BudgetWindow;
+pub use bc_models::governing_revision;
 pub use budget::BudgetService;
 pub use budget::BudgetStatus;
 pub use budget::BudgetStatusEngine;
