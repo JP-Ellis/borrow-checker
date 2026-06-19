@@ -404,7 +404,6 @@ dependencies = [
  "bon",
  "jiff",
  "pretty_assertions",
- "rstest",
  "rust_decimal",
  "rust_decimal_macros",
  "serde",
