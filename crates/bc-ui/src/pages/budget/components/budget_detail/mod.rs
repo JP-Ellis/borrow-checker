@@ -325,9 +325,7 @@ pub fn BudgetDetail(
             let p = period.get();
             let ws = window_start.get();
             let end = period_nav::step_window(&p, ws, true);
-            let start_str = ws.to_string();
-            let end_str = end.to_string();
-            async move { bc_ipc::client::get_budget_transactions(&bid, &start_str, &end_str).await }
+            async move { bc_ipc::client::get_budget_transactions(&bid, ws, end).await }
         });
 
     let on_change: Callback<()> = Callback::new(move |()| {
