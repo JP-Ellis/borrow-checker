@@ -586,7 +586,7 @@ impl BudgetStatusEngine {
             let seg_start = p.start.max(window.start);
             let seg_end = p.end.min(window.end);
             allocated = allocated
-                .checked_add(Self::period_target_prorated(p.revision, seg_start, seg_end))
+                .checked_add(Self::period_target_prorated(p.revision, p.start, seg_start, seg_end))
                 .ok_or_else(|| crate::BcError::BadData("allocated overflow".into()))?;
             let (a, c) = self.sum_actuals(&account_id, p.revision, seg_start, seg_end).await?;
             actuals = actuals.checked_add(a)
@@ -828,18 +828,26 @@ impl BudgetStatusEngine {
         }
     }
 
-    /// Target pro-rated to a (possibly stub) period's day count.
+    /// Target pro-rated to the day count of `[seg_start, seg_end)`.
+    ///
+    /// The denominator is the revision's natural period length anchored at
+    /// `period_start` (the period's true start), so the ratio stays correct when
+    /// the segment is clipped to a window edge or truncated to a boundary stub.
+    /// `period_start` must be the resolved period's start; `seg_start`/`seg_end`
+    /// the (possibly clipped) portion being measured.
+    #[inline]
     fn period_target_prorated(
         rev: &bc_models::BudgetRevision,
-        start: jiff::civil::Date,
-        end: jiff::civil::Date,
+        period_start: jiff::civil::Date,
+        seg_start: jiff::civil::Date,
+        seg_end: jiff::civil::Date,
     ) -> bc_models::Decimal {
         let Some(target) = rev.target() else { return bc_models::Decimal::ZERO };
-        let natural_end = rev.period().advance(start);
+        let natural_end = rev.period().advance(period_start);
         #[expect(clippy::arithmetic_side_effects, reason = "Date - Date Span; realistic ranges")]
-        let period_days = i64::from((natural_end - start).get_days());
+        let period_days = i64::from((natural_end - period_start).get_days());
         #[expect(clippy::arithmetic_side_effects, reason = "Date - Date Span; realistic ranges")]
-        let actual_days = i64::from((end - start).get_days());
+        let actual_days = i64::from((seg_end - seg_start).get_days());
         if period_days <= 0 { return target.value(); }
         #[expect(clippy::arithmetic_side_effects, reason = "guarded by period_days > 0")]
         let ratio = bc_models::Decimal::from(actual_days) / bc_models::Decimal::from(period_days);
@@ -888,7 +896,8 @@ impl BudgetStatusEngine {
             if matches!(prev.revision.rollover(), bc_models::RolloverPolicy::ResetToZero) {
                 return Ok(bc_models::Decimal::ZERO);
             }
-            let prev_allocated = Self::period_target_prorated(prev.revision, prev.start, prev.end);
+            let prev_allocated =
+                Self::period_target_prorated(prev.revision, prev.start, prev.start, prev.end);
             let (prev_actuals, _) =
                 self.sum_actuals(account_id, prev.revision, prev.start, prev.end).await?;
             let prev_rollover = self.rollover_into(account_id, revisions, prev.start).await?;
@@ -1213,5 +1222,28 @@ mod budget_service_tests {
             Date::constant(2026, 2, 1), Date::constant(2026, 5, 1), "FebApr");
         let s = engine.status_for_window(&budget, w).await.expect("status");
         assert_eq!(s.allocated, dec!(1200));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn window_clipped_mid_period_prorates_on_true_period_length(pool: sqlx::SqlitePool) {
+        // Monthly $310 from Jan 1 2026 (period Jan 1 .. Feb 1 = 31 days). A window
+        // that starts mid-period (Jan 29 .. Feb 1 = 3 days) must pro-rate against
+        // the period's true length (31), not the natural length anchored at the
+        // clipped start: 310 * 3/31 = 30.00.
+        let accounts = AccountService::new(pool.clone());
+        let acc = accounts.create().name("Groceries")
+            .account_type(AccountType::Expense).kind(AccountKind::DepositAccount)
+            .call().await.expect("acc");
+        let svc = BudgetService::new(pool.clone());
+        let (budget, _) = svc.create().account_id(acc)
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(Decimal::from(310_i32), CommodityCode::new("AUD")))
+            .period(Period::Monthly).rollover(RolloverPolicy::ResetToZero)
+            .call().await.expect("create");
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+        let w = bc_models::BudgetWindow::custom(
+            Date::constant(2026, 1, 29), Date::constant(2026, 2, 1), "tail");
+        let s = engine.status_for_window(&budget, w).await.expect("status");
+        assert_eq!(s.allocated, dec!(30));
     }
 }
