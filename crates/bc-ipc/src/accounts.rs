@@ -176,10 +176,10 @@ pub struct Posting {
     pub amount: Amount,
     /// Optional inline comment shown in the TOML view.
     pub note: Option<String>,
-    /// Accrual spread start date (ISO-8601). `None` means no spreading applied.
-    pub spread_from: Option<String>,
-    /// Accrual spread end date (ISO-8601, inclusive — the last day of the spread). `None` means no spreading applied.
-    pub spread_until: Option<String>,
+    /// Accrual spread start date. `None` means no spreading applied.
+    pub spread_from: Option<jiff::civil::Date>,
+    /// Accrual spread end date (inclusive — the last day of the spread). `None` means no spreading applied.
+    pub spread_until: Option<jiff::civil::Date>,
 }
 
 impl Posting {
@@ -191,8 +191,8 @@ impl Posting {
     /// * `account` - Account reference with ID and display name.
     /// * `amount` - Posting amount.
     /// * `note` - Optional inline comment, or `None`.
-    /// * `spread_from` - Accrual spread start date (ISO-8601), or `None`.
-    /// * `spread_until` - Accrual spread end date (ISO-8601, inclusive — the last day of the spread), or `None`.
+    /// * `spread_from` - Accrual spread start date, or `None`.
+    /// * `spread_until` - Accrual spread end date (inclusive — the last day of the spread), or `None`.
     #[must_use]
     #[inline]
     pub fn new(
@@ -200,16 +200,16 @@ impl Posting {
         account: AccountRef,
         amount: Amount,
         note: Option<impl Into<String>>,
-        spread_from: Option<impl Into<String>>,
-        spread_until: Option<impl Into<String>>,
+        spread_from: Option<jiff::civil::Date>,
+        spread_until: Option<jiff::civil::Date>,
     ) -> Self {
         Self {
             id: id.into(),
             account,
             amount,
             note: note.map(Into::into),
-            spread_from: spread_from.map(Into::into),
-            spread_until: spread_until.map(Into::into),
+            spread_from,
+            spread_until,
         }
     }
 }
@@ -255,8 +255,8 @@ impl AuditEntry {
 pub struct Transaction {
     /// Stable identifier.
     pub id: String,
-    /// ISO-8601 date string, e.g. `"2026-04-30"`.
-    pub date: String,
+    /// Transaction date.
+    pub date: jiff::civil::Date,
     /// Payee display name.
     pub payee: String,
     /// Transaction status.
@@ -275,7 +275,7 @@ impl Transaction {
     /// # Arguments
     ///
     /// * `id` - Stable identifier.
-    /// * `date` - ISO-8601 date string (e.g. `"2026-04-30"`).
+    /// * `date` - Transaction date.
     /// * `payee` - Payee display name.
     /// * `status` - Transaction status.
     /// * `tags` - Tag paths.
@@ -285,7 +285,7 @@ impl Transaction {
     #[inline]
     pub fn new(
         id: impl Into<String>,
-        date: impl Into<String>,
+        date: jiff::civil::Date,
         payee: impl Into<String>,
         status: TxStatus,
         tags: Vec<String>,
@@ -294,7 +294,7 @@ impl Transaction {
     ) -> Self {
         Self {
             id: id.into(),
-            date: date.into(),
+            date,
             payee: payee.into(),
             status,
             tags,
@@ -317,10 +317,10 @@ pub struct NewPosting {
     pub amount: Amount,
     /// Optional inline note.
     pub note: Option<String>,
-    /// Accrual spread start date (ISO-8601). `None` means no spreading.
-    pub spread_from: Option<String>,
-    /// Accrual spread end date (ISO-8601, inclusive — the last day of the spread). `None` means no spreading.
-    pub spread_until: Option<String>,
+    /// Accrual spread start date. `None` means no spreading.
+    pub spread_from: Option<jiff::civil::Date>,
+    /// Accrual spread end date (inclusive — the last day of the spread). `None` means no spreading.
+    pub spread_until: Option<jiff::civil::Date>,
 }
 
 impl NewPosting {
@@ -331,23 +331,23 @@ impl NewPosting {
     /// * `account_id` - Account ID referencing an existing active account.
     /// * `amount` - Posting amount (positive = credit; negative = debit).
     /// * `note` - Optional inline note, or `None`.
-    /// * `spread_from` - Accrual spread start date (ISO-8601), or `None`.
-    /// * `spread_until` - Accrual spread end date (ISO-8601, inclusive — the last day of the spread), or `None`.
+    /// * `spread_from` - Accrual spread start date, or `None`.
+    /// * `spread_until` - Accrual spread end date (inclusive — the last day of the spread), or `None`.
     #[must_use]
     #[inline]
     pub fn new(
         account_id: impl Into<String>,
         amount: Amount,
         note: Option<impl Into<String>>,
-        spread_from: Option<impl Into<String>>,
-        spread_until: Option<impl Into<String>>,
+        spread_from: Option<jiff::civil::Date>,
+        spread_until: Option<jiff::civil::Date>,
     ) -> Self {
         Self {
             account_id: account_id.into(),
             amount,
             note: note.map(Into::into),
-            spread_from: spread_from.map(Into::into),
-            spread_until: spread_until.map(Into::into),
+            spread_from,
+            spread_until,
         }
     }
 }
@@ -358,8 +358,8 @@ impl NewPosting {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct NewTransaction {
-    /// ISO-8601 date string, e.g. `"2026-05-23"`.
-    pub date: String,
+    /// Transaction date.
+    pub date: jiff::civil::Date,
     /// Payee display name.
     pub payee: String,
     /// Transaction status.
@@ -375,7 +375,7 @@ impl NewTransaction {
     ///
     /// # Arguments
     ///
-    /// * `date` - ISO-8601 date string (e.g. `"2026-05-23"`).
+    /// * `date` - Transaction date.
     /// * `payee` - Payee display name.
     /// * `status` - Transaction status.
     /// * `tags` - Tag paths attached to this transaction.
@@ -383,14 +383,14 @@ impl NewTransaction {
     #[must_use]
     #[inline]
     pub fn new(
-        date: impl Into<String>,
+        date: jiff::civil::Date,
         payee: impl Into<String>,
         status: TxStatus,
         tags: Vec<String>,
         postings: Vec<NewPosting>,
     ) -> Self {
         Self {
-            date: date.into(),
+            date,
             payee: payee.into(),
             status,
             tags,
@@ -523,8 +523,8 @@ mod tests {
             "acc-1",
             Amount::new(-1_000, "AUD", 2),
             Some("test note"),
-            None::<&str>,
-            None::<&str>,
+            None,
+            None,
         );
         assert_eq!(p.account_id, "acc-1");
         assert_eq!(p.amount.minor_units, -1_000);
@@ -536,7 +536,7 @@ mod tests {
     #[case(TxStatus::Cleared)]
     fn new_transaction_serde_roundtrip(#[case] status: TxStatus) {
         let tx = NewTransaction::new(
-            "2026-05-23",
+            jiff::civil::Date::constant(2026, 5, 23),
             "Test Payee",
             status,
             vec![],
@@ -545,15 +545,15 @@ mod tests {
                     "acc-a",
                     Amount::new(-500, "AUD", 2),
                     None::<&str>,
-                    None::<&str>,
-                    None::<&str>,
+                    None,
+                    None,
                 ),
                 NewPosting::new(
                     "acc-b",
                     Amount::new(500, "AUD", 2),
                     None::<&str>,
-                    None::<&str>,
-                    None::<&str>,
+                    None,
+                    None,
                 ),
             ],
         );
@@ -654,7 +654,7 @@ mod tests {
     #[case(TxStatus::Cleared)]
     fn new_transaction_serde_roundtrip_with_tags(#[case] status: TxStatus) {
         let tx = NewTransaction::new(
-            "2026-05-23",
+            jiff::civil::Date::constant(2026, 5, 23),
             "Payee With Tags",
             status,
             vec!["category:groceries".to_owned(), "budget:food".to_owned()],
@@ -663,15 +663,15 @@ mod tests {
                     "acc-a",
                     Amount::new(-3_000, "AUD", 2),
                     None::<&str>,
-                    None::<&str>,
-                    None::<&str>,
+                    None,
+                    None,
                 ),
                 NewPosting::new(
                     "acc-b",
                     Amount::new(3_000, "AUD", 2),
                     None::<&str>,
-                    None::<&str>,
-                    None::<&str>,
+                    None,
+                    None,
                 ),
             ],
         );

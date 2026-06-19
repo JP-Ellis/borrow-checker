@@ -309,8 +309,8 @@ impl IntoIpc for &bc_models::Posting {
             bc_ipc::AccountRef::new(account_id.clone(), account_id),
             self.amount().into_ipc(),
             self.memo(),
-            self.spread_from().map(|d| d.to_string()),
-            self.spread_until().map(|d| d.to_string()),
+            self.spread_from(),
+            self.spread_until(),
         )
     }
 }
@@ -379,15 +379,15 @@ pub(crate) fn transaction_into_ipc_with_accounts(
                 bc_ipc::AccountRef::new(account_id, account_name),
                 p.amount().into_ipc(),
                 p.memo(),
-                p.spread_from().map(|d| d.to_string()),
-                p.spread_until().map(|d| d.to_string()),
+                p.spread_from(),
+                p.spread_until(),
             )
         })
         .collect();
 
     bc_ipc::Transaction::new(
         tx.id().to_string(),
-        tx.date().to_string(),
+        tx.date(),
         tx.payee().unwrap_or_default(),
         tx.status().into_ipc(),
         vec![], // TODO(ipc): resolve tag paths via TagService
@@ -481,7 +481,7 @@ impl IntoIpc for &bc_models::Transaction {
             self.postings().iter().map(IntoIpc::into_ipc).collect();
         bc_ipc::Transaction::new(
             self.id().to_string(),
-            self.date().to_string(),
+            self.date(),
             self.payee().unwrap_or_default(),
             self.status().into_ipc(),
             vec![], // TODO(ipc): resolve tag paths via TagService

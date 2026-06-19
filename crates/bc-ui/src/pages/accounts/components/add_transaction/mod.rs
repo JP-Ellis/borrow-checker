@@ -214,9 +214,13 @@ pub fn AddTransactionForm(
             errs.push("payee is required");
         }
 
-        let date = date_input.get();
-        if date.trim().is_empty() {
+        let date_str = date_input.get();
+        if date_str.trim().is_empty() {
             errs.push("date is required");
+        }
+        let date_parsed = date_str.trim().parse::<jiff::civil::Date>().ok();
+        if !date_str.trim().is_empty() && date_parsed.is_none() {
+            errs.push("date must be a valid date (YYYY-MM-DD)");
         }
 
         let primary_amt_opt = parse_amount(&primary_amount.get(), &currency_code_submit, scale);
@@ -257,25 +261,23 @@ pub fn AddTransactionForm(
             return;
         };
 
+        let Some(date) = date_parsed else {
+            return;
+        };
+
         let mut postings = Vec::with_capacity(parsed_extras.len().saturating_add(1));
         postings.push(NewPosting::new(
             current_account_id_submit.clone(),
             primary_amt,
             None::<&str>,
-            None::<&str>,
-            None::<&str>,
+            None,
+            None,
         ));
         for (acc_id, amt_opt) in parsed_extras {
             let Some(amt) = amt_opt else {
                 return;
             };
-            postings.push(NewPosting::new(
-                acc_id,
-                amt,
-                None::<&str>,
-                None::<&str>,
-                None::<&str>,
-            ));
+            postings.push(NewPosting::new(acc_id, amt, None::<&str>, None, None));
         }
 
         let tx = NewTransaction::new(date, payee, status_input.get(), vec![], postings);
