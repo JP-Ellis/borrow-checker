@@ -3,6 +3,8 @@
 #[cfg(debug_assertions)]
 pub(crate) mod qa;
 
+use core::str::FromStr as _;
+
 use bc_ipc::AccountNode;
 use bc_ipc::BcError;
 use bc_ipc::Period;
@@ -13,7 +15,8 @@ use stylance::import_style;
 import_style!(style, "new_budget.module.scss");
 
 /// Period choices offered in the dropdown.
-const PERIOD_CHOICES: [(&str, Period); 5] = [
+const PERIOD_CHOICES: [(&str, Period); 6] = [
+    ("daily", Period::Daily),
     ("weekly", Period::Weekly),
     ("fortnightly", Period::Fortnightly),
     ("monthly", Period::Monthly),
@@ -82,17 +85,25 @@ pub fn NewBudget(
 
         let name = name_input.get_untracked();
         let name_opt = (!name.trim().is_empty()).then_some(name);
-        let target_minor =
-            crate::components::num::parse_target_minor(&target_input.get_untracked());
+        let target_raw = target_input.get_untracked();
+        let target_trim = target_raw.trim();
+        let target = if target_trim.is_empty() {
+            None
+        } else if let Ok(value) = rust_decimal::Decimal::from_str(target_trim) {
+            Some(value)
+        } else {
+            error.set(Some("Target must be a number".to_owned()));
+            return;
+        };
         let currency = currency_input.get_untracked();
-        let target_currency = target_minor.is_some().then_some(currency);
+        let target_currency = target.is_some().then_some(currency);
         let rollover = rollover_input.get_untracked();
         let period = period_from_key(&period_input.get_untracked());
         let tag = tag_input.get_untracked();
         let tag_opt = (!tag.trim().is_empty()).then_some(tag);
 
         /* Client-side mirror of the CapAtTarget invariant. */
-        if rollover == RolloverPolicy::CapAtTarget && target_minor.is_none() {
+        if rollover == RolloverPolicy::CapAtTarget && target.is_none() {
             error.set(Some("Cap at target requires a target amount".to_owned()));
             return;
         }
@@ -105,7 +116,7 @@ pub fn NewBudget(
                 &account_id,
                 effective_from,
                 name_opt.as_deref(),
-                target_minor,
+                target,
                 target_currency.as_deref(),
                 period,
                 rollover,
@@ -207,6 +218,7 @@ pub fn NewBudget(
                     on:change=move |ev| period_input.set(event_target_value(&ev))
                     prop:value=move || period_input.get()
                 >
+                    <option value="daily">"daily"</option>
                     <option value="weekly">"weekly"</option>
                     <option value="fortnightly">"fortnightly"</option>
                     <option value="monthly">"monthly"</option>

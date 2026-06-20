@@ -249,8 +249,8 @@ struct CreateBudgetArgs<'a> {
     effective_from: jiff::civil::Date,
     /// Optional display name for the budget.
     name: Option<&'a str>,
-    /// Optional target amount in minor currency units.
-    target_minor_units: Option<i64>,
+    /// Optional target amount as an exact decimal (any precision).
+    target: Option<rust_decimal::Decimal>,
     /// Optional target currency code.
     target_currency: Option<&'a str>,
     /// Budget period granularity.
@@ -386,9 +386,9 @@ struct ReviseBudgetArgs<'a> {
     effective_from: jiff::civil::Date,
     /// Display name, or `None` for the account-name fallback.
     name: Option<&'a str>,
-    /// Target amount in minor units, or `None` for tracking-only.
-    target_minor_units: Option<i64>,
-    /// Target currency code, paired with `target_minor_units`.
+    /// Target amount as an exact decimal, or `None` for tracking-only.
+    target: Option<rust_decimal::Decimal>,
+    /// Target currency code, paired with `target`.
     target_currency: Option<&'a str>,
     /// Rollover policy.
     rollover: RolloverPolicy,
@@ -421,7 +421,7 @@ pub async fn create_budget(
     account_id: &str,
     effective_from: jiff::civil::Date,
     name: Option<&str>,
-    target_minor_units: Option<i64>,
+    target: Option<rust_decimal::Decimal>,
     target_currency: Option<&str>,
     period: crate::Period,
     rollover: RolloverPolicy,
@@ -433,7 +433,7 @@ pub async fn create_budget(
             account_id,
             effective_from,
             name,
-            target_minor_units,
+            target,
             target_currency,
             period,
             rollover,
@@ -538,7 +538,7 @@ pub async fn revise_budget(
     revision_id: Option<&str>,
     effective_from: jiff::civil::Date,
     name: Option<&str>,
-    target_minor_units: Option<i64>,
+    target: Option<rust_decimal::Decimal>,
     target_currency: Option<&str>,
     rollover: RolloverPolicy,
     period: crate::Period,
@@ -551,7 +551,7 @@ pub async fn revise_budget(
             revision_id,
             effective_from,
             name,
-            target_minor_units,
+            target,
             target_currency,
             rollover,
             period,
