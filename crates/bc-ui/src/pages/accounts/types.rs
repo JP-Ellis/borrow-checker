@@ -6,6 +6,23 @@
 use bc_ipc::Amount;
 use bc_ipc::Transaction;
 
+// MARK: WASM bindings
+
+#[cfg(target_arch = "wasm32")]
+/// Bindings to JavaScript `Date.UTC()` for constructing UTC epoch milliseconds.
+mod wasm_bindings {
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_namespace = Date, js_name = "UTC")]
+        /// Computes the epoch milliseconds for a UTC date.
+        ///
+        /// Wraps `Date.UTC(year, month, date)` where month is 0-based.
+        pub fn utc(year: f64, month: f64, date: f64) -> f64;
+    }
+}
+
 // MARK: Pure helpers
 
 /// Returns the first ASCII letter of `payee` as uppercase, or `'?'` if none.
@@ -41,6 +58,10 @@ pub fn headline_amount(tx: &Transaction, account_id: &str) -> Amount {
 /// Fallback (native test builds): returns `"MM/DD"`.
 #[must_use]
 #[inline]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "month() returns 1-12; minus one is 0-11 for JS Date.UTC()"
+)]
 pub fn format_date_display(date: jiff::civil::Date) -> String {
     #[cfg(target_arch = "wasm32")]
     {
@@ -68,7 +89,11 @@ pub fn format_date_display(date: jiff::civil::Date) -> String {
             &JsValue::from_str("UTC"),
         ));
 
-        let ts = Date::parse(&date.to_string());
+        let ts = wasm_bindings::utc(
+            f64::from(date.year()),
+            f64::from(i32::from(date.month()) - 1),
+            f64::from(date.day()),
+        );
         let js_date = Date::new(&JsValue::from_f64(ts));
         let fmt = DateTimeFormat::new(&Array::new(), &options);
         let format_fn = fmt.format();
