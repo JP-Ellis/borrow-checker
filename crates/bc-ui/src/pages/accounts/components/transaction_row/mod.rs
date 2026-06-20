@@ -220,7 +220,7 @@ fn TransactionDetail(
     let stored_audit = StoredValue::new(stored_tx.with_value(|t| {
         t.audit
             .iter()
-            .map(|e| (e.time.clone(), e.kind.clone(), e.message.clone()))
+            .map(|e| (e.time_label(), e.kind.clone(), e.message.clone()))
             .collect::<Vec<_>>()
     }));
     let stored_postings = StoredValue::new(stored_tx.with_value(|t| {

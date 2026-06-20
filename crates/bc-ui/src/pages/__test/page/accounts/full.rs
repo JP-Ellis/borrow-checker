@@ -68,6 +68,10 @@ fn sample_accounts() -> Vec<AccountNode> {
 }
 
 /// Returns sample transactions for the Smart Access account.
+#[expect(
+    clippy::expect_used,
+    reason = "QA fixture — timestamp literals are valid"
+)]
 fn sample_transactions() -> Vec<Transaction> {
     vec![
         Transaction::new(
@@ -95,7 +99,9 @@ fn sample_transactions() -> Vec<Transaction> {
                 ),
             ],
             vec![AuditEntry::new(
-                "14:21",
+                "2026-04-30T14:21:00Z"
+                    .parse::<jiff::Timestamp>()
+                    .expect("valid timestamp"),
                 "import",
                 "from commbank-au.wasm@1.4.2",
             )],
