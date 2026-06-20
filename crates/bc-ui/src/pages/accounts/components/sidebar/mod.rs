@@ -226,7 +226,11 @@ fn SidebarRow(
         .as_ref()
         .map_or_else(|| "\u{2014}".into(), bc_ipc::Amount::format_short);
     let is_active = Signal::derive(move || selected_id.get().as_deref() == Some(id.as_str()));
-    let balance_class = if node.balance.as_ref().is_some_and(|b| b.minor_units < 0) {
+    let balance_class = if node
+        .balance
+        .as_ref()
+        .is_some_and(|b| b.value < rust_decimal::Decimal::ZERO)
+    {
         style::bal_neg
     } else {
         style::bal

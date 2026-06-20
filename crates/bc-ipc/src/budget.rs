@@ -248,8 +248,8 @@ mod tests {
             .account_name("Savings")
             .depth(1)
             .name("Groceries")
-            .effective_target(Amount::new(50_000, "AUD", 2))
-            .spent(Amount::new(12_300, "AUD", 2))
+            .effective_target(Amount::from_minor(50_000, "AUD", 2))
+            .spent(Amount::from_minor(12_300, "AUD", 2))
             .native_period_label("monthly")
             .has_mixed_period(false)
             .rollover(RolloverPolicy::CarryForward)
@@ -260,7 +260,7 @@ mod tests {
             .account_id("acct-1")
             .account_name("Everyday")
             .depth(0)
-            .spent(Amount::new(0, "AUD", 2))
+            .spent(Amount::from_minor(0, "AUD", 2))
             .native_period_label("monthly")
             .has_mixed_period(false)
             .is_tracking_only(false)
@@ -277,8 +277,8 @@ mod tests {
             "w24 · 9–15 Jun",
             jiff::civil::Date::constant(2026, 6, 9),
             jiff::civil::Date::constant(2026, 6, 16),
-            Some(Amount::new(15_000, "AUD", 2)),
-            Amount::new(8_200, "AUD", 2),
+            Some(Amount::from_minor(15_000, "AUD", 2)),
+            Amount::from_minor(8_200, "AUD", 2),
         );
         let json = serde_json::to_string(&row).expect("ser");
         let back: NativePeriodRow = serde_json::from_str(&json).expect("de");
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn budget_summary_serde_roundtrip() {
-        let zero = Amount::new(0, "AUD", 2);
+        let zero = Amount::from_minor(0, "AUD", 2);
         let summary = BudgetSummary::new(
             Some(zero.clone()),
             Some(zero.clone()),
@@ -327,7 +327,7 @@ mod tests {
             .effective_from(jiff::civil::Date::constant(2027, 1, 1))
             .reign_end(jiff::civil::Date::constant(2027, 9, 1))
             .name("Groceries")
-            .target(Amount::new(25_000, "AUD", 2))
+            .target(Amount::from_minor(25_000, "AUD", 2))
             .period(Period::Weekly)
             .period_label("weekly")
             .rollover(RolloverPolicy::CarryForward)

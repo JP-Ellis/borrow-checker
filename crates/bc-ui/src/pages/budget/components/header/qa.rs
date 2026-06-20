@@ -14,9 +14,9 @@ use crate::pages::budget::BudgetPageCtx;
 /// Creates a fixture [`BudgetSummary`] with realistic values.
 fn loaded_summary() -> BudgetSummary {
     BudgetSummary::new(
-        Some(Amount::new(500_000, "AUD", 2)),
-        Some(Amount::new(312_450, "AUD", 2)),
-        Some(Amount::new(187_550, "AUD", 2)),
+        Some(Amount::from_minor(500_000, "AUD", 2)),
+        Some(Amount::from_minor(312_450, "AUD", 2)),
+        Some(Amount::from_minor(187_550, "AUD", 2)),
         false,
         1,
     )

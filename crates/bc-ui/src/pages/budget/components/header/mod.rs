@@ -85,7 +85,9 @@ fn KpiTileRow(
     let remaining = format_amount(summary.as_ref().and_then(|s| s.total_remaining.as_ref()));
     let (net, net_class) = match summary.as_ref().and_then(|s| s.total_remaining.as_ref()) {
         None => ("\u{2013}".to_owned(), style::kpi_value),
-        Some(a) if a.minor_units < 0 => (a.format_short(), style::kpi_value_bad),
+        Some(a) if a.value < rust_decimal::Decimal::ZERO => {
+            (a.format_short(), style::kpi_value_bad)
+        }
         Some(a) => (a.format_short(), style::kpi_value_good),
     };
 

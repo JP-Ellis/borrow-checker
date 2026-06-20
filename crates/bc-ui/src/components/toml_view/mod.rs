@@ -182,8 +182,8 @@ pub fn TomlPosting(
     children: Children,
 ) -> impl IntoView {
     let currency = currency_from_code(&amount.currency_code).unwrap_or(&USD);
-    let amount_str = format_amount(amount.minor_units, currency);
-    let amt_class = if amount.minor_units >= 0 {
+    let amount_str = format_amount(&amount.value, currency);
+    let amt_class = if amount.value >= rust_decimal::Decimal::ZERO {
         style::amt_pos
     } else {
         style::amt_neg

@@ -32,7 +32,7 @@ fn smart_access_node() -> AccountNode {
         "cb-smart-access",
         "Smart Access",
         Some("4421"),
-        Some(Amount::new(421_842, "AUD", 2)),
+        Some(Amount::from_minor(421_842, "AUD", 2)),
         Some("commbank"),
         AccountType::Asset,
         vec![
@@ -50,7 +50,7 @@ fn sample_accounts() -> Vec<AccountNode> {
             "commbank",
             "CommBank",
             None::<&str>,
-            Some(Amount::new(6_421_000, "AUD", 2)),
+            Some(Amount::from_minor(6_421_000, "AUD", 2)),
             None::<&str>,
             AccountType::Asset,
             vec![],
@@ -59,7 +59,7 @@ fn sample_accounts() -> Vec<AccountNode> {
             "amex-platinum",
             "Amex Platinum",
             Some("9001"),
-            Some(Amount::new(-244_000, "AUD", 2)),
+            Some(Amount::from_minor(-244_000, "AUD", 2)),
             None::<&str>,
             AccountType::Liability,
             vec!["type:credit".to_owned()],
@@ -84,7 +84,7 @@ fn sample_transactions() -> Vec<Transaction> {
                 Posting::new(
                     "posting-coles-debit",
                     AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                    Amount::new(-8_420, "AUD", 2),
+                    Amount::from_minor(-8_420, "AUD", 2),
                     None::<&str>,
                     None,
                     None,
@@ -92,7 +92,7 @@ fn sample_transactions() -> Vec<Transaction> {
                 Posting::new(
                     "posting-coles-groceries",
                     AccountRef::new("groceries", "Expenses :: Groceries"),
-                    Amount::new(8_420, "AUD", 2),
+                    Amount::from_minor(8_420, "AUD", 2),
                     None::<&str>,
                     None,
                     None,
@@ -116,7 +116,7 @@ fn sample_transactions() -> Vec<Transaction> {
                 Posting::new(
                     "posting-salary-income",
                     AccountRef::new("income-salary", "Income :: Salary"),
-                    Amount::new(-846_154, "AUD", 2),
+                    Amount::from_minor(-846_154, "AUD", 2),
                     Some("gross pay"),
                     None,
                     None,
@@ -124,7 +124,7 @@ fn sample_transactions() -> Vec<Transaction> {
                 Posting::new(
                     "posting-salary-takehome",
                     AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                    Amount::new(428_055, "AUD", 2),
+                    Amount::from_minor(428_055, "AUD", 2),
                     Some("take-home"),
                     None,
                     None,

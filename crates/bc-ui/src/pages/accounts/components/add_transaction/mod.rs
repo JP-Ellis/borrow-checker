@@ -1,11 +1,14 @@
 //! Inline form for creating a new double-entry transaction.
 
+use core::str::FromStr as _;
+
 use bc_ipc::AccountNode;
 use bc_ipc::Amount;
 use bc_ipc::NewPosting;
 use bc_ipc::NewTransaction;
 use bc_ipc::TxStatus;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 use stylance::import_style;
 
 import_style!(style, "add_transaction.module.scss");
@@ -37,13 +40,13 @@ mod locale_js {
     }
 }
 
-/// Parses a locale-aware decimal string into an [`Amount`] using integer arithmetic.
+/// Parses a locale-aware decimal string into an [`Amount`].
 ///
 /// Detects the user's locale decimal and grouping separators at runtime via
 /// `Intl.NumberFormat` (WASM target) or falls back to `'.'` / `''` (native
 /// tests).  Strips grouping separators, replaces the locale decimal separator
-/// with `'.'`, then splits on `'.'` and computes the minor units exactly —
-/// no `f64` rounding.
+/// with `'.'`, parses the result as a [`Decimal`], and rescales it to the
+/// requested number of decimal places — no `f64` rounding.
 ///
 /// # Arguments
 ///
@@ -72,38 +75,9 @@ fn parse_amount(input: &str, currency_code: &str, scale: u8) -> Option<Amount> {
             .replace(decimal_sep.as_str(), ".")
     };
 
-    let negative = normalised.starts_with('-');
-    let digits = normalised.trim_start_matches('-');
-
-    let (int_str, frac_str) = match digits.split_once('.') {
-        Some((i, f)) => (i, f),
-        None => (digits, ""),
-    };
-
-    let int_val: i64 = if int_str.is_empty() {
-        0
-    } else {
-        int_str.parse().ok()?
-    };
-
-    let scale_usize = usize::from(scale);
-    let scale_pow = 10_i64.pow(u32::from(scale));
-
-    let frac_val: i64 = if scale_usize == 0 || frac_str.is_empty() {
-        0
-    } else {
-        let padded = format!("{frac_str:0<scale_usize$}");
-        padded.get(..scale_usize)?.parse().ok()?
-    };
-
-    let minor_abs = int_val.checked_mul(scale_pow)?.checked_add(frac_val)?;
-    let minor = if negative {
-        minor_abs.checked_neg()?
-    } else {
-        minor_abs
-    };
-
-    Some(Amount::new(minor, currency_code, scale))
+    let mut value = Decimal::from_str(&normalised).ok()?;
+    value.rescale(u32::from(scale));
+    Some(Amount::new(value, currency_code))
 }
 
 /// Inline form for creating a new double-entry transaction from the current account.
@@ -492,27 +466,27 @@ pub mod qa;
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
 
     use super::parse_amount;
 
     #[test]
     fn parse_amount_positive_decimal() {
         let amt = parse_amount("84.20", "AUD", 2).expect("parses positive decimal");
-        assert_eq!(amt.minor_units, 8_420);
+        assert_eq!(amt.value, Decimal::new(8_420, 2));
         assert_eq!(amt.currency_code, "AUD");
-        assert_eq!(amt.scale, 2);
     }
 
     #[test]
     fn parse_amount_negative_decimal() {
         let amt = parse_amount("-84.20", "AUD", 2).expect("parses negative decimal");
-        assert_eq!(amt.minor_units, -8_420);
+        assert_eq!(amt.value, Decimal::new(-8_420, 2));
     }
 
     #[test]
     fn parse_amount_zero_is_allowed() {
         let amt = parse_amount("0", "AUD", 2).expect("parses zero");
-        assert_eq!(amt.minor_units, 0);
+        assert_eq!(amt.value, Decimal::new(0, 2));
     }
 
     #[test]
@@ -532,33 +506,33 @@ mod tests {
 
     #[test]
     fn parse_amount_scale_conversion() {
-        // scale=3 means minor units are thousandths
+        // scale=3 means thousandths
         let amt = parse_amount("1.234", "USD", 3).expect("parses scale=3");
-        assert_eq!(amt.minor_units, 1_234);
+        assert_eq!(amt.value, Decimal::new(1_234, 3));
     }
 
     #[test]
     fn parse_amount_trims_whitespace() {
         let amt = parse_amount("  10.00  ", "AUD", 2).expect("trims whitespace");
-        assert_eq!(amt.minor_units, 1_000);
+        assert_eq!(amt.value, Decimal::new(1_000, 2));
     }
 
     #[test]
     fn parse_amount_integer_only() {
         let amt = parse_amount("42", "AUD", 2).expect("parses integer");
-        assert_eq!(amt.minor_units, 4_200);
+        assert_eq!(amt.value, Decimal::new(4_200, 2));
     }
 
     #[test]
     fn parse_amount_short_fraction_pads() {
-        // "84.2" with scale=2 should yield 8420 (pad frac to "20")
+        // "84.2" with scale=2 should yield 84.20
         let amt = parse_amount("84.2", "AUD", 2).expect("pads short fraction");
-        assert_eq!(amt.minor_units, 8_420);
+        assert_eq!(amt.value, Decimal::new(8_420, 2));
     }
 
     #[test]
     fn parse_amount_scale_zero() {
         let amt = parse_amount("100", "JPY", 0).expect("parses scale=0");
-        assert_eq!(amt.minor_units, 100);
+        assert_eq!(amt.value, Decimal::new(100, 0));
     }
 }

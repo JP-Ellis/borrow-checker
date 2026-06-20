@@ -99,9 +99,7 @@ pub fn RevisionForm(
     let init_target = revision
         .as_ref()
         .and_then(|r| r.target.as_ref())
-        .map_or_else(String::new, |a| {
-            crate::components::num::to_decimal_string(a.minor_units.unsigned_abs(), a.scale)
-        });
+        .map_or_else(String::new, |a| a.value.abs().to_string());
     let init_currency = revision
         .as_ref()
         .and_then(|r| r.target.as_ref())

@@ -8,6 +8,7 @@ use bc_ipc::BudgetTreeNode;
 use bc_ipc::Posting;
 use bc_ipc::Transaction;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 use stylance::import_style;
 
 use crate::pages::budget::BudgetPageCtx;
@@ -28,16 +29,13 @@ import_style!(style, "detail.module.scss");
 fn tx_display_amount(tx: &Transaction) -> bc_ipc::Amount {
     let first = tx.postings.first();
     let currency = first.map_or("", |p| p.amount.currency_code.as_str());
-    let scale = first.map_or(2, |p| p.amount.scale);
-
-    let total: i64 = tx
+    let total: Decimal = tx
         .postings
         .iter()
-        .filter(|p| p.amount.minor_units > 0)
-        .map(|p| p.amount.minor_units)
-        .fold(0_i64, i64::saturating_add);
-
-    bc_ipc::Amount::new(total, currency, scale)
+        .map(|p| p.amount.value)
+        .filter(|v| *v > Decimal::ZERO)
+        .sum();
+    bc_ipc::Amount::new(total, currency)
 }
 
 // MARK: PostingRow

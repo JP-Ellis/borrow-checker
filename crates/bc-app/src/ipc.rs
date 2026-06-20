@@ -29,24 +29,11 @@ impl IntoIpc for &bc_models::Amount {
 
     /// Converts a [`bc_models::Amount`] to an IPC [`bc_ipc::Amount`].
     ///
-    /// Reads scale and mantissa directly from the decimal value — no currency
-    /// lookup and no power-of-ten multiplication required. `Decimal::mantissa()`
-    /// returns the coefficient already scaled (e.g. `10.50` → mantissa `1050`,
-    /// scale `2`), so minor units are derived without any arithmetic overflow risk.
+    /// Carries the decimal value across the boundary verbatim — no lossy
+    /// minor-unit conversion.
     #[inline]
     fn into_ipc(self) -> bc_ipc::Amount {
-        let code = self.commodity().as_str();
-        let scale = self.value().scale();
-        let minor = i64::try_from(self.value().mantissa()).unwrap_or(0);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "Decimal::scale() returns u32 ≤ 28 for rust_decimal, which always fits in u8"
-        )]
-        #[expect(
-            clippy::as_conversions,
-            reason = "Decimal::scale() returns u32 ≤ 28 for rust_decimal, which always fits in u8"
-        )]
-        bc_ipc::Amount::new(minor, code, scale as u8)
+        bc_ipc::Amount::new(self.value(), self.commodity().as_str())
     }
 }
 
@@ -54,14 +41,10 @@ impl IntoModel for &bc_ipc::Amount {
     type Output = bc_models::Amount;
 
     /// Converts an IPC [`bc_ipc::Amount`] to a [`bc_models::Amount`].
-    ///
-    /// Uses the stored `scale` directly — no currency lookup required.
-    /// `Decimal::new(mantissa, scale)` constructs `mantissa / 10^scale` exactly.
     #[inline]
     fn into_model(self) -> bc_models::Amount {
-        let value = rust_decimal::Decimal::new(self.minor_units, u32::from(self.scale));
         bc_models::Amount::new(
-            value,
+            self.value,
             bc_models::CommodityCode::new(self.currency_code.clone()),
         )
     }
@@ -171,9 +154,7 @@ pub(crate) fn into_ipc_with_balance(
 
 /// Converts a [`rust_decimal::Decimal`] to a [`bc_ipc::Amount`].
 ///
-/// The decimal's internal mantissa and scale are used directly — `mantissa()`
-/// gives the coefficient already scaled (e.g. `10.50` → mantissa `1050`, scale `2`),
-/// so minor units are derived without any arithmetic overflow risk.
+/// The decimal value is carried across the boundary verbatim.
 ///
 /// # Arguments
 ///
@@ -182,23 +163,18 @@ pub(crate) fn into_ipc_with_balance(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Internal`] if the decimal's mantissa overflows `i64`.
+/// Infallible; returns `Ok` for all inputs (the `Result` is retained for a
+/// forthcoming caller-side cleanup).
 #[inline]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "infallible now; the Result is retained for a forthcoming caller-side cleanup"
+)]
 pub(crate) fn decimal_to_amount(
     d: rust_decimal::Decimal,
     currency_code: &str,
 ) -> Result<bc_ipc::Amount, bc_ipc::BcError> {
-    let minor = i64::try_from(d.mantissa())
-        .map_err(|_e| bc_ipc::BcError::Internal(format!("amount mantissa overflows i64: {d}")))?;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Decimal::scale() ≤ 28 for rust_decimal; always fits in u8"
-    )]
-    #[expect(
-        clippy::as_conversions,
-        reason = "Decimal::scale() ≤ 28 for rust_decimal; cast is safe"
-    )]
-    Ok(bc_ipc::Amount::new(minor, currency_code, d.scale() as u8))
+    Ok(bc_ipc::Amount::new(d, currency_code))
 }
 
 // MARK: Budget revision view
@@ -480,7 +456,8 @@ pub(crate) fn transaction_into_ipc_with_accounts(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Internal`] if any decimal mantissa overflows `i64`.
+/// Currently infallible; the `Result` is retained for a forthcoming caller-side
+/// cleanup.
 pub(crate) fn budget_tree_item_into_ipc(
     item: &bc_core::BudgetTreeItem,
 ) -> Result<bc_ipc::BudgetTreeNode, bc_ipc::BcError> {
@@ -597,14 +574,13 @@ mod tests {
             bc_models::CommodityCode::new("AUD"),
         );
         let ipc = (&model).into_ipc();
-        assert_eq!(ipc.minor_units, 1050);
+        assert_eq!(ipc.value, rust_decimal::Decimal::new(1050, 2));
         assert_eq!(ipc.currency_code, "AUD");
-        assert_eq!(ipc.scale, 2);
     }
 
     #[test]
     fn amount_into_model_aud() {
-        let ipc = bc_ipc::Amount::new(1050, "AUD", 2);
+        let ipc = bc_ipc::Amount::from_minor(1050, "AUD", 2);
         let model = (&ipc).into_model();
         assert_eq!(model.value(), rust_decimal::Decimal::new(1050, 2));
         assert_eq!(model.commodity().as_str(), "AUD");
@@ -617,8 +593,7 @@ mod tests {
             bc_models::CommodityCode::new("JPY"),
         );
         let ipc = (&model).into_ipc();
-        assert_eq!(ipc.minor_units, 1234);
-        assert_eq!(ipc.scale, 0);
+        assert_eq!(ipc.value, rust_decimal::Decimal::new(1234, 0));
         let back = (&ipc).into_model();
         assert_eq!(back, model);
     }
@@ -630,8 +605,17 @@ mod tests {
             bc_models::CommodityCode::new("BTC"),
         );
         let ipc = (&model).into_ipc();
-        assert_eq!(ipc.minor_units, 12345);
-        assert_eq!(ipc.scale, 8);
+        assert_eq!(ipc.value, rust_decimal::Decimal::new(12345, 8));
+        let back = (&ipc).into_model();
+        assert_eq!(back, model);
+    }
+
+    #[test]
+    fn amount_round_trip_large_btc_no_overflow() {
+        let big = rust_decimal::Decimal::from_i128_with_scale(100_000_000_000_000_000_000_i128, 8);
+        let model = bc_models::Amount::new(big, bc_models::CommodityCode::new("BTC"));
+        let ipc = (&model).into_ipc();
+        assert_eq!(ipc.value, big);
         let back = (&ipc).into_model();
         assert_eq!(back, model);
     }
