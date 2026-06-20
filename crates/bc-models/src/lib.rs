@@ -135,6 +135,7 @@ pub use loan::LoanId;
 pub use loan::LoanTerms;
 pub use loan::LoanTermsBuilder;
 pub use money::Amount;
+pub use money::AmountError;
 pub use money::CommodityCode;
 pub use money::Decimal;
 pub use period::BuildError as PeriodBuildError;
