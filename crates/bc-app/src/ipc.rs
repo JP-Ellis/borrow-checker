@@ -240,12 +240,11 @@ impl IntoIpc for &bc_models::Period {
     type Output = bc_ipc::Period;
 
     #[inline]
-    #[expect(
-        clippy::match_same_arms,
-        reason = "both bc_models::Period and bc_ipc::Period are #[non_exhaustive]; \
-                  the wildcard fallback to Monthly is intentional for future unknown variants"
-    )]
     fn into_ipc(self) -> bc_ipc::Period {
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "bc_models::Period is #[non_exhaustive]; unknown future variants fall back to Monthly"
+        )]
         match self {
             bc_models::Period::Weekly => bc_ipc::Period::Weekly,
             bc_models::Period::Fortnightly { .. } => bc_ipc::Period::Fortnightly,
