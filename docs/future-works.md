@@ -170,3 +170,57 @@ When implementing:
 - Convert `#[test]` annotations in `period_nav.rs` to `#[wasm_bindgen_test]`.
 - Add a `mise run test:wasm` task that invokes `wasm-pack test --headless --firefox` (or similar) against `bc-ui`.
 - Gate the `wasm-bindgen-test` dev-dependency on `target_arch = "wasm32"`.
+
+______________________________________________________________________
+
+## IPC — carry `Decimal` directly instead of round-tripping through minor units
+
+**Identified in:** PR #166 (feat/budget: mutable budgets with revision timeline)
+**Files:** `crates/bc-ipc/src/money.rs`, `crates/bc-ipc/src/accounts.rs`,
+`crates/bc-app/src/ipc.rs`, `crates/bc-app/src/commands/accounts.rs`
+
+This PR established that `rust_decimal::Decimal` can live in `bc-ipc` and cross
+the Tauri boundary losslessly: the workspace pins `rust_decimal` with the
+`serde-with-str` feature, so a `Decimal` serialises as a string (e.g.
+`"0.00000001"`), preserving arbitrary precision on both native and `wasm32`
+targets. The budget target now uses this directly. Several other fields still
+perform a `Decimal -> intermediate -> Decimal` round-trip and should be migrated
+the same way.
+
+**`bc_ipc::Amount` — the universal money type.** Currently
+`{ minor_units: i64, scale: u8, currency_code: String }`. Every money value is
+decomposed from a `bc_models::Amount` via `.mantissa()`/`.scale()`
+(`bc-app/src/ipc.rs:39-40`) and reconstructed via
+`Decimal::new(minor_units, scale)` (`ipc.rs:62`). It flows through nearly every
+money-bearing command (account stats, sparkline, budget overview, native
+periods, budget revisions). Replace the `{ minor_units, scale }` pair with a
+single `value: Decimal`, keeping `currency_code`.
+
+- ⚠️ **Latent corruption bug to fix in passing:** `ipc.rs:40` does
+  `i64::try_from(self.value().mantissa()).unwrap_or(0)`. `mantissa()` is an
+  `i128`; a large or high-precision value (e.g. a big BTC balance at 8 dp)
+  overflows `i64` and silently becomes `0`. Carrying the `Decimal` removes the
+  failure mode entirely.
+- **Display nuance:** dropping `scale` means display fraction-digits must come
+  from the currency registry (`currency.decimals`) rather than the value's own
+  scale, since the two can differ. Decide once whether to format from the
+  value's scale or normalise to the currency's decimals.
+- `Amount::format_short` (bc-ipc) and `to_decimal_string` / `format_with_symbol`
+  (bc-ui) are one-way display helpers, not round-trips — keep them, but they
+  format straight from the `Decimal` afterwards.
+
+**`bc_ipc::SparkPoint` — lossy today (highest severity).** Stores
+`{ income: i64, expenses: i64 }` (minor units only); the scale is discarded at
+`accounts.rs:397-398`, forcing the frontend to assume a scale to render. Carry
+`Amount` (or `Decimal`) per point instead.
+
+**Not at the IPC boundary yet — use `Decimal` directly when added:** loan terms
+(`LoanTerms::principal`, `annual_rate`, `AmortizationRow` fields in
+`bc-models/src/loan.rs`), depreciation (`DepreciationPolicy::annual_rate` in
+`valuation.rs`), and `Account::acquisition_cost` (`account.rs`). None have a
+`bc-ipc` mirror today, so there is no round-trip yet — but build them with
+`Decimal` from the start.
+
+The change is mechanical but touches all display paths and the round-trip tests
+in `ipc.rs`. The `SparkPoint` scale-loss and the `unwrap_or(0)` overflow each
+warrant their own commit + regression test.
