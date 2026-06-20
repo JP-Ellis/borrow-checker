@@ -390,12 +390,12 @@ pub async fn get_account_sparkline(
     let points = buckets
         .into_iter()
         .map(|b| {
-            let income_amount = crate::ipc::decimal_to_amount(b.inflow, &commodity_code)?;
-            let expenses_amount = crate::ipc::decimal_to_amount(b.outflow, &commodity_code)?;
+            let income = crate::ipc::decimal_to_amount(b.inflow, &commodity_code)?;
+            let expenses = crate::ipc::decimal_to_amount(b.outflow, &commodity_code)?;
             Ok(bc_ipc::SparkPoint::new(
                 spark_label(b.start, &model_period),
-                income_amount.minor_units,
-                expenses_amount.minor_units,
+                income,
+                expenses,
             ))
         })
         .collect::<Result<Vec<_>, bc_ipc::BcError>>()?;

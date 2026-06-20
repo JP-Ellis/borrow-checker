@@ -211,8 +211,8 @@ pub fn Sparkline(
     const CHART_BOT: f32 = H - PAD;
 
     // Gather series values.
-    let income_vals: Vec<i64> = points.iter().map(|p| p.income).collect();
-    let expense_vals: Vec<i64> = points.iter().map(|p| p.expenses).collect();
+    let income_vals: Vec<i64> = points.iter().map(|p| p.income.minor_units).collect();
+    let expense_vals: Vec<i64> = points.iter().map(|p| p.expenses.minor_units).collect();
 
     // Shared y-scale: find the global min/max across both series.
     let global_min = income_vals
@@ -322,11 +322,11 @@ pub fn Sparkline(
         stored_points.with_value(|pts| {
             let p = pts.get(i)?;
             let inc = {
-                let s = format_amount(p.income, currency);
+                let s = format_amount(p.income.minor_units, currency);
                 s.strip_prefix('+').map(ToOwned::to_owned).unwrap_or(s)
             };
             let exp = {
-                let s = format_amount(p.expenses, currency);
+                let s = format_amount(p.expenses.minor_units, currency);
                 s.strip_prefix('+').map(ToOwned::to_owned).unwrap_or(s)
             };
             Some(view! {
