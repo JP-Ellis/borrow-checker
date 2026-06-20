@@ -11,8 +11,8 @@ use super::Title;
 fn pt(label: &'static str, income: i64, expenses: i64) -> SparkPoint {
     SparkPoint::new(
         label,
-        Amount::new(income, "AUD", 2),
-        Amount::new(expenses, "AUD", 2),
+        Amount::from_minor(income, "AUD", 2),
+        Amount::from_minor(expenses, "AUD", 2),
     )
 }
 
@@ -30,7 +30,7 @@ pub fn SparklineQa() -> impl IntoView {
         .map(|d| {
             SparkPoint::new(
                 format!("{d:02}"),
-                Amount::new(
+                Amount::from_minor(
                     if d % 7 < 2 {
                         0
                     } else {
@@ -39,7 +39,7 @@ pub fn SparklineQa() -> impl IntoView {
                     "AUD",
                     2,
                 ),
-                Amount::new(8_000 + d * 53 % 3_000, "AUD", 2),
+                Amount::from_minor(8_000 + d * 53 % 3_000, "AUD", 2),
             )
         })
         .collect();

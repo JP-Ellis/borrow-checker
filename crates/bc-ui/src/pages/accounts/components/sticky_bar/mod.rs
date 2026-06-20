@@ -38,7 +38,7 @@ pub fn StickyAccountBar(
                         let balance = if let Some(ref b) = n.balance {
                             let currency = bc_ipc::currency_from_code(&b.currency_code)
                                 .unwrap_or(&bc_ipc::USD);
-                            crate::components::num::format_amount(b.minor_units, currency)
+                            crate::components::num::format_amount(&b.value, currency)
                         } else {
                             "\u{2014}".into()
                         };

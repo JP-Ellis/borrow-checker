@@ -27,7 +27,7 @@ fn sample_transactions() -> Vec<Transaction> {
                 Posting::new(
                     "posting-coles-debit",
                     AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                    Amount::new(-8_420, "AUD", 2),
+                    Amount::from_minor(-8_420, "AUD", 2),
                     None::<&str>,
                     None,
                     None,
@@ -35,7 +35,7 @@ fn sample_transactions() -> Vec<Transaction> {
                 Posting::new(
                     "posting-coles-groceries",
                     AccountRef::new("groceries", "Expenses :: Groceries"),
-                    Amount::new(8_420, "AUD", 2),
+                    Amount::from_minor(8_420, "AUD", 2),
                     None::<&str>,
                     None,
                     None,
@@ -59,7 +59,7 @@ fn sample_transactions() -> Vec<Transaction> {
                 Posting::new(
                     "posting-salary-income",
                     AccountRef::new("income-salary", "Income :: Salary"),
-                    Amount::new(-846_154, "AUD", 2),
+                    Amount::from_minor(-846_154, "AUD", 2),
                     Some("gross pay"),
                     None,
                     None,
@@ -67,7 +67,7 @@ fn sample_transactions() -> Vec<Transaction> {
                 Posting::new(
                     "posting-salary-takehome",
                     AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                    Amount::new(428_055, "AUD", 2),
+                    Amount::from_minor(428_055, "AUD", 2),
                     Some("take-home"),
                     None,
                     None,

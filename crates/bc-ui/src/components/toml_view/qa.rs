@@ -71,16 +71,25 @@ pub fn TomlViewQa() -> impl IntoView {
                 </p>
                 <div style="padding:16px;background:var(--bc-surface-accent);border-radius:6px">
                     <TomlArraySection>"postings"</TomlArraySection>
-                    <TomlPosting amount=bc_ipc::Amount::new(-846_154, "AUD", 2) note="gross pay">
+                    <TomlPosting
+                        amount=bc_ipc::Amount::from_minor(-846_154, "AUD", 2)
+                        note="gross pay"
+                    >
                         "Income :: Salary"
                     </TomlPosting>
-                    <TomlPosting amount=bc_ipc::Amount::new(327_692, "AUD", 2) note="PAYG">
+                    <TomlPosting amount=bc_ipc::Amount::from_minor(327_692, "AUD", 2) note="PAYG">
                         "Liabilities :: Tax Withheld"
                     </TomlPosting>
-                    <TomlPosting amount=bc_ipc::Amount::new(90_407, "AUD", 2) note="11.5% SGC">
+                    <TomlPosting
+                        amount=bc_ipc::Amount::from_minor(90_407, "AUD", 2)
+                        note="11.5% SGC"
+                    >
                         "Assets :: Super :: Employer"
                     </TomlPosting>
-                    <TomlPosting amount=bc_ipc::Amount::new(428_055, "AUD", 2) note="take-home">
+                    <TomlPosting
+                        amount=bc_ipc::Amount::from_minor(428_055, "AUD", 2)
+                        note="take-home"
+                    >
                         "Assets :: Smart Access"
                     </TomlPosting>
                 </div>
@@ -110,12 +119,12 @@ pub fn TomlViewQa() -> impl IntoView {
                 </p>
                 <div style="padding:16px;background:var(--bc-surface-accent);border-radius:6px">
                     <TomlArraySection>"postings"</TomlArraySection>
-                    <TomlPosting amount=bc_ipc::Amount::new(
+                    <TomlPosting amount=bc_ipc::Amount::from_minor(
                         -8_420,
                         "AUD",
                         2,
                     )>"Assets :: Smart Access"</TomlPosting>
-                    <TomlPosting amount=bc_ipc::Amount::new(
+                    <TomlPosting amount=bc_ipc::Amount::from_minor(
                         8_420,
                         "AUD",
                         2,

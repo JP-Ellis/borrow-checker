@@ -5,6 +5,8 @@ pub(crate) mod qa;
 
 use bc_ipc::BudgetTreeNode;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive as _;
 use stylance::import_style;
 
 use crate::pages::budget::BudgetPageCtx;
@@ -31,11 +33,10 @@ enum Status {
 
 /// Derives a [`Status`] from the node's spend and target figures.
 ///
-/// Uses integer arithmetic to avoid floating-point.
 /// Good: spent/target ≤ 0.85, Warn: > 0.85 and ≤ 1.05, Bad: > 1.05.
 #[expect(
     clippy::arithmetic_side_effects,
-    reason = "budget minor-unit values are bounded and will not overflow i64"
+    reason = "budget Decimal values are bounded and cannot overflow or panic"
 )]
 fn row_status(node: &BudgetTreeNode) -> Status {
     if node.is_tracking_only {
@@ -43,14 +44,13 @@ fn row_status(node: &BudgetTreeNode) -> Status {
     }
     match &node.effective_target {
         None => Status::Mute,
-        Some(_) if node.spent.minor_units == 0 => Status::Dim,
+        Some(_) if node.spent.value == Decimal::ZERO => Status::Dim,
         Some(target) => {
-            let spent = node.spent.minor_units;
-            let tgt = target.minor_units;
-            /* Integer thresholds: > 105% → Bad, > 85% → Warn, else Good. */
-            if spent * 100 > tgt * 105 {
+            let spent = node.spent.value;
+            let tgt = target.value;
+            if spent * Decimal::from(100_i64) > tgt * Decimal::from(105_i64) {
                 Status::Bad
-            } else if spent * 100 > tgt * 85 {
+            } else if spent * Decimal::from(100_i64) > tgt * Decimal::from(85_i64) {
                 Status::Warn
             } else {
                 Status::Good
@@ -66,23 +66,18 @@ fn row_status(node: &BudgetTreeNode) -> Status {
 /// maximum bar width and is distinguished only by the status colour.
 #[expect(
     clippy::arithmetic_side_effects,
-    clippy::integer_division,
-    clippy::integer_division_remainder_used,
-    clippy::as_conversions,
-    clippy::cast_sign_loss,
-    reason = "budget minor-unit arithmetic is bounded; .max(0) guarantees non-negative before cast; integer division for percentage is intentional; clamped to [0,125]"
+    reason = "budget Decimal arithmetic is bounded; .max(ZERO) guarantees non-negative; clamped to [0,125]"
 )]
 fn fill_percent(node: &BudgetTreeNode) -> u32 {
     let Some(target) = node.effective_target.as_ref() else {
         return 0;
     };
-    if target.minor_units <= 0 {
+    if target.value <= Decimal::ZERO {
         return 0;
     }
-    let spent = node.spent.minor_units.max(0) as u64;
-    let tgt = target.minor_units as u64;
-    let pct = (spent * 125 / tgt).min(125);
-    pct as u32
+    let spent = node.spent.value.max(Decimal::ZERO);
+    let pct = (spent * Decimal::from(125_i64) / target.value).min(Decimal::from(125_i64));
+    pct.to_u32().unwrap_or(0)
 }
 
 /// Maps a raw fill percentage (0–125) to the bar's visual position (0–100).
@@ -135,9 +130,7 @@ fn prorated_marker_style(ctx: Option<BudgetPageCtx>) -> Option<String> {
 /// Falls back to absolute amounts when tracking-only or when target is zero.
 #[expect(
     clippy::arithmetic_side_effects,
-    clippy::integer_division,
-    clippy::integer_division_remainder_used,
-    reason = "pct calculation: minor-unit values are bounded; integer division is intentional for percentage display"
+    reason = "pct calculation: budget Decimal values are bounded; cannot overflow or panic"
 )]
 fn display_str(node: &BudgetTreeNode, pct_mode: bool) -> String {
     if node.is_tracking_only {
@@ -146,13 +139,14 @@ fn display_str(node: &BudgetTreeNode, pct_mode: bool) -> String {
     match &node.effective_target {
         None => node.spent.format_short(),
         Some(target) if pct_mode => {
-            if target.minor_units == 0 {
+            if target.value == Decimal::ZERO {
                 "\u{2013}".into()
             } else {
-                format!(
-                    "{}%",
-                    (node.spent.minor_units.max(0) * 100) / target.minor_units
-                )
+                let pct = (node.spent.value.max(Decimal::ZERO) * Decimal::from(100_i64)
+                    / target.value)
+                    .to_i64()
+                    .unwrap_or(0);
+                format!("{pct}%")
             }
         }
         Some(target) => format!("{} / {}", node.spent.format_short(), target.format_short()),

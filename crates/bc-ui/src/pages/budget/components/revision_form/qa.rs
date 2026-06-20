@@ -15,7 +15,7 @@ pub fn RevisionFormQa() -> impl IntoView {
         .id("budget_rev_sample")
         .effective_from(jiff::civil::Date::constant(2027, 1, 1))
         .name("Groceries")
-        .target(Amount::new(25_000, "AUD", 2))
+        .target(Amount::from_minor(25_000, "AUD", 2))
         .period(Period::Weekly)
         .period_label("weekly")
         .rollover(RolloverPolicy::CarryForward)
