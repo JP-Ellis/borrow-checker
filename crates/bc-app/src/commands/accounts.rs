@@ -49,11 +49,10 @@ pub async fn list_accounts(
         .map(|account| {
             let balance = balances
                 .get(account.id())
-                .map(|(c, d)| crate::ipc::decimal_to_amount(*d, c))
-                .transpose()?;
-            Ok(crate::ipc::into_ipc_with_balance(account, balance))
+                .map(|(c, d)| crate::ipc::decimal_to_amount(*d, c));
+            crate::ipc::into_ipc_with_balance(account, balance)
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
 
     Ok(nodes)
 }
@@ -206,8 +205,8 @@ pub async fn get_account_stats(
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
     Ok(bc_ipc::AccountStats::new(
-        crate::ipc::decimal_to_amount(inflow, &commodity_code)?,
-        crate::ipc::decimal_to_amount(outflow, &commodity_code)?,
+        crate::ipc::decimal_to_amount(inflow, &commodity_code),
+        crate::ipc::decimal_to_amount(outflow, &commodity_code),
     ))
 }
 
@@ -390,15 +389,13 @@ pub async fn get_account_sparkline(
     let points = buckets
         .into_iter()
         .map(|b| {
-            let income = crate::ipc::decimal_to_amount(b.inflow, &commodity_code)?;
-            let expenses = crate::ipc::decimal_to_amount(b.outflow, &commodity_code)?;
-            Ok(bc_ipc::SparkPoint::new(
+            bc_ipc::SparkPoint::new(
                 spark_label(b.start, &model_period),
-                income,
-                expenses,
-            ))
+                crate::ipc::decimal_to_amount(b.inflow, &commodity_code),
+                crate::ipc::decimal_to_amount(b.outflow, &commodity_code),
+            )
         })
-        .collect::<Result<Vec<_>, bc_ipc::BcError>>()?;
+        .collect::<Vec<_>>();
 
     Ok(points)
 }

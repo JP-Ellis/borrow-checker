@@ -160,21 +160,10 @@ pub(crate) fn into_ipc_with_balance(
 ///
 /// * `d`             - Decimal value.
 /// * `currency_code` - ISO 4217 code, e.g. `"AUD"`.
-///
-/// # Errors
-///
-/// Infallible; returns `Ok` for all inputs (the `Result` is retained for a
-/// forthcoming caller-side cleanup).
+#[must_use]
 #[inline]
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "infallible now; the Result is retained for a forthcoming caller-side cleanup"
-)]
-pub(crate) fn decimal_to_amount(
-    d: rust_decimal::Decimal,
-    currency_code: &str,
-) -> Result<bc_ipc::Amount, bc_ipc::BcError> {
-    Ok(bc_ipc::Amount::new(d, currency_code))
+pub(crate) fn decimal_to_amount(d: rust_decimal::Decimal, currency_code: &str) -> bc_ipc::Amount {
+    bc_ipc::Amount::new(d, currency_code)
 }
 
 // MARK: Budget revision view
@@ -453,32 +442,24 @@ pub(crate) fn transaction_into_ipc_with_accounts(
 // MARK: Budget tree
 
 /// Converts a [`bc_core::BudgetTreeItem`] into a [`bc_ipc::BudgetTreeNode`].
-///
-/// # Errors
-///
-/// Currently infallible; the `Result` is retained for a forthcoming caller-side
-/// cleanup.
-pub(crate) fn budget_tree_item_into_ipc(
-    item: &bc_core::BudgetTreeItem,
-) -> Result<bc_ipc::BudgetTreeNode, bc_ipc::BcError> {
+pub(crate) fn budget_tree_item_into_ipc(item: &bc_core::BudgetTreeItem) -> bc_ipc::BudgetTreeNode {
     budget_tree_node_recursive(item)
 }
 
 /// Recursive implementation of [`budget_tree_item_into_ipc`].
-fn budget_tree_node_recursive(
-    item: &bc_core::BudgetTreeItem,
-) -> Result<bc_ipc::BudgetTreeNode, bc_ipc::BcError> {
-    let spent = if let Some(a) = item.actuals.first() {
-        a.into_ipc()
-    } else {
-        let c = item
-            .commodity
-            .as_ref()
-            .map_or("", bc_models::CommodityCode::as_str);
-        decimal_to_amount(rust_decimal::Decimal::ZERO, c)?
-    };
+fn budget_tree_node_recursive(item: &bc_core::BudgetTreeItem) -> bc_ipc::BudgetTreeNode {
+    let spent = item.actuals.first().map_or_else(
+        || {
+            let c = item
+                .commodity
+                .as_ref()
+                .map_or("", bc_models::CommodityCode::as_str);
+            decimal_to_amount(rust_decimal::Decimal::ZERO, c)
+        },
+        IntoIpc::into_ipc,
+    );
     let effective_target = match (item.effective_target, &item.commodity) {
-        (Some(t), Some(c)) => Some(decimal_to_amount(t, c.as_str())?),
+        (Some(t), Some(c)) => Some(decimal_to_amount(t, c.as_str())),
         _ => None,
     };
 
@@ -487,14 +468,14 @@ fn budget_tree_node_recursive(
         .as_ref()
         .map_or_else(|| "period".to_owned(), |r| period_label(r.period()));
 
-    let children: Result<Vec<_>, _> = item
+    let children: Vec<_> = item
         .children
         .iter()
         .map(budget_tree_node_recursive)
         .collect();
 
     let gov = item.governing.as_ref();
-    Ok(bc_ipc::BudgetTreeNode::builder()
+    bc_ipc::BudgetTreeNode::builder()
         .id(item.budget.id().to_string())
         .account_id(item.account.id().to_string())
         .account_name(item.account.name().to_owned())
@@ -513,8 +494,8 @@ fn budget_tree_node_recursive(
         )
         .maybe_tag_filter(gov.and_then(|r| r.tag_filter()).map(ToString::to_string))
         .is_tracking_only(gov.is_none_or(bc_models::BudgetRevision::is_tracking_only))
-        .children(children?)
-        .build())
+        .children(children)
+        .build()
 }
 
 /// Returns a short lowercase label for a [`bc_models::Period`] variant.
