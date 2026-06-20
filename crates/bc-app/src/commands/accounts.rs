@@ -15,6 +15,7 @@
 use tauri::State;
 
 use crate::AppState;
+use crate::ipc::IntoIpc;
 use crate::ipc::IntoModel;
 
 // MARK: Command handlers
@@ -47,9 +48,7 @@ pub async fn list_accounts(
     let nodes = accounts
         .iter()
         .map(|account| {
-            let balance = balances
-                .get(account.id())
-                .map(|(c, d)| crate::ipc::decimal_to_amount(*d, c));
+            let balance = balances.get(account.id()).map(IntoIpc::into_ipc);
             crate::ipc::into_ipc_with_balance(account, balance)
         })
         .collect::<Vec<_>>();
@@ -205,8 +204,8 @@ pub async fn get_account_stats(
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
     Ok(bc_ipc::AccountStats::new(
-        crate::ipc::decimal_to_amount(inflow, &commodity_code),
-        crate::ipc::decimal_to_amount(outflow, &commodity_code),
+        (&inflow).into_ipc(),
+        (&outflow).into_ipc(),
     ))
 }
 
@@ -391,8 +390,8 @@ pub async fn get_account_sparkline(
         .map(|b| {
             bc_ipc::SparkPoint::new(
                 spark_label(b.start, &model_period),
-                crate::ipc::decimal_to_amount(b.inflow, &commodity_code),
-                crate::ipc::decimal_to_amount(b.outflow, &commodity_code),
+                (&b.inflow).into_ipc(),
+                (&b.outflow).into_ipc(),
             )
         })
         .collect::<Vec<_>>();

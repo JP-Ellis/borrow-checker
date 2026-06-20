@@ -152,20 +152,6 @@ pub(crate) fn into_ipc_with_balance(
     )
 }
 
-/// Converts a [`rust_decimal::Decimal`] to a [`bc_ipc::Amount`].
-///
-/// The decimal value is carried across the boundary verbatim.
-///
-/// # Arguments
-///
-/// * `d`             - Decimal value.
-/// * `currency_code` - ISO 4217 code, e.g. `"AUD"`.
-#[must_use]
-#[inline]
-pub(crate) fn decimal_to_amount(d: rust_decimal::Decimal, currency_code: &str) -> bc_ipc::Amount {
-    bc_ipc::Amount::new(d, currency_code)
-}
-
 // MARK: Budget revision view
 
 /// Computes the overlap of a revision's reign `[reign_start, reign_end)` with the
@@ -454,12 +440,12 @@ fn budget_tree_node_recursive(item: &bc_core::BudgetTreeItem) -> bc_ipc::BudgetT
                 .commodity
                 .as_ref()
                 .map_or("", bc_models::CommodityCode::as_str);
-            decimal_to_amount(rust_decimal::Decimal::ZERO, c)
+            bc_ipc::Amount::new(rust_decimal::Decimal::ZERO, c)
         },
         IntoIpc::into_ipc,
     );
     let effective_target = match (item.effective_target, &item.commodity) {
-        (Some(t), Some(c)) => Some(decimal_to_amount(t, c.as_str())),
+        (Some(t), Some(c)) => Some(bc_ipc::Amount::new(t, c.as_str())),
         _ => None,
     };
 

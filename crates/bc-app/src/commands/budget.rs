@@ -11,7 +11,7 @@
 use tauri::State;
 
 use crate::AppState;
-use crate::ipc::IntoIpc as _;
+use crate::ipc::IntoIpc;
 use crate::ipc::IntoModel as _;
 
 // MARK: Overview
@@ -55,20 +55,20 @@ pub async fn get_budget_overview(
 
     let (total_budgeted, total_spent, total_remaining) = if let Some(tc) = target_commodity {
         let budgeted =
-            crate::ipc::decimal_to_amount(overview.summary.total_effective_target, tc.as_str());
+            bc_ipc::Amount::new(overview.summary.total_effective_target, tc.as_str());
         let actuals_in_target = overview
             .summary
             .total_actuals
             .iter()
             .find(|a| a.commodity() == tc)
             .map_or(bc_models::Decimal::ZERO, bc_models::Amount::value);
-        let spent = crate::ipc::decimal_to_amount(actuals_in_target, tc.as_str());
+        let spent = bc_ipc::Amount::new(actuals_in_target, tc.as_str());
         let remaining_val = overview
             .summary
             .total_effective_target
             .checked_sub(actuals_in_target)
             .unwrap_or(bc_models::Decimal::ZERO);
-        let remaining = crate::ipc::decimal_to_amount(remaining_val, tc.as_str());
+        let remaining = bc_ipc::Amount::new(remaining_val, tc.as_str());
         (Some(budgeted), Some(spent), Some(remaining))
     } else {
         let spent = match overview.summary.total_actuals.as_slice() {
@@ -153,8 +153,8 @@ pub async fn get_native_periods(
             let label = format_native_period_label(n);
             let effective_target = n
                 .effective_target
-                .map(|t| crate::ipc::decimal_to_amount(t, &commodity));
-            let spent = crate::ipc::decimal_to_amount(n.actuals, &commodity);
+                .map(|t| bc_ipc::Amount::new(t, commodity.as_str()));
+            let spent = bc_ipc::Amount::new(n.actuals, commodity.as_str());
             bc_ipc::NativePeriodRow::new(
                 label,
                 n.overlap.native_start,
@@ -293,9 +293,7 @@ pub async fn list_budget_revisions(
                 .get(i.saturating_add(1))
                 .map(bc_models::BudgetRevision::effective_from);
             let period_ipc = r.period().into_ipc();
-            let target = r
-                .target()
-                .map(|a| crate::ipc::decimal_to_amount(a.value(), a.commodity().as_str()));
+            let target = r.target().map(IntoIpc::into_ipc);
             Ok(bc_ipc::BudgetRevisionView::builder()
                 .id(r.id().to_string())
                 .effective_from(r.effective_from())
