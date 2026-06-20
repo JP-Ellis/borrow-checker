@@ -323,4 +323,19 @@ mod tests {
         assert_eq!(CommodityCode::from("EUR").as_str(), "EUR");
         assert_eq!(CommodityCode::from("EUR".to_owned()).as_str(), "EUR");
     }
+
+    #[test]
+    #[should_panic(expected = "commodity mismatch")]
+    fn sub_unchecked_panics_on_mismatch() {
+        let a = Amount::new(dec!(10), "AUD");
+        let b = Amount::new(dec!(10), "USD");
+        drop(a.sub_unchecked(&b));
+    }
+
+    #[test]
+    fn sub_unchecked_same_commodity_subtracts() {
+        let a = Amount::new(dec!(10), "USD");
+        let b = Amount::new(dec!(3), "USD");
+        assert_eq!(a.sub_unchecked(&b).value(), dec!(7));
+    }
 }
