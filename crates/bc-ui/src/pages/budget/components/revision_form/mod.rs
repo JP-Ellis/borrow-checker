@@ -11,92 +11,6 @@ use stylance::import_style;
 
 import_style!(style, "form.module.scss");
 
-/// Parses a target input string into minor units at scale 2.
-///
-/// Returns `None` for empty input, bare `.`, negative values, or non-numeric
-/// input. Supports both integer (`"250"`) and decimal (`"2.50"`) forms.
-/// Multiple dots → `None`. At least one digit must be present.
-///
-/// Fractional digits beyond 2 are rounded half-up (round half away from zero)
-/// at the 2nd decimal place, so `"1.999"` → `200` and `"1.994"` → `199`.
-/// Overflow (result too large for `i64`) returns `None`.
-#[must_use]
-fn parse_target_minor(s: &str) -> Option<i64> {
-    let s = s.trim();
-    if s.is_empty() || s.starts_with('-') {
-        return None;
-    }
-
-    // Reject multiple dots.
-    let dot_count = s.chars().filter(|&c| c == '.').count();
-    if dot_count > 1 {
-        return None;
-    }
-
-    match s.split_once('.') {
-        None => {
-            // Integer form: all chars must be digits.
-            if !s.chars().all(|c| c.is_ascii_digit()) {
-                return None;
-            }
-            let whole: i64 = s.parse().ok()?;
-            whole.checked_mul(100)
-        }
-        Some((whole, frac)) => {
-            // Both sides must be all-digit (each may be empty, but together
-            // at least one digit must exist).
-            if !whole.chars().all(|c| c.is_ascii_digit())
-                || !frac.chars().all(|c| c.is_ascii_digit())
-            {
-                return None;
-            }
-            // Require at least one digit somewhere.
-            if whole.is_empty() && frac.is_empty() {
-                return None;
-            }
-
-            let whole: i64 = if whole.is_empty() {
-                0
-            } else {
-                whole.parse().ok()?
-            };
-
-            // Build a fixed-point minor value with rounding.
-            // We need the first 2 frac digits plus whether any digit >= 5
-            // exists at position 3 (the third decimal place).
-            #[expect(
-                clippy::string_slice,
-                reason = "frac is validated as all-ASCII-digit by the guard above; byte-index slicing is safe"
-            )]
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "frac.len() >= 3 is guaranteed by the match arm above"
-            )]
-            #[expect(
-                clippy::arithmetic_side_effects,
-                reason = "d, prefix are small digit values; saturating ops not needed for this fixed-scale decimal"
-            )]
-            let cents: i64 = match frac.len() {
-                0 => 0,
-                1 => {
-                    /* e.g. "5" → 50 */
-                    let d: i64 = frac.parse().ok()?;
-                    d * 10
-                }
-                2 => frac.parse().ok()?,
-                _ => {
-                    /* Round the 2-digit prefix based on the third digit. */
-                    let prefix: i64 = frac[..2].parse().ok()?;
-                    let third: u8 = frac.as_bytes()[2] - b'0';
-                    if third >= 5 { prefix + 1 } else { prefix }
-                }
-            };
-
-            whole.checked_mul(100)?.checked_add(cents)
-        }
-    }
-}
-
 /// Period choices offered in the dropdown.
 const PERIOD_CHOICES: [(&str, Period); 5] = [
     ("weekly", Period::Weekly),
@@ -243,7 +157,8 @@ pub fn RevisionForm(
         };
         let name = name_input.get_untracked();
         let name_opt = (!name.trim().is_empty()).then_some(name);
-        let target_minor = parse_target_minor(&target_input.get_untracked());
+        let target_minor =
+            crate::components::num::parse_target_minor(&target_input.get_untracked());
         let currency = currency_input.get_untracked();
         let target_currency = target_minor.is_some().then_some(currency);
         let rollover = rollover_input.get_untracked();

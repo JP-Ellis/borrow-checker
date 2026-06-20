@@ -390,7 +390,6 @@ pub fn BudgetDetail(
 
                 <div class=style::actions>
                     <button class=style::action_btn>"↗ View in Accounts"</button>
-                    <button class=style::action_btn>"＋ Add budget line"</button>
 
                     {move || {
                         if confirm_archive.get() {
