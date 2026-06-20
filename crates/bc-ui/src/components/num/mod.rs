@@ -97,6 +97,9 @@ fn format_with_symbol(value: &Decimal, currency: &Currency) -> String {
 ///
 /// Grouping separators, decimal separators, and symbol placement are
 /// determined by the browser locale via `Intl.NumberFormat`.
+///
+/// Fraction digits are driven from the currency's canonical `decimals` field, not the value's
+/// intrinsic scale. For compact display using the value's own scale, see `Amount::format_short`.
 #[must_use]
 #[inline]
 pub fn format_amount(value: &Decimal, currency: &Currency) -> String {
