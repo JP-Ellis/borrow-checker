@@ -119,11 +119,12 @@ fn period_from_key(key: &str) -> Period {
 #[must_use]
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "Period is #[non_exhaustive]; the wildcard is required, and remaining known variants all map to 'monthly'"
+    reason = "Period is #[non_exhaustive]; the wildcard catches FinancialQuarter and any future variants, mapping them to the 'monthly' fallback"
 )]
 fn period_key(period: &Period) -> &'static str {
     match period {
         Period::Weekly => "weekly",
+        Period::Fortnightly => "fortnightly",
         Period::Quarterly => "quarterly",
         Period::CalendarYear | Period::FinancialYear { .. } => "calendar_year",
         _ => "monthly",
