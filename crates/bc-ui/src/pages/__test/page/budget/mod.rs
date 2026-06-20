@@ -36,6 +36,7 @@ pub fn BudgetRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
             />
             <Route path=path!("/accrual-editor") view=component::accrual_editor::AccrualEditorQa />
             <Route path=path!("/revision-form") view=component::revision_form::RevisionFormQa />
+            <Route path=path!("/new-budget") view=component::new_budget::NewBudgetQa />
         </ParentRoute>
     }
     .into_inner()
@@ -92,6 +93,11 @@ pub fn BudgetIndex() -> impl IntoView {
                     title=component::revision_form::TITLE
                     path=component::revision_form::PATH
                     description=component::revision_form::DESCRIPTION
+                />
+                <QaCard
+                    title=component::new_budget::TITLE
+                    path=component::new_budget::PATH
+                    description=component::new_budget::DESCRIPTION
                 />
             </div>
         </div>

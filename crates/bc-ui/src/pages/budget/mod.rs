@@ -9,6 +9,7 @@ use bc_ipc::BudgetTreeNode;
 use bc_ipc::Period;
 use components::budget_tree::BudgetTree;
 use components::header::BudgetHeader;
+use components::new_budget::NewBudget;
 use components::sticky_bar::StickyBar;
 use leptos::prelude::*;
 use stylance::import_style;
@@ -71,6 +72,8 @@ pub fn Budget() -> impl IntoView {
     let ctx = BudgetPageCtx::new();
     provide_context(ctx);
 
+    let show_new = RwSignal::new(false);
+
     let overview: LocalResource<Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError>> =
         LocalResource::new(move || {
             ctx.data_version.get();
@@ -79,14 +82,26 @@ pub fn Budget() -> impl IntoView {
             async move { bc_ipc::client::get_budget_overview(period, start).await }
         });
 
+    let on_created = Callback::new(move |()| {
+        ctx.data_version.update(|v| *v = v.saturating_add(1));
+        show_new.set(false);
+    });
+    let on_cancel = Callback::new(move |()| show_new.set(false));
+
     view! {
         <div class=style::page>
             <BudgetHeader overview=overview />
             <StickyBar overview=overview />
 
+            <Show when=move || show_new.get()>
+                <div style="padding:var(--bc-space-3) var(--bc-space-6);max-width:480px">
+                    <NewBudget on_created=on_created on_cancel=on_cancel />
+                </div>
+            </Show>
+
             <div class=style::tree_container>
                 <Suspense fallback=move || {
-                    view! { <div class=style::loading>"Loading budgets…"</div> }
+                    view! { <div class=style::loading>"Loading budgets\u{2026}"</div> }
                 }>
                     {move || {
                         overview
@@ -103,12 +118,30 @@ pub fn Budget() -> impl IntoView {
                                 Ok((_, nodes)) if nodes.is_empty() => {
                                     view! {
                                         <div class=style::empty_state>
-                                            "// no budgets yet — create one to get started"
+                                            <p>"// no budgets yet"</p>
+                                            <button
+                                                style="margin-top:var(--bc-space-3)"
+                                                on:click=move |_| show_new.set(true)
+                                            >
+                                                "New budget"
+                                            </button>
                                         </div>
                                     }
                                         .into_any()
                                 }
-                                Ok((_, nodes)) => view! { <BudgetTree nodes=nodes /> }.into_any(),
+                                Ok((_, nodes)) => {
+                                    view! {
+                                        <div>
+                                            <div style="padding:var(--bc-space-2) var(--bc-space-6)">
+                                                <button on:click=move |_| {
+                                                    show_new.set(true);
+                                                }>"New budget"</button>
+                                            </div>
+                                            <BudgetTree nodes=nodes />
+                                        </div>
+                                    }
+                                        .into_any()
+                                }
                             })
                     }}
                 </Suspense>
