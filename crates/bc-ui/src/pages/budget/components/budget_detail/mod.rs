@@ -364,7 +364,7 @@ pub fn BudgetDetail(
                         view! {
                             <RevisionForm
                                 budget_id=budget_id_for_form.get_value()
-                                allow_snap=false
+                                allow_snap=true
                                 on_saved=on_saved
                                 on_cancel=on_cancel
                             />
