@@ -1,6 +1,7 @@
 //! Balance calculation engine.
 
 use bc_models::AccountId;
+use bc_models::Amount;
 use bc_models::TransactionStatus;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
@@ -20,9 +21,9 @@ pub struct PostingBucket {
     /// Exclusive end of the bucket period (= start of the next bucket).
     pub end: jiff::civil::Date,
     /// Sum of positive postings (money entering the account) in this period.
-    pub inflow: rust_decimal::Decimal,
+    pub inflow: Amount,
     /// Sum of absolute negative postings (money leaving the account) in this period.
-    pub outflow: rust_decimal::Decimal,
+    pub outflow: Amount,
 }
 
 /// Calculates account balances from the `postings` projection table.
@@ -42,13 +43,13 @@ impl Engine {
 
     /// Returns the running balance for `account_id` in `commodity`.
     ///
-    /// Returns [`Decimal::ZERO`] if no postings exist.
+    /// Returns an [`Amount`] carrying `commodity`, zero-valued if no postings exist.
     ///
     /// # Errors
     ///
     /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if a stored amount cannot be parsed.
     #[inline]
-    pub async fn balance_for(&self, account_id: &AccountId, commodity: &str) -> BcResult<Decimal> {
+    pub async fn balance_for(&self, account_id: &AccountId, commodity: &str) -> BcResult<Amount> {
         let voided_str = to_db_str(TransactionStatus::Voided)?;
 
         let rows: Vec<(String,)> = sqlx::query_as(
@@ -65,14 +66,15 @@ impl Engine {
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter().try_fold(Decimal::ZERO, |acc, (amt,)| {
+        let total = rows.into_iter().try_fold(Decimal::ZERO, |acc, (amt,)| {
             let d = amt
                 .parse::<Decimal>()
                 .map_err(|e| BcError::BadData(format!("invalid decimal amount '{amt}': {e}")))?;
             acc.checked_add(d).ok_or_else(|| {
                 BcError::BadData("balance overflow: sum exceeds Decimal range".into())
             })
-        })
+        })?;
+        Ok(Amount::new(total, commodity))
     }
 
     /// Computes total net worth in `commodity` across all asset and liability accounts.
@@ -81,7 +83,7 @@ impl Engine {
     /// - [`ManualAsset`]: latest recorded market value from `asset_valuations`.
     /// - Accounts with `AccountType` other than `Asset`/`Liability` are excluded.
     ///
-    /// Returns `Decimal::ZERO` if no relevant accounts exist.
+    /// Returns an [`Amount`] carrying `commodity`, zero-valued if no relevant accounts exist.
     ///
     /// # Errors
     ///
@@ -96,7 +98,7 @@ impl Engine {
         reason = "intentional fallback with warning for future AccountKind variants"
     )]
     #[inline]
-    pub async fn net_worth(&self, commodity: &str) -> BcResult<Decimal> {
+    pub async fn net_worth(&self, commodity: &str) -> BcResult<Amount> {
         use bc_models::AccountKind;
         use bc_models::AccountType;
 
@@ -125,7 +127,7 @@ impl Engine {
                 AccountKind::DepositAccount
                 | AccountKind::Receivable
                 | AccountKind::VirtualAllocation => {
-                    self.balance_for(account.id(), commodity).await?
+                    self.balance_for(account.id(), commodity).await?.value()
                 }
                 _ => {
                     tracing::warn!(
@@ -133,7 +135,7 @@ impl Engine {
                         kind = ?account.kind(),
                         "unknown AccountKind in net_worth; using posting-based balance"
                     );
-                    self.balance_for(account.id(), commodity).await?
+                    self.balance_for(account.id(), commodity).await?.value()
                 }
             };
 
@@ -142,7 +144,7 @@ impl Engine {
                 .ok_or_else(|| BcError::BadData("net worth overflow".into()))?;
         }
 
-        Ok(total)
+        Ok(Amount::new(total, commodity))
     }
 
     /// Fetches all non-voided postings for `account_id` in `commodity` within `[from, to)`.
@@ -219,7 +221,7 @@ impl Engine {
     ///
     /// # Returns
     ///
-    /// `(inflow, outflow)` as [`Decimal`] values.
+    /// `(inflow, outflow)` as [`Amount`] values.
     ///
     /// # Errors
     ///
@@ -231,14 +233,14 @@ impl Engine {
         commodity: &str,
         from: jiff::civil::Date,
         to: jiff::civil::Date,
-    ) -> BcResult<(Decimal, Decimal)> {
+    ) -> BcResult<(Amount, Amount)> {
         let rows = self
             .fetch_postings_in_range(account_id, commodity, from, to)
             .await?;
 
-        rows.into_iter().try_fold(
+        let (inflow, outflow) = rows.into_iter().try_fold(
             (Decimal::ZERO, Decimal::ZERO),
-            |(inflow, outflow), (_, amount)| {
+            |(inflow, outflow), (_, amount)| -> BcResult<(Decimal, Decimal)> {
                 if amount >= Decimal::ZERO {
                     let new_inflow = inflow.checked_add(amount).ok_or_else(|| {
                         BcError::BadData("inflow overflow: sum exceeds Decimal range".into())
@@ -251,7 +253,8 @@ impl Engine {
                     Ok((inflow, new_outflow))
                 }
             },
-        )
+        )?;
+        Ok((Amount::new(inflow, commodity), Amount::new(outflow, commodity)))
     }
 
     /// Returns `count` contiguous period buckets ending with the period containing `as_of`.
@@ -310,34 +313,38 @@ impl Engine {
             .fetch_postings_in_range(account_id, commodity, earliest_start, latest_end)
             .await?;
 
-        // Distribute postings into buckets.
-        let mut buckets: Vec<PostingBucket> = ranges
+        // Distribute postings into per-range Decimal accumulators.
+        let mut acc: Vec<(jiff::civil::Date, jiff::civil::Date, Decimal, Decimal)> = ranges
             .into_iter()
-            .map(|(start, end)| PostingBucket {
-                start,
-                end,
-                inflow: rust_decimal::Decimal::ZERO,
-                outflow: rust_decimal::Decimal::ZERO,
-            })
+            .map(|(start, end)| (start, end, Decimal::ZERO, Decimal::ZERO))
             .collect();
 
         for (date, amount) in all_postings {
-            if let Some(bucket) = buckets.iter_mut().find(|b| date >= b.start && date < b.end) {
-                if amount >= rust_decimal::Decimal::ZERO {
-                    bucket.inflow = bucket
-                        .inflow
+            if let Some(slot) = acc.iter_mut().find(|(start, end, _, _)| date >= *start && date < *end)
+            {
+                if amount >= Decimal::ZERO {
+                    slot.2 = slot
+                        .2
                         .checked_add(amount)
                         .ok_or_else(|| BcError::BadData("inflow overflow".into()))?;
                 } else {
-                    bucket.outflow = bucket
-                        .outflow
+                    slot.3 = slot
+                        .3
                         .checked_sub(amount)
                         .ok_or_else(|| BcError::BadData("outflow overflow".into()))?;
                 }
             }
         }
 
-        Ok(buckets)
+        Ok(acc
+            .into_iter()
+            .map(|(start, end, inflow, outflow)| PostingBucket {
+                start,
+                end,
+                inflow: Amount::new(inflow, commodity),
+                outflow: Amount::new(outflow, commodity),
+            })
+            .collect())
     }
 
     /// Returns the commodity code of the first (default) commodity for `account_id`, or `None`.
@@ -426,7 +433,7 @@ impl Engine {
     /// Balances are computed live from non-voided postings, not from the `balances`
     /// cache table (which is a write-through cache not yet populated by the application).
     ///
-    /// The map key is [`AccountId`]; the value is `(commodity_code, balance)`.
+    /// The map key is [`AccountId`]; the value is an [`Amount`] (carrying the default commodity).
     /// Accounts with neither a configured commodity nor any postings are omitted.
     /// Accounts with a commodity (configured or inferred) but no postings are included with a zero
     /// balance.
@@ -441,7 +448,7 @@ impl Engine {
     #[inline]
     pub async fn default_balances(
         &self,
-    ) -> BcResult<std::collections::HashMap<AccountId, (String, Decimal)>> {
+    ) -> BcResult<std::collections::HashMap<AccountId, Amount>> {
         let voided_str = to_db_str(TransactionStatus::Voided)?;
 
         // Fetch the effective default commodity per active account.
@@ -519,7 +526,6 @@ impl Engine {
         // Convert string IDs to AccountId.
         map.into_iter()
             .map(|(id_str, balance)| {
-                // id_str was inserted from commodity_by_account keys, so the lookup cannot miss.
                 let commodity = commodity_by_account
                     .get(&id_str)
                     .ok_or_else(|| {
@@ -529,7 +535,7 @@ impl Engine {
                 let id = id_str
                     .parse::<AccountId>()
                     .map_err(|e| BcError::BadData(format!("invalid account id '{id_str}': {e}")))?;
-                Ok((id, (commodity, balance)))
+                Ok((id, Amount::new(balance, commodity)))
             })
             .collect()
     }
@@ -583,7 +589,8 @@ mod tests {
             .balance_for(&acc_a, "AUD")
             .await
             .expect("balance query should succeed");
-        assert_eq!(balance, dec!(100.00));
+        assert_eq!(balance.value(), dec!(100.00));
+        assert_eq!(balance.commodity().as_str(), "AUD");
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -602,7 +609,8 @@ mod tests {
             .balance_for(&acc, "AUD")
             .await
             .expect("balance query should succeed");
-        assert_eq!(balance, Decimal::ZERO);
+        assert_eq!(balance.value(), Decimal::ZERO);
+        assert_eq!(balance.commodity().as_str(), "AUD");
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -669,7 +677,8 @@ mod tests {
 
         // Expected: savings (50_000) + house valuation (650_000) = 700_000
         // (Income account is excluded from net worth as it's not Asset/Liability)
-        assert_eq!(net_worth, dec!(700_000));
+        assert_eq!(net_worth.value(), dec!(700_000));
+        assert_eq!(net_worth.commodity().as_str(), "AUD");
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -727,9 +736,9 @@ mod tests {
             .await
             .expect("default_balances should succeed");
 
-        let (code, bal) = map.get(&acc).expect("account should be in map");
-        assert_eq!(code.as_str(), "AUD");
-        assert_eq!(*bal, dec!(1234.56));
+        let bal = map.get(&acc).expect("account should be in map");
+        assert_eq!(bal.commodity().as_str(), "AUD");
+        assert_eq!(bal.value(), dec!(1234.56));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -767,9 +776,9 @@ mod tests {
             .await
             .expect("default_balances should succeed");
 
-        let (code, bal) = map.get(&acc).expect("account in map");
-        assert_eq!(code.as_str(), "AUD");
-        assert_eq!(*bal, rust_decimal::Decimal::ZERO);
+        let bal = map.get(&acc).expect("account in map");
+        assert_eq!(bal.commodity().as_str(), "AUD");
+        assert_eq!(bal.value(), rust_decimal::Decimal::ZERO);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -865,8 +874,8 @@ mod tests {
             .await
             .expect("posting_flows");
 
-        assert_eq!(inflow, dec!(1000.00));
-        assert_eq!(outflow, dec!(250.00));
+        assert_eq!(inflow.value(), dec!(1000.00));
+        assert_eq!(outflow.value(), dec!(250.00));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -907,8 +916,8 @@ mod tests {
             .await
             .expect("posting_flows");
 
-        assert_eq!(inflow, rust_decimal::Decimal::ZERO);
-        assert_eq!(outflow, rust_decimal::Decimal::ZERO);
+        assert_eq!(inflow.value(), rust_decimal::Decimal::ZERO);
+        assert_eq!(outflow.value(), rust_decimal::Decimal::ZERO);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -969,7 +978,7 @@ mod tests {
             .expect("posting_flows");
 
         // Only the 100.00 inside [2026-04-01, 2026-05-01) should be counted
-        assert_eq!(inflow, dec!(100.00));
+        assert_eq!(inflow.value(), dec!(100.00));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1090,12 +1099,12 @@ mod tests {
         {
             // First bucket: April (inflow 500, outflow 0)
             assert_eq!(buckets[0].start.to_string(), "2026-04-01");
-            assert_eq!(buckets[0].inflow, dec!(500.00));
-            assert_eq!(buckets[0].outflow, rust_decimal::Decimal::ZERO);
+            assert_eq!(buckets[0].inflow.value(), dec!(500.00));
+            assert_eq!(buckets[0].outflow.value(), rust_decimal::Decimal::ZERO);
             // Second bucket: May (inflow 0, outflow 200)
             assert_eq!(buckets[1].start.to_string(), "2026-05-01");
-            assert_eq!(buckets[1].inflow, rust_decimal::Decimal::ZERO);
-            assert_eq!(buckets[1].outflow, dec!(200.00));
+            assert_eq!(buckets[1].inflow.value(), rust_decimal::Decimal::ZERO);
+            assert_eq!(buckets[1].outflow.value(), dec!(200.00));
         }
     }
 
@@ -1149,7 +1158,7 @@ mod tests {
             .await
             .expect("balance query should succeed");
         assert_eq!(
-            balance,
+            balance.value(),
             Decimal::ZERO,
             "voided transaction should not affect balance"
         );
