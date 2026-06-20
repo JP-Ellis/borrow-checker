@@ -64,16 +64,28 @@ fn parse_target_minor(s: &str) -> Option<i64> {
             // Build a fixed-point minor value with rounding.
             // We need the first 2 frac digits plus whether any digit >= 5
             // exists at position 3 (the third decimal place).
+            #[expect(
+                clippy::string_slice,
+                reason = "frac is validated as all-ASCII-digit by the guard above; byte-index slicing is safe"
+            )]
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "frac.len() >= 3 is guaranteed by the match arm above"
+            )]
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "d, prefix are small digit values; saturating ops not needed for this fixed-scale decimal"
+            )]
             let cents: i64 = match frac.len() {
                 0 => 0,
                 1 => {
-                    // e.g. "5" → 50
+                    /* e.g. "5" → 50 */
                     let d: i64 = frac.parse().ok()?;
                     d * 10
                 }
                 2 => frac.parse().ok()?,
                 _ => {
-                    // Round the 2-digit prefix based on the third digit.
+                    /* Round the 2-digit prefix based on the third digit. */
                     let prefix: i64 = frac[..2].parse().ok()?;
                     let third: u8 = frac.as_bytes()[2] - b'0';
                     if third >= 5 { prefix + 1 } else { prefix }
@@ -105,13 +117,30 @@ fn period_from_key(key: &str) -> Period {
 
 /// Maps a [`Period`] to its dropdown key.
 #[must_use]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "Period is #[non_exhaustive]; the wildcard is required, and remaining known variants all map to 'monthly'"
+)]
 fn period_key(period: &Period) -> &'static str {
     match period {
         Period::Weekly => "weekly",
-        Period::Fortnightly => "fortnightly",
         Period::Quarterly => "quarterly",
         Period::CalendarYear | Period::FinancialYear { .. } => "calendar_year",
         _ => "monthly",
+    }
+}
+
+/// Maps a [`RolloverPolicy`] to its dropdown key.
+#[must_use]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "RolloverPolicy is #[non_exhaustive]; the wildcard catches any future variants as reset_to_zero"
+)]
+fn rollover_key(policy: RolloverPolicy) -> &'static str {
+    match policy {
+        RolloverPolicy::CarryForward => "carry_forward",
+        RolloverPolicy::CapAtTarget => "cap_at_target",
+        _ => "reset_to_zero",
     }
 }
 
@@ -371,13 +400,7 @@ pub fn RevisionForm(
                                 },
                             );
                     }
-                    prop:value=move || {
-                        match rollover_input.get() {
-                            RolloverPolicy::CarryForward => "carry_forward",
-                            RolloverPolicy::CapAtTarget => "cap_at_target",
-                            _ => "reset_to_zero",
-                        }
-                    }
+                    prop:value=move || rollover_key(rollover_input.get())
                 >
                     <option value="reset_to_zero">"Reset to zero"</option>
                     <option value="carry_forward">"Carry forward"</option>
