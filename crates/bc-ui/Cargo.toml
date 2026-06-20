@@ -44,6 +44,7 @@ js-sys                   = "0.3"
 leptos                   = { version = "0.8", features = ["csr"] }
 leptos_router            = { version = "0.8", default-features = false }
 leptos_router_macro      = "0.8"
+rust_decimal             = { workspace = true }
 stylance                 = "0.8"
 # tauri-sys is not on crates.io; requires `esbuild` (provided via mise).
 tauri-sys                = { git = "https://github.com/JonasKruckenberg/tauri-sys", branch = "v2", features = [

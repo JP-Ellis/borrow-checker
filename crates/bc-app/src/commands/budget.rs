@@ -368,7 +368,7 @@ pub async fn resolve_effective_date(
 ///
 /// `revision_id = None` adds a revision (a fresh id is generated); `Some` amends
 /// the revision with that id. `effective_from` must already be exact (the UI
-/// resolves snap beforehand). `target_minor_units` and `target_currency` must be
+/// resolves snap beforehand). `target` and `target_currency` must be
 /// both set or both omitted.
 ///
 /// # Errors
@@ -389,7 +389,7 @@ pub async fn revise_budget(
     revision_id: Option<String>,
     effective_from: jiff::civil::Date,
     name: Option<String>,
-    target_minor_units: Option<i64>,
+    target: Option<rust_decimal::Decimal>,
     target_currency: Option<String>,
     rollover: bc_ipc::RolloverPolicy,
     period: bc_ipc::Period,
@@ -407,15 +407,15 @@ pub async fn revise_budget(
         None => bc_models::BudgetRevisionId::new(),
     };
 
-    let target = match (target_minor_units, target_currency) {
-        (Some(minor), Some(cur)) => Some(bc_models::Amount::new(
-            rust_decimal::Decimal::new(minor, 2),
+    let target_amount = match (target, target_currency) {
+        (Some(value), Some(cur)) => Some(bc_models::Amount::new(
+            value,
             bc_models::CommodityCode::new(cur),
         )),
         (None, None) => None,
         _ => {
             return Err(bc_ipc::BcError::Validation(
-                "target_minor_units and target_currency must both be set or both null".to_owned(),
+                "target and target_currency must both be set or both null".to_owned(),
             ));
         }
     };
@@ -433,7 +433,7 @@ pub async fn revise_budget(
         .budget_id(bid.clone())
         .effective_from(effective_from)
         .maybe_name(name)
-        .maybe_target(target)
+        .maybe_target(target_amount)
         .period(period.into_model())
         .rollover(rollover.into_model())
         .maybe_tag_filter(tag)
@@ -523,7 +523,7 @@ pub async fn archive_budget(
 
 /// Creates a new budget on an account.
 ///
-/// Both `target_minor_units` and `target_currency` must be provided together, or both omitted.
+/// Both `target` and `target_currency` must be provided together, or both omitted.
 ///
 /// # Errors
 ///
@@ -542,7 +542,7 @@ pub async fn create_budget(
     account_id: String,
     effective_from: jiff::civil::Date,
     name: Option<String>,
-    target_minor_units: Option<i64>,
+    target: Option<rust_decimal::Decimal>,
     target_currency: Option<String>,
     period: bc_ipc::Period,
     rollover: bc_ipc::RolloverPolicy,
@@ -553,18 +553,15 @@ pub async fn create_budget(
         .parse::<bc_models::AccountId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
 
-    let target = match (target_minor_units, target_currency) {
-        (Some(minor), Some(cur)) => {
-            let value = rust_decimal::Decimal::new(minor, 2);
-            Some(bc_models::Amount::new(
-                value,
-                bc_models::CommodityCode::new(cur),
-            ))
-        }
+    let target_amount = match (target, target_currency) {
+        (Some(value), Some(cur)) => Some(bc_models::Amount::new(
+            value,
+            bc_models::CommodityCode::new(cur),
+        )),
         (None, None) => None,
         _ => {
             return Err(bc_ipc::BcError::Validation(
-                "target_minor_units and target_currency must both be set or both null".to_owned(),
+                "target and target_currency must both be set or both null".to_owned(),
             ));
         }
     };
@@ -583,7 +580,7 @@ pub async fn create_budget(
         .account_id(aid)
         .effective_from(effective_from)
         .maybe_name(name)
-        .maybe_target(target)
+        .maybe_target(target_amount)
         .period(period.into_model())
         .rollover(rollover.into_model())
         .maybe_tag_filter(tag)
