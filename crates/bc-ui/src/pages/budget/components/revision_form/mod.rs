@@ -3,6 +3,8 @@
 #[cfg(debug_assertions)]
 pub(crate) mod qa;
 
+use core::str::FromStr as _;
+
 use bc_ipc::BudgetRevisionView;
 use bc_ipc::Period;
 use bc_ipc::RolloverPolicy;
@@ -12,7 +14,8 @@ use stylance::import_style;
 import_style!(style, "form.module.scss");
 
 /// Period choices offered in the dropdown.
-const PERIOD_CHOICES: [(&str, Period); 5] = [
+const PERIOD_CHOICES: [(&str, Period); 6] = [
+    ("daily", Period::Daily),
     ("weekly", Period::Weekly),
     ("fortnightly", Period::Fortnightly),
     ("monthly", Period::Monthly),
@@ -37,6 +40,7 @@ fn period_from_key(key: &str) -> Period {
 )]
 fn period_key(period: &Period) -> &'static str {
     match period {
+        Period::Daily => "daily",
         Period::Weekly => "weekly",
         Period::Fortnightly => "fortnightly",
         Period::Quarterly => "quarterly",
@@ -157,10 +161,18 @@ pub fn RevisionForm(
         };
         let name = name_input.get_untracked();
         let name_opt = (!name.trim().is_empty()).then_some(name);
-        let target_minor =
-            crate::components::num::parse_target_minor(&target_input.get_untracked());
+        let target_raw = target_input.get_untracked();
+        let target_trim = target_raw.trim();
+        let target = if target_trim.is_empty() {
+            None
+        } else if let Ok(value) = rust_decimal::Decimal::from_str(target_trim) {
+            Some(value)
+        } else {
+            error.set(Some("Target must be a number".to_owned()));
+            return;
+        };
         let currency = currency_input.get_untracked();
-        let target_currency = target_minor.is_some().then_some(currency);
+        let target_currency = target.is_some().then_some(currency);
         let rollover = rollover_input.get_untracked();
         let period = selected_period.get_untracked();
         let tag = tag_input.get_untracked();
@@ -168,7 +180,7 @@ pub fn RevisionForm(
         let use_snap = snap.get_untracked();
 
         // Client-side mirror of the CapAtTarget invariant.
-        if rollover == RolloverPolicy::CapAtTarget && target_minor.is_none() {
+        if rollover == RolloverPolicy::CapAtTarget && target.is_none() {
             error.set(Some("Cap at target requires a target amount".to_owned()));
             return;
         }
@@ -196,7 +208,7 @@ pub fn RevisionForm(
                 rid.as_deref(),
                 effective_from,
                 name_opt.as_deref(),
-                target_minor,
+                target,
                 target_currency.as_deref(),
                 rollover,
                 period,
@@ -295,6 +307,7 @@ pub fn RevisionForm(
                     }
                     prop:value=move || period_key(&selected_period.get())
                 >
+                    <option value="daily">"daily"</option>
                     <option value="weekly">"weekly"</option>
                     <option value="fortnightly">"fortnightly"</option>
                     <option value="monthly">"monthly"</option>
