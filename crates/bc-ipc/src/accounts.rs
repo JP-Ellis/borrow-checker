@@ -218,8 +218,8 @@ impl Posting {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct AuditEntry {
-    /// Timestamp string, e.g. `"09:04"`.
-    pub time: String,
+    /// Instant this audit event occurred.
+    pub time: jiff::Timestamp,
     /// Event kind, e.g. `"import"`, `"autocat"`, `"user"`.
     pub kind: String,
     /// Human-readable message.
@@ -231,21 +231,27 @@ impl AuditEntry {
     ///
     /// # Arguments
     ///
-    /// * `time` - Timestamp string (e.g. `"09:04"`).
+    /// * `time` - Instant the event occurred.
     /// * `kind` - Event kind (e.g. `"import"`, `"autocat"`).
     /// * `message` - Human-readable message.
     #[must_use]
     #[inline]
-    pub fn new(
-        time: impl Into<String>,
-        kind: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
+    pub fn new(time: jiff::Timestamp, kind: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
-            time: time.into(),
+            time,
             kind: kind.into(),
             message: message.into(),
         }
+    }
+
+    /// Returns the event time as a `"HH:MM"` label in the system time zone.
+    #[must_use]
+    #[inline]
+    pub fn time_label(&self) -> String {
+        self.time
+            .to_zoned(jiff::tz::TimeZone::system())
+            .strftime("%H:%M")
+            .to_string()
     }
 }
 
@@ -699,6 +705,16 @@ mod tests {
             tx2.tags.first().map(String::as_str),
             Some("category:groceries")
         );
+    }
+
+    #[test]
+    fn audit_entry_serde_roundtrip() {
+        let ts: jiff::Timestamp = "2026-06-20T09:04:00Z".parse().expect("valid timestamp");
+        let e = AuditEntry::new(ts, "import", "from commbank-au.wasm@1.4.2");
+        let json = serde_json::to_string(&e).expect("ser");
+        let back: AuditEntry = serde_json::from_str(&json).expect("de");
+        assert_eq!(e, back);
+        assert_eq!(back.time, ts);
     }
 
     #[test]

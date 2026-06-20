@@ -152,9 +152,17 @@ mod tests {
                     ),
                 ],
                 vec![
-                    AuditEntry::new("14:21", "import", "from commbank-au.wasm@1.4.2"),
                     AuditEntry::new(
-                        "14:21",
+                        "2026-04-30T14:21:00Z"
+                            .parse::<jiff::Timestamp>()
+                            .expect("valid timestamp"),
+                        "import",
+                        "from commbank-au.wasm@1.4.2",
+                    ),
+                    AuditEntry::new(
+                        "2026-04-30T14:21:00Z"
+                            .parse::<jiff::Timestamp>()
+                            .expect("valid timestamp"),
                         "autocat",
                         "rule \"merchant=~/coles/i → Groceries\"",
                     ),

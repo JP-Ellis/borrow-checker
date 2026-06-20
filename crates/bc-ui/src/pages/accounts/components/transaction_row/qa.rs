@@ -11,6 +11,10 @@ use leptos::prelude::*;
 use super::TransactionRow;
 
 /// Returns a simple cleared transaction for QA display.
+#[expect(
+    clippy::expect_used,
+    reason = "QA fixture — timestamp literals are valid"
+)]
 fn tx_simple() -> Transaction {
     Transaction::new(
         "tx-coles-qa",
@@ -37,7 +41,9 @@ fn tx_simple() -> Transaction {
             ),
         ],
         vec![AuditEntry::new(
-            "14:21",
+            "2026-04-30T14:21:00Z"
+                .parse::<jiff::Timestamp>()
+                .expect("valid timestamp"),
             "import",
             "from commbank-au.wasm@1.4.2",
         )],
@@ -45,6 +51,10 @@ fn tx_simple() -> Transaction {
 }
 
 /// Returns a multi-posting salary transaction for QA display.
+#[expect(
+    clippy::expect_used,
+    reason = "QA fixture — timestamp literals are valid"
+)]
 fn tx_multi_posting() -> Transaction {
     Transaction::new(
         "tx-salary-qa",
@@ -71,7 +81,9 @@ fn tx_multi_posting() -> Transaction {
             ),
         ],
         vec![AuditEntry::new(
-            "09:04",
+            "2026-04-30T09:04:00Z"
+                .parse::<jiff::Timestamp>()
+                .expect("valid timestamp"),
             "import",
             "from commbank-au.wasm@1.4.2",
         )],
