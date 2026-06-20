@@ -371,4 +371,19 @@ mod tests {
         let one = Amount::new(Decimal::new(1, 0), "AUD");
         assert_eq!(max.add(&one), Err(crate::AmountError::Overflow));
     }
+
+    #[test]
+    #[should_panic(expected = "commodity mismatch")]
+    fn sub_unchecked_panics_on_mismatch() {
+        let a = Amount::new(Decimal::new(10, 0), "AUD");
+        let b = Amount::new(Decimal::new(10, 0), "USD");
+        drop(a.sub_unchecked(&b));
+    }
+
+    #[test]
+    fn sub_unchecked_returns_difference() {
+        let a = Amount::new(Decimal::new(10, 0), "USD");
+        let b = Amount::new(Decimal::new(3, 0), "USD");
+        assert_eq!(a.sub_unchecked(&b).value, Decimal::new(7, 0));
+    }
 }
