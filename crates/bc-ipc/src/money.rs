@@ -70,6 +70,9 @@ impl Amount {
 
     /// Returns a compact display string. Large amounts are abbreviated (`64k`, `1m`). Small
     /// amounts show the currency symbol. Returns `"—"` when no currency is set.
+    ///
+    /// Fraction digits follow the value's own [`Decimal`] scale. For currency-canonical
+    /// fraction digits used by the main UI money display, see bc-ui's `format_amount`.
     #[must_use]
     #[inline]
     #[expect(
