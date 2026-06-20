@@ -49,26 +49,26 @@ pub async fn get_budget_overview(
         .nodes
         .iter()
         .map(crate::ipc::budget_tree_item_into_ipc)
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
 
     let target_commodity = overview.summary.commodity.as_ref();
 
     let (total_budgeted, total_spent, total_remaining) = if let Some(tc) = target_commodity {
         let budgeted =
-            crate::ipc::decimal_to_amount(overview.summary.total_effective_target, tc.as_str())?;
+            crate::ipc::decimal_to_amount(overview.summary.total_effective_target, tc.as_str());
         let actuals_in_target = overview
             .summary
             .total_actuals
             .iter()
             .find(|a| a.commodity() == tc)
             .map_or(bc_models::Decimal::ZERO, bc_models::Amount::value);
-        let spent = crate::ipc::decimal_to_amount(actuals_in_target, tc.as_str())?;
+        let spent = crate::ipc::decimal_to_amount(actuals_in_target, tc.as_str());
         let remaining_val = overview
             .summary
             .total_effective_target
             .checked_sub(actuals_in_target)
             .unwrap_or(bc_models::Decimal::ZERO);
-        let remaining = crate::ipc::decimal_to_amount(remaining_val, tc.as_str())?;
+        let remaining = crate::ipc::decimal_to_amount(remaining_val, tc.as_str());
         (Some(budgeted), Some(spent), Some(remaining))
     } else {
         let spent = match overview.summary.total_actuals.as_slice() {
@@ -147,24 +147,23 @@ pub async fn get_native_periods(
             )
         })?;
 
-    native
+    Ok(native
         .iter()
         .map(|n| {
             let label = format_native_period_label(n);
             let effective_target = n
                 .effective_target
-                .map(|t| crate::ipc::decimal_to_amount(t, &commodity))
-                .transpose()?;
-            let spent = crate::ipc::decimal_to_amount(n.actuals, &commodity)?;
-            Ok(bc_ipc::NativePeriodRow::new(
+                .map(|t| crate::ipc::decimal_to_amount(t, &commodity));
+            let spent = crate::ipc::decimal_to_amount(n.actuals, &commodity);
+            bc_ipc::NativePeriodRow::new(
                 label,
                 n.overlap.native_start,
                 n.overlap.native_end,
                 effective_target,
                 spent,
-            ))
+            )
         })
-        .collect()
+        .collect())
 }
 
 /// Builds a human-readable label for a native period overlap row.
@@ -296,8 +295,7 @@ pub async fn list_budget_revisions(
             let period_ipc = r.period().into_ipc();
             let target = r
                 .target()
-                .map(|a| crate::ipc::decimal_to_amount(a.value(), a.commodity().as_str()))
-                .transpose()?;
+                .map(|a| crate::ipc::decimal_to_amount(a.value(), a.commodity().as_str()));
             Ok(bc_ipc::BudgetRevisionView::builder()
                 .id(r.id().to_string())
                 .effective_from(r.effective_from())
