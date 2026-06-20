@@ -104,7 +104,7 @@ pub fn RevisionForm(
         .map_or_else(|| "AUD".to_owned(), |a| a.currency_code.clone());
     let init_period = revision
         .as_ref()
-        .map_or("monthly", |r| period_key(&r.period));
+        .map_or(Period::Monthly, |r| r.period.clone());
     let init_rollover = revision
         .as_ref()
         .map_or(RolloverPolicy::ResetToZero, |r| r.rollover);
@@ -118,7 +118,7 @@ pub fn RevisionForm(
     let name_input = RwSignal::new(init_name);
     let target_input = RwSignal::new(init_target);
     let currency_input = RwSignal::new(init_currency);
-    let period_input = RwSignal::new(init_period.to_owned());
+    let selected_period = RwSignal::new(init_period);
     let rollover_input = RwSignal::new(init_rollover);
     let tag_input = RwSignal::new(init_tag);
     let resolved_hint: RwSignal<Option<String>> = RwSignal::new(None);
@@ -162,7 +162,7 @@ pub fn RevisionForm(
         let currency = currency_input.get_untracked();
         let target_currency = target_minor.is_some().then_some(currency);
         let rollover = rollover_input.get_untracked();
-        let period = period_from_key(&period_input.get_untracked());
+        let period = selected_period.get_untracked();
         let tag = tag_input.get_untracked();
         let tag_opt = (!tag.trim().is_empty()).then_some(tag);
         let use_snap = snap.get_untracked();
@@ -290,8 +290,10 @@ pub fn RevisionForm(
                 <span class=style::label>"Period"</span>
                 <select
                     class=style::input
-                    on:change=move |ev| period_input.set(event_target_value(&ev))
-                    prop:value=move || period_input.get()
+                    on:change=move |ev| {
+                        selected_period.set(period_from_key(&event_target_value(&ev)));
+                    }
+                    prop:value=move || period_key(&selected_period.get())
                 >
                     <option value="weekly">"weekly"</option>
                     <option value="fortnightly">"fortnightly"</option>
