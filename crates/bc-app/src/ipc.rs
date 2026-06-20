@@ -271,7 +271,10 @@ impl IntoIpc for &bc_models::Period {
                 months: None,
             } => bc_ipc::Period::Daily,
             other => {
-                tracing::warn!(?other, "Period has no bc_ipc equivalent; defaulting to monthly");
+                tracing::warn!(
+                    ?other,
+                    "Period has no bc_ipc equivalent; defaulting to monthly"
+                );
                 bc_ipc::Period::Monthly
             }
         }
@@ -680,10 +683,19 @@ mod tests {
     #[test]
     fn window_overlap_full_cover_when_reign_spans_window() {
         use jiff::civil::date;
-        let o = window_overlap(date(2025, 1, 1), Some(date(2028, 1, 1)), date(2026, 7, 1), date(2026, 7, 8));
+        let o = window_overlap(
+            date(2025, 1, 1),
+            Some(date(2028, 1, 1)),
+            date(2026, 7, 1),
+            date(2026, 7, 8),
+        );
         assert_eq!(
             o,
-            Some(bc_ipc::WindowOverlap::new(date(2026, 7, 1), date(2026, 7, 8), true))
+            Some(bc_ipc::WindowOverlap::new(
+                date(2026, 7, 1),
+                date(2026, 7, 8),
+                true
+            ))
         );
     }
 
@@ -691,10 +703,19 @@ mod tests {
     fn window_overlap_partial_from_left() {
         use jiff::civil::date;
         // reign ends inside the window -> partial, range [win_start, reign_end).
-        let o = window_overlap(date(2025, 1, 1), Some(date(2026, 9, 1)), date(2026, 7, 1), date(2027, 7, 1));
+        let o = window_overlap(
+            date(2025, 1, 1),
+            Some(date(2026, 9, 1)),
+            date(2026, 7, 1),
+            date(2027, 7, 1),
+        );
         assert_eq!(
             o,
-            Some(bc_ipc::WindowOverlap::new(date(2026, 7, 1), date(2026, 9, 1), false))
+            Some(bc_ipc::WindowOverlap::new(
+                date(2026, 7, 1),
+                date(2026, 9, 1),
+                false
+            ))
         );
     }
 
@@ -705,7 +726,11 @@ mod tests {
         let o = window_overlap(date(2026, 10, 1), None, date(2026, 7, 1), date(2027, 7, 1));
         assert_eq!(
             o,
-            Some(bc_ipc::WindowOverlap::new(date(2026, 10, 1), date(2027, 7, 1), false))
+            Some(bc_ipc::WindowOverlap::new(
+                date(2026, 10, 1),
+                date(2027, 7, 1),
+                false
+            ))
         );
     }
 
@@ -719,10 +744,21 @@ mod tests {
     #[test]
     fn model_period_into_ipc_maps_known_variants() {
         use crate::ipc::IntoIpc as _;
-        assert_eq!((&bc_models::Period::Weekly).into_ipc(), bc_ipc::Period::Weekly);
-        assert_eq!((&bc_models::Period::Monthly).into_ipc(), bc_ipc::Period::Monthly);
         assert_eq!(
-            (&bc_models::Period::Custom { days: Some(1), weeks: None, months: None }).into_ipc(),
+            (&bc_models::Period::Weekly).into_ipc(),
+            bc_ipc::Period::Weekly
+        );
+        assert_eq!(
+            (&bc_models::Period::Monthly).into_ipc(),
+            bc_ipc::Period::Monthly
+        );
+        assert_eq!(
+            (&bc_models::Period::Custom {
+                days: Some(1),
+                weeks: None,
+                months: None
+            })
+                .into_ipc(),
             bc_ipc::Period::Daily
         );
     }
