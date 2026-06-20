@@ -92,7 +92,7 @@ pub fn AccountDashboard(
         None => "\u{2014}".into(),
         Some(b) => {
             let currency = bc_ipc::currency_from_code(&b.currency_code).unwrap_or(&bc_ipc::USD);
-            crate::components::num::format_amount(b.minor_units, currency)
+            crate::components::num::format_amount(&b.value, currency)
         }
     };
 
@@ -220,11 +220,11 @@ pub fn AccountDashboard(
                                         )
                                         .unwrap_or(&bc_ipc::USD);
                                     let inc = crate::components::num::format_amount(
-                                        s.income.minor_units,
+                                        &s.income.value,
                                         currency,
                                     );
                                     let exp = crate::components::num::format_amount(
-                                        s.expenses.minor_units,
+                                        &s.expenses.value,
                                         currency,
                                     );
                                     (inc, exp)

@@ -46,7 +46,10 @@ pub fn headline_amount(tx: &Transaction, account_id: &str) -> Amount {
     tx.postings
         .iter()
         .find(|p| p.account.id == account_id)
-        .map_or_else(|| Amount::new(0, "AUD", 2), |p| p.amount.clone())
+        .map_or_else(
+            || Amount::new(rust_decimal::Decimal::ZERO, "AUD"),
+            |p| p.amount.clone(),
+        )
 }
 
 /// Formats a [`jiff::civil::Date`] for display.
@@ -137,7 +140,7 @@ mod tests {
                     Posting::new(
                         "posting-coles-debit",
                         AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                        Amount::new(-8_420, "AUD", 2),
+                        Amount::from_minor(-8_420, "AUD", 2),
                         None::<&str>,
                         None,
                         None,
@@ -145,7 +148,7 @@ mod tests {
                     Posting::new(
                         "posting-coles-groceries",
                         AccountRef::new("groceries", "Expenses :: Groceries"),
-                        Amount::new(8_420, "AUD", 2),
+                        Amount::from_minor(8_420, "AUD", 2),
                         None::<&str>,
                         None,
                         None,
@@ -178,7 +181,7 @@ mod tests {
                     Posting::new(
                         "posting-salary-income",
                         AccountRef::new("income-salary", "Income :: Salary"),
-                        Amount::new(-846_154, "AUD", 2),
+                        Amount::from_minor(-846_154, "AUD", 2),
                         Some("gross pay"),
                         None,
                         None,
@@ -186,7 +189,7 @@ mod tests {
                     Posting::new(
                         "posting-salary-tax",
                         AccountRef::new("liabilities-tax", "Liabilities :: Tax Withheld"),
-                        Amount::new(327_692, "AUD", 2),
+                        Amount::from_minor(327_692, "AUD", 2),
                         Some("PAYG withholding"),
                         None,
                         None,
@@ -194,7 +197,7 @@ mod tests {
                     Posting::new(
                         "posting-salary-super",
                         AccountRef::new("assets-super", "Assets :: Super :: Employer"),
-                        Amount::new(90_407, "AUD", 2),
+                        Amount::from_minor(90_407, "AUD", 2),
                         Some("11.5% SGC"),
                         None,
                         None,
@@ -202,7 +205,7 @@ mod tests {
                     Posting::new(
                         "posting-salary-takehome",
                         AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                        Amount::new(428_055, "AUD", 2),
+                        Amount::from_minor(428_055, "AUD", 2),
                         Some("take-home"),
                         None,
                         None,
@@ -233,7 +236,7 @@ mod tests {
         let txs = make_test_transactions();
         let tx = &txs[0]; // Coles Carlton, Smart Access = -8_420 AUD
         let amount = headline_amount(tx, "cb-smart-access");
-        assert_eq!(amount.minor_units, -8_420);
+        assert_eq!(amount.value, rust_decimal::Decimal::new(-8_420, 2));
         assert_eq!(amount.currency_code, "AUD");
     }
 
@@ -242,7 +245,7 @@ mod tests {
         let txs = make_test_transactions();
         let tx = &txs[1]; // salary, take-home to cb-smart-access = 428_055 AUD
         let amount = headline_amount(tx, "cb-smart-access");
-        assert_eq!(amount.minor_units, 428_055);
+        assert_eq!(amount.value, rust_decimal::Decimal::new(428_055, 2));
         assert_eq!(amount.currency_code, "AUD");
     }
 
@@ -251,7 +254,7 @@ mod tests {
         let txs = make_test_transactions();
         let tx = &txs[0];
         let amount = headline_amount(tx, "does-not-exist");
-        assert_eq!(amount.minor_units, 0);
+        assert_eq!(amount.value, rust_decimal::Decimal::ZERO);
         assert_eq!(amount.currency_code, "AUD");
     }
 

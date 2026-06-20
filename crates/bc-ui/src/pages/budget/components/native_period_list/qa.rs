@@ -24,8 +24,8 @@ fn row_with_target(
         label,
         period_start,
         period_end,
-        Some(Amount::new(target, "AUD", 2)),
-        Amount::new(spent, "AUD", 2),
+        Some(Amount::from_minor(target, "AUD", 2)),
+        Amount::from_minor(spent, "AUD", 2),
     )
 }
 
@@ -41,7 +41,7 @@ fn row_no_target(
         period_start,
         period_end,
         None,
-        Amount::new(spent, "AUD", 2),
+        Amount::from_minor(spent, "AUD", 2),
     )
 }
 

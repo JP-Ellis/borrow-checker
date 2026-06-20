@@ -6,6 +6,8 @@ pub(crate) mod qa;
 use bc_ipc::BcError;
 use bc_ipc::NativePeriodRow;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive as _;
 use stylance::import_style;
 
 use crate::pages::budget::BudgetPageCtx;
@@ -35,16 +37,15 @@ enum Status {
 /// and safe because budget minor-unit values fit comfortably in i64.
 #[expect(
     clippy::arithmetic_side_effects,
-    reason = "budget minor-unit values are bounded and will not overflow i64"
+    reason = "budget Decimal values are bounded and cannot overflow or panic"
 )]
 fn row_status(row: &NativePeriodRow) -> Status {
     match &row.effective_target {
         None => Status::Mute,
-        Some(_) if row.spent.minor_units == 0 => Status::Dim,
-        Some(target) if row.spent.minor_units > target.minor_units => Status::Bad,
+        Some(_) if row.spent.value == Decimal::ZERO => Status::Dim,
+        Some(target) if row.spent.value > target.value => Status::Bad,
         Some(target) => {
-            /* 80% check via integer: spent * 5 > target * 4 ↔ spent/target > 0.8 */
-            if row.spent.minor_units * 5 > target.minor_units * 4 {
+            if row.spent.value * Decimal::from(5_i64) > target.value * Decimal::from(4_i64) {
                 Status::Warn
             } else {
                 Status::Good
@@ -58,23 +59,18 @@ fn row_status(row: &NativePeriodRow) -> Status {
 /// Returns 0 when there is no target or when target minor-units are zero.
 #[expect(
     clippy::arithmetic_side_effects,
-    clippy::integer_division,
-    clippy::integer_division_remainder_used,
-    clippy::as_conversions,
-    clippy::cast_sign_loss,
-    reason = "budget minor-unit arithmetic is bounded; .max(0) guarantees non-negative before cast; integer division for percentage is intentional; clamped to [0,100]"
+    reason = "budget Decimal arithmetic is bounded; .max(ZERO) guarantees non-negative; clamped to [0,100]"
 )]
 fn fill_percent(row: &NativePeriodRow) -> u32 {
     let Some(target) = row.effective_target.as_ref() else {
         return 0;
     };
-    if target.minor_units <= 0 {
+    if target.value <= Decimal::ZERO {
         return 0;
     }
-    let spent = row.spent.minor_units.max(0) as u64;
-    let tgt = target.minor_units as u64;
-    let pct = (spent * 100 / tgt).min(100);
-    pct as u32
+    let spent = row.spent.value.max(Decimal::ZERO);
+    let pct = (spent * Decimal::from(100_i64) / target.value).min(Decimal::from(100_i64));
+    pct.to_u32().unwrap_or(0)
 }
 
 /// Formats the amounts column string for a native period row.
@@ -83,21 +79,20 @@ fn fill_percent(row: &NativePeriodRow) -> u32 {
 /// Falls back to absolute amounts when tracking-only or when target is zero.
 #[expect(
     clippy::arithmetic_side_effects,
-    clippy::integer_division,
-    clippy::integer_division_remainder_used,
-    reason = "pct calculation: minor-unit values are bounded; integer division is intentional for percentage display"
+    reason = "pct calculation: budget Decimal values are bounded; cannot overflow or panic"
 )]
 fn display_str(row: &NativePeriodRow, pct_mode: bool) -> String {
     match &row.effective_target {
         None => format!("{} \u{00b7} tracking", row.spent.format_short()),
         Some(target) if pct_mode => {
-            if target.minor_units == 0 {
+            if target.value == Decimal::ZERO {
                 "\u{2013}".into()
             } else {
-                format!(
-                    "{}%",
-                    (row.spent.minor_units.max(0) * 100) / target.minor_units
-                )
+                let pct = (row.spent.value.max(Decimal::ZERO) * Decimal::from(100_i64)
+                    / target.value)
+                    .to_i64()
+                    .unwrap_or(0);
+                format!("{pct}%")
             }
         }
         Some(target) => format!("{} / {}", row.spent.format_short(), target.format_short()),

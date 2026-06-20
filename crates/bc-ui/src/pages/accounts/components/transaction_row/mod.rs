@@ -102,8 +102,8 @@ pub fn TransactionRow(
     let initial = payee_initial(&tx.payee).to_string();
     let amount = headline_amount(&tx, &viewing_account_id);
     let currency = bc_ipc::currency_from_code(&amount.currency_code).unwrap_or(&bc_ipc::USD);
-    let amount_str = crate::components::num::format_amount(amount.minor_units, currency);
-    let amt_class = match amount.minor_units.cmp(&0) {
+    let amount_str = crate::components::num::format_amount(&amount.value, currency);
+    let amt_class = match amount.value.cmp(&rust_decimal::Decimal::ZERO) {
         core::cmp::Ordering::Greater => style::amt_pos,
         core::cmp::Ordering::Less => style::amt_neg,
         core::cmp::Ordering::Equal => style::amt_neu,

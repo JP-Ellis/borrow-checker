@@ -6,6 +6,7 @@ use bc_ipc::Currency;
 use bc_ipc::USD;
 use leptos::prelude::*;
 use leptos::web_sys;
+use rust_decimal::prelude::ToPrimitive as _;
 use stylance::import_style;
 
 use crate::components::num::format_amount;
@@ -211,8 +212,13 @@ pub fn Sparkline(
     const CHART_BOT: f32 = H - PAD;
 
     // Gather series values.
-    let income_vals: Vec<i64> = points.iter().map(|p| p.income.minor_units).collect();
-    let expense_vals: Vec<i64> = points.iter().map(|p| p.expenses.minor_units).collect();
+    let to_plot = |amt: &bc_ipc::Amount| -> i64 {
+        let mut scaled = amt.value;
+        scaled.rescale(u32::from(currency.decimals));
+        scaled.mantissa().to_i64().unwrap_or(0)
+    };
+    let income_vals: Vec<i64> = points.iter().map(|p| to_plot(&p.income)).collect();
+    let expense_vals: Vec<i64> = points.iter().map(|p| to_plot(&p.expenses)).collect();
 
     // Shared y-scale: find the global min/max across both series.
     let global_min = income_vals
@@ -322,11 +328,11 @@ pub fn Sparkline(
         stored_points.with_value(|pts| {
             let p = pts.get(i)?;
             let inc = {
-                let s = format_amount(p.income.minor_units, currency);
+                let s = format_amount(&p.income.value, currency);
                 s.strip_prefix('+').map(ToOwned::to_owned).unwrap_or(s)
             };
             let exp = {
-                let s = format_amount(p.expenses.minor_units, currency);
+                let s = format_amount(&p.expenses.value, currency);
                 s.strip_prefix('+').map(ToOwned::to_owned).unwrap_or(s)
             };
             Some(view! {
