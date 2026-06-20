@@ -430,16 +430,16 @@ impl AccountStats {
 }
 
 /// A single data point in a cash-flow sparkline: a time-bucket label plus
-/// income and expense totals in the account's minor unit.
+/// income and expense totals.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SparkPoint {
     /// X-axis label, e.g. `"apr"`, `"w03"`, `"Q2"`.
     pub label: String,
-    /// Income in the currency's minor unit (positive).
-    pub income: i64,
-    /// Expenses in the currency's minor unit (positive magnitude — plotted separately).
-    pub expenses: i64,
+    /// Income for the bucket (positive).
+    pub income: Amount,
+    /// Expenses for the bucket (positive magnitude — plotted separately).
+    pub expenses: Amount,
 }
 
 impl SparkPoint {
@@ -448,11 +448,11 @@ impl SparkPoint {
     /// # Arguments
     ///
     /// * `label`    - X-axis label.
-    /// * `income`   - Income in minor units.
-    /// * `expenses` - Expenses in minor units (positive magnitude).
+    /// * `income`   - Income amount.
+    /// * `expenses` - Expenses amount (positive magnitude).
     #[must_use]
     #[inline]
-    pub fn new(label: impl Into<String>, income: i64, expenses: i64) -> Self {
+    pub fn new(label: impl Into<String>, income: Amount, expenses: Amount) -> Self {
         Self {
             label: label.into(),
             income,
@@ -705,6 +705,19 @@ mod tests {
             tx2.tags.first().map(String::as_str),
             Some("category:groceries")
         );
+    }
+
+    #[test]
+    fn spark_point_carries_amount() {
+        let p = SparkPoint::new(
+            "apr",
+            Amount::new(64_000, "AUD", 2),
+            Amount::new(12_300, "AUD", 2),
+        );
+        let json = serde_json::to_string(&p).expect("ser");
+        let back: SparkPoint = serde_json::from_str(&json).expect("de");
+        assert_eq!(p, back);
+        assert_eq!(back.income.currency_code, "AUD");
     }
 
     #[test]

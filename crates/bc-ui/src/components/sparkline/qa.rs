@@ -1,5 +1,6 @@
 //! QA page for [`super::Sparkline`].
 
+use bc_ipc::Amount;
 use leptos::prelude::*;
 
 use super::SparkPoint;
@@ -8,7 +9,11 @@ use super::Title;
 
 /// Constructs a [`SparkPoint`] from a static string label and cent values.
 fn pt(label: &'static str, income: i64, expenses: i64) -> SparkPoint {
-    SparkPoint::new(label, income, expenses)
+    SparkPoint::new(
+        label,
+        Amount::new(income, "AUD", 2),
+        Amount::new(expenses, "AUD", 2),
+    )
 }
 
 /// Renders [`Sparkline`] in several states for visual inspection.
@@ -25,12 +30,16 @@ pub fn SparklineQa() -> impl IntoView {
         .map(|d| {
             SparkPoint::new(
                 format!("{d:02}"),
-                if d % 7 < 2 {
-                    0
-                } else {
-                    11_000 + d * 317 % 4_000
-                },
-                8_000 + d * 53 % 3_000,
+                Amount::new(
+                    if d % 7 < 2 {
+                        0
+                    } else {
+                        11_000 + d * 317 % 4_000
+                    },
+                    "AUD",
+                    2,
+                ),
+                Amount::new(8_000 + d * 53 % 3_000, "AUD", 2),
             )
         })
         .collect();
