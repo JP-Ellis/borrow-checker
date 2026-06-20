@@ -54,5 +54,6 @@ pub use currency::USD;
 pub use currency::currency_from_code;
 pub use error::Error as BcError;
 pub use money::Amount;
+pub use money::AmountError;
 pub use plugins::PluginInfo;
 pub use settings::SettingsInfo;
