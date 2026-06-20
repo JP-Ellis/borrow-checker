@@ -9,23 +9,54 @@ const TEST_DB_PATH = resolve(__dirname, '../../fixtures/test.db');
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-interface BudgetRow {
+interface BudgetRevisionRow {
     id:              string;
+    budget_id:       string;
     name:            string | null;
     target_amount:   string | null;
     target_currency: string | null;
-    archived_at:     string | null;
+}
+
+interface BudgetRow {
+    id:          string;
+    archived_at: string | null;
 }
 
 // ── DB helpers ─────────────────────────────────────────────────────────────
 
+/**
+ * Return the earliest (initial) revision for the budget whose name matches `name`.
+ * "Earliest" is by `effective_from ASC`, which is also the first row shown in the UI.
+ */
+function dbGetFirstRevision(name: string): BudgetRevisionRow | undefined {
+    const db = new Database(TEST_DB_PATH, { readonly: true });
+    try {
+        return db
+            .prepare(
+                'SELECT br.id, br.budget_id, br.name, br.target_amount, br.target_currency ' +
+                'FROM budget_revisions br ' +
+                'WHERE br.budget_id = (' +
+                '  SELECT budget_id FROM budget_revisions WHERE name = ? ORDER BY effective_from ASC LIMIT 1' +
+                ') ' +
+                'ORDER BY br.effective_from ASC LIMIT 1',
+            )
+            .get(name) as BudgetRevisionRow | undefined;
+    } finally {
+        db.close();
+    }
+}
+
+/** Return the `budgets` anchor row by looking up via the initial revision name. */
 function dbGetBudget(name: string): BudgetRow | undefined {
     const db = new Database(TEST_DB_PATH, { readonly: true });
     try {
         return db
             .prepare(
-                'SELECT id, name, target_amount, target_currency, archived_at ' +
-                'FROM budgets WHERE name = ?',
+                'SELECT b.id, b.archived_at ' +
+                'FROM budgets b ' +
+                'JOIN budget_revisions br ON br.budget_id = b.id ' +
+                'WHERE br.name = ? ' +
+                'ORDER BY br.effective_from ASC LIMIT 1',
             )
             .get(name) as BudgetRow | undefined;
     } finally {
@@ -221,13 +252,6 @@ describe('Budget — tree display', () => {
             expect(text).toContain(name);
         }
     });
-
-    it('rows show "· tracking" because seed budgets have no target_amount', async () => {
-        /* All seed budgets are created without a target_amount, so
-         * is_tracking_only=true and each row renders as "spent · tracking". */
-        const text = await (await $('[aria-label="budget tree"]')).getText();
-        expect(text).toContain('· tracking');
-    });
 });
 
 describe('Budget — detail panel', () => {
@@ -236,13 +260,23 @@ describe('Budget — detail panel', () => {
         await openDetail('Groceries');
     });
 
-    it('shows Settings section with Name, Target, Period and Rollover fields', async () => {
+    it('shows Revisions section and Actions section in the detail panel', async () => {
         const text = (await (await $('[aria-label="budget detail"]')).getText()).toLowerCase();
-        expect(text).toContain('settings');
-        expect(text).toContain('name');
-        expect(text).toContain('target');
-        expect(text).toContain('period');
-        expect(text).toContain('rollover');
+        expect(text).toContain('revisions');
+        expect(text).toContain('actions');
+    });
+
+    it('shows revision rows in the revisions timeline', async () => {
+        /* Groceries has 2 seed revisions (Jan 2026 and Jul 2026). */
+        await browser.waitUntil(
+            async () => {
+                const count = await browser.execute(
+                    () => document.querySelectorAll('[data-testid="revision-row"]').length,
+                );
+                return count >= 1;
+            },
+            { timeout: 10_000, timeoutMsg: 'No revision rows appeared in the detail panel' },
+        );
     });
 
     it('shows Actions section with Archive button', async () => {
@@ -257,78 +291,6 @@ describe('Budget — detail panel', () => {
             timeout: 5_000,
             reverse: true,
         });
-    });
-});
-
-describe('Budget — edit budget', () => {
-    before(async () => {
-        await navigateToBudget();
-        await openDetail('Groceries');
-    });
-
-    it('changing the name field shows Save and Reset buttons', async () => {
-        await setInputValue(
-            '[aria-label="budget detail"] input[type="text"]',
-            'Groceries Renamed',
-        );
-        /* dirty=true → Leptos <Show> renders Save and Reset into the DOM. */
-        await browser.waitUntil(
-            async () => {
-                for (const btn of await $$('button')) {
-                    if ((await btn.getText()) === 'Save') return true;
-                }
-                return false;
-            },
-            { timeout: 5_000, timeoutMsg: 'Save button did not appear after name change' },
-        );
-        await wdioExpect(await $('button=Reset')).toBeDisplayed();
-    });
-
-    it('clicking Reset restores the original name and hides Save/Reset', async () => {
-        await clickButton('Reset');
-        /* dirty=false → <Show> removes Save and Reset from the DOM. */
-        await waitForButtonGone('Save');
-        await browser.waitUntil(
-            async () => {
-                const val = await browser.execute(() => {
-                    const el = document.querySelector(
-                        '[aria-label="budget detail"] input[type="text"]',
-                    ) as HTMLInputElement | null;
-                    return el?.value ?? null;
-                });
-                return val === 'Groceries';
-            },
-            { timeout: 5_000, timeoutMsg: 'Name input did not reset to "Groceries"' },
-        );
-    });
-
-    it('saving a target converts tracking-only to budgeted — UI and DB', async () => {
-        await setInputValue(
-            '[aria-label="budget detail"] input[type="number"]',
-            '500',
-        );
-        await clickButton('Save');
-        /* dirty cleared → Save/Reset disappear once the IPC call returns. */
-        await waitForButtonGone('Save');
-
-        /* — UI: Groceries row should no longer show "· tracking".
-         * After re-fetch, is_tracking_only=false because target_amount is now set. */
-        await browser.waitUntil(
-            async () => {
-                const tree     = await $('[aria-label="budget tree"]');
-                const nameSpan = await tree.$('span=Groceries');
-                const rowDiv   = await nameSpan.$('..');
-                return !(await rowDiv.getText()).includes('· tracking');
-            },
-            { timeout: 10_000, timeoutMsg: 'Groceries row did not leave tracking-only mode' },
-        );
-
-        /* — DB: target_amount='500.00', target_currency='AUD', not archived. */
-        const row = dbGetBudget('Groceries');
-        expect(row).toBeDefined();
-        expect(row!.target_amount).toBe('500.00');
-        expect(row!.target_currency).toBe('AUD');
-        expect(row!.archived_at).toBeNull();
     });
 });
 
@@ -365,9 +327,96 @@ describe('Budget — archive', () => {
             { timeout: 10_000, timeoutMsg: 'Subscriptions did not disappear from tree after archive' },
         );
 
-        /* — DB: archived_at is now set (non-null). */
+        /* — DB: archived_at is now set (non-null) on the budgets anchor row. */
         const row = dbGetBudget('Subscriptions');
         expect(row).toBeDefined();
         expect(row!.archived_at).not.toBeNull();
+    });
+});
+
+describe('Budget — revision timeline', () => {
+    it('adds a future-dated revision and shows a new row in the timeline', async () => {
+        await navigateToBudget();
+        await openDetail('Groceries');
+
+        /* Count rows before adding. */
+        const countRevRows = () =>
+            browser.execute(
+                () => document.querySelectorAll('[data-testid="revision-row"]').length,
+            );
+        await browser.waitUntil(
+            async () => (await countRevRows()) >= 1,
+            { timeout: 10_000, timeoutMsg: 'Revision rows did not appear before add test' },
+        );
+        const beforeCount = await countRevRows();
+
+        /* Open the add-revision form. */
+        await clickButton('＋ add revision');
+        await (await $('[aria-label="revision form"]')).waitForDisplayed({ timeout: 5_000 });
+
+        /* Set a clearly-future effective date and a target amount. */
+        await setInputValue('[aria-label="revision form"] input[type="date"]', '2027-01-01');
+        await setInputValue('[aria-label="revision form"] input[type="number"]', '250.00');
+
+        /* Save and wait for the row count to increase. */
+        await clickButton('Save');
+        await browser.waitUntil(
+            async () => (await countRevRows()) === beforeCount + 1,
+            { timeout: 10_000, timeoutMsg: 'New revision row did not appear after Save' },
+        );
+    });
+
+    it('amends an existing revision by clicking a revision row', async () => {
+        /* Navigate away first to reset detail-panel state, then back to budget. */
+        await (await $('nav[aria-label="main navigation"]')).$('a=accounts').click();
+        await browser.waitUntil(
+            () => browser.execute(() => window.location.pathname.startsWith('/accounts')),
+            { timeout: 5_000, timeoutMsg: 'URL did not reach /accounts within 5 s' },
+        );
+        await navigateToBudget();
+        await openDetail('Groceries');
+
+        /* Wait for at least one revision row. */
+        await browser.waitUntil(
+            async () => {
+                const count = await browser.execute(
+                    () => document.querySelectorAll('[data-testid="revision-row"]').length,
+                );
+                return count >= 1;
+            },
+            { timeout: 10_000, timeoutMsg: 'Revision rows did not appear before amend test' },
+        );
+
+        /* Click the first revision row to open the amend form. */
+        const revRows = await $$('[data-testid="revision-row"]');
+        const firstRow = revRows[0];
+        await firstRow.click();
+        await (await $('[aria-label="revision form"]')).waitForDisplayed({ timeout: 5_000 });
+
+        /* Change the target amount to a distinctive value. */
+        await setInputValue('[aria-label="revision form"] input[type="number"]', '999.00');
+
+        /* Save and wait for the revision form to close. */
+        await clickButton('Save');
+        await (await $('[aria-label="revision form"]')).waitForDisplayed({
+            timeout: 10_000,
+            reverse: true,
+        });
+
+        /* — UI: the detail panel text should now contain "999". */
+        await browser.waitUntil(
+            async () => {
+                const text = await (await $('[aria-label="budget detail"]')).getText();
+                return text.includes('999');
+            },
+            { timeout: 10_000, timeoutMsg: 'Detail panel did not show "999" after amend' },
+        );
+
+        /* — DB: the first (oldest) revision for Groceries now has target_amount ~999
+         * (the amend test clicked the first row in the list, which is sorted
+         * by effective_from ASC and corresponds to the 2026-01-01 seed revision). */
+        const rev = dbGetFirstRevision('Groceries');
+        expect(rev).toBeDefined();
+        expect(rev!.target_amount).toMatch(/^999/);
     });
 });
