@@ -413,6 +413,10 @@ struct RemoveBudgetRevisionArgs<'a> {
 ///
 /// Returns [`BcError`] if the backend call fails.
 #[inline]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "budget creation requires all revision fields; a builder struct would add more boilerplate than clarity here"
+)]
 pub async fn create_budget(
     account_id: &str,
     effective_from: jiff::civil::Date,
