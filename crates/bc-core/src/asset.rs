@@ -829,7 +829,7 @@ mod tests {
             .await
             .expect("balance query");
         // The counterpart receives the opposite posting — if asset goes up, equity goes down
-        assert_eq!(balance, dec!(-700_000));
+        assert_eq!(balance.value(), dec!(-700_000));
     }
 
     /// Second valuation should only post the delta, not the full absolute value.
@@ -883,14 +883,14 @@ mod tests {
             .balance_for(&asset_id, "AUD")
             .await
             .expect("asset balance query");
-        assert_eq!(asset_balance, dec!(750_000));
+        assert_eq!(asset_balance.value(), dec!(750_000));
 
         // Counterpart balance: -700_000 + -50_000 = -750_000
         let counterpart_balance = balance_engine
             .balance_for(&counterpart_id, "AUD")
             .await
             .expect("counterpart balance query");
-        assert_eq!(counterpart_balance, dec!(-750_000));
+        assert_eq!(counterpart_balance.value(), dec!(-750_000));
     }
 
     /// Depreciation amount is clamped to `[0, book_value]`.
