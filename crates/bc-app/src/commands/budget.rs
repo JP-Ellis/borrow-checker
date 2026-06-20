@@ -254,47 +254,164 @@ pub async fn get_budget_transactions(
 
 // MARK: Budget mutations
 
-/// Updates mutable fields on a budget.
+/// Lists a budget's revisions, annotated for a display window.
 ///
-/// Pass `name = Some(None)` to clear the name, `name = None` to leave it unchanged.
-/// Both `target_minor_units` and `target_currency` must be provided together, or both omitted.
-/// Pass `tag_filter = Some(None)` to clear the tag filter, `tag_filter = None` to leave it unchanged.
+/// # Arguments
+///
+/// * `budget_id` - The budget whose revisions to list.
+/// * `display_start` - Display window start (inclusive).
+/// * `display_end` - Display window end (exclusive).
+/// * `state` - Tauri managed application state.
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError`] if the budget ID is invalid, the target fields are inconsistent,
-/// or the service call fails.
+/// Returns [`bc_ipc::BcError`] if the budget ID is invalid or a service call fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn list_budget_revisions(
+    budget_id: String,
+    display_start: jiff::civil::Date,
+    display_end: jiff::civil::Date,
+    state: State<'_, AppState>,
+) -> Result<Vec<bc_ipc::BudgetRevisionView>, bc_ipc::BcError> {
+    let bid = budget_id
+        .parse::<bc_models::BudgetId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
+
+    let revs = state
+        .budgets
+        .revisions(&bid)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
+    revs.iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let reign_end = revs
+                .get(i.saturating_add(1))
+                .map(bc_models::BudgetRevision::effective_from);
+            let period_ipc = r.period().into_ipc();
+            let target = r
+                .target()
+                .map(|a| crate::ipc::decimal_to_amount(a.value(), a.commodity().as_str()))
+                .transpose()?;
+            Ok(bc_ipc::BudgetRevisionView::builder()
+                .id(r.id().to_string())
+                .effective_from(r.effective_from())
+                .maybe_reign_end(reign_end)
+                .maybe_name(r.name().map(str::to_owned))
+                .maybe_target(target)
+                .period(period_ipc.clone())
+                .period_label(period_ipc.label())
+                .rollover(r.rollover().into_ipc())
+                .maybe_tag_filter(r.tag_filter().map(ToString::to_string))
+                .maybe_window_overlap(crate::ipc::window_overlap(
+                    r.effective_from(),
+                    reign_end,
+                    display_start,
+                    display_end,
+                ))
+                .build())
+        })
+        .collect()
+}
+
+/// Resolves a snap effective date to the next period-grid boundary.
+///
+/// # Arguments
+///
+/// * `budget_id` - The budget providing the revision grid.
+/// * `date` - The candidate effective date.
+/// * `exclude_revision_id` - Revision id to ignore (the one being amended), or `None`.
+/// * `state` - Tauri managed application state.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError`] if an ID is invalid or a service call fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn resolve_effective_date(
+    budget_id: String,
+    date: jiff::civil::Date,
+    exclude_revision_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<jiff::civil::Date, bc_ipc::BcError> {
+    let bid = budget_id
+        .parse::<bc_models::BudgetId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
+    let exclude = exclude_revision_id
+        .as_deref()
+        .map(str::parse::<bc_models::BudgetRevisionId>)
+        .transpose()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid revision_id: {e}")))?;
+
+    let revs = state
+        .budgets
+        .revisions(&bid)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
+    Ok(bc_models::snap_to_grid_boundary(
+        &revs,
+        date,
+        exclude.as_ref(),
+    ))
+}
+
+/// Adds a new revision or amends an existing one.
+///
+/// `revision_id = None` adds a revision (a fresh id is generated); `Some` amends
+/// the revision with that id. `effective_from` must already be exact (the UI
+/// resolves snap beforehand). `target_minor_units` and `target_currency` must be
+/// both set or both omitted.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError`] if an ID is invalid, the target fields are
+/// inconsistent, or the service call fails (including effective-date conflicts).
 #[expect(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "Tauri IPC command args map 1-to-1 to the bc-ipc contract; a wrapper struct would require extra serde round-trips"
+    reason = "Tauri IPC command args map 1-to-1 to the bc-ipc contract"
 )]
 #[tauri::command(rename_all = "snake_case")]
-pub async fn update_budget(
+pub async fn revise_budget(
     budget_id: String,
-    name: Option<Option<String>>,
+    revision_id: Option<String>,
+    effective_from: jiff::civil::Date,
+    name: Option<String>,
     target_minor_units: Option<i64>,
     target_currency: Option<String>,
-    rollover: Option<bc_ipc::RolloverPolicy>,
-    period: Option<bc_ipc::Period>,
-    tag_filter: Option<Option<String>>,
+    rollover: bc_ipc::RolloverPolicy,
+    period: bc_ipc::Period,
+    tag_filter: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), bc_ipc::BcError> {
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
 
-    let target: Option<Option<bc_models::Amount>> = match (target_minor_units, target_currency) {
-        (Some(minor), Some(cur)) => {
-            let value = rust_decimal::Decimal::new(minor, 2);
-            Some(Some(bc_models::Amount::new(
-                value,
-                bc_models::CommodityCode::new(cur),
-            )))
-        }
+    let rev_id = match revision_id {
+        Some(s) => s
+            .parse::<bc_models::BudgetRevisionId>()
+            .map_err(|e| bc_ipc::BcError::Validation(format!("invalid revision_id: {e}")))?,
+        None => bc_models::BudgetRevisionId::new(),
+    };
+
+    let target = match (target_minor_units, target_currency) {
+        (Some(minor), Some(cur)) => Some(bc_models::Amount::new(
+            rust_decimal::Decimal::new(minor, 2),
+            bc_models::CommodityCode::new(cur),
+        )),
         (None, None) => None,
         _ => {
             return Err(bc_ipc::BcError::Validation(
@@ -303,50 +420,80 @@ pub async fn update_budget(
         }
     };
 
-    let rollover_model = rollover.map(crate::ipc::IntoModel::into_model);
-    let period_model = period.map(crate::ipc::IntoModel::into_model);
+    let tag = tag_filter
+        .as_deref()
+        .map(|s| {
+            s.parse::<bc_models::TagId>()
+                .map_err(|e| bc_ipc::BcError::Validation(format!("invalid tag_filter: {e}")))
+        })
+        .transpose()?;
 
-    let tag: Option<Option<bc_models::TagId>> = match tag_filter {
-        None => None,
-        Some(None) => Some(None),
-        Some(Some(s)) => Some(Some(s.parse::<bc_models::TagId>().map_err(|e| {
-            bc_ipc::BcError::Validation(format!("invalid tag_filter: {e}"))
-        })?)),
-    };
-
-    let existing_revs = state
-        .budgets
-        .revisions(&bid)
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    // Placeholder amend-in-place: edit the revision governing today (falling back
-    // to the earliest revision when today precedes them all). This is a
-    // compile-only stand-in; the real add/amend/remove-with-effective-date UX is
-    // the budget-versioning follow-up. A multi-revision budget edited here only
-    // changes the currently-governing revision, not the whole timeline.
-    let today = jiff::Zoned::now().date();
-    let target_rev = bc_core::governing_revision(&existing_revs, today)
-        .or_else(|| existing_revs.first())
-        .ok_or_else(|| bc_ipc::BcError::Internal("budget has no revisions".to_owned()))?;
-
-    let revised = bc_models::BudgetRevision::builder()
-        .id(target_rev.id().clone())
+    let revision = bc_models::BudgetRevision::builder()
+        .id(rev_id)
         .budget_id(bid.clone())
-        .effective_from(target_rev.effective_from())
-        .maybe_name(name.unwrap_or_else(|| target_rev.name().map(str::to_owned)))
-        .maybe_target(target.unwrap_or_else(|| target_rev.target().cloned()))
-        .period(period_model.unwrap_or_else(|| target_rev.period().clone()))
-        .rollover(rollover_model.unwrap_or(target_rev.rollover()))
-        .maybe_tag_filter(tag.unwrap_or_else(|| target_rev.tag_filter().cloned()))
-        .created_at(*target_rev.created_at())
+        .effective_from(effective_from)
+        .maybe_name(name)
+        .maybe_target(target)
+        .period(period.into_model())
+        .rollover(rollover.into_model())
+        .maybe_tag_filter(tag)
+        .created_at(jiff::Timestamp::now())
         .build();
 
     state
         .budgets
-        .revise(&bid, revised)
+        .revise(&bid, revision)
         .await
         .map(|_| ())
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
+        .map_err(|e| {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "bc_core::BcError is #[non_exhaustive]; all non-validation errors map to Internal"
+            )]
+            match e {
+                bc_core::BcError::InvalidInput(m) => bc_ipc::BcError::Validation(m),
+                other => bc_ipc::BcError::Internal(other.to_string()),
+            }
+        })
+}
+
+/// Removes a revision from a budget.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError`] if an ID is invalid, the revision is the last one,
+/// or the service call fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn remove_budget_revision(
+    budget_id: String,
+    revision_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), bc_ipc::BcError> {
+    let bid = budget_id
+        .parse::<bc_models::BudgetId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
+    let rid = revision_id
+        .parse::<bc_models::BudgetRevisionId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid revision_id: {e}")))?;
+
+    state
+        .budgets
+        .remove_revision(&bid, &rid)
+        .await
+        .map_err(|e| {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "bc_core::BcError is #[non_exhaustive]; all non-validation errors map to Internal"
+            )]
+            match e {
+                bc_core::BcError::InvalidInput(m) => bc_ipc::BcError::Validation(m),
+                other => bc_ipc::BcError::Internal(other.to_string()),
+            }
+        })
 }
 
 /// Archives a budget (soft-deletes it).
@@ -393,6 +540,7 @@ pub async fn archive_budget(
 #[tauri::command(rename_all = "snake_case")]
 pub async fn create_budget(
     account_id: String,
+    effective_from: jiff::civil::Date,
     name: Option<String>,
     target_minor_units: Option<i64>,
     target_currency: Option<String>,
@@ -429,13 +577,11 @@ pub async fn create_budget(
         })
         .transpose()?;
 
-    let today = jiff::Zoned::now().date();
-
     state
         .budgets
         .create()
         .account_id(aid)
-        .effective_from(today)
+        .effective_from(effective_from)
         .maybe_name(name)
         .maybe_target(target)
         .period(period.into_model())
@@ -444,7 +590,16 @@ pub async fn create_budget(
         .call()
         .await
         .map(|_| ())
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
+        .map_err(|e| {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "bc_core::BcError is #[non_exhaustive]; all non-validation errors map to Internal"
+            )]
+            match e {
+                bc_core::BcError::InvalidInput(m) => bc_ipc::BcError::Validation(m),
+                other => bc_ipc::BcError::Internal(other.to_string()),
+            }
+        })
 }
 
 // MARK: Posting spread
