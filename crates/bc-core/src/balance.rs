@@ -875,7 +875,9 @@ mod tests {
             .expect("posting_flows");
 
         assert_eq!(inflow.value(), dec!(1000.00));
+        assert_eq!(inflow.commodity().as_str(), "AUD");
         assert_eq!(outflow.value(), dec!(250.00));
+        assert_eq!(outflow.commodity().as_str(), "AUD");
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -917,7 +919,9 @@ mod tests {
             .expect("posting_flows");
 
         assert_eq!(inflow.value(), rust_decimal::Decimal::ZERO);
+        assert_eq!(inflow.commodity().as_str(), "AUD");
         assert_eq!(outflow.value(), rust_decimal::Decimal::ZERO);
+        assert_eq!(outflow.commodity().as_str(), "AUD");
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -979,6 +983,7 @@ mod tests {
 
         // Only the 100.00 inside [2026-04-01, 2026-05-01) should be counted
         assert_eq!(inflow.value(), dec!(100.00));
+        assert_eq!(inflow.commodity().as_str(), "AUD");
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1100,11 +1105,15 @@ mod tests {
             // First bucket: April (inflow 500, outflow 0)
             assert_eq!(buckets[0].start.to_string(), "2026-04-01");
             assert_eq!(buckets[0].inflow.value(), dec!(500.00));
+            assert_eq!(buckets[0].inflow.commodity().as_str(), "AUD");
             assert_eq!(buckets[0].outflow.value(), rust_decimal::Decimal::ZERO);
+            assert_eq!(buckets[0].outflow.commodity().as_str(), "AUD");
             // Second bucket: May (inflow 0, outflow 200)
             assert_eq!(buckets[1].start.to_string(), "2026-05-01");
             assert_eq!(buckets[1].inflow.value(), rust_decimal::Decimal::ZERO);
+            assert_eq!(buckets[1].inflow.commodity().as_str(), "AUD");
             assert_eq!(buckets[1].outflow.value(), dec!(200.00));
+            assert_eq!(buckets[1].outflow.commodity().as_str(), "AUD");
         }
     }
 
@@ -1162,6 +1171,7 @@ mod tests {
             Decimal::ZERO,
             "voided transaction should not affect balance"
         );
+        assert_eq!(balance.commodity().as_str(), "AUD");
     }
 
     #[sqlx::test(migrations = "./migrations")]
