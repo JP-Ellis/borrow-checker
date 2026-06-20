@@ -40,6 +40,7 @@ pub use budget::BudgetSummary;
 pub use budget::BudgetTreeNode;
 pub use budget::NativePeriodRow;
 pub use budget::RolloverPolicy;
+pub use budget::WindowOverlap;
 pub use currency::AUD;
 pub use currency::BTC;
 pub use currency::Currency;
