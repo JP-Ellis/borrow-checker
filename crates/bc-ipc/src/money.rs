@@ -4,6 +4,23 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
 
+/// Errors that can occur during [`Amount`] arithmetic.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum AmountError {
+    /// The two operands carry different currency codes.
+    #[error("commodity mismatch: {left} vs {right}")]
+    CommodityMismatch {
+        /// Currency code of the left-hand operand.
+        left: String,
+        /// Currency code of the right-hand operand.
+        right: String,
+    },
+    /// The decimal result exceeded [`Decimal`]'s representable range.
+    #[error("decimal overflow in amount arithmetic")]
+    Overflow,
+}
+
 /// A monetary amount at the IPC boundary: a decimal value plus a currency code.
 ///
 /// `value` carries arbitrary precision and its own scale (e.g. `10.50` keeps
@@ -66,6 +83,120 @@ impl Amount {
     #[inline]
     pub fn value(&self) -> Decimal {
         self.value
+    }
+
+    /// Adds `other` to `self`, returning a new [`Amount`] in the shared currency.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The amount to add; must carry the same currency code as `self`.
+    ///
+    /// # Returns
+    ///
+    /// The sum as a new [`Amount`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AmountError::CommodityMismatch`] if the currency codes differ,
+    /// or [`AmountError::Overflow`] if the decimal sum exceeds [`Decimal`]'s range.
+    #[inline]
+    pub fn add(&self, other: &Self) -> Result<Self, AmountError> {
+        if self.currency_code != other.currency_code {
+            return Err(AmountError::CommodityMismatch {
+                left: self.currency_code.clone(),
+                right: other.currency_code.clone(),
+            });
+        }
+        let sum = self
+            .value
+            .checked_add(other.value)
+            .ok_or(AmountError::Overflow)?;
+        Ok(Self::new(sum, self.currency_code.clone()))
+    }
+
+    /// Subtracts `other` from `self`, returning a new [`Amount`] in the shared currency.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The amount to subtract; must carry the same currency code as `self`.
+    ///
+    /// # Returns
+    ///
+    /// The difference as a new [`Amount`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AmountError::CommodityMismatch`] if the currency codes differ,
+    /// or [`AmountError::Overflow`] if the decimal difference exceeds [`Decimal`]'s range.
+    #[inline]
+    pub fn sub(&self, other: &Self) -> Result<Self, AmountError> {
+        if self.currency_code != other.currency_code {
+            return Err(AmountError::CommodityMismatch {
+                left: self.currency_code.clone(),
+                right: other.currency_code.clone(),
+            });
+        }
+        let diff = self
+            .value
+            .checked_sub(other.value)
+            .ok_or(AmountError::Overflow)?;
+        Ok(Self::new(diff, self.currency_code.clone()))
+    }
+
+    /// Adds `other` to `self`, panicking on currency mismatch or overflow.
+    ///
+    /// For call sites that have already guaranteed a shared currency.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The amount to add.
+    ///
+    /// # Returns
+    ///
+    /// The sum as a new [`Amount`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the currency codes differ or the decimal sum overflows.
+    #[inline]
+    #[must_use]
+    #[expect(
+        clippy::panic,
+        reason = "panics are intentional for unchecked arithmetic"
+    )]
+    pub fn add_unchecked(&self, other: &Self) -> Self {
+        match self.add(other) {
+            Ok(amount) => amount,
+            Err(error) => panic!("Amount::add_unchecked: {error}"),
+        }
+    }
+
+    /// Subtracts `other` from `self`, panicking on currency mismatch or overflow.
+    ///
+    /// For call sites that have already guaranteed a shared currency.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The amount to subtract.
+    ///
+    /// # Returns
+    ///
+    /// The difference as a new [`Amount`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the currency codes differ or the decimal difference overflows.
+    #[inline]
+    #[must_use]
+    #[expect(
+        clippy::panic,
+        reason = "panics are intentional for unchecked arithmetic"
+    )]
+    pub fn sub_unchecked(&self, other: &Self) -> Self {
+        match self.sub(other) {
+            Ok(amount) => amount,
+            Err(error) => panic!("Amount::sub_unchecked: {error}"),
+        }
     }
 
     /// Returns a compact display string. Large amounts are abbreviated (`64k`, `1m`). Small
@@ -195,5 +326,49 @@ mod tests {
         let back: Amount = serde_json::from_str(&json).expect("de");
         assert_eq!(back.value, big);
         assert_ne!(back.value, Decimal::ZERO);
+    }
+
+    #[test]
+    fn add_same_commodity_sums_value() {
+        let a = Amount::new(Decimal::new(1050, 2), "AUD"); // 10.50
+        let b = Amount::new(Decimal::new(425, 2), "AUD"); // 4.25
+        let sum = a.add(&b).expect("same commodity");
+        assert_eq!(sum.value, Decimal::new(1475, 2));
+        assert_eq!(sum.currency_code, "AUD");
+    }
+
+    #[test]
+    fn sub_same_commodity_subtracts_value() {
+        let a = Amount::new(Decimal::new(10, 0), "USD");
+        let b = Amount::new(Decimal::new(3, 0), "USD");
+        assert_eq!(a.sub(&b).expect("same commodity").value, Decimal::new(7, 0));
+    }
+
+    #[test]
+    fn add_commodity_mismatch_errors() {
+        let a = Amount::new(Decimal::new(10, 0), "AUD");
+        let b = Amount::new(Decimal::new(10, 0), "USD");
+        assert_eq!(
+            a.add(&b),
+            Err(crate::AmountError::CommodityMismatch {
+                left: "AUD".to_owned(),
+                right: "USD".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "commodity mismatch")]
+    fn add_unchecked_panics_on_mismatch() {
+        let a = Amount::new(Decimal::new(10, 0), "AUD");
+        let b = Amount::new(Decimal::new(10, 0), "USD");
+        drop(a.add_unchecked(&b));
+    }
+
+    #[test]
+    fn add_overflow_errors() {
+        let max = Amount::new(Decimal::MAX, "AUD");
+        let one = Amount::new(Decimal::new(1, 0), "AUD");
+        assert_eq!(max.add(&one), Err(crate::AmountError::Overflow));
     }
 }
