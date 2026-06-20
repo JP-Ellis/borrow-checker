@@ -13,36 +13,73 @@ import_style!(style, "form.module.scss");
 
 /// Parses a target input string into minor units at scale 2.
 ///
-/// Returns `None` for empty input; rejects negative values and non-numeric
+/// Returns `None` for empty input, bare `.`, negative values, or non-numeric
 /// input. Supports both integer (`"250"`) and decimal (`"2.50"`) forms.
+/// Multiple dots → `None`. At least one digit must be present.
+///
+/// Fractional digits beyond 2 are rounded half-up (round half away from zero)
+/// at the 2nd decimal place, so `"1.999"` → `200` and `"1.994"` → `199`.
+/// Overflow (result too large for `i64`) returns `None`.
 #[must_use]
 fn parse_target_minor(s: &str) -> Option<i64> {
     let s = s.trim();
     if s.is_empty() || s.starts_with('-') {
         return None;
     }
+
+    // Reject multiple dots.
+    let dot_count = s.chars().filter(|&c| c == '.').count();
+    if dot_count > 1 {
+        return None;
+    }
+
     match s.split_once('.') {
         None => {
-            // Integer form: multiply by 100.
+            // Integer form: all chars must be digits.
+            if !s.chars().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
             let whole: i64 = s.parse().ok()?;
             whole.checked_mul(100)
         }
         Some((whole, frac)) => {
+            // Both sides must be all-digit (each may be empty, but together
+            // at least one digit must exist).
+            if !whole.chars().all(|c| c.is_ascii_digit())
+                || !frac.chars().all(|c| c.is_ascii_digit())
+            {
+                return None;
+            }
+            // Require at least one digit somewhere.
+            if whole.is_empty() && frac.is_empty() {
+                return None;
+            }
+
             let whole: i64 = if whole.is_empty() {
                 0
             } else {
                 whole.parse().ok()?
             };
-            // Pad or truncate fraction to exactly 2 digits.
-            let frac = match frac.len() {
-                0 => "00".to_owned(),
-                1 => format!("{frac}0"),
-                _ => frac[..2].to_owned(),
+
+            // Build a fixed-point minor value with rounding.
+            // We need the first 2 frac digits plus whether any digit >= 5
+            // exists at position 3 (the third decimal place).
+            let cents: i64 = match frac.len() {
+                0 => 0,
+                1 => {
+                    // e.g. "5" → 50
+                    let d: i64 = frac.parse().ok()?;
+                    d * 10
+                }
+                2 => frac.parse().ok()?,
+                _ => {
+                    // Round the 2-digit prefix based on the third digit.
+                    let prefix: i64 = frac[..2].parse().ok()?;
+                    let third: u8 = frac.as_bytes()[2] - b'0';
+                    if third >= 5 { prefix + 1 } else { prefix }
+                }
             };
-            if !frac.chars().all(|c| c.is_ascii_digit()) {
-                return None;
-            }
-            let cents: i64 = frac.parse().ok()?;
+
             whole.checked_mul(100)?.checked_add(cents)
         }
     }
