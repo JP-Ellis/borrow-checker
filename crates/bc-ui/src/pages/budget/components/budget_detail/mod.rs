@@ -312,6 +312,7 @@ pub fn BudgetDetail(
                                                     };
                                                     view! {
                                                         <div
+                                                            data-testid="revision-row"
                                                             class=move || {
                                                                 if active { style::rev_active } else { style::rev_row }
                                                             }
