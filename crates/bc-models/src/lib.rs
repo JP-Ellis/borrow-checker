@@ -92,6 +92,7 @@ macro_rules! define_id {
 }
 
 mod account;
+mod balances;
 mod budget;
 mod budget_timeline;
 mod budget_window;
@@ -112,6 +113,7 @@ pub use account::AccountId;
 pub use account::Kind as AccountKind;
 pub use account::Type as AccountType;
 pub use account::ValidationError as AccountValidationError;
+pub use balances::Balances;
 pub use budget::Budget;
 pub use budget::BudgetBuilder;
 pub use budget::BudgetId;
