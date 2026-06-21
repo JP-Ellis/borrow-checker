@@ -199,6 +199,30 @@ impl Service {
         let tags = self.list().await?;
         Ok(resolve_path_in(&tags, path))
     }
+
+    /// Resolves a colon-path to an existing tag ID, erroring if it does not exist.
+    ///
+    /// Used when saving transactions/postings/accounts: tag references must point
+    /// at tags that were created deliberately (no implicit creation from input).
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The hierarchical path to resolve.
+    ///
+    /// # Returns
+    ///
+    /// The ID of the existing leaf tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if no tag matches the path; [`BcError::Database`]
+    /// on query failure; [`BcError::BadData`] if a stored row cannot be parsed.
+    #[inline]
+    pub async fn resolve_existing(&self, path: &TagPath) -> BcResult<TagId> {
+        self.find_by_path(path)
+            .await?
+            .ok_or_else(|| BcError::NotFound(format!("tag '{path}'")))
+    }
 }
 
 /// Resolves a colon-path against an in-memory tag slice, returning the leaf ID.
@@ -314,5 +338,29 @@ mod tests {
         let second = svc.create_path(&path).await.expect("ok");
         assert_eq!(first, second);
         assert_eq!(svc.list().await.expect("ok").len(), 3);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn resolve_existing_returns_id(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let made = svc
+            .create_path(&"person:josh".parse().expect("path"))
+            .await
+            .expect("ok");
+        let got = svc
+            .resolve_existing(&"person:josh".parse().expect("path"))
+            .await
+            .expect("ok");
+        assert_eq!(got, made);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn resolve_existing_errors_when_missing(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let err = svc
+            .resolve_existing(&"person:nope".parse().expect("path"))
+            .await
+            .expect_err("missing tag must error");
+        assert!(matches!(err, BcError::NotFound(_)));
     }
 }
