@@ -222,6 +222,17 @@ impl Service {
                 .await?;
         }
 
+        for (label, date) in tx.extra_dates() {
+            sqlx::query(
+                "INSERT INTO transaction_dates (transaction_id, label, date) VALUES (?, ?, ?)",
+            )
+            .bind(tx_id.to_string())
+            .bind(label)
+            .bind(date.to_string())
+            .execute(&mut *db_tx)
+            .await?;
+        }
+
         for (position, posting) in tx.postings().iter().enumerate() {
             let (cost_value, cost_commodity, cost_date, cost_label) =
                 if let Some(cost) = posting.cost() {
@@ -328,6 +339,23 @@ impl Service {
             })
             .collect::<BcResult<_>>()?;
 
+        // Load extra labeled dates.
+        let extra_date_rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT label, date FROM transaction_dates WHERE transaction_id = ?")
+                .bind(id.to_string())
+                .fetch_all(&self.pool)
+                .await?;
+
+        let extra_dates: Vec<(String, Date)> = extra_date_rows
+            .into_iter()
+            .map(|(label, date_str)| {
+                date_str
+                    .parse::<Date>()
+                    .map(|d| (label, d))
+                    .map_err(|e| BcError::BadData(format!("invalid extra date '{date_str}': {e}")))
+            })
+            .collect::<BcResult<_>>()?;
+
         // Load postings with cost and spread columns.
         let posting_rows: Vec<PostingRow> = sqlx::query_as(
             "SELECT id, account_id, amount, commodity, note, \
@@ -419,6 +447,7 @@ impl Service {
             .postings(postings)
             .reconciliation(reconciliation)
             .tag_ids(tag_ids)
+            .extra_dates(extra_dates)
             .created_at(created_at)
             .build())
     }
@@ -580,6 +609,25 @@ impl Service {
             tx_tags_map.entry(tx_id_str).or_default().push(tid);
         }
 
+        // Load all extra labeled dates in one query.
+        let extra_date_rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT td.transaction_id, td.label, td.date \
+             FROM transaction_dates td",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut tx_extra_dates_map: HashMap<String, Vec<(String, Date)>> = HashMap::new();
+        for (tx_id_str, label, date_str) in extra_date_rows {
+            let d = date_str
+                .parse::<Date>()
+                .map_err(|e| BcError::BadData(format!("invalid extra date '{date_str}': {e}")))?;
+            tx_extra_dates_map
+                .entry(tx_id_str)
+                .or_default()
+                .push((label, d));
+        }
+
         // Load all postings in one query.
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
             "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.note, \
@@ -682,6 +730,7 @@ impl Service {
                         BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
                     })?;
                     let tag_ids = tx_tags_map.remove(&id_str).unwrap_or_default();
+                    let extra_dates = tx_extra_dates_map.remove(&id_str).unwrap_or_default();
                     let postings = postings_by_tx.remove(&id_str).unwrap_or_default();
                     Ok(Transaction::builder()
                         .id(tx_id)
@@ -692,6 +741,7 @@ impl Service {
                         .postings(postings)
                         .reconciliation(reconciliation)
                         .tag_ids(tag_ids)
+                        .extra_dates(extra_dates)
                         .created_at(created_at)
                         .build())
                 },
@@ -755,6 +805,28 @@ impl Service {
                 .parse::<TagId>()
                 .map_err(|e| BcError::BadData(format!("invalid tag_id '{tag_id_str}': {e}")))?;
             tx_tags_map.entry(tx_id_str).or_default().push(tid);
+        }
+
+        // Load extra labeled dates for the matching transactions.
+        let extra_date_rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT td.transaction_id, td.label, td.date \
+             FROM transaction_dates td \
+             JOIN transactions t ON td.transaction_id = t.id \
+             WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
+        )
+        .bind(&account_id_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut tx_extra_dates_map: HashMap<String, Vec<(String, Date)>> = HashMap::new();
+        for (tx_id_str, label, date_str) in extra_date_rows {
+            let d = date_str
+                .parse::<Date>()
+                .map_err(|e| BcError::BadData(format!("invalid extra date '{date_str}': {e}")))?;
+            tx_extra_dates_map
+                .entry(tx_id_str)
+                .or_default()
+                .push((label, d));
         }
 
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
@@ -863,6 +935,7 @@ impl Service {
                         BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
                     })?;
                     let tag_ids = tx_tags_map.remove(&id_str).unwrap_or_default();
+                    let extra_dates = tx_extra_dates_map.remove(&id_str).unwrap_or_default();
                     let postings = postings_by_tx.remove(&id_str).unwrap_or_default();
                     Ok(Transaction::builder()
                         .id(tx_id)
@@ -873,6 +946,7 @@ impl Service {
                         .postings(postings)
                         .reconciliation(reconciliation)
                         .tag_ids(tag_ids)
+                        .extra_dates(extra_dates)
                         .created_at(created_at)
                         .build())
                 },
@@ -1025,6 +1099,33 @@ impl Service {
             tx_tags_map.entry(tx_id_str).or_default().push(tid);
         }
 
+        // Load extra labeled dates for the matching transactions.
+        let extra_date_rows: Vec<(String, String, String)> = sqlx::query_as(
+            "WITH RECURSIVE subtree(id) AS ( \
+                 VALUES(?) \
+                 UNION ALL \
+                 SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
+             ) \
+             SELECT td.transaction_id, td.label, td.date \
+             FROM transaction_dates td \
+             JOIN transactions t ON td.transaction_id = t.id \
+             WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree))",
+        )
+        .bind(&account_id_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut tx_extra_dates_map: HashMap<String, Vec<(String, Date)>> = HashMap::new();
+        for (tx_id_str, label, date_str) in extra_date_rows {
+            let d = date_str
+                .parse::<Date>()
+                .map_err(|e| BcError::BadData(format!("invalid extra date '{date_str}': {e}")))?;
+            tx_extra_dates_map
+                .entry(tx_id_str)
+                .or_default()
+                .push((label, d));
+        }
+
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
             "WITH RECURSIVE subtree(id) AS ( \
                  VALUES(?) \
@@ -1141,6 +1242,7 @@ impl Service {
                         BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
                     })?;
                     let tag_ids = tx_tags_map.remove(&id_str).unwrap_or_default();
+                    let extra_dates = tx_extra_dates_map.remove(&id_str).unwrap_or_default();
                     let postings = postings_by_tx.remove(&id_str).unwrap_or_default();
                     Ok(Transaction::builder()
                         .id(tx_id)
@@ -1151,6 +1253,7 @@ impl Service {
                         .postings(postings)
                         .reconciliation(reconciliation)
                         .tag_ids(tag_ids)
+                        .extra_dates(extra_dates)
                         .created_at(created_at)
                         .build())
                 },
@@ -1177,6 +1280,10 @@ impl Service {
     /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "amending a transaction with postings, cost, spread, tags, and extra_dates requires several delete/insert queries and field mappings"
+    )]
     pub async fn amend(&self, updated: Transaction) -> BcResult<()> {
         validate_balance(updated.postings())?;
 
@@ -1229,12 +1336,28 @@ impl Service {
             .execute(&mut *db_tx)
             .await?;
 
+        sqlx::query("DELETE FROM transaction_dates WHERE transaction_id = ?")
+            .bind(&tx_id_str)
+            .execute(&mut *db_tx)
+            .await?;
+
         for tag_id in updated.tag_ids() {
             sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
                 .bind(&tx_id_str)
                 .bind(tag_id.to_string())
                 .execute(&mut *db_tx)
                 .await?;
+        }
+
+        for (label, date) in updated.extra_dates() {
+            sqlx::query(
+                "INSERT INTO transaction_dates (transaction_id, label, date) VALUES (?, ?, ?)",
+            )
+            .bind(&tx_id_str)
+            .bind(label)
+            .bind(date.to_string())
+            .execute(&mut *db_tx)
+            .await?;
         }
 
         for (position, posting) in updated.postings().iter().enumerate() {
@@ -1998,6 +2121,45 @@ mod tests {
         svc.create(tx).await.expect("create");
         let found = svc.find_by_id(&id).await.expect("find");
         assert_eq!(found.note(), Some("my annotation"));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn extra_dates_roundtrip(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let a = acct_svc
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("a");
+        let b = acct_svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("b");
+        let svc = Service::new(pool.clone());
+        let base = make_balanced_transaction(a, b);
+        let tx = Transaction::builder()
+            .id(base.id().clone())
+            .date(base.date())
+            .description("d")
+            .extra_dates(vec![("cleared".to_owned(), date(2026, 1, 17))])
+            .postings(base.postings().to_vec())
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let id = tx.id().clone();
+        svc.create(tx).await.expect("create");
+        let found = svc.find_by_id(&id).await.expect("find");
+        assert_eq!(
+            found.extra_dates(),
+            &[("cleared".to_owned(), date(2026, 1, 17))]
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
