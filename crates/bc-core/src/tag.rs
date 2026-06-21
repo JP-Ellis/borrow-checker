@@ -128,6 +128,55 @@ impl Service {
         row.map(Tag::try_from).transpose()
     }
 
+    /// Creates the tag hierarchy for `path`, reusing existing ancestors and
+    /// creating only the missing segments. This is the only tag-creation path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The hierarchical path to materialise (e.g. `person:josh`).
+    ///
+    /// # Returns
+    ///
+    /// The ID of the leaf (last-segment) tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Database`] on query/insert failure or [`BcError::BadData`]
+    /// if a stored row cannot be parsed.
+    #[inline]
+    pub async fn create_path(&self, path: &TagPath) -> BcResult<TagId> {
+        let mut conn = self.pool.acquire().await?;
+        let mut parent: Option<TagId> = None;
+        for segment in path.segments() {
+            let parent_str = parent.as_ref().map(TagId::to_string);
+            let existing: Option<(String,)> =
+                sqlx::query_as("SELECT id FROM tags WHERE name = ? AND parent_id IS ?")
+                    .bind(segment)
+                    .bind(parent_str.as_deref())
+                    .fetch_optional(&mut *conn)
+                    .await?;
+
+            let id = if let Some((id,)) = existing {
+                id.parse::<TagId>()
+                    .map_err(|e| BcError::BadData(format!("invalid tag id '{id}': {e}")))?
+            } else {
+                let new_id = TagId::new();
+                sqlx::query(
+                    "INSERT INTO tags (id, name, parent_id, created_at) VALUES (?, ?, ?, ?)",
+                )
+                .bind(new_id.to_string())
+                .bind(segment)
+                .bind(parent.as_ref().map(TagId::to_string))
+                .bind(Timestamp::now().to_string())
+                .execute(&mut *conn)
+                .await?;
+                new_id
+            };
+            parent = Some(id);
+        }
+        parent.ok_or_else(|| BcError::BadData("tag path had no segments".to_owned()))
+    }
+
     /// Resolves a full colon-path to an existing tag ID.
     ///
     /// Walks the hierarchy segment by segment from the root, matching each name
@@ -215,5 +264,55 @@ mod tests {
 
         let path: TagPath = "person:bec".parse().expect("valid path");
         assert_eq!(svc.find_by_path(&path).await.expect("query ok"), None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_path_creates_full_hierarchy(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let path: TagPath = "person:josh".parse().expect("valid path");
+
+        let leaf = svc.create_path(&path).await.expect("create ok");
+
+        let forest = svc.forest().await.expect("forest loads");
+        assert_eq!(
+            forest.path_of(&leaf).map(|p| p.to_string()),
+            Some("person:josh".to_owned())
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_path_reuses_existing_ancestors(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let josh = svc
+            .create_path(&"person:josh".parse().expect("path"))
+            .await
+            .expect("ok");
+        let bec = svc
+            .create_path(&"person:bec".parse().expect("path"))
+            .await
+            .expect("ok");
+
+        let josh_tag = svc.find_by_id(&josh).await.expect("ok").expect("exists");
+        let bec_tag = svc.find_by_id(&bec).await.expect("ok").expect("exists");
+        assert_eq!(
+            josh_tag.parent_id(),
+            bec_tag.parent_id(),
+            "shared 'person' parent"
+        );
+        assert_eq!(
+            svc.list().await.expect("ok").len(),
+            3,
+            "person + josh + bec"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_path_is_idempotent(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let path: TagPath = "a:b:c".parse().expect("path");
+        let first = svc.create_path(&path).await.expect("ok");
+        let second = svc.create_path(&path).await.expect("ok");
+        assert_eq!(first, second);
+        assert_eq!(svc.list().await.expect("ok").len(), 3);
     }
 }
