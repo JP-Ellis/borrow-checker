@@ -83,6 +83,10 @@ ______________________________________________________________________
 
 ## Add-transaction form — per-posting tags and notes
 
+> **Superseded by** the transaction-model + unified-row design (2026-06-21). The model
+> and IPC groundwork for per-posting tags/notes is defined there; the form work follows
+> once that lands.
+
 **Identified in:** PR #127 (feat/add-transaction-form)
 **File:** `crates/bc-ui/src/pages/accounts/components/add_transaction/mod.rs`
 
@@ -129,6 +133,10 @@ When the budget UI is built out, add:
 ______________________________________________________________________
 
 ## Budget detail — reuse TransactionRow from accounts page
+
+> **Superseded by** the transaction-model + unified-row design (2026-06-21), which
+> unifies the row behind a `RowPerspective` prop and deletes `TxRow` /
+> `tx_display_amount`.
 
 **Identified in:** PR #159 (feat/bc-ui: budget page implementation)
 **File:** `crates/bc-ui/src/pages/budget/components/budget_detail/mod.rs`
@@ -224,3 +232,38 @@ single `value: Decimal`, keeping `currency_code`.
 The change is mechanical but touches all display paths and the round-trip tests
 in `ipc.rs`. The `SparkPoint` scale-loss and the `unwrap_or(0)` overflow each
 warrant their own commit + regression test.
+
+______________________________________________________________________
+
+## Editable expanded transaction view (IDE-like)
+
+**Identified in:** transaction-model + unified-row design (2026-06-21)
+
+Make the expanded "hybrid" detail view directly editable — IDE-style with guardrails —
+so notes, tags, categories, amounts, and spreads can be changed inline rather than
+through separate action buttons. The hybrid layout was chosen partly to accommodate this.
+This absorbs the old `recategorise` / `split` / `mark shared` / `add note` row actions,
+which are removed in favour of inline editing.
+
+______________________________________________________________________
+
+## Payee extraction / autocat from raw description
+
+**Identified in:** transaction-model + unified-row design (2026-06-21)
+
+A bank export provides only a raw narration (`Transaction.description`) that mashes
+together payee, location, and reference. `Transaction.payee` is an optional cleaned
+counterparty and is frequently `None` after import. Add import rules / autocat that
+derive `payee` (and possibly tags/category) from the raw `description`. Until then,
+`payee` is set manually.
+
+______________________________________________________________________
+
+## Reversal-link UI workflow
+
+**Identified in:** transaction-model + unified-row design (2026-06-21)
+
+Voiding a transaction is modelled as a reversal `Link` rather than a status, reusing the
+existing `transaction_links` tables. Beyond a single "reverse" button on the row, surface
+linked reversal/transfer groups in the UI (e.g. visually grouping a transaction with its
+reversal, navigating between members).
