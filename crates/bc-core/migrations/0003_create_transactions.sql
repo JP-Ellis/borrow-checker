@@ -42,6 +42,15 @@ CREATE TABLE IF NOT EXISTS posting_tags (
 );
 CREATE INDEX IF NOT EXISTS idx_posting_tags_tag ON posting_tags (tag_id);
 
+-- Free-form labeled dates for a transaction
+CREATE TABLE IF NOT EXISTS transaction_dates (
+    transaction_id TEXT NOT NULL REFERENCES transactions(id),
+    label          TEXT NOT NULL,
+    date           TEXT NOT NULL, -- YYYY-MM-DD
+    PRIMARY KEY (transaction_id, label)
+);
+CREATE INDEX IF NOT EXISTS idx_transaction_dates_tx ON transaction_dates (transaction_id);
+
 -- Transaction link registry
 CREATE TABLE IF NOT EXISTS transaction_links (
     id         TEXT NOT NULL PRIMARY KEY,

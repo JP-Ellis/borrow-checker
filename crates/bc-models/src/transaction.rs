@@ -368,6 +368,12 @@ pub struct Transaction {
     #[builder(default)]
     tag_ids: Vec<TagId>,
 
+    /// Free-form labeled dates attached to this transaction (e.g. `("cleared", …)`).
+    /// The canonical [`Self::date`] is always separate and privileged; these are
+    /// supplementary domain dates supplied by importers or users. Defaults to empty.
+    #[builder(default)]
+    extra_dates: Vec<(String, Date)>,
+
     /// IDs of [`crate::TransactionLink`]s this transaction participates in (e.g.
     /// a transfer pair or a reversal). Defaults to empty; managed by `bc-core`.
     #[builder(default)]
@@ -440,6 +446,14 @@ impl Transaction {
     #[must_use]
     pub fn link_ids(&self) -> &[TransactionLinkId] {
         &self.link_ids
+    }
+
+    /// Returns additional user-labeled dates (e.g. `("cleared", …)`).
+    /// The canonical [`Transaction::date`] is separate and always present.
+    #[must_use]
+    #[inline]
+    pub fn extra_dates(&self) -> &[(String, Date)] {
+        &self.extra_dates
     }
 
     /// Returns the creation timestamp.
