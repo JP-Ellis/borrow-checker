@@ -7,6 +7,7 @@
 use bc_ipc::Amount;
 use bc_ipc::NativePeriodRow;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::NativePeriodList;
 use super::style;
@@ -24,8 +25,8 @@ fn row_with_target(
         label,
         period_start,
         period_end,
-        Some(Amount::from_minor(target, "AUD", 2)),
-        Amount::from_minor(spent, "AUD", 2),
+        Some(Amount::new(Decimal::new(target, 2), "AUD")),
+        Amount::new(Decimal::new(spent, 2), "AUD"),
     )
 }
 
@@ -41,7 +42,7 @@ fn row_no_target(
         period_start,
         period_end,
         None,
-        Amount::from_minor(spent, "AUD", 2),
+        Amount::new(Decimal::new(spent, 2), "AUD"),
     )
 }
 

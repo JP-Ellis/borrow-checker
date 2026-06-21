@@ -32,9 +32,10 @@ pub enum AmountError {
 ///
 /// ```
 /// use bc_ipc::Amount;
+/// use rust_decimal::Decimal;
 ///
-/// let price = Amount::from_minor(-123_456, "AUD", 2);  // −$1,234.56 AUD
-/// assert_eq!(price.value, rust_decimal::Decimal::new(-123_456, 2));
+/// let price = Amount::new(Decimal::new(-123_456, 2), "AUD");  // −$1,234.56 AUD
+/// assert_eq!(price.value, Decimal::new(-123_456, 2));
 /// assert_eq!(price.currency_code, "AUD");
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,22 +61,6 @@ impl Amount {
             value,
             currency_code: currency_code.into(),
         }
-    }
-
-    /// Creates an [`Amount`] from minor units and a scale.
-    ///
-    /// Convenience for tests and fixtures expressed in a currency's smallest
-    /// unit (e.g. cents). `from_minor(1050, "AUD", 2)` is `10.50 AUD`.
-    ///
-    /// # Arguments
-    ///
-    /// * `minor_units` - Amount in the smallest unit.
-    /// * `currency_code` - ISO 4217 or informal code.
-    /// * `scale` - Number of decimal places.
-    #[must_use]
-    #[inline]
-    pub fn from_minor(minor_units: i64, currency_code: impl Into<String>, scale: u8) -> Self {
-        Self::new(Decimal::new(minor_units, u32::from(scale)), currency_code)
     }
 
     /// Returns the decimal value of this amount.
@@ -253,7 +238,7 @@ mod tests {
     #[test]
     fn balance_short_thousands() {
         assert_eq!(
-            Amount::from_minor(6_400_000, "USD", 2).format_short(),
+            Amount::new(Decimal::new(6_400_000, 2), "USD").format_short(),
             "64k"
         );
     }
@@ -261,7 +246,7 @@ mod tests {
     #[test]
     fn balance_short_millions() {
         assert_eq!(
-            Amount::from_minor(120_000_000, "USD", 2).format_short(),
+            Amount::new(Decimal::new(120_000_000, 2), "USD").format_short(),
             "1m"
         );
     }
@@ -269,7 +254,7 @@ mod tests {
     #[test]
     fn balance_short_negative() {
         assert_eq!(
-            Amount::from_minor(-244_000, "USD", 2).format_short(),
+            Amount::new(Decimal::new(-244_000, 2), "USD").format_short(),
             "\u{2212}2k"
         );
     }
@@ -277,20 +262,23 @@ mod tests {
     #[test]
     fn balance_short_small() {
         assert_eq!(
-            Amount::from_minor(42_100, "USD", 2).format_short(),
+            Amount::new(Decimal::new(42_100, 2), "USD").format_short(),
             "+$421.00"
         );
     }
 
     #[test]
     fn balance_short_jpy_millions() {
-        assert_eq!(Amount::from_minor(1_500_000, "JPY", 0).format_short(), "1m");
+        assert_eq!(
+            Amount::new(Decimal::new(1_500_000, 0), "JPY").format_short(),
+            "1m"
+        );
     }
 
     #[test]
     fn balance_short_negative_thousands() {
         assert_eq!(
-            Amount::from_minor(-150_000, "USD", 2).format_short(),
+            Amount::new(Decimal::new(-150_000, 2), "USD").format_short(),
             "\u{2212}1k"
         );
     }
@@ -303,18 +291,6 @@ mod tests {
         let back: Amount = serde_json::from_str(&json).expect("de");
         assert_eq!(a, back);
         assert_eq!(back.value, Decimal::new(1050, 2));
-    }
-
-    #[test]
-    fn from_minor_builds_scaled_decimal() {
-        assert_eq!(
-            Amount::from_minor(12_345, "BTC", 8).value,
-            Decimal::new(12_345, 8)
-        );
-        assert_eq!(
-            Amount::from_minor(1_234, "JPY", 0).value,
-            Decimal::new(1_234, 0)
-        );
     }
 
     #[test]

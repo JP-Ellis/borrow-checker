@@ -1,6 +1,7 @@
 //! QA page for the [`super`] `TomlView` primitives.
 
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::KvKey;
 use super::KvKind;
@@ -72,22 +73,25 @@ pub fn TomlViewQa() -> impl IntoView {
                 <div style="padding:16px;background:var(--bc-surface-accent);border-radius:6px">
                     <TomlArraySection>"postings"</TomlArraySection>
                     <TomlPosting
-                        amount=bc_ipc::Amount::from_minor(-846_154, "AUD", 2)
+                        amount=bc_ipc::Amount::new(Decimal::new(-846_154, 2), "AUD")
                         note="gross pay"
                     >
                         "Income :: Salary"
                     </TomlPosting>
-                    <TomlPosting amount=bc_ipc::Amount::from_minor(327_692, "AUD", 2) note="PAYG">
+                    <TomlPosting
+                        amount=bc_ipc::Amount::new(Decimal::new(327_692, 2), "AUD")
+                        note="PAYG"
+                    >
                         "Liabilities :: Tax Withheld"
                     </TomlPosting>
                     <TomlPosting
-                        amount=bc_ipc::Amount::from_minor(90_407, "AUD", 2)
+                        amount=bc_ipc::Amount::new(Decimal::new(90_407, 2), "AUD")
                         note="11.5% SGC"
                     >
                         "Assets :: Super :: Employer"
                     </TomlPosting>
                     <TomlPosting
-                        amount=bc_ipc::Amount::from_minor(428_055, "AUD", 2)
+                        amount=bc_ipc::Amount::new(Decimal::new(428_055, 2), "AUD")
                         note="take-home"
                     >
                         "Assets :: Smart Access"
@@ -119,15 +123,13 @@ pub fn TomlViewQa() -> impl IntoView {
                 </p>
                 <div style="padding:16px;background:var(--bc-surface-accent);border-radius:6px">
                     <TomlArraySection>"postings"</TomlArraySection>
-                    <TomlPosting amount=bc_ipc::Amount::from_minor(
-                        -8_420,
+                    <TomlPosting amount=bc_ipc::Amount::new(
+                        Decimal::new(-8_420, 2),
                         "AUD",
-                        2,
                     )>"Assets :: Smart Access"</TomlPosting>
-                    <TomlPosting amount=bc_ipc::Amount::from_minor(
-                        8_420,
+                    <TomlPosting amount=bc_ipc::Amount::new(
+                        Decimal::new(8_420, 2),
                         "AUD",
-                        2,
                     )>"Expenses :: Groceries"</TomlPosting>
                 </div>
             </section>

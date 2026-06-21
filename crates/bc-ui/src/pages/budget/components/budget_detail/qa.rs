@@ -3,6 +3,7 @@
 use bc_ipc::Amount;
 use bc_ipc::BudgetTreeNode;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::BudgetDetail;
 use crate::pages::budget::BudgetPageCtx;
@@ -15,8 +16,8 @@ fn sample_node() -> BudgetTreeNode {
         .account_name("Everyday")
         .depth(0)
         .name("Groceries")
-        .effective_target(Amount::from_minor(80_000, "AUD", 2))
-        .spent(Amount::from_minor(52_300, "AUD", 2))
+        .effective_target(Amount::new(Decimal::new(80_000, 2), "AUD"))
+        .spent(Amount::new(Decimal::new(52_300, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(false)
         .rollover(bc_ipc::RolloverPolicy::ResetToZero)
@@ -32,7 +33,7 @@ fn tracking_node() -> BudgetTreeNode {
         .account_name("Bills")
         .depth(0)
         .name("Utilities")
-        .spent(Amount::from_minor(15_000, "AUD", 2))
+        .spent(Amount::new(Decimal::new(15_000, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(false)
         .is_tracking_only(true)
@@ -47,8 +48,8 @@ fn tagged_node() -> BudgetTreeNode {
         .account_name("Everyday")
         .depth(0)
         .name("My Food")
-        .effective_target(Amount::from_minor(40_000, "AUD", 2))
-        .spent(Amount::from_minor(38_500, "AUD", 2))
+        .effective_target(Amount::new(Decimal::new(40_000, 2), "AUD"))
+        .spent(Amount::new(Decimal::new(38_500, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(false)
         .rollover(bc_ipc::RolloverPolicy::CarryForward)

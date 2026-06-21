@@ -4,6 +4,7 @@ use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
 use bc_ipc::Amount;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::StickyAccountBar;
 
@@ -13,7 +14,7 @@ fn sample_node() -> AccountNode {
         "cb-smart-access",
         "Smart Access",
         Some("4421"),
-        Some(Amount::from_minor(421_842, "AUD", 2)),
+        Some(Amount::new(Decimal::new(421_842, 2), "AUD")),
         Some("commbank"),
         AccountType::Asset,
         vec![],

@@ -4,6 +4,7 @@ use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
 use bc_ipc::Amount;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::AccountDashboard;
 
@@ -13,7 +14,7 @@ fn asset_node() -> AccountNode {
         "cb-smart-access",
         "Smart Access",
         Some("4421"),
-        Some(Amount::from_minor(421_842, "AUD", 2)),
+        Some(Amount::new(Decimal::new(421_842, 2), "AUD")),
         Some("commbank"),
         AccountType::Asset,
         vec![
@@ -29,7 +30,7 @@ fn liability_node() -> AccountNode {
         "amex-platinum",
         "Amex Platinum",
         Some("9001"),
-        Some(Amount::from_minor(-244_000, "AUD", 2)),
+        Some(Amount::new(Decimal::new(-244_000, 2), "AUD")),
         None::<&str>,
         AccountType::Liability,
         vec!["type:credit".to_owned()],
@@ -42,7 +43,7 @@ fn no_mask_node() -> AccountNode {
         "macquarie",
         "Macquarie",
         None::<&str>,
-        Some(Amount::from_minor(14_210_000, "AUD", 2)),
+        Some(Amount::new(Decimal::new(14_210_000, 2), "AUD")),
         None::<&str>,
         AccountType::Asset,
         vec![],

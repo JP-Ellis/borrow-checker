@@ -123,6 +123,7 @@ mod tests {
     use bc_ipc::Transaction;
     use bc_ipc::TxStatus;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
 
     use super::format_date_display;
     use super::headline_amount;
@@ -140,7 +141,7 @@ mod tests {
                     Posting::new(
                         "posting-coles-debit",
                         AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                        Amount::from_minor(-8_420, "AUD", 2),
+                        Amount::new(Decimal::new(-8_420, 2), "AUD"),
                         None::<&str>,
                         None,
                         None,
@@ -148,7 +149,7 @@ mod tests {
                     Posting::new(
                         "posting-coles-groceries",
                         AccountRef::new("groceries", "Expenses :: Groceries"),
-                        Amount::from_minor(8_420, "AUD", 2),
+                        Amount::new(Decimal::new(8_420, 2), "AUD"),
                         None::<&str>,
                         None,
                         None,
@@ -181,7 +182,7 @@ mod tests {
                     Posting::new(
                         "posting-salary-income",
                         AccountRef::new("income-salary", "Income :: Salary"),
-                        Amount::from_minor(-846_154, "AUD", 2),
+                        Amount::new(Decimal::new(-846_154, 2), "AUD"),
                         Some("gross pay"),
                         None,
                         None,
@@ -189,7 +190,7 @@ mod tests {
                     Posting::new(
                         "posting-salary-tax",
                         AccountRef::new("liabilities-tax", "Liabilities :: Tax Withheld"),
-                        Amount::from_minor(327_692, "AUD", 2),
+                        Amount::new(Decimal::new(327_692, 2), "AUD"),
                         Some("PAYG withholding"),
                         None,
                         None,
@@ -197,7 +198,7 @@ mod tests {
                     Posting::new(
                         "posting-salary-super",
                         AccountRef::new("assets-super", "Assets :: Super :: Employer"),
-                        Amount::from_minor(90_407, "AUD", 2),
+                        Amount::new(Decimal::new(90_407, 2), "AUD"),
                         Some("11.5% SGC"),
                         None,
                         None,
@@ -205,7 +206,7 @@ mod tests {
                     Posting::new(
                         "posting-salary-takehome",
                         AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                        Amount::from_minor(428_055, "AUD", 2),
+                        Amount::new(Decimal::new(428_055, 2), "AUD"),
                         Some("take-home"),
                         None,
                         None,
