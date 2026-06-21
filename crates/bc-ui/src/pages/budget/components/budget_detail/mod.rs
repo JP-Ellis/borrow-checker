@@ -20,21 +20,22 @@ import_style!(style, "detail.module.scss");
 
 // MARK: Helpers
 
-/// Sums the positive posting amounts for a transaction's display total.
-///
 /// Returns a zeroed [`Amount`] using the first posting's currency when there are no positive
 /// postings.
 #[must_use]
 #[inline]
 fn tx_display_amount(tx: &Transaction) -> bc_ipc::Amount {
-    let first = tx.postings.first();
-    let currency = first.map_or("", |p| p.amount.currency_code.as_str());
-    let total: Decimal = tx
+    let currency = tx
+        .postings
+        .first()
+        .map_or("", |p| p.amount.currency_code.as_str());
+    let totals: bc_ipc::Balances = tx
         .postings
         .iter()
-        .map(|p| p.amount.value)
-        .filter(|v| *v > Decimal::ZERO)
-        .sum();
+        .filter(|p| p.amount.value > Decimal::ZERO)
+        .map(|p| p.amount.clone())
+        .collect();
+    let total = totals.get(currency).unwrap_or(Decimal::ZERO);
     bc_ipc::Amount::new(total, currency)
 }
 
