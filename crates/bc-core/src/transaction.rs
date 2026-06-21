@@ -36,10 +36,10 @@ struct ListPostingRow {
     transaction_id: String,
     /// Account ID for this posting.
     account_id: String,
-    /// Decimal string for the posting amount.
-    amount: String,
-    /// Commodity code string.
-    commodity: String,
+    /// Decimal string for the posting amount; `None` when this leg is elided.
+    amount: Option<String>,
+    /// Commodity code string; `None` iff `amount` is `None`.
+    commodity: Option<String>,
     /// Optional free-text note.
     note: Option<String>,
     /// Decimal string for the cost basis total value; NULL if no cost basis.
@@ -77,9 +77,12 @@ fn validate_balance(postings: &[Posting]) -> BcResult<()> {
 
     let mut sums: std::collections::BTreeMap<&str, Decimal> = std::collections::BTreeMap::new();
     for p in postings {
-        let entry: &mut Decimal = sums.entry(p.amount().commodity().as_str()).or_default();
+        let Some(amount) = p.amount() else {
+            continue; // elided leg — residual resolved in Task 7
+        };
+        let entry: &mut Decimal = sums.entry(amount.commodity().as_str()).or_default();
         *entry = entry
-            .checked_add(p.amount().value())
+            .checked_add(amount.value())
             .ok_or(BcError::BadData("posting sum overflow".into()))?;
     }
     for (commodity, sum) in &sums {
@@ -143,10 +146,10 @@ struct PostingRow {
     id: String,
     /// Account ID for this posting.
     account_id: String,
-    /// Decimal string for the posting amount.
-    amount: String,
-    /// Commodity code string.
-    commodity: String,
+    /// Decimal string for the posting amount; `None` when this leg is elided.
+    amount: Option<String>,
+    /// Commodity code string; `None` iff `amount` is `None`.
+    commodity: Option<String>,
     /// Optional free-text note.
     note: Option<String>,
     /// Decimal string for the cost basis total value; NULL if no cost basis.
@@ -256,8 +259,8 @@ impl Service {
             .bind(posting.id().to_string()) //  1. id
             .bind(tx_id.to_string()) //  2. transaction_id
             .bind(posting.account_id().to_string()) //  3. account_id
-            .bind(posting.amount().value().to_string()) //  4. amount
-            .bind(posting.amount().commodity().as_str()) //  5. commodity
+            .bind(posting.amount().map(|a| a.value().to_string())) //  4. amount
+            .bind(posting.amount().map(|a| a.commodity().as_str().to_owned())) //  5. commodity
             .bind(posting.note()) //  6. note
             .bind(
                 i64::try_from(position)
@@ -396,10 +399,15 @@ impl Service {
                 let acc_id = row.account_id.parse::<AccountId>().map_err(|e| {
                     BcError::BadData(format!("invalid account id '{}': {e}", row.account_id))
                 })?;
-                let value = row.amount.parse::<Decimal>().map_err(|e| {
-                    BcError::BadData(format!("invalid amount '{}': {e}", row.amount))
-                })?;
-                let amount = Amount::new(value, CommodityCode::new(row.commodity));
+                let amount = match (row.amount, row.commodity) {
+                    (Some(v), Some(c)) => {
+                        let value = v
+                            .parse::<Decimal>()
+                            .map_err(|e| BcError::BadData(format!("invalid amount '{v}': {e}")))?;
+                        Some(Amount::new(value, CommodityCode::new(c)))
+                    }
+                    _ => None,
+                };
                 let cost = parse_cost(
                     row.cost_total_value,
                     row.cost_total_commodity,
@@ -428,7 +436,7 @@ impl Service {
                 Ok(Posting::builder()
                     .id(posting_id)
                     .account_id(acc_id)
-                    .amount(amount)
+                    .maybe_amount(amount)
                     .maybe_cost(cost)
                     .maybe_note(row.note)
                     .maybe_spread_from(spread_from)
@@ -499,11 +507,18 @@ impl Service {
 
         // Insert negated postings for the reversal.
         for (position, posting) in original.postings().iter().enumerate() {
-            let negated_value = posting
-                .amount()
-                .value()
-                .checked_mul(Decimal::NEGATIVE_ONE)
-                .ok_or_else(|| BcError::BadData("posting amount negation overflow".into()))?;
+            let (negated_amount_str, commodity_str) = if let Some(amount) = posting.amount() {
+                let negated = amount
+                    .value()
+                    .checked_mul(Decimal::NEGATIVE_ONE)
+                    .ok_or_else(|| BcError::BadData("posting amount negation overflow".into()))?;
+                (
+                    Some(negated.to_string()),
+                    Some(amount.commodity().as_str().to_owned()),
+                )
+            } else {
+                (None, None)
+            };
             let (cost_value, cost_commodity, cost_date, cost_label) =
                 if let Some(cost) = posting.cost() {
                     (
@@ -526,8 +541,8 @@ impl Service {
             .bind(PostingId::new().to_string())
             .bind(reversal_id.to_string())
             .bind(posting.account_id().to_string())
-            .bind(negated_value.to_string())
-            .bind(posting.amount().commodity().as_str())
+            .bind(negated_amount_str)
+            .bind(commodity_str)
             .bind(posting.note())
             .bind(
                 i64::try_from(position)
@@ -666,11 +681,15 @@ impl Service {
             let acc_id = row.account_id.parse::<AccountId>().map_err(|e| {
                 BcError::BadData(format!("invalid account id '{}': {e}", row.account_id))
             })?;
-            let value = row
-                .amount
-                .parse::<Decimal>()
-                .map_err(|e| BcError::BadData(format!("invalid amount '{}': {e}", row.amount)))?;
-            let amount = Amount::new(value, CommodityCode::new(row.commodity));
+            let amount = match (row.amount, row.commodity) {
+                (Some(v), Some(c)) => {
+                    let value = v
+                        .parse::<Decimal>()
+                        .map_err(|e| BcError::BadData(format!("invalid amount '{v}': {e}")))?;
+                    Some(Amount::new(value, CommodityCode::new(c)))
+                }
+                _ => None,
+            };
             let cost = parse_cost(
                 row.cost_total_value,
                 row.cost_total_commodity,
@@ -697,7 +716,7 @@ impl Service {
             let posting = Posting::builder()
                 .id(posting_id)
                 .account_id(acc_id)
-                .amount(amount)
+                .maybe_amount(amount)
                 .maybe_cost(cost)
                 .maybe_note(row.note)
                 .maybe_spread_from(spread_from)
@@ -871,11 +890,15 @@ impl Service {
             let acc_id = row.account_id.parse::<AccountId>().map_err(|e| {
                 BcError::BadData(format!("invalid account id '{}': {e}", row.account_id))
             })?;
-            let value = row
-                .amount
-                .parse::<Decimal>()
-                .map_err(|e| BcError::BadData(format!("invalid amount '{}': {e}", row.amount)))?;
-            let amount = Amount::new(value, CommodityCode::new(row.commodity));
+            let amount = match (row.amount, row.commodity) {
+                (Some(v), Some(c)) => {
+                    let value = v
+                        .parse::<Decimal>()
+                        .map_err(|e| BcError::BadData(format!("invalid amount '{v}': {e}")))?;
+                    Some(Amount::new(value, CommodityCode::new(c)))
+                }
+                _ => None,
+            };
             let cost = parse_cost(
                 row.cost_total_value,
                 row.cost_total_commodity,
@@ -902,7 +925,7 @@ impl Service {
             let posting = Posting::builder()
                 .id(posting_id)
                 .account_id(acc_id)
-                .amount(amount)
+                .maybe_amount(amount)
                 .maybe_cost(cost)
                 .maybe_note(row.note)
                 .maybe_spread_from(spread_from)
@@ -1178,11 +1201,15 @@ impl Service {
             let acc_id = row.account_id.parse::<AccountId>().map_err(|e| {
                 BcError::BadData(format!("invalid account id '{}': {e}", row.account_id))
             })?;
-            let value = row
-                .amount
-                .parse::<Decimal>()
-                .map_err(|e| BcError::BadData(format!("invalid amount '{}': {e}", row.amount)))?;
-            let amount = Amount::new(value, CommodityCode::new(row.commodity));
+            let amount = match (row.amount, row.commodity) {
+                (Some(v), Some(c)) => {
+                    let value = v
+                        .parse::<Decimal>()
+                        .map_err(|e| BcError::BadData(format!("invalid amount '{v}': {e}")))?;
+                    Some(Amount::new(value, CommodityCode::new(c)))
+                }
+                _ => None,
+            };
             let cost = parse_cost(
                 row.cost_total_value,
                 row.cost_total_commodity,
@@ -1209,7 +1236,7 @@ impl Service {
             let posting = Posting::builder()
                 .id(posting_id)
                 .account_id(acc_id)
-                .amount(amount)
+                .maybe_amount(amount)
                 .maybe_cost(cost)
                 .maybe_note(row.note)
                 .maybe_spread_from(spread_from)
@@ -1383,8 +1410,8 @@ impl Service {
             .bind(posting.id().to_string()) //  1. id
             .bind(&tx_id_str) //  2. transaction_id
             .bind(posting.account_id().to_string()) //  3. account_id
-            .bind(posting.amount().value().to_string()) //  4. amount
-            .bind(posting.amount().commodity().as_str()) //  5. commodity
+            .bind(posting.amount().map(|a| a.value().to_string())) //  4. amount
+            .bind(posting.amount().map(|a| a.commodity().as_str().to_owned())) //  5. commodity
             .bind(posting.note()) //  6. note
             .bind(
                 i64::try_from(position)
@@ -1845,10 +1872,16 @@ mod tests {
         let reversal = svc.find_by_id(&reversal_id).await.expect("find reversal");
 
         let orig = svc.find_by_id(&original_id).await.expect("find original");
-        let orig_sum: rust_decimal::Decimal =
-            orig.postings().iter().map(|p| p.amount().value()).sum();
-        let rev_sum: rust_decimal::Decimal =
-            reversal.postings().iter().map(|p| p.amount().value()).sum();
+        let orig_sum: rust_decimal::Decimal = orig
+            .postings()
+            .iter()
+            .map(|p| p.amount().expect("amount set in test").value())
+            .sum();
+        let rev_sum: rust_decimal::Decimal = reversal
+            .postings()
+            .iter()
+            .map(|p| p.amount().expect("amount set in test").value())
+            .sum();
         pretty_assertions::assert_eq!(orig_sum, rust_decimal::Decimal::ZERO);
         pretty_assertions::assert_eq!(rev_sum, rust_decimal::Decimal::ZERO);
         pretty_assertions::assert_eq!(reversal.postings().len(), orig.postings().len());
@@ -1857,11 +1890,15 @@ mod tests {
         for (orig_p, rev_p) in orig.postings().iter().zip(reversal.postings().iter()) {
             let rev_negated = rev_p
                 .amount()
+                .expect("reversal amount set in test")
                 .value()
                 .checked_mul(rust_decimal::Decimal::NEGATIVE_ONE)
                 .expect("negation should not overflow in test");
             pretty_assertions::assert_eq!(
-                orig_p.amount().value(),
+                orig_p
+                    .amount()
+                    .expect("original amount set in test")
+                    .value(),
                 rev_negated,
                 "reversal posting should negate original"
             );

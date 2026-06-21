@@ -148,8 +148,11 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
             let amounts: Vec<String> = tx
                 .postings()
                 .iter()
-                .filter(|p| p.amount().value() > rust_decimal::Decimal::ZERO)
-                .map(|p| format!("{} {}", p.amount().value(), p.amount().commodity().as_str()))
+                .filter_map(|p| {
+                    let a = p.amount()?;
+                    (a.value() > rust_decimal::Decimal::ZERO)
+                        .then(|| format!("{} {}", a.value(), a.commodity().as_str()))
+                })
                 .collect();
             let amounts_str = amounts.join(", ");
             let description = tx.payee().map_or_else(
@@ -300,8 +303,9 @@ mod tests {
         let account_id = bc_models::AccountId::new().to_string();
         let spec = format!("{account_id}:50.00:AUD");
         let posting = parse_posting_spec(&spec).expect("valid spec");
-        pretty_assertions::assert_eq!(posting.amount().value().to_string(), "50.00");
-        pretty_assertions::assert_eq!(posting.amount().commodity().as_str(), "AUD");
+        let amount = posting.amount().expect("amount should be set");
+        pretty_assertions::assert_eq!(amount.value().to_string(), "50.00");
+        pretty_assertions::assert_eq!(amount.commodity().as_str(), "AUD");
     }
 
     #[test]

@@ -191,7 +191,7 @@ impl Cost {
 ///     .amount(Amount::new(Decimal::from(100), CommodityCode::new("AUD")))
 ///     .build();
 ///
-/// assert_eq!(posting.amount().commodity().to_string(), "AUD");
+/// assert_eq!(posting.amount().expect("amount set").commodity().to_string(), "AUD");
 /// assert!(posting.cost().is_none());
 /// ```
 // NOTE: the field docstrings propagate to the setter methods on the builder, so
@@ -207,9 +207,10 @@ pub struct Posting {
     account_id: crate::AccountId,
 
     /// Monetary amount of this leg. Positive values are debits; negative values are credits.
-    /// The sum of all posting amounts in a transaction must be zero per commodity —
-    /// enforced by `bc-core`.
-    amount: Amount,
+    /// `None` means the amount is *elided*: its value is the residual that makes the
+    /// transaction balance, computed by `bc-core` (Task 7). At most one posting per
+    /// commodity may be elided in a given transaction.
+    amount: Option<Amount>,
 
     /// Cost basis for a commodity conversion, if applicable. `None` for
     /// same-commodity postings; required when tracking acquisition cost across
@@ -251,11 +252,12 @@ impl Posting {
         &self.account_id
     }
 
-    /// Returns the amount.
-    #[inline]
+    /// Returns the posting amount, or `None` when this leg is elided
+    /// (its amount is the residual that balances the transaction).
     #[must_use]
-    pub fn amount(&self) -> &Amount {
-        &self.amount
+    #[inline]
+    pub fn amount(&self) -> Option<&Amount> {
+        self.amount.as_ref()
     }
 
     /// Returns the cost basis, if any.
@@ -577,7 +579,14 @@ mod tests {
             .account_id(crate::AccountId::new())
             .amount(Amount::new(dec!(100.00), CommodityCode::new("AUD")))
             .build();
-        assert_eq!(posting.amount().commodity().to_string(), "AUD");
+        assert_eq!(
+            posting
+                .amount()
+                .expect("amount should be set")
+                .commodity()
+                .to_string(),
+            "AUD"
+        );
     }
 
     #[test]
@@ -655,6 +664,16 @@ mod tests {
             .build();
         assert!(posting.spread_from().is_none());
         assert!(posting.spread_until().is_none());
+    }
+
+    #[test]
+    fn elided_posting_has_no_amount() {
+        let p = Posting::builder()
+            .id(PostingId::new())
+            .account_id(crate::AccountId::new())
+            .maybe_amount(None)
+            .build();
+        assert!(p.amount().is_none());
     }
 
     #[test]
