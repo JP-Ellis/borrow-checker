@@ -465,6 +465,19 @@ impl Transaction {
         &self.created_at
     }
 
+    /// Returns the effective tags for `posting`: the transaction's tags followed
+    /// by any posting-only tags, de-duplicated, preserving first-seen order.
+    #[must_use]
+    pub fn effective_tag_ids(&self, posting: &Posting) -> Vec<TagId> {
+        let mut out: Vec<TagId> = self.tag_ids.clone();
+        for t in posting.tag_ids() {
+            if !out.contains(t) {
+                out.push(t.clone());
+            }
+        }
+        out
+    }
+
     /// Returns the number of postings whose amount is elided (`None`).
     #[must_use]
     #[inline]
@@ -845,6 +858,28 @@ mod tests {
         let tx = lone_elided_fixture();
         assert_eq!(tx.elided_count(), 1);
         assert!(!tx.balanced());
+    }
+
+    #[test]
+    fn effective_tags_union_dedupes() {
+        let shared = TagId::new();
+        let only_posting = TagId::new();
+        let p = Posting::builder()
+            .id(PostingId::new())
+            .account_id(crate::AccountId::new())
+            .amount(Amount::new(dec!(1), CommodityCode::new("AUD")))
+            .tag_ids(vec![shared.clone(), only_posting.clone()])
+            .build();
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 1))
+            .description("d")
+            .postings(vec![p.clone()])
+            .tag_ids(vec![shared.clone()])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        assert_eq!(tx.effective_tag_ids(&p), vec![shared, only_posting]);
     }
 
     #[test]
