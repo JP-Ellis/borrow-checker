@@ -24,6 +24,7 @@ use crate::RolloverPolicy;
 use crate::SettingsInfo;
 use crate::Transaction;
 use crate::commands;
+use crate::commands::ReverseTransactionArgs;
 
 /// Empty args struct for commands that take no parameters.
 ///
@@ -576,13 +577,6 @@ pub async fn remove_budget_revision(budget_id: &str, revision_id: &str) -> Resul
         },
     )
     .await
-}
-
-/// Argument struct for [`reverse_transaction`].
-#[derive(Serialize)]
-struct ReverseTransactionArgs<'a> {
-    /// The transaction ID to reverse.
-    id: &'a str,
 }
 
 /// Reverses a transaction by id, returning the new reversal transaction's id.
