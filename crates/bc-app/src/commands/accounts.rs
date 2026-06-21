@@ -121,18 +121,21 @@ pub async fn create_transaction(
     tx: bc_ipc::NewTransaction,
     state: State<'_, AppState>,
 ) -> Result<String, bc_ipc::BcError> {
-    let reconciliation = tx.status.into_model();
+    let reconciliation = tx.reconciliation.into_model();
 
     let mut postings = Vec::with_capacity(tx.postings.len());
     for p in &tx.postings {
         let account_id = p.account_id.parse::<bc_models::AccountId>().map_err(|e| {
             bc_ipc::BcError::Validation(format!("invalid account_id '{}': {e}", p.account_id))
         })?;
+        let tag_ids: Vec<bc_models::TagId> =
+            p.tag_ids.iter().filter_map(|s| s.parse().ok()).collect();
         let posting = bc_models::Posting::builder()
             .id(bc_models::PostingId::new())
             .account_id(account_id)
-            .amount(p.amount.into_model())
+            .maybe_amount(p.amount.as_ref().map(IntoModel::into_model))
             .maybe_note(p.note.clone())
+            .tag_ids(tag_ids)
             .maybe_spread_from(p.spread_from)
             .maybe_spread_until(p.spread_until)
             .build();
@@ -143,7 +146,8 @@ pub async fn create_transaction(
         .id(bc_models::TransactionId::new())
         .date(tx.date)
         .maybe_payee(Some(tx.payee))
-        .description(String::new())
+        .description(tx.description)
+        .maybe_note(tx.note)
         .postings(postings)
         .reconciliation(reconciliation)
         .created_at(jiff::Timestamp::now())
