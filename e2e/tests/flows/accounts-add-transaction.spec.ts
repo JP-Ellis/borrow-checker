@@ -87,7 +87,7 @@ interface TxRow {
     id: string;
     payee: string | null;
     date: string;
-    status: string;
+    reconciliation: string;
 }
 
 interface PostingRow {
@@ -100,7 +100,7 @@ function dbQueryTransaction(payee: string): TxRow | undefined {
     const db = new Database(TEST_DB_PATH, { readonly: true });
     try {
         return db
-            .prepare('SELECT id, payee, date, status FROM transactions WHERE payee = ?')
+            .prepare('SELECT id, payee, date, reconciliation FROM transactions WHERE payee = ?')
             .get(payee) as TxRow | undefined;
     } finally {
         db.close();
@@ -167,7 +167,7 @@ describe('Accounts — add transaction', () => {
         const tx = dbQueryTransaction('E2E Test Payee');
         wdioExpect(tx).toBeDefined();
         wdioExpect(tx!.date).toBe('2026-06-01');
-        wdioExpect(tx!.status).toBe('pending');
+        wdioExpect(tx!.reconciliation).toBe('unreconciled');
 
         const postings = dbQueryPostings(tx!.id);
         // A balanced double-entry transaction has exactly two postings.
