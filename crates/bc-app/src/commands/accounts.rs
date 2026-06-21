@@ -45,11 +45,17 @@ pub async fn list_accounts(
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
+    let forest = state
+        .tags
+        .forest()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
     let nodes = accounts
         .iter()
         .map(|account| {
             let balance = balances.get(account.id()).map(IntoIpc::into_ipc);
-            crate::ipc::into_ipc_with_balance(account, balance)
+            crate::ipc::into_ipc_with_balance(account, balance, &forest)
         })
         .collect::<Vec<_>>();
 
@@ -90,6 +96,12 @@ pub async fn list_transactions(
         .map(|a| (a.id().to_string(), a))
         .collect::<std::collections::HashMap<_, _>>();
 
+    let forest = state
+        .tags
+        .forest()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
     let txs = state
         .transactions
         .list_for_account(&id)
@@ -97,7 +109,7 @@ pub async fn list_transactions(
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
     Ok(txs
-        .map(|tx| crate::ipc::transaction_into_ipc_with_accounts(&tx, &account_map))
+        .map(|tx| crate::ipc::transaction_into_ipc_with_accounts(&tx, &account_map, &forest))
         .collect())
 }
 
@@ -129,7 +141,7 @@ pub async fn create_transaction(
             bc_ipc::BcError::Validation(format!("invalid account_id '{}': {e}", p.account_id))
         })?;
         let tag_ids: Vec<bc_models::TagId> =
-            p.tag_ids.iter().filter_map(|s| s.parse().ok()).collect();
+            p.tags.iter().filter_map(|s| s.parse().ok()).collect();
         let posting = bc_models::Posting::builder()
             .id(bc_models::PostingId::new())
             .account_id(account_id)

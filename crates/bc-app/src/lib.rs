@@ -27,6 +27,8 @@ pub(crate) struct AppState {
     pub(crate) budgets: bc_core::BudgetService,
     /// Budget tree and overview service.
     pub(crate) budget_tree: bc_core::BudgetTreeService,
+    /// Tag service — hierarchy, resolution, and membership.
+    pub(crate) tags: bc_core::TagService,
     /// Snapshot of installed plugin metadata, collected at startup.
     ///
     /// `PluginRegistry` is not `Clone` (Wasmtime components are not `Clone`),
@@ -88,6 +90,7 @@ pub fn run() {
                 transactions: bc_core::TransactionService::new(pool.clone()),
                 balance_engine: bc_core::BalanceEngine::new(pool.clone()),
                 budgets: bc_core::BudgetService::new(pool.clone()),
+                tags: bc_core::TagService::new(pool.clone()),
                 budget_tree: bc_core::BudgetTreeService::new(pool, fx),
                 plugins,
             });

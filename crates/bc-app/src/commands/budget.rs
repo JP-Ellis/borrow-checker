@@ -244,9 +244,15 @@ pub async fn get_budget_transactions(
     let account_map: std::collections::HashMap<String, &bc_models::Account> =
         accounts.iter().map(|a| (a.id().to_string(), a)).collect();
 
+    let forest = state
+        .tags
+        .forest()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
     Ok(txns
         .iter()
-        .map(|t| crate::ipc::transaction_into_ipc_with_accounts(t, &account_map))
+        .map(|t| crate::ipc::transaction_into_ipc_with_accounts(t, &account_map, &forest))
         .collect())
 }
 
