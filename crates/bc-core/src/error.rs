@@ -1,7 +1,6 @@
 //! Core error types.
 
 use bc_models::AccountId;
-use bc_models::TransactionId;
 
 /// The result type used throughout `bc-core`.
 pub type BcResult<T> = Result<T, BcError>;
@@ -16,12 +15,6 @@ pub enum BcError {
     /// The account has already been archived and cannot be archived again.
     #[error("account already archived: {0}")]
     AlreadyArchived(AccountId),
-    /// The transaction has already been voided and cannot be voided again.
-    #[error("transaction already voided: {0}")]
-    AlreadyVoided(TransactionId),
-    /// A transaction's postings do not sum to zero per commodity.
-    #[error("transaction postings are not balanced to zero")]
-    UnbalancedTransaction,
     /// An operation is not valid for the given account kind.
     #[error("invalid account kind for {operation}: account {account_id} is {kind:?}")]
     InvalidAccountKind {
@@ -66,22 +59,9 @@ mod tests {
     }
 
     #[test]
-    fn unbalanced_transaction_error_displays() {
-        let err = BcError::UnbalancedTransaction;
-        assert!(!err.to_string().is_empty());
-    }
-
-    #[test]
     fn already_archived_error_displays_id() {
         let id = AccountId::new();
         let err = BcError::AlreadyArchived(id.clone());
-        assert!(err.to_string().contains(&id.to_string()));
-    }
-
-    #[test]
-    fn already_voided_error_displays_id() {
-        let id = TransactionId::new();
-        let err = BcError::AlreadyVoided(id.clone());
         assert!(err.to_string().contains(&id.to_string()));
     }
 }
