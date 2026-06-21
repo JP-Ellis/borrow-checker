@@ -347,6 +347,13 @@ pub struct Transaction {
     #[builder(into)]
     description: String,
 
+    /// Optional user-supplied annotation for this transaction.
+    ///
+    /// Distinct from [`Self::description`], which holds the raw imported narration.
+    /// `None` means no note has been recorded.
+    #[builder(into)]
+    note: Option<String>,
+
     /// All posting legs of this transaction. Must sum to zero per commodity —
     /// `bc-core` enforces this invariant before persistence. Defaults to empty.
     #[builder(default)]
@@ -398,6 +405,13 @@ impl Transaction {
     #[must_use]
     pub fn description(&self) -> &str {
         &self.description
+    }
+
+    /// Returns the user's free-text note, distinct from the imported `description`.
+    #[must_use]
+    #[inline]
+    pub fn note(&self) -> Option<&str> {
+        self.note.as_deref()
     }
 
     /// Returns the postings.

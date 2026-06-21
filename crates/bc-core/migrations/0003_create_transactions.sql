@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     date        TEXT NOT NULL, -- YYYY-MM-DD
     payee       TEXT,
     description TEXT NOT NULL,
+    note        TEXT,
     reconciliation TEXT NOT NULL,
     created_at  TEXT NOT NULL
     -- tags column removed; replaced by transaction_tags join table
