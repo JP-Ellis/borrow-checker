@@ -145,7 +145,7 @@ pub enum RowPerspective {
     /// period/spread-prorated sum over `[window_start, window_end]`.
     ///
     /// `tag_filter` is carried for future tag-filter narrowing; until tag paths
-    /// are resolved through IPC it is unused for matching (see future-works).
+    /// are resolved through IPC it is unused for matching (see issue #182).
     Budget {
         /// The account this budget targets.
         account_id: String,
