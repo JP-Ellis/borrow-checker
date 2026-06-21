@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS postings (
     account_id           TEXT    NOT NULL REFERENCES accounts(id),
     amount               TEXT    NOT NULL, -- decimal string
     commodity            TEXT    NOT NULL, -- CommodityCode (e.g. "AUD"); not FK to commodities
-    memo                 TEXT,
+    note                 TEXT,
     position             INTEGER NOT NULL DEFAULT 0,
     -- cost basis fields (all NULL if no commodity conversion)
     cost_total_value     TEXT,   -- decimal string
