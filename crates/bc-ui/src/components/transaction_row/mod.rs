@@ -340,17 +340,23 @@ pub fn TransactionRow(
 
     let date = format_date_display(tx.date);
     let has_payee = !tx.payee.is_empty();
-    let display_name = if has_payee {
-        tx.payee.clone()
-    } else {
-        tx.description.clone()
-    };
+    let has_desc = !tx.description.is_empty();
     let initial = payee_initial(if has_payee {
         &tx.payee
     } else {
         &tx.description
     })
     .to_string();
+    let (display_name, name_class) = if has_payee {
+        (tx.payee.clone(), style::payee.to_owned())
+    } else if has_desc {
+        (
+            tx.description.clone(),
+            format!("{} {}", style::payee, style::name_dim),
+        )
+    } else {
+        ("\u{2014}".to_owned(), style::payee.to_owned())
+    };
 
     let focal_id: Option<String> = match &perspective {
         RowPerspective::Account { account_id } | RowPerspective::Budget { account_id, .. } => {
@@ -373,12 +379,6 @@ pub fn TransactionRow(
     let flagged = tx.reconciliation == bc_ipc::Reconciliation::Flagged;
     let unrec = tx.reconciliation == bc_ipc::Reconciliation::Unreconciled;
     let split_count = tx.postings.len();
-
-    let name_class = if has_payee {
-        style::payee.to_owned()
-    } else {
-        format!("{} {}", style::payee, style::name_dim)
-    };
 
     let toggle_click = toggle;
     let toggle_key = toggle;
@@ -406,7 +406,7 @@ pub fn TransactionRow(
             tabindex="0"
             aria-expanded=move || expanded.get().to_string()
         >
-            <span class=style::date>{date.clone()}</span>
+            <span class=style::date>{date}</span>
             <div class=style::payee_cell>
                 <span class=style::avatar aria-hidden="true">
                     {initial}
