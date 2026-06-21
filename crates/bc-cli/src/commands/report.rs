@@ -125,7 +125,7 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
         );
     }
 
-    let total = ctx.balances.net_worth(COMMODITY).await?;
+    let total = ctx.balances.net_worth(COMMODITY).await?.value();
     let accounts = ctx.accounts.list_active().await?;
 
     if ctx.json {
@@ -150,7 +150,11 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
                         .latest_market_value(account.id(), COMMODITY)
                         .await?
                         .unwrap_or(Decimal::ZERO),
-                    _ => ctx.balances.balance_for(account.id(), COMMODITY).await?,
+                    _ => ctx
+                        .balances
+                        .balance_for(account.id(), COMMODITY)
+                        .await?
+                        .value(),
                 }
             };
             rows.push(serde_json::json!({
@@ -190,7 +194,11 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
                     .latest_market_value(account.id(), COMMODITY)
                     .await?
                     .unwrap_or(Decimal::ZERO),
-                _ => ctx.balances.balance_for(account.id(), COMMODITY).await?,
+                _ => ctx
+                    .balances
+                    .balance_for(account.id(), COMMODITY)
+                    .await?
+                    .value(),
             }
         };
         table_rows.push(vec![
