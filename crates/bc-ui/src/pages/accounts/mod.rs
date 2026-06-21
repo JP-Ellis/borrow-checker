@@ -1,7 +1,5 @@
 //! Accounts page — account tree sidebar and transaction register.
 
-pub(crate) mod types;
-
 pub(crate) mod components;
 pub(crate) mod dashboard;
 
@@ -246,6 +244,9 @@ pub fn Accounts() -> impl IntoView {
                             <TransactionRegister
                                 transactions=transactions_signal
                                 viewing_account_id=node_id_register
+                                on_change=Callback::new(move |()| {
+                                    data_version.update(|v| *v = v.wrapping_add(1));
+                                })
                             />
                         }
                             .into_any()

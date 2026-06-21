@@ -20,9 +20,114 @@ use crate::components::toml_view::TomlKv;
 use crate::components::toml_view::TomlPosting;
 use crate::components::toml_view::TomlSection;
 use crate::label::category_label;
-use crate::pages::accounts::types::format_date_display;
-use crate::pages::accounts::types::payee_initial;
 use crate::pages::budget::components::accrual_editor::AccrualEditor;
+
+// MARK: WASM bindings
+
+#[cfg(target_arch = "wasm32")]
+/// Bindings to JavaScript `Date.UTC()` for constructing UTC epoch milliseconds.
+mod wasm_bindings {
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_namespace = Date, js_name = "UTC")]
+        /// Computes the epoch milliseconds for a UTC date.
+        ///
+        /// Wraps `Date.UTC(year, month, date)` where month is 0-based.
+        pub fn utc(year: f64, month: f64, date: f64) -> f64;
+    }
+}
+
+// MARK: Pure display helpers
+
+/// Returns the first ASCII letter of `payee` as uppercase, or `'?'` if none.
+///
+/// Used for the payee avatar circle in transaction rows.
+///
+/// # Arguments
+///
+/// * `payee` - The payee string to extract an initial from.
+///
+/// # Returns
+///
+/// The first ASCII alphabetic character, uppercased, or `'?'` when none exists.
+#[must_use]
+#[inline]
+pub fn payee_initial(payee: &str) -> char {
+    payee
+        .chars()
+        .find(char::is_ascii_alphabetic)
+        .map_or('?', |c| c.to_ascii_uppercase())
+}
+
+/// Formats a [`jiff::civil::Date`] for display.
+///
+/// On WASM: delegates to the browser's `Intl.DateTimeFormat` using UTC timezone.
+/// Having a typed `Date` means callers can also access `date.year()`,
+/// `date.month()`, and `date.day()` directly to build locale-aware `Intl.*`
+/// expressions without any intermediate string.
+/// Fallback (native test builds): returns `"MM/DD"`.
+///
+/// # Arguments
+///
+/// * `date` - The civil date to format.
+///
+/// # Returns
+///
+/// A locale-formatted date string (e.g. `"04/30"` in `en-AU`).
+#[must_use]
+#[inline]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "month() returns 1-12; minus one is 0-11 for JS Date.UTC()"
+)]
+pub fn format_date_display(date: jiff::civil::Date) -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use js_sys::Array;
+        use js_sys::Date;
+        use js_sys::Intl::DateTimeFormat;
+        use js_sys::Object;
+        use js_sys::Reflect;
+        use web_sys::wasm_bindgen::JsValue;
+
+        let options = Object::new();
+        drop(Reflect::set(
+            &options,
+            &JsValue::from_str("month"),
+            &JsValue::from_str("2-digit"),
+        ));
+        drop(Reflect::set(
+            &options,
+            &JsValue::from_str("day"),
+            &JsValue::from_str("2-digit"),
+        ));
+        drop(Reflect::set(
+            &options,
+            &JsValue::from_str("timeZone"),
+            &JsValue::from_str("UTC"),
+        ));
+
+        let ts = wasm_bindings::utc(
+            f64::from(date.year()),
+            f64::from(i32::from(date.month()) - 1),
+            f64::from(date.day()),
+        );
+        let js_date = Date::new(&JsValue::from_f64(ts));
+        let fmt = DateTimeFormat::new(&Array::new(), &options);
+        let format_fn = fmt.format();
+        format_fn
+            .call1(&JsValue::NULL, &js_date)
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| date.to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        format!("{:02}/{:02}", date.month(), date.day())
+    }
+}
 
 import_style!(style, "row.module.scss");
 
@@ -1012,5 +1117,28 @@ mod tests {
         // 15 of 30 days → half value
         assert_eq!(amt.value, Decimal::new(15_000, 2));
         assert_eq!(amt.currency_code, "AUD");
+    }
+
+    #[test]
+    fn payee_initial_first_letter() {
+        assert_eq!(super::payee_initial("Coles Carlton"), 'C');
+    }
+
+    #[test]
+    fn payee_initial_skips_non_alpha() {
+        assert_eq!(super::payee_initial("123 Foo"), 'F');
+    }
+
+    #[test]
+    fn payee_initial_empty_returns_question_mark() {
+        assert_eq!(super::payee_initial(""), '?');
+    }
+
+    #[test]
+    fn format_date_display_standard() {
+        assert_eq!(
+            super::format_date_display(jiff::civil::Date::constant(2026, 4, 30)),
+            "04/30"
+        );
     }
 }
