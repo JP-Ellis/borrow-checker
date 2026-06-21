@@ -7,7 +7,6 @@
 pub mod error_banner;
 #[cfg(target_arch = "wasm32")]
 pub mod num;
-#[cfg(target_arch = "wasm32")]
 pub mod sparkline;
 #[cfg(target_arch = "wasm32")]
 pub mod stat_card;
