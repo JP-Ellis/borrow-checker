@@ -29,14 +29,3 @@ pub fn ErrorBanner(
 
 #[cfg(debug_assertions)]
 pub mod qa;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn error_banner_smoke() {
-        // Component is constructible — rendering is tested via QA routes.
-        let _ = std::any::type_name::<ErrorBanner>();
-    }
-}
