@@ -46,7 +46,7 @@ mod app;
 mod components;
 #[cfg(target_arch = "wasm32")]
 mod pages;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 mod shell;
 
 #[cfg(target_arch = "wasm32")]
