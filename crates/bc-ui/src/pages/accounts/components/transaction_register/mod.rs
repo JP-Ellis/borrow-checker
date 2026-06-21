@@ -9,7 +9,8 @@ use leptos::prelude::*;
 use leptos::web_sys;
 use stylance::import_style;
 
-use super::transaction_row::TransactionRow;
+use crate::components::transaction_row::RowPerspective;
+use crate::components::transaction_row::TransactionRow;
 
 import_style!(style, "register.module.scss");
 
@@ -50,6 +51,8 @@ impl Filter {
 ///
 /// * `transactions` - Reactive signal of all transactions for this account.
 /// * `viewing_account_id` - The account whose page is currently shown.
+/// * `on_change` - Optional callback invoked after any mutation (e.g. reverse)
+///   so the parent can refresh its transaction list.
 #[component]
 #[expect(
     clippy::needless_pass_by_value,
@@ -65,6 +68,9 @@ pub fn TransactionRegister(
     /// Account ID being viewed (determines headline amounts).
     #[prop(into)]
     viewing_account_id: String,
+    /// Called after any mutation so the parent can bump its data version.
+    #[prop(optional)]
+    on_change: Option<Callback<()>>,
 ) -> impl IntoView {
     let instance = REGISTER_INSTANCE.fetch_add(1, Ordering::Relaxed);
     let anchor_name = format!("--bc-reg-filter-{instance}");
@@ -123,6 +129,7 @@ pub fn TransactionRegister(
     };
 
     let vid = viewing_account_id.clone();
+    let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
 
     view! {
         <div
@@ -222,7 +229,9 @@ pub fn TransactionRegister(
                         view! {
                             <TransactionRow
                                 tx=tx
-                                viewing_account_id=vid
+                                perspective=RowPerspective::Account {
+                                    account_id: vid,
+                                }
                                 selected=Signal::derive(move || selected_idx.get() == Some(i))
                                 expanded=Signal::derive(move || expanded_idx.get() == Some(i))
                                 on_toggle=Callback::new(move |()| {
@@ -232,6 +241,7 @@ pub fn TransactionRegister(
                                         });
                                     selected_idx.set(Some(i));
                                 })
+                                on_change=on_change_cb
                             />
                         }
                     })
