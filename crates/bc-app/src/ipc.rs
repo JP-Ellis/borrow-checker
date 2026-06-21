@@ -434,15 +434,12 @@ pub(crate) fn transaction_into_ipc_with_accounts(
             let account_id = p.account_id().to_string();
             let account_name = build_account_path(&account_id, account_map);
             let amount = p.amount().map(IntoIpc::into_ipc);
-            // Effective posting tags = union(transaction tags, posting's own tags).
-            let mut union_ids: Vec<bc_models::TagId> = tx_tag_ids.to_vec();
-            union_ids.extend(p.tag_ids().iter().cloned());
             bc_ipc::Posting::new(
                 p.id().to_string(),
                 bc_ipc::AccountRef::new(account_id, account_name),
                 amount,
                 p.note(),
-                resolve_tag_paths(forest, &union_ids),
+                resolve_tag_paths(forest, &tx.effective_tag_ids(p)),
                 p.spread_from(),
                 p.spread_until(),
             )

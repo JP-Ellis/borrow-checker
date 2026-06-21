@@ -1300,10 +1300,6 @@ impl Service {
     /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "amending a transaction with postings, cost, spread, tags, and extra_dates requires several delete/insert queries and field mappings"
-    )]
     pub async fn amend(&self, updated: Transaction) -> BcResult<()> {
         validate_postings(updated.postings())?;
 
@@ -1362,13 +1358,7 @@ impl Service {
             .execute(&mut *db_tx)
             .await?;
 
-        for tag_id in updated.tag_ids() {
-            sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
-                .bind(&tx_id_str)
-                .bind(tag_id.to_string())
-                .execute(&mut *db_tx)
-                .await?;
-        }
+        crate::tag::insert_transaction_tags(&mut db_tx, updated.id(), updated.tag_ids()).await?;
 
         for (label, date) in updated.extra_dates() {
             sqlx::query(
@@ -1420,13 +1410,7 @@ impl Service {
             .execute(&mut *db_tx)
             .await?;
 
-            for tag_id in posting.tag_ids() {
-                sqlx::query("INSERT INTO posting_tags (posting_id, tag_id) VALUES (?, ?)")
-                    .bind(posting.id().to_string())
-                    .bind(tag_id.to_string())
-                    .execute(&mut *db_tx)
-                    .await?;
-            }
+            crate::tag::insert_posting_tags(&mut db_tx, posting.id(), posting.tag_ids()).await?;
         }
 
         db_tx.commit().await?;
