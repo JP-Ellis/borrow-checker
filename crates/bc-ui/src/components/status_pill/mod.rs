@@ -1,9 +1,27 @@
 //! Status indicator pill component.
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::mod_module_files,
+        reason = "mod.rs collocates the component source with its SCSS module file"
+    )
+)]
 
+#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 use stylance::import_style;
 
-import_style!(style, "status_pill.module.scss");
+import_style!(
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(
+            dead_code,
+            reason = "dot and pill are only used in the wasm32-gated StatusPill component"
+        )
+    )]
+    style,
+    "status_pill.module.scss"
+);
 
 /// Semantic tone for a [`StatusPill`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +53,7 @@ impl Tone {
 ///
 /// * `label` - One-word status label: `"synced"`, `"pending"`, `"error"`.
 /// * `tone` - Semantic [`Tone`] controlling colour.
+#[cfg(target_arch = "wasm32")]
 #[component]
 pub fn StatusPill(
     /// One-word status label.
@@ -51,11 +70,13 @@ pub fn StatusPill(
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, target_arch = "wasm32"))]
 pub mod qa;
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_ne;
+
     use super::Tone;
 
     #[test]
