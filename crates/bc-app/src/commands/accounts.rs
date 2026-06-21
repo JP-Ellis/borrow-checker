@@ -162,6 +162,38 @@ pub async fn create_transaction(
     Ok(tx_id.to_string())
 }
 
+/// Reverses a transaction, returning the new reversal transaction's id.
+///
+/// # Arguments
+///
+/// * `id`    - The transaction ID to reverse.
+/// * `state` - Tauri managed application state.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError`] if `id` is malformed or no such transaction exists.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn reverse_transaction(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<String, bc_ipc::BcError> {
+    let tx_id = id
+        .parse::<bc_models::TransactionId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid id: {e}")))?;
+
+    let reversal_id = state
+        .transactions
+        .reverse(&tx_id)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
+    Ok(reversal_id.to_string())
+}
+
 /// Returns income and expense totals for `account_id` over the last 30 days.
 ///
 /// # Arguments

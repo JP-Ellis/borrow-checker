@@ -59,3 +59,6 @@ pub const SET_POSTING_SPREAD: &str = "set_posting_spread";
 
 /// Command: clear the accrual spread from a posting.
 pub const CLEAR_POSTING_SPREAD: &str = "clear_posting_spread";
+
+/// Reverses a transaction, creating a linked negated reversal transaction.
+pub const REVERSE_TRANSACTION: &str = "reverse_transaction";
