@@ -1,11 +1,17 @@
 //! Command palette (⌘K) — account search and keyboard navigation.
 
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::AccountNode;
+#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
+#[cfg(target_arch = "wasm32")]
 use leptos::web_sys;
+#[cfg(target_arch = "wasm32")]
 use leptos_router::hooks::use_navigate;
+#[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
+#[cfg(target_arch = "wasm32")]
 import_style!(style, "palette.module.scss");
 
 /// Command palette modal triggered by ⌘K.
@@ -19,6 +25,7 @@ import_style!(style, "palette.module.scss");
 ///
 /// * `open` - Read signal controlling whether the palette is visible.
 /// * `on_close` - Callback invoked when the palette should close.
+#[cfg(target_arch = "wasm32")]
 #[component]
 #[expect(clippy::too_many_lines, reason = "Leptos view! block")]
 pub fn CommandPalette(
@@ -261,7 +268,7 @@ mod tests {
         let count = 0_usize;
         let i = 0_usize;
         if count > 0 {
-            let _ = i.saturating_add(1).min(count.saturating_sub(1));
+            let _next: usize = i.saturating_add(1).min(count.saturating_sub(1));
             panic!("should not reach here when count == 0");
         }
         assert_eq!(i, 0);
