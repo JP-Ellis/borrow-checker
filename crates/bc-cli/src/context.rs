@@ -27,6 +27,8 @@ pub struct AppContext {
     pub budgets: bc_core::BudgetService,
     /// Budget status engine.
     pub budget_status: bc_core::BudgetStatusEngine,
+    /// Tag service.
+    pub tags: bc_core::TagService,
 }
 
 impl AppContext {
@@ -73,6 +75,7 @@ impl AppContext {
             assets: bc_core::AssetService::new(pool.clone()),
             loans: bc_core::LoanService::new(pool.clone()),
             budgets: bc_core::BudgetService::new(pool.clone()),
+            tags: bc_core::TagService::new(pool.clone()),
             budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
         })
     }

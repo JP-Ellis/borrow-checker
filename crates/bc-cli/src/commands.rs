@@ -11,6 +11,7 @@ pub mod export;
 pub mod import;
 pub mod plugin;
 pub mod report;
+pub mod tag;
 pub mod transaction;
 
 /// Parses a `YYYY-MM-DD` date string, or returns today's date when `None`.
