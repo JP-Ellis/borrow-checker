@@ -56,6 +56,19 @@ struct ListPostingRow {
     spread_until: Option<String>,
 }
 
+/// Row type for a transaction fetched from the `transactions` table.
+///
+/// Fields: `(id, date, payee, description, note, reconciliation, created_at)`.
+type TxRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    String,
+    String,
+);
+
 /// Validates that the postings in a transaction sum to zero per commodity.
 fn validate_balance(postings: &[Posting]) -> BcResult<()> {
     if postings.is_empty() {
@@ -189,12 +202,13 @@ impl Service {
         insert_event(&event, &mut db_tx).await?;
 
         sqlx::query(
-            "INSERT INTO transactions (id, date, payee, description, reconciliation, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            "INSERT INTO transactions (id, date, payee, description, note, reconciliation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(tx_id.to_string())
         .bind(&date_str)
         .bind(tx.payee())
         .bind(tx.description())
+        .bind(tx.note())
         .bind(to_db_str(tx.reconciliation())?)
         .bind(&created_at_str)
         .execute(&mut *db_tx)
@@ -273,8 +287,8 @@ impl Service {
         reason = "loading a transaction with postings, cost, spread, and tags requires several queries and field mappings"
     )]
     pub async fn find_by_id(&self, id: &TransactionId) -> BcResult<Transaction> {
-        let tx_row = sqlx::query_as::<_, (String, String, Option<String>, String, String, String)>(
-            "SELECT id, date, payee, description, reconciliation, created_at \
+        let tx_row = sqlx::query_as::<_, TxRow>(
+            "SELECT id, date, payee, description, note, reconciliation, created_at \
              FROM transactions WHERE id = ?",
         )
         .bind(id.to_string())
@@ -292,12 +306,12 @@ impl Service {
             .parse::<Date>()
             .map_err(|e| BcError::BadData(format!("invalid date '{}': {e}", tx_row.1)))?;
 
-        let reconciliation = from_db_str::<Reconciliation>(&tx_row.4)?;
+        let reconciliation = from_db_str::<Reconciliation>(&tx_row.5)?;
 
         let created_at = tx_row
-            .5
+            .6
             .parse::<Timestamp>()
-            .map_err(|e| BcError::BadData(format!("invalid created_at '{}': {e}", tx_row.5)))?;
+            .map_err(|e| BcError::BadData(format!("invalid created_at '{}': {e}", tx_row.6)))?;
 
         // Load transaction-level tag IDs.
         let tx_tag_rows: Vec<(String,)> =
@@ -401,6 +415,7 @@ impl Service {
             .date(date)
             .maybe_payee(tx_row.2)
             .description(tx_row.3)
+            .maybe_note(tx_row.4)
             .postings(postings)
             .reconciliation(reconciliation)
             .tag_ids(tag_ids)
@@ -538,13 +553,12 @@ impl Service {
         reason = "loading transactions with postings, cost, and tags inherently requires several queries and field mappings"
     )]
     pub async fn list(&self) -> BcResult<Vec<Transaction>> {
-        let tx_rows: Vec<(String, String, Option<String>, String, String, String)> =
-            sqlx::query_as(
-                "SELECT id, date, payee, description, reconciliation, created_at \
+        let tx_rows: Vec<TxRow> = sqlx::query_as(
+            "SELECT id, date, payee, description, note, reconciliation, created_at \
                  FROM transactions ORDER BY date DESC",
-            )
-            .fetch_all(&self.pool)
-            .await?;
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         if tx_rows.is_empty() {
             return Ok(vec![]);
@@ -648,7 +662,15 @@ impl Service {
         tx_rows
             .into_iter()
             .map(
-                |(id_str, date_str, payee, description, reconciliation_str, created_at_str)| {
+                |(
+                    id_str,
+                    date_str,
+                    payee,
+                    description,
+                    note,
+                    reconciliation_str,
+                    created_at_str,
+                )| {
                     let tx_id = id_str
                         .parse::<TransactionId>()
                         .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
@@ -666,6 +688,7 @@ impl Service {
                         .date(date)
                         .maybe_payee(payee)
                         .description(description)
+                        .maybe_note(note)
                         .postings(postings)
                         .reconciliation(reconciliation)
                         .tag_ids(tag_ids)
@@ -702,16 +725,15 @@ impl Service {
     ) -> BcResult<impl Iterator<Item = Transaction>> {
         let account_id_str = account_id.to_string();
 
-        let tx_rows: Vec<(String, String, Option<String>, String, String, String)> =
-            sqlx::query_as(
-                "SELECT t.id, t.date, t.payee, t.description, t.reconciliation, t.created_at \
+        let tx_rows: Vec<TxRow> = sqlx::query_as(
+            "SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
                  FROM transactions t \
                  WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
                  ORDER BY t.date DESC",
-            )
-            .bind(&account_id_str)
-            .fetch_all(&self.pool)
-            .await?;
+        )
+        .bind(&account_id_str)
+        .fetch_all(&self.pool)
+        .await?;
 
         if tx_rows.is_empty() {
             return Ok(vec![].into_iter());
@@ -821,7 +843,15 @@ impl Service {
         tx_rows
             .into_iter()
             .map(
-                |(id_str, date_str, payee, description, reconciliation_str, created_at_str)| {
+                |(
+                    id_str,
+                    date_str,
+                    payee,
+                    description,
+                    note,
+                    reconciliation_str,
+                    created_at_str,
+                )| {
                     let tx_id = id_str
                         .parse::<TransactionId>()
                         .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
@@ -839,6 +869,7 @@ impl Service {
                         .date(date)
                         .maybe_payee(payee)
                         .description(description)
+                        .maybe_note(note)
                         .postings(postings)
                         .reconciliation(reconciliation)
                         .tag_ids(tag_ids)
@@ -900,7 +931,7 @@ impl Service {
         let date_from_str = date_from.map(|d| d.to_string());
         let date_until_str = date_until.map(|d| d.to_string());
 
-        let tx_rows: Vec<(String, String, Option<String>, String, String, String)> =
+        let tx_rows: Vec<TxRow> =
             match (&date_from_str, &date_until_str) {
                 (Some(from), Some(until)) => sqlx::query_as(
                     "WITH RECURSIVE subtree(id) AS ( \
@@ -908,7 +939,7 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.payee, t.description, t.reconciliation, t.created_at \
+                     SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
                      FROM transactions t \
                      WHERE t.date >= ? AND t.date < ? \
                      AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
@@ -925,7 +956,7 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.payee, t.description, t.reconciliation, t.created_at \
+                     SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
                      FROM transactions t \
                      WHERE t.date >= ? \
                      AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
@@ -941,7 +972,7 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.payee, t.description, t.reconciliation, t.created_at \
+                     SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
                      FROM transactions t \
                      WHERE t.date < ? \
                      AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
@@ -957,7 +988,7 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.payee, t.description, t.reconciliation, t.created_at \
+                     SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
                      FROM transactions t \
                      WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
                      ORDER BY t.date DESC",
@@ -1090,7 +1121,15 @@ impl Service {
         tx_rows
             .into_iter()
             .map(
-                |(id_str, date_str, payee, description, reconciliation_str, created_at_str)| {
+                |(
+                    id_str,
+                    date_str,
+                    payee,
+                    description,
+                    note,
+                    reconciliation_str,
+                    created_at_str,
+                )| {
                     let tx_id = id_str
                         .parse::<TransactionId>()
                         .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
@@ -1108,6 +1147,7 @@ impl Service {
                         .date(date)
                         .maybe_payee(payee)
                         .description(description)
+                        .maybe_note(note)
                         .postings(postings)
                         .reconciliation(reconciliation)
                         .tag_ids(tag_ids)
@@ -1922,6 +1962,42 @@ mod tests {
 
         let found = svc.find_by_id(&id).await.expect("find should succeed");
         assert_eq!(found.tag_ids(), &[tag_id]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn transaction_note_roundtrips(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let a = acct_svc
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("a");
+        let b = acct_svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("b");
+        let svc = Service::new(pool.clone());
+        let base = make_balanced_transaction(a, b);
+        let tx = Transaction::builder()
+            .id(base.id().clone())
+            .date(base.date())
+            .description("raw")
+            .note("my annotation")
+            .postings(base.postings().to_vec())
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let id = tx.id().clone();
+        svc.create(tx).await.expect("create");
+        let found = svc.find_by_id(&id).await.expect("find");
+        assert_eq!(found.note(), Some("my annotation"));
     }
 
     #[sqlx::test(migrations = "./migrations")]
