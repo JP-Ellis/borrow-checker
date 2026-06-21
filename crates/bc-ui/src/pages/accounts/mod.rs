@@ -1,22 +1,43 @@
 //! Accounts page — account tree sidebar and transaction register.
 
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::mod_module_files,
+        reason = "mod.rs collocates the component source with its SCSS module file"
+    )
+)]
+
 pub(crate) mod components;
+#[cfg(target_arch = "wasm32")]
 pub(crate) mod dashboard;
 
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::NewTransaction;
+#[cfg(target_arch = "wasm32")]
 use components::add_transaction::AddTransactionForm;
+#[cfg(target_arch = "wasm32")]
 use components::sidebar::AccountSidebar;
+#[cfg(target_arch = "wasm32")]
 use components::sticky_bar::StickyAccountBar;
+#[cfg(target_arch = "wasm32")]
 use components::transaction_register::TransactionRegister;
+#[cfg(target_arch = "wasm32")]
 use dashboard::AccountDashboard;
+#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
+#[cfg(target_arch = "wasm32")]
 use leptos::web_sys;
+#[cfg(target_arch = "wasm32")]
 use leptos_router::hooks::use_params_map;
+#[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
+#[cfg(target_arch = "wasm32")]
 import_style!(style, "accounts.module.scss");
 
 /// Accounts page — sidebar + scrollable account dashboard and register.
+#[cfg(target_arch = "wasm32")]
 #[component]
 #[expect(
     clippy::too_many_lines,
