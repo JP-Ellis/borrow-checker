@@ -78,6 +78,13 @@ pub enum Event {
         /// The transaction's ID.
         id: TransactionId,
     },
+    /// A reversal transaction was created for an existing transaction.
+    TransactionReversed {
+        /// The original transaction's ID.
+        original_id: TransactionId,
+        /// The new reversal transaction's ID.
+        reversal_id: TransactionId,
+    },
     /// A point-in-time market value was recorded for a [`ManualAsset`] account.
     ///
     /// [`ManualAsset`]: bc_models::AccountKind::ManualAsset
@@ -207,6 +214,7 @@ impl Event {
             Self::TransactionCreated { .. } => "TransactionCreated",
             Self::TransactionAmended { .. } => "TransactionAmended",
             Self::TransactionVoided { .. } => "TransactionVoided",
+            Self::TransactionReversed { .. } => "TransactionReversed",
             Self::AssetValuationRecorded { .. } => "AssetValuationRecorded",
             Self::DepreciationCalculated { .. } => "DepreciationCalculated",
             Self::LoanTermsSet { .. } => "LoanTermsSet",
@@ -228,6 +236,7 @@ impl Event {
             Self::TransactionCreated { id }
             | Self::TransactionAmended { id, .. }
             | Self::TransactionVoided { id } => id.to_string(),
+            Self::TransactionReversed { original_id, .. } => original_id.to_string(),
             // Asset/loan events belong to the account aggregate: `account_id` is the
             // aggregate root, so it is used as the aggregate ID rather than the entity's
             // own ID (`valuation_id`, `depreciation_id`, `loan_id`). This differs from

@@ -65,7 +65,7 @@ pub enum Commands {
     Account(account::Args),
     /// Manage assets (record-valuation, book-value, depreciate, set-loan-terms, amortization).
     Asset(asset::Args),
-    /// Manage transactions (list, add, amend, void).
+    /// Manage transactions (list, add, amend, reverse).
     Transaction(transaction::Args),
     /// Import transactions from a file using a named import profile.
     Import(import::Args),
