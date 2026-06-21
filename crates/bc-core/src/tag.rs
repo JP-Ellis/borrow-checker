@@ -244,6 +244,69 @@ impl Service {
         Ok(())
     }
 
+    /// Deletes a tag, its entire subtree, and every membership row referencing any
+    /// tag in that subtree.
+    ///
+    /// Hard-errors if any tag in the subtree is referenced as a budget revision's
+    /// `tag_filter`, to avoid silently breaking a budget definition.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The root of the subtree to delete.
+    ///
+    /// # Returns
+    ///
+    /// Nothing on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::TagInUse`] if a subtree tag is a budget filter;
+    /// [`BcError::Database`] on failure; [`BcError::BadData`] on row parse failure.
+    #[inline]
+    pub async fn delete(&self, id: &TagId) -> BcResult<()> {
+        let forest = self.forest().await?;
+        // Root first, then descendants in pre-order: every parent precedes its children.
+        let mut subtree: Vec<TagId> = vec![id.clone()];
+        subtree.extend(forest.descendants_of(id).map(|t| t.id().clone()));
+        let id_strings: Vec<String> = subtree.iter().map(TagId::to_string).collect();
+
+        let mut tx = self.pool.begin().await?;
+        for sid in &id_strings {
+            let used: Option<(String,)> =
+                sqlx::query_as("SELECT id FROM budget_revisions WHERE tag_filter = ?")
+                    .bind(sid)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            if used.is_some() {
+                return Err(BcError::TagInUse(format!("tag {sid} is a budget filter")));
+            }
+        }
+        for sid in &id_strings {
+            sqlx::query("DELETE FROM account_tags WHERE tag_id = ?")
+                .bind(sid)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM transaction_tags WHERE tag_id = ?")
+                .bind(sid)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM posting_tags WHERE tag_id = ?")
+                .bind(sid)
+                .execute(&mut *tx)
+                .await?;
+        }
+        // Delete tags children-first (reverse of root-first pre-order) to satisfy the
+        // tags.parent_id self-referential FK under foreign_keys = ON.
+        for sid in id_strings.iter().rev() {
+            sqlx::query("DELETE FROM tags WHERE id = ?")
+                .bind(sid)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Resolves a colon-path to an existing tag ID, erroring if it does not exist.
     ///
     /// Used when saving transactions/postings/accounts: tag references must point
@@ -460,5 +523,100 @@ mod tests {
             .await
             .expect_err("missing must error");
         assert!(matches!(err, BcError::NotFound(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn delete_cascades_subtree_and_memberships(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let person = svc
+            .create_path(&"person".parse().expect("path"))
+            .await
+            .expect("ok");
+        let josh = svc
+            .create_path(&"person:josh".parse().expect("path"))
+            .await
+            .expect("ok");
+
+        // account_tags.account_id has an FK, so insert a real account first.
+        let account_id = bc_models::AccountId::new();
+        sqlx::query(
+            "INSERT INTO accounts (id, name, account_type, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(account_id.to_string())
+        .bind("Test")
+        .bind("asset")
+        .bind("2026-01-01T00:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("account insert ok");
+        sqlx::query("INSERT INTO account_tags (account_id, tag_id) VALUES (?, ?)")
+            .bind(account_id.to_string())
+            .bind(josh.to_string())
+            .execute(&pool)
+            .await
+            .expect("membership insert ok");
+
+        svc.delete(&person).await.expect("delete ok");
+
+        assert!(svc.list().await.expect("ok").is_empty(), "subtree removed");
+        let remaining: (i64,) = sqlx::query_as("SELECT count(*) FROM account_tags")
+            .fetch_one(&pool)
+            .await
+            .expect("count ok");
+        assert_eq!(remaining.0, 0, "memberships removed");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn delete_blocks_when_used_by_budget_filter(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let person = svc
+            .create_path(&"person".parse().expect("path"))
+            .await
+            .expect("ok");
+
+        let account_id = bc_models::AccountId::new();
+        sqlx::query(
+            "INSERT INTO accounts (id, name, account_type, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(account_id.to_string())
+        .bind("Test")
+        .bind("asset")
+        .bind("2026-01-01T00:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("account insert ok");
+
+        let budget_id = bc_models::BudgetId::new();
+        sqlx::query("INSERT INTO budgets (id, account_id, created_at) VALUES (?, ?, ?)")
+            .bind(budget_id.to_string())
+            .bind(account_id.to_string())
+            .bind("2026-01-01T00:00:00Z")
+            .execute(&pool)
+            .await
+            .expect("budget insert ok");
+
+        let revision_id = bc_models::BudgetRevisionId::new();
+        sqlx::query(
+            "INSERT INTO budget_revisions \
+             (id, budget_id, effective_from, name, target_amount, target_currency, \
+              period, rollover, tag_filter, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(revision_id.to_string())
+        .bind(budget_id.to_string())
+        .bind("2026-01-01")
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .bind("monthly")
+        .bind("reset_to_zero")
+        .bind(person.to_string())
+        .bind("2026-01-01T00:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("revision insert ok");
+
+        let err = svc.delete(&person).await.expect_err("must block");
+        assert!(matches!(err, BcError::TagInUse(_)));
     }
 }
