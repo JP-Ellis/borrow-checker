@@ -13,15 +13,16 @@ CREATE TABLE IF NOT EXISTS postings (
     id                   TEXT    NOT NULL PRIMARY KEY,
     transaction_id       TEXT    NOT NULL REFERENCES transactions(id),
     account_id           TEXT    NOT NULL REFERENCES accounts(id),
-    amount               TEXT    NOT NULL, -- decimal string
-    commodity            TEXT    NOT NULL, -- CommodityCode (e.g. "AUD"); not FK to commodities
+    amount               TEXT,             -- decimal string; NULL when this leg is elided
+    commodity            TEXT,             -- CommodityCode (e.g. "AUD"); NULL iff amount is NULL; not FK to commodities
     note                 TEXT,
     position             INTEGER NOT NULL DEFAULT 0,
     -- cost basis fields (all NULL if no commodity conversion)
     cost_total_value     TEXT,   -- decimal string
     cost_total_commodity TEXT,             -- CommodityCode of the cost commodity; not FK
     cost_date            TEXT,   -- YYYY-MM-DD
-    cost_label           TEXT
+    cost_label           TEXT,
+    CHECK ((amount IS NULL) = (commodity IS NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_postings_transaction ON postings (transaction_id);
 CREATE INDEX IF NOT EXISTS idx_postings_account     ON postings (account_id);
