@@ -443,7 +443,8 @@ async fn amortization(ctx: &AppContext, account: String) -> CliResult<()> {
                 let bal = ctx
                     .balances
                     .balance_for(offset_id, terms.commodity())
-                    .await?;
+                    .await?
+                    .value();
                 map.insert(offset_id.clone(), bal);
             }
         }
