@@ -23,6 +23,8 @@ mod error;
 mod money;
 mod plugins;
 mod settings;
+/// Tag IPC types.
+mod tags;
 
 pub use accounts::AccountNode;
 pub use accounts::AccountRef;
@@ -59,3 +61,4 @@ pub use money::Amount;
 pub use money::AmountError;
 pub use plugins::PluginInfo;
 pub use settings::SettingsInfo;
+pub use tags::TagInfo;
