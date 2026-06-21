@@ -463,7 +463,9 @@ impl Engine {
         }
 
         // Fetch all postings for those accounts (one query, filtered in Rust).
-        let posting_rows: Vec<(String, String, String)> = sqlx::query_as(
+        // Elided postings (NULL amount/commodity) are included in the SQL result but
+        // skipped in Rust so they do not contribute to the balance sum.
+        let posting_rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
             "SELECT p.account_id, p.commodity, p.amount
              FROM postings p
              JOIN accounts a ON a.id = p.account_id
@@ -484,7 +486,10 @@ impl Engine {
             .map(|id| (id.clone(), Decimal::ZERO))
             .collect();
 
-        for (acc_id, commodity, amt_str) in &posting_rows {
+        for (acc_id, opt_commodity, opt_amt_str) in &posting_rows {
+            let (Some(commodity), Some(amt_str)) = (opt_commodity, opt_amt_str) else {
+                continue; // elided posting — skip
+            };
             let Some(default_commodity) = commodity_by_account.get(acc_id) else {
                 continue; // no default commodity — skip
             };
