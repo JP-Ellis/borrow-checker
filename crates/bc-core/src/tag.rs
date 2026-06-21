@@ -200,6 +200,50 @@ impl Service {
         Ok(resolve_path_in(&tags, path))
     }
 
+    /// Renames a tag's leaf-name segment. Descendant paths update automatically.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The tag to rename.
+    /// * `new_name` - The new leaf name (must be unique among the tag's siblings).
+    ///
+    /// # Returns
+    ///
+    /// Nothing on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if the tag does not exist; [`BcError::InvalidInput`]
+    /// if a sibling already has `new_name`; [`BcError::Database`] on update failure.
+    #[inline]
+    pub async fn rename(&self, id: &TagId, new_name: &str) -> BcResult<()> {
+        let current = self
+            .find_by_id(id)
+            .await?
+            .ok_or_else(|| BcError::NotFound(format!("tag '{id}'")))?;
+        let parent_str = current.parent_id().map(ToString::to_string);
+
+        let clash: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM tags WHERE name = ? AND parent_id IS ? AND id <> ?")
+                .bind(new_name)
+                .bind(parent_str.as_deref())
+                .bind(id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
+        if clash.is_some() {
+            return Err(BcError::InvalidInput(format!(
+                "a sibling tag named '{new_name}' already exists"
+            )));
+        }
+
+        sqlx::query("UPDATE tags SET name = ? WHERE id = ?")
+            .bind(new_name)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Resolves a colon-path to an existing tag ID, erroring if it does not exist.
     ///
     /// Used when saving transactions/postings/accounts: tag references must point
@@ -361,6 +405,60 @@ mod tests {
             .resolve_existing(&"person:nope".parse().expect("path"))
             .await
             .expect_err("missing tag must error");
+        assert!(matches!(err, BcError::NotFound(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_updates_descendant_paths(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        svc.create_path(&"person:josh".parse().expect("path"))
+            .await
+            .expect("ok");
+        let person = svc
+            .find_by_path(&"person".parse().expect("path"))
+            .await
+            .expect("ok")
+            .expect("exists");
+        let josh = svc
+            .find_by_path(&"person:josh".parse().expect("path"))
+            .await
+            .expect("ok")
+            .expect("exists");
+
+        svc.rename(&person, "people").await.expect("rename ok");
+
+        let forest = svc.forest().await.expect("ok");
+        assert_eq!(
+            forest.path_of(&josh).map(|p| p.to_string()),
+            Some("people:josh".to_owned())
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_rejects_sibling_collision(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let josh = svc
+            .create_path(&"person:josh".parse().expect("path"))
+            .await
+            .expect("ok");
+        svc.create_path(&"person:bec".parse().expect("path"))
+            .await
+            .expect("ok");
+
+        let err = svc
+            .rename(&josh, "bec")
+            .await
+            .expect_err("collision must error");
+        assert!(matches!(err, BcError::InvalidInput(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_missing_tag_errors(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let err = svc
+            .rename(&TagId::new(), "x")
+            .await
+            .expect_err("missing must error");
         assert!(matches!(err, BcError::NotFound(_)));
     }
 }
