@@ -140,8 +140,7 @@ pub async fn create_transaction(
         let account_id = p.account_id.parse::<bc_models::AccountId>().map_err(|e| {
             bc_ipc::BcError::Validation(format!("invalid account_id '{}': {e}", p.account_id))
         })?;
-        let tag_ids: Vec<bc_models::TagId> =
-            p.tags.iter().filter_map(|s| s.parse().ok()).collect();
+        let tag_ids = resolve_tag_inputs(&state.tags, &p.tags).await?;
         let posting = bc_models::Posting::builder()
             .id(bc_models::PostingId::new())
             .account_id(account_id)
@@ -154,6 +153,8 @@ pub async fn create_transaction(
         postings.push(posting);
     }
 
+    let tx_tag_ids = resolve_tag_inputs(&state.tags, &tx.tags).await?;
+
     let model_tx = bc_models::Transaction::builder()
         .id(bc_models::TransactionId::new())
         .date(tx.date)
@@ -161,6 +162,7 @@ pub async fn create_transaction(
         .description(tx.description)
         .maybe_note(tx.note)
         .postings(postings)
+        .tag_ids(tx_tag_ids)
         .reconciliation(reconciliation)
         .created_at(jiff::Timestamp::now())
         .build();
@@ -286,6 +288,40 @@ pub async fn get_posting_count(
         .posting_count(&id)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
+}
+
+// MARK: Tag helpers
+
+/// Resolves a list of tag path strings to existing tag IDs.
+///
+/// # Arguments
+///
+/// * `tags` - The tag service used for resolution.
+/// * `paths` - The colon-joined tag paths to resolve.
+///
+/// # Returns
+///
+/// The resolved tag IDs, in input order.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] if a path is malformed or unknown.
+async fn resolve_tag_inputs(
+    tags: &bc_core::TagService,
+    paths: &[String],
+) -> Result<Vec<bc_models::TagId>, bc_ipc::BcError> {
+    let mut ids = Vec::with_capacity(paths.len());
+    for raw in paths {
+        let path = raw
+            .parse::<bc_models::TagPath>()
+            .map_err(|e| bc_ipc::BcError::Validation(format!("invalid tag '{raw}': {e}")))?;
+        let id = tags
+            .resolve_existing(&path)
+            .await
+            .map_err(|e| bc_ipc::BcError::Validation(e.to_string()))?;
+        ids.push(id);
+    }
+    Ok(ids)
 }
 
 // MARK: Sparkline helpers
@@ -445,4 +481,19 @@ pub async fn get_account_sparkline(
         .collect::<Vec<_>>();
 
     Ok(points)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn resolve_tag_inputs_errors_on_unknown_tag() {
+        tauri::async_runtime::block_on(async {
+            let pool = bc_core::open_db("sqlite::memory:").await.expect("db");
+            let tags = bc_core::TagService::new(pool);
+            let err = super::resolve_tag_inputs(&tags, &["person:ghost".to_owned()])
+                .await
+                .expect_err("unknown tag must error");
+            assert!(matches!(err, bc_ipc::BcError::Validation(_)));
+        });
+    }
 }
