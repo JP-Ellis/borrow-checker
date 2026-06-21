@@ -4,6 +4,7 @@ use bc_ipc::Amount;
 use bc_ipc::BudgetTreeNode;
 use bc_ipc::RolloverPolicy;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::BudgetRow;
 use crate::pages::budget::BudgetPageCtx;
@@ -16,8 +17,8 @@ fn leaf_with_target(id: &str, name: &str, spent: i64, target: i64, mixed: bool) 
         .account_name("Everyday")
         .depth(0)
         .name(name)
-        .spent(Amount::from_minor(spent, "AUD", 2))
-        .effective_target(Amount::from_minor(target, "AUD", 2))
+        .spent(Amount::new(Decimal::new(spent, 2), "AUD"))
+        .effective_target(Amount::new(Decimal::new(target, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(mixed)
         .rollover(RolloverPolicy::ResetToZero)
@@ -33,7 +34,7 @@ fn leaf_no_target(id: &str, name: &str, spent: i64, tracking: bool) -> BudgetTre
         .account_name("Everyday")
         .depth(0)
         .name(name)
-        .spent(Amount::from_minor(spent, "AUD", 2))
+        .spent(Amount::new(Decimal::new(spent, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(false)
         .rollover(RolloverPolicy::ResetToZero)
@@ -72,8 +73,8 @@ pub fn BudgetRowQa() -> impl IntoView {
         .account_name("Everyday")
         .depth(0)
         .name("Food")
-        .spent(Amount::from_minor(109_600, "AUD", 2))
-        .effective_target(Amount::from_minor(160_000, "AUD", 2))
+        .spent(Amount::new(Decimal::new(109_600, 2), "AUD"))
+        .effective_target(Amount::new(Decimal::new(160_000, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(false)
         .is_tracking_only(false)

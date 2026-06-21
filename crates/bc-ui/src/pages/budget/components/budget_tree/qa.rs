@@ -4,6 +4,7 @@ use bc_ipc::Amount;
 use bc_ipc::BudgetTreeNode;
 use bc_ipc::RolloverPolicy;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::BudgetTree;
 
@@ -21,8 +22,8 @@ fn two_nodes() -> Vec<BudgetTreeNode> {
             .account_name("Everyday")
             .depth(0)
             .name("Groceries")
-            .effective_target(Amount::from_minor(80_000, "AUD", 2))
-            .spent(Amount::from_minor(52_300, "AUD", 2))
+            .effective_target(Amount::new(Decimal::new(80_000, 2), "AUD"))
+            .spent(Amount::new(Decimal::new(52_300, 2), "AUD"))
             .native_period_label("monthly")
             .has_mixed_period(false)
             .rollover(RolloverPolicy::ResetToZero)
@@ -34,8 +35,8 @@ fn two_nodes() -> Vec<BudgetTreeNode> {
             .account_name("Everyday")
             .depth(0)
             .name("Dining Out")
-            .effective_target(Amount::from_minor(30_000, "AUD", 2))
-            .spent(Amount::from_minor(31_200, "AUD", 2))
+            .effective_target(Amount::new(Decimal::new(30_000, 2), "AUD"))
+            .spent(Amount::new(Decimal::new(31_200, 2), "AUD"))
             .native_period_label("monthly")
             .has_mixed_period(false)
             .rollover(RolloverPolicy::ResetToZero)
@@ -54,8 +55,8 @@ fn three_nodes() -> Vec<BudgetTreeNode> {
             .account_name("Expenses")
             .depth(0)
             .name("Transport")
-            .effective_target(Amount::from_minor(15_000, "AUD", 2))
-            .spent(Amount::from_minor(7_400, "AUD", 2))
+            .effective_target(Amount::new(Decimal::new(15_000, 2), "AUD"))
+            .spent(Amount::new(Decimal::new(7_400, 2), "AUD"))
             .native_period_label("monthly")
             .has_mixed_period(false)
             .rollover(RolloverPolicy::CarryForward)

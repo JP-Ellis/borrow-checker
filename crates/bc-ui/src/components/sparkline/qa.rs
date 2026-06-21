@@ -2,6 +2,7 @@
 
 use bc_ipc::Amount;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::SparkPoint;
 use super::Sparkline;
@@ -11,8 +12,8 @@ use super::Title;
 fn pt(label: &'static str, income: i64, expenses: i64) -> SparkPoint {
     SparkPoint::new(
         label,
-        Amount::from_minor(income, "AUD", 2),
-        Amount::from_minor(expenses, "AUD", 2),
+        Amount::new(Decimal::new(income, 2), "AUD"),
+        Amount::new(Decimal::new(expenses, 2), "AUD"),
     )
 }
 
@@ -30,16 +31,18 @@ pub fn SparklineQa() -> impl IntoView {
         .map(|d| {
             SparkPoint::new(
                 format!("{d:02}"),
-                Amount::from_minor(
-                    if d % 7 < 2 {
-                        0
-                    } else {
-                        11_000 + d * 317 % 4_000
-                    },
+                Amount::new(
+                    Decimal::new(
+                        if d % 7 < 2 {
+                            0
+                        } else {
+                            11_000 + d * 317 % 4_000
+                        },
+                        2,
+                    ),
                     "AUD",
-                    2,
                 ),
-                Amount::from_minor(8_000 + d * 53 % 3_000, "AUD", 2),
+                Amount::new(Decimal::new(8_000 + d * 53 % 3_000, 2), "AUD"),
             )
         })
         .collect();

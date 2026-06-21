@@ -4,6 +4,7 @@ use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
 use bc_ipc::Amount;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::AddTransactionForm;
 
@@ -14,7 +15,7 @@ fn sample_accounts() -> Vec<AccountNode> {
             "acc-checking",
             "Smart Access",
             Some("4421"),
-            Some(Amount::from_minor(-150_000, "AUD", 2)),
+            Some(Amount::new(Decimal::new(-150_000, 2), "AUD")),
             None::<&str>,
             AccountType::Asset,
             vec![],
@@ -23,7 +24,7 @@ fn sample_accounts() -> Vec<AccountNode> {
             "acc-groceries",
             "Groceries",
             None::<&str>,
-            Some(Amount::from_minor(0, "AUD", 2)),
+            Some(Amount::new(Decimal::new(0, 2), "AUD")),
             None::<&str>,
             AccountType::Expense,
             vec![],
@@ -32,7 +33,7 @@ fn sample_accounts() -> Vec<AccountNode> {
             "acc-salary",
             "Salary",
             None::<&str>,
-            Some(Amount::from_minor(0, "AUD", 2)),
+            Some(Amount::new(Decimal::new(0, 2), "AUD")),
             None::<&str>,
             AccountType::Income,
             vec![],

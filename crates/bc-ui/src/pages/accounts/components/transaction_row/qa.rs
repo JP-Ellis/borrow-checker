@@ -7,6 +7,7 @@ use bc_ipc::Posting;
 use bc_ipc::Transaction;
 use bc_ipc::TxStatus;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::TransactionRow;
 
@@ -26,7 +27,7 @@ fn tx_simple() -> Transaction {
             Posting::new(
                 "posting-coles-debit",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                Amount::from_minor(-8_420, "AUD", 2),
+                Amount::new(Decimal::new(-8_420, 2), "AUD"),
                 None::<&str>,
                 None,
                 None,
@@ -34,7 +35,7 @@ fn tx_simple() -> Transaction {
             Posting::new(
                 "posting-coles-groceries",
                 AccountRef::new("groceries", "Expenses :: Groceries"),
-                Amount::from_minor(8_420, "AUD", 2),
+                Amount::new(Decimal::new(8_420, 2), "AUD"),
                 None::<&str>,
                 None,
                 None,
@@ -66,7 +67,7 @@ fn tx_multi_posting() -> Transaction {
             Posting::new(
                 "posting-salary-income",
                 AccountRef::new("income-salary", "Income :: Salary"),
-                Amount::from_minor(-846_154, "AUD", 2),
+                Amount::new(Decimal::new(-846_154, 2), "AUD"),
                 Some("gross pay"),
                 None,
                 None,
@@ -74,7 +75,7 @@ fn tx_multi_posting() -> Transaction {
             Posting::new(
                 "posting-salary-takehome",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                Amount::from_minor(428_055, "AUD", 2),
+                Amount::new(Decimal::new(428_055, 2), "AUD"),
                 Some("take-home"),
                 None,
                 None,
@@ -102,7 +103,7 @@ fn tx_split_siblings() -> Transaction {
             Posting::new(
                 "posting-amazon-debit",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                Amount::from_minor(-30_000, "AUD", 2),
+                Amount::new(Decimal::new(-30_000, 2), "AUD"),
                 None::<&str>,
                 None,
                 None,
@@ -110,7 +111,7 @@ fn tx_split_siblings() -> Transaction {
             Posting::new(
                 "posting-amazon-groceries",
                 AccountRef::new("exp-groceries", "Expenses :: Groceries"),
-                Amount::from_minor(10_000, "AUD", 2),
+                Amount::new(Decimal::new(10_000, 2), "AUD"),
                 None::<&str>,
                 None,
                 None,
@@ -118,7 +119,7 @@ fn tx_split_siblings() -> Transaction {
             Posting::new(
                 "posting-amazon-healthcare",
                 AccountRef::new("exp-healthcare", "Expenses :: Healthcare"),
-                Amount::from_minor(10_000, "AUD", 2),
+                Amount::new(Decimal::new(10_000, 2), "AUD"),
                 None::<&str>,
                 None,
                 None,
@@ -126,7 +127,7 @@ fn tx_split_siblings() -> Transaction {
             Posting::new(
                 "posting-amazon-household",
                 AccountRef::new("exp-household", "Expenses :: Household"),
-                Amount::from_minor(10_000, "AUD", 2),
+                Amount::new(Decimal::new(10_000, 2), "AUD"),
                 None::<&str>,
                 None,
                 None,
@@ -148,7 +149,7 @@ fn tx_split_cross_type() -> Transaction {
             Posting::new(
                 "posting-cross-debit",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                Amount::from_minor(-30_000, "AUD", 2),
+                Amount::new(Decimal::new(-30_000, 2), "AUD"),
                 None::<&str>,
                 None,
                 None,
@@ -156,7 +157,7 @@ fn tx_split_cross_type() -> Transaction {
             Posting::new(
                 "posting-cross-groceries",
                 AccountRef::new("exp-groceries", "Expenses :: Groceries"),
-                Amount::from_minor(10_000, "AUD", 2),
+                Amount::new(Decimal::new(10_000, 2), "AUD"),
                 None::<&str>,
                 None,
                 None,
@@ -164,7 +165,7 @@ fn tx_split_cross_type() -> Transaction {
             Posting::new(
                 "posting-cross-healthcare",
                 AccountRef::new("exp-healthcare", "Expenses :: Healthcare"),
-                Amount::from_minor(10_000, "AUD", 2),
+                Amount::new(Decimal::new(10_000, 2), "AUD"),
                 None::<&str>,
                 None,
                 None,
@@ -172,7 +173,7 @@ fn tx_split_cross_type() -> Transaction {
             Posting::new(
                 "posting-cross-interest",
                 AccountRef::new("inc-interest", "Income :: Interest"),
-                Amount::from_minor(10_000, "AUD", 2),
+                Amount::new(Decimal::new(10_000, 2), "AUD"),
                 None::<&str>,
                 None,
                 None,
