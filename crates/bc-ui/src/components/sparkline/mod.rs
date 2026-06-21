@@ -1,19 +1,37 @@
 //! SVG sparkline — income and expense lines over a time axis.
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::mod_module_files,
+        reason = "mod.rs collocates the component source with its SCSS module file"
+    )
+)]
+#[cfg(target_arch = "wasm32")]
 use core::cmp::Ordering;
+#[cfg(target_arch = "wasm32")]
 use core::sync::atomic::AtomicUsize;
 
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::Currency;
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::USD;
+#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
+#[cfg(target_arch = "wasm32")]
 use leptos::web_sys;
+#[cfg(target_arch = "wasm32")]
 use rust_decimal::prelude::ToPrimitive as _;
+#[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
+#[cfg(target_arch = "wasm32")]
 use crate::components::num::format_amount;
 
+#[cfg(target_arch = "wasm32")]
 import_style!(style, "sparkline.module.scss");
 
 /// Per-instance counter for generating unique SVG gradient IDs.
+#[cfg(target_arch = "wasm32")]
 static NEXT_SPARKLINE_ID: AtomicUsize = AtomicUsize::new(0);
 
 // MARK: Scaling
@@ -40,8 +58,11 @@ static NEXT_SPARKLINE_ID: AtomicUsize = AtomicUsize::new(0);
     clippy::as_conversions,
     clippy::cast_precision_loss,
     clippy::expect_used,
-    dead_code,
-    reason = "SVG coordinate math on non-empty slices; precision loss, expect, and dead_code are safe here; used in later tasks"
+    reason = "SVG coordinate math on non-empty slices; precision loss and expect are safe here"
+)]
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(dead_code, reason = "used in later tasks on wasm32")
 )]
 pub fn scale_to_svg(values: &[i64], y_top: f32, y_bottom: f32, width: f32) -> Vec<(f32, f32)> {
     if values.is_empty() {
@@ -163,11 +184,13 @@ fn fill_points_attr(pts: &[(f32, f32)], chart_bot: f32) -> String {
 
 /// Re-exported from `bc_ipc` so callers can `use crate::components::sparkline::SparkPoint`
 /// without adding a direct `bc_ipc` import.
+#[cfg(target_arch = "wasm32")]
 pub use bc_ipc::SparkPoint;
 
 // MARK: Component
 
 /// Title slot for [`Sparkline`] — accepts arbitrary HTML children.
+#[cfg(target_arch = "wasm32")]
 #[slot]
 pub struct Title {
     /// Title content — plain text or rich markup.
@@ -184,6 +207,7 @@ pub struct Title {
 /// * `points` - Time-series data points, oldest first.
 /// * `title` - Title slot — use `<Title slot>` to pass text or rich markup.
 /// * `currency` - Currency for formatting y-axis and hover labels. Defaults to [`USD`].
+#[cfg(target_arch = "wasm32")]
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -461,7 +485,7 @@ pub fn Sparkline(
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, target_arch = "wasm32"))]
 pub mod qa;
 
 #[cfg(test)]
@@ -473,18 +497,33 @@ mod tests {
     use super::scale_to_svg_with_bounds;
 
     #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::float_cmp,
+        reason = "test assertions on known-length Vec; exact float equality is correct here"
+    )]
     fn scale_maps_min_to_bottom() {
         let pts = scale_to_svg(&[0, 100], 0.0, 40.0, 100.0);
         assert_eq!(pts[0].1, 40.0_f32);
     }
 
     #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::float_cmp,
+        reason = "test assertions on known-length Vec; exact float equality is correct here"
+    )]
     fn scale_maps_max_to_top() {
         let pts = scale_to_svg(&[0, 100], 0.0, 40.0, 100.0);
         assert_eq!(pts[1].1, 0.0_f32);
     }
 
     #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::float_cmp,
+        reason = "test assertions on known-length Vec; exact float equality is correct here"
+    )]
     fn scale_equal_values_maps_to_midpoint() {
         let pts = scale_to_svg(&[50, 50], 0.0, 40.0, 100.0);
         assert_eq!(pts[0].1, 20.0_f32);
@@ -492,15 +531,24 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::float_cmp,
+        reason = "test assertions on known-length Vec; exact float equality is correct here"
+    )]
     fn bounds_income_at_top_expense_in_middle() {
-        // income=100 is global max → y_top; expense=60 is in middle
         let income_pts = scale_to_svg_with_bounds(&[100], 0, 100, 0.0, 40.0, 100.0);
         let expense_pts = scale_to_svg_with_bounds(&[60], 0, 100, 0.0, 40.0, 100.0);
-        assert_eq!(income_pts[0].1, 0.0_f32); // max → top
-        assert_eq!(expense_pts[0].1, 16.0_f32); // 60% from bottom → 40 - 0.6*40 = 16
+        assert_eq!(income_pts[0].1, 0.0_f32);
+        assert_eq!(expense_pts[0].1, 16.0_f32);
     }
 
     #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::float_cmp,
+        reason = "test assertions on known-length Vec; exact float equality is correct here"
+    )]
     fn bounds_equal_range_maps_to_midpoint() {
         let pts = scale_to_svg_with_bounds(&[50, 50], 50, 50, 0.0, 40.0, 100.0);
         assert_eq!(pts[0].1, 20.0_f32);
