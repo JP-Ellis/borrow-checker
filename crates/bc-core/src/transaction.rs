@@ -217,13 +217,7 @@ impl Service {
         .execute(&mut *db_tx)
         .await?;
 
-        for tag_id in tx.tag_ids() {
-            sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
-                .bind(tx_id.to_string())
-                .bind(tag_id.to_string())
-                .execute(&mut *db_tx)
-                .await?;
-        }
+        crate::tag::insert_transaction_tags(&mut db_tx, &tx_id, tx.tag_ids()).await?;
 
         for (label, date) in tx.extra_dates() {
             sqlx::query(
@@ -275,13 +269,7 @@ impl Service {
             .execute(&mut *db_tx)
             .await?;
 
-            for tag_id in posting.tag_ids() {
-                sqlx::query("INSERT INTO posting_tags (posting_id, tag_id) VALUES (?, ?)")
-                    .bind(posting.id().to_string())
-                    .bind(tag_id.to_string())
-                    .execute(&mut *db_tx)
-                    .await?;
-            }
+            crate::tag::insert_posting_tags(&mut db_tx, posting.id(), posting.tag_ids()).await?;
         }
 
         db_tx.commit().await?;
