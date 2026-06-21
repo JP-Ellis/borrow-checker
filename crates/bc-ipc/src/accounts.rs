@@ -535,6 +535,7 @@ impl Period {
 mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
+    use rust_decimal::Decimal;
 
     use super::*;
     use crate::Amount;
@@ -543,7 +544,7 @@ mod tests {
     fn new_posting_constructor_roundtrip() {
         let p = NewPosting::new(
             "acc-1",
-            Amount::from_minor(-1_000, "AUD", 2),
+            Amount::new(Decimal::new(-1_000, 2), "AUD"),
             Some("test note"),
             None,
             None,
@@ -565,14 +566,14 @@ mod tests {
             vec![
                 NewPosting::new(
                     "acc-a",
-                    Amount::from_minor(-500, "AUD", 2),
+                    Amount::new(Decimal::new(-500, 2), "AUD"),
                     None::<&str>,
                     None,
                     None,
                 ),
                 NewPosting::new(
                     "acc-b",
-                    Amount::from_minor(500, "AUD", 2),
+                    Amount::new(Decimal::new(500, 2), "AUD"),
                     None::<&str>,
                     None,
                     None,
@@ -683,14 +684,14 @@ mod tests {
             vec![
                 NewPosting::new(
                     "acc-a",
-                    Amount::from_minor(-3_000, "AUD", 2),
+                    Amount::new(Decimal::new(-3_000, 2), "AUD"),
                     None::<&str>,
                     None,
                     None,
                 ),
                 NewPosting::new(
                     "acc-b",
-                    Amount::from_minor(3_000, "AUD", 2),
+                    Amount::new(Decimal::new(3_000, 2), "AUD"),
                     None::<&str>,
                     None,
                     None,
@@ -711,8 +712,8 @@ mod tests {
     fn spark_point_carries_amount() {
         let p = SparkPoint::new(
             "apr",
-            Amount::from_minor(64_000, "AUD", 2),
-            Amount::from_minor(12_300, "AUD", 2),
+            Amount::new(Decimal::new(64_000, 2), "AUD"),
+            Amount::new(Decimal::new(12_300, 2), "AUD"),
         );
         let json = serde_json::to_string(&p).expect("ser");
         let back: SparkPoint = serde_json::from_str(&json).expect("de");

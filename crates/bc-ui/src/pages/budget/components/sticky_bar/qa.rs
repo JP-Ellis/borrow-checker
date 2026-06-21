@@ -7,6 +7,7 @@ use bc_ipc::BudgetTreeNode;
 use bc_ipc::Period;
 use jiff::civil::Date;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::StickyBar;
 use crate::pages::budget::BudgetPageCtx;
@@ -14,9 +15,9 @@ use crate::pages::budget::BudgetPageCtx;
 /// Creates a fixture [`BudgetSummary`] with realistic loaded values.
 fn loaded_summary() -> BudgetSummary {
     BudgetSummary::new(
-        Some(Amount::from_minor(500_000, "AUD", 2)),
-        Some(Amount::from_minor(312_450, "AUD", 2)),
-        Some(Amount::from_minor(187_550, "AUD", 2)),
+        Some(Amount::new(Decimal::new(500_000, 2), "AUD")),
+        Some(Amount::new(Decimal::new(312_450, 2), "AUD")),
+        Some(Amount::new(Decimal::new(187_550, 2), "AUD")),
         false,
         2,
     )

@@ -5,6 +5,7 @@ use bc_ipc::BudgetRevisionView;
 use bc_ipc::Period;
 use bc_ipc::RolloverPolicy;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::RevisionForm;
 
@@ -15,7 +16,7 @@ pub fn RevisionFormQa() -> impl IntoView {
         .id("budget_rev_sample")
         .effective_from(jiff::civil::Date::constant(2027, 1, 1))
         .name("Groceries")
-        .target(Amount::from_minor(25_000, "AUD", 2))
+        .target(Amount::new(Decimal::new(25_000, 2), "AUD"))
         .period(Period::Weekly)
         .period_label("weekly")
         .rollover(RolloverPolicy::CarryForward)

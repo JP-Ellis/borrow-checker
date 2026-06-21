@@ -528,6 +528,7 @@ mod tests {
     use std::collections::HashMap;
 
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
 
     use super::IntoIpc as _;
     use super::IntoModel as _;
@@ -547,7 +548,7 @@ mod tests {
 
     #[test]
     fn amount_into_model_aud() {
-        let ipc = bc_ipc::Amount::from_minor(1050, "AUD", 2);
+        let ipc = bc_ipc::Amount::new(Decimal::new(1050, 2), "AUD");
         let model = (&ipc).into_model();
         assert_eq!(model.value(), rust_decimal::Decimal::new(1050, 2));
         assert_eq!(model.commodity().as_str(), "AUD");

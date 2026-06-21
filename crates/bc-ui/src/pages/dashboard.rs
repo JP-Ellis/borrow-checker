@@ -2,6 +2,7 @@
 
 use bc_ipc::Amount;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use crate::components::num::Num;
 use crate::components::status_pill::StatusPill;
@@ -16,7 +17,7 @@ pub fn Dashboard() -> impl IntoView {
             <p>"dashboard — coming in phase 2"</p>
             // Primitive components rendered with neutral/placeholder values so
             // they are live in the WASM binary and visually testable in Phase 1.
-            <Num money=Amount::from_minor(0, "USD", 2) />
+            <Num money=Amount::new(Decimal::new(0, 2), "USD") />
             <TagToken label="example:tag".to_owned() />
             <StatusPill label="ok".to_owned() tone=Tone::Good />
         </div>

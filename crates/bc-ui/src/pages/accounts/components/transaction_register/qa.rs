@@ -7,6 +7,7 @@ use bc_ipc::Posting;
 use bc_ipc::Transaction;
 use bc_ipc::TxStatus;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::TransactionRegister;
 
@@ -27,7 +28,7 @@ fn sample_transactions() -> Vec<Transaction> {
                 Posting::new(
                     "posting-coles-debit",
                     AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                    Amount::from_minor(-8_420, "AUD", 2),
+                    Amount::new(Decimal::new(-8_420, 2), "AUD"),
                     None::<&str>,
                     None,
                     None,
@@ -35,7 +36,7 @@ fn sample_transactions() -> Vec<Transaction> {
                 Posting::new(
                     "posting-coles-groceries",
                     AccountRef::new("groceries", "Expenses :: Groceries"),
-                    Amount::from_minor(8_420, "AUD", 2),
+                    Amount::new(Decimal::new(8_420, 2), "AUD"),
                     None::<&str>,
                     None,
                     None,
@@ -59,7 +60,7 @@ fn sample_transactions() -> Vec<Transaction> {
                 Posting::new(
                     "posting-salary-income",
                     AccountRef::new("income-salary", "Income :: Salary"),
-                    Amount::from_minor(-846_154, "AUD", 2),
+                    Amount::new(Decimal::new(-846_154, 2), "AUD"),
                     Some("gross pay"),
                     None,
                     None,
@@ -67,7 +68,7 @@ fn sample_transactions() -> Vec<Transaction> {
                 Posting::new(
                     "posting-salary-takehome",
                     AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                    Amount::from_minor(428_055, "AUD", 2),
+                    Amount::new(Decimal::new(428_055, 2), "AUD"),
                     Some("take-home"),
                     None,
                     None,
