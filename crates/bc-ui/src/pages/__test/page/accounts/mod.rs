@@ -30,10 +30,6 @@ pub fn AccountsRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
             <Route path=path!("/hero") view=hero::AccountDashboardQa />
             <Route path=path!("/full") view=full::AccountFullQa />
             <Route
-                path=path!("/transaction-row")
-                view=component::transaction_row::TransactionRowQa
-            />
-            <Route
                 path=path!("/transaction-register")
                 view=component::transaction_register::TransactionRegisterQa
             />
@@ -65,11 +61,6 @@ pub fn AccountsIndex() -> impl IntoView {
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));\
             gap:8px;">
                 <QaCard title=hero::TITLE path=hero::PATH description=hero::DESCRIPTION />
-                <QaCard
-                    title=component::transaction_row::TITLE
-                    path=component::transaction_row::PATH
-                    description=component::transaction_row::DESCRIPTION
-                />
                 <QaCard
                     title=component::transaction_register::TITLE
                     path=component::transaction_register::PATH
