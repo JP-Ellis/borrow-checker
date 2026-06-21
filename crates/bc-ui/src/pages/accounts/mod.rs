@@ -1,6 +1,6 @@
 //! Accounts page — account tree sidebar and transaction register.
 
-mod types;
+pub(crate) mod types;
 
 pub(crate) mod components;
 pub(crate) mod dashboard;
