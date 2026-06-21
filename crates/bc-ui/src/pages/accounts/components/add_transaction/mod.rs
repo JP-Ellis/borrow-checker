@@ -1,16 +1,31 @@
 //! Inline form for creating a new double-entry transaction.
 
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::mod_module_files,
+        reason = "mod.rs collocates the component source with its SCSS module file"
+    )
+)]
+
 use core::str::FromStr as _;
 
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::AccountNode;
 use bc_ipc::Amount;
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::NewPosting;
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::NewTransaction;
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::Reconciliation;
+#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 use rust_decimal::Decimal;
+#[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
+#[cfg(target_arch = "wasm32")]
 import_style!(style, "add_transaction.module.scss");
 
 /// Locale-aware JS helpers for decimal and grouping separators.
@@ -96,6 +111,7 @@ fn parse_amount(input: &str, currency_code: &str, scale: u8) -> Option<Amount> {
 /// * `on_submit` - Called with the completed [`NewTransaction`] when the user submits.
 /// * `on_cancel` - Called when the user cancels or closes the form.
 /// * `submit_error` - Reactive signal carrying the current IPC error string, if any.
+#[cfg(target_arch = "wasm32")]
 #[component]
 #[expect(
     clippy::needless_pass_by_value,
@@ -480,7 +496,7 @@ pub fn AddTransactionForm(
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, target_arch = "wasm32"))]
 pub mod qa;
 
 #[cfg(test)]

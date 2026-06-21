@@ -1,22 +1,43 @@
 //! Budget page — allocation grid, period header, and accrual editor.
 
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::mod_module_files,
+        reason = "mod.rs collocates the component source with its SCSS module file"
+    )
+)]
+
+#[cfg(target_arch = "wasm32")]
 pub(crate) mod components;
 pub mod period_nav;
 
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::BcError;
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::BudgetSummary;
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::BudgetTreeNode;
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::Period;
+#[cfg(target_arch = "wasm32")]
 use components::budget_tree::BudgetTree;
+#[cfg(target_arch = "wasm32")]
 use components::header::BudgetHeader;
+#[cfg(target_arch = "wasm32")]
 use components::new_budget::NewBudget;
+#[cfg(target_arch = "wasm32")]
 use components::sticky_bar::StickyBar;
+#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
+#[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
+#[cfg(target_arch = "wasm32")]
 import_style!(style, "budget.module.scss");
 
 /// Shared page-level reactive state provided via context to all child components.
+#[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct BudgetPageCtx {
@@ -32,6 +53,7 @@ pub struct BudgetPageCtx {
     pub data_version: RwSignal<u32>,
 }
 
+#[cfg(target_arch = "wasm32")]
 impl BudgetPageCtx {
     /// Creates a new [`BudgetPageCtx`] with sensible defaults.
     ///
@@ -59,6 +81,7 @@ impl BudgetPageCtx {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 impl Default for BudgetPageCtx {
     #[inline]
     fn default() -> Self {
@@ -67,6 +90,7 @@ impl Default for BudgetPageCtx {
 }
 
 /// Budget page — header KPIs, period controls, and the allocation tree.
+#[cfg(target_arch = "wasm32")]
 #[component]
 pub fn Budget() -> impl IntoView {
     let ctx = BudgetPageCtx::new();
