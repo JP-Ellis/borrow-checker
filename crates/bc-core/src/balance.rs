@@ -1162,7 +1162,13 @@ mod tests {
             .build();
         let tx_id = tx.id().clone();
         tx_svc.create(tx).await.expect("create should succeed");
-        tx_svc.void(&tx_id).await.expect("void should succeed");
+        // Set voided status via raw SQL: void() is removed; the balance engine's
+        // voided-exclusion filter is kept as dead code until Task 3.
+        sqlx::query("UPDATE transactions SET status = 'voided' WHERE id = ?")
+            .bind(tx_id.to_string())
+            .execute(&pool)
+            .await
+            .expect("mark voided");
 
         let engine = Engine::new(pool.clone());
         let balance = engine
@@ -1367,7 +1373,13 @@ mod tests {
             .build();
         let tx_id = tx.id().clone();
         tx_svc.create(tx).await.expect("create should succeed");
-        tx_svc.void(&tx_id).await.expect("void should succeed");
+        // Set voided status via raw SQL: void() is removed; the posting_count
+        // voided-exclusion filter is kept as dead code until Task 3.
+        sqlx::query("UPDATE transactions SET status = 'voided' WHERE id = ?")
+            .bind(tx_id.to_string())
+            .execute(&pool)
+            .await
+            .expect("mark voided");
 
         let engine = Engine::new(pool.clone());
         let count = engine

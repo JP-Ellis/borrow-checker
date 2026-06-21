@@ -1,9 +1,10 @@
 ---
 source: crates/bc-cli/tests/cli/transaction.rs
+assertion_line: 284
 expression: output
 ---
-success: false
-exit_code: 3
+success: true
+exit_code: 0
 ----- stdout -----
+Amended transaction: [TRANSACTION_ID]
 ----- stderr -----
-error: transaction already voided: [TRANSACTION_ID]

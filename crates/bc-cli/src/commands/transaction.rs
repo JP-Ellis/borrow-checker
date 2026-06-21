@@ -1,4 +1,4 @@
-//! Transaction management sub-commands: list, add, amend, void.
+//! Transaction management sub-commands: list, add, amend, reverse.
 
 use core::str::FromStr as _;
 
@@ -59,9 +59,9 @@ pub enum Command {
         #[arg(long)]
         clear_payee: bool,
     },
-    /// Void a transaction (preserves data; excludes from balances and reports).
-    Void {
-        /// Transaction ID to void.
+    /// Reverse a transaction by creating a new transaction with negated postings.
+    Reverse {
+        /// Transaction ID to reverse.
         id: String,
     },
 }
@@ -122,7 +122,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             payee,
             clear_payee,
         } => amend(ctx, id, date, description, payee, clear_payee).await,
-        Command::Void { id } => void(ctx, id).await,
+        Command::Reverse { id } => reverse(ctx, id).await,
     }
 }
 
@@ -267,23 +267,25 @@ async fn amend(
     Ok(())
 }
 
-/// Voids a transaction by ID.
-async fn void(ctx: &AppContext, id: String) -> CliResult<()> {
+/// Reverses a transaction by ID, creating a new transaction with negated postings.
+async fn reverse(ctx: &AppContext, id: String) -> CliResult<()> {
     let tx_id = bc_models::TransactionId::from_str(&id)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid transaction ID '{id}': {e}")))?;
 
-    ctx.transactions.void(&tx_id).await?;
+    let reversal_id = ctx.transactions.reverse(&tx_id).await?;
 
     if ctx.json {
         return crate::output::print_json(&serde_json::json!({
-            "voided": true,
+            "reversed": true,
             "id": id,
+            "reversal_id": reversal_id.to_string(),
         }));
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        println!("Voided transaction: {id}");
+        println!("Reversed transaction: {id}");
+        println!("Reversal transaction: {reversal_id}");
     }
     Ok(())
 }

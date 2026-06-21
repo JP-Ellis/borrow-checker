@@ -1,9 +1,11 @@
 ---
 source: crates/bc-cli/tests/cli/transaction.rs
+assertion_line: 157
 expression: output
 ---
 success: true
 exit_code: 0
 ----- stdout -----
-Voided transaction: [TRANSACTION_ID]
+Reversed transaction: [TRANSACTION_ID]
+Reversal transaction: [TRANSACTION_ID]
 ----- stderr -----
