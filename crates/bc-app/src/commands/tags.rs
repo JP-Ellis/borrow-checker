@@ -27,7 +27,10 @@ use crate::AppState;
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
 )]
 #[tauri::command(rename_all = "snake_case")]
-pub async fn create_tag(path: String, state: State<'_, AppState>) -> Result<String, bc_ipc::BcError> {
+pub async fn create_tag(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<String, bc_ipc::BcError> {
     let parsed = path
         .parse::<bc_models::TagPath>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid tag path '{path}': {e}")))?;
@@ -97,7 +100,9 @@ pub async fn delete_tag(id: String, state: State<'_, AppState>) -> Result<(), bc
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
 )]
 #[tauri::command(rename_all = "snake_case")]
-pub async fn list_tags(state: State<'_, AppState>) -> Result<Vec<bc_ipc::TagInfo>, bc_ipc::BcError> {
+pub async fn list_tags(
+    state: State<'_, AppState>,
+) -> Result<Vec<bc_ipc::TagInfo>, bc_ipc::BcError> {
     let forest = state
         .tags
         .forest()
