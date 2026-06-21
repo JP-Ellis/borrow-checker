@@ -28,12 +28,14 @@ fn tx_display_amount(tx: &Transaction) -> bc_ipc::Amount {
     let currency = tx
         .postings
         .first()
-        .map_or("", |p| p.amount.currency_code.as_str());
+        .and_then(|p| p.amount.as_ref())
+        .map_or("", |a| a.currency_code.as_str());
     let totals: bc_ipc::Balances = tx
         .postings
         .iter()
-        .filter(|p| p.amount.value > Decimal::ZERO)
-        .map(|p| p.amount.clone())
+        .filter_map(|p| p.amount.as_ref())
+        .filter(|a| a.value > Decimal::ZERO)
+        .cloned()
         .collect();
     let total = totals.get(currency).unwrap_or(Decimal::ZERO);
     bc_ipc::Amount::new(total, currency)
@@ -75,7 +77,9 @@ fn PostingRow(
         <div>
             <div class=style::posting_row>
                 <span>{posting.account.name.clone()}</span>
-                <span class=style::posting_amount>{posting.amount.format_short()}</span>
+                <span class=style::posting_amount>
+                    {posting.amount.as_ref().map_or_else(String::new, bc_ipc::Amount::format_short)}
+                </span>
             </div>
             {has_spread
                 .then(|| {

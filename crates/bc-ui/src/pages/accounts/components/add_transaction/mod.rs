@@ -6,7 +6,7 @@ use bc_ipc::AccountNode;
 use bc_ipc::Amount;
 use bc_ipc::NewPosting;
 use bc_ipc::NewTransaction;
-use bc_ipc::TxStatus;
+use bc_ipc::Reconciliation;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 use stylance::import_style;
@@ -152,7 +152,7 @@ pub fn AddTransactionForm(
 
     let date_input = RwSignal::new(default_date);
     let payee_input = RwSignal::new(String::new());
-    let status_input = RwSignal::new(TxStatus::Pending);
+    let status_input = RwSignal::new(Reconciliation::Flagged);
     let errors: RwSignal<Vec<&'static str>> = RwSignal::new(vec![]);
 
     // Primary posting amount (current account).
@@ -242,8 +242,9 @@ pub fn AddTransactionForm(
         let mut postings = Vec::with_capacity(parsed_extras.len().saturating_add(1));
         postings.push(NewPosting::new(
             current_account_id_submit.clone(),
-            primary_amt,
+            Some(primary_amt),
             None::<&str>,
+            vec![],
             None,
             None,
         ));
@@ -251,10 +252,25 @@ pub fn AddTransactionForm(
             let Some(amt) = amt_opt else {
                 return;
             };
-            postings.push(NewPosting::new(acc_id, amt, None::<&str>, None, None));
+            postings.push(NewPosting::new(
+                acc_id,
+                Some(amt),
+                None::<&str>,
+                vec![],
+                None,
+                None,
+            ));
         }
 
-        let tx = NewTransaction::new(date, payee, status_input.get(), vec![], postings);
+        let tx = NewTransaction::new(
+            date,
+            payee,
+            "",
+            None::<&str>,
+            status_input.get(),
+            vec![],
+            postings,
+        );
         on_submit.run(tx);
     };
 
@@ -321,21 +337,25 @@ pub fn AddTransactionForm(
                         let val = event_target_value(&e);
                         status_input
                             .set(
-                                if val == "cleared" { TxStatus::Cleared } else { TxStatus::Pending },
+                                if val == "reconciled" {
+                                    Reconciliation::Reconciled
+                                } else {
+                                    Reconciliation::Flagged
+                                },
                             );
                     }
                 >
                     <option
-                        value="pending"
-                        selected=move || { status_input.get() == TxStatus::Pending }
+                        value="flagged"
+                        selected=move || { status_input.get() == Reconciliation::Flagged }
                     >
-                        "pending"
+                        "flagged"
                     </option>
                     <option
-                        value="cleared"
-                        selected=move || { status_input.get() == TxStatus::Cleared }
+                        value="reconciled"
+                        selected=move || { status_input.get() == Reconciliation::Reconciled }
                     >
-                        "cleared"
+                        "reconciled"
                     </option>
                 </select>
 

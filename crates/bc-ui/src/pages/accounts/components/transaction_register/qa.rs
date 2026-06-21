@@ -4,8 +4,8 @@ use bc_ipc::AccountRef;
 use bc_ipc::Amount;
 use bc_ipc::AuditEntry;
 use bc_ipc::Posting;
+use bc_ipc::Reconciliation;
 use bc_ipc::Transaction;
-use bc_ipc::TxStatus;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
@@ -22,22 +22,27 @@ fn sample_transactions() -> Vec<Transaction> {
             "tx-coles-2026-04-30",
             jiff::civil::Date::constant(2026, 4, 30),
             "Coles Carlton",
-            TxStatus::Cleared,
+            "",
+            None::<&str>,
+            vec![],
+            Reconciliation::Reconciled,
             vec!["shared".to_owned()],
             vec![
                 Posting::new(
                     "posting-coles-debit",
                     AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                    Amount::new(Decimal::new(-8_420, 2), "AUD"),
+                    Some(Amount::new(Decimal::new(-8_420, 2), "AUD")),
                     None::<&str>,
+                    vec![],
                     None,
                     None,
                 ),
                 Posting::new(
                     "posting-coles-groceries",
                     AccountRef::new("groceries", "Expenses :: Groceries"),
-                    Amount::new(Decimal::new(8_420, 2), "AUD"),
+                    Some(Amount::new(Decimal::new(8_420, 2), "AUD")),
                     None::<&str>,
+                    vec![],
                     None,
                     None,
                 ),
@@ -54,22 +59,27 @@ fn sample_transactions() -> Vec<Transaction> {
             "tx-salary-2026-04-30",
             jiff::civil::Date::constant(2026, 4, 30),
             "Salary — Atlassian",
-            TxStatus::Cleared,
+            "",
+            None::<&str>,
+            vec![],
+            Reconciliation::Reconciled,
             vec!["work".to_owned()],
             vec![
                 Posting::new(
                     "posting-salary-income",
                     AccountRef::new("income-salary", "Income :: Salary"),
-                    Amount::new(Decimal::new(-846_154, 2), "AUD"),
+                    Some(Amount::new(Decimal::new(-846_154, 2), "AUD")),
                     Some("gross pay"),
+                    vec![],
                     None,
                     None,
                 ),
                 Posting::new(
                     "posting-salary-takehome",
                     AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                    Amount::new(Decimal::new(428_055, 2), "AUD"),
+                    Some(Amount::new(Decimal::new(428_055, 2), "AUD")),
                     Some("take-home"),
+                    vec![],
                     None,
                     None,
                 ),
