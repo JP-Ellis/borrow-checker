@@ -103,27 +103,36 @@ impl AccountNode {
     }
 }
 
-/// Cleared / pending / unreconciled status of a transaction.
+/// Reconciliation status of a transaction, matching `bc_models::Reconciliation` 1:1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub enum TxStatus {
-    /// Bank-confirmed.
-    Cleared,
-    /// Not yet confirmed by the bank.
-    Pending,
-    /// Imported but not reviewed.
+pub enum Reconciliation {
+    /// Imported but not reviewed by the user.
     Unreconciled,
+    /// Flagged for review (user attention needed).
+    Flagged,
+    /// Reviewed and confirmed correct.
+    Reconciled,
 }
 
-impl TxStatus {
-    /// Returns the display label string for this status.
+impl Reconciliation {
+    /// Returns the lowercase display label for this reconciliation state.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bc_ipc::Reconciliation;
+    /// assert_eq!(Reconciliation::Unreconciled.label(), "unreconciled");
+    /// assert_eq!(Reconciliation::Flagged.label(), "flagged");
+    /// assert_eq!(Reconciliation::Reconciled.label(), "reconciled");
+    /// ```
     #[must_use]
     #[inline]
     pub fn label(self) -> &'static str {
         match self {
-            Self::Cleared => "cleared",
-            Self::Pending => "pending",
             Self::Unreconciled => "unreconciled",
+            Self::Flagged => "flagged",
+            Self::Reconciled => "reconciled",
         }
     }
 }
@@ -172,10 +181,12 @@ pub struct Posting {
     pub id: String,
     /// Account reference — carries the stable ID and human-readable display name.
     pub account: AccountRef,
-    /// Posting amount. Positive = credit; negative = debit.
-    pub amount: Amount,
+    /// Posting amount. `None` when the amount is elided (inferred to balance the transaction).
+    pub amount: Option<Amount>,
     /// Optional inline comment shown in the TOML view.
     pub note: Option<String>,
+    /// Tag IDs attached to this posting (raw ID strings, not resolved paths).
+    pub tag_ids: Vec<String>,
     /// Accrual spread start date. `None` means no spreading applied.
     pub spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end date (inclusive — the last day of the spread). `None` means no spreading applied.
@@ -189,8 +200,9 @@ impl Posting {
     ///
     /// * `id` - Stable posting identifier (UUID string).
     /// * `account` - Account reference with ID and display name.
-    /// * `amount` - Posting amount.
+    /// * `amount` - Posting amount, or `None` if elided (inferred to balance).
     /// * `note` - Optional inline comment, or `None`.
+    /// * `tag_ids` - Tag IDs attached to this posting.
     /// * `spread_from` - Accrual spread start date, or `None`.
     /// * `spread_until` - Accrual spread end date (inclusive — the last day of the spread), or `None`.
     #[must_use]
@@ -198,8 +210,9 @@ impl Posting {
     pub fn new(
         id: impl Into<String>,
         account: AccountRef,
-        amount: Amount,
+        amount: Option<Amount>,
         note: Option<impl Into<String>>,
+        tag_ids: Vec<String>,
         spread_from: Option<jiff::civil::Date>,
         spread_until: Option<jiff::civil::Date>,
     ) -> Self {
@@ -208,6 +221,7 @@ impl Posting {
             account,
             amount,
             note: note.map(Into::into),
+            tag_ids,
             spread_from,
             spread_until,
         }
@@ -265,9 +279,15 @@ pub struct Transaction {
     pub date: jiff::civil::Date,
     /// Payee display name.
     pub payee: String,
-    /// Transaction status.
-    pub status: TxStatus,
-    /// Tag paths attached to this transaction.
+    /// Free-text description (raw imported narration).
+    pub description: String,
+    /// User's free-text note, distinct from the imported `description`.
+    pub note: Option<String>,
+    /// Extra named dates attached to this transaction (e.g. `("effective", 2026-04-01)`).
+    pub extra_dates: Vec<(String, jiff::civil::Date)>,
+    /// Reconciliation status.
+    pub reconciliation: Reconciliation,
+    /// Tag paths attached to this transaction (colon-joined).
     pub tags: Vec<String>,
     /// All postings. Must sum to zero (double-entry invariant).
     pub postings: Vec<Posting>,
@@ -283,17 +303,27 @@ impl Transaction {
     /// * `id` - Stable identifier.
     /// * `date` - Transaction date.
     /// * `payee` - Payee display name.
-    /// * `status` - Transaction status.
-    /// * `tags` - Tag paths.
+    /// * `description` - Free-text description (raw imported narration).
+    /// * `note` - User free-text note, or `None`.
+    /// * `extra_dates` - Extra named dates (label + date pairs).
+    /// * `reconciliation` - Reconciliation status.
+    /// * `tags` - Tag paths (colon-joined).
     /// * `postings` - All postings (must sum to zero).
     /// * `audit` - Audit trail entries.
     #[must_use]
     #[inline]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "domain record with many required fields"
+    )]
     pub fn new(
         id: impl Into<String>,
         date: jiff::civil::Date,
         payee: impl Into<String>,
-        status: TxStatus,
+        description: impl Into<String>,
+        note: Option<impl Into<String>>,
+        extra_dates: Vec<(String, jiff::civil::Date)>,
+        reconciliation: Reconciliation,
         tags: Vec<String>,
         postings: Vec<Posting>,
         audit: Vec<AuditEntry>,
@@ -302,7 +332,10 @@ impl Transaction {
             id: id.into(),
             date,
             payee: payee.into(),
-            status,
+            description: description.into(),
+            note: note.map(Into::into),
+            extra_dates,
+            reconciliation,
             tags,
             postings,
             audit,
@@ -319,10 +352,12 @@ impl Transaction {
 pub struct NewPosting {
     /// Account ID — must reference an existing active account.
     pub account_id: String,
-    /// Posting amount. Positive = credit; negative = debit.
-    pub amount: Amount,
+    /// Posting amount. `None` when the amount should be elided (inferred to balance).
+    pub amount: Option<Amount>,
     /// Optional inline note.
     pub note: Option<String>,
+    /// Tag IDs to attach to this posting.
+    pub tag_ids: Vec<String>,
     /// Accrual spread start date. `None` means no spreading.
     pub spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end date (inclusive — the last day of the spread). `None` means no spreading.
@@ -335,16 +370,18 @@ impl NewPosting {
     /// # Arguments
     ///
     /// * `account_id` - Account ID referencing an existing active account.
-    /// * `amount` - Posting amount (positive = credit; negative = debit).
+    /// * `amount` - Posting amount, or `None` to elide (inferred to balance).
     /// * `note` - Optional inline note, or `None`.
+    /// * `tag_ids` - Tag IDs to attach to this posting.
     /// * `spread_from` - Accrual spread start date, or `None`.
     /// * `spread_until` - Accrual spread end date (inclusive — the last day of the spread), or `None`.
     #[must_use]
     #[inline]
     pub fn new(
         account_id: impl Into<String>,
-        amount: Amount,
+        amount: Option<Amount>,
         note: Option<impl Into<String>>,
+        tag_ids: Vec<String>,
         spread_from: Option<jiff::civil::Date>,
         spread_until: Option<jiff::civil::Date>,
     ) -> Self {
@@ -352,6 +389,7 @@ impl NewPosting {
             account_id: account_id.into(),
             amount,
             note: note.map(Into::into),
+            tag_ids,
             spread_from,
             spread_until,
         }
@@ -368,8 +406,12 @@ pub struct NewTransaction {
     pub date: jiff::civil::Date,
     /// Payee display name.
     pub payee: String,
-    /// Transaction status.
-    pub status: TxStatus,
+    /// Free-text description (raw narration). Empty string if not provided.
+    pub description: String,
+    /// User's free-text note. `None` if not provided.
+    pub note: Option<String>,
+    /// Reconciliation status.
+    pub reconciliation: Reconciliation,
     /// Tag paths attached to this transaction.
     pub tags: Vec<String>,
     /// All postings. Must sum to zero per commodity (enforced by the backend).
@@ -383,7 +425,9 @@ impl NewTransaction {
     ///
     /// * `date` - Transaction date.
     /// * `payee` - Payee display name.
-    /// * `status` - Transaction status.
+    /// * `description` - Free-text description (raw narration).
+    /// * `note` - User's free-text note, or `None`.
+    /// * `reconciliation` - Reconciliation status.
     /// * `tags` - Tag paths attached to this transaction.
     /// * `postings` - All postings (must sum to zero per commodity).
     #[must_use]
@@ -391,14 +435,18 @@ impl NewTransaction {
     pub fn new(
         date: jiff::civil::Date,
         payee: impl Into<String>,
-        status: TxStatus,
+        description: impl Into<String>,
+        note: Option<impl Into<String>>,
+        reconciliation: Reconciliation,
         tags: Vec<String>,
         postings: Vec<NewPosting>,
     ) -> Self {
         Self {
             date,
             payee: payee.into(),
-            status,
+            description: description.into(),
+            note: note.map(Into::into),
+            reconciliation,
             tags,
             postings,
         }
@@ -544,37 +592,45 @@ mod tests {
     fn new_posting_constructor_roundtrip() {
         let p = NewPosting::new(
             "acc-1",
-            Amount::new(Decimal::new(-1_000, 2), "AUD"),
+            Some(Amount::new(Decimal::new(-1_000, 2), "AUD")),
             Some("test note"),
+            vec![],
             None,
             None,
         );
         assert_eq!(p.account_id, "acc-1");
-        assert_eq!(p.amount.value, rust_decimal::Decimal::new(-1_000, 2));
+        assert_eq!(
+            p.amount.as_ref().map(|a| a.value),
+            Some(rust_decimal::Decimal::new(-1_000, 2))
+        );
         assert_eq!(p.note.as_deref(), Some("test note"));
     }
 
     #[rstest]
-    #[case(TxStatus::Pending)]
-    #[case(TxStatus::Cleared)]
-    fn new_transaction_serde_roundtrip(#[case] status: TxStatus) {
+    #[case(Reconciliation::Unreconciled)]
+    #[case(Reconciliation::Reconciled)]
+    fn new_transaction_serde_roundtrip(#[case] reconciliation: Reconciliation) {
         let tx = NewTransaction::new(
             jiff::civil::Date::constant(2026, 5, 23),
             "Test Payee",
-            status,
+            "",
+            None::<&str>,
+            reconciliation,
             vec![],
             vec![
                 NewPosting::new(
                     "acc-a",
-                    Amount::new(Decimal::new(-500, 2), "AUD"),
+                    Some(Amount::new(Decimal::new(-500, 2), "AUD")),
                     None::<&str>,
+                    vec![],
                     None,
                     None,
                 ),
                 NewPosting::new(
                     "acc-b",
-                    Amount::new(Decimal::new(500, 2), "AUD"),
+                    Some(Amount::new(Decimal::new(500, 2), "AUD")),
                     None::<&str>,
+                    vec![],
                     None,
                     None,
                 ),
@@ -583,6 +639,54 @@ mod tests {
         let json = serde_json::to_string(&tx).expect("serialises");
         let tx2: NewTransaction = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(tx, tx2);
+    }
+
+    #[test]
+    fn transaction_serde_roundtrip_with_new_fields() {
+        let posting = Posting::new(
+            "posting-1",
+            AccountRef::new("acc-1", "Assets :: Checking"),
+            None,
+            Some("posting note"),
+            vec!["tag-abc".to_owned()],
+            None,
+            None,
+        );
+        let tx = Transaction::new(
+            "tx-1",
+            jiff::civil::Date::constant(2026, 6, 1),
+            "Test Payee",
+            "raw narration",
+            Some("user note"),
+            vec![(
+                "effective".to_owned(),
+                jiff::civil::Date::constant(2026, 6, 15),
+            )],
+            Reconciliation::Flagged,
+            vec![],
+            vec![posting],
+            vec![],
+        );
+        let json = serde_json::to_string(&tx).expect("serialises");
+        let tx2: Transaction = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(tx, tx2);
+        assert_eq!(tx2.reconciliation, Reconciliation::Flagged);
+        assert_eq!(tx2.description, "raw narration");
+        assert_eq!(tx2.note.as_deref(), Some("user note"));
+        assert_eq!(tx2.extra_dates.len(), 1);
+        assert_eq!(
+            tx2.extra_dates.first().map(|(l, _)| l.as_str()),
+            Some("effective")
+        );
+        assert_eq!(tx2.postings.first().and_then(|p| p.amount.as_ref()), None);
+        assert_eq!(
+            tx2.postings.first().map(|p| p.tag_ids.as_slice()),
+            Some(["tag-abc".to_owned()].as_slice())
+        );
+        assert_eq!(
+            tx2.postings.first().and_then(|p| p.note.as_deref()),
+            Some("posting note")
+        );
     }
 
     #[test]
@@ -673,26 +777,30 @@ mod tests {
     }
 
     #[rstest]
-    #[case(TxStatus::Pending)]
-    #[case(TxStatus::Cleared)]
-    fn new_transaction_serde_roundtrip_with_tags(#[case] status: TxStatus) {
+    #[case(Reconciliation::Unreconciled)]
+    #[case(Reconciliation::Reconciled)]
+    fn new_transaction_serde_roundtrip_with_tags(#[case] reconciliation: Reconciliation) {
         let tx = NewTransaction::new(
             jiff::civil::Date::constant(2026, 5, 23),
             "Payee With Tags",
-            status,
+            "",
+            None::<&str>,
+            reconciliation,
             vec!["category:groceries".to_owned(), "budget:food".to_owned()],
             vec![
                 NewPosting::new(
                     "acc-a",
-                    Amount::new(Decimal::new(-3_000, 2), "AUD"),
+                    Some(Amount::new(Decimal::new(-3_000, 2), "AUD")),
                     None::<&str>,
+                    vec![],
                     None,
                     None,
                 ),
                 NewPosting::new(
                     "acc-b",
-                    Amount::new(Decimal::new(3_000, 2), "AUD"),
+                    Some(Amount::new(Decimal::new(3_000, 2), "AUD")),
                     None::<&str>,
+                    vec![],
                     None,
                     None,
                 ),
@@ -743,5 +851,12 @@ mod tests {
             .label(),
             "financial year"
         );
+    }
+
+    #[test]
+    fn reconciliation_labels() {
+        assert_eq!(Reconciliation::Unreconciled.label(), "unreconciled");
+        assert_eq!(Reconciliation::Flagged.label(), "flagged");
+        assert_eq!(Reconciliation::Reconciled.label(), "reconciled");
     }
 }

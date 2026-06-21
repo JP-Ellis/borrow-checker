@@ -37,19 +37,18 @@ pub fn payee_initial(payee: &str) -> char {
         .map_or('?', |c| c.to_ascii_uppercase())
 }
 
-/// Returns the posting for `account_id` within `tx`.
+/// Returns the posting amount for `account_id` within `tx`.
 ///
-/// Returns a zero-AUD `Amount` when the account has no posting.
+/// Returns a zero-AUD `Amount` when the account has no posting or the posting
+/// has an elided (inferred) amount.
 #[must_use]
 #[inline]
 pub fn headline_amount(tx: &Transaction, account_id: &str) -> Amount {
     tx.postings
         .iter()
         .find(|p| p.account.id == account_id)
-        .map_or_else(
-            || Amount::new(rust_decimal::Decimal::ZERO, "AUD"),
-            |p| p.amount.clone(),
-        )
+        .and_then(|p| p.amount.clone())
+        .unwrap_or_else(|| Amount::new(rust_decimal::Decimal::ZERO, "AUD"))
 }
 
 /// Formats a [`jiff::civil::Date`] for display.
@@ -120,8 +119,8 @@ mod tests {
     use bc_ipc::Amount;
     use bc_ipc::AuditEntry;
     use bc_ipc::Posting;
+    use bc_ipc::Reconciliation;
     use bc_ipc::Transaction;
-    use bc_ipc::TxStatus;
     use pretty_assertions::assert_eq;
     use rust_decimal::Decimal;
 
@@ -135,22 +134,27 @@ mod tests {
                 "tx-coles-2026-04-30",
                 jiff::civil::Date::constant(2026, 4, 30),
                 "Coles Carlton",
-                TxStatus::Cleared,
+                "",
+                None::<&str>,
+                vec![],
+                Reconciliation::Reconciled,
                 vec!["shared".to_owned()],
                 vec![
                     Posting::new(
                         "posting-coles-debit",
                         AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                        Amount::new(Decimal::new(-8_420, 2), "AUD"),
+                        Some(Amount::new(Decimal::new(-8_420, 2), "AUD")),
                         None::<&str>,
+                        vec![],
                         None,
                         None,
                     ),
                     Posting::new(
                         "posting-coles-groceries",
                         AccountRef::new("groceries", "Expenses :: Groceries"),
-                        Amount::new(Decimal::new(8_420, 2), "AUD"),
+                        Some(Amount::new(Decimal::new(8_420, 2), "AUD")),
                         None::<&str>,
+                        vec![],
                         None,
                         None,
                     ),
@@ -176,38 +180,45 @@ mod tests {
                 "tx-salary-2026-04-30",
                 jiff::civil::Date::constant(2026, 4, 30),
                 "Salary — Atlassian",
-                TxStatus::Cleared,
+                "",
+                None::<&str>,
+                vec![],
+                Reconciliation::Reconciled,
                 vec!["work".to_owned()],
                 vec![
                     Posting::new(
                         "posting-salary-income",
                         AccountRef::new("income-salary", "Income :: Salary"),
-                        Amount::new(Decimal::new(-846_154, 2), "AUD"),
+                        Some(Amount::new(Decimal::new(-846_154, 2), "AUD")),
                         Some("gross pay"),
+                        vec![],
                         None,
                         None,
                     ),
                     Posting::new(
                         "posting-salary-tax",
                         AccountRef::new("liabilities-tax", "Liabilities :: Tax Withheld"),
-                        Amount::new(Decimal::new(327_692, 2), "AUD"),
+                        Some(Amount::new(Decimal::new(327_692, 2), "AUD")),
                         Some("PAYG withholding"),
+                        vec![],
                         None,
                         None,
                     ),
                     Posting::new(
                         "posting-salary-super",
                         AccountRef::new("assets-super", "Assets :: Super :: Employer"),
-                        Amount::new(Decimal::new(90_407, 2), "AUD"),
+                        Some(Amount::new(Decimal::new(90_407, 2), "AUD")),
                         Some("11.5% SGC"),
+                        vec![],
                         None,
                         None,
                     ),
                     Posting::new(
                         "posting-salary-takehome",
                         AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                        Amount::new(Decimal::new(428_055, 2), "AUD"),
+                        Some(Amount::new(Decimal::new(428_055, 2), "AUD")),
                         Some("take-home"),
+                        vec![],
                         None,
                         None,
                     ),

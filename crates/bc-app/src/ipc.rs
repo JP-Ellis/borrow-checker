@@ -73,30 +73,40 @@ impl IntoIpc for bc_models::AccountType {
     }
 }
 
-// MARK: Reconciliation / TxStatus
+// MARK: Reconciliation
 
 impl IntoIpc for bc_models::Reconciliation {
-    type Output = bc_ipc::TxStatus;
+    type Output = bc_ipc::Reconciliation;
 
     #[inline]
-    fn into_ipc(self) -> bc_ipc::TxStatus {
+    #[expect(
+        clippy::match_same_arms,
+        reason = "bc_models::Reconciliation is #[non_exhaustive]; the wildcard fallback is intentional"
+    )]
+    fn into_ipc(self) -> bc_ipc::Reconciliation {
         match self {
-            bc_models::Reconciliation::Reconciled => bc_ipc::TxStatus::Cleared,
-            bc_models::Reconciliation::Flagged => bc_ipc::TxStatus::Pending,
-            bc_models::Reconciliation::Unreconciled | _ => bc_ipc::TxStatus::Unreconciled,
+            bc_models::Reconciliation::Unreconciled => bc_ipc::Reconciliation::Unreconciled,
+            bc_models::Reconciliation::Flagged => bc_ipc::Reconciliation::Flagged,
+            bc_models::Reconciliation::Reconciled => bc_ipc::Reconciliation::Reconciled,
+            _ => bc_ipc::Reconciliation::Unreconciled,
         }
     }
 }
 
-impl IntoModel for bc_ipc::TxStatus {
+impl IntoModel for bc_ipc::Reconciliation {
     type Output = bc_models::Reconciliation;
 
     #[inline]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "bc_ipc::Reconciliation is #[non_exhaustive]; the wildcard fallback is intentional"
+    )]
     fn into_model(self) -> bc_models::Reconciliation {
         match self {
-            bc_ipc::TxStatus::Cleared => bc_models::Reconciliation::Reconciled,
-            bc_ipc::TxStatus::Pending => bc_models::Reconciliation::Flagged,
-            bc_ipc::TxStatus::Unreconciled | _ => bc_models::Reconciliation::Unreconciled,
+            bc_ipc::Reconciliation::Unreconciled => bc_models::Reconciliation::Unreconciled,
+            bc_ipc::Reconciliation::Flagged => bc_models::Reconciliation::Flagged,
+            bc_ipc::Reconciliation::Reconciled => bc_models::Reconciliation::Reconciled,
+            _ => bc_models::Reconciliation::Unreconciled,
         }
     }
 }
@@ -325,16 +335,14 @@ impl IntoIpc for &bc_models::Posting {
     #[inline]
     fn into_ipc(self) -> bc_ipc::Posting {
         let account_id = self.account_id().to_string();
-        // TODO(task-9): carry Option<Amount> over IPC
-        let amount = self.amount().map_or_else(
-            || bc_ipc::Amount::new(rust_decimal::Decimal::ZERO, ""),
-            IntoIpc::into_ipc,
-        );
+        let amount = self.amount().map(IntoIpc::into_ipc);
+        let tag_ids = self.tag_ids().iter().map(ToString::to_string).collect();
         bc_ipc::Posting::new(
             self.id().to_string(),
             bc_ipc::AccountRef::new(account_id.clone(), account_id),
             amount,
             self.note(),
+            tag_ids,
             self.spread_from(),
             self.spread_until(),
         )
@@ -400,28 +408,35 @@ pub(crate) fn transaction_into_ipc_with_accounts(
         .map(|p| {
             let account_id = p.account_id().to_string();
             let account_name = build_account_path(&account_id, account_map);
-            // TODO(task-9): carry Option<Amount> over IPC
-            let amount = p.amount().map_or_else(
-                || bc_ipc::Amount::new(rust_decimal::Decimal::ZERO, ""),
-                IntoIpc::into_ipc,
-            );
+            let amount = p.amount().map(IntoIpc::into_ipc);
+            let tag_ids = p.tag_ids().iter().map(ToString::to_string).collect();
             bc_ipc::Posting::new(
                 p.id().to_string(),
                 bc_ipc::AccountRef::new(account_id, account_name),
                 amount,
                 p.note(),
+                tag_ids,
                 p.spread_from(),
                 p.spread_until(),
             )
         })
         .collect();
 
+    let extra_dates = tx
+        .extra_dates()
+        .iter()
+        .map(|(label, date)| (label.clone(), *date))
+        .collect();
+
     bc_ipc::Transaction::new(
         tx.id().to_string(),
         tx.date(),
         tx.payee().unwrap_or_default(),
+        tx.description(),
+        tx.note(),
+        extra_dates,
         tx.reconciliation().into_ipc(),
-        vec![], // TODO(ipc): resolve tag paths via TagService
+        vec![], // tag path resolution deferred: posting tag_ids carry raw ids (option a)
         postings,
         vec![],
     )
@@ -513,12 +528,20 @@ impl IntoIpc for &bc_models::Transaction {
     fn into_ipc(self) -> bc_ipc::Transaction {
         let postings: Vec<bc_ipc::Posting> =
             self.postings().iter().map(IntoIpc::into_ipc).collect();
+        let extra_dates = self
+            .extra_dates()
+            .iter()
+            .map(|(label, date)| (label.clone(), *date))
+            .collect();
         bc_ipc::Transaction::new(
             self.id().to_string(),
             self.date(),
             self.payee().unwrap_or_default(),
+            self.description(),
+            self.note(),
+            extra_dates,
             self.reconciliation().into_ipc(),
-            vec![], // TODO(ipc): resolve tag paths via TagService
+            vec![], // tag path resolution deferred: posting tag_ids carry raw ids (option a)
             postings,
             vec![],
         )

@@ -214,7 +214,7 @@ fn TransactionDetail(
     let tx_id = StoredValue::new(stored_tx.with_value(|t| t.id.clone()));
     let tx_date = StoredValue::new(stored_tx.with_value(|t| t.date));
     let tx_payee = StoredValue::new(stored_tx.with_value(|t| t.payee.clone()));
-    let tx_status = StoredValue::new(stored_tx.with_value(|t| t.status.label().to_owned()));
+    let tx_status = StoredValue::new(stored_tx.with_value(|t| t.reconciliation.label().to_owned()));
     let stored_tags = StoredValue::new(stored_tx.with_value(|t| t.tags.clone()));
     let tx_has_tags = stored_tx.with_value(|t| !t.tags.is_empty());
     let stored_audit = StoredValue::new(stored_tx.with_value(|t| {
@@ -226,7 +226,13 @@ fn TransactionDetail(
     let stored_postings = StoredValue::new(stored_tx.with_value(|t| {
         t.postings
             .iter()
-            .map(|p| (p.account.name.clone(), p.amount.clone(), p.note.clone()))
+            .map(|p| {
+                let amount = p
+                    .amount
+                    .clone()
+                    .unwrap_or_else(|| bc_ipc::Amount::new(rust_decimal::Decimal::ZERO, ""));
+                (p.account.name.clone(), amount, p.note.clone())
+            })
             .collect::<Vec<_>>()
     }));
 

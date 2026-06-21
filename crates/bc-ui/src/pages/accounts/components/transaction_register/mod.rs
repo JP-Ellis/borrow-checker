@@ -3,8 +3,8 @@
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 
+use bc_ipc::Reconciliation;
 use bc_ipc::Transaction;
-use bc_ipc::TxStatus;
 use leptos::prelude::*;
 use leptos::web_sys;
 use stylance::import_style;
@@ -79,7 +79,7 @@ pub fn TransactionRegister(
             .get()
             .into_iter()
             .filter(|tx| match active_filter.get() {
-                Filter::Pending => tx.status == TxStatus::Pending,
+                Filter::Pending => tx.reconciliation == Reconciliation::Flagged,
                 // TODO: filter by missing category_id once the field is available on postings
                 Filter::All | Filter::Uncategorised => true,
             })
