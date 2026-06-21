@@ -497,62 +497,60 @@ mod tests {
     use super::scale_to_svg_with_bounds;
 
     #[test]
-    #[expect(
-        clippy::indexing_slicing,
-        clippy::float_cmp,
-        reason = "test assertions on known-length Vec; exact float equality is correct here"
-    )]
+    #[expect(clippy::float_cmp, reason = "exact float equality is correct here")]
     fn scale_maps_min_to_bottom() {
         let pts = scale_to_svg(&[0, 100], 0.0, 40.0, 100.0);
-        assert_eq!(pts[0].1, 40.0_f32);
+        let [(_, y0), ..] = pts.as_slice() else {
+            panic!("expected at least 1 point");
+        };
+        assert_eq!(*y0, 40.0_f32);
     }
 
     #[test]
-    #[expect(
-        clippy::indexing_slicing,
-        clippy::float_cmp,
-        reason = "test assertions on known-length Vec; exact float equality is correct here"
-    )]
+    #[expect(clippy::float_cmp, reason = "exact float equality is correct here")]
     fn scale_maps_max_to_top() {
         let pts = scale_to_svg(&[0, 100], 0.0, 40.0, 100.0);
-        assert_eq!(pts[1].1, 0.0_f32);
+        let [_, (_, y1), ..] = pts.as_slice() else {
+            panic!("expected at least 2 points");
+        };
+        assert_eq!(*y1, 0.0_f32);
     }
 
     #[test]
-    #[expect(
-        clippy::indexing_slicing,
-        clippy::float_cmp,
-        reason = "test assertions on known-length Vec; exact float equality is correct here"
-    )]
+    #[expect(clippy::float_cmp, reason = "exact float equality is correct here")]
     fn scale_equal_values_maps_to_midpoint() {
         let pts = scale_to_svg(&[50, 50], 0.0, 40.0, 100.0);
-        assert_eq!(pts[0].1, 20.0_f32);
-        assert_eq!(pts[1].1, 20.0_f32);
+        let [(_, y0), (_, y1), ..] = pts.as_slice() else {
+            panic!("expected at least 2 points");
+        };
+        assert_eq!(*y0, 20.0_f32);
+        assert_eq!(*y1, 20.0_f32);
     }
 
     #[test]
-    #[expect(
-        clippy::indexing_slicing,
-        clippy::float_cmp,
-        reason = "test assertions on known-length Vec; exact float equality is correct here"
-    )]
+    #[expect(clippy::float_cmp, reason = "exact float equality is correct here")]
     fn bounds_income_at_top_expense_in_middle() {
         let income_pts = scale_to_svg_with_bounds(&[100], 0, 100, 0.0, 40.0, 100.0);
         let expense_pts = scale_to_svg_with_bounds(&[60], 0, 100, 0.0, 40.0, 100.0);
-        assert_eq!(income_pts[0].1, 0.0_f32);
-        assert_eq!(expense_pts[0].1, 16.0_f32);
+        let [(_, it0), ..] = income_pts.as_slice() else {
+            panic!("expected at least 1 income point");
+        };
+        let [(_, ey0), ..] = expense_pts.as_slice() else {
+            panic!("expected at least 1 expense point");
+        };
+        assert_eq!(*it0, 0.0_f32);
+        assert_eq!(*ey0, 16.0_f32);
     }
 
     #[test]
-    #[expect(
-        clippy::indexing_slicing,
-        clippy::float_cmp,
-        reason = "test assertions on known-length Vec; exact float equality is correct here"
-    )]
+    #[expect(clippy::float_cmp, reason = "exact float equality is correct here")]
     fn bounds_equal_range_maps_to_midpoint() {
         let pts = scale_to_svg_with_bounds(&[50, 50], 50, 50, 0.0, 40.0, 100.0);
-        assert_eq!(pts[0].1, 20.0_f32);
-        assert_eq!(pts[1].1, 20.0_f32);
+        let [(_, y0), (_, y1), ..] = pts.as_slice() else {
+            panic!("expected at least 2 points");
+        };
+        assert_eq!(*y0, 20.0_f32);
+        assert_eq!(*y1, 20.0_f32);
     }
 
     #[test]
