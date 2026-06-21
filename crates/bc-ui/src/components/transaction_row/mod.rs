@@ -1,25 +1,47 @@
 //! Shared, posting-aware transaction row used by the accounts and budget pages.
 
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::mod_module_files,
+        reason = "mod.rs collocates the component source with its SCSS module file"
+    )
+)]
+
 use std::collections::BTreeMap;
 
 use bc_ipc::Amount;
 use bc_ipc::Posting;
 use bc_ipc::Transaction;
+#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
+#[cfg(target_arch = "wasm32")]
 use leptos::web_sys;
 use rust_decimal::Decimal;
+#[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
+#[cfg(target_arch = "wasm32")]
 use crate::components::tag_token::TagToken;
+#[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::KvKey;
+#[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::KvKind;
+#[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::KvValue;
+#[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::TomlArraySection;
+#[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::TomlAuditEntry;
+#[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::TomlKv;
+#[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::TomlPosting;
+#[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::TomlSection;
+#[cfg(target_arch = "wasm32")]
 use crate::label::category_label;
+#[cfg(target_arch = "wasm32")]
 use crate::pages::budget::components::accrual_editor::AccrualEditor;
 
 // MARK: WASM bindings
@@ -78,9 +100,12 @@ pub fn payee_initial(payee: &str) -> char {
 /// A locale-formatted date string (e.g. `"04/30"` in `en-AU`).
 #[must_use]
 #[inline]
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "month() returns 1-12; minus one is 0-11 for JS Date.UTC()"
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::arithmetic_side_effects,
+        reason = "month() returns 1-12; minus one is 0-11 for JS Date.UTC()"
+    )
 )]
 pub fn format_date_display(date: jiff::civil::Date) -> String {
     #[cfg(target_arch = "wasm32")]
@@ -129,6 +154,7 @@ pub fn format_date_display(date: jiff::civil::Date) -> String {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 import_style!(style, "row.module.scss");
 
 /// Determines which postings are focal and how the headline amount is derived.
@@ -347,6 +373,7 @@ pub fn is_balanced(tx: &Transaction) -> bool {
 ///
 /// * `label` - The expansion string from [`crate::label::category_label`] (e.g.
 ///   `"Expenses :: {Groceries, Healthcare}"` or `"—"`).
+#[cfg(target_arch = "wasm32")]
 #[component]
 fn CategoryCell(
     /// Computed category label — either an account name, a shell expansion, or `"—"`.
@@ -403,6 +430,7 @@ fn CategoryCell(
 /// * `expanded` - Optional external signal controlling expansion state.
 /// * `on_toggle` - Optional callback called when the row is toggled.
 /// * `on_change` - Optional callback called when the transaction is mutated (wired in Task 4).
+#[cfg(target_arch = "wasm32")]
 #[component]
 #[expect(
     clippy::needless_pass_by_value,
@@ -587,6 +615,7 @@ pub fn TransactionRow(
 }
 
 /// Per-posting display data for the expanded postings card.
+#[cfg(target_arch = "wasm32")]
 #[derive(Clone)]
 struct PostingData {
     /// Account display path, e.g. `"Assets :: Checking"`.
@@ -609,6 +638,7 @@ struct PostingData {
 
 /// Renders a single posting: amount/`auto` line, chips row, and the optional
 /// retained [`AccrualEditor`].
+#[cfg(target_arch = "wasm32")]
 fn render_posting(p: PostingData, on_change_cb: Callback<()>) -> impl IntoView {
     let PostingData {
         account_path,
@@ -687,6 +717,7 @@ fn render_posting(p: PostingData, on_change_cb: Callback<()>) -> impl IntoView {
 /// * `tx` - The transaction to render.
 /// * `on_change` - Optional callback run after a successful mutation (reverse or
 ///   spread edit); defaults to a no-op when `None`.
+#[cfg(target_arch = "wasm32")]
 #[component]
 fn TransactionDetail(
     /// The transaction to render.
@@ -913,6 +944,7 @@ fn TransactionDetail(
 /// * `active` - Whether this action is currently active/toggled.
 /// * `disabled` - Whether the button is disabled (greyed out, no click).
 /// * `on_click` - Optional callback run when the button is clicked.
+#[cfg(target_arch = "wasm32")]
 #[component]
 fn ActionBtn(
     /// Button label.
@@ -954,7 +986,7 @@ fn ActionBtn(
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, target_arch = "wasm32"))]
 pub mod qa;
 
 #[cfg(test)]
