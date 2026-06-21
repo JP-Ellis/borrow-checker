@@ -1,8 +1,19 @@
 //! Inline tag badge component.
 
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::mod_module_files,
+        reason = "mod.rs collocates the component source with its SCSS module file"
+    )
+)]
+
+#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
+#[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
+#[cfg(target_arch = "wasm32")]
 import_style!(style, "tag_token.module.scss");
 
 /// Returns the inline background style for a [`TagToken`] at 12% alpha of
@@ -20,6 +31,7 @@ pub fn tag_background_style(tone_var: &str) -> String {
 /// * `label` - Text displayed inside the badge.
 /// * `tone_var` - CSS variable name for the colour tone.
 ///   Defaults to `"--bc-string"` (green).
+#[cfg(target_arch = "wasm32")]
 #[component]
 #[expect(
     clippy::needless_pass_by_value,
@@ -41,7 +53,7 @@ pub fn TagToken(
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, target_arch = "wasm32"))]
 pub mod qa;
 
 #[cfg(test)]

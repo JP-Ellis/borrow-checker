@@ -12,7 +12,6 @@ pub mod sparkline;
 #[cfg(target_arch = "wasm32")]
 pub mod stat_card;
 pub mod status_pill;
-#[cfg(target_arch = "wasm32")]
 pub mod tag_token;
 #[cfg(target_arch = "wasm32")]
 pub mod toml_view;
