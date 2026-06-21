@@ -8,11 +8,11 @@ use bc_models::CommodityCode;
 use bc_models::Cost;
 use bc_models::Posting;
 use bc_models::PostingId;
+use bc_models::Reconciliation;
 use bc_models::TagId;
 use bc_models::Transaction;
 use bc_models::TransactionId;
 use bc_models::TransactionLinkId;
-use bc_models::TransactionStatus;
 use jiff::Timestamp;
 use jiff::civil::Date;
 use rust_decimal::Decimal;
@@ -189,13 +189,13 @@ impl Service {
         insert_event(&event, &mut db_tx).await?;
 
         sqlx::query(
-            "INSERT INTO transactions (id, date, payee, description, status, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            "INSERT INTO transactions (id, date, payee, description, reconciliation, created_at) VALUES (?, ?, ?, ?, ?, ?)"
         )
         .bind(tx_id.to_string())
         .bind(&date_str)
         .bind(tx.payee())
         .bind(tx.description())
-        .bind(to_db_str(tx.status())?)
+        .bind(to_db_str(tx.reconciliation())?)
         .bind(&created_at_str)
         .execute(&mut *db_tx)
         .await?;
@@ -274,7 +274,7 @@ impl Service {
     )]
     pub async fn find_by_id(&self, id: &TransactionId) -> BcResult<Transaction> {
         let tx_row = sqlx::query_as::<_, (String, String, Option<String>, String, String, String)>(
-            "SELECT id, date, payee, description, status, created_at \
+            "SELECT id, date, payee, description, reconciliation, created_at \
              FROM transactions WHERE id = ?",
         )
         .bind(id.to_string())
@@ -292,7 +292,7 @@ impl Service {
             .parse::<Date>()
             .map_err(|e| BcError::BadData(format!("invalid date '{}': {e}", tx_row.1)))?;
 
-        let status = from_db_str::<TransactionStatus>(&tx_row.4)?;
+        let reconciliation = from_db_str::<Reconciliation>(&tx_row.4)?;
 
         let created_at = tx_row
             .5
@@ -402,7 +402,7 @@ impl Service {
             .maybe_payee(tx_row.2)
             .description(tx_row.3)
             .postings(postings)
-            .status(status)
+            .reconciliation(reconciliation)
             .tag_ids(tag_ids)
             .created_at(created_at)
             .build())
@@ -411,7 +411,7 @@ impl Service {
     /// Creates a reversal transaction for the given transaction.
     ///
     /// A reversal inserts a new transaction with the same postings negated, a
-    /// description of `"Reversal of {id}"`, and `Status::Pending`.  One
+    /// description of `"Reversal of {id}"`, and `Reconciliation::Unreconciled`.  One
     /// `transaction_links` row (`link_type = 'reversal'`) and two
     /// `transaction_link_members` rows (original + reversal) are inserted in the
     /// same database transaction to tie them together atomically.
@@ -427,7 +427,7 @@ impl Service {
         let reversal_id = TransactionId::new();
         let link_id = TransactionLinkId::new();
         let created_at_str = Timestamp::now().to_string();
-        let pending_str = to_db_str(TransactionStatus::Pending)?;
+        let unreconciled_str = to_db_str(Reconciliation::Unreconciled)?;
         let description = format!("Reversal of {id}");
 
         let event = Event::TransactionReversed {
@@ -441,14 +441,14 @@ impl Service {
 
         // Insert the reversal transaction row.
         sqlx::query(
-            "INSERT INTO transactions (id, date, payee, description, status, created_at) \
+            "INSERT INTO transactions (id, date, payee, description, reconciliation, created_at) \
              VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(reversal_id.to_string())
         .bind(original.date().to_string())
         .bind(original.payee())
         .bind(&description)
-        .bind(&pending_str)
+        .bind(&unreconciled_str)
         .bind(&created_at_str)
         .execute(&mut *db_tx)
         .await?;
@@ -524,7 +524,7 @@ impl Service {
         Ok(reversal_id)
     }
 
-    /// Lists all non-voided transactions ordered by date descending, including postings.
+    /// Lists all transactions ordered by date descending, including postings.
     ///
     /// Postings, tags, and cost data are loaded via separate queries to avoid N+1
     /// round-trips.
@@ -538,14 +538,11 @@ impl Service {
         reason = "loading transactions with postings, cost, and tags inherently requires several queries and field mappings"
     )]
     pub async fn list(&self) -> BcResult<Vec<Transaction>> {
-        let voided_str = to_db_str(TransactionStatus::Voided)?;
-
         let tx_rows: Vec<(String, String, Option<String>, String, String, String)> =
             sqlx::query_as(
-                "SELECT id, date, payee, description, status, created_at \
-                 FROM transactions WHERE status != ? ORDER BY date DESC",
+                "SELECT id, date, payee, description, reconciliation, created_at \
+                 FROM transactions ORDER BY date DESC",
             )
-            .bind(&voided_str)
             .fetch_all(&self.pool)
             .await?;
 
@@ -553,14 +550,11 @@ impl Service {
             return Ok(vec![]);
         }
 
-        // Load all transaction-level tags for non-voided transactions in one query.
+        // Load all transaction-level tags in one query.
         let tx_tag_rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT tt.transaction_id, tt.tag_id \
-             FROM transaction_tags tt \
-             JOIN transactions t ON tt.transaction_id = t.id \
-             WHERE t.status != ?",
+             FROM transaction_tags tt",
         )
-        .bind(&voided_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -572,29 +566,22 @@ impl Service {
             tx_tags_map.entry(tx_id_str).or_default().push(tid);
         }
 
-        // Load all postings for non-voided transactions in one query.
+        // Load all postings in one query.
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
             "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.note, \
                     p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
-             JOIN transactions t ON p.transaction_id = t.id \
-             WHERE t.status != ? \
              ORDER BY p.transaction_id, p.position ASC",
         )
-        .bind(&voided_str)
         .fetch_all(&self.pool)
         .await?;
 
-        // Load all posting tags for non-voided transactions in one query.
+        // Load all posting tags in one query.
         let posting_tag_rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT pt.posting_id, pt.tag_id \
-             FROM posting_tags pt \
-             JOIN postings p ON pt.posting_id = p.id \
-             JOIN transactions t ON p.transaction_id = t.id \
-             WHERE t.status != ?",
+             FROM posting_tags pt",
         )
-        .bind(&voided_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -661,14 +648,14 @@ impl Service {
         tx_rows
             .into_iter()
             .map(
-                |(id_str, date_str, payee, description, status_str, created_at_str)| {
+                |(id_str, date_str, payee, description, reconciliation_str, created_at_str)| {
                     let tx_id = id_str
                         .parse::<TransactionId>()
                         .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
                     let date = date_str
                         .parse::<jiff::civil::Date>()
                         .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
-                    let status = from_db_str::<TransactionStatus>(&status_str)?;
+                    let reconciliation = from_db_str::<Reconciliation>(&reconciliation_str)?;
                     let created_at = created_at_str.parse::<Timestamp>().map_err(|e| {
                         BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
                     })?;
@@ -680,7 +667,7 @@ impl Service {
                         .maybe_payee(payee)
                         .description(description)
                         .postings(postings)
-                        .status(status)
+                        .reconciliation(reconciliation)
                         .tag_ids(tag_ids)
                         .created_at(created_at)
                         .build())
@@ -689,7 +676,7 @@ impl Service {
             .collect()
     }
 
-    /// Lists all non-voided transactions that have at least one posting for the
+    /// Lists all transactions that have at least one posting for the
     /// given account, ordered by date descending.
     ///
     /// Issues four targeted queries against SQLite (transactions, tx-tags, postings,
@@ -713,18 +700,15 @@ impl Service {
         &self,
         account_id: &AccountId,
     ) -> BcResult<impl Iterator<Item = Transaction>> {
-        let voided_str = to_db_str(TransactionStatus::Voided)?;
         let account_id_str = account_id.to_string();
 
         let tx_rows: Vec<(String, String, Option<String>, String, String, String)> =
             sqlx::query_as(
-                "SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
+                "SELECT t.id, t.date, t.payee, t.description, t.reconciliation, t.created_at \
                  FROM transactions t \
-                 WHERE t.status != ? \
-                 AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
+                 WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
                  ORDER BY t.date DESC",
             )
-            .bind(&voided_str)
             .bind(&account_id_str)
             .fetch_all(&self.pool)
             .await?;
@@ -737,10 +721,8 @@ impl Service {
             "SELECT tt.transaction_id, tt.tag_id \
              FROM transaction_tags tt \
              JOIN transactions t ON tt.transaction_id = t.id \
-             WHERE t.status != ? \
-             AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
+             WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
         )
-        .bind(&voided_str)
         .bind(&account_id_str)
         .fetch_all(&self.pool)
         .await?;
@@ -758,13 +740,10 @@ impl Service {
                     p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
-             JOIN transactions t ON p.transaction_id = t.id \
-             WHERE t.status != ? \
-             AND p.transaction_id IN \
+             WHERE p.transaction_id IN \
                  (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
              ORDER BY p.transaction_id, p.position ASC",
         )
-        .bind(&voided_str)
         .bind(&account_id_str)
         .fetch_all(&self.pool)
         .await?;
@@ -773,12 +752,9 @@ impl Service {
             "SELECT pt.posting_id, pt.tag_id \
              FROM posting_tags pt \
              JOIN postings p ON pt.posting_id = p.id \
-             JOIN transactions t ON p.transaction_id = t.id \
-             WHERE t.status != ? \
-             AND p.transaction_id IN \
+             WHERE p.transaction_id IN \
                  (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
         )
-        .bind(&voided_str)
         .bind(&account_id_str)
         .fetch_all(&self.pool)
         .await?;
@@ -845,14 +821,14 @@ impl Service {
         tx_rows
             .into_iter()
             .map(
-                |(id_str, date_str, payee, description, status_str, created_at_str)| {
+                |(id_str, date_str, payee, description, reconciliation_str, created_at_str)| {
                     let tx_id = id_str
                         .parse::<TransactionId>()
                         .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
                     let date = date_str
                         .parse::<jiff::civil::Date>()
                         .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
-                    let status = from_db_str::<TransactionStatus>(&status_str)?;
+                    let reconciliation = from_db_str::<Reconciliation>(&reconciliation_str)?;
                     let created_at = created_at_str.parse::<Timestamp>().map_err(|e| {
                         BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
                     })?;
@@ -864,7 +840,7 @@ impl Service {
                         .maybe_payee(payee)
                         .description(description)
                         .postings(postings)
-                        .status(status)
+                        .reconciliation(reconciliation)
                         .tag_ids(tag_ids)
                         .created_at(created_at)
                         .build())
@@ -874,7 +850,7 @@ impl Service {
             .map(IntoIterator::into_iter)
     }
 
-    /// Lists all non-voided transactions that involve `account_id` or any of its
+    /// Lists all transactions that involve `account_id` or any of its
     /// descendant accounts in the account hierarchy.
     ///
     /// Uses a `WITH RECURSIVE` CTE to collect the full subtree of account IDs
@@ -897,7 +873,7 @@ impl Service {
             .await
     }
 
-    /// Lists all non-voided transactions that involve `account_id` or any of its
+    /// Lists all transactions that involve `account_id` or any of its
     /// descendant accounts, optionally restricted to a date half-open interval
     /// `[date_from, date_until)`.
     ///
@@ -920,7 +896,6 @@ impl Service {
         date_from: Option<jiff::civil::Date>,
         date_until: Option<jiff::civil::Date>,
     ) -> BcResult<impl Iterator<Item = Transaction>> {
-        let voided_str = to_db_str(TransactionStatus::Voided)?;
         let account_id_str = account_id.to_string();
         let date_from_str = date_from.map(|d| d.to_string());
         let date_until_str = date_until.map(|d| d.to_string());
@@ -933,14 +908,13 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
+                     SELECT t.id, t.date, t.payee, t.description, t.reconciliation, t.created_at \
                      FROM transactions t \
-                     WHERE t.status != ? AND t.date >= ? AND t.date < ? \
+                     WHERE t.date >= ? AND t.date < ? \
                      AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
                      ORDER BY t.date DESC",
                 )
                 .bind(&account_id_str)
-                .bind(&voided_str)
                 .bind(from)
                 .bind(until)
                 .fetch_all(&self.pool)
@@ -951,14 +925,13 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
+                     SELECT t.id, t.date, t.payee, t.description, t.reconciliation, t.created_at \
                      FROM transactions t \
-                     WHERE t.status != ? AND t.date >= ? \
+                     WHERE t.date >= ? \
                      AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
                      ORDER BY t.date DESC",
                 )
                 .bind(&account_id_str)
-                .bind(&voided_str)
                 .bind(from)
                 .fetch_all(&self.pool)
                 .await?,
@@ -968,14 +941,13 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
+                     SELECT t.id, t.date, t.payee, t.description, t.reconciliation, t.created_at \
                      FROM transactions t \
-                     WHERE t.status != ? AND t.date < ? \
+                     WHERE t.date < ? \
                      AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
                      ORDER BY t.date DESC",
                 )
                 .bind(&account_id_str)
-                .bind(&voided_str)
                 .bind(until)
                 .fetch_all(&self.pool)
                 .await?,
@@ -985,14 +957,12 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.payee, t.description, t.status, t.created_at \
+                     SELECT t.id, t.date, t.payee, t.description, t.reconciliation, t.created_at \
                      FROM transactions t \
-                     WHERE t.status != ? \
-                     AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
+                     WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
                      ORDER BY t.date DESC",
                 )
                 .bind(&account_id_str)
-                .bind(&voided_str)
                 .fetch_all(&self.pool)
                 .await?,
             };
@@ -1010,11 +980,9 @@ impl Service {
              SELECT tt.transaction_id, tt.tag_id \
              FROM transaction_tags tt \
              JOIN transactions t ON tt.transaction_id = t.id \
-             WHERE t.status != ? \
-             AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree))",
+             WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree))",
         )
         .bind(&account_id_str)
-        .bind(&voided_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1036,14 +1004,11 @@ impl Service {
                     p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
-             JOIN transactions t ON p.transaction_id = t.id \
-             WHERE t.status != ? \
-             AND p.transaction_id IN \
+             WHERE p.transaction_id IN \
                  (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
              ORDER BY p.transaction_id, p.position ASC",
         )
         .bind(&account_id_str)
-        .bind(&voided_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1056,13 +1021,10 @@ impl Service {
              SELECT pt.posting_id, pt.tag_id \
              FROM posting_tags pt \
              JOIN postings p ON pt.posting_id = p.id \
-             JOIN transactions t ON p.transaction_id = t.id \
-             WHERE t.status != ? \
-             AND p.transaction_id IN \
+             WHERE p.transaction_id IN \
                  (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree))",
         )
         .bind(&account_id_str)
-        .bind(&voided_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1128,14 +1090,14 @@ impl Service {
         tx_rows
             .into_iter()
             .map(
-                |(id_str, date_str, payee, description, status_str, created_at_str)| {
+                |(id_str, date_str, payee, description, reconciliation_str, created_at_str)| {
                     let tx_id = id_str
                         .parse::<TransactionId>()
                         .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
                     let date = date_str
                         .parse::<jiff::civil::Date>()
                         .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
-                    let status = from_db_str::<TransactionStatus>(&status_str)?;
+                    let reconciliation = from_db_str::<Reconciliation>(&reconciliation_str)?;
                     let created_at = created_at_str.parse::<Timestamp>().map_err(|e| {
                         BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
                     })?;
@@ -1147,7 +1109,7 @@ impl Service {
                         .maybe_payee(payee)
                         .description(description)
                         .postings(postings)
-                        .status(status)
+                        .reconciliation(reconciliation)
                         .tag_ids(tag_ids)
                         .created_at(created_at)
                         .build())
@@ -1173,13 +1135,8 @@ impl Service {
     ///
     /// Returns [`BcError::UnbalancedTransaction`] if postings do not sum to zero.
     /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
-    /// Returns [`BcError::AlreadyVoided`] if the transaction exists but is already voided.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "complex atomic operation: event + UPDATE + FK-ordered DELETE + INSERT"
-    )]
     pub async fn amend(&self, updated: Transaction) -> BcResult<()> {
         validate_balance(updated.postings())?;
 
@@ -1191,8 +1148,6 @@ impl Service {
             description: updated.description().to_owned(),
             payee: updated.payee().map(str::to_owned),
         };
-        let voided_str = crate::db::to_db_str(bc_models::TransactionStatus::Voided)?;
-
         let date_str = updated.date().to_string();
 
         let mut db_tx = self.pool.begin().await?;
@@ -1200,27 +1155,17 @@ impl Service {
         insert_event(&event, &mut db_tx).await?;
 
         let result = sqlx::query(
-            "UPDATE transactions SET date = ?, payee = ?, description = ? WHERE id = ? AND status != ?",
+            "UPDATE transactions SET date = ?, payee = ?, description = ? WHERE id = ?",
         )
         .bind(&date_str)
         .bind(updated.payee())
         .bind(updated.description())
         .bind(&tx_id_str)
-        .bind(&voided_str)
         .execute(&mut *db_tx)
         .await?;
 
         if result.rows_affected() == 0 {
-            let exists: bool =
-                sqlx::query_scalar("SELECT count(*) > 0 FROM transactions WHERE id = ?")
-                    .bind(&tx_id_str)
-                    .fetch_one(&mut *db_tx)
-                    .await?;
-            return if exists {
-                Err(BcError::AlreadyVoided(tx_id.clone()))
-            } else {
-                Err(BcError::NotFound(tx_id_str))
-            };
+            return Err(BcError::NotFound(tx_id_str));
         }
 
         // Delete posting_tags first to satisfy the FK constraint
@@ -1305,7 +1250,7 @@ impl Service {
         Ok(())
     }
 
-    /// Lists all non-voided transactions with a posting against `account_id`
+    /// Lists all transactions with a posting against `account_id`
     /// (optionally filtered to postings tagged with `tag_filter`) in
     /// `[period_start, period_end)`.
     ///
@@ -1428,9 +1373,9 @@ mod tests {
     use bc_models::Cost;
     use bc_models::Posting;
     use bc_models::PostingId;
+    use bc_models::Reconciliation;
     use bc_models::TagId;
     use bc_models::Transaction;
-    use bc_models::TransactionStatus;
     use jiff::Timestamp;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
@@ -1477,7 +1422,7 @@ mod tests {
                     .amount(Amount::new(dec!(-600.00), CommodityCode::new("AUD")))
                     .build(),
             ])
-            .status(TransactionStatus::Cleared)
+            .reconciliation(Reconciliation::Reconciled)
             .created_at(jiff::Timestamp::now())
             .build();
 
@@ -1538,7 +1483,7 @@ mod tests {
                     .amount(Amount::new(dec!(-600.00), CommodityCode::new("AUD")))
                     .build(),
             ])
-            .status(TransactionStatus::Cleared)
+            .reconciliation(Reconciliation::Reconciled)
             .created_at(jiff::Timestamp::now())
             .build();
 
@@ -1587,7 +1532,7 @@ mod tests {
                     .amount(Amount::new(dec!(-100.00), CommodityCode::new("AUD")))
                     .build(),
             ])
-            .status(TransactionStatus::Cleared)
+            .reconciliation(Reconciliation::Reconciled)
             .created_at(Timestamp::now())
             .build()
     }
@@ -1639,7 +1584,7 @@ mod tests {
                     .amount(Amount::new(dec!(50.00), CommodityCode::new("AUD")))
                     .build(),
             ])
-            .status(TransactionStatus::Cleared)
+            .reconciliation(Reconciliation::Reconciled)
             .created_at(Timestamp::now())
             .build();
         let result = svc.create(tx).await;
@@ -1690,7 +1635,7 @@ mod tests {
                     .amount(Amount::new(dec!(-10), CommodityCode::new("AAPL")))
                     .build(),
             ])
-            .status(TransactionStatus::Cleared)
+            .reconciliation(Reconciliation::Reconciled)
             .created_at(Timestamp::now())
             .build();
 
@@ -1791,7 +1736,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn list_excludes_voided_transactions(pool: sqlx::SqlitePool) {
+    async fn list_returns_all_transactions(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -1812,8 +1757,6 @@ mod tests {
 
         let svc = Service::new(pool.clone());
 
-        // Create two transactions; mark one as voided directly to verify the
-        // list filter still excludes legacy voided-status rows.
         let tx1 = make_balanced_transaction(acc_a.clone(), acc_b.clone());
         let id1 = tx1.id().clone();
         svc.create(tx1).await.expect("create tx1 should succeed");
@@ -1821,19 +1764,12 @@ mod tests {
         let tx2 = make_balanced_transaction(acc_a, acc_b);
         let id2 = tx2.id().clone();
         svc.create(tx2).await.expect("create tx2 should succeed");
-        // Set voided status via raw SQL: void() is removed; the exclusion filter
-        // is kept as-is and this confirms it still works for any legacy rows.
-        sqlx::query("UPDATE transactions SET status = 'voided' WHERE id = ?")
-            .bind(id2.to_string())
-            .execute(&pool)
-            .await
-            .expect("mark tx2 voided");
 
-        let active = svc.list().await.expect("list should succeed");
-        assert_eq!(active.len(), 1);
-        let first = active.first().expect("one active transaction should exist");
-        assert_eq!(first.id(), &id1);
-        assert_eq!(first.postings().len(), 2);
+        let txns = svc.list().await.expect("list should succeed");
+        assert_eq!(txns.len(), 2);
+        let ids: Vec<_> = txns.iter().map(Transaction::id).collect();
+        assert!(ids.contains(&&id1));
+        assert!(ids.contains(&&id2));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1863,7 +1799,7 @@ mod tests {
             .id(bc_models::TransactionId::new())
             .date("2026-01-01".parse::<jiff::civil::Date>().expect("date"))
             .description("Original description")
-            .status(TransactionStatus::Cleared)
+            .reconciliation(Reconciliation::Reconciled)
             .created_at(jiff::Timestamp::now())
             .postings(vec![
                 Posting::builder()
@@ -1885,7 +1821,7 @@ mod tests {
             .id(id.clone())
             .date("2026-01-15".parse::<jiff::civil::Date>().expect("date"))
             .description("Amended description")
-            .status(TransactionStatus::Cleared)
+            .reconciliation(Reconciliation::Reconciled)
             .postings(original.postings().to_vec())
             .created_at(*original.created_at())
             .build();
@@ -1901,67 +1837,32 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn amend_voided_transaction_returns_already_voided(pool: sqlx::SqlitePool) {
+    async fn amend_nonexistent_transaction_returns_not_found(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool.clone());
-        let account_svc = crate::AccountService::new(pool.clone());
+        let fake_id = bc_models::TransactionId::new();
 
-        let checking_id = account_svc
-            .create()
-            .name("Checking")
-            .account_type(bc_models::AccountType::Asset)
-            .kind(bc_models::AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create checking");
-        let expenses_id = account_svc
-            .create()
-            .name("Expenses")
-            .account_type(bc_models::AccountType::Expense)
-            .kind(bc_models::AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create expenses");
-
-        let original = Transaction::builder()
-            .id(bc_models::TransactionId::new())
-            .date("2026-01-01".parse::<jiff::civil::Date>().expect("date"))
-            .description("Original description")
-            .status(TransactionStatus::Cleared)
-            .created_at(jiff::Timestamp::now())
+        let amended = Transaction::builder()
+            .id(fake_id)
+            .date("2026-01-15".parse::<jiff::civil::Date>().expect("date"))
+            .description("Amended non-existent")
+            .reconciliation(Reconciliation::Reconciled)
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
-                    .account_id(checking_id.clone())
+                    .account_id(bc_models::AccountId::new())
                     .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
                     .build(),
                 Posting::builder()
                     .id(PostingId::new())
-                    .account_id(expenses_id.clone())
+                    .account_id(bc_models::AccountId::new())
                     .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
                     .build(),
             ])
-            .build();
-
-        let id = svc.create(original.clone()).await.expect("create");
-        // Set voided status via raw SQL: void() is removed; the amend guard
-        // still checks the voided-status value for any legacy rows.
-        sqlx::query("UPDATE transactions SET status = 'voided' WHERE id = ?")
-            .bind(id.to_string())
-            .execute(&pool)
-            .await
-            .expect("mark voided");
-
-        let amended = Transaction::builder()
-            .id(id.clone())
-            .date("2026-01-15".parse::<jiff::civil::Date>().expect("date"))
-            .description("Amended after void")
-            .status(TransactionStatus::Cleared)
-            .postings(original.postings().to_vec())
-            .created_at(*original.created_at())
+            .created_at(jiff::Timestamp::now())
             .build();
 
         let result = svc.amend(amended).await;
-        assert!(matches!(result, Err(BcError::AlreadyVoided(_))));
+        assert!(matches!(result, Err(BcError::NotFound(_))));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2012,7 +1913,7 @@ mod tests {
                     .build(),
             ])
             .tag_ids(vec![tag_id.clone()])
-            .status(TransactionStatus::Cleared)
+            .reconciliation(Reconciliation::Reconciled)
             .created_at(Timestamp::now())
             .build();
 
@@ -2064,7 +1965,7 @@ mod tests {
             .date(date(2026, 3, 1))
             .description("Original description")
             .postings(vec![posting_a, posting_b])
-            .status(TransactionStatus::Cleared)
+            .reconciliation(Reconciliation::Reconciled)
             .created_at(Timestamp::now())
             .build();
 
@@ -2104,7 +2005,7 @@ mod tests {
                     .amount(Amount::new(dec!(-75.00), CommodityCode::new("AUD")))
                     .build(),
             ])
-            .status(TransactionStatus::Cleared)
+            .reconciliation(Reconciliation::Reconciled)
             .created_at(Timestamp::now())
             .build();
 

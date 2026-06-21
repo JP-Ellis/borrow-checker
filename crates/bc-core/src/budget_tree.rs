@@ -536,9 +536,9 @@ mod tests {
     use bc_models::Period;
     use bc_models::Posting;
     use bc_models::PostingId;
+    use bc_models::Reconciliation;
     use bc_models::RolloverPolicy;
     use bc_models::Transaction;
-    use bc_models::TransactionStatus;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
@@ -599,7 +599,7 @@ mod tests {
                         .amount(Amount::new(dec!(-68), CommodityCode::new("AUD")))
                         .build(),
                 ])
-                .status(TransactionStatus::Cleared)
+                .reconciliation(Reconciliation::Reconciled)
                 .created_at(jiff::Timestamp::now())
                 .build(),
         )

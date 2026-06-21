@@ -157,7 +157,7 @@ pub use transaction::LinkType as TransactionLinkType;
 pub use transaction::Posting;
 pub use transaction::PostingBuilder;
 pub use transaction::PostingId;
-pub use transaction::Status as TransactionStatus;
+pub use transaction::Reconciliation;
 pub use transaction::Transaction;
 pub use transaction::TransactionBuilder;
 pub use transaction::TransactionId;

@@ -6,7 +6,7 @@ CREATE INDEX IF NOT EXISTS idx_accounts_archived_at ON accounts (archived_at);
 
 -- transactions
 CREATE INDEX IF NOT EXISTS idx_transactions_date    ON transactions (date);
-CREATE INDEX IF NOT EXISTS idx_transactions_status  ON transactions (status);
+CREATE INDEX IF NOT EXISTS idx_transactions_reconciliation ON transactions (reconciliation);
 
 -- postings: balance queries filter and group by both columns
 CREATE INDEX IF NOT EXISTS idx_postings_account_commodity ON postings (account_id, commodity);
