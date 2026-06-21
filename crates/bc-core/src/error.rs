@@ -31,6 +31,9 @@ pub enum BcError {
     /// A value could not be parsed from its stored representation.
     #[error("data error: {0}")]
     BadData(String),
+    /// A tag could not be deleted because it is still referenced by a budget filter.
+    #[error("tag in use: {0}")]
+    TagInUse(String),
     /// A database error.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
