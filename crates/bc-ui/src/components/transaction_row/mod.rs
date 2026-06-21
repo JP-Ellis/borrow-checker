@@ -624,8 +624,8 @@ struct PostingData {
     amount: Option<Amount>,
     /// Optional inline note.
     note: Option<String>,
-    /// Tag IDs attached to this posting.
-    tag_ids: Vec<String>,
+    /// Resolved tag colon-paths attached to this posting (e.g. `"person:josh"`).
+    tags: Vec<String>,
     /// Accrual spread start date, if set.
     spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end date, if set.
@@ -644,7 +644,7 @@ fn render_posting(p: PostingData, on_change_cb: Callback<()>) -> impl IntoView {
         account_path,
         amount,
         note,
-        tag_ids,
+        tags,
         spread_from,
         spread_until,
         posting_id,
@@ -666,7 +666,7 @@ fn render_posting(p: PostingData, on_change_cb: Callback<()>) -> impl IntoView {
     let note_chip = note
         .filter(|n| !n.is_empty())
         .map(|n| view! { <span class=style::chip_note>"# "{n}</span> });
-    let tag_chips = tag_ids
+    let tag_chips = tags
         .into_iter()
         .map(|t| view! { <TagToken label=t /> })
         .collect::<Vec<_>>();
@@ -789,7 +789,7 @@ fn TransactionDetail(
                 account_path: p.account.name.clone(),
                 amount: p.amount.clone(),
                 note: p.note.clone(),
-                tag_ids: p.tag_ids.clone(),
+                tags: p.tags.clone(),
                 spread_from: p.spread_from,
                 spread_until: p.spread_until,
                 posting_id: p.id.clone(),
