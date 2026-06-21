@@ -5,150 +5,18 @@ pub(crate) mod qa;
 
 use bc_ipc::BudgetRevisionView;
 use bc_ipc::BudgetTreeNode;
-use bc_ipc::Posting;
 use bc_ipc::Transaction;
+use jiff::Span;
 use leptos::prelude::*;
-use rust_decimal::Decimal;
 use stylance::import_style;
 
+use crate::components::transaction_row::RowPerspective;
+use crate::components::transaction_row::TransactionRow;
 use crate::pages::budget::BudgetPageCtx;
-use crate::pages::budget::components::accrual_editor::AccrualEditor;
 use crate::pages::budget::components::revision_form::RevisionForm;
 use crate::pages::budget::period_nav;
 
 import_style!(style, "detail.module.scss");
-
-// MARK: Helpers
-
-/// Returns a zeroed [`Amount`] using the first posting's currency when there are no positive
-/// postings.
-#[must_use]
-#[inline]
-fn tx_display_amount(tx: &Transaction) -> bc_ipc::Amount {
-    let currency = tx
-        .postings
-        .first()
-        .and_then(|p| p.amount.as_ref())
-        .map_or("", |a| a.currency_code.as_str());
-    let totals: bc_ipc::Balances = tx
-        .postings
-        .iter()
-        .filter_map(|p| p.amount.as_ref())
-        .filter(|a| a.value > Decimal::ZERO)
-        .cloned()
-        .collect();
-    let total = totals.get(currency).unwrap_or(Decimal::ZERO);
-    bc_ipc::Amount::new(total, currency)
-}
-
-// MARK: PostingRow
-
-/// Renders a single posting sub-row with optional accrual-spread editor.
-#[component]
-fn PostingRow(
-    /// The posting to display.
-    posting: Posting,
-    /// Callback invoked after a successful accrual spread change.
-    on_change: Callback<()>,
-) -> impl IntoView {
-    let spread_open = RwSignal::new(false);
-    let has_spread = posting.spread_from.is_some();
-    let spread_from = posting.spread_from;
-    let spread_until = posting.spread_until;
-    let posting_id = posting.id.clone();
-
-    let spread_label = match (spread_from, spread_until) {
-        (Some(f), Some(u)) => format!("{f} \u{2013} {u}"),
-        (Some(f), None) => f.to_string(),
-        _ => String::new(),
-    };
-
-    let btn_label = move || {
-        if spread_open.get() {
-            "Hide spread"
-        } else if has_spread {
-            "Edit spread"
-        } else {
-            "Add spread"
-        }
-    };
-
-    view! {
-        <div>
-            <div class=style::posting_row>
-                <span>{posting.account.name.clone()}</span>
-                <span class=style::posting_amount>
-                    {posting.amount.as_ref().map_or_else(String::new, bc_ipc::Amount::format_short)}
-                </span>
-            </div>
-            {has_spread
-                .then(|| {
-                    view! {
-                        <div class=style::spread_badge_row>
-                            <span class=style::accrual_badge>"\u{27F3} accrued"</span>
-                            <span class=style::spread_dates>{spread_label.clone()}</span>
-                        </div>
-                    }
-                })}
-            <div class=style::spread_badge_row>
-                <button
-                    class=style::spread_edit_btn
-                    on:click=move |_| spread_open.update(|o| *o = !*o)
-                >
-                    {btn_label}
-                </button>
-            </div>
-            <Show when=move || spread_open.get()>
-                <AccrualEditor
-                    posting_id=posting_id.clone()
-                    has_spread=has_spread
-                    spread_from=spread_from
-                    spread_until=spread_until
-                    on_change=on_change
-                />
-            </Show>
-        </div>
-    }
-}
-
-// MARK: TxRow
-
-/// Renders a single transaction row and its expandable postings detail.
-#[component]
-fn TxRow(
-    /// The transaction to display.
-    tx: Transaction,
-    /// Callback invoked after a successful accrual spread change.
-    on_change: Callback<()>,
-) -> impl IntoView {
-    let expanded = RwSignal::new(false);
-    let display_amount = tx_display_amount(&tx);
-    let postings = StoredValue::new(tx.postings.clone());
-
-    view! {
-        <div>
-            <div
-                class=move || if expanded.get() { style::txn_row_expanded } else { style::txn_row }
-                on:click=move |_| expanded.update(|e| *e = !*e)
-            >
-                <span class=style::txn_date>{tx.date.to_string()}</span>
-                <span>{tx.payee.clone()}</span>
-                <span class=style::txn_amt>{display_amount.format_short()}</span>
-            </div>
-            <Show when=move || expanded.get()>
-                <div class=style::txn_detail>
-                    <For
-                        each=move || postings.get_value()
-                        key=|p| p.id.clone()
-                        children=move |p| {
-                            view! { <PostingRow posting=p on_change=on_change /> }
-                        }
-                    />
-                </div>
-            </Show>
-        </div>
-    }
-}
 
 // MARK: BudgetDetail
 
@@ -158,10 +26,6 @@ fn TxRow(
 /// add/amend form and action buttons; right column shows a scrollable list of matched
 /// transactions with expandable postings and accrual-spread editors.
 #[component]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Leptos component props must be owned values"
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "large view! block combining revision timeline, actions, and transaction list columns"
@@ -465,13 +329,30 @@ pub fn BudgetDetail(
                                         .into_any()
                                 }
                                 Ok(list) => {
+                                    let acct = StoredValue::new(node.account_id.clone());
+                                    let filter = StoredValue::new(node.tag_filter.clone());
+                                    let p = period.get();
+                                    let ws = window_start.get();
+                                    let next_start = period_nav::step_window(&p, ws, true);
+                                    let we = next_start.saturating_sub(Span::new().days(1_i64));
                                     view! {
                                         <div class=style::txn_list>
                                             <For
                                                 each=move || list.clone()
                                                 key=|tx| tx.id.clone()
                                                 children=move |tx| {
-                                                    view! { <TxRow tx=tx on_change=on_change /> }
+                                                    view! {
+                                                        <TransactionRow
+                                                            tx=tx
+                                                            perspective=RowPerspective::Budget {
+                                                                account_id: acct.get_value(),
+                                                                tag_filter: filter.get_value(),
+                                                                window_start: ws,
+                                                                window_end: we,
+                                                            }
+                                                            on_change=on_change
+                                                        />
+                                                    }
                                                 }
                                             />
                                         </div>
