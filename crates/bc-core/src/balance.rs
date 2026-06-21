@@ -254,7 +254,10 @@ impl Engine {
                 }
             },
         )?;
-        Ok((Amount::new(inflow, commodity), Amount::new(outflow, commodity)))
+        Ok((
+            Amount::new(inflow, commodity),
+            Amount::new(outflow, commodity),
+        ))
     }
 
     /// Returns `count` contiguous period buckets ending with the period containing `as_of`.
@@ -320,7 +323,9 @@ impl Engine {
             .collect();
 
         for (date, amount) in all_postings {
-            if let Some(slot) = acc.iter_mut().find(|(start, end, _, _)| date >= *start && date < *end)
+            if let Some(slot) = acc
+                .iter_mut()
+                .find(|(start, end, _, _)| date >= *start && date < *end)
             {
                 if amount >= Decimal::ZERO {
                     slot.2 = slot
@@ -446,9 +451,7 @@ impl Engine {
     ///
     /// Returns [`BcError`] on database or parse failure.
     #[inline]
-    pub async fn default_balances(
-        &self,
-    ) -> BcResult<std::collections::HashMap<AccountId, Amount>> {
+    pub async fn default_balances(&self) -> BcResult<std::collections::HashMap<AccountId, Amount>> {
         let voided_str = to_db_str(TransactionStatus::Voided)?;
 
         // Fetch the effective default commodity per active account.
