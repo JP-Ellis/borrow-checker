@@ -185,8 +185,8 @@ pub struct Posting {
     pub amount: Option<Amount>,
     /// Optional inline comment shown in the TOML view.
     pub note: Option<String>,
-    /// Tag IDs attached to this posting (raw ID strings, not resolved paths).
-    pub tag_ids: Vec<String>,
+    /// Resolved tag paths attached to this posting (colon-joined; includes inherited transaction tags).
+    pub tags: Vec<String>,
     /// Accrual spread start date. `None` means no spreading applied.
     pub spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end date (inclusive — the last day of the spread). `None` means no spreading applied.
@@ -202,7 +202,7 @@ impl Posting {
     /// * `account` - Account reference with ID and display name.
     /// * `amount` - Posting amount, or `None` if elided (inferred to balance).
     /// * `note` - Optional inline comment, or `None`.
-    /// * `tag_ids` - Tag IDs attached to this posting.
+    /// * `tags` - Tag IDs attached to this posting.
     /// * `spread_from` - Accrual spread start date, or `None`.
     /// * `spread_until` - Accrual spread end date (inclusive — the last day of the spread), or `None`.
     #[must_use]
@@ -212,7 +212,7 @@ impl Posting {
         account: AccountRef,
         amount: Option<Amount>,
         note: Option<impl Into<String>>,
-        tag_ids: Vec<String>,
+        tags: Vec<String>,
         spread_from: Option<jiff::civil::Date>,
         spread_until: Option<jiff::civil::Date>,
     ) -> Self {
@@ -221,7 +221,7 @@ impl Posting {
             account,
             amount,
             note: note.map(Into::into),
-            tag_ids,
+            tags,
             spread_from,
             spread_until,
         }
@@ -356,8 +356,8 @@ pub struct NewPosting {
     pub amount: Option<Amount>,
     /// Optional inline note.
     pub note: Option<String>,
-    /// Tag IDs to attach to this posting.
-    pub tag_ids: Vec<String>,
+    /// Tag paths to attach to this posting (must reference existing tags).
+    pub tags: Vec<String>,
     /// Accrual spread start date. `None` means no spreading.
     pub spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end date (inclusive — the last day of the spread). `None` means no spreading.
@@ -372,7 +372,7 @@ impl NewPosting {
     /// * `account_id` - Account ID referencing an existing active account.
     /// * `amount` - Posting amount, or `None` to elide (inferred to balance).
     /// * `note` - Optional inline note, or `None`.
-    /// * `tag_ids` - Tag IDs to attach to this posting.
+    /// * `tags` - Tag IDs to attach to this posting.
     /// * `spread_from` - Accrual spread start date, or `None`.
     /// * `spread_until` - Accrual spread end date (inclusive — the last day of the spread), or `None`.
     #[must_use]
@@ -381,7 +381,7 @@ impl NewPosting {
         account_id: impl Into<String>,
         amount: Option<Amount>,
         note: Option<impl Into<String>>,
-        tag_ids: Vec<String>,
+        tags: Vec<String>,
         spread_from: Option<jiff::civil::Date>,
         spread_until: Option<jiff::civil::Date>,
     ) -> Self {
@@ -389,7 +389,7 @@ impl NewPosting {
             account_id: account_id.into(),
             amount,
             note: note.map(Into::into),
-            tag_ids,
+            tags,
             spread_from,
             spread_until,
         }
@@ -680,7 +680,7 @@ mod tests {
         );
         assert_eq!(tx2.postings.first().and_then(|p| p.amount.as_ref()), None);
         assert_eq!(
-            tx2.postings.first().map(|p| p.tag_ids.as_slice()),
+            tx2.postings.first().map(|p| p.tags.as_slice()),
             Some(["tag-abc".to_owned()].as_slice())
         );
         assert_eq!(
