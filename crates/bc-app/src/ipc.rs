@@ -73,38 +73,30 @@ impl IntoIpc for bc_models::AccountType {
     }
 }
 
-// MARK: TransactionStatus / TxStatus
+// MARK: Reconciliation / TxStatus
 
-impl IntoIpc for bc_models::TransactionStatus {
+impl IntoIpc for bc_models::Reconciliation {
     type Output = bc_ipc::TxStatus;
 
     #[inline]
-    #[expect(
-        clippy::match_same_arms,
-        reason = "both bc_models::TransactionStatus and bc_ipc::TxStatus are #[non_exhaustive]; \
-                  Voided is kept explicit even though the wildcard fallback also maps to Unreconciled"
-    )]
     fn into_ipc(self) -> bc_ipc::TxStatus {
         match self {
-            bc_models::TransactionStatus::Cleared => bc_ipc::TxStatus::Cleared,
-            bc_models::TransactionStatus::Pending => bc_ipc::TxStatus::Pending,
-            bc_models::TransactionStatus::Voided => bc_ipc::TxStatus::Unreconciled,
-            _ => bc_ipc::TxStatus::Unreconciled,
+            bc_models::Reconciliation::Reconciled => bc_ipc::TxStatus::Cleared,
+            bc_models::Reconciliation::Flagged => bc_ipc::TxStatus::Pending,
+            bc_models::Reconciliation::Unreconciled | _ => bc_ipc::TxStatus::Unreconciled,
         }
     }
 }
 
 impl IntoModel for bc_ipc::TxStatus {
-    type Output = bc_models::TransactionStatus;
+    type Output = bc_models::Reconciliation;
 
     #[inline]
-    fn into_model(self) -> bc_models::TransactionStatus {
+    fn into_model(self) -> bc_models::Reconciliation {
         match self {
-            bc_ipc::TxStatus::Cleared => bc_models::TransactionStatus::Cleared,
-            bc_ipc::TxStatus::Pending | bc_ipc::TxStatus::Unreconciled => {
-                bc_models::TransactionStatus::Pending
-            }
-            _ => bc_models::TransactionStatus::Pending,
+            bc_ipc::TxStatus::Cleared => bc_models::Reconciliation::Reconciled,
+            bc_ipc::TxStatus::Pending => bc_models::Reconciliation::Flagged,
+            bc_ipc::TxStatus::Unreconciled | _ => bc_models::Reconciliation::Unreconciled,
         }
     }
 }
@@ -418,7 +410,7 @@ pub(crate) fn transaction_into_ipc_with_accounts(
         tx.id().to_string(),
         tx.date(),
         tx.payee().unwrap_or_default(),
-        tx.status().into_ipc(),
+        tx.reconciliation().into_ipc(),
         vec![], // TODO(ipc): resolve tag paths via TagService
         postings,
         vec![],
@@ -515,7 +507,7 @@ impl IntoIpc for &bc_models::Transaction {
             self.id().to_string(),
             self.date(),
             self.payee().unwrap_or_default(),
-            self.status().into_ipc(),
+            self.reconciliation().into_ipc(),
             vec![], // TODO(ipc): resolve tag paths via TagService
             postings,
             vec![],

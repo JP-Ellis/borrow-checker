@@ -39,7 +39,7 @@ exit_code: 0
       "spread_until": null
     }
   ],
-  "status": "cleared",
+  "reconciliation": "reconciled",
   "tag_ids": [],
   "link_ids": [],
   "created_at": "[TIMESTAMP]"

@@ -101,7 +101,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             .maybe_payee(raw.payee.clone())
             .description(raw.description.clone())
             .postings(vec![posting_account, posting_counterpart])
-            .status(bc_models::TransactionStatus::Cleared)
+            .reconciliation(bc_models::Reconciliation::Reconciled)
             .created_at(jiff::Timestamp::now())
             .build();
 

@@ -715,7 +715,6 @@ impl BudgetStatusEngine {
         period_start: jiff::civil::Date,
         period_end: jiff::civil::Date,
         tag_filter: Option<&bc_models::TagId>,
-        voided_str: &str,
     ) -> crate::BcResult<Vec<(String, String)>> {
         match tag_filter {
             Some(tag) => sqlx::query_as(
@@ -733,7 +732,7 @@ impl BudgetStatusEngine {
                  SELECT p.amount, p.commodity FROM postings p \
                  JOIN transactions t ON t.id = p.transaction_id \
                  WHERE p.account_id IN (SELECT id FROM acct_tree) \
-                   AND t.date >= ? AND t.date < ? AND t.status != ? \
+                   AND t.date >= ? AND t.date < ? \
                    AND EXISTS ( \
                      SELECT 1 FROM posting_tags pt WHERE pt.posting_id = p.id \
                      AND pt.tag_id IN (SELECT id FROM tag_subtree))",
@@ -742,7 +741,6 @@ impl BudgetStatusEngine {
             .bind(tag.to_string())
             .bind(period_start.to_string())
             .bind(period_end.to_string())
-            .bind(voided_str)
             .fetch_all(&self.pool)
             .await
             .map_err(Into::into),
@@ -755,12 +753,11 @@ impl BudgetStatusEngine {
                  SELECT p.amount, p.commodity FROM postings p \
                  JOIN transactions t ON t.id = p.transaction_id \
                  WHERE p.account_id IN (SELECT id FROM acct_tree) \
-                   AND t.date >= ? AND t.date < ? AND t.status != ?",
+                   AND t.date >= ? AND t.date < ?",
             )
             .bind(account_id.to_string())
             .bind(period_start.to_string())
             .bind(period_end.to_string())
-            .bind(voided_str)
             .fetch_all(&self.pool)
             .await
             .map_err(Into::into),
@@ -785,15 +782,8 @@ impl BudgetStatusEngine {
         period_start: jiff::civil::Date,
         period_end: jiff::civil::Date,
     ) -> crate::BcResult<(bc_models::Decimal, Option<bc_models::CommodityCode>)> {
-        let voided_str = crate::db::to_db_str(bc_models::TransactionStatus::Voided)?;
         let rows = self
-            .fetch_posting_amounts(
-                account_id,
-                period_start,
-                period_end,
-                rev.tag_filter(),
-                &voided_str,
-            )
+            .fetch_posting_amounts(account_id, period_start, period_end, rev.tag_filter())
             .await?;
 
         let target_commodity: Option<bc_models::CommodityCode> =
@@ -1000,9 +990,9 @@ mod budget_service_tests {
     use bc_models::Period;
     use bc_models::Posting;
     use bc_models::PostingId;
+    use bc_models::Reconciliation;
     use bc_models::RolloverPolicy;
     use bc_models::Transaction;
-    use bc_models::TransactionStatus;
     use jiff::Timestamp;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
@@ -1288,7 +1278,7 @@ mod budget_service_tests {
                         .amount(Amount::new(dec!(-60), CommodityCode::new("AUD")))
                         .build(),
                 ])
-                .status(TransactionStatus::Cleared)
+                .reconciliation(Reconciliation::Reconciled)
                 .created_at(Timestamp::now())
                 .build(),
         )

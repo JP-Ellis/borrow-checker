@@ -4,8 +4,8 @@ use bc_models::AccountId;
 use bc_models::DepreciationId;
 use bc_models::DepreciationPolicy;
 use bc_models::PostingId;
+use bc_models::Reconciliation;
 use bc_models::TransactionId;
-use bc_models::TransactionStatus;
 use bc_models::ValuationId;
 use bc_models::ValuationSource;
 use jiff::Timestamp;
@@ -211,20 +211,20 @@ impl Service {
             && !change.is_zero()
         {
             let tx_id = TransactionId::new();
-            let status_str = to_db_str(TransactionStatus::Cleared)?;
+            let reconciliation_str = to_db_str(Reconciliation::Reconciled)?;
 
             let event_tx = Event::TransactionCreated { id: tx_id.clone() };
             insert_event(&event_tx, &mut tx).await?;
 
             sqlx::query(
                 "INSERT INTO transactions \
-                     (id, date, payee, description, status, created_at) \
+                     (id, date, payee, description, reconciliation, created_at) \
                      VALUES (?, ?, NULL, ?, ?, ?)",
             )
             .bind(tx_id.to_string())
             .bind(recorded_at.to_string())
             .bind("Asset valuation recorded")
-            .bind(&status_str)
+            .bind(&reconciliation_str)
             .bind(now.to_string())
             .execute(&mut *tx)
             .await?;
@@ -577,7 +577,7 @@ impl Service {
 
         let depr_id = DepreciationId::new();
         let now = Timestamp::now();
-        let status_str = to_db_str(TransactionStatus::Cleared)?;
+        let reconciliation_str = to_db_str(Reconciliation::Reconciled)?;
 
         let event = Event::DepreciationCalculated {
             id: depr_id.clone(),
@@ -612,13 +612,13 @@ impl Service {
 
         sqlx::query(
             "INSERT INTO transactions \
-             (id, date, payee, description, status, created_at) \
+             (id, date, payee, description, reconciliation, created_at) \
              VALUES (?, ?, NULL, ?, ?, ?)",
         )
         .bind(tx_id.to_string())
         .bind(as_of.to_string())
         .bind("Depreciation expense")
-        .bind(&status_str)
+        .bind(&reconciliation_str)
         .bind(now.to_string())
         .execute(&mut *db_tx)
         .await?;
