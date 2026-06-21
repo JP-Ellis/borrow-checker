@@ -62,3 +62,20 @@ pub const CLEAR_POSTING_SPREAD: &str = "clear_posting_spread";
 
 /// Reverses a transaction, creating a linked negated reversal transaction.
 pub const REVERSE_TRANSACTION: &str = "reverse_transaction";
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    #[derive(serde::Serialize)]
+    struct ReverseTransactionArgs<'a> {
+        id: &'a str,
+    }
+
+    #[test]
+    fn reverse_transaction_args_serialize() {
+        let args = ReverseTransactionArgs { id: "tx-123" };
+        let json = serde_json::to_value(&args).expect("serialize");
+        assert_eq!(json, serde_json::json!({ "id": "tx-123" }));
+    }
+}
