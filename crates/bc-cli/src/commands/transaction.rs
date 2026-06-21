@@ -251,8 +251,10 @@ async fn amend(
         .date(new_date)
         .description(new_description)
         .maybe_payee(new_payee)
+        .maybe_note(original.note().map(str::to_owned))
         .postings(original.postings().to_vec())
         .tag_ids(original.tag_ids().to_vec())
+        .extra_dates(original.extra_dates().to_vec())
         .reconciliation(original.reconciliation())
         .created_at(*original.created_at())
         .build();

@@ -1296,6 +1296,10 @@ impl Service {
     /// `posting_tags` rows are deleted before `postings` rows to satisfy the FK constraint
     /// `posting_tags.posting_id REFERENCES postings(id)` enforced by `PRAGMA foreign_keys = ON`.
     ///
+    /// `reconciliation` is intentionally **not** updated here — it may only advance
+    /// through [`Service::reconcile`], which enforces the `balanced()` invariant before
+    /// allowing a transition to [`Reconciliation::Reconciled`].
+    ///
     /// # Arguments
     ///
     /// * `updated` - The new transaction state. Must carry the same [`TransactionId`]
@@ -1330,11 +1334,12 @@ impl Service {
         insert_event(&event, &mut db_tx).await?;
 
         let result = sqlx::query(
-            "UPDATE transactions SET date = ?, payee = ?, description = ? WHERE id = ?",
+            "UPDATE transactions SET date = ?, payee = ?, description = ?, note = ? WHERE id = ?",
         )
         .bind(&date_str)
         .bind(updated.payee())
         .bind(updated.description())
+        .bind(updated.note())
         .bind(&tx_id_str)
         .execute(&mut *db_tx)
         .await?;
@@ -2519,5 +2524,137 @@ mod tests {
         svc.reconcile(&id, Reconciliation::Reconciled)
             .await
             .expect("reconcile balanced tx should succeed");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amend_preserves_note_and_extra_dates(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::AccountService::new(pool.clone());
+        let acc_a = acct_svc
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account A");
+        let acc_b = acct_svc
+            .create()
+            .name("Expenses")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account B");
+        let svc = Service::new(pool.clone());
+
+        let original = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 1, 10))
+            .description("Original payee")
+            .maybe_note(Some("keep this note".to_owned()))
+            .extra_dates(vec![("cleared".to_owned(), date(2026, 1, 12))])
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_a.clone())
+                    .amount(Amount::new(dec!(-50), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_b.clone())
+                    .amount(Amount::new(dec!(50), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+
+        let id = svc.create(original.clone()).await.expect("create");
+
+        let updated = Transaction::builder()
+            .id(id.clone())
+            .date(date(2026, 1, 10))
+            .description("Amended payee")
+            .maybe_note(original.note().map(str::to_owned))
+            .extra_dates(original.extra_dates().to_vec())
+            .postings(original.postings().to_vec())
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(*original.created_at())
+            .build();
+
+        svc.amend(updated).await.expect("amend should succeed");
+
+        let found = svc.find_by_id(&id).await.expect("find after amend");
+        assert_eq!(found.description(), "Amended payee");
+        assert_eq!(
+            found.note(),
+            Some("keep this note"),
+            "note must survive amend"
+        );
+        assert_eq!(
+            found.extra_dates(),
+            &[("cleared".to_owned(), date(2026, 1, 12))],
+            "extra_dates must survive amend"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amend_updates_note(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::AccountService::new(pool.clone());
+        let acc_a = acct_svc
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account A");
+        let acc_b = acct_svc
+            .create()
+            .name("Expenses")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account B");
+        let svc = Service::new(pool.clone());
+
+        let original = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 2, 1))
+            .description("Groceries")
+            .maybe_note(Some("old note".to_owned()))
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_a.clone())
+                    .amount(Amount::new(dec!(-30), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_b.clone())
+                    .amount(Amount::new(dec!(30), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+
+        let id = svc.create(original.clone()).await.expect("create");
+
+        let updated = Transaction::builder()
+            .id(id.clone())
+            .date(date(2026, 2, 1))
+            .description("Groceries")
+            .maybe_note(Some("new note".to_owned()))
+            .postings(original.postings().to_vec())
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(*original.created_at())
+            .build();
+
+        svc.amend(updated).await.expect("amend should succeed");
+
+        let found = svc.find_by_id(&id).await.expect("find after amend");
+        assert_eq!(found.note(), Some("new note"), "amended note must persist");
     }
 }
