@@ -63,14 +63,19 @@ pub const CLEAR_POSTING_SPREAD: &str = "clear_posting_spread";
 /// Reverses a transaction, creating a linked negated reversal transaction.
 pub const REVERSE_TRANSACTION: &str = "reverse_transaction";
 
+/// Argument struct for the `reverse_transaction` command.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(serde::Serialize)]
+pub(crate) struct ReverseTransactionArgs<'a> {
+    /// The transaction ID to reverse.
+    pub id: &'a str,
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
 
-    #[derive(serde::Serialize)]
-    struct ReverseTransactionArgs<'a> {
-        id: &'a str,
-    }
+    use super::ReverseTransactionArgs;
 
     #[test]
     fn reverse_transaction_args_serialize() {
