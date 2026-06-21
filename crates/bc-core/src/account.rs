@@ -290,13 +290,7 @@ impl Service {
             .await?;
         }
 
-        for tag_id in tag_ids {
-            sqlx::query("INSERT INTO account_tags (account_id, tag_id) VALUES (?, ?)")
-                .bind(id.to_string())
-                .bind(tag_id.to_string())
-                .execute(&mut *tx)
-                .await?;
-        }
+        crate::tag::insert_account_tags(&mut tx, &id, tag_ids).await?;
 
         tx.commit().await?;
         tracing::info!(account_id = %id, %name, "account created");

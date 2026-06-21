@@ -344,6 +344,87 @@ fn resolve_path_in(tags: &[Tag], path: &TagPath) -> Option<TagId> {
     parent
 }
 
+/// Inserts account↔tag membership rows on the given connection.
+///
+/// Accepts an executor (not the pool) so it composes into the caller's existing
+/// transaction, keeping the aggregate write atomic.
+///
+/// # Arguments
+///
+/// * `conn` - An active SQLite connection (typically `&mut *tx`).
+/// * `account_id` - The account to attach tags to.
+/// * `tag_ids` - The tags to attach.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on insert failure.
+pub(crate) async fn insert_account_tags(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &bc_models::AccountId,
+    tag_ids: &[TagId],
+) -> BcResult<()> {
+    for tag_id in tag_ids {
+        sqlx::query("INSERT INTO account_tags (account_id, tag_id) VALUES (?, ?)")
+            .bind(account_id.to_string())
+            .bind(tag_id.to_string())
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Inserts transaction↔tag membership rows on the given connection.
+///
+/// # Arguments
+///
+/// * `conn` - An active SQLite connection (typically `&mut *tx`).
+/// * `tx_id` - The transaction to attach tags to.
+/// * `tag_ids` - The tags to attach.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on insert failure.
+pub(crate) async fn insert_transaction_tags(
+    conn: &mut sqlx::SqliteConnection,
+    tx_id: &bc_models::TransactionId,
+    tag_ids: &[TagId],
+) -> BcResult<()> {
+    for tag_id in tag_ids {
+        sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
+            .bind(tx_id.to_string())
+            .bind(tag_id.to_string())
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Inserts posting↔tag membership rows on the given connection.
+///
+/// # Arguments
+///
+/// * `conn` - An active SQLite connection (typically `&mut *tx`).
+/// * `posting_id` - The posting to attach tags to.
+/// * `tag_ids` - The tags to attach.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on insert failure.
+pub(crate) async fn insert_posting_tags(
+    conn: &mut sqlx::SqliteConnection,
+    posting_id: &bc_models::PostingId,
+    tag_ids: &[TagId],
+) -> BcResult<()> {
+    for tag_id in tag_ids {
+        sqlx::query("INSERT INTO posting_tags (posting_id, tag_id) VALUES (?, ?)")
+            .bind(posting_id.to_string())
+            .bind(tag_id.to_string())
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
