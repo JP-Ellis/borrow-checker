@@ -51,7 +51,6 @@ ______________________________________________________________________
 ```
 borrow-checker/
 ├── Cargo.toml                  # workspace root
-├── ROADMAP.md
 ├── crates/
 │   ├── bc-models/              # shared domain types (accounts, transactions, budgets, etc.)
 │   ├── bc-core/                # engine: event log, SQLite projections, business logic
@@ -387,7 +386,11 @@ Layout: **icon rail + context-sensitive content**.
 
 ______________________________________________________________________
 
-## 9. ROADMAP Summary
+## 9. Milestone Summary
+
+> This table is a high-level design reference. Live tracking of outstanding work
+> happens in [GitHub issues](https://github.com/JP-Ellis/borrow-checker/issues)
+> (epics with sub-issues), not in a roadmap document.
 
 | Milestone | Description | Depends on |
 | --------- | ------------------------------------------------ | ---------- |
