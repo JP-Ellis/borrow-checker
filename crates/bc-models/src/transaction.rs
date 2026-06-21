@@ -216,9 +216,9 @@ pub struct Posting {
     cost: Option<Cost>,
 
     /// Optional free-text note for this individual posting leg. `None` means
-    /// no memo has been recorded.
+    /// no note has been recorded.
     #[builder(into)]
-    memo: Option<String>,
+    note: Option<String>,
 
     /// Tags applied specifically to this posting leg, in addition to any
     /// transaction-level tags. Defaults to empty.
@@ -264,11 +264,11 @@ impl Posting {
         self.cost.as_ref()
     }
 
-    /// Returns the memo, if any.
+    /// Returns the optional free-text note for this posting leg.
     #[inline]
     #[must_use]
-    pub fn memo(&self) -> Option<&str> {
-        self.memo.as_deref()
+    pub fn note(&self) -> Option<&str> {
+        self.note.as_deref()
     }
 
     /// Returns the posting-level tag IDs.
@@ -610,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn posting_with_memo_cost_and_tag_ids_round_trips() {
+    fn posting_with_note_cost_and_tag_ids_round_trips() {
         use crate::TagId;
 
         let tag_id = TagId::new();
@@ -621,12 +621,12 @@ mod tests {
             .id(PostingId::new())
             .account_id(crate::AccountId::new())
             .amount(Amount::new(dec!(10), CommodityCode::new("AAPL")))
-            .memo("lot purchase memo")
+            .note("lot purchase memo")
             .cost(cost_basis)
             .tag_ids(vec![tag_id.clone()])
             .build();
 
-        assert_eq!(posting.memo(), Some("lot purchase memo"));
+        assert_eq!(posting.note(), Some("lot purchase memo"));
         let cost = posting.cost().expect("cost should be set");
         assert_eq!(cost.total().value(), dec!(500));
         assert_eq!(cost.total().commodity().to_string(), "USD");

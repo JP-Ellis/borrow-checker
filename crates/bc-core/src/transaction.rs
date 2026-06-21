@@ -39,8 +39,8 @@ struct ListPostingRow {
     amount: String,
     /// Commodity code string.
     commodity: String,
-    /// Optional free-text memo.
-    memo: Option<String>,
+    /// Optional free-text note.
+    note: Option<String>,
     /// Decimal string for the cost basis total value; NULL if no cost basis.
     cost_total_value: Option<String>,
     /// Commodity code for the cost basis total; NULL when `cost_total_value` is NULL.
@@ -133,8 +133,8 @@ struct PostingRow {
     amount: String,
     /// Commodity code string.
     commodity: String,
-    /// Optional free-text memo.
-    memo: Option<String>,
+    /// Optional free-text note.
+    note: Option<String>,
     /// Decimal string for the cost basis total value; NULL if no cost basis.
     cost_total_value: Option<String>,
     /// Commodity code for the cost basis total; NULL when `cost_total_value` is NULL.
@@ -222,7 +222,7 @@ impl Service {
 
             sqlx::query(
                 "INSERT INTO postings \
-                 (id, transaction_id, account_id, amount, commodity, memo, position, \
+                 (id, transaction_id, account_id, amount, commodity, note, position, \
                   cost_total_value, cost_total_commodity, cost_date, cost_label, \
                   spread_from, spread_until) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -232,7 +232,7 @@ impl Service {
             .bind(posting.account_id().to_string()) //  3. account_id
             .bind(posting.amount().value().to_string()) //  4. amount
             .bind(posting.amount().commodity().as_str()) //  5. commodity
-            .bind(posting.memo()) //  6. memo
+            .bind(posting.note()) //  6. note
             .bind(
                 i64::try_from(position)
                     .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?,
@@ -315,7 +315,7 @@ impl Service {
 
         // Load postings with cost and spread columns.
         let posting_rows: Vec<PostingRow> = sqlx::query_as(
-            "SELECT id, account_id, amount, commodity, memo, \
+            "SELECT id, account_id, amount, commodity, note, \
                     cost_total_value, cost_total_commodity, cost_date, cost_label, \
                     spread_from, spread_until \
              FROM postings WHERE transaction_id = ? ORDER BY position ASC",
@@ -387,7 +387,7 @@ impl Service {
                     .account_id(acc_id)
                     .amount(amount)
                     .maybe_cost(cost)
-                    .maybe_memo(row.memo)
+                    .maybe_note(row.note)
                     .maybe_spread_from(spread_from)
                     .maybe_spread_until(spread_until)
                     .tag_ids(p_tag_ids)
@@ -511,7 +511,7 @@ impl Service {
 
         // Load all postings for non-voided transactions in one query.
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
-            "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.memo, \
+            "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.note, \
                     p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
@@ -587,7 +587,7 @@ impl Service {
                 .account_id(acc_id)
                 .amount(amount)
                 .maybe_cost(cost)
-                .maybe_memo(row.memo)
+                .maybe_note(row.note)
                 .maybe_spread_from(spread_from)
                 .maybe_spread_until(spread_until)
                 .tag_ids(p_tag_ids)
@@ -691,7 +691,7 @@ impl Service {
         }
 
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
-            "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.memo, \
+            "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.note, \
                     p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
@@ -771,7 +771,7 @@ impl Service {
                 .account_id(acc_id)
                 .amount(amount)
                 .maybe_cost(cost)
-                .maybe_memo(row.memo)
+                .maybe_note(row.note)
                 .maybe_spread_from(spread_from)
                 .maybe_spread_until(spread_until)
                 .tag_ids(p_tag_ids)
@@ -969,7 +969,7 @@ impl Service {
                  UNION ALL \
                  SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
              ) \
-             SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.memo, \
+             SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.note, \
                     p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
@@ -1054,7 +1054,7 @@ impl Service {
                 .account_id(acc_id)
                 .amount(amount)
                 .maybe_cost(cost)
-                .maybe_memo(row.memo)
+                .maybe_note(row.note)
                 .maybe_spread_from(spread_from)
                 .maybe_spread_until(spread_until)
                 .tag_ids(p_tag_ids)
@@ -1204,7 +1204,7 @@ impl Service {
 
             sqlx::query(
                 "INSERT INTO postings \
-                 (id, transaction_id, account_id, amount, commodity, memo, position, \
+                 (id, transaction_id, account_id, amount, commodity, note, position, \
                   cost_total_value, cost_total_commodity, cost_date, cost_label, \
                   spread_from, spread_until) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1214,7 +1214,7 @@ impl Service {
             .bind(posting.account_id().to_string()) //  3. account_id
             .bind(posting.amount().value().to_string()) //  4. amount
             .bind(posting.amount().commodity().as_str()) //  5. commodity
-            .bind(posting.memo()) //  6. memo
+            .bind(posting.note()) //  6. note
             .bind(
                 i64::try_from(position)
                     .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?,

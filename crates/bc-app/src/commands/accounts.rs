@@ -132,7 +132,7 @@ pub async fn create_transaction(
             .id(bc_models::PostingId::new())
             .account_id(account_id)
             .amount(p.amount.into_model())
-            .maybe_memo(p.note.clone())
+            .maybe_note(p.note.clone())
             .maybe_spread_from(p.spread_from)
             .maybe_spread_until(p.spread_until)
             .build();
