@@ -138,10 +138,12 @@ impl IntoIpc for &bc_models::Account {
 ///
 /// * `account` - The account to convert.
 /// * `balance` - The pre-computed balance for this account.
+/// * `forest` - The loaded tag hierarchy used to resolve account tag IDs to paths.
 #[inline]
 pub(crate) fn into_ipc_with_balance(
     account: &bc_models::Account,
     balance: Option<bc_ipc::Amount>,
+    forest: &bc_models::TagForest,
 ) -> bc_ipc::AccountNode {
     bc_ipc::AccountNode::new(
         account.id().to_string(),
@@ -150,7 +152,7 @@ pub(crate) fn into_ipc_with_balance(
         balance,
         account.parent_id().map(ToString::to_string),
         account.account_type().into_ipc(),
-        vec![],
+        resolve_tag_paths(forest, account.tag_ids()),
     )
 }
 
@@ -336,13 +338,12 @@ impl IntoIpc for &bc_models::Posting {
     fn into_ipc(self) -> bc_ipc::Posting {
         let account_id = self.account_id().to_string();
         let amount = self.amount().map(IntoIpc::into_ipc);
-        let tag_ids = self.tag_ids().iter().map(ToString::to_string).collect();
         bc_ipc::Posting::new(
             self.id().to_string(),
             bc_ipc::AccountRef::new(account_id.clone(), account_id),
             amount,
             self.note(),
-            tag_ids,
+            vec![],
             self.spread_from(),
             self.spread_until(),
         )
@@ -391,17 +392,41 @@ pub(crate) fn build_account_path(
     }
 }
 
+/// Resolves a slice of tag IDs to colon-joined path strings, dropping any ID that
+/// is absent from `forest`. Order is preserved; duplicates by path are removed.
+///
+/// # Arguments
+///
+/// * `forest` - The loaded tag hierarchy.
+/// * `ids` - The tag IDs to resolve.
+pub(crate) fn resolve_tag_paths(
+    forest: &bc_models::TagForest,
+    ids: &[bc_models::TagId],
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    ids.iter()
+        .filter_map(|id| forest.path_of(id).map(|p| p.to_string()))
+        .filter(|path| seen.insert(path.clone()))
+        .collect()
+}
+
 /// Converts a [`bc_models::Transaction`] to [`bc_ipc::Transaction`], resolving
-/// posting account names from `account_map`.
+/// posting account names from `account_map` and tag IDs to paths via `forest`.
+///
+/// The effective tags for each posting are the union of the transaction's own
+/// tags and the posting's own tags, deduplicated by resolved path.
 ///
 /// # Arguments
 ///
 /// * `tx` - The transaction to convert.
 /// * `account_map` - Map from account ID string to account reference.
+/// * `forest` - The loaded tag hierarchy used to resolve tag IDs to paths.
 pub(crate) fn transaction_into_ipc_with_accounts(
     tx: &bc_models::Transaction,
     account_map: &std::collections::HashMap<String, &bc_models::Account>,
+    forest: &bc_models::TagForest,
 ) -> bc_ipc::Transaction {
+    let tx_tag_ids = tx.tag_ids();
     let postings = tx
         .postings()
         .iter()
@@ -409,13 +434,15 @@ pub(crate) fn transaction_into_ipc_with_accounts(
             let account_id = p.account_id().to_string();
             let account_name = build_account_path(&account_id, account_map);
             let amount = p.amount().map(IntoIpc::into_ipc);
-            let tag_ids = p.tag_ids().iter().map(ToString::to_string).collect();
+            // Effective posting tags = union(transaction tags, posting's own tags).
+            let mut union_ids: Vec<bc_models::TagId> = tx_tag_ids.to_vec();
+            union_ids.extend(p.tag_ids().iter().cloned());
             bc_ipc::Posting::new(
                 p.id().to_string(),
                 bc_ipc::AccountRef::new(account_id, account_name),
                 amount,
                 p.note(),
-                tag_ids,
+                resolve_tag_paths(forest, &union_ids),
                 p.spread_from(),
                 p.spread_until(),
             )
@@ -436,7 +463,7 @@ pub(crate) fn transaction_into_ipc_with_accounts(
         tx.note(),
         extra_dates,
         tx.reconciliation().into_ipc(),
-        vec![], // tag path resolution deferred: posting tag_ids carry raw ids (option a)
+        resolve_tag_paths(forest, tx_tag_ids),
         postings,
         vec![],
     )
@@ -558,7 +585,31 @@ mod tests {
     use super::IntoIpc as _;
     use super::IntoModel as _;
     use super::build_account_path;
+    use super::resolve_tag_paths;
     use super::window_overlap;
+
+    #[test]
+    fn resolve_tag_paths_renders_hierarchy_and_dedupes() {
+        use jiff::Timestamp;
+        let person = bc_models::TagId::new();
+        let josh = bc_models::TagId::new();
+        let forest = bc_models::TagForest::new(vec![
+            bc_models::Tag::builder()
+                .id(person.clone())
+                .name("person")
+                .created_at(Timestamp::now())
+                .build(),
+            bc_models::Tag::builder()
+                .id(josh.clone())
+                .name("josh")
+                .parent_id(person.clone())
+                .created_at(Timestamp::now())
+                .build(),
+        ]);
+        let paths =
+            resolve_tag_paths(&forest, &[josh.clone(), josh.clone(), person.clone()]);
+        assert_eq!(paths, vec!["person:josh".to_owned(), "person".to_owned()]);
+    }
 
     #[test]
     fn amount_into_ipc_aud() {
