@@ -606,8 +606,7 @@ mod tests {
                 .created_at(Timestamp::now())
                 .build(),
         ]);
-        let paths =
-            resolve_tag_paths(&forest, &[josh.clone(), josh.clone(), person.clone()]);
+        let paths = resolve_tag_paths(&forest, &[josh.clone(), josh.clone(), person.clone()]);
         assert_eq!(paths, vec!["person:josh".to_owned(), "person".to_owned()]);
     }
 
