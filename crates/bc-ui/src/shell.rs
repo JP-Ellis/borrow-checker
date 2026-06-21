@@ -2,19 +2,26 @@
 //! The [`palette`] module contains a [`palette::CommandPalette`] wired into [`ConsoleShell`].
 
 pub mod palette;
+#[cfg(target_arch = "wasm32")]
 pub mod top_bar;
 
+#[cfg(target_arch = "wasm32")]
 use leptos::ev;
+#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
+#[cfg(target_arch = "wasm32")]
 use leptos_router::components::Outlet;
+#[cfg(target_arch = "wasm32")]
 pub use top_bar::TopBar;
 
+#[cfg(target_arch = "wasm32")]
 use crate::shell::palette::CommandPalette;
 
 /// Full-app wrapper that renders [`TopBar`] above the routed content area.
 ///
 /// Owns the `palette_open` signal and wires the global ⌘K / Ctrl+K shortcut.
 /// Child routes render via [`Outlet`].
+#[cfg(target_arch = "wasm32")]
 #[component]
 pub fn ConsoleShell() -> impl IntoView {
     let palette_open = RwSignal::new(false);
