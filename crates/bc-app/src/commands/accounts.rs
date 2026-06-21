@@ -121,7 +121,7 @@ pub async fn create_transaction(
     tx: bc_ipc::NewTransaction,
     state: State<'_, AppState>,
 ) -> Result<String, bc_ipc::BcError> {
-    let status = tx.status.into_model();
+    let reconciliation = tx.status.into_model();
 
     let mut postings = Vec::with_capacity(tx.postings.len());
     for p in &tx.postings {
@@ -145,7 +145,7 @@ pub async fn create_transaction(
         .maybe_payee(Some(tx.payee))
         .description(String::new())
         .postings(postings)
-        .status(status)
+        .reconciliation(reconciliation)
         .created_at(jiff::Timestamp::now())
         .build();
 

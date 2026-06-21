@@ -196,7 +196,7 @@ async fn add(
         .description(description)
         .maybe_payee(payee)
         .postings(postings)
-        .status(bc_models::TransactionStatus::Cleared)
+        .reconciliation(bc_models::Reconciliation::Reconciled)
         .created_at(jiff::Timestamp::now())
         .build();
 
@@ -250,7 +250,7 @@ async fn amend(
         .maybe_payee(new_payee)
         .postings(original.postings().to_vec())
         .tag_ids(original.tag_ids().to_vec())
-        .status(original.status())
+        .reconciliation(original.reconciliation())
         .created_at(*original.created_at())
         .build();
     ctx.transactions.amend(updated).await?;

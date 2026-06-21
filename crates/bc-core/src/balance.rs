@@ -2,13 +2,11 @@
 
 use bc_models::AccountId;
 use bc_models::Amount;
-use bc_models::TransactionStatus;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
 use crate::BcError;
 use crate::BcResult;
-use crate::db::to_db_str;
 
 /// A single time-bucket of posting aggregation data.
 ///
@@ -50,19 +48,15 @@ impl Engine {
     /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if a stored amount cannot be parsed.
     #[inline]
     pub async fn balance_for(&self, account_id: &AccountId, commodity: &str) -> BcResult<Amount> {
-        let voided_str = to_db_str(TransactionStatus::Voided)?;
-
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT p.amount
              FROM postings p
              JOIN transactions t ON t.id = p.transaction_id
              WHERE p.account_id = ?
-               AND p.commodity  = ?
-               AND t.status     != ?",
+               AND p.commodity  = ?",
         )
         .bind(account_id.to_string())
         .bind(commodity)
-        .bind(&voided_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -147,7 +141,7 @@ impl Engine {
         Ok(Amount::new(total, commodity))
     }
 
-    /// Fetches all non-voided postings for `account_id` in `commodity` within `[from, to)`.
+    /// Fetches all postings for `account_id` in `commodity` within `[from, to)`.
     ///
     /// Returns `(transaction_date, amount)` pairs — both parsed from their stored strings.
     ///
@@ -172,8 +166,6 @@ impl Engine {
         from: jiff::civil::Date,
         to: jiff::civil::Date,
     ) -> BcResult<Vec<(jiff::civil::Date, Decimal)>> {
-        let voided_str = to_db_str(TransactionStatus::Voided)?;
-
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT t.date, p.amount
              FROM postings p
@@ -181,14 +173,12 @@ impl Engine {
              WHERE p.account_id = ?
                AND p.commodity  = ?
                AND t.date >= ?
-               AND t.date  < ?
-               AND t.status != ?",
+               AND t.date  < ?",
         )
         .bind(account_id.to_string())
         .bind(commodity)
         .bind(from.to_string())
         .bind(to.to_string())
-        .bind(&voided_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -210,7 +200,7 @@ impl Engine {
     /// - `inflow` — sum of all positive postings (money entering the account).
     /// - `outflow` — absolute sum of all negative postings (money leaving).
     ///
-    /// Both values are non-negative. Voided transactions are excluded.
+    /// Both values are non-negative.
     ///
     /// # Arguments
     ///
@@ -363,7 +353,6 @@ impl Engine {
     /// Returns [`BcError`] on database failure.
     #[inline]
     pub async fn default_commodity_for(&self, account_id: &AccountId) -> BcResult<Option<String>> {
-        let voided_str = to_db_str(TransactionStatus::Voided)?;
         let (commodity_code,): (Option<String>,) = sqlx::query_as(
             "SELECT COALESCE(
                  (SELECT c.code
@@ -374,8 +363,7 @@ impl Engine {
                   LIMIT 1),
                  (SELECT p.commodity
                   FROM postings p
-                  JOIN transactions t ON t.id = p.transaction_id
-                  WHERE p.account_id = ? AND t.status != ?
+                  WHERE p.account_id = ?
                   GROUP BY p.commodity
                   ORDER BY COUNT(*) DESC
                   LIMIT 1)
@@ -383,16 +371,14 @@ impl Engine {
         )
         .bind(account_id.to_string())
         .bind(account_id.to_string())
-        .bind(&voided_str)
         .fetch_one(&self.pool)
         .await?;
         Ok(commodity_code)
     }
 
-    /// Returns the number of non-voided postings for `account_id`.
+    /// Returns the number of postings for `account_id`.
     ///
-    /// Voided transactions are excluded. Used to populate the "Transactions"
-    /// stat card on the account dashboard.
+    /// Used to populate the "Transactions" stat card on the account dashboard.
     ///
     /// # Arguments
     ///
@@ -400,7 +386,7 @@ impl Engine {
     ///
     /// # Returns
     ///
-    /// The number of non-voided postings as a [`u32`].
+    /// The number of postings as a [`u32`].
     ///
     /// # Errors
     ///
@@ -409,17 +395,12 @@ impl Engine {
     /// defensively).
     #[inline]
     pub async fn posting_count(&self, account_id: &AccountId) -> BcResult<u32> {
-        let voided_str = to_db_str(TransactionStatus::Voided)?;
-
         let (count,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*)
              FROM postings p
-             JOIN transactions t ON t.id = p.transaction_id
-             WHERE p.account_id = ?
-               AND t.status != ?",
+             WHERE p.account_id = ?",
         )
         .bind(account_id.to_string())
-        .bind(&voided_str)
         .fetch_one(&self.pool)
         .await?;
 
@@ -435,7 +416,7 @@ impl Engine {
 
     /// Returns the default-commodity balance for every active account in one query.
     ///
-    /// Balances are computed live from non-voided postings, not from the `balances`
+    /// Balances are computed live from all postings, not from the `balances`
     /// cache table (which is a write-through cache not yet populated by the application).
     ///
     /// The map key is [`AccountId`]; the value is an [`Amount`] (carrying the default commodity).
@@ -452,8 +433,6 @@ impl Engine {
     /// Returns [`BcError`] on database or parse failure.
     #[inline]
     pub async fn default_balances(&self) -> BcResult<std::collections::HashMap<AccountId, Amount>> {
-        let voided_str = to_db_str(TransactionStatus::Voided)?;
-
         // Fetch the effective default commodity per active account.
         // Prefers account_commodities (position = 0); falls back to the most-used posting
         // commodity so accounts imported without explicit commodity setup are still included.
@@ -464,8 +443,7 @@ impl Engine {
                             c.code,
                             (SELECT p.commodity
                              FROM postings p
-                             JOIN transactions t ON t.id = p.transaction_id
-                             WHERE p.account_id = a.id AND t.status != ?
+                             WHERE p.account_id = a.id
                              GROUP BY p.commodity
                              ORDER BY COUNT(*) DESC
                              LIMIT 1)
@@ -477,7 +455,6 @@ impl Engine {
              )
              WHERE commodity_code IS NOT NULL",
         )
-        .bind(&voided_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -485,16 +462,13 @@ impl Engine {
             return Ok(std::collections::HashMap::new());
         }
 
-        // Fetch all non-voided postings for those accounts (one query, filtered in Rust).
+        // Fetch all postings for those accounts (one query, filtered in Rust).
         let posting_rows: Vec<(String, String, String)> = sqlx::query_as(
             "SELECT p.account_id, p.commodity, p.amount
              FROM postings p
-             JOIN transactions t ON t.id = p.transaction_id
              JOIN accounts a ON a.id = p.account_id
-             WHERE a.archived_at IS NULL
-               AND t.status != ?",
+             WHERE a.archived_at IS NULL",
         )
-        .bind(&voided_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -552,6 +526,7 @@ mod tests {
     use bc_models::CommodityCode;
     use bc_models::Posting;
     use bc_models::PostingId;
+    use bc_models::Reconciliation;
     use bc_models::Transaction;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
@@ -580,7 +555,7 @@ mod tests {
             .expect("create Income account should succeed");
 
         // Insert a transaction directly for simplicity
-        sqlx::query("INSERT INTO transactions (id, date, description, status, created_at) VALUES ('tx_1', '2026-01-01', 'Test', 'cleared', '2026-01-01T00:00:00Z')")
+        sqlx::query("INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES ('tx_1', '2026-01-01', 'Test', 'reconciled', '2026-01-01T00:00:00Z')")
             .execute(&pool).await.expect("insert transaction should succeed");
         sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p1', 'tx_1', ?, '100.00', 'AUD', 0)")
             .bind(acc_a.to_string()).execute(&pool).await.expect("insert posting p1 should succeed");
@@ -654,7 +629,7 @@ mod tests {
             .call()
             .await
             .expect("create Income");
-        sqlx::query("INSERT INTO transactions (id, date, description, status, created_at) VALUES ('tx_nw1', '2026-01-01', 'Test', 'cleared', '2026-01-01T00:00:00Z')")
+        sqlx::query("INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES ('tx_nw1', '2026-01-01', 'Test', 'reconciled', '2026-01-01T00:00:00Z')")
             .execute(&pool).await.expect("tx insert");
         sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_nw1', 'tx_nw1', ?, '50000.00', 'AUD', 0)")
             .bind(savings_id.to_string()).execute(&pool).await.expect("posting insert");
@@ -718,8 +693,8 @@ mod tests {
 
         // Seed via a real transaction + posting
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, status, created_at)
-             VALUES ('t1', '2026-01-01', 'Test', 'cleared', '2026-01-01T00:00:00Z')",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at)
+             VALUES ('t1', '2026-01-01', 'Test', 'reconciled', '2026-01-01T00:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -836,8 +811,8 @@ mod tests {
 
         // Two cleared transactions within the range
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, status, created_at)
-             VALUES ('tf1', '2026-04-10', 'Pay', 'cleared', '2026-04-10T00:00:00Z')",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at)
+             VALUES ('tf1', '2026-04-10', 'Pay', 'reconciled', '2026-04-10T00:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -854,8 +829,8 @@ mod tests {
         .expect("postings 1");
 
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, status, created_at)
-             VALUES ('tf2', '2026-04-20', 'Expense', 'cleared', '2026-04-20T00:00:00Z')",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at)
+             VALUES ('tf2', '2026-04-20', 'Expense', 'reconciled', '2026-04-20T00:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -884,7 +859,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn posting_flows_excludes_voided_transactions(pool: sqlx::SqlitePool) {
+    async fn posting_flows_includes_all_reconciliation_states(pool: sqlx::SqlitePool) {
         use bc_models::AccountKind;
         use bc_models::AccountType;
         use jiff::civil::date;
@@ -899,16 +874,17 @@ mod tests {
             .await
             .expect("create Wallet");
 
+        // Transaction with unreconciled state — should still be included.
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, status, created_at)
-             VALUES ('tv1', '2026-04-15', 'Voided', 'voided', '2026-04-15T00:00:00Z')",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at)
+             VALUES ('tu1', '2026-04-15', 'Unreconciled', 'unreconciled', '2026-04-15T00:00:00Z')",
         )
         .execute(&pool)
         .await
-        .expect("voided tx");
+        .expect("unreconciled tx");
         sqlx::query(
             "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position)
-             VALUES ('pv1', 'tv1', ?, '500.00', 'AUD', 0)",
+             VALUES ('pu1', 'tu1', ?, '500.00', 'AUD', 0)",
         )
         .bind(wallet.to_string())
         .execute(&pool)
@@ -921,7 +897,8 @@ mod tests {
             .await
             .expect("posting_flows");
 
-        assert_eq!(inflow.value(), rust_decimal::Decimal::ZERO);
+        // Unreconciled transactions are included.
+        assert_eq!(inflow.value(), rust_decimal::Decimal::from(500_i32));
         assert_eq!(inflow.commodity().as_str(), "AUD");
         assert_eq!(outflow.value(), rust_decimal::Decimal::ZERO);
         assert_eq!(outflow.commodity().as_str(), "AUD");
@@ -946,8 +923,8 @@ mod tests {
 
         // Inside range
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, status, created_at)
-             VALUES ('tb1', '2026-04-01', 'In', 'cleared', '2026-04-01T00:00:00Z')",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at)
+             VALUES ('tb1', '2026-04-01', 'In', 'reconciled', '2026-04-01T00:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -963,8 +940,8 @@ mod tests {
 
         // On the exclusive upper bound — should be excluded
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, status, created_at)
-             VALUES ('tb2', '2026-05-01', 'Boundary', 'cleared', '2026-05-01T00:00:00Z')",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at)
+             VALUES ('tb2', '2026-05-01', 'Boundary', 'reconciled', '2026-05-01T00:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -1056,8 +1033,8 @@ mod tests {
 
         // One inflow in April, one outflow in May
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, status, created_at)
-             VALUES ('tbk1', '2026-04-15', 'April pay', 'cleared', '2026-04-15T00:00:00Z')",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at)
+             VALUES ('tbk1', '2026-04-15', 'April pay', 'reconciled', '2026-04-15T00:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -1072,8 +1049,8 @@ mod tests {
         .expect("posting april");
 
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, status, created_at)
-             VALUES ('tbk2', '2026-05-10', 'May rent', 'cleared', '2026-05-10T00:00:00Z')",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at)
+             VALUES ('tbk2', '2026-05-10', 'May rent', 'reconciled', '2026-05-10T00:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -1121,7 +1098,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn balance_excludes_voided_transactions(pool: sqlx::SqlitePool) {
+    async fn balance_includes_all_reconciliation_states(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -1144,7 +1121,7 @@ mod tests {
         let tx = Transaction::builder()
             .id(bc_models::TransactionId::new())
             .date(date(2026, 1, 1))
-            .description("Voided")
+            .description("Unreconciled")
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
@@ -1157,29 +1134,18 @@ mod tests {
                     .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
                     .build(),
             ])
-            .status(TransactionStatus::Cleared)
+            .reconciliation(Reconciliation::Unreconciled)
             .created_at(jiff::Timestamp::now())
             .build();
-        let tx_id = tx.id().clone();
         tx_svc.create(tx).await.expect("create should succeed");
-        // Set voided status via raw SQL: void() is removed; the balance engine's
-        // voided-exclusion filter is kept as dead code until Task 3.
-        sqlx::query("UPDATE transactions SET status = 'voided' WHERE id = ?")
-            .bind(tx_id.to_string())
-            .execute(&pool)
-            .await
-            .expect("mark voided");
 
         let engine = Engine::new(pool.clone());
         let balance = engine
             .balance_for(&acc_a, "AUD")
             .await
             .expect("balance query should succeed");
-        assert_eq!(
-            balance.value(),
-            Decimal::ZERO,
-            "voided transaction should not affect balance"
-        );
+        // Unreconciled transactions are included in balances.
+        assert_eq!(balance.value(), dec!(100));
         assert_eq!(balance.commodity().as_str(), "AUD");
     }
 
@@ -1225,8 +1191,8 @@ mod tests {
 
         // Two postings (budgets are now account-anchored, not posting-tagged)
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, status, created_at)
-             VALUES ('uc_tx1', '2026-01-01', 'Deposit', 'cleared', '2026-01-01T00:00:00Z')",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at)
+             VALUES ('uc_tx1', '2026-01-01', 'Deposit', 'reconciled', '2026-01-01T00:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -1266,8 +1232,8 @@ mod tests {
         // With budget model, all non-voided postings are counted.
         // Two postings for this account.
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, status, created_at)
-             VALUES ('uc_cat_tx1', '2026-01-01', 'Groceries', 'cleared', '2026-01-01T00:00:00Z')",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at)
+             VALUES ('uc_cat_tx1', '2026-01-01', 'Groceries', 'reconciled', '2026-01-01T00:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -1304,8 +1270,8 @@ mod tests {
             .expect("create Checking account should succeed");
 
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, status, created_at)
-             VALUES ('mix_tx1', '2026-01-15', 'Partial', 'cleared', '2026-01-15T00:00:00Z')",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at)
+             VALUES ('mix_tx1', '2026-01-15', 'Partial', 'reconciled', '2026-01-15T00:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -1328,11 +1294,11 @@ mod tests {
             .posting_count(&acc)
             .await
             .expect("posting_count should succeed");
-        assert_eq!(count, 2, "both non-voided postings should be counted");
+        assert_eq!(count, 2, "both postings should be counted");
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn posting_count_excludes_voided_transactions(pool: sqlx::SqlitePool) {
+    async fn posting_count_includes_all_reconciliation_states(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -1355,7 +1321,7 @@ mod tests {
         let tx = Transaction::builder()
             .id(bc_models::TransactionId::new())
             .date(date(2026, 1, 1))
-            .description("Voided")
+            .description("Unreconciled")
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
@@ -1368,24 +1334,17 @@ mod tests {
                     .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
                     .build(),
             ])
-            .status(TransactionStatus::Cleared)
+            .reconciliation(Reconciliation::Unreconciled)
             .created_at(jiff::Timestamp::now())
             .build();
-        let tx_id = tx.id().clone();
         tx_svc.create(tx).await.expect("create should succeed");
-        // Set voided status via raw SQL: void() is removed; the posting_count
-        // voided-exclusion filter is kept as dead code until Task 3.
-        sqlx::query("UPDATE transactions SET status = 'voided' WHERE id = ?")
-            .bind(tx_id.to_string())
-            .execute(&pool)
-            .await
-            .expect("mark voided");
 
         let engine = Engine::new(pool.clone());
         let count = engine
             .posting_count(&acc_a)
             .await
             .expect("posting_count should succeed");
-        assert_eq!(count, 0, "voided transaction should not be counted");
+        // Unreconciled transactions are counted.
+        assert_eq!(count, 1, "unreconciled transaction should be counted");
     }
 }

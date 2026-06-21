@@ -10,19 +10,20 @@ crate::define_id!(TransactionId, "transaction");
 crate::define_id!(PostingId, "posting");
 crate::define_id!(TransactionLinkId, "transaction_link");
 
-/// The lifecycle status of a transaction.
+/// Reconciliation state of a transaction: whether it has been confirmed
+/// against an authoritative external source (bank/credit-card statement).
 ///
-/// Re-exported from the crate root as [`crate::TransactionStatus`].
+/// Re-exported from the crate root as [`crate::Reconciliation`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
-pub enum Status {
-    /// Not yet confirmed.
-    Pending,
-    /// Confirmed and included in balances.
-    Cleared,
-    /// Cancelled; excluded from balances.
-    Voided,
+pub enum Reconciliation {
+    /// Not confirmed against any statement (default).
+    Unreconciled,
+    /// Flagged for attention — something needs review.
+    Flagged,
+    /// Confirmed against the bank/credit-card statement.
+    Reconciled,
 }
 
 /// The kind of relationship between linked transactions.
@@ -310,14 +311,14 @@ impl Posting {
 /// # Example
 ///
 /// ```
-/// use bc_models::{Transaction, TransactionId, TransactionStatus};
+/// use bc_models::{Transaction, TransactionId, Reconciliation};
 /// use jiff::{civil::date, Timestamp};
 ///
 /// let tx = Transaction::builder()
 ///     .id(TransactionId::new())
 ///     .date(date(2026, 1, 15))
 ///     .description("Groceries")
-///     .status(TransactionStatus::Cleared)
+///     .reconciliation(Reconciliation::Reconciled)
 ///     .created_at(Timestamp::now())
 ///     .build();
 ///
@@ -351,8 +352,9 @@ pub struct Transaction {
     #[builder(default)]
     postings: Vec<Posting>,
 
-    /// Lifecycle status of this transaction (pending, cleared, or voided).
-    status: Status,
+    /// Reconciliation state of this transaction: whether it has been confirmed
+    /// against an authoritative external source (bank/credit-card statement).
+    reconciliation: Reconciliation,
 
     /// Tags applied at the transaction level, shared across all posting legs.
     /// Defaults to empty.
@@ -405,11 +407,11 @@ impl Transaction {
         &self.postings
     }
 
-    /// Returns the status.
+    /// Returns the reconciliation state.
     #[inline]
     #[must_use]
-    pub fn status(&self) -> Status {
-        self.status
+    pub fn reconciliation(&self) -> Reconciliation {
+        self.reconciliation
     }
 
     /// Returns the transaction-level tag IDs.
@@ -518,8 +520,26 @@ mod tests {
     }
 
     #[test]
-    fn transaction_status_variants_exist() {
-        _ = (Status::Pending, Status::Cleared, Status::Voided);
+    fn reconciliation_variants_exist() {
+        _ = (
+            Reconciliation::Unreconciled,
+            Reconciliation::Flagged,
+            Reconciliation::Reconciled,
+        );
+    }
+
+    #[test]
+    fn reconciliation_default_builds() {
+        use jiff::Timestamp;
+
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 1))
+            .description("t")
+            .reconciliation(Reconciliation::Flagged)
+            .created_at(Timestamp::now())
+            .build();
+        assert_eq!(tx.reconciliation(), Reconciliation::Flagged);
     }
 
     #[test]
@@ -572,7 +592,7 @@ mod tests {
             .id(TransactionId::new())
             .date(date(2026, 1, 1))
             .description("Test")
-            .status(Status::Cleared)
+            .reconciliation(Reconciliation::Reconciled)
             .created_at(Timestamp::now())
             .build();
         assert!(tx.link_ids().is_empty());
