@@ -148,4 +148,27 @@ mod tests {
             .expect("events table should exist");
         assert_eq!(row.0, 0);
     }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn sibling_tags_with_same_name_are_rejected(pool: sqlx::SqlitePool) {
+        sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, ?, ?)")
+            .bind("tag_a")
+            .bind("person")
+            .bind("2026-01-01T00:00:00Z")
+            .execute(&pool)
+            .await
+            .expect("first root insert should succeed");
+
+        let dup = sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, ?, ?)")
+            .bind("tag_b")
+            .bind("person")
+            .bind("2026-01-01T00:00:00Z")
+            .execute(&pool)
+            .await;
+
+        assert!(
+            dup.is_err(),
+            "duplicate root name must violate the unique index"
+        );
+    }
 }
