@@ -464,6 +464,50 @@ impl Transaction {
     pub fn created_at(&self) -> &Timestamp {
         &self.created_at
     }
+
+    /// Returns the number of postings whose amount is elided (`None`).
+    #[must_use]
+    #[inline]
+    pub fn elided_count(&self) -> usize {
+        self.postings
+            .iter()
+            .filter(|p| p.amount().is_none())
+            .count()
+    }
+
+    /// Returns `true` if the transaction balances to zero per commodity once a
+    /// single elided leg (if any) is resolved to the residual. Two or more
+    /// elided legs are ambiguous and never balance. A transaction with no
+    /// concrete (non-elided) legs never balances — a lone elided posting has
+    /// nothing to balance against.
+    #[must_use]
+    pub fn balanced(&self) -> bool {
+        if self.elided_count() > 1 {
+            return false;
+        }
+        let mut balances = crate::Balances::new();
+        let mut concrete = 0_usize;
+        for p in &self.postings {
+            if let Some(a) = p.amount() {
+                concrete = concrete.saturating_add(1);
+                if balances.try_add(a).is_err() {
+                    return false;
+                }
+            }
+        }
+        // A transaction needs at least one concrete leg to be meaningful.
+        if concrete == 0 {
+            return false;
+        }
+        // With exactly one elided leg, it absorbs the residual → balanced iff a
+        // single commodity remains (the elided leg's commodity is unknown but
+        // assumed to match). With zero elided legs, balanced iff empty.
+        if self.elided_count() == 1 {
+            balances.len() <= 1
+        } else {
+            balances.is_empty()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -674,6 +718,133 @@ mod tests {
             .maybe_amount(None)
             .build();
         assert!(p.amount().is_none());
+    }
+
+    fn make_posting(
+        account_id: crate::AccountId,
+        value: rust_decimal::Decimal,
+        commodity: &str,
+    ) -> Posting {
+        Posting::builder()
+            .id(PostingId::new())
+            .account_id(account_id)
+            .amount(Amount::new(value, CommodityCode::new(commodity)))
+            .build()
+    }
+
+    fn make_elided_posting(account_id: crate::AccountId) -> Posting {
+        Posting::builder()
+            .id(PostingId::new())
+            .account_id(account_id)
+            .maybe_amount(None)
+            .build()
+    }
+
+    fn balanced_fixture() -> Transaction {
+        use jiff::Timestamp;
+        Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Balanced")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(vec![
+                make_posting(crate::AccountId::new(), dec!(100), "AUD"),
+                make_posting(crate::AccountId::new(), dec!(-100), "AUD"),
+            ])
+            .build()
+    }
+
+    fn one_elided_fixture() -> Transaction {
+        use jiff::Timestamp;
+        Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("One elided")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(vec![
+                make_posting(crate::AccountId::new(), dec!(-100), "AUD"),
+                make_elided_posting(crate::AccountId::new()),
+            ])
+            .build()
+    }
+
+    fn two_elided_fixture() -> Transaction {
+        use jiff::Timestamp;
+        Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Two elided")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(vec![
+                make_elided_posting(crate::AccountId::new()),
+                make_elided_posting(crate::AccountId::new()),
+            ])
+            .build()
+    }
+
+    fn one_sided_fixture() -> Transaction {
+        use jiff::Timestamp;
+        Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("One sided")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(vec![make_posting(
+                crate::AccountId::new(),
+                dec!(-39),
+                "AUD",
+            )])
+            .build()
+    }
+
+    fn lone_elided_fixture() -> Transaction {
+        use jiff::Timestamp;
+        Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Lone elided")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(vec![make_elided_posting(crate::AccountId::new())])
+            .build()
+    }
+
+    #[test]
+    fn balanced_true_when_sums_zero() {
+        let tx = balanced_fixture();
+        assert!(tx.balanced());
+        assert_eq!(tx.elided_count(), 0);
+    }
+
+    #[test]
+    fn balanced_true_with_single_elided_leg() {
+        let tx = one_elided_fixture();
+        assert_eq!(tx.elided_count(), 1);
+        assert!(tx.balanced());
+    }
+
+    #[test]
+    fn unbalanced_when_two_elided() {
+        let tx = two_elided_fixture();
+        assert_eq!(tx.elided_count(), 2);
+        assert!(!tx.balanced());
+    }
+
+    #[test]
+    fn unbalanced_one_sided_no_elision() {
+        let tx = one_sided_fixture();
+        assert!(!tx.balanced());
+    }
+
+    #[test]
+    fn lone_elided_posting_not_balanced() {
+        let tx = lone_elided_fixture();
+        assert_eq!(tx.elided_count(), 1);
+        assert!(!tx.balanced());
     }
 
     #[test]

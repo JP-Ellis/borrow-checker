@@ -69,27 +69,26 @@ type TxRow = (
     String,
 );
 
-/// Validates that the postings in a transaction sum to zero per commodity.
-fn validate_balance(postings: &[Posting]) -> BcResult<()> {
+/// Validates a transaction's postings before persistence.
+///
+/// Storing is permissive — an unbalanced (e.g. one-sided, freshly-imported)
+/// transaction is valid and persists so the UI can surface it for resolution.
+/// Only structurally impossible posting sets are rejected:
+/// - an empty posting list;
+/// - two or more elided (`None`) amounts, whose residual is ambiguous;
+/// - a single posting that is itself elided, which carries no amount at all.
+fn validate_postings(postings: &[Posting]) -> BcResult<()> {
     if postings.is_empty() {
-        return Err(BcError::UnbalancedTransaction);
+        return Err(BcError::BadData("transaction has no postings".into()));
     }
-
-    let mut sums: std::collections::BTreeMap<&str, Decimal> = std::collections::BTreeMap::new();
-    for p in postings {
-        let Some(amount) = p.amount() else {
-            continue; // elided leg — residual resolved in Task 7
-        };
-        let entry: &mut Decimal = sums.entry(amount.commodity().as_str()).or_default();
-        *entry = entry
-            .checked_add(amount.value())
-            .ok_or(BcError::BadData("posting sum overflow".into()))?;
+    let elided = postings.iter().filter(|p| p.amount().is_none()).count();
+    if elided >= 2 {
+        return Err(BcError::BadData("two or more elided postings".into()));
     }
-    for (commodity, sum) in &sums {
-        if !sum.is_zero() {
-            tracing::warn!(%commodity, %sum, "transaction postings do not balance");
-            return Err(BcError::UnbalancedTransaction);
-        }
+    if elided == 1 && postings.len() == 1 {
+        return Err(BcError::BadData(
+            "a lone elided posting carries no amount".into(),
+        ));
     }
     Ok(())
 }
@@ -188,11 +187,12 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::UnbalancedTransaction`] if postings do not sum to zero.
+    /// Returns [`BcError::BadData`] if the posting list is empty, contains two
+    /// or more elided amounts, or is a single lone elided posting.
     /// Returns [`BcError`] on event append or database insert failure.
     #[inline]
     pub async fn create(&self, tx: Transaction) -> BcResult<TransactionId> {
-        validate_balance(tx.postings())?;
+        validate_postings(tx.postings())?;
 
         let tx_id = tx.id().clone();
         let event = Event::TransactionCreated { id: tx_id.clone() };
@@ -1303,7 +1303,8 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::UnbalancedTransaction`] if postings do not sum to zero.
+    /// Returns [`BcError::BadData`] if the posting list is empty, contains two
+    /// or more elided amounts, or is a single lone elided posting.
     /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
@@ -1312,7 +1313,7 @@ impl Service {
         reason = "amending a transaction with postings, cost, spread, tags, and extra_dates requires several delete/insert queries and field mappings"
     )]
     pub async fn amend(&self, updated: Transaction) -> BcResult<()> {
-        validate_balance(updated.postings())?;
+        validate_postings(updated.postings())?;
 
         let tx_id = updated.id().clone();
         let tx_id_str = tx_id.to_string();
@@ -1551,6 +1552,38 @@ impl Service {
         tracing::info!(posting_id = %id, "posting spread cleared");
         Ok(())
     }
+
+    /// Sets the reconciliation state of a transaction.
+    ///
+    /// Setting [`Reconciliation::Reconciled`] requires the transaction to
+    /// balance — an unbalanced (one-sided or multi-commodity) transaction cannot
+    /// be reconciled until the missing leg is supplied.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The transaction to update.
+    /// * `state` - The new reconciliation state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if `state` is `Reconciled` and the
+    /// transaction does not balance.
+    /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
+    /// Returns [`BcError`] on database update failure.
+    pub async fn reconcile(&self, id: &TransactionId, state: Reconciliation) -> BcResult<()> {
+        let tx = self.find_by_id(id).await?;
+        if state == Reconciliation::Reconciled && !tx.balanced() {
+            return Err(BcError::BadData(
+                "cannot reconcile an unbalanced transaction".into(),
+            ));
+        }
+        sqlx::query("UPDATE transactions SET reconciliation = ? WHERE id = ?")
+            .bind(to_db_str(state)?)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1760,25 +1793,40 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn create_unbalanced_transaction_fails(pool: sqlx::SqlitePool) {
-        use jiff::Timestamp;
+    async fn create_unbalanced_transaction_succeeds(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
         let svc = Service::new(pool.clone());
+        let tx_id = bc_models::TransactionId::new();
         let tx = Transaction::builder()
-            .id(bc_models::TransactionId::new())
+            .id(tx_id.clone())
             .date(date(2026, 1, 15))
             .description("Unbalanced")
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
-                    .account_id(AccountId::new())
+                    .account_id(acc)
                     .amount(Amount::new(dec!(50.00), CommodityCode::new("AUD")))
                     .build(),
             ])
-            .reconciliation(Reconciliation::Reconciled)
+            .reconciliation(Reconciliation::Unreconciled)
             .created_at(Timestamp::now())
             .build();
-        let result = svc.create(tx).await;
-        assert!(matches!(result, Err(BcError::UnbalancedTransaction)));
+        svc.create(tx)
+            .await
+            .expect("one-sided transaction should now succeed");
+        let found = svc.find_by_id(&tx_id).await.expect("find should succeed");
+        assert!(
+            !found.balanced(),
+            "one-sided transaction should not be balanced"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2290,5 +2338,186 @@ mod tests {
 
         let found = svc.find_by_id(&tx_id).await.expect("find should succeed");
         assert_eq!(found.description(), "Amended description");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_rejects_empty_postings(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Empty")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let result = svc.create(tx).await;
+        assert!(
+            matches!(result, Err(BcError::BadData(_))),
+            "empty posting list should be rejected"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_rejects_two_elided_postings(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Two elided")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .maybe_amount(None)
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .maybe_amount(None)
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let result = svc.create(tx).await;
+        assert!(
+            matches!(result, Err(BcError::BadData(_))),
+            "two elided postings should be rejected"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_rejects_lone_elided_posting(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Lone elided")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .maybe_amount(None)
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let result = svc.create(tx).await;
+        assert!(
+            matches!(result, Err(BcError::BadData(_))),
+            "lone elided posting should be rejected"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_accepts_concrete_with_elided(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc_a = acct_svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account A");
+        let acc_b = acct_svc
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account B");
+        let svc = Service::new(pool.clone());
+        let tx_id = bc_models::TransactionId::new();
+        let tx = Transaction::builder()
+            .id(tx_id.clone())
+            .date(date(2026, 1, 15))
+            .description("Concrete plus elided")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_a)
+                    .amount(Amount::new(dec!(-50.00), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_b)
+                    .maybe_amount(None)
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(tx)
+            .await
+            .expect("concrete + elided should be accepted");
+        let found = svc.find_by_id(&tx_id).await.expect("find should succeed");
+        assert_eq!(found.postings().len(), 2);
+        assert!(found.balanced(), "concrete + elided should balance");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reconcile_rejects_unbalanced(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+        let svc = Service::new(pool.clone());
+        let tx_id = bc_models::TransactionId::new();
+        let tx = Transaction::builder()
+            .id(tx_id.clone())
+            .date(date(2026, 1, 15))
+            .description("One sided")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc)
+                    .amount(Amount::new(dec!(-50.00), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(tx).await.expect("create should succeed");
+        let result = svc.reconcile(&tx_id, Reconciliation::Reconciled).await;
+        assert!(
+            matches!(result, Err(BcError::BadData(_))),
+            "reconcile on unbalanced tx should fail"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reconcile_accepts_balanced(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc_a = acct_svc
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account A");
+        let acc_b = acct_svc
+            .create()
+            .name("Expenses")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account B");
+        let svc = Service::new(pool.clone());
+        let tx = make_balanced_transaction(acc_a, acc_b);
+        let id = tx.id().clone();
+        svc.create(tx).await.expect("create balanced tx");
+        svc.reconcile(&id, Reconciliation::Reconciled)
+            .await
+            .expect("reconcile balanced tx should succeed");
     }
 }
