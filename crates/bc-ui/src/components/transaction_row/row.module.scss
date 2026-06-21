@@ -172,3 +172,142 @@
   color: var(--bc-warn);
   margin-left: var(--bc-space-2);
 }
+
+/* MARK: Detail panel */
+
+.detail {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--bc-space-7);
+  padding: var(--bc-space-7) var(--bc-space-7) var(--bc-space-8);
+  border-bottom: 1px solid var(--bc-border);
+  background: var(--bc-surface);
+
+  @media (min-width: #{bp.$bp-md}) { grid-template-columns: 1fr 160px; }
+  @media (min-width: #{bp.$bp-lg}) { grid-template-columns: 1fr 280px; }
+}
+
+.data_panel {
+  padding: var(--bc-space-6);
+  background: var(--bc-surface-accent);
+  border: 1px solid var(--bc-border-strong);
+  border-radius: var(--bc-radius-card);
+  min-height: 120px; /* minimum panel height: prevents collapse on short content */
+}
+
+.actions_panel {
+  display: flex;
+  flex-direction: column;
+
+  @media (min-width: #{bp.$bp-lg}) {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: var(--bc-space-2);
+    align-content: start;
+  }
+}
+
+/* At large screens the actions panel goes two-column: span full width for
+   the header, divider, and the standalone "audit log" toggle below the divider. */
+@media (min-width: #{bp.$bp-lg}) {
+  .actions_label,
+  .actions_divider,
+  .actions_divider ~ .action_btn { grid-column: 1 / -1; }
+}
+
+.actions_label {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-ink-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  margin-bottom: var(--bc-space-4);
+}
+
+.actions_divider {
+  height: 1px;
+  background: var(--bc-border);
+  margin: var(--bc-space-3) 0;
+}
+
+.action_btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--bc-space-2) var(--bc-space-3);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  margin-bottom: var(--bc-space-2);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink-soft);
+  background: var(--bc-surface-accent);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+
+  &:focus-visible { @include focus.focus-ring(2px); }
+}
+
+.action_btn_active {
+  background: var(--bc-accent-soft);
+  border-color: color-mix(in oklch, var(--bc-accent) 40%, var(--bc-border));
+  color: var(--bc-accent);
+}
+
+.action_kbd {
+  border: 1px solid var(--bc-border-strong);
+  border-radius: var(--bc-radius-kbd);
+  padding: 0 var(--bc-space-1);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-ink-dim);
+  background: transparent;
+
+  .action_btn_active & {
+    border-color: var(--bc-accent);
+    color: var(--bc-accent);
+  }
+}
+
+/* MARK: Posting chips */
+
+.posting_chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bc-space-2);
+  margin: var(--bc-space-1) 0 var(--bc-space-2) var(--bc-space-4);
+}
+
+.chip_note { color: var(--bc-comment); font-size: var(--bc-text-eyebrow); }
+
+.chip_spread {
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-accent);
+  border: 1px solid var(--bc-accent);
+  border-radius: var(--bc-radius-tag);
+  padding: 0 var(--bc-space-1);
+}
+
+.amt_auto { color: var(--bc-ink-mute); font-style: italic; }
+
+.spread_edit_btn {
+  background: none;
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  padding: 0 var(--bc-space-2);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-ink-mute);
+  cursor: pointer;
+}
+
+.action_btn_disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* MARK: Posting account path */
+
+.posting_acct {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink-soft);
+}

@@ -11,9 +11,18 @@ use rust_decimal::Decimal;
 use stylance::import_style;
 
 use crate::components::tag_token::TagToken;
+use crate::components::toml_view::KvKey;
+use crate::components::toml_view::KvKind;
+use crate::components::toml_view::KvValue;
+use crate::components::toml_view::TomlArraySection;
+use crate::components::toml_view::TomlAuditEntry;
+use crate::components::toml_view::TomlKv;
+use crate::components::toml_view::TomlPosting;
+use crate::components::toml_view::TomlSection;
 use crate::label::category_label;
 use crate::pages::accounts::types::format_date_display;
 use crate::pages::accounts::types::payee_initial;
+use crate::pages::budget::components::accrual_editor::AccrualEditor;
 
 import_style!(style, "row.module.scss");
 
@@ -316,8 +325,6 @@ pub fn TransactionRow(
     #[prop(optional)]
     on_change: Option<Callback<()>>,
 ) -> impl IntoView {
-    let _: Option<Callback<()>> = on_change; /* consumed by expanded view in Task 4 */
-
     let local_expanded = RwSignal::new(false);
     let expanded: Signal<bool> = expanded.unwrap_or_else(|| local_expanded.into());
     let toggle = move || match on_toggle {
@@ -460,8 +467,385 @@ pub fn TransactionRow(
                 {move || if expanded.get() { "\u{2193}" } else { "\u{203A}" }}
             </span>
         </div>
-        // Expanded body added in Task 4:
-        {move || expanded.get().then(|| view! { <span /> })}
+        {
+            let tx_detail = tx.clone();
+            let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
+            move || {
+                expanded
+                    .get()
+                    .then(|| {
+                        view! { <TransactionDetail tx=tx_detail.clone() on_change=on_change_cb /> }
+                    })
+            }
+        }
+    }
+}
+
+/// Per-posting display data for the expanded postings card.
+#[derive(Clone)]
+struct PostingData {
+    /// Account display path, e.g. `"Assets :: Checking"`.
+    account_path: String,
+    /// Concrete amount, or `None` for an elided (auto-balancing) leg.
+    amount: Option<Amount>,
+    /// Optional inline note.
+    note: Option<String>,
+    /// Tag IDs attached to this posting.
+    tag_ids: Vec<String>,
+    /// Accrual spread start date, if set.
+    spread_from: Option<jiff::civil::Date>,
+    /// Accrual spread end date, if set.
+    spread_until: Option<jiff::civil::Date>,
+    /// Stable posting identifier.
+    posting_id: String,
+    /// Toggles the inline [`AccrualEditor`] for this posting.
+    show_editor: RwSignal<bool>,
+}
+
+/// Renders a single posting: amount/`auto` line, chips row, and the optional
+/// retained [`AccrualEditor`].
+fn render_posting(p: PostingData, on_change_cb: Callback<()>) -> impl IntoView {
+    let PostingData {
+        account_path,
+        amount,
+        note,
+        tag_ids,
+        spread_from,
+        spread_until,
+        posting_id,
+        show_editor,
+    } = p;
+    let has_spread = spread_from.is_some() && spread_until.is_some();
+
+    let amount_view = match amount {
+        Some(a) => view! { <TomlPosting amount=a>{account_path.clone()}</TomlPosting> }.into_any(),
+        None => view! {
+            <div class=style::posting_chips>
+                <span class=style::posting_acct>{account_path.clone()}</span>
+                <span class=style::amt_auto>"auto"</span>
+            </div>
+        }
+        .into_any(),
+    };
+
+    let note_chip = note
+        .filter(|n| !n.is_empty())
+        .map(|n| view! { <span class=style::chip_note>"# "{n}</span> });
+    let tag_chips = tag_ids
+        .into_iter()
+        .map(|t| view! { <TagToken label=t /> })
+        .collect::<Vec<_>>();
+    let spread_chip = spread_from.zip(spread_until).map(|(from, until)| {
+        view! {
+            <span class=style::chip_spread>
+                "\u{27F3} "{from.to_string()}" \u{2192} "{until.to_string()}
+            </span>
+        }
+    });
+
+    let editor = move || {
+        show_editor.get().then(|| {
+            view! {
+                <AccrualEditor
+                    posting_id=posting_id.clone()
+                    has_spread=has_spread
+                    spread_from=spread_from
+                    spread_until=spread_until
+                    on_change=on_change_cb
+                />
+            }
+        })
+    };
+
+    view! {
+        {amount_view}
+        <div class=style::posting_chips>
+            {note_chip} {tag_chips} {spread_chip}
+            <button class=style::spread_edit_btn on:click=move |_| show_editor.update(|v| *v = !*v)>
+                "edit spread"
+            </button>
+        </div>
+        {editor}
+    }
+}
+
+/// Inline expanded detail panel shown below an expanded [`TransactionRow`].
+///
+/// Renders a meta card (key/value rows, empty fields omitted) and a postings
+/// card (account path, concrete amount or an `auto` token for elided legs, plus
+/// note/tag/spread chips and the retained [`AccrualEditor`]) built from the
+/// `toml_view` primitives, followed by a trimmed actions row. Press `a` to
+/// toggle the audit log.
+///
+/// # Arguments
+///
+/// * `tx` - The transaction to render.
+/// * `on_change` - Optional callback run after a successful mutation (reverse or
+///   spread edit); defaults to a no-op when `None`.
+#[component]
+fn TransactionDetail(
+    /// The transaction to render.
+    tx: Transaction,
+    /// Called after a successful mutation; defaults to a no-op when `None`.
+    #[prop(optional)]
+    on_change: Option<Callback<()>>,
+) -> impl IntoView {
+    let show_audit = RwSignal::new(false);
+    let detail_ref = NodeRef::<leptos::html::Div>::new();
+    let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
+
+    let stored_tx = StoredValue::new(tx);
+
+    Effect::new(move |_| {
+        if let Some(el) = detail_ref.get() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                clippy::let_underscore_untyped,
+                let_underscore_drop,
+                reason = "focus() returns Result<(), JsValue>; errors are benign in this context"
+            )]
+            let _ = el.focus();
+        }
+    });
+
+    let on_action_key = move |e: web_sys::KeyboardEvent| {
+        if e.key() == "a" {
+            show_audit.update(|v| *v = !*v);
+            e.prevent_default();
+        }
+    };
+
+    /* Meta-card scalars, captured as Copy StoredValues so Fn closures can read
+    them repeatedly without consuming the transaction. */
+    let tx_id = StoredValue::new(stored_tx.with_value(|t| t.id.clone()));
+    let tx_date = StoredValue::new(stored_tx.with_value(|t| t.date));
+    let tx_extra_dates = StoredValue::new(stored_tx.with_value(|t| {
+        t.extra_dates
+            .iter()
+            .map(|(label, d)| format!("{label} {d}"))
+            .collect::<Vec<_>>()
+            .join("  ")
+    }));
+    let tx_status = StoredValue::new(stored_tx.with_value(|t| t.reconciliation.label().to_owned()));
+    let tx_payee = StoredValue::new(stored_tx.with_value(|t| t.payee.clone()));
+    let tx_has_payee = stored_tx.with_value(|t| !t.payee.is_empty());
+    let tx_desc = StoredValue::new(stored_tx.with_value(|t| t.description.clone()));
+    let tx_has_desc = stored_tx.with_value(|t| !t.description.is_empty());
+    let tx_note = StoredValue::new(stored_tx.with_value(|t| t.note.clone().unwrap_or_default()));
+    let tx_has_note = stored_tx.with_value(|t| t.note.as_ref().is_some_and(|n| !n.is_empty()));
+    let stored_tags = StoredValue::new(stored_tx.with_value(|t| t.tags.clone()));
+    let tx_has_tags = stored_tx.with_value(|t| !t.tags.is_empty());
+
+    let stored_audit = StoredValue::new(stored_tx.with_value(|t| {
+        t.audit
+            .iter()
+            .map(|e| (e.time_label(), e.kind.clone(), e.message.clone()))
+            .collect::<Vec<_>>()
+    }));
+
+    /* Posting display data, with one Copy toggle signal per posting driving the
+    retained AccrualEditor. Stored as plain data so the audit-toggle closure
+    can rebuild the postings card without consuming non-Clone views. */
+    let stored_postings = StoredValue::new(stored_tx.with_value(|t| {
+        t.postings
+            .iter()
+            .map(|p| PostingData {
+                account_path: p.account.name.clone(),
+                amount: p.amount.clone(),
+                note: p.note.clone(),
+                tag_ids: p.tag_ids.clone(),
+                spread_from: p.spread_from,
+                spread_until: p.spread_until,
+                posting_id: p.id.clone(),
+                show_editor: RwSignal::new(false),
+            })
+            .collect::<Vec<_>>()
+    }));
+
+    let tx_id_reverse = stored_tx.with_value(|t| t.id.clone());
+    let do_reverse = move |()| {
+        let id = tx_id_reverse.clone();
+        leptos::task::spawn_local(async move {
+            if bc_ipc::client::reverse_transaction(&id).await.is_ok() {
+                on_change_cb.run(());
+            }
+        });
+    };
+
+    view! {
+        <div class=style::detail node_ref=detail_ref on:keydown=on_action_key tabindex="-1">
+            <div class=style::data_panel>
+                {move || {
+                    if show_audit.get() {
+                        view! {
+                            <TomlArraySection comment=tx_id
+                                .get_value()>"audit_log"</TomlArraySection>
+                            {stored_audit
+                                .with_value(|entries| {
+                                    entries
+                                        .iter()
+                                        .map(|(time, kind, msg)| {
+                                            let msg = msg.clone();
+                                            view! {
+                                                <TomlAuditEntry time=time.clone() kind=kind.clone()>
+                                                    {msg}
+                                                </TomlAuditEntry>
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                })}
+                        }
+                            .into_any()
+                    } else {
+                        view! {
+                            <TomlSection>"transaction"</TomlSection>
+                            <TomlKv>
+                                <KvKey slot>"id"</KvKey>
+                                <KvValue slot kind=KvKind::Str>
+                                    {tx_id.get_value()}
+                                </KvValue>
+                            </TomlKv>
+                            <TomlKv comment=tx_extra_dates.get_value()>
+                                <KvKey slot>"date"</KvKey>
+                                <KvValue slot kind=KvKind::Date>
+                                    {tx_date.get_value().to_string()}
+                                </KvValue>
+                            </TomlKv>
+                            <TomlKv>
+                                <KvKey slot>"status"</KvKey>
+                                <KvValue slot kind=KvKind::Keyword>
+                                    {tx_status.get_value()}
+                                </KvValue>
+                            </TomlKv>
+                            {tx_has_payee
+                                .then(|| {
+                                    view! {
+                                        <TomlKv>
+                                            <KvKey slot>"payee"</KvKey>
+                                            <KvValue slot kind=KvKind::Str>
+                                                {tx_payee.get_value()}
+                                            </KvValue>
+                                        </TomlKv>
+                                    }
+                                })}
+                            {tx_has_desc
+                                .then(|| {
+                                    view! {
+                                        <TomlKv>
+                                            <KvKey slot>"description"</KvKey>
+                                            <KvValue slot kind=KvKind::Str>
+                                                {tx_desc.get_value()}
+                                            </KvValue>
+                                        </TomlKv>
+                                    }
+                                })}
+                            {tx_has_note
+                                .then(|| {
+                                    view! {
+                                        <TomlKv>
+                                            <KvKey slot>"note"</KvKey>
+                                            <KvValue slot kind=KvKind::Str>
+                                                {tx_note.get_value()}
+                                            </KvValue>
+                                        </TomlKv>
+                                    }
+                                })}
+                            {tx_has_tags
+                                .then(|| {
+                                    let tags = stored_tags.get_value();
+                                    view! {
+                                        <TomlKv>
+                                            <KvKey slot>"tags"</KvKey>
+                                            <KvValue slot kind=KvKind::Tags tags=tags />
+                                        </TomlKv>
+                                    }
+                                })}
+                            <TomlArraySection>"postings"</TomlArraySection>
+                            {stored_postings
+                                .get_value()
+                                .into_iter()
+                                .map(|p| render_posting(p, on_change_cb))
+                                .collect::<Vec<_>>()}
+                        }
+                            .into_any()
+                    }
+                }}
+            </div>
+
+            <div class=style::actions_panel>
+                <div class=style::actions_label>"actions"</div>
+                <ActionBtn
+                    label="edit"
+                    kbd="e"
+                    active=Signal::derive(|| false)
+                    disabled=Signal::derive(|| true)
+                />
+                <ActionBtn
+                    label="reverse"
+                    kbd="x"
+                    active=Signal::derive(|| false)
+                    on_click=Callback::new(do_reverse)
+                />
+                <ActionBtn
+                    label="find similar"
+                    kbd="f"
+                    active=Signal::derive(|| false)
+                    disabled=Signal::derive(|| true)
+                />
+                <div class=style::actions_divider />
+                <ActionBtn label="audit log" kbd="a" active=Signal::from(show_audit.read_only()) />
+            </div>
+        </div>
+    }
+}
+
+/// A single action button with a keyboard shortcut hint.
+///
+/// # Arguments
+///
+/// * `label` - Button label.
+/// * `kbd` - Keyboard shortcut character.
+/// * `active` - Whether this action is currently active/toggled.
+/// * `disabled` - Whether the button is disabled (greyed out, no click).
+/// * `on_click` - Optional callback run when the button is clicked.
+#[component]
+fn ActionBtn(
+    /// Button label.
+    label: &'static str,
+    /// Keyboard shortcut character.
+    kbd: &'static str,
+    /// Whether this action is currently active/toggled.
+    #[prop(into)]
+    active: Signal<bool>,
+    /// Whether the button is disabled.
+    #[prop(optional, into)]
+    disabled: Signal<bool>,
+    /// Optional callback run on click.
+    #[prop(optional)]
+    on_click: Option<Callback<()>>,
+) -> impl IntoView {
+    view! {
+        <button
+            class=move || {
+                let mut c = vec![style::action_btn];
+                if active.get() {
+                    c.push(style::action_btn_active);
+                }
+                if disabled.get() {
+                    c.push(style::action_btn_disabled);
+                }
+                c.join(" ")
+            }
+            disabled=move || disabled.get()
+            on:click=move |_| {
+                if let Some(cb) = on_click {
+                    cb.run(());
+                }
+            }
+        >
+            {label}
+            <kbd class=style::action_kbd>{kbd}</kbd>
+        </button>
     }
 }
 
