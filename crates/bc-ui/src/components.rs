@@ -14,5 +14,4 @@ pub mod status_pill;
 pub mod tag_token;
 #[cfg(target_arch = "wasm32")]
 pub mod toml_view;
-#[cfg(target_arch = "wasm32")]
 pub mod transaction_row;
