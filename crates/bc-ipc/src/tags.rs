@@ -12,6 +12,9 @@ impl TagInfo {
     /// Creates a new [`TagInfo`].
     #[must_use]
     pub fn new(id: impl Into<String>, path: impl Into<String>) -> Self {
-        Self { id: id.into(), path: path.into() }
+        Self {
+            id: id.into(),
+            path: path.into(),
+        }
     }
 }
