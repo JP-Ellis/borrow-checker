@@ -134,9 +134,12 @@ ______________________________________________________________________
 
 ## Budget detail — reuse TransactionRow from accounts page
 
-> **Superseded by** the transaction-model + unified-row design (2026-06-21), which
-> unifies the row behind a `RowPerspective` prop and deletes `TxRow` /
-> `tx_display_amount`.
+> **Done** (2026-06-21): the transaction-UI-unification plan unified the row behind a
+> `RowPerspective` prop and deleted `TxRow` / `PostingRow` / `tx_display_amount`. Both the
+> accounts and budget pages now render `crate::components::transaction_row::TransactionRow`.
+> The remaining row-related follow-ups are the new entries at the end of this document
+> (tag-path resolution, budget tag-filter narrowing, accounts-page period view, budget
+> filter predicate, and spread editing beyond the AccrualEditor).
 
 **Identified in:** PR #159 (feat/bc-ui: budget page implementation)
 **File:** `crates/bc-ui/src/pages/budget/components/budget_detail/mod.rs`
@@ -159,15 +162,19 @@ amount is sourced from `TransactionRow`'s existing logic.
 
 ______________________________________________________________________
 
-## bc-ui — WASM test runner for period_nav unit tests
+## bc-ui — WASM test runner for pure-logic unit tests
 
 **Identified in:** PR #159 (feat/bc-ui: budget page implementation)
-**File:** `crates/bc-ui/src/pages/budget/period_nav.rs`
+**Files:** `crates/bc-ui/src/pages/budget/period_nav.rs`,
+`crates/bc-ui/src/components/transaction_row/mod.rs`
 
-`period_nav.rs` contains pure date-arithmetic unit tests (`#[test]`) that
+`period_nav.rs` and the shared transaction row's perspective logic
+(`transaction_row/mod.rs`: `headline_amount` / `is_balanced` / `prorated_value` and the
+`payee_initial` / `format_date_display` helpers) contain pure unit tests (`#[test]`) that
 previously ran natively via a `#[path]` shim in `main.rs`. The shim was removed
-(PR #159) because `#[path]` is fragile and the reviewer flagged it as a
-last-resort tool.
+(PR #159, and again for `transaction_row` in the 2026-06-21 unification) because
+`#[path]` is fragile and reviewers flagged it as a last-resort tool. These tests now
+live in the wasm-gated modules and do not run anywhere until a runner exists.
 
 The correct solution is a WASM test runner (`wasm-bindgen-test` or `wasm-pack test`) so the tests run in the actual target environment. Until that
 infrastructure exists, `period_nav` unit tests do not run anywhere — coverage
@@ -175,7 +182,7 @@ comes only from the E2E suite.
 
 When implementing:
 
-- Convert `#[test]` annotations in `period_nav.rs` to `#[wasm_bindgen_test]`.
+- Convert `#[test]` annotations in `period_nav.rs` and `transaction_row/mod.rs` to `#[wasm_bindgen_test]`.
 - Add a `mise run test:wasm` task that invokes `wasm-pack test --headless --firefox` (or similar) against `bc-ui`.
 - Gate the `wasm-bindgen-test` dev-dependency on `target_arch = "wasm32"`.
 
@@ -267,3 +274,66 @@ Voiding a transaction is modelled as a reversal `Link` rather than a status, reu
 existing `transaction_links` tables. Beyond a single "reverse" button on the row, surface
 linked reversal/transfer groups in the UI (e.g. visually grouping a transaction with its
 reversal, navigating between members).
+
+______________________________________________________________________
+
+## TagService + tag-path resolution through IPC
+
+**Identified in:** transaction-UI-unification plan (2026-06-21)
+
+There is no `TagService` in `bc-core`. Tags live in the `tags` table (`id`, `name`,
+`parent_id`) with `transaction_tags` / `posting_tags` join tables, but nothing resolves a
+`TagId` to a readable path. Consequently the IPC boundary leaks raw IDs: posting
+`tag_ids` cross as raw ID strings and transaction-level `tags` cross **empty**
+(`crates/bc-app/src/ipc.rs` `transaction_into_ipc_with_accounts` sets `vec![]`).
+
+Add a tag-path resolver — a `TagService` (or a lookup analogous to `build_account_path`
+in `crates/bc-app/src/ipc.rs`) that walks the parent chain and joins names — so the
+unified transaction row renders tag chips as readable paths (e.g. `person:me`) instead of
+raw IDs, and so budget tag-filter narrowing (below) can match on effective tags.
+
+______________________________________________________________________
+
+## Budget headline tag-filter narrowing
+
+**Identified in:** transaction-UI-unification plan (2026-06-21)
+
+The unified row's `RowPerspective::Budget` carries the budget's `tag_filter` but does not
+yet narrow focal postings by it (it depends on tag-path resolution above). A tag-filtered
+sub-budget's row headline currently approximates by the account's focal postings. Once
+tags resolve through IPC, narrow focal postings to those whose effective tags
+(`transaction.tags` ∪ `posting.tag_ids`) match `tag_filter`.
+
+______________________________________________________________________
+
+## Accounts-page period view
+
+**Identified in:** transaction-UI-unification plan (2026-06-21)
+
+Reuse the budget page's `period_nav` (period stepper + window) on the accounts page so a
+growing register can be scoped to the current period, filtered by the canonical
+transaction date (stricter than the budget page, which also includes spread overlaps).
+Extract the period navigation into a shared component during the work.
+
+______________________________________________________________________
+
+## Budget transaction filter predicate (date OR spread overlap)
+
+**Identified in:** transaction-UI-unification plan (2026-06-21)
+
+Confirm and, if needed, extend `get_budget_transactions` so a transaction is included when
+its canonical date falls in the period **or** any posting's spread (`spread_from` …
+`spread_until`) overlaps the period. This is the budget-side complement to the
+accounts-page period view above.
+
+______________________________________________________________________
+
+## Spread editing beyond the retained AccrualEditor
+
+**Identified in:** transaction-UI-unification plan (2026-06-21)
+
+The unified row keeps the inline `AccrualEditor` (reached via the per-posting "edit spread"
+toggle in the expanded detail) so no budget-page editing was lost. The longer-term goal is a
+fully editable expanded view (an IDE-like, guard-railed TOML editor for the whole
+transaction, per the design's out-of-scope note); fold the `AccrualEditor`'s spread editing
+into that broader editable view when it lands.
