@@ -12,3 +12,4 @@ pub mod accounts;
 pub mod budget;
 pub mod plugins;
 pub mod settings;
+pub mod tags;
