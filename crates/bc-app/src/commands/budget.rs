@@ -54,8 +54,7 @@ pub async fn get_budget_overview(
     let target_commodity = overview.summary.commodity.as_ref();
 
     let (total_budgeted, total_spent, total_remaining) = if let Some(tc) = target_commodity {
-        let budgeted =
-            bc_ipc::Amount::new(overview.summary.total_effective_target, tc.as_str());
+        let budgeted = bc_ipc::Amount::new(overview.summary.total_effective_target, tc.as_str());
         let actuals_in_target = overview
             .summary
             .total_actuals
