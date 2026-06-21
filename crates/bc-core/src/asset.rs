@@ -233,7 +233,7 @@ impl Service {
             let asset_posting_id = PostingId::new();
             sqlx::query(
                 "INSERT INTO postings \
-                (id, transaction_id, account_id, amount, commodity, memo, position, \
+                (id, transaction_id, account_id, amount, commodity, note, position, \
                 cost_total_value, cost_total_commodity, cost_date, cost_label) \
                 VALUES (?, ?, ?, ?, ?, NULL, 0, NULL, NULL, NULL, NULL)",
             )
@@ -254,7 +254,7 @@ impl Service {
             let neg_change = -change;
             sqlx::query(
                 "INSERT INTO postings \
-                (id, transaction_id, account_id, amount, commodity, memo, position, \
+                (id, transaction_id, account_id, amount, commodity, note, position, \
                 cost_total_value, cost_total_commodity, cost_date, cost_label) \
                 VALUES (?, ?, ?, ?, ?, NULL, 1, NULL, NULL, NULL, NULL)",
             )
@@ -627,7 +627,7 @@ impl Service {
         let expense_posting_id = PostingId::new();
         sqlx::query(
             "INSERT INTO postings \
-             (id, transaction_id, account_id, amount, commodity, memo, position, \
+             (id, transaction_id, account_id, amount, commodity, note, position, \
               cost_total_value, cost_total_commodity, cost_date, cost_label) \
              VALUES (?, ?, ?, ?, ?, NULL, 0, NULL, NULL, NULL, NULL)",
         )
@@ -648,7 +648,7 @@ impl Service {
         let neg_amount = -amount_clamped;
         sqlx::query(
             "INSERT INTO postings \
-             (id, transaction_id, account_id, amount, commodity, memo, position, \
+             (id, transaction_id, account_id, amount, commodity, note, position, \
               cost_total_value, cost_total_commodity, cost_date, cost_label) \
              VALUES (?, ?, ?, ?, ?, NULL, 1, NULL, NULL, NULL, NULL)",
         )

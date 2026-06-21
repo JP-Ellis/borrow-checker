@@ -27,7 +27,7 @@ pub enum Command {
         /// Transaction date in YYYY-MM-DD format.
         #[arg(long)]
         date: String,
-        /// Transaction description (memo).
+        /// Transaction description.
         #[arg(long)]
         description: String,
         /// Optional payee name.
