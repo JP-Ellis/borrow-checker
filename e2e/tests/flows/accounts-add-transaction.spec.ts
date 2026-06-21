@@ -167,7 +167,7 @@ describe('Accounts — add transaction', () => {
         const tx = dbQueryTransaction('E2E Test Payee');
         wdioExpect(tx).toBeDefined();
         wdioExpect(tx!.date).toBe('2026-06-01');
-        wdioExpect(tx!.reconciliation).toBe('unreconciled');
+        wdioExpect(tx!.reconciliation).toBe('flagged');
 
         const postings = dbQueryPostings(tx!.id);
         // A balanced double-entry transaction has exactly two postings.
