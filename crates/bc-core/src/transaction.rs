@@ -11,6 +11,7 @@ use bc_models::PostingId;
 use bc_models::TagId;
 use bc_models::Transaction;
 use bc_models::TransactionId;
+use bc_models::TransactionLinkId;
 use bc_models::TransactionStatus;
 use jiff::Timestamp;
 use jiff::civil::Date;
@@ -407,58 +408,120 @@ impl Service {
             .build())
     }
 
-    /// Voids a transaction by setting its status to `voided`.
+    /// Creates a reversal transaction for the given transaction.
     ///
-    /// The event append and the projection UPDATE are wrapped in a single SQLite
-    /// transaction so they succeed or fail atomically.  `rows_affected()` is used
-    /// to detect a missing or already-voided transaction without a separate pre-check,
-    /// eliminating a TOCTOU race.  The voided-status string is derived at runtime
-    /// via [`to_db_str`] so it stays in sync with the serde representation.
+    /// A reversal inserts a new transaction with the same postings negated, a
+    /// description of `"Reversal of {id}"`, and `Status::Pending`.  One
+    /// `transaction_links` row (`link_type = 'reversal'`) and two
+    /// `transaction_link_members` rows (original + reversal) are inserted in the
+    /// same database transaction to tie them together atomically.
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
-    /// Returns [`BcError::AlreadyVoided`] if the transaction exists but is already voided.
-    /// Returns [`BcError`] on event append or database update failure.
+    /// Returns [`BcError::NotFound`] if no transaction with the given ID exists.
+    /// Returns [`BcError`] on database insert failure.
     #[inline]
-    pub async fn void(&self, id: &TransactionId) -> BcResult<()> {
-        let voided_str = to_db_str(TransactionStatus::Voided)?;
-        let event = Event::TransactionVoided { id: id.clone() };
+    pub async fn reverse(&self, id: &TransactionId) -> BcResult<TransactionId> {
+        let original = self.find_by_id(id).await?;
 
-        let mut tx = self.pool.begin().await?;
+        let reversal_id = TransactionId::new();
+        let link_id = TransactionLinkId::new();
+        let created_at_str = Timestamp::now().to_string();
+        let pending_str = to_db_str(TransactionStatus::Pending)?;
+        let description = format!("Reversal of {id}");
 
-        insert_event(&event, &mut tx).await?;
+        let event = Event::TransactionReversed {
+            original_id: id.clone(),
+            reversal_id: reversal_id.clone(),
+        };
 
-        let result = sqlx::query("UPDATE transactions SET status = ? WHERE id = ? AND status != ?")
-            .bind(&voided_str)
-            .bind(id.to_string())
-            .bind(&voided_str)
-            .execute(&mut *tx)
+        let mut db_tx = self.pool.begin().await?;
+
+        insert_event(&event, &mut db_tx).await?;
+
+        // Insert the reversal transaction row.
+        sqlx::query(
+            "INSERT INTO transactions (id, date, payee, description, status, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(reversal_id.to_string())
+        .bind(original.date().to_string())
+        .bind(original.payee())
+        .bind(&description)
+        .bind(&pending_str)
+        .bind(&created_at_str)
+        .execute(&mut *db_tx)
+        .await?;
+
+        // Insert negated postings for the reversal.
+        for (position, posting) in original.postings().iter().enumerate() {
+            let negated_value = posting
+                .amount()
+                .value()
+                .checked_mul(Decimal::NEGATIVE_ONE)
+                .ok_or_else(|| BcError::BadData("posting amount negation overflow".into()))?;
+            let (cost_value, cost_commodity, cost_date, cost_label) =
+                if let Some(cost) = posting.cost() {
+                    (
+                        Some(cost.total().value().to_string()),
+                        Some(cost.total().commodity().as_str().to_owned()),
+                        cost.date().map(|d| d.to_string()),
+                        cost.label().map(str::to_owned),
+                    )
+                } else {
+                    (None, None, None, None)
+                };
+
+            sqlx::query(
+                "INSERT INTO postings \
+                 (id, transaction_id, account_id, amount, commodity, note, position, \
+                  cost_total_value, cost_total_commodity, cost_date, cost_label, \
+                  spread_from, spread_until) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(PostingId::new().to_string())
+            .bind(reversal_id.to_string())
+            .bind(posting.account_id().to_string())
+            .bind(negated_value.to_string())
+            .bind(posting.amount().commodity().as_str())
+            .bind(posting.note())
+            .bind(
+                i64::try_from(position)
+                    .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?,
+            )
+            .bind(cost_value)
+            .bind(cost_commodity)
+            .bind(cost_date)
+            .bind(cost_label)
+            .bind(posting.spread_from().map(|d| d.to_string()))
+            .bind(posting.spread_until().map(|d| d.to_string()))
+            .execute(&mut *db_tx)
             .await?;
-
-        if result.rows_affected() == 0 {
-            // rows_affected == 0 means the UPDATE found no matching row.
-            // Returning here drops `tx` without committing — sqlx rolls it
-            // back implicitly, discarding the event insert above.
-            //
-            // Perform a follow-up SELECT to distinguish "not found" from
-            // "already voided" so callers get a semantic error.
-            let exists: bool =
-                sqlx::query_scalar("SELECT count(*) > 0 FROM transactions WHERE id = ?")
-                    .bind(id.to_string())
-                    .fetch_one(&self.pool)
-                    .await?;
-
-            return if exists {
-                Err(BcError::AlreadyVoided(id.clone()))
-            } else {
-                Err(BcError::NotFound(id.to_string()))
-            };
         }
 
-        tx.commit().await?;
-        tracing::info!(transaction_id = %id, "transaction voided");
-        Ok(())
+        // Insert the link registry row.
+        sqlx::query(
+            "INSERT INTO transaction_links (id, link_type, created_at) VALUES (?, 'reversal', ?)",
+        )
+        .bind(link_id.to_string())
+        .bind(&created_at_str)
+        .execute(&mut *db_tx)
+        .await?;
+
+        // Insert both members: original and reversal.
+        sqlx::query(
+            "INSERT INTO transaction_link_members (link_id, transaction_id) VALUES (?, ?), (?, ?)",
+        )
+        .bind(link_id.to_string())
+        .bind(id.to_string())
+        .bind(link_id.to_string())
+        .bind(reversal_id.to_string())
+        .execute(&mut *db_tx)
+        .await?;
+
+        db_tx.commit().await?;
+        tracing::info!(original_id = %id, reversal_id = %reversal_id, "transaction reversed");
+        Ok(reversal_id)
     }
 
     /// Lists all non-voided transactions ordered by date descending, including postings.
@@ -1646,50 +1709,85 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn void_nonexistent_transaction_returns_not_found(pool: sqlx::SqlitePool) {
-        let svc = Service::new(pool.clone());
-        let fake_id = bc_models::TransactionId::new();
-        let result = svc.void(&fake_id).await;
-        assert!(matches!(result, Err(BcError::NotFound(_))));
-        // Verify the failed void did not leave any orphaned events.
-        let store = crate::events::SqliteStore::new(pool.clone());
-        let events = store
-            .replay_for(&fake_id.to_string())
-            .await
-            .expect("replay should succeed");
-        assert!(
-            events.is_empty(),
-            "failed void must not leave events in the log"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn void_already_voided_returns_already_voided(pool: sqlx::SqlitePool) {
+    async fn reverse_creates_linked_negated_transaction(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
             .create()
-            .name("A")
+            .name("Income")
+            .account_type(bc_models::AccountType::Income)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("acc a");
+        let acc_b = acct_svc
+            .create()
+            .name("Checking")
             .account_type(bc_models::AccountType::Asset)
             .kind(bc_models::AccountKind::DepositAccount)
             .call()
             .await
-            .expect("create A should succeed");
-        let acc_b = acct_svc
-            .create()
-            .name("B")
-            .account_type(bc_models::AccountType::Expense)
-            .kind(bc_models::AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create B should succeed");
+            .expect("acc b");
 
         let svc = Service::new(pool.clone());
         let tx = make_balanced_transaction(acc_a, acc_b);
-        let id = tx.id().clone();
-        svc.create(tx).await.expect("create should succeed");
-        svc.void(&id).await.expect("first void should succeed");
-        let result = svc.void(&id).await;
-        assert!(matches!(result, Err(BcError::AlreadyVoided(_))));
+        let original_id = tx.id().clone();
+        svc.create(tx).await.expect("create");
+
+        let reversal_id = svc.reverse(&original_id).await.expect("reverse");
+        let reversal = svc.find_by_id(&reversal_id).await.expect("find reversal");
+
+        let orig = svc.find_by_id(&original_id).await.expect("find original");
+        let orig_sum: rust_decimal::Decimal =
+            orig.postings().iter().map(|p| p.amount().value()).sum();
+        let rev_sum: rust_decimal::Decimal =
+            reversal.postings().iter().map(|p| p.amount().value()).sum();
+        pretty_assertions::assert_eq!(orig_sum, rust_decimal::Decimal::ZERO);
+        pretty_assertions::assert_eq!(rev_sum, rust_decimal::Decimal::ZERO);
+        pretty_assertions::assert_eq!(reversal.postings().len(), orig.postings().len());
+
+        // Amounts are negated.
+        for (orig_p, rev_p) in orig.postings().iter().zip(reversal.postings().iter()) {
+            let rev_negated = rev_p
+                .amount()
+                .value()
+                .checked_mul(rust_decimal::Decimal::NEGATIVE_ONE)
+                .expect("negation should not overflow in test");
+            pretty_assertions::assert_eq!(
+                orig_p.amount().value(),
+                rev_negated,
+                "reversal posting should negate original"
+            );
+        }
+
+        // A reversal link ties them together.
+        let link_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM transaction_links WHERE link_type = 'reversal'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count links");
+        pretty_assertions::assert_eq!(link_count, 1);
+
+        // Both transactions are members of the link.
+        let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transaction_link_members")
+            .fetch_one(&pool)
+            .await
+            .expect("count members");
+        pretty_assertions::assert_eq!(member_count, 2);
+
+        // Description follows the expected pattern.
+        pretty_assertions::assert_eq!(
+            reversal.description(),
+            format!("Reversal of {original_id}").as_str()
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reverse_nonexistent_returns_not_found(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let fake_id = bc_models::TransactionId::new();
+        let result = svc.reverse(&fake_id).await;
+        assert!(matches!(result, Err(BcError::NotFound(_))));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1714,7 +1812,8 @@ mod tests {
 
         let svc = Service::new(pool.clone());
 
-        // Create two transactions; void one.
+        // Create two transactions; mark one as voided directly to verify the
+        // list filter still excludes legacy voided-status rows.
         let tx1 = make_balanced_transaction(acc_a.clone(), acc_b.clone());
         let id1 = tx1.id().clone();
         svc.create(tx1).await.expect("create tx1 should succeed");
@@ -1722,7 +1821,13 @@ mod tests {
         let tx2 = make_balanced_transaction(acc_a, acc_b);
         let id2 = tx2.id().clone();
         svc.create(tx2).await.expect("create tx2 should succeed");
-        svc.void(&id2).await.expect("void tx2 should succeed");
+        // Set voided status via raw SQL: void() is removed; the exclusion filter
+        // is kept as-is and this confirms it still works for any legacy rows.
+        sqlx::query("UPDATE transactions SET status = 'voided' WHERE id = ?")
+            .bind(id2.to_string())
+            .execute(&pool)
+            .await
+            .expect("mark tx2 voided");
 
         let active = svc.list().await.expect("list should succeed");
         assert_eq!(active.len(), 1);
@@ -1838,7 +1943,13 @@ mod tests {
             .build();
 
         let id = svc.create(original.clone()).await.expect("create");
-        svc.void(&id).await.expect("void should succeed");
+        // Set voided status via raw SQL: void() is removed; the amend guard
+        // still checks the voided-status value for any legacy rows.
+        sqlx::query("UPDATE transactions SET status = 'voided' WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&pool)
+            .await
+            .expect("mark voided");
 
         let amended = Transaction::builder()
             .id(id.clone())

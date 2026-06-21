@@ -1,5 +1,6 @@
 ---
 source: crates/bc-cli/tests/cli/transaction.rs
+assertion_line: 337
 expression: output
 ---
 success: true
@@ -19,7 +20,7 @@ exit_code: 0
         "commodity": "AUD"
       },
       "cost": null,
-      "memo": null,
+      "note": null,
       "tag_ids": [],
       "spread_from": null,
       "spread_until": null
@@ -32,7 +33,7 @@ exit_code: 0
         "commodity": "AUD"
       },
       "cost": null,
-      "memo": null,
+      "note": null,
       "tag_ids": [],
       "spread_from": null,
       "spread_until": null

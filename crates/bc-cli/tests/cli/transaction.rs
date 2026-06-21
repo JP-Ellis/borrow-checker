@@ -124,11 +124,11 @@ fn add_unbalanced_transaction_fails() {
 }
 
 #[test]
-fn void_existing_transaction() {
+fn reverse_existing_transaction() {
     let ctx = TestContext::new();
     let (checking_id, expenses_id) = setup_accounts(&ctx);
 
-    let void_out = ctx
+    let add_out = ctx
         .command()
         .args([
             "--json",
@@ -137,7 +137,7 @@ fn void_existing_transaction() {
             "--date",
             "2026-03-01",
             "--description",
-            "To void",
+            "To reverse",
             "--posting",
             &format!("{checking_id}:-10.00:AUD"),
             "--posting",
@@ -145,23 +145,23 @@ fn void_existing_transaction() {
         ])
         .output()
         .expect("add");
-    let void_json: serde_json::Value = serde_json::from_slice(&void_out.stdout).expect("json");
-    let tx_id = void_json
+    let add_json: serde_json::Value = serde_json::from_slice(&add_out.stdout).expect("json");
+    let tx_id = add_json
         .get("id")
         .and_then(serde_json::Value::as_str)
         .expect("id")
         .to_owned();
 
     let mut cmd = ctx.command();
-    cmd.args(["transaction", "void", &tx_id]);
+    cmd.args(["transaction", "reverse", &tx_id]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
 #[test]
-fn void_nonexistent_transaction_returns_error() {
+fn reverse_nonexistent_transaction_returns_error() {
     let ctx = TestContext::new();
     let mut cmd = ctx.command();
-    cmd.args(["transaction", "void", "transaction_notavalidid000000000"]);
+    cmd.args(["transaction", "reverse", "transaction_notavalidid000000000"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
@@ -240,7 +240,7 @@ fn amend_date_only() {
 }
 
 #[test]
-fn amend_voided_returns_error() {
+fn amend_after_reversal_succeeds() {
     let ctx = TestContext::new();
     let (checking_id, expenses_id) = setup_accounts(&ctx);
 
@@ -269,9 +269,9 @@ fn amend_voided_returns_error() {
         .to_owned();
 
     ctx.command()
-        .args(["transaction", "void", &tx_id])
+        .args(["transaction", "reverse", &tx_id])
         .output()
-        .expect("void");
+        .expect("reverse");
 
     let mut cmd = ctx.command();
     cmd.args([
@@ -279,47 +279,8 @@ fn amend_voided_returns_error() {
         "amend",
         &tx_id,
         "--description",
-        "Should fail",
+        "Should succeed after reversal",
     ]);
-    cmd_snapshot!(ctx, &mut cmd);
-}
-
-#[test]
-fn void_already_voided_returns_error() {
-    let ctx = TestContext::new();
-    let (checking_id, expenses_id) = setup_accounts(&ctx);
-
-    let out = ctx
-        .command()
-        .args([
-            "--json",
-            "transaction",
-            "add",
-            "--date",
-            "2026-03-01",
-            "--description",
-            "Void twice",
-            "--posting",
-            &format!("{checking_id}:-10.00:AUD"),
-            "--posting",
-            &format!("{expenses_id}:10.00:AUD"),
-        ])
-        .output()
-        .expect("add");
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
-    let tx_id = json
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .expect("id")
-        .to_owned();
-
-    ctx.command()
-        .args(["transaction", "void", &tx_id])
-        .output()
-        .expect("first void");
-
-    let mut cmd = ctx.command();
-    cmd.args(["transaction", "void", &tx_id]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
