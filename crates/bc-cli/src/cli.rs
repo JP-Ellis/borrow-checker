@@ -10,6 +10,7 @@ use crate::commands::export;
 use crate::commands::import;
 use crate::commands::plugin;
 use crate::commands::report;
+use crate::commands::tag;
 use crate::commands::transaction;
 
 /// BorrowChecker — personal finance with ledger/beancount compatibility.
@@ -75,6 +76,8 @@ pub enum Commands {
     Report(report::Args),
     /// Manage budgets: create, list, archive, status.
     Budget(budget::Args),
+    /// Manage tags: create, rename, delete, list.
+    Tag(tag::Args),
     /// Manage plugins (requires Milestone 6).
     Plugin(plugin::Args),
     /// Generate shell completion scripts.
