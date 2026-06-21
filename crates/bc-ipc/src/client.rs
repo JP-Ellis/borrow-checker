@@ -577,3 +577,36 @@ pub async fn remove_budget_revision(budget_id: &str, revision_id: &str) -> Resul
     )
     .await
 }
+
+/// Argument struct for [`reverse_transaction`]. Must match the Tauri command param name.
+#[derive(Serialize)]
+struct ReverseTransactionArgs<'a> {
+    /// The transaction ID to reverse.
+    id: &'a str,
+}
+
+/// Reverses a transaction by id, returning the new reversal transaction's id.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the id is invalid or the transaction does not exist.
+#[inline]
+pub async fn reverse_transaction(id: &str) -> Result<String, BcError> {
+    tauri_sys::core::invoke_result::<String, BcError>(
+        commands::REVERSE_TRANSACTION,
+        ReverseTransactionArgs { id },
+    )
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReverseTransactionArgs;
+
+    #[test]
+    fn reverse_transaction_args_serialize() {
+        let args = ReverseTransactionArgs { id: "tx-123" };
+        let json = serde_json::to_value(&args).expect("serialize");
+        pretty_assertions::assert_eq!(json, serde_json::json!({ "id": "tx-123" }));
+    }
+}

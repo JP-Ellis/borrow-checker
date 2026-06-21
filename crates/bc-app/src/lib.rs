@@ -56,6 +56,7 @@ pub fn run() {
             commands::accounts::list_accounts,
             commands::accounts::list_transactions,
             commands::accounts::create_transaction,
+            commands::accounts::reverse_transaction,
             commands::accounts::get_account_stats,
             commands::accounts::get_account_sparkline,
             commands::accounts::get_posting_count,
