@@ -49,11 +49,6 @@ mod pages;
 #[cfg(target_arch = "wasm32")]
 mod shell;
 
-// Pure logic — no WASM APIs; also compiled for native unit tests.
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "components/transaction_row/mod.rs"]
-mod transaction_row;
-
 #[cfg(target_arch = "wasm32")]
 fn main() {
     #[cfg(debug_assertions)]
