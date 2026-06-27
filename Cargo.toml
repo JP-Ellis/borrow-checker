@@ -93,7 +93,7 @@ members  = [
     "fmt",
     "json"
   ] }
-  wasmtime              = { version = "45", default-features = false, features = [
+  wasmtime              = { version = "46", default-features = false, features = [
     "component-model",
     "cranelift",
     "runtime",
