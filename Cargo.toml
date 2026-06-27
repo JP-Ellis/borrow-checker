@@ -99,7 +99,7 @@ members  = [
     "runtime",
     "std",
   ] }
-  wasmtime-wasi         = { version = "45" }
+  wasmtime-wasi         = { version = "46" }
   winnow                = "1.0"
   wit-bindgen           = { version = "0.58", default-features = false, features = [
     "macros"
