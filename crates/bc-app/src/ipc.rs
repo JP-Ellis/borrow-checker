@@ -574,39 +574,36 @@ impl IntoIpc for &bc_models::Transaction {
 
 // MARK: Error mapping
 
-/// Maps a [`bc_core::BcError`] to its IPC [`bc_ipc::BcError`] counterpart.
-///
-/// User-facing validation failures (`InvalidInput`, `BadData`, and the
-/// account/tag rule violations) surface as [`bc_ipc::BcError::Validation`] so the
-/// UI can render a friendly message; `NotFound` maps to
-/// [`bc_ipc::BcError::NotFound`]; everything genuinely internal (database, IO,
-/// serialisation) becomes [`bc_ipc::BcError::Internal`].
-///
-/// A free function rather than a [`From`] impl because both error types are
-/// defined in external crates (the orphan rule forbids the impl here).
-///
-/// # Arguments
-///
-/// * `err` - The core error to translate.
-///
-/// # Returns
-///
-/// The corresponding serialisable IPC error.
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "bc_core::BcError is #[non_exhaustive]; catch-all required for future variants"
-)]
-pub(crate) fn core_error_to_ipc(err: &bc_core::BcError) -> bc_ipc::BcError {
-    use bc_core::BcError as Core;
+impl IntoIpc for &bc_core::BcError {
+    type Output = bc_ipc::BcError;
 
-    match err {
-        Core::NotFound(_) => bc_ipc::BcError::NotFound(err.to_string()),
-        Core::InvalidInput(_)
-        | Core::BadData(_)
-        | Core::AlreadyArchived(_)
-        | Core::InvalidAccountKind { .. }
-        | Core::TagInUse(_) => bc_ipc::BcError::Validation(err.to_string()),
-        _ => bc_ipc::BcError::Internal(err.to_string()),
+    /// Maps a [`bc_core::BcError`] to its IPC [`bc_ipc::BcError`] counterpart.
+    ///
+    /// User-facing validation failures (`InvalidInput`, `BadData`, and the
+    /// account/tag rule violations) surface as [`bc_ipc::BcError::Validation`] so
+    /// the UI can render a friendly message; `NotFound` maps to
+    /// [`bc_ipc::BcError::NotFound`]; everything genuinely internal (database, IO,
+    /// serialisation) becomes [`bc_ipc::BcError::Internal`].
+    ///
+    /// # Returns
+    ///
+    /// The corresponding serialisable IPC error.
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "bc_core::BcError is #[non_exhaustive]; catch-all required for future variants"
+    )]
+    fn into_ipc(self) -> bc_ipc::BcError {
+        use bc_core::BcError as Core;
+
+        match self {
+            Core::NotFound(_) => bc_ipc::BcError::NotFound(self.to_string()),
+            Core::InvalidInput(_)
+            | Core::BadData(_)
+            | Core::AlreadyArchived(_)
+            | Core::InvalidAccountKind { .. }
+            | Core::TagInUse(_) => bc_ipc::BcError::Validation(self.to_string()),
+            _ => bc_ipc::BcError::Internal(self.to_string()),
+        }
     }
 }
 
@@ -620,7 +617,6 @@ mod tests {
     use super::IntoIpc as _;
     use super::IntoModel as _;
     use super::build_account_path;
-    use super::core_error_to_ipc;
     use super::resolve_tag_paths;
     use super::window_overlap;
 
@@ -628,7 +624,7 @@ mod tests {
     fn core_bad_data_maps_to_validation() {
         let err =
             bc_core::BcError::BadData("cannot reconcile an unbalanced transaction".to_owned());
-        let mapped = core_error_to_ipc(&err);
+        let mapped = err.into_ipc();
         assert!(
             matches!(mapped, bc_ipc::BcError::Validation(_)),
             "BadData must surface as Validation, got {mapped:?}"
@@ -638,19 +634,13 @@ mod tests {
     #[test]
     fn core_invalid_input_maps_to_validation() {
         let err = bc_core::BcError::InvalidInput("two or more elided postings".to_owned());
-        assert!(matches!(
-            core_error_to_ipc(&err),
-            bc_ipc::BcError::Validation(_)
-        ));
+        assert!(matches!(err.into_ipc(), bc_ipc::BcError::Validation(_)));
     }
 
     #[test]
     fn core_not_found_maps_to_not_found() {
         let err = bc_core::BcError::NotFound("txn-001".to_owned());
-        assert!(matches!(
-            core_error_to_ipc(&err),
-            bc_ipc::BcError::NotFound(_)
-        ));
+        assert!(matches!(err.into_ipc(), bc_ipc::BcError::NotFound(_)));
     }
 
     #[test]

@@ -17,7 +17,6 @@ use tauri::State;
 use crate::AppState;
 use crate::ipc::IntoIpc;
 use crate::ipc::IntoModel;
-use crate::ipc::core_error_to_ipc;
 
 // MARK: Command handlers
 
@@ -247,7 +246,7 @@ pub async fn edit_transaction(
         .transactions
         .edit(model_tx)
         .await
-        .map_err(|e| core_error_to_ipc(&e))
+        .map_err(|e| e.into_ipc())
 }
 
 /// Sets a transaction's reconciliation state.
@@ -280,7 +279,7 @@ pub async fn set_reconciliation(
         .transactions
         .reconcile(&tx_id, reconciliation.into_model())
         .await
-        .map_err(|e| core_error_to_ipc(&e))
+        .map_err(|e| e.into_ipc())
 }
 
 /// Reverses a transaction, returning the new reversal transaction's id.
