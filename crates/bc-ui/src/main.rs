@@ -78,6 +78,9 @@ mod components_tests {
         pub mod editable {
             include!("components/transaction_row/editable.rs");
         }
+        pub mod audit {
+            include!("components/transaction_row/audit.rs");
+        }
     }
     pub mod account_picker {
         pub mod matching {
