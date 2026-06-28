@@ -28,10 +28,6 @@ use crate::components::tag_picker::TagPicker;
 #[cfg(target_arch = "wasm32")]
 use crate::components::tag_token::TagToken;
 #[cfg(target_arch = "wasm32")]
-use crate::components::toml_view::TomlArraySection;
-#[cfg(target_arch = "wasm32")]
-use crate::components::toml_view::TomlAuditEntry;
-#[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::edit_ctx::TxEditCtx;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::editable::BalanceState;
@@ -989,20 +985,28 @@ fn TransactionDetail(
                     .get()
                     .then(|| {
                         view! {
-                            <TomlArraySection>"audit_log"</TomlArraySection>
+                            <div class=style::audit_hdr>"Audit"</div>
                             {move || match audit_resource.get() {
                                 Some(Ok(entries)) => {
-                                    entries
-                                        .into_iter()
-                                        .map(|e| {
-                                            let msg = e.message.clone();
-                                            view! {
-                                                <TomlAuditEntry time=e.time_label() kind=e.kind.clone()>
-                                                    {msg}
-                                                </TomlAuditEntry>
-                                            }
-                                        })
-                                        .collect::<Vec<_>>()
+                                    let rows = audit::audit_rows(&entries);
+                                    view! {
+                                        <div class=style::audit_list>
+                                            {rows
+                                                .into_iter()
+                                                .map(|r| {
+                                                    view! {
+                                                        <div class=style::audit_row>
+                                                            <span class=style::audit_time>
+                                                                {r.time.unwrap_or_default()}
+                                                            </span>
+                                                            <span class=style::audit_kind>{r.kind}</span>
+                                                            <span class=style::audit_msg>{r.message}</span>
+                                                        </div>
+                                                    }
+                                                })
+                                                .collect::<Vec<_>>()}
+                                        </div>
+                                    }
                                         .into_any()
                                 }
                                 Some(Err(err)) => {
