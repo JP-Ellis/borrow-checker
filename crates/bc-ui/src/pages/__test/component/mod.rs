@@ -1,9 +1,11 @@
 //! Route entries for shared component QA pages (`/__test/component/*`).
 
+pub mod account_picker;
 pub mod num;
 pub mod sparkline;
 pub mod stat_card;
 pub mod status_pill;
+pub mod tag_picker;
 pub mod tag_token;
 pub mod toml_view;
 pub mod transaction_row;
@@ -24,10 +26,12 @@ pub fn ComponentRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
     view! {
         <ParentRoute path=path!("/component") view=|| view! { <Outlet /> }>
             <Route path=path!("") view=ComponentIndex />
+            <Route path=path!("/account-picker") view=account_picker::AccountPickerQa />
             <Route path=path!("/sparkline") view=sparkline::SparklineQa />
             <Route path=path!("/stat-card") view=stat_card::StatCardQa />
             <Route path=path!("/num") view=num::NumQa />
             <Route path=path!("/status-pill") view=status_pill::StatusPillQa />
+            <Route path=path!("/tag-picker") view=tag_picker::TagPickerQa />
             <Route path=path!("/tag-token") view=tag_token::TagTokenQa />
             <Route path=path!("/toml-view") view=toml_view::TomlViewQa />
             <Route path=path!("/transaction-row") view=transaction_row::TransactionRowQa />
@@ -47,6 +51,11 @@ pub fn ComponentIndex() -> impl IntoView {
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));\
             gap:8px;">
                 <QaCard
+                    title=account_picker::TITLE
+                    path=account_picker::PATH
+                    description=account_picker::DESCRIPTION
+                />
+                <QaCard
                     title=sparkline::TITLE
                     path=sparkline::PATH
                     description=sparkline::DESCRIPTION
@@ -61,6 +70,11 @@ pub fn ComponentIndex() -> impl IntoView {
                     title=status_pill::TITLE
                     path=status_pill::PATH
                     description=status_pill::DESCRIPTION
+                />
+                <QaCard
+                    title=tag_picker::TITLE
+                    path=tag_picker::PATH
+                    description=tag_picker::DESCRIPTION
                 />
                 <QaCard
                     title=tag_token::TITLE

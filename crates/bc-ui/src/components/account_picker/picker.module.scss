@@ -1,0 +1,54 @@
+/* Account autocomplete picker. */
+
+/* MARK: Layout */
+.picker {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+
+.input {
+  width: 100%;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-string);
+  background: var(--bc-surface-alt);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  padding: var(--bc-space-1) var(--bc-space-2);
+}
+
+/* MARK: Menu */
+.menu {
+  position: absolute;
+  z-index: 20;
+  inset-inline: 0;
+  margin-block-start: var(--bc-space-1);
+  max-height: 12rem;
+  overflow-y: auto;
+  list-style: none;
+  padding: var(--bc-space-1);
+  background: var(--bc-surface);
+  border: 1px solid var(--bc-border-strong);
+  border-radius: var(--bc-radius-card);
+}
+
+.option {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  border-radius: var(--bc-radius-control);
+  cursor: pointer;
+}
+
+.option:hover {
+  background: var(--bc-surface-accent);
+}
+
+/* MARK: Option label */
+.opt_prefix { color: var(--bc-ink-mute); }
+.opt_leaf { color: var(--bc-ink); font-weight: 600; }
+.option mark { background: color-mix(in srgb, var(--bc-accent) 28%, transparent); color: inherit; border-radius: 2px; }
+.option_hi { background: var(--bc-accent-soft); }
+.option_create { color: var(--bc-accent); border-top: 1px solid var(--bc-border); }

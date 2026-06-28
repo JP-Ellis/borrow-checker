@@ -15,7 +15,7 @@
 
 .kv_row {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: baseline;
   font-family: var(--bc-font-mono);
   font-size: var(--bc-text-body);
@@ -32,6 +32,18 @@
   color: var(--bc-ink-dim);
   flex-shrink: 0;
   padding-inline: 0.4ch;
+}
+
+/* Value tracks shrink and ellipsize so a long value (e.g. a wide description)
+   never overflows its column. The key/eq tracks stay fixed (flex-shrink: 0). */
+.str_val,
+.date_val,
+.kw_val {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .str_val   { color: var(--bc-string,  var(--bc-good)); }
@@ -152,3 +164,16 @@
 }
 
 .audit_msg { color: var(--bc-ink-mute); }
+
+/* MARK: Editable kv input */
+
+/* Inline editor input inside an editable kv row. */
+.kv_input {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  background: var(--bc-surface-alt);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  padding: 0 var(--bc-space-1);
+  min-width: 16rem;
+}
