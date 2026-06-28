@@ -13,15 +13,19 @@
 use serde::Serialize;
 
 use crate::AccountNode;
+use crate::AuditEntry;
 use crate::BcError;
 use crate::BudgetRevisionView;
 use crate::BudgetSummary;
 use crate::BudgetTreeNode;
+use crate::EditTransaction;
 use crate::NativePeriodRow;
 use crate::NewTransaction;
 use crate::PluginInfo;
+use crate::Reconciliation;
 use crate::RolloverPolicy;
 use crate::SettingsInfo;
+use crate::TagInfo;
 use crate::Transaction;
 use crate::commands;
 use crate::commands::ReverseTransactionArgs;
@@ -90,6 +94,37 @@ pub async fn create_transaction(tx: &NewTransaction) -> Result<String, BcError> 
         CreateTransactionArgs { tx },
     )
     .await
+}
+
+/// Lists all tags from the backend as id/path pairs.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the Tauri invoke fails.
+#[inline]
+pub async fn list_tags() -> Result<Vec<TagInfo>, BcError> {
+    tauri_sys::core::invoke_result::<Vec<TagInfo>, BcError>(commands::LIST_TAGS, NoArgs {}).await
+}
+
+/// Argument struct for [`create_tag`].
+#[derive(Serialize)]
+struct CreateTagArgs<'a> {
+    /// The colon-joined tag path to create.
+    path: &'a str,
+}
+
+/// Creates the full colon-path tag hierarchy, returning the leaf tag ID string.
+///
+/// Existing ancestors are reused; only missing segments are created.
+///
+/// # Errors
+///
+/// Returns a [`BcError`] from the backend if the path is invalid, or
+/// [`BcError::Internal`] if the Tauri invoke itself fails.
+#[inline]
+pub async fn create_tag(path: &str) -> Result<String, BcError> {
+    tauri_sys::core::invoke_result::<String, BcError>(commands::CREATE_TAG, CreateTagArgs { path })
+        .await
 }
 
 /// Argument struct for [`get_account_stats`].
@@ -589,6 +624,84 @@ pub async fn reverse_transaction(id: &str) -> Result<String, BcError> {
     tauri_sys::core::invoke_result::<String, BcError>(
         commands::REVERSE_TRANSACTION,
         ReverseTransactionArgs { id },
+    )
+    .await
+}
+
+/// Arg struct for [`edit_transaction`]. Must match the Tauri command param name.
+#[derive(Serialize)]
+struct EditTransactionArgs<'a> {
+    /// The desired transaction state.
+    tx: &'a EditTransaction,
+}
+
+/// Arg struct for [`get_transaction_audit`]. Must match the Tauri command param name.
+#[derive(Serialize)]
+struct GetTransactionAuditArgs<'a> {
+    /// The transaction ID whose audit trail to load.
+    id: &'a str,
+}
+
+/// Applies a desired transaction state via the backend edit command.
+///
+/// # Arguments
+///
+/// * `tx` - The desired transaction state.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend rejects or fails the edit.
+#[inline]
+pub async fn edit_transaction(tx: &EditTransaction) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result(commands::EDIT_TRANSACTION, EditTransactionArgs { tx }).await
+}
+
+/// Arg struct for [`set_reconciliation`]. Must match the Tauri command param names.
+#[derive(Serialize)]
+struct SetReconciliationArgs<'a> {
+    /// The transaction ID to update.
+    id: &'a str,
+    /// The desired reconciliation state.
+    reconciliation: Reconciliation,
+}
+
+/// Sets a transaction's reconciliation state.
+///
+/// # Arguments
+///
+/// * `id` - The transaction ID.
+/// * `state` - The desired reconciliation state.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend rejects (e.g. reconciling an
+/// unbalanced transaction) or fails the update.
+#[inline]
+pub async fn set_reconciliation(id: &str, state: Reconciliation) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result(
+        commands::SET_RECONCILIATION,
+        SetReconciliationArgs {
+            id,
+            reconciliation: state,
+        },
+    )
+    .await
+}
+
+/// Loads the audit trail for a transaction.
+///
+/// # Arguments
+///
+/// * `id` - The transaction's ID.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend lookup fails.
+#[inline]
+pub async fn get_transaction_audit(id: &str) -> Result<Vec<AuditEntry>, BcError> {
+    tauri_sys::core::invoke_result(
+        commands::GET_TRANSACTION_AUDIT,
+        GetTransactionAuditArgs { id },
     )
     .await
 }

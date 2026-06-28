@@ -453,6 +453,130 @@ impl NewTransaction {
     }
 }
 
+/// A single posting in an [`EditTransaction`].
+///
+/// `id` identifies an existing posting to update in place; `None` adds a new leg.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct EditPosting {
+    /// Existing posting ID, or `None` for a newly added leg.
+    pub id: Option<String>,
+    /// Account this posting hits.
+    pub account_id: String,
+    /// Posting amount, or `None` if elided (inferred to balance).
+    pub amount: Option<Amount>,
+    /// Free-text note, or `None`.
+    pub note: Option<String>,
+    /// Tag paths to attach (colon-joined; resolved to existing tags on save).
+    pub tags: Vec<String>,
+    /// Accrual spread start (inclusive), or `None`.
+    pub spread_from: Option<jiff::civil::Date>,
+    /// Accrual spread end (exclusive), or `None`.
+    pub spread_until: Option<jiff::civil::Date>,
+}
+
+impl EditPosting {
+    /// Creates a new [`EditPosting`].
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Existing posting ID to update in place, or `None` to add a new leg.
+    /// * `account_id` - Account this posting hits.
+    /// * `amount` - Posting amount, or `None` if elided (inferred to balance).
+    /// * `note` - Free-text note, or `None`.
+    /// * `tags` - Tag paths to attach (resolved to existing tags on save).
+    /// * `spread_from` - Accrual spread start, or `None`.
+    /// * `spread_until` - Accrual spread end, or `None`.
+    #[must_use]
+    #[inline]
+    pub fn new(
+        id: Option<String>,
+        account_id: impl Into<String>,
+        amount: Option<Amount>,
+        note: Option<String>,
+        tags: Vec<String>,
+        spread_from: Option<jiff::civil::Date>,
+        spread_until: Option<jiff::civil::Date>,
+    ) -> Self {
+        Self {
+            id,
+            account_id: account_id.into(),
+            amount,
+            note,
+            tags,
+            spread_from,
+            spread_until,
+        }
+    }
+}
+
+/// The desired state for editing an existing transaction.
+///
+/// The backend diffs this against the stored state to record decomposed
+/// semantic events, then rewrites the projection.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct EditTransaction {
+    /// ID of the transaction being edited.
+    pub id: String,
+    /// Transaction date.
+    pub date: jiff::civil::Date,
+    /// Payee display name.
+    pub payee: String,
+    /// Free-text description.
+    pub description: String,
+    /// User's free-text note, or `None`.
+    pub note: Option<String>,
+    /// Reconciliation status (read-only in the editor, echoed back unchanged).
+    pub reconciliation: Reconciliation,
+    /// Transaction-level tag paths (resolved to existing tags on save).
+    pub tags: Vec<String>,
+    /// All postings in display order.
+    pub postings: Vec<EditPosting>,
+}
+
+impl EditTransaction {
+    /// Creates a new [`EditTransaction`] describing the desired post-edit state.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - ID of the transaction being edited.
+    /// * `date` - Transaction date.
+    /// * `payee` - Payee display name.
+    /// * `description` - Free-text description.
+    /// * `note` - User's free-text note, or `None`.
+    /// * `reconciliation` - Reconciliation status (echoed back unchanged).
+    /// * `tags` - Transaction-level tag paths (resolved to existing tags on save).
+    /// * `postings` - All postings in display order.
+    #[must_use]
+    #[inline]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors the public DTO field set; a builder would add ceremony for a flat data carrier"
+    )]
+    pub fn new(
+        id: impl Into<String>,
+        date: jiff::civil::Date,
+        payee: impl Into<String>,
+        description: impl Into<String>,
+        note: Option<String>,
+        reconciliation: Reconciliation,
+        tags: Vec<String>,
+        postings: Vec<EditPosting>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            date,
+            payee: payee.into(),
+            description: description.into(),
+            note,
+            reconciliation,
+            tags,
+            postings,
+        }
+    }
+}
+
 /// Aggregate income and expense totals for a time window.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -858,5 +982,61 @@ mod tests {
         assert_eq!(Reconciliation::Unreconciled.label(), "unreconciled");
         assert_eq!(Reconciliation::Flagged.label(), "flagged");
         assert_eq!(Reconciliation::Reconciled.label(), "reconciled");
+    }
+
+    #[test]
+    fn edit_transaction_serde_roundtrip() {
+        let dto = EditTransaction {
+            id: "tx-1".to_owned(),
+            date: "2026-04-30".parse().expect("date"),
+            payee: "Atlassian".to_owned(),
+            description: "salary".to_owned(),
+            note: None,
+            reconciliation: Reconciliation::Unreconciled,
+            tags: vec!["work".to_owned()],
+            postings: vec![EditPosting {
+                id: Some("p-1".to_owned()),
+                account_id: "acc-1".to_owned(),
+                amount: None,
+                note: None,
+                tags: vec![],
+                spread_from: None,
+                spread_until: None,
+            }],
+        };
+        let json = serde_json::to_string(&dto).expect("ser");
+        let back: EditTransaction = serde_json::from_str(&json).expect("de");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn edit_transaction_new_builds_expected() {
+        use jiff::civil::Date;
+
+        let p = EditPosting::new(
+            Some("p-1".to_owned()),
+            "acct-checking",
+            Some(Amount::new(rust_decimal::Decimal::new(-5_000, 2), "AUD")),
+            None,
+            vec!["tag-1".to_owned()],
+            None,
+            None,
+        );
+        let tx = EditTransaction::new(
+            "tx-1",
+            Date::constant(2026, 4, 30),
+            "Coles",
+            "weekly shop",
+            Some("note".to_owned()),
+            Reconciliation::Unreconciled,
+            vec!["work".to_owned()],
+            vec![p.clone()],
+        );
+
+        assert_eq!(tx.id, "tx-1");
+        assert_eq!(tx.date, Date::constant(2026, 4, 30));
+        assert_eq!(tx.payee, "Coles");
+        assert_eq!(tx.note.as_deref(), Some("note"));
+        assert_eq!(tx.postings, vec![p]);
     }
 }
