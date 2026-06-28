@@ -7,7 +7,6 @@ pub mod stat_card;
 pub mod status_pill;
 pub mod tag_picker;
 pub mod tag_token;
-pub mod toml_view;
 pub mod transaction_row;
 
 use leptos::prelude::*;
@@ -33,7 +32,6 @@ pub fn ComponentRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
             <Route path=path!("/status-pill") view=status_pill::StatusPillQa />
             <Route path=path!("/tag-picker") view=tag_picker::TagPickerQa />
             <Route path=path!("/tag-token") view=tag_token::TagTokenQa />
-            <Route path=path!("/toml-view") view=toml_view::TomlViewQa />
             <Route path=path!("/transaction-row") view=transaction_row::TransactionRowQa />
         </ParentRoute>
     }
@@ -80,11 +78,6 @@ pub fn ComponentIndex() -> impl IntoView {
                     title=tag_token::TITLE
                     path=tag_token::PATH
                     description=tag_token::DESCRIPTION
-                />
-                <QaCard
-                    title=toml_view::TITLE
-                    path=toml_view::PATH
-                    description=toml_view::DESCRIPTION
                 />
                 <QaCard
                     title=transaction_row::TITLE
