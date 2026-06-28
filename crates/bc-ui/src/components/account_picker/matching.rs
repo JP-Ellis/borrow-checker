@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
+
+use bc_ipc::AccountNode;
 use bc_ipc::AccountRef;
 
 /// Filters `accounts` to those whose display name contains `query`.
@@ -23,6 +27,48 @@ pub fn filter_accounts(accounts: &[AccountRef], query: &str) -> Vec<AccountRef> 
         .iter()
         .filter(|a| a.name.to_lowercase().contains(&q))
         .cloned()
+        .collect()
+}
+
+/// Builds picker [`AccountRef`]s with fully-qualified display names.
+///
+/// `list_accounts` returns a flat node list whose `name` is the leaf label
+/// (e.g. `"CarLoan"`). The picker needs the full path
+/// (`"Liabilities :: CarLoan"`) so it matches how postings are displayed.
+/// This walks each node's `parent_id` chain to the root and joins the names
+/// with `" :: "`. An orphan node (parent not present) falls back to its leaf
+/// name.
+///
+/// # Arguments
+///
+/// * `nodes` - The flat account list returned by `list_accounts`.
+///
+/// # Returns
+///
+/// One [`AccountRef`] per node, in input order, with the qualified path as
+/// its `name`.
+#[must_use]
+pub fn account_paths(nodes: &[AccountNode]) -> Vec<AccountRef> {
+    let by_id: HashMap<&str, &AccountNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    nodes
+        .iter()
+        .map(|n| {
+            let mut parts = Vec::new();
+            let mut seen = HashSet::new();
+            let mut cur = Some(n);
+            while let Some(node) = cur {
+                if !seen.insert(node.id.as_str()) {
+                    break;
+                }
+                parts.push(node.name.clone());
+                cur = node
+                    .parent_id
+                    .as_deref()
+                    .and_then(|p| by_id.get(p).copied());
+            }
+            parts.reverse();
+            AccountRef::new(n.id.clone(), parts.join(" :: "))
+        })
         .collect()
 }
 
@@ -152,13 +198,73 @@ pub fn split_leaf(name: &str) -> (String, String) {
 
 #[cfg(test)]
 mod tests {
+    use bc_ipc::AccountNode;
     use bc_ipc::AccountRef;
+    use bc_ipc::AccountType;
     use pretty_assertions::assert_eq;
 
     use super::Seg;
+    use super::account_paths;
     use super::filter_accounts;
     use super::match_segments;
     use super::split_leaf;
+
+    fn node(id: &str, name: &str, parent: Option<&str>) -> AccountNode {
+        AccountNode::new(
+            id,
+            name,
+            None::<String>,
+            None,
+            parent,
+            AccountType::Asset,
+            vec![],
+        )
+    }
+
+    #[test]
+    fn account_paths_root_has_no_prefix() {
+        let nodes = vec![node("a", "Assets", None)];
+        let refs = account_paths(&nodes);
+        assert_eq!(refs, vec![AccountRef::new("a", "Assets")]);
+    }
+
+    #[test]
+    fn account_paths_child_is_qualified() {
+        let nodes = vec![
+            node("l", "Liabilities", None),
+            node("c", "CarLoan", Some("l")),
+        ];
+        let refs = account_paths(&nodes);
+        assert_eq!(
+            refs,
+            vec![
+                AccountRef::new("l", "Liabilities"),
+                AccountRef::new("c", "Liabilities :: CarLoan"),
+            ]
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "fixed-size vec; index 2 is always valid"
+    )]
+    fn account_paths_multi_level_chain() {
+        let nodes = vec![
+            node("a", "Assets", None),
+            node("b", "Bank", Some("a")),
+            node("c", "Checking", Some("b")),
+        ];
+        let refs = account_paths(&nodes);
+        assert_eq!(refs[2], AccountRef::new("c", "Assets :: Bank :: Checking"));
+    }
+
+    #[test]
+    fn account_paths_orphan_falls_back_to_leaf() {
+        let nodes = vec![node("c", "CarLoan", Some("missing"))];
+        let refs = account_paths(&nodes);
+        assert_eq!(refs, vec![AccountRef::new("c", "CarLoan")]);
+    }
 
     fn accts() -> Vec<AccountRef> {
         vec![
