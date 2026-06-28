@@ -224,13 +224,13 @@ pub fn Accounts() -> impl IntoView {
                     Some(node) => {
                         let node_id = node.id.clone();
                         let node_id_register = node.id.clone();
-                        let account_refs = accounts_resource
+                        let account_nodes = accounts_resource
                             .get()
                             .and_then(Result::ok)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|n| bc_ipc::AccountRef::new(n.id, n.name))
-                            .collect::<Vec<_>>();
+                            .unwrap_or_default();
+                        let account_refs = crate::components::account_picker::account_paths(
+                            &account_nodes,
+                        );
 
                         view! {
                             <AccountDashboard
