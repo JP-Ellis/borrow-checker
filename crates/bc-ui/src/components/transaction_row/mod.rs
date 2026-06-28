@@ -10,6 +10,8 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(target_arch = "wasm32")]
+use bc_ipc::AccountRef;
 use bc_ipc::Amount;
 use bc_ipc::Posting;
 use bc_ipc::Transaction;
@@ -22,27 +24,50 @@ use rust_decimal::Decimal;
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
+use crate::components::tag_picker::TagPicker;
+#[cfg(target_arch = "wasm32")]
 use crate::components::tag_token::TagToken;
 #[cfg(target_arch = "wasm32")]
-use crate::components::toml_view::KvKey;
-#[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::KvKind;
-#[cfg(target_arch = "wasm32")]
-use crate::components::toml_view::KvValue;
 #[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::TomlArraySection;
 #[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::TomlAuditEntry;
 #[cfg(target_arch = "wasm32")]
-use crate::components::toml_view::TomlKv;
-#[cfg(target_arch = "wasm32")]
-use crate::components::toml_view::TomlPosting;
+use crate::components::toml_view::TomlKvEdit;
 #[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::TomlSection;
 #[cfg(target_arch = "wasm32")]
-use crate::label::category_label;
+use crate::components::transaction_row::edit_ctx::TxEditCtx;
 #[cfg(target_arch = "wasm32")]
-use crate::pages::budget::components::accrual_editor::AccrualEditor;
+use crate::components::transaction_row::editable::BalanceState;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::editable::EditableTransaction;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::editable::derive_balance;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::posting_row::PostingsList;
+#[cfg(target_arch = "wasm32")]
+use crate::label::category_label;
+
+/// Editor-friendly working-buffer model for the editable transaction view.
+///
+/// Contains pure data structures ([`editable::EditableTransaction`] and
+/// [`editable::EditablePosting`]) for representing transactions and postings
+/// in the process of being edited. These structures use strings for all
+/// numeric/date fields to represent parse-in-progress values.
+pub mod editable;
+
+/// Shared edit context (mode, working buffer, accounts) for the detail view.
+#[cfg(target_arch = "wasm32")]
+pub mod edit_ctx;
+
+/// Inert, register-aligned read row for a single posting in the expanded detail.
+#[cfg(target_arch = "wasm32")]
+pub mod posting_row;
+
+/// Pure helpers for rendering and seeding per-posting accrual spreads.
+pub mod spread;
 
 // MARK: WASM bindings
 
@@ -155,7 +180,7 @@ pub fn format_date_display(date: jiff::civil::Date) -> String {
 }
 
 #[cfg(target_arch = "wasm32")]
-import_style!(style, "row.module.scss");
+import_style!(pub(crate) style, "row.module.scss");
 
 /// Determines which postings are focal and how the headline amount is derived.
 #[derive(Clone, Debug, PartialEq)]
@@ -418,7 +443,7 @@ fn CategoryCell(
 ///
 /// Renders date, payee avatar, name (payee or dim description), flag/unreconciled
 /// glyphs, inline and mobile tags, category cell, headline amount with split and
-/// unbalanced pills, and a chevron. The expanded body is wired in Task 4.
+/// unbalanced pills, and a chevron. Expanding reveals the editable detail panel.
 ///
 /// Self-managed expansion is used when `expanded` and `on_toggle` are `None`.
 ///
@@ -454,9 +479,16 @@ pub fn TransactionRow(
     /// Called to toggle expansion (parent-controlled).
     #[prop(optional)]
     on_toggle: Option<Callback<()>>,
-    /// Called when the transaction is mutated; consumed by the expanded view in Task 4.
+    /// Called when the transaction is mutated; consumed by the expanded detail view.
     #[prop(optional)]
     on_change: Option<Callback<()>>,
+    /// All selectable accounts for the recategorise picker in the detail view.
+    #[prop(optional)]
+    accounts: Vec<AccountRef>,
+    /// All known tags for the transaction/posting tag pickers in the detail
+    /// view; when empty the detail fetches them over IPC instead.
+    #[prop(optional)]
+    all_tags: Vec<bc_ipc::TagInfo>,
 ) -> impl IntoView {
     let local_expanded = RwSignal::new(false);
     let expanded: Signal<bool> = expanded.unwrap_or_else(|| local_expanded.into());
@@ -603,120 +635,43 @@ pub fn TransactionRow(
         {
             let tx_detail = tx.clone();
             let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
+            let accounts = StoredValue::new(accounts);
+            let all_tags = StoredValue::new(all_tags);
             move || {
                 expanded
                     .get()
                     .then(|| {
-                        view! { <TransactionDetail tx=tx_detail.clone() on_change=on_change_cb /> }
+                        view! {
+                            <TransactionDetail
+                                tx=tx_detail.clone()
+                                on_change=on_change_cb
+                                accounts=accounts.get_value()
+                                all_tags=all_tags.get_value()
+                            />
+                        }
                     })
             }
         }
     }
 }
 
-/// Per-posting display data for the expanded postings card.
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone)]
-struct PostingData {
-    /// Account display path, e.g. `"Assets :: Checking"`.
-    account_path: String,
-    /// Concrete amount, or `None` for an elided (auto-balancing) leg.
-    amount: Option<Amount>,
-    /// Optional inline note.
-    note: Option<String>,
-    /// Resolved tag colon-paths attached to this posting (e.g. `"person:josh"`).
-    tags: Vec<String>,
-    /// Accrual spread start date, if set.
-    spread_from: Option<jiff::civil::Date>,
-    /// Accrual spread end date, if set.
-    spread_until: Option<jiff::civil::Date>,
-    /// Stable posting identifier.
-    posting_id: String,
-    /// Toggles the inline [`AccrualEditor`] for this posting.
-    show_editor: RwSignal<bool>,
-}
-
-/// Renders a single posting: amount/`auto` line, chips row, and the optional
-/// retained [`AccrualEditor`].
-#[cfg(target_arch = "wasm32")]
-fn render_posting(p: PostingData, on_change_cb: Callback<()>) -> impl IntoView {
-    let PostingData {
-        account_path,
-        amount,
-        note,
-        tags,
-        spread_from,
-        spread_until,
-        posting_id,
-        show_editor,
-    } = p;
-    let has_spread = spread_from.is_some() && spread_until.is_some();
-
-    let amount_view = match amount {
-        Some(a) => view! { <TomlPosting amount=a>{account_path.clone()}</TomlPosting> }.into_any(),
-        None => view! {
-            <div class=style::posting_chips>
-                <span class=style::posting_acct>{account_path.clone()}</span>
-                <span class=style::amt_auto>"auto"</span>
-            </div>
-        }
-        .into_any(),
-    };
-
-    let note_chip = note
-        .filter(|n| !n.is_empty())
-        .map(|n| view! { <span class=style::chip_note>"# "{n}</span> });
-    let tag_chips = tags
-        .into_iter()
-        .map(|t| view! { <TagToken label=t /> })
-        .collect::<Vec<_>>();
-    let spread_chip = spread_from.zip(spread_until).map(|(from, until)| {
-        view! {
-            <span class=style::chip_spread>
-                "\u{27F3} "{from.to_string()}" \u{2192} "{until.to_string()}
-            </span>
-        }
-    });
-
-    let editor = move || {
-        show_editor.get().then(|| {
-            view! {
-                <AccrualEditor
-                    posting_id=posting_id.clone()
-                    has_spread=has_spread
-                    spread_from=spread_from
-                    spread_until=spread_until
-                    on_change=on_change_cb
-                />
-            }
-        })
-    };
-
-    view! {
-        {amount_view}
-        <div class=style::posting_chips>
-            {note_chip} {tag_chips} {spread_chip}
-            <button class=style::spread_edit_btn on:click=move |_| show_editor.update(|v| *v = !*v)>
-                "edit spread"
-            </button>
-        </div>
-        {editor}
-    }
-}
-
-/// Inline expanded detail panel shown below an expanded [`TransactionRow`].
+/// Inline, always-editable detail panel shown below an expanded [`TransactionRow`].
 ///
-/// Renders a meta card (key/value rows, empty fields omitted) and a postings
-/// card (account path, concrete amount or an `auto` token for elided legs, plus
-/// note/tag/spread chips and the retained [`AccrualEditor`]) built from the
-/// `toml_view` primitives, followed by a trimmed actions row. Press `a` to
-/// toggle the audit log.
+/// Provides a [`TxEditCtx`] and renders, top to bottom: the editable
+/// [`PostingsList`], a quiet balance line, a statement-style meta bar (date,
+/// clickable reconciliation pill, transaction tags, note), a raw TOML view of
+/// the remaining transaction fields, the optional audit log, and a dirty-gated
+/// save bar. Saving wires to [`bc_ipc::client::edit_transaction`] (plus
+/// [`bc_ipc::client::set_reconciliation`] when the status changed).
 ///
 /// # Arguments
 ///
-/// * `tx` - The transaction to render.
-/// * `on_change` - Optional callback run after a successful mutation (reverse or
-///   spread edit); defaults to a no-op when `None`.
+/// * `on_change` - Optional callback run after a successful save; defaults to a
+///   no-op when `None`.
+/// * `accounts` - All selectable accounts for the recategorise picker; an empty
+///   list degrades to free-text-only pickers.
+/// * `all_tags` - Known tags to seed the pickers; empty falls back to the IPC
+///   fetch.
 #[cfg(target_arch = "wasm32")]
 #[component]
 fn TransactionDetail(
@@ -725,264 +680,385 @@ fn TransactionDetail(
     /// Called after a successful mutation; defaults to a no-op when `None`.
     #[prop(optional)]
     on_change: Option<Callback<()>>,
+    /// All selectable accounts for the recategorise picker.
+    #[prop(optional)]
+    accounts: Vec<AccountRef>,
+    /// Known tags to seed the pickers; empty falls back to the IPC fetch.
+    #[prop(optional)]
+    all_tags: Vec<bc_ipc::TagInfo>,
 ) -> impl IntoView {
-    let show_audit = RwSignal::new(false);
-    let detail_ref = NodeRef::<leptos::html::Div>::new();
     let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
+    let editable = EditableTransaction::from_transaction(&tx);
+    let ctx = TxEditCtx::new(editable, accounts);
+    provide_context(ctx.clone());
 
-    let stored_tx = StoredValue::new(tx);
+    if !all_tags.is_empty() {
+        ctx.all_tags.set(all_tags);
+    }
 
-    Effect::new(move |_| {
-        if let Some(el) = detail_ref.get() {
-            #[expect(
-                clippy::let_underscore_must_use,
-                clippy::let_underscore_untyped,
-                let_underscore_drop,
-                reason = "focus() returns Result<(), JsValue>; errors are benign in this context"
-            )]
-            let _ = el.focus();
+    #[expect(
+        clippy::shadow_unrelated,
+        reason = "prop vec consumed into ctx; name reused for the context signal"
+    )]
+    let all_tags = ctx.all_tags;
+    let _tags_resource = LocalResource::new(move || async move {
+        if let Ok(list) = bc_ipc::client::list_tags().await {
+            all_tags.set(list);
         }
     });
 
-    let on_action_key = move |e: web_sys::KeyboardEvent| {
-        if e.key() == "a" {
+    let error: RwSignal<Option<String>> = RwSignal::new(None);
+    let saving = RwSignal::new(false);
+
+    let show_audit = RwSignal::new(false);
+    let audit_version = RwSignal::new(0_u32);
+    let tx_id_audit = ctx.working.with(|w| w.id.clone());
+    let audit_resource = LocalResource::new(move || {
+        audit_version.get();
+        let id = tx_id_audit.clone();
+        async move {
+            if show_audit.get_untracked() {
+                bc_ipc::client::get_transaction_audit(&id).await
+            } else {
+                Ok(vec![])
+            }
+        }
+    });
+
+    let f_date = RwSignal::new(ctx.working.with(|w| w.date.clone()));
+    let f_payee = RwSignal::new(ctx.working.with(|w| w.payee.clone()));
+    let f_desc = RwSignal::new(ctx.working.with(|w| w.description.clone()));
+    let f_note = RwSignal::new(ctx.working.with(|w| w.note.clone()));
+
+    {
+        let working = ctx.working;
+        Effect::new(move |_| {
+            let (date, payee, desc, note) =
+                (f_date.get(), f_payee.get(), f_desc.get(), f_note.get());
+            working.update(|w| {
+                w.date = date;
+                w.payee = payee;
+                w.description = desc;
+                w.note = note;
+            });
+        });
+    }
+
+    let working = ctx.working;
+    let original = ctx.original;
+
+    let balance_state = Signal::derive(move || working.with(derive_balance));
+    let save_disabled = Signal::derive(move || {
+        !matches!(
+            balance_state.get(),
+            BalanceState::Balanced | BalanceState::Inferred { .. }
+        )
+    });
+
+    let cycle_recon = move |_| {
+        working.update(|w| {
+            w.reconciliation = match w.reconciliation {
+                bc_ipc::Reconciliation::Unreconciled => bc_ipc::Reconciliation::Flagged,
+                bc_ipc::Reconciliation::Flagged => bc_ipc::Reconciliation::Reconciled,
+                bc_ipc::Reconciliation::Reconciled | _ => bc_ipc::Reconciliation::Unreconciled,
+            };
+        });
+    };
+
+    let ctx_discard = ctx.clone();
+    let discard = Callback::new(move |()| {
+        ctx_discard.discard();
+        original.with_value(|o| {
+            f_date.set(o.date.clone());
+            f_payee.set(o.payee.clone());
+            f_desc.set(o.description.clone());
+            f_note.set(o.note.clone());
+        });
+        error.set(None);
+    });
+
+    let ctx_save = ctx.clone();
+    let save = Callback::new(move |()| {
+        if saving.get_untracked() || !ctx_save.dirty() || save_disabled.get_untracked() {
+            return;
+        }
+        let working_now = working.get_untracked();
+        let edit = match working_now.to_edit_transaction() {
+            Ok(d) => d,
+            Err(e) => {
+                error.set(Some(e.to_string()));
+                return;
+            }
+        };
+        let recon_changed = original.with_value(|o| o.reconciliation) != working_now.reconciliation;
+        let id = working_now.id.clone();
+        let recon = working_now.reconciliation;
+        saving.set(true);
+        error.set(None);
+        leptos::task::spawn_local(async move {
+            match bc_ipc::client::edit_transaction(&edit).await {
+                Ok(()) => {
+                    if recon_changed
+                        && let Err(e) = bc_ipc::client::set_reconciliation(&id, recon).await
+                    {
+                        saving.set(false);
+                        // The edit persisted but the reconciliation change did
+                        // not. Snapshot the saved (non-reconciliation) state as
+                        // the new pristine so Discard won't revert it, leaving
+                        // only the reconciliation change marked dirty.
+                        let mut saved = working.get_untracked();
+                        saved.reconciliation = original.with_value(|o| o.reconciliation);
+                        original.set_value(saved);
+                        working.update(|_| {});
+                        on_change_cb.run(());
+                        audit_version.update(|v| *v = v.wrapping_add(1));
+                        error.set(Some(friendly_save_error(&e)));
+                        return;
+                    }
+                    saving.set(false);
+                    original.set_value(working.get_untracked());
+                    working.update(|_| {});
+                    on_change_cb.run(());
+                    audit_version.update(|v| *v = v.wrapping_add(1));
+                }
+                Err(e) => {
+                    saving.set(false);
+                    error.set(Some(friendly_save_error(&e)));
+                }
+            }
+        });
+    });
+
+    let detail_ref = NodeRef::<leptos::html::Div>::new();
+    let on_key = move |e: web_sys::KeyboardEvent| {
+        let key = e.key();
+        let key = key.as_str();
+
+        let typing_in_field = e
+            .target()
+            .and_then(|t| web_sys::wasm_bindgen::JsCast::dyn_into::<web_sys::Element>(t).ok())
+            .is_some_and(|el| {
+                let tag = el.tag_name();
+                tag == "INPUT"
+                    || tag == "TEXTAREA"
+                    || web_sys::wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlElement>(el)
+                        .is_ok_and(|h| h.is_content_editable())
+            });
+
+        if typing_in_field {
+            return;
+        }
+
+        if key == "Escape" {
+            discard.run(());
+            e.prevent_default();
+        } else if (e.meta_key() || e.ctrl_key()) && (key == "s" || key == "S") {
+            save.run(());
+            e.prevent_default();
+        } else if key == "a" {
             show_audit.update(|v| *v = !*v);
+            audit_version.update(|v| *v = v.wrapping_add(1));
             e.prevent_default();
         }
     };
 
-    /* Meta-card scalars, captured as Copy StoredValues so Fn closures can read
-    them repeatedly without consuming the transaction. */
-    let tx_id = StoredValue::new(stored_tx.with_value(|t| t.id.clone()));
-    let tx_date = StoredValue::new(stored_tx.with_value(|t| t.date));
-    let tx_extra_dates = StoredValue::new(stored_tx.with_value(|t| {
-        t.extra_dates
-            .iter()
-            .map(|(label, d)| format!("{label} {d}"))
-            .collect::<Vec<_>>()
-            .join("  ")
-    }));
-    let tx_status = StoredValue::new(stored_tx.with_value(|t| t.reconciliation.label().to_owned()));
-    let tx_payee = StoredValue::new(stored_tx.with_value(|t| t.payee.clone()));
-    let tx_has_payee = stored_tx.with_value(|t| !t.payee.is_empty());
-    let tx_desc = StoredValue::new(stored_tx.with_value(|t| t.description.clone()));
-    let tx_has_desc = stored_tx.with_value(|t| !t.description.is_empty());
-    let tx_note = StoredValue::new(stored_tx.with_value(|t| t.note.clone().unwrap_or_default()));
-    let tx_has_note = stored_tx.with_value(|t| t.note.as_ref().is_some_and(|n| !n.is_empty()));
-    let stored_tags = StoredValue::new(stored_tx.with_value(|t| t.tags.clone()));
-    let tx_has_tags = stored_tx.with_value(|t| !t.tags.is_empty());
-
-    let stored_audit = StoredValue::new(stored_tx.with_value(|t| {
-        t.audit
-            .iter()
-            .map(|e| (e.time_label(), e.kind.clone(), e.message.clone()))
-            .collect::<Vec<_>>()
-    }));
-
-    /* Posting display data, with one Copy toggle signal per posting driving the
-    retained AccrualEditor. Stored as plain data so the audit-toggle closure
-    can rebuild the postings card without consuming non-Clone views. */
-    let stored_postings = StoredValue::new(stored_tx.with_value(|t| {
-        t.postings
-            .iter()
-            .map(|p| PostingData {
-                account_path: p.account.name.clone(),
-                amount: p.amount.clone(),
-                note: p.note.clone(),
-                tags: p.tags.clone(),
-                spread_from: p.spread_from,
-                spread_until: p.spread_until,
-                posting_id: p.id.clone(),
-                show_editor: RwSignal::new(false),
-            })
-            .collect::<Vec<_>>()
-    }));
-
-    let tx_id_reverse = stored_tx.with_value(|t| t.id.clone());
-    let do_reverse = move |()| {
-        let id = tx_id_reverse.clone();
-        leptos::task::spawn_local(async move {
-            if bc_ipc::client::reverse_transaction(&id).await.is_ok() {
-                on_change_cb.run(());
-            }
-        });
-    };
+    let ctx_bar = ctx.clone();
 
     view! {
-        <div class=style::detail node_ref=detail_ref on:keydown=on_action_key tabindex="-1">
+        <div class=style::detail node_ref=detail_ref on:keydown=on_key tabindex="-1">
+            <PostingsList />
+
+            {move || {
+                let (extra, text) = match balance_state.get() {
+                    BalanceState::Balanced => (style::balance_ok, "balances".to_owned()),
+                    BalanceState::Inferred { remainder, currency } => {
+                        let cur = bc_ipc::currency_from_code(&currency).unwrap_or(&bc_ipc::USD);
+                        let amt = crate::components::num::format_amount(&remainder, cur);
+                        (style::balance_ok, format!("balances \u{2014} auto {amt}"))
+                    }
+                    BalanceState::Empty => (style::balance_ok, "no amounts yet".to_owned()),
+                    BalanceState::Unbalanced { delta, currency } => {
+                        let cur = bc_ipc::currency_from_code(&currency).unwrap_or(&bc_ipc::USD);
+                        let amt = crate::components::num::format_amount(&delta, cur);
+                        (style::balance_bad, format!("unbalanced \u{2014} \u{03A3} = {amt}"))
+                    }
+                    BalanceState::Ambiguous => {
+                        (style::balance_bad, "more than one blank amount".to_owned())
+                    }
+                    BalanceState::Invalid => {
+                        (style::balance_bad, "an amount does not parse".to_owned())
+                    }
+                };
+                view! { <div class=format!("{} {}", style::balance, extra)>{text}</div> }
+            }}
+
+            // TODO(extra_dates): render + edit Transaction.extra_dates here in the
+            // mixline (alongside Date/Status/Tags) with an add-on-demand affordance
+            // mirroring + note / ⤳ spread. Tracked in
+            // https://github.com/JP-Ellis/borrow-checker/issues/209
+            <div class=style::metamix>
+                <div class=style::mixline>
+                    <div class=style::metamix_grp>
+                        <span class=style::metamix_lbl>"Date"</span>
+                        <input
+                            class=format!("{} {}", style::f, style::f_num)
+                            prop:value=move || f_date.get()
+                            on:input=move |ev| f_date.set(event_target_value(&ev))
+                            placeholder="YYYY-MM-DD"
+                        />
+                    </div>
+                    <div class=style::vsep></div>
+                    <div class=style::metamix_grp>
+                        <span class=style::metamix_lbl>"Status"</span>
+                        <span
+                            class=move || {
+                                let variant = working
+                                    .with(|w| match w.reconciliation {
+                                        bc_ipc::Reconciliation::Flagged => style::status_flagged,
+                                        bc_ipc::Reconciliation::Reconciled => style::status_ok,
+                                        bc_ipc::Reconciliation::Unreconciled | _ => {
+                                            style::status_unrec
+                                        }
+                                    });
+                                format!("{} {}", style::status_pill, variant)
+                            }
+                            on:click=cycle_recon
+                            role="button"
+                            tabindex="0"
+                            data-testid="status-pill"
+                        >
+                            <span class=style::status_dot></span>
+                            {move || working.with(|w| w.reconciliation.label().to_owned())}
+                        </span>
+                    </div>
+                    <div class=style::vsep></div>
+                    <div class=style::metamix_grp>
+                        <span class=style::metamix_lbl>"Tags"</span>
+                        <TagPicker
+                            tags=Signal::derive(move || working.with(|w| w.tags.clone()))
+                            all_tags=Signal::derive(move || all_tags.get())
+                            on_add=Callback::new(move |p: String| {
+                                working
+                                    .update(|w| {
+                                        if !w.tags.contains(&p) {
+                                            w.tags.push(p);
+                                        }
+                                    });
+                            })
+                            on_remove=Callback::new(move |p: String| {
+                                working.update(|w| w.tags.retain(|t| t != &p));
+                            })
+                            on_created=Callback::new(move |info: bc_ipc::TagInfo| {
+                                all_tags.update(|v| v.push(info));
+                            })
+                            compact=true
+                        />
+                    </div>
+                </div>
+                <div class=style::noteline>
+                    <input
+                        class=format!("{} {}", style::f, style::note_input)
+                        prop:value=move || f_note.get()
+                        on:input=move |ev| f_note.set(event_target_value(&ev))
+                        placeholder="add note…"
+                    />
+                </div>
+            </div>
+
             <div class=style::data_panel>
-                {move || {
-                    if show_audit.get() {
+                <TomlSection>"transaction"</TomlSection>
+                <TomlKvEdit key="payee" value=f_payee kind=KvKind::Str />
+                <TomlKvEdit key="description" value=f_desc kind=KvKind::Str />
+            </div>
+
+            {move || {
+                show_audit
+                    .get()
+                    .then(|| {
                         view! {
-                            <TomlArraySection comment=tx_id
-                                .get_value()>"audit_log"</TomlArraySection>
-                            {stored_audit
-                                .with_value(|entries| {
+                            <TomlArraySection>"audit_log"</TomlArraySection>
+                            {move || match audit_resource.get() {
+                                Some(Ok(entries)) => {
                                     entries
-                                        .iter()
-                                        .map(|(time, kind, msg)| {
-                                            let msg = msg.clone();
+                                        .into_iter()
+                                        .map(|e| {
+                                            let msg = e.message.clone();
                                             view! {
-                                                <TomlAuditEntry time=time.clone() kind=kind.clone()>
+                                                <TomlAuditEntry time=e.time_label() kind=e.kind.clone()>
                                                     {msg}
                                                 </TomlAuditEntry>
                                             }
                                         })
                                         .collect::<Vec<_>>()
-                                })}
+                                        .into_any()
+                                }
+                                Some(Err(err)) => {
+                                    view! { <div class=style::diag_error>{err.to_string()}</div> }
+                                        .into_any()
+                                }
+                                None => {
+                                    view! {
+                                        <div class=style::audit_loading>"loading audit…"</div>
+                                    }
+                                        .into_any()
+                                }
+                            }}
                         }
-                            .into_any()
-                    } else {
-                        view! {
-                            <TomlSection>"transaction"</TomlSection>
-                            <TomlKv>
-                                <KvKey slot>"id"</KvKey>
-                                <KvValue slot kind=KvKind::Str>
-                                    {tx_id.get_value()}
-                                </KvValue>
-                            </TomlKv>
-                            <TomlKv comment=tx_extra_dates.get_value()>
-                                <KvKey slot>"date"</KvKey>
-                                <KvValue slot kind=KvKind::Date>
-                                    {tx_date.get_value().to_string()}
-                                </KvValue>
-                            </TomlKv>
-                            <TomlKv>
-                                <KvKey slot>"status"</KvKey>
-                                <KvValue slot kind=KvKind::Keyword>
-                                    {tx_status.get_value()}
-                                </KvValue>
-                            </TomlKv>
-                            {tx_has_payee
-                                .then(|| {
-                                    view! {
-                                        <TomlKv>
-                                            <KvKey slot>"payee"</KvKey>
-                                            <KvValue slot kind=KvKind::Str>
-                                                {tx_payee.get_value()}
-                                            </KvValue>
-                                        </TomlKv>
-                                    }
-                                })}
-                            {tx_has_desc
-                                .then(|| {
-                                    view! {
-                                        <TomlKv>
-                                            <KvKey slot>"description"</KvKey>
-                                            <KvValue slot kind=KvKind::Str>
-                                                {tx_desc.get_value()}
-                                            </KvValue>
-                                        </TomlKv>
-                                    }
-                                })}
-                            {tx_has_note
-                                .then(|| {
-                                    view! {
-                                        <TomlKv>
-                                            <KvKey slot>"note"</KvKey>
-                                            <KvValue slot kind=KvKind::Str>
-                                                {tx_note.get_value()}
-                                            </KvValue>
-                                        </TomlKv>
-                                    }
-                                })}
-                            {tx_has_tags
-                                .then(|| {
-                                    let tags = stored_tags.get_value();
-                                    view! {
-                                        <TomlKv>
-                                            <KvKey slot>"tags"</KvKey>
-                                            <KvValue slot kind=KvKind::Tags tags=tags />
-                                        </TomlKv>
-                                    }
-                                })}
-                            <TomlArraySection>"postings"</TomlArraySection>
-                            {stored_postings
-                                .get_value()
-                                .into_iter()
-                                .map(|p| render_posting(p, on_change_cb))
-                                .collect::<Vec<_>>()}
-                        }
-                            .into_any()
-                    }
-                }}
-            </div>
+                    })
+            }}
 
-            <div class=style::actions_panel>
-                <div class=style::actions_label>"actions"</div>
-                <ActionBtn
-                    label="edit"
-                    kbd="e"
-                    active=Signal::derive(|| false)
-                    disabled=Signal::derive(|| true)
-                />
-                <ActionBtn
-                    label="reverse"
-                    kbd="x"
-                    active=Signal::derive(|| false)
-                    on_click=Callback::new(do_reverse)
-                />
-                <ActionBtn
-                    label="find similar"
-                    kbd="f"
-                    active=Signal::derive(|| false)
-                    disabled=Signal::derive(|| true)
-                />
-                <div class=style::actions_divider />
-                <ActionBtn label="audit log" kbd="a" active=Signal::from(show_audit.read_only()) />
-            </div>
+            {move || {
+                ctx_bar
+                    .dirty()
+                    .then(|| {
+                        view! {
+                            <div class=style::savebar>
+                                <div class=style::savebar_note>
+                                    {move || {
+                                        error.get().unwrap_or_else(|| "unsaved changes".to_owned())
+                                    }}
+                                </div>
+                                <button
+                                    class=style::action_btn
+                                    on:click=move |_| discard.run(())
+                                    type="button"
+                                    aria-label="discard changes"
+                                >
+                                    "Discard"
+                                </button>
+                                <button
+                                    class=style::action_btn
+                                    disabled=move || save_disabled.get()
+                                    on:click=move |_| save.run(())
+                                    type="button"
+                                    aria-label="save transaction"
+                                >
+                                    "Save"
+                                </button>
+                            </div>
+                        }
+                    })
+            }}
         </div>
     }
 }
 
-/// A single action button with a keyboard shortcut hint.
+/// Maps a [`bc_ipc::BcError`] from a failed save to a friendly message.
 ///
 /// # Arguments
 ///
-/// * `label` - Button label.
-/// * `kbd` - Keyboard shortcut character.
-/// * `active` - Whether this action is currently active/toggled.
-/// * `disabled` - Whether the button is disabled (greyed out, no click).
-/// * `on_click` - Optional callback run when the button is clicked.
+/// * `error` - The error returned by the save IPC call.
+///
+/// # Returns
+///
+/// A short, user-facing description of the failure.
 #[cfg(target_arch = "wasm32")]
-#[component]
-fn ActionBtn(
-    /// Button label.
-    label: &'static str,
-    /// Keyboard shortcut character.
-    kbd: &'static str,
-    /// Whether this action is currently active/toggled.
-    #[prop(into)]
-    active: Signal<bool>,
-    /// Whether the button is disabled.
-    #[prop(optional, into)]
-    disabled: Signal<bool>,
-    /// Optional callback run on click.
-    #[prop(optional)]
-    on_click: Option<Callback<()>>,
-) -> impl IntoView {
-    view! {
-        <button
-            class=move || {
-                let mut c = vec![style::action_btn];
-                if active.get() {
-                    c.push(style::action_btn_active);
-                }
-                if disabled.get() {
-                    c.push(style::action_btn_disabled);
-                }
-                c.join(" ")
-            }
-            disabled=move || disabled.get()
-            on:click=move |_| {
-                if let Some(cb) = on_click {
-                    cb.run(());
-                }
-            }
-        >
-            {label}
-            <kbd class=style::action_kbd>{kbd}</kbd>
-        </button>
+fn friendly_save_error(error: &bc_ipc::BcError) -> String {
+    match error {
+        bc_ipc::BcError::Validation(message) => format!("Couldn't save: {message}"),
+        bc_ipc::BcError::NotFound(_) | bc_ipc::BcError::Internal(_) | _ => {
+            format!("Couldn't save changes: {error}")
+        }
     }
 }
 
