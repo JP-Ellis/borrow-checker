@@ -31,6 +31,8 @@ pub use accounts::AccountRef;
 pub use accounts::AccountStats;
 pub use accounts::AccountType;
 pub use accounts::AuditEntry;
+pub use accounts::EditPosting;
+pub use accounts::EditTransaction;
 pub use accounts::NewPosting;
 pub use accounts::NewTransaction;
 pub use accounts::Period;
