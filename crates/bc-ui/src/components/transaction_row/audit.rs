@@ -43,10 +43,6 @@ pub struct AuditRow {
     clippy::module_name_repetitions,
     reason = "audit_rows is the canonical interface name specified by the task SDD"
 )]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "wasm consumer arrives in Task 4; remove then")
-)]
 pub fn audit_rows(entries: &[AuditEntry]) -> Vec<AuditRow> {
     let mut rows = Vec::with_capacity(entries.len());
     let mut prev: Option<jiff::Timestamp> = None;
