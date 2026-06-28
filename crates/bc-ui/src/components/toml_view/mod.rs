@@ -167,6 +167,55 @@ pub fn TomlKv(
     }
 }
 
+/// Renders an editable `key = value` row: the key text plus an inline input
+/// bound to `value`, styled to match the read-mode value colour for `kind`.
+///
+/// Intended for [`KvKind::Str`], [`KvKind::Date`], and [`KvKind::Tags`]
+/// (the tags buffer is comma-separated text). [`KvKind::Keyword`] is read-only
+/// and renders as static text.
+///
+/// # Arguments
+///
+/// * `key` - The left-hand identifier.
+/// * `value` - Bound signal holding the in-progress value text.
+/// * `kind` - Selects the value colour / semantics.
+#[component]
+#[expect(clippy::needless_pass_by_value, reason = "Leptos requires owned props")]
+pub fn TomlKvEdit(
+    /// The left-hand identifier.
+    key: &'static str,
+    /// Bound signal holding the in-progress value text.
+    value: RwSignal<String>,
+    /// Selects the value colour / semantics.
+    kind: KvKind,
+) -> impl IntoView {
+    let value_class = match kind {
+        KvKind::Str | KvKind::Tags => style::str_val,
+        KvKind::Date => style::date_val,
+        KvKind::Keyword => style::kw_val,
+    };
+    let editable = !matches!(kind, KvKind::Keyword);
+
+    view! {
+        <div class=style::kv_row>
+            <span class=style::key>{key}</span>
+            <span class=style::eq>"="</span>
+            {if editable {
+                view! {
+                    <input
+                        class=format!("{} {}", style::kv_input, value_class)
+                        prop:value=move || value.get()
+                        on:input=move |ev| value.set(event_target_value(&ev))
+                    />
+                }
+                    .into_any()
+            } else {
+                view! { <span class=value_class>{move || value.get()}</span> }.into_any()
+            }}
+        </div>
+    }
+}
+
 /// Renders one posting row: account path (left) and amount (right).
 ///
 /// The account path is passed as children; amount and optional note are props.

@@ -1,0 +1,121 @@
+/* Multi-select tag picker with chips row, autocomplete dropdown, and inline create. */
+.picker {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+
+.chips_row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bc-space-1);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  background: var(--bc-surface-alt);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  min-height: calc(var(--bc-space-4) + 2px);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+}
+
+.chip_remove {
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink-mute);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 var(--bc-space-1);
+  line-height: 1;
+}
+
+.chip_remove:hover {
+  color: var(--bc-bad);
+}
+
+.input {
+  flex: 1;
+  min-width: 8rem;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink);
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+}
+
+.menu {
+  position: absolute;
+  z-index: 20;
+  inset-inline: 0;
+  margin-block-start: var(--bc-space-1);
+  max-height: 12rem;
+  overflow-y: auto;
+  list-style: none;
+  padding: var(--bc-space-1);
+  background: var(--bc-surface);
+  border: 1px solid var(--bc-border-strong);
+  border-radius: var(--bc-radius-card);
+}
+
+.option {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  border-radius: var(--bc-radius-control);
+  cursor: pointer;
+}
+
+.option:hover {
+  background: var(--bc-surface-accent);
+}
+
+.create_option {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-accent);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  border-radius: var(--bc-radius-control);
+  cursor: pointer;
+  border-top: 1px solid var(--bc-border);
+  margin-block-start: var(--bc-space-1);
+  padding-block-start: var(--bc-space-2);
+}
+
+.create_option:hover {
+  background: var(--bc-surface-accent);
+}
+
+.error {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-bad);
+  margin-block-start: var(--bc-space-1);
+}
+
+/* MARK: Compact variant — inline tagbox, no border or background */
+.picker_compact {
+  display: inline-flex;
+  width: auto;
+}
+
+.chips_row_compact {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  min-height: unset;
+  padding: 0;
+}
+
+.input_compact {
+  flex: unset;
+  min-width: unset;
+  width: 8ch;
+  font-size: var(--bc-text-eyebrow);
+}
