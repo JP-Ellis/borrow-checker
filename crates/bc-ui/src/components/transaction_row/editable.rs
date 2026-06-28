@@ -1,0 +1,679 @@
+// Editor-friendly working-buffer model for the editable transaction view.
+//
+// Mirrors the [`bc_ipc::Transaction`] shape but uses parse-in-progress string
+// fields so an in-flight edit (a half-typed amount, a malformed date) is always
+// representable. Conversion back to a [`bc_ipc::EditTransaction`] (with real
+// parsing and validation) lives in [`Self::to_edit_transaction`].
+//
+// Public items are used by the UI layer and tested extensively. When compiling
+// to wasm32-unknown-unknown, tests are excluded, making items appear unused to
+// clippy on that target only.
+
+use core::fmt;
+
+use bc_ipc::Amount;
+use bc_ipc::EditPosting;
+use bc_ipc::EditTransaction;
+use bc_ipc::Posting;
+use bc_ipc::Reconciliation;
+use bc_ipc::Transaction;
+use rust_decimal::Decimal;
+
+/// A single posting in the working buffer.
+///
+/// `amount` is the raw text the user is editing; an empty (whitespace-only)
+/// value marks an elided leg whose amount is inferred to balance.
+#[derive(Clone, Debug, PartialEq)]
+#[expect(clippy::module_name_repetitions, reason = "name is correct per spec")]
+pub struct EditablePosting {
+    /// Existing posting ID, or `None` for a newly added leg.
+    pub id: Option<String>,
+    /// Account this posting hits.
+    pub account_id: String,
+    /// Account display name (for the read view and picker label).
+    pub account_name: String,
+    /// Raw amount text; empty means elided.
+    pub amount: String,
+    /// ISO currency code for `amount`.
+    pub currency: String,
+    /// Free-text note; empty means none.
+    pub note: String,
+    /// Resolved tag colon-paths attached to this posting (e.g. `"person:josh"`).
+    pub tags: Vec<String>,
+    /// Accrual spread start date, if set.
+    pub spread_from: Option<jiff::civil::Date>,
+    /// Accrual spread end date, if set.
+    pub spread_until: Option<jiff::civil::Date>,
+}
+
+impl EditablePosting {
+    /// Builds an [`EditablePosting`] from a read-model [`Posting`].
+    ///
+    /// # Arguments
+    ///
+    /// * `p` - The source posting.
+    ///
+    /// # Returns
+    ///
+    /// The editor-friendly posting; elided legs map to an empty `amount`.
+    #[must_use]
+    pub fn from_posting(p: &Posting) -> Self {
+        Self {
+            id: Some(p.id.clone()),
+            account_id: p.account.id.clone(),
+            account_name: p.account.name.clone(),
+            amount: p
+                .amount
+                .as_ref()
+                .map_or_else(String::new, |a| a.value.to_string()),
+            currency: p
+                .amount
+                .as_ref()
+                .map_or_else(String::new, |a| a.currency_code.clone()),
+            note: p.note.clone().unwrap_or_default(),
+            tags: p.tags.clone(),
+            spread_from: p.spread_from,
+            spread_until: p.spread_until,
+        }
+    }
+
+    /// Returns whether this posting's amount is elided (inferred to balance).
+    ///
+    /// # Returns
+    ///
+    /// `true` when the raw amount text is empty or whitespace.
+    #[must_use]
+    pub fn is_elided(&self) -> bool {
+        self.amount.trim().is_empty()
+    }
+}
+
+/// The full working buffer for an in-progress edit.
+#[derive(Clone, Debug, PartialEq)]
+#[expect(clippy::module_name_repetitions, reason = "name is correct per spec")]
+pub struct EditableTransaction {
+    /// Stable transaction ID (immutable).
+    pub id: String,
+    /// Raw date text (`YYYY-MM-DD`).
+    pub date: String,
+    /// Payee display name.
+    pub payee: String,
+    /// Free-text description.
+    pub description: String,
+    /// User's free-text note; empty means none.
+    pub note: String,
+    /// Reconciliation status (immutable in this view; echoed back unchanged).
+    pub reconciliation: Reconciliation,
+    /// Transaction-level tags.
+    pub tags: Vec<String>,
+    /// All postings in display order.
+    pub postings: Vec<EditablePosting>,
+}
+
+impl EditableTransaction {
+    /// Builds an [`EditableTransaction`] from a read-model [`Transaction`].
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - The source transaction.
+    ///
+    /// # Returns
+    ///
+    /// The working buffer seeded from `tx`.
+    #[must_use]
+    pub fn from_transaction(tx: &Transaction) -> Self {
+        Self {
+            id: tx.id.clone(),
+            date: tx.date.to_string(),
+            payee: tx.payee.clone(),
+            description: tx.description.clone(),
+            note: tx.note.clone().unwrap_or_default(),
+            reconciliation: tx.reconciliation,
+            tags: tx.tags.clone(),
+            // TODO(extra_dates): carry tx.extra_dates into the working buffer (and
+            // back out via to_edit_transaction) so they can be edited. Tracked in
+            // https://github.com/JP-Ellis/borrow-checker/issues/209
+            postings: tx
+                .postings
+                .iter()
+                .map(EditablePosting::from_posting)
+                .collect(),
+        }
+    }
+
+    /// Returns the currency of the first posting carrying a concrete amount.
+    ///
+    /// Used to seed the currency of newly added legs.
+    ///
+    /// # Returns
+    ///
+    /// The first present-amount currency code, or an empty string if none.
+    #[must_use]
+    pub fn default_currency(&self) -> String {
+        self.postings
+            .iter()
+            .find(|p| !p.is_elided())
+            .map(|p| p.currency.clone())
+            .unwrap_or_default()
+    }
+
+    /// Serialises the working buffer into a [`EditTransaction`] for submission.
+    ///
+    /// # Returns
+    ///
+    /// The desired transaction state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EditError`] when the date or an amount fails to parse, a posting
+    /// has no account or currency, or more than one leg is elided. An unbalanced
+    /// (but otherwise representable) transaction is **not** an error.
+    pub fn to_edit_transaction(&self) -> Result<EditTransaction, EditError> {
+        let date = self
+            .date
+            .trim()
+            .parse::<jiff::civil::Date>()
+            .map_err(|e| EditError::Date(e.to_string()))?;
+
+        let mut elided = 0_usize;
+        let mut postings = Vec::with_capacity(self.postings.len());
+        for (index, p) in self.postings.iter().enumerate() {
+            if p.account_id.trim().is_empty() {
+                return Err(EditError::MissingAccount { index });
+            }
+            let amount = if p.is_elided() {
+                elided = elided.saturating_add(1);
+                None
+            } else {
+                if p.currency.trim().is_empty() {
+                    return Err(EditError::MissingCurrency { index });
+                }
+                let value = parse_amount(&p.amount)
+                    .map_err(|message| EditError::Amount { index, message })?;
+                Some(Amount::new(value, p.currency.clone()))
+            };
+            postings.push(EditPosting::new(
+                p.id.clone(),
+                p.account_id.clone(),
+                amount,
+                non_empty(&p.note),
+                p.tags.clone(),
+                p.spread_from,
+                p.spread_until,
+            ));
+        }
+        if elided >= 2 {
+            return Err(EditError::Ambiguous);
+        }
+
+        Ok(EditTransaction::new(
+            self.id.clone(),
+            date,
+            self.payee.clone(),
+            self.description.clone(),
+            non_empty(&self.note),
+            self.reconciliation,
+            self.tags.clone(),
+            postings,
+        ))
+    }
+}
+
+/// Parses a user-entered amount string into a [`Decimal`].
+///
+/// Trims surrounding whitespace and strips thousands separators (spaces and
+/// commas). Sign and decimal point are handled by [`Decimal`]'s parser.
+///
+/// # Arguments
+///
+/// * `input` - The raw amount text.
+///
+/// # Returns
+///
+/// The parsed value.
+///
+/// # Errors
+///
+/// Returns a human-readable message when the input is empty or does not parse.
+pub fn parse_amount(input: &str) -> Result<Decimal, String> {
+    let cleaned: String = input
+        .chars()
+        .filter(|c| *c != ',' && !c.is_whitespace())
+        .collect();
+    if cleaned.is_empty() {
+        return Err("empty amount".to_owned());
+    }
+    cleaned.parse::<Decimal>().map_err(|e| e.to_string())
+}
+
+/// Parses a comma-separated tag buffer into a list of trimmed, non-empty tags.
+///
+/// Test-only helper.
+#[cfg(test)]
+#[must_use]
+fn parse_tags(input: &str) -> Vec<String> {
+    input
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// A hard error that prevents serialising the working buffer.
+///
+/// Only the genuinely unrepresentable is an error; an unbalanced transaction is
+/// not (it commits with a warning).
+#[derive(Clone, Debug, PartialEq)]
+pub enum EditError {
+    /// The transaction date does not parse.
+    Date(String),
+    /// A posting amount does not parse.
+    Amount {
+        /// Index of the offending posting.
+        index: usize,
+        /// Parser message.
+        message: String,
+    },
+    /// A posting has no account selected.
+    MissingAccount {
+        /// Index of the offending posting.
+        index: usize,
+    },
+    /// A present-amount posting has no currency.
+    MissingCurrency {
+        /// Index of the offending posting.
+        index: usize,
+    },
+    /// More than one elided leg — the balancing remainder is ambiguous.
+    Ambiguous,
+}
+
+impl fmt::Display for EditError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Date(m) => write!(f, "invalid date: {m}"),
+            Self::Amount { index, message } => {
+                write!(
+                    f,
+                    "invalid amount on posting {}: {message}",
+                    index.saturating_add(1)
+                )
+            }
+            Self::MissingAccount { index } => {
+                write!(f, "posting {} has no account", index.saturating_add(1))
+            }
+            Self::MissingCurrency { index } => {
+                write!(f, "posting {} has no currency", index.saturating_add(1))
+            }
+            Self::Ambiguous => write!(f, "more than one leg has a blank amount"),
+        }
+    }
+}
+
+/// Converts an empty-or-whitespace string to `None`, else `Some(trimmed-owned)`.
+fn non_empty(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.to_owned())
+}
+
+/// The balance state of a working buffer, for the live balance indicator.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BalanceState {
+    /// All concrete legs net to zero.
+    Balanced,
+    /// Exactly one elided leg; `remainder` is the value it will infer.
+    Inferred {
+        /// The amount the elided leg will take to balance.
+        remainder: Decimal,
+        /// Currency of the inferred remainder.
+        currency: String,
+    },
+    /// All amounts present but they do not net to zero (commits with a warning).
+    Unbalanced {
+        /// The non-zero net (positive means a surplus).
+        delta: Decimal,
+        /// Currency of the delta.
+        currency: String,
+    },
+    /// More than one elided leg — inference is ambiguous (hard error).
+    Ambiguous,
+    /// At least one concrete amount failed to parse (hard error).
+    Invalid,
+    /// No concrete amounts to balance against.
+    Empty,
+}
+
+/// Derives the [`BalanceState`] of a working buffer.
+///
+/// Mirrors `bc_models::Transaction::balanced` semantics: two-or-more elided legs
+/// are ambiguous; a single elided leg infers the remainder; otherwise the
+/// concrete legs must net to zero. Amounts are summed using the first present
+/// currency (mixed-currency transactions show the raw net).
+///
+/// # Arguments
+///
+/// * `working` - The working buffer.
+///
+/// # Returns
+///
+/// The derived balance state.
+#[must_use]
+pub fn derive_balance(working: &EditableTransaction) -> BalanceState {
+    let elided = working.postings.iter().filter(|p| p.is_elided()).count();
+    if elided >= 2 {
+        return BalanceState::Ambiguous;
+    }
+    let mut total = Decimal::ZERO;
+    let mut currency = String::new();
+    let mut any = false;
+    for p in working.postings.iter().filter(|p| !p.is_elided()) {
+        match parse_amount(&p.amount) {
+            Ok(v) => {
+                if currency.is_empty() {
+                    currency.clone_from(&p.currency);
+                }
+                total = total.saturating_add(v);
+                any = true;
+            }
+            Err(_) => return BalanceState::Invalid,
+        }
+    }
+    if !any {
+        return BalanceState::Empty;
+    }
+    if elided == 1 {
+        return BalanceState::Inferred {
+            remainder: Decimal::ZERO.saturating_sub(total),
+            currency,
+        };
+    }
+    if total.is_zero() {
+        BalanceState::Balanced
+    } else {
+        BalanceState::Unbalanced {
+            delta: total,
+            currency,
+        }
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use bc_ipc::AccountRef;
+    use bc_ipc::Amount;
+    use bc_ipc::Posting;
+    use bc_ipc::Reconciliation;
+    use bc_ipc::Transaction;
+    use jiff::civil::Date;
+    use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
+
+    use super::BalanceState;
+    use super::EditError;
+    use super::EditablePosting;
+    use super::EditableTransaction;
+    use super::derive_balance;
+    use super::parse_amount;
+    use super::parse_tags;
+
+    fn sample_tx() -> Transaction {
+        Transaction::new(
+            "tx-1",
+            Date::constant(2026, 4, 30),
+            "Coles",
+            "weekly shop",
+            Some("remember"),
+            vec![("cleared".to_owned(), Date::constant(2026, 5, 1))],
+            Reconciliation::Unreconciled,
+            vec!["work".to_owned()],
+            vec![
+                Posting::new(
+                    "p-1",
+                    AccountRef::new("acct-checking", "Assets :: Checking"),
+                    Some(Amount::new(Decimal::new(-8_420, 2), "AUD")),
+                    None::<&str>,
+                    vec![],
+                    None,
+                    None,
+                ),
+                Posting::new(
+                    "p-2",
+                    AccountRef::new("acct-groceries", "Expenses :: Groceries"),
+                    None,
+                    Some("split"),
+                    vec!["tag-x".to_owned()],
+                    None,
+                    None,
+                ),
+            ],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn from_transaction_maps_scalars_and_postings() {
+        let e = EditableTransaction::from_transaction(&sample_tx());
+        assert_eq!(e.id, "tx-1");
+        assert_eq!(e.date, "2026-04-30");
+        assert_eq!(e.payee, "Coles");
+        assert_eq!(e.description, "weekly shop");
+        assert_eq!(e.note, "remember");
+        assert_eq!(e.tags, vec!["work".to_owned()]);
+        assert_eq!(e.postings.len(), 2);
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn present_amount_posting_round_trips_fields() {
+        let e = EditableTransaction::from_transaction(&sample_tx());
+        let p = &e.postings[0];
+        assert_eq!(p.id.as_deref(), Some("p-1"));
+        assert_eq!(p.account_id, "acct-checking");
+        assert_eq!(p.account_name, "Assets :: Checking");
+        assert_eq!(p.amount, "-84.20");
+        assert_eq!(p.currency, "AUD");
+        assert!(!p.is_elided());
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn elided_posting_has_blank_amount() {
+        let e = EditableTransaction::from_transaction(&sample_tx());
+        let p = &e.postings[1];
+        assert_eq!(p.amount, "");
+        assert!(p.is_elided());
+        assert_eq!(p.note, "split");
+        assert_eq!(p.tags, vec!["tag-x".to_owned()]);
+    }
+
+    #[test]
+    fn default_currency_is_first_present() {
+        let e = EditableTransaction::from_transaction(&sample_tx());
+        assert_eq!(e.default_currency(), "AUD");
+    }
+
+    #[test]
+    fn from_posting_builds_editable_posting() {
+        let p = Posting::new(
+            "p-9",
+            AccountRef::new("a", "A :: B"),
+            Some(Amount::new(Decimal::new(1_250, 2), "USD")),
+            None::<&str>,
+            vec![],
+            Some(Date::constant(2026, 1, 1)),
+            Some(Date::constant(2026, 1, 31)),
+        );
+        let ep = EditablePosting::from_posting(&p);
+        assert_eq!(ep.amount, "12.50");
+        assert_eq!(ep.currency, "USD");
+        assert_eq!(ep.spread_from, Some(Date::constant(2026, 1, 1)));
+        assert_eq!(ep.spread_until, Some(Date::constant(2026, 1, 31)));
+    }
+
+    fn ep(amount: &str, currency: &str) -> EditablePosting {
+        EditablePosting {
+            id: Some("p".to_owned()),
+            account_id: "a".to_owned(),
+            account_name: "A".to_owned(),
+            amount: amount.to_owned(),
+            currency: currency.to_owned(),
+            note: String::new(),
+            tags: vec![],
+            spread_from: None,
+            spread_until: None,
+        }
+    }
+
+    fn et(postings: Vec<EditablePosting>) -> EditableTransaction {
+        EditableTransaction {
+            id: "tx".to_owned(),
+            date: "2026-04-30".to_owned(),
+            payee: "P".to_owned(),
+            description: String::new(),
+            note: String::new(),
+            reconciliation: Reconciliation::Unreconciled,
+            tags: vec![],
+            postings,
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::assertions_on_result_states,
+        reason = "unwrap_err is banned in tests by config; is_err is the correct check here"
+    )]
+    fn parse_amount_handles_sign_commas_spaces() {
+        assert_eq!(parse_amount(" -1,234.50 "), Ok(Decimal::new(-123_450, 2)));
+        assert_eq!(parse_amount("8420.00"), Ok(Decimal::new(842_000, 2)));
+        assert!(parse_amount("").is_err());
+        assert!(parse_amount("abc").is_err());
+    }
+
+    #[test]
+    fn parse_tags_splits_and_trims() {
+        assert_eq!(
+            parse_tags("work,  income "),
+            vec!["work".to_owned(), "income".to_owned()]
+        );
+        assert_eq!(parse_tags("  "), Vec::<String>::new());
+    }
+
+    #[test]
+    fn balance_zero_sum_is_balanced() {
+        let s = derive_balance(&et(vec![ep("-84.20", "AUD"), ep("84.20", "AUD")]));
+        assert_eq!(s, BalanceState::Balanced);
+    }
+
+    #[test]
+    fn balance_single_elided_infers_remainder() {
+        let s = derive_balance(&et(vec![ep("-84.20", "AUD"), ep("", "AUD")]));
+        assert_eq!(
+            s,
+            BalanceState::Inferred {
+                remainder: Decimal::new(84_20, 2),
+                currency: "AUD".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn balance_two_elided_is_ambiguous() {
+        let s = derive_balance(&et(vec![ep("", "AUD"), ep("", "AUD")]));
+        assert_eq!(s, BalanceState::Ambiguous);
+    }
+
+    #[test]
+    fn balance_nonzero_sum_is_unbalanced() {
+        let s = derive_balance(&et(vec![ep("-84.20", "AUD"), ep("80.00", "AUD")]));
+        assert_eq!(
+            s,
+            BalanceState::Unbalanced {
+                delta: Decimal::new(-4_20, 2),
+                currency: "AUD".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn balance_unparsable_amount_is_invalid() {
+        let s = derive_balance(&et(vec![ep("xx", "AUD"), ep("1.00", "AUD")]));
+        assert_eq!(s, BalanceState::Invalid);
+    }
+
+    #[test]
+    fn balance_no_concrete_amounts_is_empty() {
+        let s = derive_balance(&et(vec![ep("", "AUD")]));
+        assert_eq!(s, BalanceState::Empty);
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn to_edit_maps_present_and_elided() {
+        let w = et(vec![ep("-84.20", "AUD"), ep("", "AUD")]);
+        let out = w.to_edit_transaction().expect("valid");
+        assert_eq!(out.id, "tx");
+        assert_eq!(out.date, jiff::civil::Date::constant(2026, 4, 30));
+        assert_eq!(out.postings.len(), 2);
+        assert_eq!(
+            out.postings[0].amount,
+            Some(Amount::new(Decimal::new(-84_20, 2), "AUD"))
+        );
+        assert_eq!(out.postings[1].amount, None);
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn to_edit_preserves_existing_ids_and_new_leg_none() {
+        let mut w = et(vec![ep("-10.00", "AUD"), ep("10.00", "AUD")]);
+        w.postings[1].id = None;
+        let out = w.to_edit_transaction().expect("valid");
+        assert_eq!(out.postings[0].id.as_deref(), Some("p"));
+        assert_eq!(out.postings[1].id, None);
+    }
+
+    #[test]
+    #[expect(
+        clippy::assertions_on_result_states,
+        reason = "unwrap_err is banned in tests by config; is_ok is the correct check here"
+    )]
+    fn to_edit_unbalanced_still_succeeds() {
+        let w = et(vec![ep("-84.20", "AUD"), ep("1.00", "AUD")]);
+        assert!(w.to_edit_transaction().is_ok());
+    }
+
+    #[test]
+    fn to_edit_bad_date_errors() {
+        let mut w = et(vec![ep("-1.00", "AUD"), ep("1.00", "AUD")]);
+        w.date = "not-a-date".to_owned();
+        assert!(matches!(w.to_edit_transaction(), Err(EditError::Date(_))));
+    }
+
+    #[test]
+    fn to_edit_two_elided_errors() {
+        let w = et(vec![ep("", "AUD"), ep("", "AUD")]);
+        assert_eq!(w.to_edit_transaction(), Err(EditError::Ambiguous));
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn to_edit_missing_account_errors() {
+        let mut w = et(vec![ep("-1.00", "AUD"), ep("1.00", "AUD")]);
+        w.postings[0].account_id = String::new();
+        assert_eq!(
+            w.to_edit_transaction(),
+            Err(EditError::MissingAccount { index: 0 })
+        );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn to_edit_bad_amount_errors() {
+        let mut w = et(vec![ep("xx", "AUD"), ep("1.00", "AUD")]);
+        w.postings[0].amount = "xx".to_owned();
+        assert!(matches!(
+            w.to_edit_transaction(),
+            Err(EditError::Amount { index: 0, .. })
+        ));
+    }
+}

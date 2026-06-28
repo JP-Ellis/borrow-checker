@@ -224,6 +224,13 @@ pub fn Accounts() -> impl IntoView {
                     Some(node) => {
                         let node_id = node.id.clone();
                         let node_id_register = node.id.clone();
+                        let account_refs = accounts_resource
+                            .get()
+                            .and_then(Result::ok)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|n| bc_ipc::AccountRef::new(n.id, n.name))
+                            .collect::<Vec<_>>();
 
                         view! {
                             <AccountDashboard
@@ -265,6 +272,7 @@ pub fn Accounts() -> impl IntoView {
                             <TransactionRegister
                                 transactions=transactions_signal
                                 viewing_account_id=node_id_register
+                                accounts=account_refs
                                 on_change=Callback::new(move |()| {
                                     data_version.update(|v| *v = v.wrapping_add(1));
                                 })

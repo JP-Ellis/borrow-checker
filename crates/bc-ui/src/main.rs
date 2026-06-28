@@ -62,6 +62,30 @@ fn main() {
     panic!("wasm32 exclusive crate");
 }
 
+/// Native-test access to pure logic modules that live under the wasm-only
+/// `components` tree.
+///
+/// `components` (and its descendants) are gated on `target_arch = "wasm32"`
+/// because they pull in Leptos and `web-sys`, so their pure, host-testable
+/// submodules are unreachable from a native `cargo nextest` run through the
+/// normal module path. Each such module is re-mounted here under `cfg(test)`
+/// via `include!`, so its `#[cfg(test)] mod tests` runs on the host. The file
+/// is authored once at its canonical path; this is an alternate mount, not a
+/// copy.
+#[cfg(test)]
+mod components_tests {
+    pub mod transaction_row {
+        pub mod editable {
+            include!("components/transaction_row/editable.rs");
+        }
+    }
+    pub mod account_picker {
+        pub mod matching {
+            include!("components/account_picker/matching.rs");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
