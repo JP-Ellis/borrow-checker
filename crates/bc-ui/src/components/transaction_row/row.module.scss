@@ -186,7 +186,6 @@
   background: var(--bc-surface);
 }
 
-
 .action_btn {
   display: inline-flex;
   align-items: center;
@@ -202,6 +201,46 @@
   text-align: left;
 
   &:focus-visible { @include focus.focus-ring(2px); }
+}
+
+.audit_hdr {
+  font-size: var(--bc-text-eyebrow);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--bc-ink-dim);
+  margin-block-start: var(--bc-space-4);
+  margin-block-end: var(--bc-space-2);
+}
+
+.audit_list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+}
+
+.audit_row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--bc-space-3);
+  font-size: var(--bc-text-caption);
+}
+
+.audit_time {
+  flex: 0 0 auto;
+  min-width: 3rem;
+  color: var(--bc-ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.audit_kind {
+  flex: 0 0 auto;
+  min-width: 5rem;
+  color: var(--bc-ink-mute);
+}
+
+.audit_msg {
+  flex: 1;
+  color: var(--bc-ink-soft);
 }
 
 .audit_loading {
