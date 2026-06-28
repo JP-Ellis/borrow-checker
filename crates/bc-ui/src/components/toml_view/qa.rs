@@ -10,6 +10,7 @@ use super::TomlArraySection;
 use super::TomlAuditEntry;
 use super::TomlComment;
 use super::TomlKv;
+use super::TomlKvEdit;
 use super::TomlPosting;
 use super::TomlSection;
 
@@ -20,6 +21,7 @@ use super::TomlSection;
     reason = "QA showcase component with many examples"
 )]
 pub fn TomlViewQa() -> impl IntoView {
+    let payee = RwSignal::new("Atlassian Pty Ltd".to_owned());
     view! {
         <div style="display:flex;flex-direction:column;gap:32px;padding:24px;max-width:600px">
 
@@ -114,6 +116,15 @@ pub fn TomlViewQa() -> impl IntoView {
                     <TomlAuditEntry time="09:04" kind="split" comment="4 postings created">
                         "applied rule \"salary-split-au\""
                     </TomlAuditEntry>
+                </div>
+            </section>
+
+            <section>
+                <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
+                    "editable kv row (TomlKvEdit)"
+                </p>
+                <div style="padding:16px;background:var(--bc-surface-accent);border-radius:6px">
+                    <TomlKvEdit key="payee" value=payee kind=KvKind::Str />
                 </div>
             </section>
 
