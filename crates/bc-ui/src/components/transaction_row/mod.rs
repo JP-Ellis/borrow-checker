@@ -58,6 +58,12 @@ use crate::label::category_label;
 /// numeric/date fields to represent parse-in-progress values.
 pub mod editable;
 
+/// Pure timestamp de-duplication for the audit trail display.
+///
+/// Collapses consecutive entries sharing the same instant under one time label
+/// so a run of changes made together renders cleanly in the gutter.
+pub mod audit;
+
 /// Shared edit context (mode, working buffer, accounts) for the detail view.
 #[cfg(target_arch = "wasm32")]
 pub mod edit_ctx;
