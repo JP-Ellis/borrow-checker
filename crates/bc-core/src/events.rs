@@ -10,6 +10,8 @@ use bc_models::DepreciationId;
 use bc_models::EventId;
 use bc_models::LoanId;
 use bc_models::Period;
+use bc_models::PostingId;
+use bc_models::Reconciliation;
 use bc_models::RolloverPolicy;
 use bc_models::TagId;
 use bc_models::TransactionId;
@@ -84,6 +86,122 @@ pub enum Event {
         original_id: TransactionId,
         /// The new reversal transaction's ID.
         reversal_id: TransactionId,
+    },
+    /// A transaction's payee was changed.
+    TransactionPayeeChanged {
+        /// The transaction's ID.
+        id: TransactionId,
+        /// Payee before the change, or `None` if previously unset.
+        from: Option<String>,
+        /// Payee after the change, or `None` if cleared.
+        to: Option<String>,
+    },
+    /// A transaction's date was changed.
+    TransactionDateChanged {
+        /// The transaction's ID.
+        id: TransactionId,
+        /// Date before the change.
+        from: jiff::civil::Date,
+        /// Date after the change.
+        to: jiff::civil::Date,
+    },
+    /// A transaction's description was changed.
+    TransactionDescriptionChanged {
+        /// The transaction's ID.
+        id: TransactionId,
+        /// Description before the change.
+        from: String,
+        /// Description after the change.
+        to: String,
+    },
+    /// A transaction's note was changed.
+    TransactionNoteChanged {
+        /// The transaction's ID.
+        id: TransactionId,
+        /// Note before the change, or `None` if previously unset.
+        from: Option<String>,
+        /// Note after the change, or `None` if cleared.
+        to: Option<String>,
+    },
+    /// A transaction's tag set was changed.
+    TransactionTagsChanged {
+        /// The transaction's ID.
+        id: TransactionId,
+        /// Tags added in this change.
+        added: Vec<TagId>,
+        /// Tags removed in this change.
+        removed: Vec<TagId>,
+    },
+    /// A transaction's reconciliation state was changed.
+    TransactionReconciled {
+        /// The transaction's ID.
+        id: TransactionId,
+        /// Reconciliation state before the change.
+        from: Reconciliation,
+        /// Reconciliation state after the change.
+        to: Reconciliation,
+    },
+    /// A posting was moved to a different account (recategorised).
+    PostingRecategorised {
+        /// The owning transaction's ID.
+        id: TransactionId,
+        /// The posting that moved.
+        posting_id: PostingId,
+        /// Account before the change.
+        from_account: AccountId,
+        /// Account after the change.
+        to_account: AccountId,
+    },
+    /// A posting's amount was changed.
+    PostingAmountChanged {
+        /// The owning transaction's ID.
+        id: TransactionId,
+        /// The posting whose amount changed.
+        posting_id: PostingId,
+        /// Amount before the change, or `None` if previously elided.
+        from: Option<Amount>,
+        /// Amount after the change, or `None` if now elided.
+        to: Option<Amount>,
+    },
+    /// A posting's note was changed.
+    PostingNoteChanged {
+        /// The owning transaction's ID.
+        id: TransactionId,
+        /// The posting whose note changed.
+        posting_id: PostingId,
+        /// Note before the change, or `None` if previously unset.
+        from: Option<String>,
+        /// Note after the change, or `None` if cleared.
+        to: Option<String>,
+    },
+    /// A posting's accrual spread window was changed.
+    PostingSpreadChanged {
+        /// The owning transaction's ID.
+        id: TransactionId,
+        /// The posting whose spread changed.
+        posting_id: PostingId,
+        /// Spread `(from, until)` before the change, or `None` if unset.
+        from: Option<(jiff::civil::Date, jiff::civil::Date)>,
+        /// Spread `(from, until)` after the change, or `None` if cleared.
+        to: Option<(jiff::civil::Date, jiff::civil::Date)>,
+    },
+    /// A posting (leg) was added to a transaction (also covers splits).
+    PostingAdded {
+        /// The owning transaction's ID.
+        id: TransactionId,
+        /// The new posting's ID.
+        posting_id: PostingId,
+        /// The account the new posting hits.
+        account: AccountId,
+        /// The new posting's amount, or `None` if elided.
+        amount: Option<Amount>,
+    },
+    /// A posting (leg) was removed from a transaction.
+    PostingRemoved {
+        /// The owning transaction's ID.
+        id: TransactionId,
+        /// The removed posting's ID.
+        posting_id: PostingId,
     },
     /// A point-in-time market value was recorded for a [`ManualAsset`] account.
     ///
@@ -215,6 +333,18 @@ impl Event {
             Self::TransactionAmended { .. } => "TransactionAmended",
             Self::TransactionVoided { .. } => "TransactionVoided",
             Self::TransactionReversed { .. } => "TransactionReversed",
+            Self::TransactionPayeeChanged { .. } => "TransactionPayeeChanged",
+            Self::TransactionDateChanged { .. } => "TransactionDateChanged",
+            Self::TransactionDescriptionChanged { .. } => "TransactionDescriptionChanged",
+            Self::TransactionNoteChanged { .. } => "TransactionNoteChanged",
+            Self::TransactionTagsChanged { .. } => "TransactionTagsChanged",
+            Self::TransactionReconciled { .. } => "TransactionReconciled",
+            Self::PostingRecategorised { .. } => "PostingRecategorised",
+            Self::PostingAmountChanged { .. } => "PostingAmountChanged",
+            Self::PostingNoteChanged { .. } => "PostingNoteChanged",
+            Self::PostingSpreadChanged { .. } => "PostingSpreadChanged",
+            Self::PostingAdded { .. } => "PostingAdded",
+            Self::PostingRemoved { .. } => "PostingRemoved",
             Self::AssetValuationRecorded { .. } => "AssetValuationRecorded",
             Self::DepreciationCalculated { .. } => "DepreciationCalculated",
             Self::LoanTermsSet { .. } => "LoanTermsSet",
@@ -235,7 +365,19 @@ impl Event {
             | Self::AccountArchived { id } => id.to_string(),
             Self::TransactionCreated { id }
             | Self::TransactionAmended { id, .. }
-            | Self::TransactionVoided { id } => id.to_string(),
+            | Self::TransactionVoided { id }
+            | Self::TransactionPayeeChanged { id, .. }
+            | Self::TransactionDateChanged { id, .. }
+            | Self::TransactionDescriptionChanged { id, .. }
+            | Self::TransactionNoteChanged { id, .. }
+            | Self::TransactionTagsChanged { id, .. }
+            | Self::TransactionReconciled { id, .. }
+            | Self::PostingRecategorised { id, .. }
+            | Self::PostingAmountChanged { id, .. }
+            | Self::PostingNoteChanged { id, .. }
+            | Self::PostingSpreadChanged { id, .. }
+            | Self::PostingAdded { id, .. }
+            | Self::PostingRemoved { id, .. } => id.to_string(),
             Self::TransactionReversed { original_id, .. } => original_id.to_string(),
             // Asset/loan events belong to the account aggregate: `account_id` is the
             // aggregate root, so it is used as the aggregate ID rather than the entity's
@@ -763,5 +905,60 @@ mod tests {
             }
             other => panic!("expected AccountCreated, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn posting_recategorised_round_trips() {
+        use bc_models::PostingId;
+
+        let event = Event::PostingRecategorised {
+            id: TransactionId::new(),
+            posting_id: PostingId::new(),
+            from_account: AccountId::new(),
+            to_account: AccountId::new(),
+        };
+        let json = serde_json::to_string(&event).expect("serialise");
+        let back: Event = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(event.kind(), back.kind());
+        assert_eq!(event.kind(), "PostingRecategorised");
+    }
+
+    #[test]
+    fn transaction_reconciled_round_trips() {
+        use bc_models::Reconciliation;
+
+        let tx = TransactionId::new();
+        let event = Event::TransactionReconciled {
+            id: tx.clone(),
+            from: Reconciliation::Unreconciled,
+            to: Reconciliation::Reconciled,
+        };
+        let json = serde_json::to_string(&event).expect("serialise");
+        let back: Event = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.kind(), "TransactionReconciled");
+        assert_eq!(back.aggregate_id(), tx.to_string());
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "Event is #[non_exhaustive]; wildcard arm required"
+        )]
+        match back {
+            Event::TransactionReconciled { from, to, .. } => {
+                assert_eq!(from, Reconciliation::Unreconciled);
+                assert_eq!(to, Reconciliation::Reconciled);
+            }
+            other => panic!("expected TransactionReconciled, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decomposed_events_aggregate_on_transaction_id() {
+        let tx = TransactionId::new();
+        let event = Event::TransactionPayeeChanged {
+            id: tx.clone(),
+            from: Some("Old".to_owned()),
+            to: Some("New".to_owned()),
+        };
+        assert_eq!(event.aggregate_id(), tx.to_string());
+        assert_eq!(event.kind(), "TransactionPayeeChanged");
     }
 }
