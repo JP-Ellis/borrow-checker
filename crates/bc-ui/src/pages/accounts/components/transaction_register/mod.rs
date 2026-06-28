@@ -3,11 +3,13 @@
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 
+use bc_ipc::AccountRef;
 use bc_ipc::Reconciliation;
 use bc_ipc::Transaction;
 use leptos::prelude::*;
 use leptos::web_sys;
 use stylance::import_style;
+use wasm_bindgen::JsCast as _;
 
 use crate::components::transaction_row::RowPerspective;
 use crate::components::transaction_row::TransactionRow;
@@ -71,7 +73,11 @@ pub fn TransactionRegister(
     /// Called after any mutation so the parent can bump its data version.
     #[prop(optional)]
     on_change: Option<Callback<()>>,
+    /// All selectable accounts for the per-row recategorise picker.
+    #[prop(optional)]
+    accounts: Vec<AccountRef>,
 ) -> impl IntoView {
+    let accounts = StoredValue::new(accounts);
     let instance = REGISTER_INSTANCE.fetch_add(1, Ordering::Relaxed);
     let anchor_name = format!("--bc-reg-filter-{instance}");
     let popover_id = format!("bc-register-filter-menu-{instance}");
@@ -93,6 +99,16 @@ pub fn TransactionRegister(
     });
 
     let on_keydown = move |e: web_sys::KeyboardEvent| {
+        if let Some(t) = e
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
+        {
+            let tag = t.tag_name();
+            if tag == "INPUT" || tag == "TEXTAREA" || t.is_content_editable() {
+                return;
+            }
+        }
+
         let row_count = filtered.get().len();
         if row_count == 0 {
             return;
@@ -242,6 +258,7 @@ pub fn TransactionRegister(
                                     selected_idx.set(Some(i));
                                 })
                                 on_change=on_change_cb
+                                accounts=accounts.get_value()
                             />
                         }
                     })
