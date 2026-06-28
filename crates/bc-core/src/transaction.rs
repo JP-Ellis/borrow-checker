@@ -69,6 +69,214 @@ type TxRow = (
     String,
 );
 
+/// Returns a posting's spread window as a `(from, until)` pair when both ends are set.
+///
+/// Returns `None` if either end of the spread window is absent.
+pub(crate) fn spread_pair(posting: &Posting) -> Option<(Date, Date)> {
+    match (posting.spread_from(), posting.spread_until()) {
+        (Some(from), Some(until)) => Some((from, until)),
+        _ => None,
+    }
+}
+
+/// Merges `updated` with fields from `current` that the edit DTO cannot express.
+///
+/// The `edit` path receives a `Transaction` built from an `EditTransaction` DTO
+/// that has no `extra_dates` field and whose `EditPosting` has no `cost` field.
+/// Without merging, calling `apply_transaction_projection` with the DTO-derived
+/// value would silently wipe those columns.
+///
+/// This function returns a new `Transaction` that carries all of `updated`'s
+/// editable fields (payee, date, description, note, `tag_ids`, posting account/
+/// amount/note/tags/spread) while carrying forward from `current`:
+/// - `extra_dates`: always taken from `current` (the edit path can never change them).
+/// - `reconciliation`: always taken from `current`; the edit path never changes it
+///   (reconciliation is owned by `Service::reconcile`, which enforces the balance
+///   guard). The DTO's `reconciliation` field is echoed but ignored here.
+/// - per-posting `cost`: taken from the matching `current` posting (by ID); new
+///   postings (ID not in `current`) keep `None`.
+///
+/// # Arguments
+///
+/// * `current` - The current stored transaction state.
+/// * `updated` - The desired transaction state built from the edit DTO.
+///
+/// # Returns
+///
+/// A merged `Transaction` suitable for both diffing and projection rewrite.
+fn merge_preserving(current: &Transaction, updated: &Transaction) -> Transaction {
+    let current_postings: std::collections::HashMap<&PostingId, &Posting> =
+        current.postings().iter().map(|p| (p.id(), p)).collect();
+
+    let merged_postings: Vec<Posting> = updated
+        .postings()
+        .iter()
+        .map(|p| {
+            let carried_cost = current_postings
+                .get(p.id())
+                .and_then(|cp| cp.cost())
+                .cloned();
+            Posting::builder()
+                .id(p.id().clone())
+                .account_id(p.account_id().clone())
+                .maybe_amount(p.amount().cloned())
+                .maybe_cost(carried_cost)
+                .maybe_note(p.note().map(str::to_owned))
+                .tag_ids(p.tag_ids().to_vec())
+                .maybe_spread_from(p.spread_from())
+                .maybe_spread_until(p.spread_until())
+                .build()
+        })
+        .collect();
+
+    Transaction::builder()
+        .id(updated.id().clone())
+        .date(updated.date())
+        .maybe_payee(updated.payee().map(str::to_owned))
+        .description(updated.description().to_owned())
+        .maybe_note(updated.note().map(str::to_owned))
+        .postings(merged_postings)
+        .reconciliation(current.reconciliation())
+        .tag_ids(updated.tag_ids().to_vec())
+        .extra_dates(current.extra_dates().to_vec())
+        .created_at(*updated.created_at())
+        .build()
+}
+
+/// Computes the decomposed semantic events that turn `current` into `updated`.
+///
+/// Postings are matched by [`PostingId`]. Transaction-scalar changes are emitted
+/// first, then per-posting changes in `updated` order, then removals.
+///
+/// # Arguments
+///
+/// * `current` - The stored transaction state.
+/// * `updated` - The desired transaction state (same [`TransactionId`]).
+///
+/// # Returns
+///
+/// The list of events; empty if the two states are equal.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the diff covers all scalar and posting-level fields; extraction would obscure the sequential check logic"
+)]
+pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> Vec<Event> {
+    let id = updated.id().clone();
+    let mut events = Vec::new();
+
+    if current.payee() != updated.payee() {
+        events.push(Event::TransactionPayeeChanged {
+            id: id.clone(),
+            from: current.payee().map(str::to_owned),
+            to: updated.payee().map(str::to_owned),
+        });
+    }
+    if current.date() != updated.date() {
+        events.push(Event::TransactionDateChanged {
+            id: id.clone(),
+            from: current.date(),
+            to: updated.date(),
+        });
+    }
+    if current.description() != updated.description() {
+        events.push(Event::TransactionDescriptionChanged {
+            id: id.clone(),
+            from: current.description().to_owned(),
+            to: updated.description().to_owned(),
+        });
+    }
+    if current.note() != updated.note() {
+        events.push(Event::TransactionNoteChanged {
+            id: id.clone(),
+            from: current.note().map(str::to_owned),
+            to: updated.note().map(str::to_owned),
+        });
+    }
+
+    let current_tags: std::collections::HashSet<&TagId> = current.tag_ids().iter().collect();
+    let updated_tags: std::collections::HashSet<&TagId> = updated.tag_ids().iter().collect();
+    let mut added: Vec<TagId> = updated_tags
+        .difference(&current_tags)
+        .map(|t| (*t).clone())
+        .collect();
+    let mut removed: Vec<TagId> = current_tags
+        .difference(&updated_tags)
+        .map(|t| (*t).clone())
+        .collect();
+    added.sort_by_key(std::string::ToString::to_string);
+    removed.sort_by_key(std::string::ToString::to_string);
+    if !added.is_empty() || !removed.is_empty() {
+        events.push(Event::TransactionTagsChanged {
+            id: id.clone(),
+            added,
+            removed,
+        });
+    }
+
+    let current_postings: std::collections::HashMap<&PostingId, &Posting> =
+        current.postings().iter().map(|p| (p.id(), p)).collect();
+
+    for posting in updated.postings() {
+        match current_postings.get(posting.id()) {
+            None => events.push(Event::PostingAdded {
+                id: id.clone(),
+                posting_id: posting.id().clone(),
+                account: posting.account_id().clone(),
+                amount: posting.amount().cloned(),
+            }),
+            Some(prev) => {
+                if prev.account_id() != posting.account_id() {
+                    events.push(Event::PostingRecategorised {
+                        id: id.clone(),
+                        posting_id: posting.id().clone(),
+                        from_account: prev.account_id().clone(),
+                        to_account: posting.account_id().clone(),
+                    });
+                }
+                if prev.amount() != posting.amount() {
+                    events.push(Event::PostingAmountChanged {
+                        id: id.clone(),
+                        posting_id: posting.id().clone(),
+                        from: prev.amount().cloned(),
+                        to: posting.amount().cloned(),
+                    });
+                }
+                if prev.note() != posting.note() {
+                    events.push(Event::PostingNoteChanged {
+                        id: id.clone(),
+                        posting_id: posting.id().clone(),
+                        from: prev.note().map(str::to_owned),
+                        to: posting.note().map(str::to_owned),
+                    });
+                }
+                let prev_spread = spread_pair(prev);
+                let new_spread = spread_pair(posting);
+                if prev_spread != new_spread {
+                    events.push(Event::PostingSpreadChanged {
+                        id: id.clone(),
+                        posting_id: posting.id().clone(),
+                        from: prev_spread,
+                        to: new_spread,
+                    });
+                }
+            }
+        }
+    }
+
+    let updated_ids: std::collections::HashSet<&PostingId> =
+        updated.postings().iter().map(Posting::id).collect();
+    for prev in current.postings() {
+        if !updated_ids.contains(prev.id()) {
+            events.push(Event::PostingRemoved {
+                id: id.clone(),
+                posting_id: prev.id().clone(),
+            });
+        }
+    }
+
+    events
+}
+
 /// Validates a transaction's postings before persistence.
 ///
 /// Storing is permissive — an unbalanced (e.g. one-sided, freshly-imported)
@@ -1277,45 +1485,27 @@ impl Service {
             .map(IntoIterator::into_iter)
     }
 
-    /// Amends an existing transaction, replacing its projection row and all postings atomically.
+    /// Rewrites the projection tables for `updated` within an open DB transaction.
     ///
-    /// The event append, projection UPDATE, posting DELETE/INSERT, and tag DELETE/INSERT
-    /// are all wrapped in a single SQLite transaction so they succeed or fail atomically.
-    /// `posting_tags` rows are deleted before `postings` rows to satisfy the FK constraint
-    /// `posting_tags.posting_id REFERENCES postings(id)` enforced by `PRAGMA foreign_keys = ON`.
-    ///
-    /// `reconciliation` is intentionally **not** updated here — it may only advance
-    /// through [`Service::reconcile`], which enforces the `balanced()` invariant before
-    /// allowing a transition to [`Reconciliation::Reconciled`].
+    /// Updates the `transactions` row and fully replaces the transaction's
+    /// postings, posting tags, transaction tags, and extra dates.
     ///
     /// # Arguments
     ///
-    /// * `updated` - The new transaction state. Must carry the same [`TransactionId`]
-    ///   as the existing transaction. All postings are replaced.
+    /// * `db_tx` - An open SQLite transaction to write within.
+    /// * `updated` - The desired transaction state.
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::BadData`] if the posting list is empty, contains two
-    /// or more elided amounts, or is a single lone elided posting.
-    /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
-    /// Returns [`BcError`] on event append or database update failure.
-    #[inline]
-    pub async fn amend(&self, updated: Transaction) -> BcResult<()> {
-        validate_postings(updated.postings())?;
-
-        let tx_id = updated.id().clone();
-        let tx_id_str = tx_id.to_string();
-        let event = Event::TransactionAmended {
-            id: tx_id.clone(),
-            date: updated.date(),
-            description: updated.description().to_owned(),
-            payee: updated.payee().map(str::to_owned),
-        };
+    /// Returns [`BcError::NotFound`] if no `transactions` row matches the ID.
+    /// Returns [`BcError`] on any database write failure.
+    async fn apply_transaction_projection(
+        &self,
+        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        updated: &Transaction,
+    ) -> BcResult<()> {
+        let tx_id_str = updated.id().to_string();
         let date_str = updated.date().to_string();
-
-        let mut db_tx = self.pool.begin().await?;
-
-        insert_event(&event, &mut db_tx).await?;
 
         let result = sqlx::query(
             "UPDATE transactions SET date = ?, payee = ?, description = ?, note = ? WHERE id = ?",
@@ -1325,7 +1515,7 @@ impl Service {
         .bind(updated.description())
         .bind(updated.note())
         .bind(&tx_id_str)
-        .execute(&mut *db_tx)
+        .execute(&mut **db_tx)
         .await?;
 
         if result.rows_affected() == 0 {
@@ -1340,25 +1530,25 @@ impl Service {
              (SELECT id FROM postings WHERE transaction_id = ?)",
         )
         .bind(&tx_id_str)
-        .execute(&mut *db_tx)
+        .execute(&mut **db_tx)
         .await?;
 
         sqlx::query("DELETE FROM postings WHERE transaction_id = ?")
             .bind(&tx_id_str)
-            .execute(&mut *db_tx)
+            .execute(&mut **db_tx)
             .await?;
 
         sqlx::query("DELETE FROM transaction_tags WHERE transaction_id = ?")
             .bind(&tx_id_str)
-            .execute(&mut *db_tx)
+            .execute(&mut **db_tx)
             .await?;
 
         sqlx::query("DELETE FROM transaction_dates WHERE transaction_id = ?")
             .bind(&tx_id_str)
-            .execute(&mut *db_tx)
+            .execute(&mut **db_tx)
             .await?;
 
-        crate::tag::insert_transaction_tags(&mut db_tx, updated.id(), updated.tag_ids()).await?;
+        crate::tag::insert_transaction_tags(&mut *db_tx, updated.id(), updated.tag_ids()).await?;
 
         for (label, date) in updated.extra_dates() {
             sqlx::query(
@@ -1367,7 +1557,7 @@ impl Service {
             .bind(&tx_id_str)
             .bind(label)
             .bind(date.to_string())
-            .execute(&mut *db_tx)
+            .execute(&mut **db_tx)
             .await?;
         }
 
@@ -1407,14 +1597,93 @@ impl Service {
             .bind(cost_label) // 11. cost_label
             .bind(posting.spread_from().map(|d| d.to_string())) // 12. spread_from
             .bind(posting.spread_until().map(|d| d.to_string())) // 13. spread_until
-            .execute(&mut *db_tx)
+            .execute(&mut **db_tx)
             .await?;
 
-            crate::tag::insert_posting_tags(&mut db_tx, posting.id(), posting.tag_ids()).await?;
+            crate::tag::insert_posting_tags(&mut *db_tx, posting.id(), posting.tag_ids()).await?;
         }
 
+        Ok(())
+    }
+
+    /// Amends an existing transaction, replacing its projection row and all postings atomically.
+    ///
+    /// The event append, projection UPDATE, posting DELETE/INSERT, and tag DELETE/INSERT
+    /// are all wrapped in a single SQLite transaction so they succeed or fail atomically.
+    /// `posting_tags` rows are deleted before `postings` rows to satisfy the FK constraint
+    /// `posting_tags.posting_id REFERENCES postings(id)` enforced by `PRAGMA foreign_keys = ON`.
+    ///
+    /// `reconciliation` is intentionally **not** updated here — it may only advance
+    /// through [`Service::reconcile`], which enforces the `balanced()` invariant before
+    /// allowing a transition to [`Reconciliation::Reconciled`].
+    ///
+    /// # Arguments
+    ///
+    /// * `updated` - The new transaction state. Must carry the same [`TransactionId`]
+    ///   as the existing transaction. All postings are replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if the posting list is empty, contains two
+    /// or more elided amounts, or is a single lone elided posting.
+    /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
+    /// Returns [`BcError`] on event append or database update failure.
+    #[inline]
+    pub async fn amend(&self, updated: Transaction) -> BcResult<()> {
+        validate_postings(updated.postings())?;
+
+        let tx_id = updated.id().clone();
+        let event = Event::TransactionAmended {
+            id: tx_id.clone(),
+            date: updated.date(),
+            description: updated.description().to_owned(),
+            payee: updated.payee().map(str::to_owned),
+        };
+
+        let mut db_tx = self.pool.begin().await?;
+        insert_event(&event, &mut db_tx).await?;
+        self.apply_transaction_projection(&mut db_tx, &updated)
+            .await?;
         db_tx.commit().await?;
         tracing::info!(transaction_id = %tx_id, "transaction amended");
+        Ok(())
+    }
+
+    /// Applies a desired transaction state, recording decomposed semantic events.
+    ///
+    /// Loads the current state, diffs it against `updated` to produce granular
+    /// events (payee/date/note/tags and per-posting recategorise/amount/note/
+    /// spread/add/remove), then atomically appends those events and rewrites the
+    /// projection. Persistence is permissive: an unbalanced result is allowed.
+    ///
+    /// # Arguments
+    ///
+    /// * `updated` - The desired transaction state. Must carry the ID of an
+    ///   existing transaction; all postings are replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if the posting list is empty, has ≥2 elided
+    /// amounts, or is a lone elided posting. Returns [`BcError::NotFound`] if no
+    /// transaction with that ID exists. Returns [`BcError`] on DB failure.
+    #[inline]
+    pub async fn edit(&self, updated: Transaction) -> BcResult<()> {
+        validate_postings(updated.postings())?;
+
+        let tx_id = updated.id().clone();
+        let current = self.find_by_id(&tx_id).await?;
+        let merged = merge_preserving(&current, &updated);
+        let events = diff_transaction(&current, &merged);
+
+        let mut db_tx = self.pool.begin().await?;
+        for event in &events {
+            insert_event(event, &mut db_tx).await?;
+        }
+        self.apply_transaction_projection(&mut db_tx, &merged)
+            .await?;
+        db_tx.commit().await?;
+
+        tracing::info!(transaction_id = %tx_id, event_count = events.len(), "transaction edited");
         Ok(())
     }
 
@@ -1554,12 +1823,67 @@ impl Service {
                 "cannot reconcile an unbalanced transaction".into(),
             ));
         }
+
+        let from = tx.reconciliation();
+        if from == state {
+            return Ok(());
+        }
+
+        let event = Event::TransactionReconciled {
+            id: id.clone(),
+            from,
+            to: state,
+        };
+
+        let mut db_tx = self.pool.begin().await?;
+        insert_event(&event, &mut db_tx).await?;
         sqlx::query("UPDATE transactions SET reconciliation = ? WHERE id = ?")
             .bind(to_db_str(state)?)
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *db_tx)
             .await?;
+        db_tx.commit().await?;
+
+        tracing::info!(transaction_id = %id, ?state, "transaction reconciliation set");
         Ok(())
+    }
+
+    /// Returns the event trail for a transaction, oldest first.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The transaction whose events to load.
+    ///
+    /// # Returns
+    ///
+    /// `(created_at, event)` pairs ordered by insertion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if a stored timestamp or payload cannot be
+    /// parsed. Returns [`BcError`] on DB failure.
+    #[inline]
+    pub async fn audit_trail(
+        &self,
+        id: &TransactionId,
+    ) -> BcResult<Vec<(jiff::Timestamp, crate::events::Event)>> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT payload, created_at FROM events WHERE aggregate_id = ? ORDER BY rowid ASC",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|(payload, created_at)| {
+                let event: crate::events::Event = serde_json::from_str(&payload)
+                    .map_err(|e| BcError::BadData(format!("invalid event payload: {e}")))?;
+                let ts = created_at.parse::<jiff::Timestamp>().map_err(|e| {
+                    BcError::BadData(format!("invalid created_at '{created_at}': {e}"))
+                })?;
+                Ok((ts, event))
+            })
+            .collect()
     }
 }
 
@@ -1576,12 +1900,16 @@ mod tests {
     use bc_models::Reconciliation;
     use bc_models::TagId;
     use bc_models::Transaction;
+    use bc_models::TransactionId;
     use jiff::Timestamp;
+    use jiff::civil::Date;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
+    use super::diff_transaction;
     use super::*;
+    use crate::events::Event;
 
     #[sqlx::test(migrations = "./migrations")]
     async fn posting_spread_persists_and_loads(pool: sqlx::SqlitePool) {
@@ -1767,6 +2095,94 @@ mod tests {
         let found = svc.find_by_id(&id).await.expect("find should succeed");
         assert_eq!(found.postings().len(), 2);
         assert!(found.tag_ids().is_empty());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reconcile_unbalanced_returns_bad_data(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+        let svc = Service::new(pool.clone());
+        let tx_id = bc_models::TransactionId::new();
+        let tx = Transaction::builder()
+            .id(tx_id.clone())
+            .date(date(2026, 1, 15))
+            .description("Unbalanced")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc)
+                    .amount(Amount::new(dec!(50.00), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(tx).await.expect("create");
+
+        let err = svc
+            .reconcile(&tx_id, Reconciliation::Reconciled)
+            .await
+            .expect_err("reconciling an unbalanced transaction must fail");
+        assert!(
+            matches!(err, BcError::BadData(_)),
+            "expected BadData, got {err:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reconcile_records_audit_event(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc_a = acct_svc
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+        let acc_b = acct_svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let svc = Service::new(pool.clone());
+        let mut tx = make_balanced_transaction(acc_a, acc_b);
+        tx = Transaction::builder()
+            .id(tx.id().clone())
+            .date(tx.date())
+            .description(tx.description().to_owned())
+            .postings(tx.postings().to_vec())
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let tx_id = tx.id().clone();
+        svc.create(tx).await.expect("create");
+
+        svc.reconcile(&tx_id, Reconciliation::Reconciled)
+            .await
+            .expect("reconcile balanced transaction");
+
+        let trail = svc.audit_trail(&tx_id).await.expect("audit trail");
+        assert!(
+            trail
+                .iter()
+                .any(|(_, e)| matches!(e, Event::TransactionReconciled { .. })),
+            "audit trail must include a TransactionReconciled event"
+        );
+
+        let found = svc.find_by_id(&tx_id).await.expect("find");
+        assert_eq!(found.reconciliation(), Reconciliation::Reconciled);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2570,6 +2986,369 @@ mod tests {
         );
     }
 
+    // MARK: diff_transaction tests
+
+    fn sample_tx() -> Transaction {
+        let p1 = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .maybe_amount(Some(Amount::new(
+                rust_decimal::Decimal::new(-1000, 2),
+                CommodityCode::new("AUD"),
+            )))
+            .tag_ids(Vec::new())
+            .build();
+        let p2 = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .maybe_amount(Some(Amount::new(
+                rust_decimal::Decimal::new(1000, 2),
+                CommodityCode::new("AUD"),
+            )))
+            .tag_ids(Vec::new())
+            .build();
+        Transaction::builder()
+            .id(TransactionId::new())
+            .date("2026-04-30".parse::<Date>().expect("valid date"))
+            .maybe_payee(Some("Old Payee".to_owned()))
+            .description("desc".to_owned())
+            .postings(vec![p1, p2])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build()
+    }
+
+    trait TxTestExt {
+        fn with_payee(self, payee: Option<String>) -> Self;
+        fn recategorise_first(self, account: AccountId) -> Self;
+        fn push_leg(self) -> Self;
+        fn recategorise_posting(self, target: &PostingId, account: AccountId) -> Self;
+    }
+
+    impl TxTestExt for Transaction {
+        fn with_payee(self, payee: Option<String>) -> Self {
+            Transaction::builder()
+                .id(self.id().clone())
+                .date(self.date())
+                .maybe_payee(payee)
+                .description(self.description().to_owned())
+                .maybe_note(self.note().map(str::to_owned))
+                .postings(self.postings().to_vec())
+                .reconciliation(self.reconciliation())
+                .tag_ids(self.tag_ids().to_vec())
+                .created_at(Timestamp::now())
+                .build()
+        }
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "test helper: sample_tx always has at least two postings"
+        )]
+        fn recategorise_first(self, account: AccountId) -> Self {
+            let mut postings = self.postings().to_vec();
+            let first = &postings[0];
+            postings[0] = Posting::builder()
+                .id(first.id().clone())
+                .account_id(account)
+                .maybe_amount(first.amount().cloned())
+                .tag_ids(first.tag_ids().to_vec())
+                .build();
+            Transaction::builder()
+                .id(self.id().clone())
+                .date(self.date())
+                .maybe_payee(self.payee().map(str::to_owned))
+                .description(self.description().to_owned())
+                .postings(postings)
+                .reconciliation(self.reconciliation())
+                .created_at(Timestamp::now())
+                .build()
+        }
+
+        fn push_leg(self) -> Self {
+            let mut postings = self.postings().to_vec();
+            postings.push(
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .maybe_amount(Some(Amount::new(
+                        rust_decimal::Decimal::new(500, 2),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .tag_ids(Vec::new())
+                    .build(),
+            );
+            Transaction::builder()
+                .id(self.id().clone())
+                .date(self.date())
+                .maybe_payee(self.payee().map(str::to_owned))
+                .description(self.description().to_owned())
+                .postings(postings)
+                .reconciliation(self.reconciliation())
+                .created_at(Timestamp::now())
+                .build()
+        }
+
+        fn recategorise_posting(self, target: &PostingId, account: AccountId) -> Self {
+            let postings = self
+                .postings()
+                .iter()
+                .map(|p| {
+                    if p.id() == target {
+                        Posting::builder()
+                            .id(p.id().clone())
+                            .account_id(account.clone())
+                            .maybe_amount(p.amount().cloned())
+                            .maybe_note(p.note().map(str::to_owned))
+                            .tag_ids(p.tag_ids().to_vec())
+                            .build()
+                    } else {
+                        p.clone()
+                    }
+                })
+                .collect::<Vec<_>>();
+            Transaction::builder()
+                .id(self.id().clone())
+                .date(self.date())
+                .maybe_payee(self.payee().map(str::to_owned))
+                .description(self.description().to_owned())
+                .postings(postings)
+                .reconciliation(self.reconciliation())
+                .created_at(Timestamp::now())
+                .build()
+        }
+    }
+
+    /// Serialises a [`Reconciliation`] value to the canonical DB string.
+    ///
+    /// Thin wrapper around [`crate::db::to_db_str`] for test helpers that need
+    /// a plain `String` without propagating `BcResult`.
+    fn to_db_str_test(val: Reconciliation) -> String {
+        crate::db::to_db_str(val).expect("Reconciliation serialises cleanly")
+    }
+
+    /// Seeds two accounts and a balanced two-posting transaction.
+    ///
+    /// Returns `(tx_id, first_posting_id, second_account_id)` so callers can
+    /// recategorise the first posting into the second account.
+    async fn seed_editable_tx(pool: &sqlx::SqlitePool) -> (TransactionId, PostingId, AccountId) {
+        let account_svc = crate::AccountService::new(pool.clone());
+        let checking_id = account_svc
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create checking account");
+        let expenses_id = account_svc
+            .create()
+            .name("Expenses")
+            .account_type(bc_models::AccountType::Expense)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create expenses account");
+
+        let posting_id = PostingId::new();
+        let svc = Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date("2026-05-01".parse::<Date>().expect("valid date"))
+            .description("Seed transaction")
+            .postings(vec![
+                Posting::builder()
+                    .id(posting_id.clone())
+                    .account_id(checking_id.clone())
+                    .amount(Amount::new(
+                        rust_decimal::Decimal::new(-10000, 2),
+                        CommodityCode::new("AUD"),
+                    ))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(expenses_id.clone())
+                    .amount(Amount::new(
+                        rust_decimal::Decimal::new(10000, 2),
+                        CommodityCode::new("AUD"),
+                    ))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let tx_id = svc.create(tx).await.expect("seed transaction created");
+        (tx_id, posting_id, expenses_id)
+    }
+
+    // MARK: Service::edit tests
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_emits_decomposed_events(pool: sqlx::SqlitePool) {
+        let service = Service::new(pool.clone());
+        let (tx_id, posting_id, new_account_id) = seed_editable_tx(&pool).await;
+
+        let current = service.find_by_id(&tx_id).await.expect("load tx");
+        let updated = current
+            .clone()
+            .with_payee(Some("Edited Payee".to_owned()))
+            .recategorise_posting(&posting_id, new_account_id.clone());
+        service.edit(updated).await.expect("edit ok");
+
+        let kinds: Vec<String> =
+            sqlx::query_scalar("SELECT kind FROM events WHERE aggregate_id = ? ORDER BY rowid ASC")
+                .bind(tx_id.to_string())
+                .fetch_all(&pool)
+                .await
+                .expect("query events");
+        assert!(kinds.contains(&"TransactionPayeeChanged".to_owned()));
+        assert!(kinds.contains(&"PostingRecategorised".to_owned()));
+
+        let reloaded = service.find_by_id(&tx_id).await.expect("reload");
+        assert_eq!(reloaded.payee(), Some("Edited Payee"));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_preserves_extra_dates_and_cost(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::AccountService::new(pool.clone());
+        let acc_a = acct_svc
+            .create()
+            .name("Brokerage")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create brokerage");
+        let acc_b = acct_svc
+            .create()
+            .name("Cash")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create cash");
+
+        let svc = Service::new(pool.clone());
+
+        let cost = Cost::builder()
+            .total(Amount::new(dec!(1500.00), CommodityCode::new("AUD")))
+            .label("lot-1")
+            .build();
+        let posting_with_cost_id = PostingId::new();
+        let original = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 3, 1))
+            .description("Buy shares")
+            .extra_dates(vec![("cleared".to_owned(), date(2026, 3, 3))])
+            .postings(vec![
+                Posting::builder()
+                    .id(posting_with_cost_id.clone())
+                    .account_id(acc_a.clone())
+                    .amount(Amount::new(dec!(10), CommodityCode::new("AAPL")))
+                    .cost(cost)
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_b.clone())
+                    .amount(Amount::new(dec!(-10), CommodityCode::new("AAPL")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+
+        let tx_id = svc.create(original.clone()).await.expect("create");
+
+        // Edit: only change the payee — extra_dates and posting cost must survive.
+        let current = svc.find_by_id(&tx_id).await.expect("load current");
+        let edited = Transaction::builder()
+            .id(tx_id.clone())
+            .date(current.date())
+            .maybe_payee(Some("New Payee".to_owned()))
+            .description(current.description().to_owned())
+            .maybe_note(current.note().map(str::to_owned))
+            .postings(current.postings().to_vec())
+            .reconciliation(current.reconciliation())
+            .tag_ids(current.tag_ids().to_vec())
+            .created_at(*current.created_at())
+            .build();
+
+        svc.edit(edited).await.expect("edit ok");
+
+        let reloaded = svc.find_by_id(&tx_id).await.expect("reload");
+        assert_eq!(
+            reloaded.extra_dates(),
+            &[("cleared".to_owned(), date(2026, 3, 3))],
+            "extra_dates must survive edit"
+        );
+        let cost_posting = reloaded
+            .postings()
+            .iter()
+            .find(|p| p.id() == &posting_with_cost_id)
+            .expect("posting with cost must still exist");
+        let saved_cost = cost_posting.cost().expect("cost must survive edit");
+        assert_eq!(saved_cost.total().value(), dec!(1500.00));
+        assert_eq!(saved_cost.label(), Some("lot-1"));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_allows_reconciled_transactions(pool: sqlx::SqlitePool) {
+        let service = Service::new(pool.clone());
+        let (tx_id, _posting_id, _acct) = seed_editable_tx(&pool).await;
+        sqlx::query("UPDATE transactions SET reconciliation = ? WHERE id = ?")
+            .bind(to_db_str_test(Reconciliation::Reconciled))
+            .bind(tx_id.to_string())
+            .execute(&pool)
+            .await
+            .expect("mark reconciled");
+
+        let current = service.find_by_id(&tx_id).await.expect("load");
+        let updated = current
+            .clone()
+            .with_payee(Some("Still Editable".to_owned()));
+        service.edit(updated).await.expect("reconciled edit ok");
+    }
+
+    #[test]
+    fn diff_no_changes_is_empty() {
+        let tx = sample_tx();
+        assert!(
+            diff_transaction(&tx, &tx).is_empty(),
+            "identical inputs must produce no events"
+        );
+    }
+
+    #[test]
+    fn diff_detects_payee_change() {
+        let current = sample_tx();
+        let updated = current.clone().with_payee(Some("New Payee".to_owned()));
+        let events = diff_transaction(&current, &updated);
+        assert_eq!(events.len(), 1);
+        let first = events.first().expect("one event expected");
+        assert!(matches!(
+            first,
+            Event::TransactionPayeeChanged { to, .. } if to.as_deref() == Some("New Payee")
+        ));
+    }
+
+    #[test]
+    fn diff_detects_recategorise_and_added_leg() {
+        let current = sample_tx();
+        let new_account = AccountId::new();
+        let updated = current
+            .clone()
+            .recategorise_first(new_account.clone())
+            .push_leg();
+        let events = diff_transaction(&current, &updated);
+        assert!(events.iter().any(|e| matches!(
+            e, Event::PostingRecategorised { to_account, .. } if *to_account == new_account
+        )));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::PostingAdded { .. }))
+        );
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn amend_updates_note(pool: sqlx::SqlitePool) {
         let acct_svc = crate::AccountService::new(pool.clone());
@@ -2628,5 +3407,84 @@ mod tests {
 
         let found = svc.find_by_id(&id).await.expect("find after amend");
         assert_eq!(found.note(), Some("new note"), "amended note must persist");
+    }
+
+    // MARK: Service::reconcile tests
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reconcile_sets_state_when_balanced(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::AccountService::new(pool.clone());
+        let checking_id = acct_svc
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create checking account");
+        let expense_id = acct_svc
+            .create()
+            .name("Expenses")
+            .account_type(bc_models::AccountType::Expense)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create expense account");
+
+        let svc = Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date("2026-06-01".parse::<Date>().expect("valid date"))
+            .description("Balanced")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(checking_id)
+                    .amount(Amount::new(
+                        rust_decimal::Decimal::new(-5000, 2),
+                        CommodityCode::new("AUD"),
+                    ))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(expense_id)
+                    .amount(Amount::new(
+                        rust_decimal::Decimal::new(5000, 2),
+                        CommodityCode::new("AUD"),
+                    ))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let id = svc.create(tx).await.expect("create balanced tx");
+
+        svc.reconcile(&id, Reconciliation::Reconciled)
+            .await
+            .expect("reconcile balanced tx should succeed");
+        let loaded = svc.find_by_id(&id).await.expect("find after reconcile");
+        assert_eq!(loaded.reconciliation(), Reconciliation::Reconciled);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn audit_trail_returns_events_in_order(pool: sqlx::SqlitePool) {
+        let service = Service::new(pool.clone());
+        let (tx_id, posting_id, new_account_id) = seed_editable_tx(&pool).await;
+        let current = service.find_by_id(&tx_id).await.expect("load");
+        let updated = current
+            .clone()
+            .recategorise_posting(&posting_id, new_account_id);
+        service.edit(updated).await.expect("edit");
+
+        let trail = service.audit_trail(&tx_id).await.expect("trail");
+        assert!(matches!(
+            trail.first().map(|(_, e)| e),
+            Some(Event::TransactionCreated { .. })
+        ));
+        assert!(
+            trail
+                .iter()
+                .any(|(_, e)| matches!(e, Event::PostingRecategorised { .. }))
+        );
     }
 }
