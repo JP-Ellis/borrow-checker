@@ -186,13 +186,6 @@
   background: var(--bc-surface);
 }
 
-.data_panel {
-  padding: var(--bc-space-6);
-  background: var(--bc-surface-accent);
-  border: 1px solid var(--bc-border-strong);
-  border-radius: var(--bc-radius-card);
-  min-height: 120px; /* minimum panel height: prevents collapse on short content */
-}
 
 .action_btn {
   display: inline-flex;
@@ -443,10 +436,15 @@
   color: var(--bc-ink-dim);
 }
 
-.noteline {
+.textline {
   display: flex;
   align-items: baseline;
   gap: var(--bc-space-3);
+}
+
+.textfield {
+  flex: 1;
+  color: inherit;
 }
 
 .note_input {

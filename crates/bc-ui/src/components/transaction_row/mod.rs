@@ -28,15 +28,9 @@ use crate::components::tag_picker::TagPicker;
 #[cfg(target_arch = "wasm32")]
 use crate::components::tag_token::TagToken;
 #[cfg(target_arch = "wasm32")]
-use crate::components::toml_view::KvKind;
-#[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::TomlArraySection;
 #[cfg(target_arch = "wasm32")]
 use crate::components::toml_view::TomlAuditEntry;
-#[cfg(target_arch = "wasm32")]
-use crate::components::toml_view::TomlKvEdit;
-#[cfg(target_arch = "wasm32")]
-use crate::components::toml_view::TomlSection;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::edit_ctx::TxEditCtx;
 #[cfg(target_arch = "wasm32")]
@@ -903,6 +897,24 @@ fn TransactionDetail(
             // mirroring + note / ⤳ spread. Tracked in
             // https://github.com/JP-Ellis/borrow-checker/issues/209
             <div class=style::metamix>
+                <div class=style::textline>
+                    <span class=style::metamix_lbl>"Payee"</span>
+                    <input
+                        class=format!("{} {}", style::f, style::textfield)
+                        prop:value=move || f_payee.get()
+                        on:input=move |ev| f_payee.set(event_target_value(&ev))
+                        placeholder="payee"
+                    />
+                </div>
+                <div class=style::textline>
+                    <span class=style::metamix_lbl>"Description"</span>
+                    <input
+                        class=format!("{} {}", style::f, style::textfield)
+                        prop:value=move || f_desc.get()
+                        on:input=move |ev| f_desc.set(event_target_value(&ev))
+                        placeholder="description"
+                    />
+                </div>
                 <div class=style::mixline>
                     <div class=style::metamix_grp>
                         <span class=style::metamix_lbl>"Date"</span>
@@ -961,7 +973,8 @@ fn TransactionDetail(
                         />
                     </div>
                 </div>
-                <div class=style::noteline>
+                <div class=style::textline>
+                    <span class=style::metamix_lbl>"Note"</span>
                     <input
                         class=format!("{} {}", style::f, style::note_input)
                         prop:value=move || f_note.get()
@@ -969,12 +982,6 @@ fn TransactionDetail(
                         placeholder="add note…"
                     />
                 </div>
-            </div>
-
-            <div class=style::data_panel>
-                <TomlSection>"transaction"</TomlSection>
-                <TomlKvEdit key="payee" value=f_payee kind=KvKind::Str />
-                <TomlKvEdit key="description" value=f_desc kind=KvKind::Str />
             </div>
 
             {move || {
