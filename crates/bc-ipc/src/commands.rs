@@ -63,6 +63,21 @@ pub const CLEAR_POSTING_SPREAD: &str = "clear_posting_spread";
 /// Reverses a transaction, creating a linked negated reversal transaction.
 pub const REVERSE_TRANSACTION: &str = "reverse_transaction";
 
+/// Command: apply a desired transaction state (edit in place).
+pub const EDIT_TRANSACTION: &str = "edit_transaction";
+
+/// Command: set a transaction's reconciliation state.
+pub const SET_RECONCILIATION: &str = "set_reconciliation";
+
+/// Command: load the audit trail for a transaction.
+pub const GET_TRANSACTION_AUDIT: &str = "get_transaction_audit";
+
+/// Command: list all tags as id/path pairs.
+pub const LIST_TAGS: &str = "list_tags";
+
+/// Command: create the full colon-path tag hierarchy, returning the leaf ID.
+pub const CREATE_TAG: &str = "create_tag";
+
 /// Argument struct for the `reverse_transaction` command.
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(serde::Serialize)]
