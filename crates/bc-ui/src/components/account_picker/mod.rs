@@ -18,6 +18,8 @@ use bc_ipc::AccountRef;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
+pub use matching::account_paths;
+#[cfg(target_arch = "wasm32")]
 pub use matching::filter_accounts;
 #[cfg(target_arch = "wasm32")]
 pub use matching::match_segments;
