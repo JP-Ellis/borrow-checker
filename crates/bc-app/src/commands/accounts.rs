@@ -17,6 +17,7 @@ use tauri::State;
 use crate::AppState;
 use crate::ipc::IntoIpc;
 use crate::ipc::IntoModel;
+use crate::ipc::core_error_to_ipc;
 
 // MARK: Command handlers
 
@@ -174,6 +175,112 @@ pub async fn create_transaction(
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
     Ok(tx_id.to_string())
+}
+
+/// Applies a desired transaction state (decomposed-event edit).
+///
+/// # Arguments
+///
+/// * `tx` - The desired transaction state.
+/// * `state` - The shared application state.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for unparsable IDs or domain rule
+/// violations, [`bc_ipc::BcError::NotFound`] if the transaction does not exist,
+/// or [`bc_ipc::BcError::Internal`] for unexpected failures.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn edit_transaction(
+    tx: bc_ipc::EditTransaction,
+    state: State<'_, AppState>,
+) -> Result<(), bc_ipc::BcError> {
+    let tx_id = tx
+        .id
+        .parse::<bc_models::TransactionId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid transaction id: {e}")))?;
+    let reconciliation = tx.reconciliation.into_model();
+
+    let mut postings = Vec::with_capacity(tx.postings.len());
+    for p in &tx.postings {
+        let account_id = p
+            .account_id
+            .parse::<bc_models::AccountId>()
+            .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account id: {e}")))?;
+        let posting_id = match &p.id {
+            Some(s) => s
+                .parse::<bc_models::PostingId>()
+                .map_err(|e| bc_ipc::BcError::Validation(format!("invalid posting id: {e}")))?,
+            None => bc_models::PostingId::new(),
+        };
+        let tag_ids = resolve_tag_inputs(&state.tags, &p.tags).await?;
+        let posting = bc_models::Posting::builder()
+            .id(posting_id)
+            .account_id(account_id)
+            .maybe_amount(p.amount.as_ref().map(IntoModel::into_model))
+            .maybe_note(p.note.clone())
+            .tag_ids(tag_ids)
+            .maybe_spread_from(p.spread_from)
+            .maybe_spread_until(p.spread_until)
+            .build();
+        postings.push(posting);
+    }
+
+    let tag_ids = resolve_tag_inputs(&state.tags, &tx.tags).await?;
+
+    let model_tx = bc_models::Transaction::builder()
+        .id(tx_id)
+        .date(tx.date)
+        .maybe_payee(Some(tx.payee))
+        .description(tx.description)
+        .maybe_note(tx.note)
+        .postings(postings)
+        .reconciliation(reconciliation)
+        .tag_ids(tag_ids)
+        .created_at(jiff::Timestamp::now())
+        .build();
+
+    state
+        .transactions
+        .edit(model_tx)
+        .await
+        .map_err(|e| core_error_to_ipc(&e))
+}
+
+/// Sets a transaction's reconciliation state.
+///
+/// # Arguments
+///
+/// * `id`             - The transaction ID to update.
+/// * `reconciliation` - The desired reconciliation state.
+/// * `state`          - Tauri managed application state.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] if `id` is malformed or the
+/// transaction does not balance, [`bc_ipc::BcError::NotFound`] if no such
+/// transaction exists, or [`bc_ipc::BcError::Internal`] if the update fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn set_reconciliation(
+    id: String,
+    reconciliation: bc_ipc::Reconciliation,
+    state: State<'_, AppState>,
+) -> Result<(), bc_ipc::BcError> {
+    let tx_id = id
+        .parse::<bc_models::TransactionId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid transaction id: {e}")))?;
+    state
+        .transactions
+        .reconcile(&tx_id, reconciliation.into_model())
+        .await
+        .map_err(|e| core_error_to_ipc(&e))
 }
 
 /// Reverses a transaction, returning the new reversal transaction's id.
@@ -401,6 +508,104 @@ fn spark_label(start: jiff::civil::Date, period: &bc_models::Period) -> String {
     }
 }
 
+// MARK: Audit helpers
+
+/// Maps a core [`bc_core::Event`] to a UI audit entry with a short kind tag.
+///
+/// # Arguments
+///
+/// * `ts` - When the event was recorded.
+/// * `event` - The core event to describe.
+///
+/// # Returns
+///
+/// A [`bc_ipc::AuditEntry`] with a short kind and a human-readable message.
+fn audit_entry_from(ts: jiff::Timestamp, event: &bc_core::Event) -> bc_ipc::AuditEntry {
+    use bc_core::Event;
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "Event is #[non_exhaustive]; catch-all arm required for exhaustiveness against future variants"
+    )]
+    let (kind, message): (&str, String) = match event {
+        Event::TransactionCreated { .. } => ("create", "transaction created".to_owned()),
+        Event::TransactionAmended { .. } => ("amend", "transaction amended".to_owned()),
+        Event::TransactionVoided { .. } => ("void", "transaction voided".to_owned()),
+        Event::TransactionReversed { .. } => ("reverse", "transaction reversed".to_owned()),
+        Event::TransactionPayeeChanged { to, .. } => (
+            "payee",
+            format!("payee → {}", to.as_deref().unwrap_or("(none)")),
+        ),
+        Event::TransactionDateChanged { to, .. } => ("date", format!("date → {to}")),
+        Event::TransactionDescriptionChanged { .. } => ("desc", "description changed".to_owned()),
+        Event::TransactionNoteChanged { to, .. } => (
+            "note",
+            match to {
+                Some(_) => "note changed".to_owned(),
+                None => "note removed".to_owned(),
+            },
+        ),
+        Event::TransactionTagsChanged { added, removed, .. } => {
+            ("tags", format!("tags +{} -{}", added.len(), removed.len()))
+        }
+        Event::TransactionReconciled { from, to, .. } => {
+            ("reconcile", format!("reconciliation {from:?} → {to:?}"))
+        }
+        Event::PostingRecategorised { to_account, .. } => {
+            ("recat", format!("recategorised → {to_account}"))
+        }
+        Event::PostingAmountChanged { .. } => ("amount", "amount changed".to_owned()),
+        Event::PostingNoteChanged { .. } => ("note", "posting note changed".to_owned()),
+        Event::PostingSpreadChanged { to, .. } => (
+            "spread",
+            match to {
+                Some((from, until)) => format!("spread {from}..{until}"),
+                None => "spread cleared".to_owned(),
+            },
+        ),
+        Event::PostingAdded { account, .. } => ("split", format!("+leg {account}")),
+        Event::PostingRemoved { .. } => ("split", "removed leg".to_owned()),
+        other => {
+            let k = other.kind();
+            (k, k.to_owned())
+        }
+    };
+    bc_ipc::AuditEntry::new(ts, kind.to_owned(), message)
+}
+
+/// Loads the audit trail for a transaction.
+///
+/// # Arguments
+///
+/// * `id` - The transaction's ID.
+/// * `state` - The shared application state.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for an unparsable ID, or
+/// [`bc_ipc::BcError::Internal`] if the lookup fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_transaction_audit(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<bc_ipc::AuditEntry>, bc_ipc::BcError> {
+    let tx_id = id
+        .parse::<bc_models::TransactionId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid transaction id: {e}")))?;
+    let trail = state
+        .transactions
+        .audit_trail(&tx_id)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    Ok(trail
+        .iter()
+        .map(|(ts, event)| audit_entry_from(*ts, event))
+        .collect())
+}
+
 /// Returns period-bucketed cash-flow data for a sparkline chart.
 ///
 /// Defaults to 6 monthly buckets ending with the current month.
@@ -485,6 +690,8 @@ pub async fn get_account_sparkline(
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
+
     #[test]
     fn resolve_tag_inputs_errors_on_unknown_tag() {
         tauri::async_runtime::block_on(async {
@@ -495,5 +702,18 @@ mod tests {
                 .expect_err("unknown tag must error");
             assert!(matches!(err, bc_ipc::BcError::Validation(_)));
         });
+    }
+
+    #[test]
+    fn audit_entry_from_recategorise_uses_recat_kind() {
+        let event = bc_core::Event::PostingRecategorised {
+            id: bc_models::TransactionId::new(),
+            posting_id: bc_models::PostingId::new(),
+            from_account: bc_models::AccountId::new(),
+            to_account: bc_models::AccountId::new(),
+        };
+        let entry = super::audit_entry_from(jiff::Timestamp::now(), &event);
+        assert_eq!(entry.kind, "recat");
+        assert!(!entry.message.is_empty());
     }
 }
