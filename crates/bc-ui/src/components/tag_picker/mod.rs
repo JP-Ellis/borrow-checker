@@ -129,6 +129,7 @@ pub fn TagPicker(
                     on:focus=move |_| open.set(true)
                     on:blur=move |_| open.set(false)
                     data-testid="tag-input"
+                    placeholder="add tag"
                 />
             </div>
             {move || {
