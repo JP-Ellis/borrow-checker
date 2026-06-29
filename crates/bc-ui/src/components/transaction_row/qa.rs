@@ -262,6 +262,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
         note: String::new(),
         reconciliation: Reconciliation::Unreconciled,
         tags: vec![],
+        extra_dates: vec![],
         postings: vec![
             EditablePosting {
                 id: Some("p-1".to_owned()),
