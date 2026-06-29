@@ -1,6 +1,7 @@
 //! Shared edit context for the editable transaction detail view.
 
 use bc_ipc::AccountRef;
+use bc_ipc::CommodityInfo;
 use bc_ipc::TagInfo;
 use leptos::prelude::*;
 
@@ -21,6 +22,8 @@ pub struct TxEditCtx {
     pub accounts: StoredValue<Vec<AccountRef>>,
     /// All known tags, populated asynchronously after context creation.
     pub all_tags: RwSignal<Vec<TagInfo>>,
+    /// All known currencies, populated asynchronously after context creation.
+    pub currencies: RwSignal<Vec<CommodityInfo>>,
     /// Monotonic counter bumped whenever `working` is reset externally (discard).
     ///
     /// Per-posting inputs that mirror `working` into local signals watch this to
@@ -31,8 +34,8 @@ pub struct TxEditCtx {
 impl TxEditCtx {
     /// Creates a context seeded from `original`.
     ///
-    /// `all_tags` starts empty and is populated asynchronously by the owning
-    /// component after creation.
+    /// `all_tags` and `currencies` start empty and are populated asynchronously
+    /// by the owning component after creation.
     ///
     /// # Arguments
     ///
@@ -49,6 +52,7 @@ impl TxEditCtx {
             original: StoredValue::new(original),
             accounts: StoredValue::new(accounts),
             all_tags: RwSignal::new(Vec::new()),
+            currencies: RwSignal::new(Vec::new()),
             reset_epoch: RwSignal::new(0),
         }
     }

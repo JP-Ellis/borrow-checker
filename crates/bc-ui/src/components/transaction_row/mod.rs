@@ -792,6 +792,13 @@ fn TransactionDetail(
         }
     });
 
+    let currencies = ctx.currencies;
+    let _currencies_resource = LocalResource::new(move || async move {
+        if let Ok(list) = bc_ipc::client::list_currencies().await {
+            currencies.set(list);
+        }
+    });
+
     let error: RwSignal<Option<String>> = RwSignal::new(None);
     let saving = RwSignal::new(false);
 
@@ -832,7 +839,8 @@ fn TransactionDetail(
     let working = ctx.working;
     let original = ctx.original;
 
-    let balance_state = Signal::derive(move || working.with(|w| derive_balance(w, &[]))); // TODO(task7): pass ctx.currencies
+    let balance_state =
+        Signal::derive(move || working.with(|w| derive_balance(w, &currencies.get())));
     let save_disabled = Signal::derive(move || {
         !matches!(
             balance_state.get(),
@@ -868,8 +876,7 @@ fn TransactionDetail(
             return;
         }
         let working_now = working.get_untracked();
-        let edit = match working_now.to_edit_transaction(&[]) {
-            // TODO(task7): pass ctx.currencies
+        let edit = match working_now.to_edit_transaction(&currencies.get_untracked()) {
             Ok(d) => d,
             Err(e) => {
                 error.set(Some(e.to_string()));
