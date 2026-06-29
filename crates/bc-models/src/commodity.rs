@@ -62,6 +62,11 @@ pub struct Commodity {
     #[builder(into)]
     symbol: Option<String>,
 
+    /// Acceptable input markers besides `code`/`symbol` (e.g. `"A$"`, `"AU$"`).
+    /// Resolution matches against `{code} ∪ {symbol} ∪ aliases`. Defaults to empty.
+    #[builder(default)]
+    aliases: Vec<String>,
+
     /// First date from which this commodity is considered valid. `None` means there is
     /// no lower bound on validity.
     active_from: Option<Date>,
@@ -112,6 +117,13 @@ impl Commodity {
     #[must_use]
     pub fn symbol(&self) -> Option<&str> {
         self.symbol.as_deref()
+    }
+
+    /// Returns the alternate input markers for this commodity.
+    #[inline]
+    #[must_use]
+    pub fn aliases(&self) -> &[String] {
+        &self.aliases
     }
 
     /// Returns the date from which this commodity is valid.
@@ -190,5 +202,16 @@ mod tests {
         assert!(c.symbol().is_none());
         assert!(c.active_from().is_none());
         assert!(c.active_until().is_none());
+    }
+
+    #[test]
+    fn aliases_default_empty_and_settable() {
+        let c = Commodity::builder().code("AUD").build();
+        assert!(c.aliases().is_empty());
+        let c2 = Commodity::builder()
+            .code("AUD")
+            .aliases(vec!["A$".to_owned(), "AU$".to_owned()])
+            .build();
+        assert_eq!(c2.aliases(), &["A$".to_owned(), "AU$".to_owned()]);
     }
 }
