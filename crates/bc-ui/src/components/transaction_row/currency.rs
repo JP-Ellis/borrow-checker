@@ -116,13 +116,6 @@ pub fn resolve_marker(currencies: &[CommodityInfo], marker: &str) -> Result<Stri
 /// Returns [`MarkerError::Missing`] when no marker is found, [`MarkerError::Unknown`]
 /// when a marker token matches no commodity, and [`MarkerError::Ambiguous`] when a
 /// marker token matches more than one commodity.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "consumed by Task 6 posting-row amount parser; no callers exist yet on wasm32"
-    )
-)]
 #[expect(
     clippy::string_slice,
     reason = "cut is derived from ASCII-only marker suffix length; UTF-8 boundary guaranteed"

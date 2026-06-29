@@ -832,7 +832,7 @@ fn TransactionDetail(
     let working = ctx.working;
     let original = ctx.original;
 
-    let balance_state = Signal::derive(move || working.with(derive_balance));
+    let balance_state = Signal::derive(move || working.with(|w| derive_balance(w, &[]))); // TODO(task7): pass ctx.currencies
     let save_disabled = Signal::derive(move || {
         !matches!(
             balance_state.get(),
@@ -868,7 +868,8 @@ fn TransactionDetail(
             return;
         }
         let working_now = working.get_untracked();
-        let edit = match working_now.to_edit_transaction() {
+        let edit = match working_now.to_edit_transaction(&[]) {
+            // TODO(task7): pass ctx.currencies
             Ok(d) => d,
             Err(e) => {
                 error.set(Some(e.to_string()));

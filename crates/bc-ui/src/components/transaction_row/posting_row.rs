@@ -202,11 +202,12 @@ pub fn PostingLine(
                 .unwrap_or_default()
         });
         let mut cls = style::p_row.to_owned();
-        match parse_amount(amount_str.trim()) {
-            Ok(v) if v < Decimal::ZERO => {
+        match parse_amount(&[], amount_str.trim()) {
+            // TODO(task7): pass ctx.currencies
+            Ok((v, _)) if v < Decimal::ZERO => {
                 cls = format!("{} {}", cls, style::p_out);
             }
-            Ok(v) if v > Decimal::ZERO => {
+            Ok((v, _)) if v > Decimal::ZERO => {
                 cls = format!("{} {}", cls, style::p_in);
             }
             _ => {}
@@ -222,7 +223,7 @@ pub fn PostingLine(
             .iter()
             .find(|p| p.uid == uid)
             .is_some_and(EditablePosting::is_elided);
-        is_elided && matches!(derive_balance(&w), BalanceState::Inferred { .. })
+        is_elided && matches!(derive_balance(&w, &[]), BalanceState::Inferred { .. }) // TODO(task7): pass ctx.currencies
     };
 
     let ghost_placeholder = move || {
@@ -235,7 +236,8 @@ pub fn PostingLine(
         if !is_elided {
             return String::new();
         }
-        match derive_balance(&w) {
+        match derive_balance(&w, &[]) {
+            // TODO(task7): pass ctx.currencies
             BalanceState::Inferred {
                 remainder,
                 currency,
