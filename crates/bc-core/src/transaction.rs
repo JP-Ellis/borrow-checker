@@ -547,11 +547,12 @@ impl Service {
             .collect::<BcResult<_>>()?;
 
         // Load extra labeled dates.
-        let extra_date_rows: Vec<(String, String)> =
-            sqlx::query_as("SELECT label, date FROM transaction_dates WHERE transaction_id = ?")
-                .bind(id.to_string())
-                .fetch_all(&self.pool)
-                .await?;
+        let extra_date_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT label, date FROM transaction_dates WHERE transaction_id = ? ORDER BY rowid",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
 
         let extra_dates: Vec<(String, Date)> = extra_date_rows
             .into_iter()

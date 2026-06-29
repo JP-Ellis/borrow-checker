@@ -536,6 +536,7 @@ fn audit_entry_from(ts: jiff::Timestamp, event: &bc_core::Event) -> bc_ipc::Audi
             format!("payee → {}", to.as_deref().unwrap_or("(none)")),
         ),
         Event::TransactionDateChanged { to, .. } => ("date", format!("date → {to}")),
+        Event::TransactionExtraDatesChanged { .. } => ("dates", "extra dates changed".to_owned()),
         Event::TransactionDescriptionChanged { .. } => ("desc", "description changed".to_owned()),
         Event::TransactionNoteChanged { to, .. } => (
             "note",

@@ -149,19 +149,19 @@ async function expandTxRow(payee: string): Promise<boolean> {
 // ── Test ─────────────────────────────────────────────────────────────────────
 
 describe('Accounts — posting mid-list delete does not clobber remaining rows (#210)', () => {
-    it('deleting the middle posting leaves the other rows with their original data', async () => {
+    it('deleting the middle posting leaves the other rows with their original data', async function () {
         const txId = dbFindMultiPostingTx();
         if (!txId) {
             console.warn(
                 'No 3+-posting transaction found in test DB — skipping #210 regression test',
             );
-            return;
+            this.skip();
         }
 
         const payee = dbTxPayee(txId);
         if (!payee) {
             console.warn('Could not resolve payee for multi-posting tx — skipping');
-            return;
+            this.skip();
         }
 
         await openFirstAccount();
@@ -170,12 +170,14 @@ describe('Accounts — posting mid-list delete does not clobber remaining rows (
             console.warn(
                 `Could not locate "${payee}" transaction in any account register — skipping`,
             );
-            return;
+            this.skip();
         }
 
         // ── Capture all posting rows. ────────────────────────────────────────
         const amountInputs = await $$('[data-testid="posting-amount"]');
         expect(amountInputs.length).toBeGreaterThanOrEqual(3);
+
+        const initialCount = await amountInputs.length;
 
         const before: string[] = [];
         for (const input of amountInputs) {
@@ -192,7 +194,11 @@ describe('Accounts — posting mid-list delete does not clobber remaining rows (
 
         // Wait for the row count to drop by one.
         await browser.waitUntil(
-            async () => (await $$('[data-testid="posting-amount"]')).length === amountInputs.length - 1,
+            async () => {
+                const rows = await $$('[data-testid="posting-amount"]');
+                const count = await rows.length;
+                return count === initialCount - 1;
+            },
             { timeout: 3_000, timeoutMsg: 'Posting row count did not decrease after delete' },
         );
 
