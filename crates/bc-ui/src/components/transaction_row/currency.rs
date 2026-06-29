@@ -158,8 +158,25 @@ pub fn split_marked_amount(
     }
 
     // 2) Glued leading marker (symbol/alias/code immediately before the number).
+    //    Allow an optional leading sign before the marker (e.g. "-$50"): strip it,
+    //    match the marker, then re-attach the sign to the numeric remainder.
+    let (sign, body): (&str, &str) = if let Some(rest) = s.strip_prefix('-') {
+        ("-", rest)
+    } else if let Some(rest) = s.strip_prefix('+') {
+        ("+", rest)
+    } else {
+        ("", s)
+    };
     for entry in &markers {
-        if let Some(rest) = s.strip_prefix(entry.marker.as_str()) {
+        // Alphabetic CODE markers match case-insensitively; symbols/aliases stay exact.
+        let stripped = if entry.is_code && entry.marker.chars().all(|c| c.is_ascii_alphabetic()) {
+            body.get(..entry.marker.len())
+                .filter(|p| p.eq_ignore_ascii_case(&entry.marker))
+                .map(|_| &body[entry.marker.len()..])
+        } else {
+            body.strip_prefix(entry.marker.as_str())
+        };
+        if let Some(rest) = stripped {
             // Only accept when what's left starts like a number (digit, sign, or dot).
             if rest
                 .trim_start()
@@ -167,7 +184,7 @@ pub fn split_marked_amount(
             {
                 // Propagate ambiguity error for the matched prefix.
                 drop(resolve_marker(currencies, &entry.marker)?);
-                return Ok((rest.trim().to_owned(), entry.code.clone()));
+                return Ok((format!("{sign}{}", rest.trim()), entry.code.clone()));
             }
         }
     }
@@ -307,6 +324,38 @@ mod tests {
             resolve_marker(&reg, "usd"),
             Ok("USD".to_owned()),
             "resolve_marker must match code case-insensitively"
+        );
+    }
+
+    #[test]
+    fn negative_leading_symbol_resolves() {
+        assert_eq!(
+            split_marked_amount(&registry(), "-$50"),
+            Ok(("-50".to_owned(), "USD".to_owned()))
+        );
+    }
+
+    #[test]
+    fn negative_leading_multichar_symbol_resolves() {
+        assert_eq!(
+            split_marked_amount(&registry(), "-A$100"),
+            Ok(("-100".to_owned(), "AUD".to_owned()))
+        );
+    }
+
+    #[test]
+    fn sign_after_symbol_still_resolves() {
+        assert_eq!(
+            split_marked_amount(&registry(), "$-100"),
+            Ok(("-100".to_owned(), "USD".to_owned()))
+        );
+    }
+
+    #[test]
+    fn leading_glued_code_case_insensitive() {
+        assert_eq!(
+            split_marked_amount(&registry(), "usd100"),
+            Ok(("100".to_owned(), "USD".to_owned()))
         );
     }
 
