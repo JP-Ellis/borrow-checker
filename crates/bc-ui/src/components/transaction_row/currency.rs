@@ -16,14 +16,39 @@ pub enum MarkerError {
     Ambiguous(String),
 }
 
-/// All `(marker, code)` pairs for a commodity: code, symbol, and aliases.
-fn markers_for(c: &CommodityInfo) -> Vec<(String, String)> {
-    let mut v = vec![(c.code.clone(), c.code.clone())];
+/// A single marker-to-code mapping entry for a commodity.
+struct MarkerEntry {
+    /// The marker string (code, symbol, or alias).
+    marker: String,
+    /// The canonical commodity code this marker resolves to.
+    code: String,
+    /// Whether this entry originated from the commodity's code field.
+    ///
+    /// When `true`, matching is case-insensitive. When `false` (symbol or alias),
+    /// matching is exact.
+    is_code: bool,
+}
+
+/// All marker entries for a commodity: code (case-insensitive), symbol, and aliases (exact).
+fn markers_for(c: &CommodityInfo) -> Vec<MarkerEntry> {
+    let mut v = vec![MarkerEntry {
+        marker: c.code.clone(),
+        code: c.code.clone(),
+        is_code: true,
+    }];
     if let Some(s) = &c.symbol {
-        v.push((s.clone(), c.code.clone()));
+        v.push(MarkerEntry {
+            marker: s.clone(),
+            code: c.code.clone(),
+            is_code: false,
+        });
     }
     for a in &c.aliases {
-        v.push((a.clone(), c.code.clone()));
+        v.push(MarkerEntry {
+            marker: a.clone(),
+            code: c.code.clone(),
+            is_code: false,
+        });
     }
     v
 }
@@ -53,10 +78,14 @@ pub fn resolve_marker(currencies: &[CommodityInfo], marker: &str) -> Result<Stri
     }
     let mut hits: Vec<String> = Vec::new();
     for c in currencies {
-        for (m, code) in markers_for(c) {
-            let matches = m == key || m.eq_ignore_ascii_case(key);
-            if matches && !hits.contains(&code) {
-                hits.push(code.clone());
+        for entry in markers_for(c) {
+            let matches = if entry.is_code {
+                entry.marker.eq_ignore_ascii_case(key)
+            } else {
+                entry.marker == key
+            };
+            if matches && !hits.contains(&entry.code) {
+                hits.push(entry.code.clone());
             }
         }
     }
@@ -108,8 +137,8 @@ pub fn split_marked_amount(
     }
 
     // Gather all candidate markers, longest first (so "A$" beats "$").
-    let mut markers: Vec<(String, String)> = currencies.iter().flat_map(markers_for).collect();
-    markers.sort_by_key(|m| Reverse(m.0.len()));
+    let mut markers: Vec<MarkerEntry> = currencies.iter().flat_map(markers_for).collect();
+    markers.sort_by_key(|m| Reverse(m.marker.len()));
 
     // 1) Whitespace-separated token at either end.
     //    A non-numeric token is treated as a marker attempt: propagate errors so
@@ -136,32 +165,34 @@ pub fn split_marked_amount(
     }
 
     // 2) Glued leading marker (symbol/alias/code immediately before the number).
-    for (m, code) in &markers {
-        if let Some(rest) = s.strip_prefix(m.as_str()) {
+    for entry in &markers {
+        if let Some(rest) = s.strip_prefix(entry.marker.as_str()) {
             // Only accept when what's left starts like a number (digit, sign, or dot).
             if rest
                 .trim_start()
                 .starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+' || c == '.')
             {
                 // Propagate ambiguity error for the matched prefix.
-                drop(resolve_marker(currencies, m)?);
-                return Ok((rest.trim().to_owned(), code.clone()));
+                drop(resolve_marker(currencies, &entry.marker)?);
+                return Ok((rest.trim().to_owned(), entry.code.clone()));
             }
         }
     }
 
     // 3) Glued trailing code (e.g. "100AUD") — only alphabetic codes/aliases.
-    for (m, code) in &markers {
-        if m.chars().all(|c| c.is_ascii_alphabetic())
-            && let Some(rest) = s.to_ascii_uppercase().strip_suffix(&m.to_ascii_uppercase())
+    for entry in &markers {
+        if entry.marker.chars().all(|c| c.is_ascii_alphabetic())
+            && let Some(rest) = s
+                .to_ascii_uppercase()
+                .strip_suffix(&entry.marker.to_ascii_uppercase())
             && rest
                 .chars()
                 .next()
                 .is_some_and(|c| c.is_ascii_digit() || c == '.')
         {
-            drop(resolve_marker(currencies, m)?);
+            drop(resolve_marker(currencies, &entry.marker)?);
             let cut = rest.len();
-            return Ok((s[..cut].trim().to_owned(), code.clone()));
+            return Ok((s[..cut].trim().to_owned(), entry.code.clone()));
         }
     }
 
@@ -228,6 +259,62 @@ mod tests {
             split_marked_amount(&registry(), "XYZ 100"),
             Err(MarkerError::Unknown(_))
         ));
+    }
+
+    /// Codes match case-insensitively; symbols/aliases must match exactly.
+    #[test]
+    fn symbol_exact_match_code_case_insensitive() {
+        // Registry: code "USD", symbol "us$" (lowercase).
+        let reg = vec![CommodityInfo::new(
+            "c1",
+            "USD",
+            Some("us$".to_owned()),
+            vec![],
+        )];
+
+        // "US$100" — uppercase "US$" does NOT match the lowercase symbol "us$".
+        assert!(
+            matches!(
+                split_marked_amount(&reg, "US$100"),
+                Err(MarkerError::Unknown(_) | MarkerError::Missing)
+            ),
+            "uppercase symbol variant must not match lowercase symbol"
+        );
+
+        // "us$100" — exact lowercase symbol DOES match.
+        assert_eq!(
+            split_marked_amount(&reg, "us$100"),
+            Ok(("100".to_owned(), "USD".to_owned())),
+            "exact-case symbol must resolve"
+        );
+
+        // "usd 100" — code match is case-insensitive.
+        assert_eq!(
+            split_marked_amount(&reg, "usd 100"),
+            Ok(("100".to_owned(), "USD".to_owned())),
+            "code must resolve case-insensitively"
+        );
+
+        // resolve_marker bare API.
+        assert!(
+            matches!(resolve_marker(&reg, "US$"), Err(MarkerError::Unknown(_))),
+            "resolve_marker must not match wrong-case symbol"
+        );
+        assert_eq!(
+            resolve_marker(&reg, "us$"),
+            Ok("USD".to_owned()),
+            "resolve_marker must match exact-case symbol"
+        );
+        assert_eq!(
+            resolve_marker(&reg, "USD"),
+            Ok("USD".to_owned()),
+            "resolve_marker must match code exactly"
+        );
+        assert_eq!(
+            resolve_marker(&reg, "usd"),
+            Ok("USD".to_owned()),
+            "resolve_marker must match code case-insensitively"
+        );
     }
 
     #[test]
