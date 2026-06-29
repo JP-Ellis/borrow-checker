@@ -27,7 +27,7 @@ pub async fn list_currencies(
 ) -> Result<Vec<bc_ipc::CommodityInfo>, bc_ipc::BcError> {
     let list = state
         .commodities
-        .list_active()
+        .list_all()
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
     Ok(list
