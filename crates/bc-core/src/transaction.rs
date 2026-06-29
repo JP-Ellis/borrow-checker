@@ -89,7 +89,7 @@ pub(crate) fn spread_pair(posting: &Posting) -> Option<(Date, Date)> {
 /// This function returns a new `Transaction` that carries all of `updated`'s
 /// editable fields (payee, date, description, note, `tag_ids`, `extra_dates`,
 /// posting account/amount/note/tags/spread) while carrying forward from `current`:
-/// - `extra_dates`: taken from `updated` (the DTO is authoritative; Task 2+).
+/// - `extra_dates`: taken from `updated` (the DTO is authoritative).
 /// - `reconciliation`: always taken from `current`; the edit path never changes it
 ///   (reconciliation is owned by `Service::reconcile`, which enforces the balance
 ///   guard). The DTO's `reconciliation` field is echoed but ignored here.
