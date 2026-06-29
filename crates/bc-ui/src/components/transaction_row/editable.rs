@@ -28,6 +28,8 @@ use rust_decimal::Decimal;
 pub struct EditablePosting {
     /// Existing posting ID, or `None` for a newly added leg.
     pub id: Option<String>,
+    /// Stable per-row identity for keyed rendering; not persisted.
+    pub uid: u64,
     /// Account this posting hits.
     pub account_id: String,
     /// Account display name (for the read view and picker label).
@@ -52,14 +54,16 @@ impl EditablePosting {
     /// # Arguments
     ///
     /// * `p` - The source posting.
+    /// * `uid` - Stable per-row identity for keyed rendering.
     ///
     /// # Returns
     ///
     /// The editor-friendly posting; elided legs map to an empty `amount`.
     #[must_use]
-    pub fn from_posting(p: &Posting) -> Self {
+    pub fn from_posting(p: &Posting, uid: u64) -> Self {
         Self {
             id: Some(p.id.clone()),
+            uid,
             account_id: p.account.id.clone(),
             account_name: p.account.name.clone(),
             amount: p
@@ -136,7 +140,10 @@ impl EditableTransaction {
             postings: tx
                 .postings
                 .iter()
-                .map(EditablePosting::from_posting)
+                .enumerate()
+                .map(|(i, p)| {
+                    EditablePosting::from_posting(p, u64::try_from(i).unwrap_or(u64::MAX))
+                })
                 .collect(),
         }
     }
@@ -155,6 +162,35 @@ impl EditableTransaction {
             .find(|p| !p.is_elided())
             .map(|p| p.currency.clone())
             .unwrap_or_default()
+    }
+
+    /// Appends a blank posting seeded with the buffer's default currency and a
+    /// fresh `uid` (max existing + 1), returning the new uid.
+    ///
+    /// # Returns
+    ///
+    /// The `uid` assigned to the new posting.
+    pub fn push_blank_posting(&mut self) -> u64 {
+        let uid = self
+            .postings
+            .iter()
+            .map(|p| p.uid)
+            .max()
+            .map_or(0, |m| m.saturating_add(1));
+        let currency = self.default_currency();
+        self.postings.push(EditablePosting {
+            id: None,
+            uid,
+            account_id: String::new(),
+            account_name: String::new(),
+            amount: String::new(),
+            currency,
+            note: String::new(),
+            tags: vec![],
+            spread_from: None,
+            spread_until: None,
+        });
+        uid
     }
 
     /// Serialises the working buffer into a [`EditTransaction`] for submission.
@@ -407,6 +443,7 @@ pub mod tests {
     use bc_ipc::Transaction;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
+    use pretty_assertions::assert_ne;
     use rust_decimal::Decimal;
 
     use super::BalanceState;
@@ -416,6 +453,44 @@ pub mod tests {
     use super::derive_balance;
     use super::parse_amount;
     use super::parse_tags;
+
+    fn two_balanced_postings() -> Vec<Posting> {
+        vec![
+            Posting::new(
+                "p1",
+                AccountRef::new("checking", "Checking"),
+                Some(Amount::new(Decimal::new(-8_420, 2), "AUD")),
+                None::<&str>,
+                vec![],
+                None,
+                None,
+            ),
+            Posting::new(
+                "p2",
+                AccountRef::new("groceries", "Groceries"),
+                Some(Amount::new(Decimal::new(8_420, 2), "AUD")),
+                None::<&str>,
+                vec![],
+                None,
+                None,
+            ),
+        ]
+    }
+
+    fn sample_two_posting_tx() -> Transaction {
+        Transaction::new(
+            "tx-1",
+            Date::constant(2026, 4, 30),
+            "Coles",
+            "",
+            None::<&str>,
+            vec![],
+            Reconciliation::Unreconciled,
+            vec![],
+            two_balanced_postings(),
+            vec![],
+        )
+    }
 
     fn sample_tx() -> Transaction {
         Transaction::new(
@@ -504,7 +579,7 @@ pub mod tests {
             Some(Date::constant(2026, 1, 1)),
             Some(Date::constant(2026, 1, 31)),
         );
-        let ep = EditablePosting::from_posting(&p);
+        let ep = EditablePosting::from_posting(&p, 0);
         assert_eq!(ep.amount, "12.50");
         assert_eq!(ep.currency, "USD");
         assert_eq!(ep.spread_from, Some(Date::constant(2026, 1, 1)));
@@ -514,6 +589,7 @@ pub mod tests {
     fn ep(amount: &str, currency: &str) -> EditablePosting {
         EditablePosting {
             id: Some("p".to_owned()),
+            uid: 0,
             account_id: "a".to_owned(),
             account_name: "A".to_owned(),
             amount: amount.to_owned(),
@@ -675,5 +751,25 @@ pub mod tests {
             w.to_edit_transaction(),
             Err(EditError::Amount { index: 0, .. })
         ));
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn from_transaction_assigns_unique_uids() {
+        let t = sample_two_posting_tx();
+        let e = EditableTransaction::from_transaction(&t);
+        assert_eq!(e.postings.len(), 2);
+        assert_ne!(e.postings[0].uid, e.postings[1].uid);
+    }
+
+    #[test]
+    fn push_blank_posting_returns_fresh_uid() {
+        let t = sample_two_posting_tx();
+        let mut e = EditableTransaction::from_transaction(&t);
+        let max_before = e.postings.iter().map(|p| p.uid).max().unwrap_or(0);
+        let new_uid = e.push_blank_posting();
+        assert_eq!(e.postings.len(), 3);
+        assert!(new_uid > max_before);
+        assert_eq!(e.postings.last().map(|p| p.uid), Some(new_uid));
     }
 }

@@ -265,6 +265,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
         postings: vec![
             EditablePosting {
                 id: Some("p-1".to_owned()),
+                uid: 0,
                 account_id: "checking".to_owned(),
                 account_name: "Assets :: Checking".to_owned(),
                 amount: "-42.00".to_owned(),
@@ -276,6 +277,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
             },
             EditablePosting {
                 id: Some("p-2".to_owned()),
+                uid: 1,
                 account_id: "groceries".to_owned(),
                 account_name: "Expenses :: Groceries".to_owned(),
                 amount: "42.00".to_owned(),
