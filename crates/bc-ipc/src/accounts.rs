@@ -533,6 +533,8 @@ pub struct EditTransaction {
     pub tags: Vec<String>,
     /// All postings in display order.
     pub postings: Vec<EditPosting>,
+    /// Extra named dates (label + date pairs); replaces the stored set on save.
+    pub extra_dates: Vec<(String, jiff::civil::Date)>,
 }
 
 impl EditTransaction {
@@ -548,6 +550,7 @@ impl EditTransaction {
     /// * `reconciliation` - Reconciliation status (echoed back unchanged).
     /// * `tags` - Transaction-level tag paths (resolved to existing tags on save).
     /// * `postings` - All postings in display order.
+    /// * `extra_dates` - Extra named dates (label + date pairs); replaces the stored set on save.
     #[must_use]
     #[inline]
     #[expect(
@@ -563,6 +566,7 @@ impl EditTransaction {
         reconciliation: Reconciliation,
         tags: Vec<String>,
         postings: Vec<EditPosting>,
+        extra_dates: Vec<(String, jiff::civil::Date)>,
     ) -> Self {
         Self {
             id: id.into(),
@@ -573,6 +577,7 @@ impl EditTransaction {
             reconciliation,
             tags,
             postings,
+            extra_dates,
         }
     }
 }
@@ -1003,6 +1008,7 @@ mod tests {
                 spread_from: None,
                 spread_until: None,
             }],
+            extra_dates: vec![],
         };
         let json = serde_json::to_string(&dto).expect("ser");
         let back: EditTransaction = serde_json::from_str(&json).expect("de");
@@ -1031,6 +1037,7 @@ mod tests {
             Reconciliation::Unreconciled,
             vec!["work".to_owned()],
             vec![p.clone()],
+            vec![],
         );
 
         assert_eq!(tx.id, "tx-1");
