@@ -49,6 +49,7 @@ pub use budget::RolloverPolicy;
 pub use budget::WindowOverlap;
 pub use currency::AUD;
 pub use currency::BTC;
+pub use currency::CommodityInfo;
 pub use currency::Currency;
 pub use currency::ETH;
 pub use currency::EUR;
