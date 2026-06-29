@@ -34,9 +34,9 @@ import_style!(style, "picker.module.scss");
 /// An account autocomplete: a text input plus a filtered suggestion list.
 ///
 /// Keyboard-driven: `↑`/`↓` move the highlight, `Enter` selects, `Escape`
-/// closes and restores the last committed value. A "Create" row appears, when
-/// the query does not match any existing account name, only if `on_create` is
-/// provided.
+/// closes and restores the last committed value. The picker only selects
+/// existing accounts; accounts must be created beforehand (e.g. on the Accounts
+/// page).
 ///
 /// # Arguments
 ///
@@ -44,14 +44,12 @@ import_style!(style, "picker.module.scss");
 /// * `selected_id` - Bound signal holding the chosen account ID.
 /// * `selected_name` - Bound signal holding the input text / chosen name.
 /// * `on_pick` - Called with the chosen [`AccountRef`] when selected.
-/// * `on_create` - Optional callback invoked when the user confirms the "Create"
-///   row. The "Create" row is rendered only when this callback is provided.
 #[cfg(target_arch = "wasm32")]
 #[component]
 #[expect(clippy::too_many_lines, reason = "Leptos view! macro")]
 #[expect(
     clippy::arithmetic_side_effects,
-    reason = "count is bounded by suggestions len + 1; h < count is pre-checked"
+    reason = "count is bounded by suggestions len; h < count is pre-checked"
 )]
 #[expect(
     clippy::indexing_slicing,
@@ -66,10 +64,6 @@ pub fn AccountPicker(
     selected_name: RwSignal<String>,
     /// Called with the chosen account when selected via click or keyboard.
     on_pick: Callback<AccountRef>,
-    /// Optional callback invoked when the user confirms the "Create" row. The
-    /// "Create" row is rendered only when this callback is provided.
-    #[prop(optional)]
-    on_create: Option<Callback<String>>,
 ) -> impl IntoView {
     let open = RwSignal::new(false);
     let highlighted = RwSignal::new(0_usize);
@@ -90,12 +84,7 @@ pub fn AccountPicker(
             return;
         }
         let matches = suggestions();
-        let show_create = on_create.is_some() && {
-            let q = selected_name.get();
-            let q = q.trim();
-            !q.is_empty() && !matches.iter().any(|a| a.name.eq_ignore_ascii_case(q))
-        };
-        let count = matches.len() + usize::from(show_create);
+        let count = matches.len();
         if count == 0 {
             return;
         }
@@ -116,13 +105,6 @@ pub fn AccountPicker(
                     selected_id.set(a.id.clone());
                     selected_name.set(a.name.clone());
                     on_pick.run(a);
-                } else if show_create {
-                    let q = selected_name.get().trim().to_owned();
-                    last_committed.set_value(q.clone());
-                    selected_id.set(String::new());
-                    if let Some(cb) = on_create {
-                        cb.run(q);
-                    }
                 }
                 open.set(false);
                 ev.prevent_default();
@@ -149,15 +131,7 @@ pub fn AccountPicker(
                 open.get()
                     .then(|| {
                         let list = suggestions();
-                        let matches_len = list.len();
                         let q = selected_name.get();
-                        let show_create = on_create.is_some()
-                            && {
-                                let qt = q.trim();
-                                !qt.is_empty()
-                                    && !list.iter().any(|a| a.name.eq_ignore_ascii_case(qt))
-                            };
-                        let q_trimmed = q.trim().to_owned();
                         view! {
                             <ul class=style::menu>
                                 {list
@@ -205,41 +179,6 @@ pub fn AccountPicker(
                                         }
                                     })
                                     .collect::<Vec<_>>()}
-                                {show_create
-                                    .then(|| {
-                                        let q_for_create = q_trimmed.clone();
-                                        let q_for_display = q_trimmed.clone();
-                                        view! {
-                                            <li
-                                                class=move || {
-                                                    if highlighted.get() == matches_len {
-                                                        format!(
-                                                            "{} {} {}",
-                                                            style::option,
-                                                            style::option_create,
-                                                            style::option_hi,
-                                                        )
-                                                    } else {
-                                                        format!("{} {}", style::option, style::option_create)
-                                                    }
-                                                }
-                                                on:mouseenter=move |_| highlighted.set(matches_len)
-                                                on:mousedown=move |ev| {
-                                                    ev.prevent_default();
-                                                    last_committed.set_value(q_for_create.clone());
-                                                    selected_id.set(String::new());
-                                                    if let Some(cb) = on_create {
-                                                        cb.run(q_for_create.clone());
-                                                    }
-                                                    open.set(false);
-                                                }
-                                            >
-                                                {"Create \""}
-                                                {q_for_display}
-                                                {"\""}
-                                            </li>
-                                        }
-                                    })}
                             </ul>
                         }
                     })
