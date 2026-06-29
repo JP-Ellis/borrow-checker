@@ -110,6 +110,8 @@ pub struct EditableTransaction {
     pub reconciliation: Reconciliation,
     /// Transaction-level tags.
     pub tags: Vec<String>,
+    /// Extra named dates as (label, raw `YYYY-MM-DD` text) pairs; empty labels allowed.
+    pub extra_dates: Vec<(String, String)>,
     /// All postings in display order.
     pub postings: Vec<EditablePosting>,
 }
@@ -134,9 +136,11 @@ impl EditableTransaction {
             note: tx.note.clone().unwrap_or_default(),
             reconciliation: tx.reconciliation,
             tags: tx.tags.clone(),
-            // TODO(extra_dates): carry tx.extra_dates into the working buffer (and
-            // back out via to_edit_transaction) so they can be edited. Tracked in
-            // https://github.com/JP-Ellis/borrow-checker/issues/209
+            extra_dates: tx
+                .extra_dates
+                .iter()
+                .map(|(label, d)| (label.clone(), d.to_string()))
+                .collect(),
             postings: tx
                 .postings
                 .iter()
@@ -242,6 +246,18 @@ impl EditableTransaction {
             return Err(EditError::Ambiguous);
         }
 
+        let mut extra_dates = Vec::with_capacity(self.extra_dates.len());
+        for (index, (label, raw)) in self.extra_dates.iter().enumerate() {
+            let parsed =
+                raw.trim()
+                    .parse::<jiff::civil::Date>()
+                    .map_err(|e| EditError::ExtraDate {
+                        index,
+                        message: e.to_string(),
+                    })?;
+            extra_dates.push((label.clone(), parsed));
+        }
+
         Ok(EditTransaction::new(
             self.id.clone(),
             date,
@@ -251,6 +267,7 @@ impl EditableTransaction {
             self.reconciliation,
             self.tags.clone(),
             postings,
+            extra_dates,
         ))
     }
 }
@@ -323,6 +340,13 @@ pub enum EditError {
     },
     /// More than one elided leg — the balancing remainder is ambiguous.
     Ambiguous,
+    /// An extra date does not parse.
+    ExtraDate {
+        /// Index of the offending extra date.
+        index: usize,
+        /// Parser message.
+        message: String,
+    },
 }
 
 impl fmt::Display for EditError {
@@ -343,6 +367,13 @@ impl fmt::Display for EditError {
                 write!(f, "posting {} has no currency", index.saturating_add(1))
             }
             Self::Ambiguous => write!(f, "more than one leg has a blank amount"),
+            Self::ExtraDate { index, message } => {
+                write!(
+                    f,
+                    "invalid extra date {}: {message}",
+                    index.saturating_add(1)
+                )
+            }
         }
     }
 }
@@ -610,6 +641,7 @@ pub mod tests {
             note: String::new(),
             reconciliation: Reconciliation::Unreconciled,
             tags: vec![],
+            extra_dates: vec![],
             postings,
         }
     }
@@ -771,5 +803,55 @@ pub mod tests {
         assert_eq!(e.postings.len(), 3);
         assert!(new_uid > max_before);
         assert_eq!(e.postings.last().map(|p| p.uid), Some(new_uid));
+    }
+
+    #[test]
+    fn extra_dates_round_trip() {
+        // extra_dates is the 6th arg of Transaction::new (before reconciliation/tags/postings/audit)
+        let t = Transaction::new(
+            "tx-1",
+            Date::constant(2026, 4, 30),
+            "Coles",
+            "",
+            None::<&str>,
+            vec![("cleared".to_owned(), Date::constant(2026, 5, 2))], // extra_dates
+            Reconciliation::Unreconciled,
+            vec![],
+            two_balanced_postings(),
+            vec![],
+        );
+        let e = EditableTransaction::from_transaction(&t);
+        assert_eq!(
+            e.extra_dates,
+            vec![("cleared".to_owned(), "2026-05-02".to_owned())]
+        );
+        let edit = e.to_edit_transaction().expect("valid");
+        assert_eq!(
+            edit.extra_dates,
+            vec![("cleared".to_owned(), Date::constant(2026, 5, 2))]
+        );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn malformed_extra_date_is_rejected() {
+        let t = Transaction::new(
+            "tx-1",
+            Date::constant(2026, 4, 30),
+            "Coles",
+            "",
+            None::<&str>,
+            vec![("cleared".to_owned(), Date::constant(2026, 5, 2))], // extra_dates
+            Reconciliation::Unreconciled,
+            vec![],
+            two_balanced_postings(),
+            vec![],
+        );
+        let mut e = EditableTransaction::from_transaction(&t);
+        e.extra_dates[0].1 = "not-a-date".to_owned();
+        assert!(matches!(
+            e.to_edit_transaction(),
+            Err(EditError::ExtraDate { index: 0, .. })
+        ));
     }
 }
