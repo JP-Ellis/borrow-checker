@@ -31,6 +31,12 @@ interface TxRow {
     reconciliation: string;
 }
 
+interface ExtraDateRow {
+    transaction_id: string;
+    label:          string;
+    date:           string;
+}
+
 function dbFetchColesTx(): TxRow | undefined {
     const db = new Database(DB_PATH, { readonly: true });
     try {
@@ -55,6 +61,19 @@ function dbReconciliation(txId: string): string | undefined {
             .prepare('SELECT reconciliation FROM transactions WHERE id = ?')
             .get(txId) as { reconciliation: string } | undefined;
         return row?.reconciliation;
+    } finally {
+        db.close();
+    }
+}
+
+function dbExtraDates(txId: string): ExtraDateRow[] {
+    const db = new Database(DB_PATH, { readonly: true });
+    try {
+        return db
+            .prepare(
+                'SELECT transaction_id, label, date FROM transaction_dates WHERE transaction_id = ?',
+            )
+            .all(txId) as ExtraDateRow[];
     } finally {
         db.close();
     }
@@ -208,5 +227,76 @@ describe('Accounts — edit transaction detail', () => {
         await browser.pause(300);
         const visible = await saveBtn.isDisplayed().catch(() => false);
         expect(visible).toBe(false);
+    });
+
+    it('can add an extra date via "+ date" and persist it on save', async () => {
+        const seedTx = dbFetchColesTx();
+        if (!seedTx) {
+            console.warn('No Coles tx found in DB — skipping extra-date test');
+            return;
+        }
+
+        await openGroceriesAccount();
+        await expandColesRow();
+
+        // The "+ date" button must be visible in the metamix bar.
+        const addDateBtn = await $('button=+ date');
+        await addDateBtn.waitForDisplayed({
+            timeout: 5_000,
+            timeoutMsg: '"+ date" button did not appear in the metamix bar',
+        });
+
+        // Click "+ date" to insert a new extra-date row.
+        await addDateBtn.click();
+
+        // A "×" remove span must now be visible.
+        const xSpan = await $('span=×');
+        await xSpan.waitForDisplayed({
+            timeout: 3_000,
+            timeoutMsg: '"×" remove button did not appear after adding extra date',
+        });
+
+        // Fill the label and date fields of the newly added row.
+        const labelInput = await $('input[placeholder="label"]');
+        await labelInput.waitForDisplayed({ timeout: 3_000 });
+        await labelInput.setValue('settlement');
+
+        // The last YYYY-MM-DD input is the extra-date one; pick it via JS.
+        await browser.execute(() => {
+            const inputs = Array.from(
+                document.querySelectorAll<HTMLInputElement>('input[placeholder="YYYY-MM-DD"]'),
+            );
+            const last = inputs[inputs.length - 1];
+            if (last) {
+                last.focus();
+                /* Dispatch input event so the Leptos signal updates. */
+                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype,
+                    'value',
+                )?.set;
+                nativeInputValueSetter?.call(last, '2025-02-01');
+                last.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        });
+
+        // Save bar must appear.
+        const saveBtn = await $('[aria-label="save transaction"]');
+        await saveBtn.waitForDisplayed({
+            timeout: 3_000,
+            timeoutMsg: 'Save button did not appear after adding extra date',
+        });
+
+        // Save.
+        await saveBtn.click();
+        await browser.waitUntil(
+            async () => !(await saveBtn.isDisplayed().catch(() => false)),
+            { timeout: 10_000, timeoutMsg: 'Save bar did not disappear after saving extra date' },
+        );
+
+        // Verify the extra date persisted in SQLite.
+        await browser.pause(300);
+        const extraDates = dbExtraDates(seedTx.id);
+        const persisted  = extraDates.find(r => r.label === 'settlement');
+        expect(persisted).toBeDefined();
     });
 });

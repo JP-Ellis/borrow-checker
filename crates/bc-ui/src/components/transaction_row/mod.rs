@@ -970,31 +970,83 @@ fn TransactionDetail(
                 view! { <div class=format!("{} {}", style::balance, extra)>{text}</div> }
             }}
 
-            // TODO(extra_dates): render + edit Transaction.extra_dates here in the
-            // mixline (alongside Date/Status/Tags) with an add-on-demand affordance
-            // mirroring + note / ⤳ spread. Tracked in
-            // https://github.com/JP-Ellis/borrow-checker/issues/209
             <div class=style::metamix>
-                <div class=style::textline>
-                    <span class=style::metamix_lbl>"Payee"</span>
-                    <input
-                        class=format!("{} {}", style::f, style::textfield)
-                        prop:value=move || f_payee.get()
-                        on:input=move |ev| f_payee.set(event_target_value(&ev))
-                        placeholder="payee"
-                    />
-                </div>
-                <div class=style::textline>
-                    <span class=style::metamix_lbl>"Description"</span>
-                    <input
-                        class=format!("{} {}", style::f, style::textfield)
-                        prop:value=move || f_desc.get()
-                        on:input=move |ev| f_desc.set(event_target_value(&ev))
-                        placeholder="description"
-                    />
-                </div>
-                <div class=style::mixline>
-                    <div class=style::metamix_grp>
+                <div class=style::mm_main>
+                    <div class=style::mm_fields>
+                        <span class=style::metamix_lbl>"Payee"</span>
+                        <div class=style::mm_val>
+                            <input
+                                class=format!("{} {}", style::f, style::textfield)
+                                prop:value=move || f_payee.get()
+                                on:input=move |ev| f_payee.set(event_target_value(&ev))
+                                placeholder="payee"
+                            />
+                        </div>
+                        <span class=style::metamix_lbl>"Description"</span>
+                        <div class=style::mm_val>
+                            <input
+                                class=format!("{} {}", style::f, style::textfield)
+                                prop:value=move || f_desc.get()
+                                on:input=move |ev| f_desc.set(event_target_value(&ev))
+                                placeholder="description"
+                            />
+                        </div>
+                        <span class=style::metamix_lbl>"Status"</span>
+                        <div class=style::mm_val>
+                            <span
+                                class=move || {
+                                    let variant = working
+                                        .with(|w| match w.reconciliation {
+                                            bc_ipc::Reconciliation::Flagged => style::status_flagged,
+                                            bc_ipc::Reconciliation::Reconciled => style::status_ok,
+                                            bc_ipc::Reconciliation::Unreconciled | _ => {
+                                                style::status_unrec
+                                            }
+                                        });
+                                    format!("{} {}", style::status_pill, variant)
+                                }
+                                on:click=cycle_recon
+                                role="button"
+                                tabindex="0"
+                                data-testid="status-pill"
+                            >
+                                <span class=style::status_dot></span>
+                                {move || working.with(|w| w.reconciliation.label().to_owned())}
+                            </span>
+                        </div>
+                        <span class=style::metamix_lbl>"Tags"</span>
+                        <div class=style::mm_val>
+                            <TagPicker
+                                tags=Signal::derive(move || working.with(|w| w.tags.clone()))
+                                all_tags=Signal::derive(move || all_tags.get())
+                                on_add=Callback::new(move |p: String| {
+                                    working
+                                        .update(|w| {
+                                            if !w.tags.contains(&p) {
+                                                w.tags.push(p);
+                                            }
+                                        });
+                                })
+                                on_remove=Callback::new(move |p: String| {
+                                    working.update(|w| w.tags.retain(|t| t != &p));
+                                })
+                                on_created=Callback::new(move |info: bc_ipc::TagInfo| {
+                                    all_tags.update(|v| v.push(info));
+                                })
+                                compact=true
+                            />
+                        </div>
+                        <span class=style::metamix_lbl>"Note"</span>
+                        <div class=style::mm_val>
+                            <input
+                                class=format!("{} {}", style::f, style::note_input)
+                                prop:value=move || f_note.get()
+                                on:input=move |ev| f_note.set(event_target_value(&ev))
+                                placeholder="add note…"
+                            />
+                        </div>
+                    </div>
+                    <div class=style::mm_dates>
                         <span class=style::metamix_lbl>"Date"</span>
                         <input
                             class=format!("{} {}", style::f, style::f_num)
@@ -1002,63 +1054,85 @@ fn TransactionDetail(
                             on:input=move |ev| f_date.set(event_target_value(&ev))
                             placeholder="YYYY-MM-DD"
                         />
-                    </div>
-                    <div class=style::vsep></div>
-                    <div class=style::metamix_grp>
-                        <span class=style::metamix_lbl>"Status"</span>
-                        <span
-                            class=move || {
-                                let variant = working
-                                    .with(|w| match w.reconciliation {
-                                        bc_ipc::Reconciliation::Flagged => style::status_flagged,
-                                        bc_ipc::Reconciliation::Reconciled => style::status_ok,
-                                        bc_ipc::Reconciliation::Unreconciled | _ => {
-                                            style::status_unrec
-                                        }
-                                    });
-                                format!("{} {}", style::status_pill, variant)
+                        <span></span>
+                        <For
+                            each=move || {
+                                working.with(|w| (0..w.extra_dates.len()).collect::<Vec<_>>())
                             }
-                            on:click=cycle_recon
-                            role="button"
-                            tabindex="0"
-                            data-testid="status-pill"
-                        >
-                            <span class=style::status_dot></span>
-                            {move || working.with(|w| w.reconciliation.label().to_owned())}
-                        </span>
-                    </div>
-                    <div class=style::vsep></div>
-                    <div class=style::metamix_grp>
-                        <span class=style::metamix_lbl>"Tags"</span>
-                        <TagPicker
-                            tags=Signal::derive(move || working.with(|w| w.tags.clone()))
-                            all_tags=Signal::derive(move || all_tags.get())
-                            on_add=Callback::new(move |p: String| {
-                                working
-                                    .update(|w| {
-                                        if !w.tags.contains(&p) {
-                                            w.tags.push(p);
+                            key=|i| *i
+                            children=move |i| {
+                                view! {
+                                    <input
+                                        class=style::f
+                                        prop:value=move || {
+                                            working
+                                                .with(|w| {
+                                                    w.extra_dates
+                                                        .get(i)
+                                                        .map(|(l, _)| l.clone())
+                                                        .unwrap_or_default()
+                                                })
                                         }
-                                    });
-                            })
-                            on_remove=Callback::new(move |p: String| {
-                                working.update(|w| w.tags.retain(|t| t != &p));
-                            })
-                            on_created=Callback::new(move |info: bc_ipc::TagInfo| {
-                                all_tags.update(|v| v.push(info));
-                            })
-                            compact=true
+                                        on:input=move |ev| {
+                                            working
+                                                .update(|w| {
+                                                    if let Some(e) = w.extra_dates.get_mut(i) {
+                                                        e.0 = event_target_value(&ev);
+                                                    }
+                                                });
+                                        }
+                                        placeholder="label"
+                                    />
+                                    <input
+                                        class=format!("{} {}", style::f, style::f_num)
+                                        prop:value=move || {
+                                            working
+                                                .with(|w| {
+                                                    w.extra_dates
+                                                        .get(i)
+                                                        .map(|(_, d)| d.clone())
+                                                        .unwrap_or_default()
+                                                })
+                                        }
+                                        on:input=move |ev| {
+                                            working
+                                                .update(|w| {
+                                                    if let Some(e) = w.extra_dates.get_mut(i) {
+                                                        e.1 = event_target_value(&ev);
+                                                    }
+                                                });
+                                        }
+                                        placeholder="YYYY-MM-DD"
+                                    />
+                                    <span
+                                        class=style::date_x
+                                        role="button"
+                                        tabindex="0"
+                                        on:click=move |_| {
+                                            working
+                                                .update(|w| {
+                                                    if i < w.extra_dates.len() {
+                                                        w.extra_dates.remove(i);
+                                                    }
+                                                });
+                                        }
+                                    >
+                                        "×"
+                                    </span>
+                                }
+                            }
                         />
+                        <button
+                            class=style::add_date
+                            type="button"
+                            on:click=move |_| {
+                                working
+                                    .update(|w| w.extra_dates.push((String::new(), String::new())));
+                            }
+                        >
+                            "+ date"
+                        </button>
                     </div>
-                </div>
-                <div class=style::textline>
-                    <span class=style::metamix_lbl>"Note"</span>
-                    <input
-                        class=format!("{} {}", style::f, style::note_input)
-                        prop:value=move || f_note.get()
-                        on:input=move |ev| f_note.set(event_target_value(&ev))
-                        placeholder="add note…"
-                    />
                 </div>
             </div>
 
