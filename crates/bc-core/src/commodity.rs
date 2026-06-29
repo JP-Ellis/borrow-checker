@@ -47,33 +47,7 @@ impl Service {
     /// Returns [`BcError`] on database failure.
     pub async fn register(&self, c: &Commodity) -> BcResult<()> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "INSERT INTO commodities (id, code, exchange, name, description, symbol, active_from, active_until) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(c.id().to_string())
-        .bind(c.code())
-        .bind(c.exchange())
-        .bind(c.name())
-        .bind(c.description())
-        .bind(c.symbol())
-        .bind(c.active_from().map(|d| d.to_string()))
-        .bind(c.active_until().map(|d| d.to_string()))
-        .execute(&mut *tx)
-        .await?;
-        for (position, alias) in c.aliases().iter().enumerate() {
-            sqlx::query(
-                "INSERT INTO commodity_aliases (commodity_id, alias, position) VALUES (?, ?, ?)",
-            )
-            .bind(c.id().to_string())
-            .bind(alias)
-            .bind(
-                i64::try_from(position)
-                    .map_err(|e| BcError::BadData(format!("alias position overflow: {e}")))?,
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
+        insert_with(&mut tx, c).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -83,7 +57,7 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError`] on database failure or an unparsable stored id.
-    pub async fn list_active(&self) -> BcResult<Vec<Commodity>> {
+    pub async fn list_all(&self) -> BcResult<Vec<Commodity>> {
         let rows = sqlx::query(
             "SELECT id, code, exchange, name, description, symbol, active_from, active_until \
              FROM commodities ORDER BY code ASC",
@@ -142,6 +116,7 @@ impl Service {
         if count > 0 {
             return Ok(());
         }
+        let mut tx = self.pool.begin().await?;
         for (code, symbol, name, aliases) in DEFAULT_CURRENCIES {
             let c = Commodity::builder()
                 .code(*code)
@@ -149,10 +124,56 @@ impl Service {
                 .name(*name)
                 .aliases(aliases.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
                 .build();
-            self.register(&c).await?;
+            insert_with(&mut tx, &c).await?;
         }
+        tx.commit().await?;
         Ok(())
     }
+}
+
+/// Inserts a commodity row and its alias rows on the provided transaction.
+///
+/// Used by both [`Service::register`] (its own transaction) and
+/// [`Service::seed_defaults`] (one shared transaction for the whole seed) so a
+/// mid-seed failure rolls the entire batch back rather than leaving a partial set.
+///
+/// # Arguments
+///
+/// * `tx` - The open transaction to execute the inserts on.
+/// * `c` - The commodity to insert.
+///
+/// # Errors
+///
+/// Returns [`BcError`] on database failure or an alias position overflow.
+async fn insert_with(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, c: &Commodity) -> BcResult<()> {
+    sqlx::query(
+        "INSERT INTO commodities (id, code, exchange, name, description, symbol, active_from, active_until) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(c.id().to_string())
+    .bind(c.code())
+    .bind(c.exchange())
+    .bind(c.name())
+    .bind(c.description())
+    .bind(c.symbol())
+    .bind(c.active_from().map(|d| d.to_string()))
+    .bind(c.active_until().map(|d| d.to_string()))
+    .execute(&mut **tx)
+    .await?;
+    for (position, alias) in c.aliases().iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO commodity_aliases (commodity_id, alias, position) VALUES (?, ?, ?)",
+        )
+        .bind(c.id().to_string())
+        .bind(alias)
+        .bind(
+            i64::try_from(position)
+                .map_err(|e| BcError::BadData(format!("alias position overflow: {e}")))?,
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }
 
 /// Parses an optional `YYYY-MM-DD` column.
@@ -180,7 +201,7 @@ mod tests {
             .aliases(vec!["AU$".to_owned()])
             .build();
         svc.register(&aud).await.expect("register");
-        let all = svc.list_active().await.expect("list");
+        let all = svc.list_all().await.expect("list");
         let found = all.iter().find(|c| c.code() == "AUD").expect("AUD present");
         assert_eq!(found.symbol(), Some("A$"));
         assert_eq!(found.aliases(), &["AU$".to_owned()]);
@@ -190,9 +211,9 @@ mod tests {
     async fn seed_defaults_is_idempotent(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool);
         svc.seed_defaults().await.expect("seed 1");
-        let first = svc.list_active().await.expect("list 1").len();
+        let first = svc.list_all().await.expect("list 1").len();
         svc.seed_defaults().await.expect("seed 2");
-        let second = svc.list_active().await.expect("list 2").len();
+        let second = svc.list_all().await.expect("list 2").len();
         assert_eq!(first, 9);
         assert_eq!(first, second, "seeding twice must not duplicate");
     }
