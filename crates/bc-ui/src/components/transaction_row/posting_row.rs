@@ -36,15 +36,15 @@ fn tx_date_from_working(working: &EditableTransaction) -> Date {
 ///
 /// # Arguments
 ///
-/// * `index` - Position of this posting in the working buffer.
+/// * `uid` - Stable identity of this posting in the buffer.
 #[component]
 #[expect(
     clippy::too_many_lines,
     reason = "Leptos view! macro expands verbosely; logic is straightforward"
 )]
 pub fn PostingLine(
-    /// Position of this posting in the buffer.
-    index: usize,
+    /// Stable identity of this posting in the buffer.
+    uid: u64,
 ) -> impl IntoView {
     let ctx = expect_context::<TxEditCtx>();
     let working = ctx.working;
@@ -52,23 +52,30 @@ pub fn PostingLine(
     let all_tags = ctx.all_tags;
     let reset_epoch = ctx.reset_epoch;
 
+    // Resolve the live index from the stable uid on every access. Returns None
+    // briefly if this row's posting was just removed.
+    let index_of = move || working.with(|w| w.postings.iter().position(|p| p.uid == uid));
+
     // MARK: Account signals — synced into working via Effect.
     let selected_id = RwSignal::new(working.with_untracked(|w| {
         w.postings
-            .get(index)
+            .iter()
+            .find(|p| p.uid == uid)
             .map(|p| p.account_id.clone())
             .unwrap_or_default()
     }));
     let selected_name = RwSignal::new(working.with_untracked(|w| {
         w.postings
-            .get(index)
+            .iter()
+            .find(|p| p.uid == uid)
             .map(|p| p.account_name.clone())
             .unwrap_or_default()
     }));
     Effect::new(move |_| {
         let (id, name) = (selected_id.get(), selected_name.get());
+        let Some(i) = index_of() else { return };
         working.update(|w| {
-            if let Some(p) = w.postings.get_mut(index)
+            if let Some(p) = w.postings.get_mut(i)
                 && (p.account_id != id || p.account_name != name)
             {
                 p.account_id.clone_from(&id);
@@ -80,22 +87,25 @@ pub fn PostingLine(
     // MARK: Spread signals — string representations synced into working via Effect.
     let from_str = RwSignal::new(working.with_untracked(|w| {
         w.postings
-            .get(index)
+            .iter()
+            .find(|p| p.uid == uid)
             .and_then(|p| p.spread_from)
             .map(|d| d.to_string())
             .unwrap_or_default()
     }));
     let until_str = RwSignal::new(working.with_untracked(|w| {
         w.postings
-            .get(index)
+            .iter()
+            .find(|p| p.uid == uid)
             .and_then(|p| p.spread_until)
             .map(|d| d.to_string())
             .unwrap_or_default()
     }));
     Effect::new(move |_| {
         let (f, u) = (from_str.get(), until_str.get());
+        let Some(i) = index_of() else { return };
         working.update(|w| {
-            if let Some(p) = w.postings.get_mut(index) {
+            if let Some(p) = w.postings.get_mut(i) {
                 p.spread_from = f.trim().parse::<Date>().ok().or(if f.trim().is_empty() {
                     None
                 } else {
@@ -113,14 +123,16 @@ pub fn PostingLine(
     // MARK: Note signal — synced into working via Effect.
     let note_sig = RwSignal::new(working.with_untracked(|w| {
         w.postings
-            .get(index)
+            .iter()
+            .find(|p| p.uid == uid)
             .map(|p| p.note.clone())
             .unwrap_or_default()
     }));
     Effect::new(move |_| {
         let n = note_sig.get();
+        let Some(i) = index_of() else { return };
         working.update(|w| {
-            if let Some(p) = w.postings.get_mut(index)
+            if let Some(p) = w.postings.get_mut(i)
                 && p.note != n
             {
                 p.note.clone_from(&n);
@@ -135,7 +147,7 @@ pub fn PostingLine(
     Effect::new(move |_| {
         reset_epoch.get();
         working.with_untracked(|w| {
-            let Some(p) = w.postings.get(index) else {
+            let Some(p) = w.postings.iter().find(|p| p.uid == uid) else {
                 return;
             };
             if selected_id.get_untracked() != p.account_id {
@@ -165,8 +177,8 @@ pub fn PostingLine(
     // MARK: Delete handler.
     let remove = move |_| {
         working.update(|w| {
-            if index < w.postings.len() {
-                w.postings.remove(index);
+            if let Some(i) = w.postings.iter().position(|p| p.uid == uid) {
+                w.postings.remove(i);
             }
         });
     };
@@ -175,7 +187,8 @@ pub fn PostingLine(
     let row_class = move || {
         let amount_str = working.with(|w| {
             w.postings
-                .get(index)
+                .iter()
+                .find(|p| p.uid == uid)
                 .map(|p| p.amount.clone())
                 .unwrap_or_default()
         });
@@ -197,7 +210,8 @@ pub fn PostingLine(
         let w = working.get();
         let is_elided = w
             .postings
-            .get(index)
+            .iter()
+            .find(|p| p.uid == uid)
             .is_some_and(EditablePosting::is_elided);
         is_elided && matches!(derive_balance(&w), BalanceState::Inferred { .. })
     };
@@ -206,7 +220,8 @@ pub fn PostingLine(
         let w = working.get();
         let is_elided = w
             .postings
-            .get(index)
+            .iter()
+            .find(|p| p.uid == uid)
             .is_some_and(EditablePosting::is_elided);
         if !is_elided {
             return String::new();
@@ -238,8 +253,9 @@ pub fn PostingLine(
     // MARK: Amount update handler.
     let set_amount = move |ev: leptos::ev::Event| {
         let v = event_target_value(&ev);
+        let Some(i) = index_of() else { return };
         working.update(|w| {
-            if let Some(p) = w.postings.get_mut(index) {
+            if let Some(p) = w.postings.get_mut(i) {
                 p.amount.clone_from(&v);
             }
         });
@@ -252,7 +268,7 @@ pub fn PostingLine(
     let spread_chip_text = move || {
         let tx_date_val = working.with(tx_date_from_working);
         working.with(|w| {
-            let p = w.postings.get(index)?;
+            let p = w.postings.iter().find(|p| p.uid == uid)?;
             let from = p.spread_from?;
             let until = p.spread_until?;
             let display = spread::spread_display(from, until, tx_date_val);
@@ -329,7 +345,8 @@ pub fn PostingLine(
                             working
                                 .with(|w| {
                                     w.postings
-                                        .get(index)
+                                        .iter()
+                                        .find(|p| p.uid == uid)
                                         .map(|p| p.tags.clone())
                                         .unwrap_or_default()
                                 })
@@ -338,7 +355,7 @@ pub fn PostingLine(
                         on_add=Callback::new(move |tag: String| {
                             working
                                 .update(|w| {
-                                    if let Some(p) = w.postings.get_mut(index)
+                                    if let Some(p) = w.postings.iter_mut().find(|p| p.uid == uid)
                                         && !p.tags.contains(&tag)
                                     {
                                         p.tags.push(tag);
@@ -348,7 +365,7 @@ pub fn PostingLine(
                         on_remove=Callback::new(move |tag: String| {
                             working
                                 .update(|w| {
-                                    if let Some(p) = w.postings.get_mut(index) {
+                                    if let Some(p) = w.postings.iter_mut().find(|p| p.uid == uid) {
                                         p.tags.retain(|t| t != &tag);
                                     }
                                 });
@@ -464,7 +481,11 @@ pub fn PostingLine(
                     prop:value=move || {
                         working
                             .with(|w| {
-                                w.postings.get(index).map(|p| p.amount.clone()).unwrap_or_default()
+                                w.postings
+                                    .iter()
+                                    .find(|p| p.uid == uid)
+                                    .map(|p| p.amount.clone())
+                                    .unwrap_or_default()
                             })
                     }
                     on:input=set_amount
@@ -491,31 +512,15 @@ pub fn PostingLine(
 #[component]
 pub fn PostingsList() -> impl IntoView {
     let working = expect_context::<TxEditCtx>().working;
-    let indices = move || (0..working.with(|w| w.postings.len())).collect::<Vec<_>>();
+    let uids = move || working.with(|w| w.postings.iter().map(|p| p.uid).collect::<Vec<_>>());
     let add_leg = move |_| {
         working.update(|w| {
-            let currency = w.default_currency();
-            w.postings.push(EditablePosting {
-                id: None,
-                account_id: String::new(),
-                account_name: String::new(),
-                amount: String::new(),
-                currency,
-                note: String::new(),
-                tags: vec![],
-                spread_from: None,
-                spread_until: None,
-            });
+            w.push_blank_posting();
         });
     };
     view! {
         <div class=style::postings>
-            // TODO(#210): positional For key clobbers later rows on mid-list delete
-            <For
-                each=indices
-                key=|i| *i
-                children=move |index| view! { <PostingLine index=index /> }
-            />
+            <For each=uids key=|uid| *uid children=move |uid| view! { <PostingLine uid=uid /> } />
             <button
                 class=format!("{} {}", style::addrow, style::addrow_btn)
                 on:click=add_leg
