@@ -967,7 +967,11 @@ fn TransactionDetail(
                         (style::balance_bad, "an amount does not parse".to_owned())
                     }
                 };
-                view! { <div class=format!("{} {}", style::balance, extra)>{text}</div> }
+                view! {
+                    <div class=style::balance>
+                        <span class=format!("{} {}", style::bal_text, extra)>{text}</span>
+                    </div>
+                }
             }}
 
             <div class=style::metamix>
