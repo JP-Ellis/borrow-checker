@@ -48,6 +48,13 @@ use crate::label::category_label;
 /// numeric/date fields to represent parse-in-progress values.
 pub mod editable;
 
+/// Pure currency-marker resolution for amount inputs.
+///
+/// Maps a marker string (symbol, alias, or code) to a canonical commodity code
+/// against the loaded commodity set, with longest-match precedence and
+/// ambiguity detection. Native-testable — no Leptos or WASM here.
+pub mod currency;
+
 /// Pure timestamp de-duplication for the audit trail display.
 ///
 /// Collapses consecutive entries sharing the same instant under one time label
