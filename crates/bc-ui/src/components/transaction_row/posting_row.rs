@@ -73,7 +73,10 @@ pub fn PostingLine(
     }));
     Effect::new(move |_| {
         let (id, name) = (selected_id.get(), selected_name.get());
-        let Some(i) = index_of() else { return };
+        let Some(i) = working.with_untracked(|w| w.postings.iter().position(|p| p.uid == uid))
+        else {
+            return;
+        };
         working.update(|w| {
             if let Some(p) = w.postings.get_mut(i)
                 && (p.account_id != id || p.account_name != name)
@@ -103,7 +106,10 @@ pub fn PostingLine(
     }));
     Effect::new(move |_| {
         let (f, u) = (from_str.get(), until_str.get());
-        let Some(i) = index_of() else { return };
+        let Some(i) = working.with_untracked(|w| w.postings.iter().position(|p| p.uid == uid))
+        else {
+            return;
+        };
         working.update(|w| {
             if let Some(p) = w.postings.get_mut(i) {
                 p.spread_from = f.trim().parse::<Date>().ok().or(if f.trim().is_empty() {
@@ -130,7 +136,10 @@ pub fn PostingLine(
     }));
     Effect::new(move |_| {
         let n = note_sig.get();
-        let Some(i) = index_of() else { return };
+        let Some(i) = working.with_untracked(|w| w.postings.iter().position(|p| p.uid == uid))
+        else {
+            return;
+        };
         working.update(|w| {
             if let Some(p) = w.postings.get_mut(i)
                 && p.note != n
