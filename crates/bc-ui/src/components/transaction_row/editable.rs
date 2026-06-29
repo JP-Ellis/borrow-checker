@@ -248,8 +248,15 @@ impl EditableTransaction {
 
         let mut extra_dates = Vec::with_capacity(self.extra_dates.len());
         for (index, (label, raw)) in self.extra_dates.iter().enumerate() {
+            let trimmed = raw.trim();
+            // Prune not-yet-filled rows: clicking "+ date" inserts a blank row,
+            // and saving without filling it must not block the save. A non-empty
+            // but unparsable date still errors below.
+            if trimmed.is_empty() {
+                continue;
+            }
             let parsed =
-                raw.trim()
+                trimmed
                     .parse::<jiff::civil::Date>()
                     .map_err(|e| EditError::ExtraDate {
                         index,
@@ -849,6 +856,42 @@ pub mod tests {
         );
         let mut e = EditableTransaction::from_transaction(&t);
         e.extra_dates[0].1 = "not-a-date".to_owned();
+        assert!(matches!(
+            e.to_edit_transaction(),
+            Err(EditError::ExtraDate { index: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn empty_extra_date_row_is_dropped_not_blocking() {
+        let mut e = et(vec![ep("-1.00", "AUD"), ep("1.00", "AUD")]);
+        e.extra_dates = vec![(String::new(), String::new())];
+        let edit = e
+            .to_edit_transaction()
+            .expect("blank extra-date row is pruned");
+        assert!(edit.extra_dates.is_empty());
+    }
+
+    #[test]
+    fn filled_extra_date_row_is_kept_among_blanks() {
+        let mut e = et(vec![ep("-1.00", "AUD"), ep("1.00", "AUD")]);
+        e.extra_dates = vec![
+            ("cleared".to_owned(), "2026-05-02".to_owned()),
+            (String::new(), "  ".to_owned()),
+        ];
+        let edit = e
+            .to_edit_transaction()
+            .expect("blank row pruned, filled kept");
+        assert_eq!(
+            edit.extra_dates,
+            vec![("cleared".to_owned(), Date::constant(2026, 5, 2))]
+        );
+    }
+
+    #[test]
+    fn nonempty_malformed_extra_date_still_errors() {
+        let mut e = et(vec![ep("-1.00", "AUD"), ep("1.00", "AUD")]);
+        e.extra_dates = vec![("cleared".to_owned(), "not-a-date".to_owned())];
         assert!(matches!(
             e.to_edit_transaction(),
             Err(EditError::ExtraDate { index: 0, .. })

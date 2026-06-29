@@ -1059,6 +1059,10 @@ fn TransactionDetail(
                             placeholder="YYYY-MM-DD"
                         />
                         <span></span>
+                        // Positional index key is safe here: each row reads/writes
+                        // directly into `working.extra_dates[i]` with no per-row local
+                        // signal that could go stale on reorder (unlike the postings
+                        // list fixed in #210).
                         <For
                             each=move || {
                                 working.with(|w| (0..w.extra_dates.len()).collect::<Vec<_>>())
