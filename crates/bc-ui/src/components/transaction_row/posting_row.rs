@@ -315,7 +315,6 @@ pub fn PostingLine(
 
             <div class=style::p_acct_wrap>
                 <div class=style::p_acct_row>
-                    // TODO(#211): pass on_create once inline account creation exists
                     <AccountPicker
                         accounts=ctx_accounts.get_value()
                         selected_id=selected_id
