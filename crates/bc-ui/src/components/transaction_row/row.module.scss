@@ -399,13 +399,20 @@
 /* MARK: Balance line */
 
 .balance {
-  margin-inline-start: 40px;
-  display: flex;
-  align-items: center;
-  gap: var(--bc-space-2);
-  font-size: var(--bc-text-caption);
+  display: grid;
+  grid-template-columns: 40px 1fr 116px 20px;
+  gap: var(--bc-space-3);
   padding-top: var(--bc-space-2);
   border-top: 1px dashed var(--bc-border);
+  font-size: var(--bc-text-caption);
+}
+
+.bal_text {
+  grid-column: 2 / 4;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--bc-space-2);
 }
 
 .balance_ok  { color: var(--bc-good); }
