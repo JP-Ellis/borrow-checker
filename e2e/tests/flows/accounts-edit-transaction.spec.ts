@@ -151,11 +151,11 @@ async function expandColesRow(): Promise<void> {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe('Accounts — edit transaction detail', () => {
-    it('can toggle the reconciliation status and save the change', async () => {
+    it('can toggle the reconciliation status and save the change', async function () {
         const seedTx = dbFetchColesTx();
         if (!seedTx) {
             console.warn('No Coles tx found in DB — skipping edit test');
-            return;
+            this.skip();
         }
 
         await openGroceriesAccount();
@@ -229,11 +229,11 @@ describe('Accounts — edit transaction detail', () => {
         expect(visible).toBe(false);
     });
 
-    it('can add an extra date via "+ date" and persist it on save', async () => {
+    it('can add an extra date via "+ date" and persist it on save', async function () {
         const seedTx = dbFetchColesTx();
         if (!seedTx) {
             console.warn('No Coles tx found in DB — skipping extra-date test');
-            return;
+            this.skip();
         }
 
         await openGroceriesAccount();
