@@ -29,6 +29,8 @@ pub(crate) struct AppState {
     pub(crate) budget_tree: bc_core::BudgetTreeService,
     /// Tag service — hierarchy, resolution, and membership.
     pub(crate) tags: bc_core::TagService,
+    /// Commodity/currency registry service.
+    pub(crate) commodities: bc_core::CommodityService,
     /// Snapshot of installed plugin metadata, collected at startup.
     ///
     /// `PluginRegistry` is not `Clone` (Wasmtime components are not `Clone`),
@@ -69,6 +71,7 @@ pub fn run() {
             commands::tags::rename_tag,
             commands::tags::delete_tag,
             commands::tags::list_tags,
+            commands::commodities::list_currencies,
             commands::plugins::list_plugins,
             commands::settings::get_settings,
             commands::budget::get_budget_overview,
@@ -92,12 +95,16 @@ pub fn run() {
             let plugins = commands::plugins::collect_plugin_info();
             let fx = bc_core::noop_fx();
 
+            let commodities = bc_core::CommodityService::new(pool.clone());
+            tauri::async_runtime::block_on(commodities.seed_defaults())?;
+
             app.manage(AppState {
                 accounts: bc_core::AccountService::new(pool.clone()),
                 transactions: bc_core::TransactionService::new(pool.clone()),
                 balance_engine: bc_core::BalanceEngine::new(pool.clone()),
                 budgets: bc_core::BudgetService::new(pool.clone()),
                 tags: bc_core::TagService::new(pool.clone()),
+                commodities,
                 budget_tree: bc_core::BudgetTreeService::new(pool, fx),
                 plugins,
             });
