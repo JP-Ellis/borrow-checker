@@ -132,6 +132,15 @@ pub enum Event {
         /// Tags removed in this change.
         removed: Vec<TagId>,
     },
+    /// A transaction's extra (labeled) dates were changed.
+    TransactionExtraDatesChanged {
+        /// The transaction's ID.
+        id: TransactionId,
+        /// The full extra-date set before the change.
+        from: Vec<(String, jiff::civil::Date)>,
+        /// The full extra-date set after the change.
+        to: Vec<(String, jiff::civil::Date)>,
+    },
     /// A transaction's reconciliation state was changed.
     TransactionReconciled {
         /// The transaction's ID.
@@ -338,6 +347,7 @@ impl Event {
             Self::TransactionDescriptionChanged { .. } => "TransactionDescriptionChanged",
             Self::TransactionNoteChanged { .. } => "TransactionNoteChanged",
             Self::TransactionTagsChanged { .. } => "TransactionTagsChanged",
+            Self::TransactionExtraDatesChanged { .. } => "TransactionExtraDatesChanged",
             Self::TransactionReconciled { .. } => "TransactionReconciled",
             Self::PostingRecategorised { .. } => "PostingRecategorised",
             Self::PostingAmountChanged { .. } => "PostingAmountChanged",
@@ -371,6 +381,7 @@ impl Event {
             | Self::TransactionDescriptionChanged { id, .. }
             | Self::TransactionNoteChanged { id, .. }
             | Self::TransactionTagsChanged { id, .. }
+            | Self::TransactionExtraDatesChanged { id, .. }
             | Self::TransactionReconciled { id, .. }
             | Self::PostingRecategorised { id, .. }
             | Self::PostingAmountChanged { id, .. }

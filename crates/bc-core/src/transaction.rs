@@ -82,14 +82,14 @@ pub(crate) fn spread_pair(posting: &Posting) -> Option<(Date, Date)> {
 /// Merges `updated` with fields from `current` that the edit DTO cannot express.
 ///
 /// The `edit` path receives a `Transaction` built from an `EditTransaction` DTO
-/// that has no `extra_dates` field and whose `EditPosting` has no `cost` field.
-/// Without merging, calling `apply_transaction_projection` with the DTO-derived
-/// value would silently wipe those columns.
+/// whose `EditPosting` has no `cost` field. Without merging, calling
+/// `apply_transaction_projection` with the DTO-derived value would silently wipe
+/// cost columns.
 ///
 /// This function returns a new `Transaction` that carries all of `updated`'s
-/// editable fields (payee, date, description, note, `tag_ids`, posting account/
-/// amount/note/tags/spread) while carrying forward from `current`:
-/// - `extra_dates`: always taken from `current` (the edit path can never change them).
+/// editable fields (payee, date, description, note, `tag_ids`, `extra_dates`,
+/// posting account/amount/note/tags/spread) while carrying forward from `current`:
+/// - `extra_dates`: taken from `updated` (the DTO is authoritative; Task 2+).
 /// - `reconciliation`: always taken from `current`; the edit path never changes it
 ///   (reconciliation is owned by `Service::reconcile`, which enforces the balance
 ///   guard). The DTO's `reconciliation` field is echoed but ignored here.
@@ -138,7 +138,7 @@ fn merge_preserving(current: &Transaction, updated: &Transaction) -> Transaction
         .postings(merged_postings)
         .reconciliation(current.reconciliation())
         .tag_ids(updated.tag_ids().to_vec())
-        .extra_dates(current.extra_dates().to_vec())
+        .extra_dates(updated.extra_dates().to_vec())
         .created_at(*updated.created_at())
         .build()
 }
@@ -210,6 +210,14 @@ pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> 
             id: id.clone(),
             added,
             removed,
+        });
+    }
+
+    if current.extra_dates() != updated.extra_dates() {
+        events.push(Event::TransactionExtraDatesChanged {
+            id: id.clone(),
+            from: current.extra_dates().to_vec(),
+            to: updated.extra_dates().to_vec(),
         });
     }
 
@@ -3208,7 +3216,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn edit_preserves_extra_dates_and_cost(pool: sqlx::SqlitePool) {
+    async fn edit_preserves_cost(pool: sqlx::SqlitePool) {
         let acct_svc = crate::AccountService::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -3258,7 +3266,7 @@ mod tests {
 
         let tx_id = svc.create(original.clone()).await.expect("create");
 
-        // Edit: only change the payee — extra_dates and posting cost must survive.
+        // Edit: only change the payee — extra_dates echoed from current, posting cost must survive.
         let current = svc.find_by_id(&tx_id).await.expect("load current");
         let edited = Transaction::builder()
             .id(tx_id.clone())
@@ -3269,17 +3277,13 @@ mod tests {
             .postings(current.postings().to_vec())
             .reconciliation(current.reconciliation())
             .tag_ids(current.tag_ids().to_vec())
+            .extra_dates(current.extra_dates().to_vec())
             .created_at(*current.created_at())
             .build();
 
         svc.edit(edited).await.expect("edit ok");
 
         let reloaded = svc.find_by_id(&tx_id).await.expect("reload");
-        assert_eq!(
-            reloaded.extra_dates(),
-            &[("cleared".to_owned(), date(2026, 3, 3))],
-            "extra_dates must survive edit"
-        );
         let cost_posting = reloaded
             .postings()
             .iter()
@@ -3288,6 +3292,73 @@ mod tests {
         let saved_cost = cost_posting.cost().expect("cost must survive edit");
         assert_eq!(saved_cost.total().value(), dec!(1500.00));
         assert_eq!(saved_cost.label(), Some("lot-1"));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_can_change_extra_dates(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::AccountService::new(pool.clone());
+        let acc_a = acct_svc
+            .create()
+            .name("Brokerage")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create brokerage");
+        let acc_b = acct_svc
+            .create()
+            .name("Cash")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create cash");
+
+        let svc = Service::new(pool.clone());
+
+        let original = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 3, 1))
+            .description("Buy shares")
+            .extra_dates(vec![("cleared".to_owned(), date(2026, 3, 3))])
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_a.clone())
+                    .amount(Amount::new(dec!(10), CommodityCode::new("AAPL")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_b.clone())
+                    .amount(Amount::new(dec!(-10), CommodityCode::new("AAPL")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+
+        let tx_id = svc.create(original).await.expect("create");
+
+        let current = svc.find_by_id(&tx_id).await.expect("load");
+        let edited = Transaction::builder()
+            .id(tx_id.clone())
+            .date(current.date())
+            .maybe_payee(current.payee().map(str::to_owned))
+            .description(current.description().to_owned())
+            .maybe_note(current.note().map(str::to_owned))
+            .postings(current.postings().to_vec())
+            .reconciliation(current.reconciliation())
+            .tag_ids(current.tag_ids().to_vec())
+            .extra_dates(vec![("effective".to_owned(), date(2026, 3, 10))])
+            .created_at(*current.created_at())
+            .build();
+        svc.edit(edited).await.expect("edit ok");
+
+        let reloaded = svc.find_by_id(&tx_id).await.expect("reload");
+        assert_eq!(
+            reloaded.extra_dates(),
+            &[("effective".to_owned(), date(2026, 3, 10))]
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -3346,6 +3417,41 @@ mod tests {
             events
                 .iter()
                 .any(|e| matches!(e, Event::PostingAdded { .. }))
+        );
+    }
+
+    #[test]
+    fn diff_emits_extra_dates_changed() {
+        let current = sample_tx();
+        let updated = Transaction::builder()
+            .id(current.id().clone())
+            .date(current.date())
+            .maybe_payee(current.payee().map(str::to_owned))
+            .description(current.description().to_owned())
+            .maybe_note(current.note().map(str::to_owned))
+            .postings(current.postings().to_vec())
+            .reconciliation(current.reconciliation())
+            .tag_ids(current.tag_ids().to_vec())
+            .extra_dates(vec![("cleared".to_owned(), date(2026, 3, 3))])
+            .created_at(*current.created_at())
+            .build();
+        let events = diff_transaction(&current, &updated);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::TransactionExtraDatesChanged { .. })),
+            "changing extra_dates must emit TransactionExtraDatesChanged"
+        );
+    }
+
+    #[test]
+    fn diff_no_extra_dates_change_emits_nothing() {
+        let tx = sample_tx();
+        let events = diff_transaction(&tx, &tx);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::TransactionExtraDatesChanged { .. }))
         );
     }
 

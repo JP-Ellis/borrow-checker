@@ -239,6 +239,7 @@ pub async fn edit_transaction(
         .postings(postings)
         .reconciliation(reconciliation)
         .tag_ids(tag_ids)
+        .extra_dates(tx.extra_dates)
         .created_at(jiff::Timestamp::now())
         .build();
 
