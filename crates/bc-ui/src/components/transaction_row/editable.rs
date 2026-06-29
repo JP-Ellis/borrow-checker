@@ -12,12 +12,16 @@
 use core::fmt;
 
 use bc_ipc::Amount;
+use bc_ipc::CommodityInfo;
 use bc_ipc::EditPosting;
 use bc_ipc::EditTransaction;
 use bc_ipc::Posting;
 use bc_ipc::Reconciliation;
 use bc_ipc::Transaction;
 use rust_decimal::Decimal;
+
+use crate::components::transaction_row::currency::MarkerError;
+use crate::components::transaction_row::currency::split_marked_amount;
 
 /// A single posting in the working buffer.
 ///
@@ -69,7 +73,7 @@ impl EditablePosting {
             amount: p
                 .amount
                 .as_ref()
-                .map_or_else(String::new, |a| a.value.to_string()),
+                .map_or_else(String::new, |a| format!("{} {}", a.currency_code, a.value)),
             currency: p
                 .amount
                 .as_ref()
@@ -199,16 +203,24 @@ impl EditableTransaction {
 
     /// Serialises the working buffer into a [`EditTransaction`] for submission.
     ///
+    /// # Arguments
+    ///
+    /// * `currencies` - The set of known commodities used to resolve amount markers.
+    ///
     /// # Returns
     ///
     /// The desired transaction state.
     ///
     /// # Errors
     ///
-    /// Returns [`EditError`] when the date or an amount fails to parse, a posting
-    /// has no account or currency, or more than one leg is elided. An unbalanced
-    /// (but otherwise representable) transaction is **not** an error.
-    pub fn to_edit_transaction(&self) -> Result<EditTransaction, EditError> {
+    /// Returns [`EditError`] when the date or an amount fails to parse (including
+    /// when the amount marker is missing or unknown), a posting has no account,
+    /// or more than one leg is elided. An unbalanced (but otherwise representable)
+    /// transaction is **not** an error.
+    pub fn to_edit_transaction(
+        &self,
+        currencies: &[CommodityInfo],
+    ) -> Result<EditTransaction, EditError> {
         let date = self
             .date
             .trim()
@@ -225,12 +237,9 @@ impl EditableTransaction {
                 elided = elided.saturating_add(1);
                 None
             } else {
-                if p.currency.trim().is_empty() {
-                    return Err(EditError::MissingCurrency { index });
-                }
-                let value = parse_amount(&p.amount)
+                let (value, code) = parse_amount(currencies, &p.amount)
                     .map_err(|message| EditError::Amount { index, message })?;
-                Some(Amount::new(value, p.currency.clone()))
+                Some(Amount::new(value, code))
             };
             postings.push(EditPosting::new(
                 p.id.clone(),
@@ -279,31 +288,42 @@ impl EditableTransaction {
     }
 }
 
-/// Parses a user-entered amount string into a [`Decimal`].
+/// Parses a marked amount string into `(value, canonical_code)`.
 ///
-/// Trims surrounding whitespace and strips thousands separators (spaces and
-/// commas). Sign and decimal point are handled by [`Decimal`]'s parser.
+/// Requires a resolvable currency marker (`$100`, `AUD 100`, `100 AUD`); a bare
+/// number is an error. The numeric remainder may carry comma/space grouping.
 ///
 /// # Arguments
 ///
+/// * `currencies` - The set of known commodities to match against.
 /// * `input` - The raw amount text.
 ///
 /// # Returns
 ///
-/// The parsed value.
+/// A `(value, canonical_code)` pair on success.
 ///
 /// # Errors
 ///
-/// Returns a human-readable message when the input is empty or does not parse.
-pub fn parse_amount(input: &str) -> Result<Decimal, String> {
-    let cleaned: String = input
+/// Returns a human-readable message when the marker is missing/unknown/ambiguous
+/// or the numeric part does not parse.
+pub fn parse_amount(
+    currencies: &[CommodityInfo],
+    input: &str,
+) -> Result<(Decimal, String), String> {
+    let (number, code) = split_marked_amount(currencies, input).map_err(|e| match e {
+        MarkerError::Missing => "amount needs a currency (e.g. A$100)".to_owned(),
+        MarkerError::Unknown(m) => format!("unknown currency '{m}'"),
+        MarkerError::Ambiguous(m) => format!("ambiguous currency '{m}'"),
+    })?;
+    let cleaned: String = number
         .chars()
         .filter(|c| *c != ',' && !c.is_whitespace())
         .collect();
     if cleaned.is_empty() {
         return Err("empty amount".to_owned());
     }
-    cleaned.parse::<Decimal>().map_err(|e| e.to_string())
+    let value = cleaned.parse::<Decimal>().map_err(|e| e.to_string())?;
+    Ok((value, code))
 }
 
 /// Parses a comma-separated tag buffer into a list of trimmed, non-empty tags.
@@ -341,6 +361,13 @@ pub enum EditError {
         index: usize,
     },
     /// A present-amount posting has no currency.
+    ///
+    /// Kept for API compatibility; superseded by the marker requirement in
+    /// [`parse_amount`] which errors before this variant can be constructed.
+    #[expect(
+        dead_code,
+        reason = "marker requirement supersedes this path; kept for API safety"
+    )]
     MissingCurrency {
         /// Index of the offending posting.
         index: usize,
@@ -428,12 +455,13 @@ pub enum BalanceState {
 /// # Arguments
 ///
 /// * `working` - The working buffer.
+/// * `currencies` - The set of known commodities used to resolve amount markers.
 ///
 /// # Returns
 ///
 /// The derived balance state.
 #[must_use]
-pub fn derive_balance(working: &EditableTransaction) -> BalanceState {
+pub fn derive_balance(working: &EditableTransaction, currencies: &[CommodityInfo]) -> BalanceState {
     let elided = working.postings.iter().filter(|p| p.is_elided()).count();
     if elided >= 2 {
         return BalanceState::Ambiguous;
@@ -442,10 +470,10 @@ pub fn derive_balance(working: &EditableTransaction) -> BalanceState {
     let mut currency = String::new();
     let mut any = false;
     for p in working.postings.iter().filter(|p| !p.is_elided()) {
-        match parse_amount(&p.amount) {
-            Ok(v) => {
+        match parse_amount(currencies, &p.amount) {
+            Ok((v, code)) => {
                 if currency.is_empty() {
-                    currency.clone_from(&p.currency);
+                    currency = code;
                 }
                 total = total.saturating_add(v);
                 any = true;
@@ -476,6 +504,7 @@ pub fn derive_balance(working: &EditableTransaction) -> BalanceState {
 pub mod tests {
     use bc_ipc::AccountRef;
     use bc_ipc::Amount;
+    use bc_ipc::CommodityInfo;
     use bc_ipc::Posting;
     use bc_ipc::Reconciliation;
     use bc_ipc::Transaction;
@@ -530,6 +559,11 @@ pub mod tests {
         )
     }
 
+    /// A one-entry registry containing AUD with symbol "A$".
+    fn registry() -> Vec<CommodityInfo> {
+        vec![CommodityInfo::new("c2", "AUD", Some("A$".to_owned()), vec![])]
+    }
+
     fn sample_tx() -> Transaction {
         Transaction::new(
             "tx-1",
@@ -564,6 +598,41 @@ pub mod tests {
         )
     }
 
+    /// A two-posting transaction with concrete AUD amounts on both legs.
+    fn sample_two_posting_tx() -> Transaction {
+        Transaction::new(
+            "tx-2",
+            Date::constant(2026, 4, 30),
+            "Coles",
+            "weekly shop",
+            None::<&str>,
+            vec![],
+            Reconciliation::Unreconciled,
+            vec![],
+            vec![
+                Posting::new(
+                    "p-1",
+                    AccountRef::new("acct-checking", "Assets :: Checking"),
+                    Some(Amount::new(Decimal::new(-8_420, 2), "AUD")),
+                    None::<&str>,
+                    vec![],
+                    None,
+                    None,
+                ),
+                Posting::new(
+                    "p-2",
+                    AccountRef::new("acct-groceries", "Expenses :: Groceries"),
+                    Some(Amount::new(Decimal::new(8_420, 2), "AUD")),
+                    None::<&str>,
+                    vec![],
+                    None,
+                    None,
+                ),
+            ],
+            vec![],
+        )
+    }
+
     #[test]
     fn from_transaction_maps_scalars_and_postings() {
         let e = EditableTransaction::from_transaction(&sample_tx());
@@ -584,7 +653,7 @@ pub mod tests {
         assert_eq!(p.id.as_deref(), Some("p-1"));
         assert_eq!(p.account_id, "acct-checking");
         assert_eq!(p.account_name, "Assets :: Checking");
-        assert_eq!(p.amount, "-84.20");
+        assert_eq!(p.amount, "AUD -84.20");
         assert_eq!(p.currency, "AUD");
         assert!(!p.is_elided());
     }
@@ -618,7 +687,7 @@ pub mod tests {
             Some(Date::constant(2026, 1, 31)),
         );
         let ep = EditablePosting::from_posting(&p, 0);
-        assert_eq!(ep.amount, "12.50");
+        assert_eq!(ep.amount, "USD 12.50");
         assert_eq!(ep.currency, "USD");
         assert_eq!(ep.spread_from, Some(Date::constant(2026, 1, 1)));
         assert_eq!(ep.spread_until, Some(Date::constant(2026, 1, 31)));
@@ -659,10 +728,41 @@ pub mod tests {
         reason = "unwrap_err is banned in tests by config; is_err is the correct check here"
     )]
     fn parse_amount_handles_sign_commas_spaces() {
-        assert_eq!(parse_amount(" -1,234.50 "), Ok(Decimal::new(-123_450, 2)));
-        assert_eq!(parse_amount("8420.00"), Ok(Decimal::new(842_000, 2)));
-        assert!(parse_amount("").is_err());
-        assert!(parse_amount("abc").is_err());
+        assert_eq!(
+            parse_amount(&registry(), "AUD -1,234.50").map(|(v, _)| v),
+            Ok(Decimal::new(-123_450, 2))
+        );
+        assert_eq!(
+            parse_amount(&registry(), "AUD 8420.00").map(|(v, _)| v),
+            Ok(Decimal::new(842_000, 2))
+        );
+        assert!(parse_amount(&registry(), "").is_err());
+        assert!(parse_amount(&registry(), "abc").is_err());
+    }
+
+    #[test]
+    #[expect(
+        clippy::assertions_on_result_states,
+        reason = "is_err is the correct check for the missing-marker case"
+    )]
+    fn parse_amount_requires_marker() {
+        assert!(parse_amount(&registry(), "100").is_err());
+        assert_eq!(
+            parse_amount(&registry(), "A$100"),
+            Ok((rust_decimal::Decimal::new(100, 0), "AUD".to_owned()))
+        );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    #[expect(
+        clippy::assertions_on_result_states,
+        reason = "is_ok is the correct check for the round-trip case"
+    )]
+    fn from_transaction_seeds_marked_amount() {
+        let t = sample_two_posting_tx();
+        let e = EditableTransaction::from_transaction(&t);
+        assert!(parse_amount(&registry(), &e.postings[0].amount).is_ok());
     }
 
     #[test]
@@ -676,13 +776,19 @@ pub mod tests {
 
     #[test]
     fn balance_zero_sum_is_balanced() {
-        let s = derive_balance(&et(vec![ep("-84.20", "AUD"), ep("84.20", "AUD")]));
+        let s = derive_balance(
+            &et(vec![ep("AUD -84.20", "AUD"), ep("AUD 84.20", "AUD")]),
+            &registry(),
+        );
         assert_eq!(s, BalanceState::Balanced);
     }
 
     #[test]
     fn balance_single_elided_infers_remainder() {
-        let s = derive_balance(&et(vec![ep("-84.20", "AUD"), ep("", "AUD")]));
+        let s = derive_balance(
+            &et(vec![ep("AUD -84.20", "AUD"), ep("", "AUD")]),
+            &registry(),
+        );
         assert_eq!(
             s,
             BalanceState::Inferred {
@@ -694,13 +800,16 @@ pub mod tests {
 
     #[test]
     fn balance_two_elided_is_ambiguous() {
-        let s = derive_balance(&et(vec![ep("", "AUD"), ep("", "AUD")]));
+        let s = derive_balance(&et(vec![ep("", "AUD"), ep("", "AUD")]), &registry());
         assert_eq!(s, BalanceState::Ambiguous);
     }
 
     #[test]
     fn balance_nonzero_sum_is_unbalanced() {
-        let s = derive_balance(&et(vec![ep("-84.20", "AUD"), ep("80.00", "AUD")]));
+        let s = derive_balance(
+            &et(vec![ep("AUD -84.20", "AUD"), ep("AUD 80.00", "AUD")]),
+            &registry(),
+        );
         assert_eq!(
             s,
             BalanceState::Unbalanced {
@@ -712,21 +821,24 @@ pub mod tests {
 
     #[test]
     fn balance_unparsable_amount_is_invalid() {
-        let s = derive_balance(&et(vec![ep("xx", "AUD"), ep("1.00", "AUD")]));
+        let s = derive_balance(
+            &et(vec![ep("xx", "AUD"), ep("AUD 1.00", "AUD")]),
+            &registry(),
+        );
         assert_eq!(s, BalanceState::Invalid);
     }
 
     #[test]
     fn balance_no_concrete_amounts_is_empty() {
-        let s = derive_balance(&et(vec![ep("", "AUD")]));
+        let s = derive_balance(&et(vec![ep("", "AUD")]), &registry());
         assert_eq!(s, BalanceState::Empty);
     }
 
     #[test]
     #[expect(clippy::indexing_slicing, reason = "test code with known length")]
     fn to_edit_maps_present_and_elided() {
-        let w = et(vec![ep("-84.20", "AUD"), ep("", "AUD")]);
-        let out = w.to_edit_transaction().expect("valid");
+        let w = et(vec![ep("AUD -84.20", "AUD"), ep("", "AUD")]);
+        let out = w.to_edit_transaction(&registry()).expect("valid");
         assert_eq!(out.id, "tx");
         assert_eq!(out.date, jiff::civil::Date::constant(2026, 4, 30));
         assert_eq!(out.postings.len(), 2);
@@ -740,9 +852,9 @@ pub mod tests {
     #[test]
     #[expect(clippy::indexing_slicing, reason = "test code with known length")]
     fn to_edit_preserves_existing_ids_and_new_leg_none() {
-        let mut w = et(vec![ep("-10.00", "AUD"), ep("10.00", "AUD")]);
+        let mut w = et(vec![ep("AUD -10.00", "AUD"), ep("AUD 10.00", "AUD")]);
         w.postings[1].id = None;
-        let out = w.to_edit_transaction().expect("valid");
+        let out = w.to_edit_transaction(&registry()).expect("valid");
         assert_eq!(out.postings[0].id.as_deref(), Some("p"));
         assert_eq!(out.postings[1].id, None);
     }
@@ -753,30 +865,36 @@ pub mod tests {
         reason = "unwrap_err is banned in tests by config; is_ok is the correct check here"
     )]
     fn to_edit_unbalanced_still_succeeds() {
-        let w = et(vec![ep("-84.20", "AUD"), ep("1.00", "AUD")]);
-        assert!(w.to_edit_transaction().is_ok());
+        let w = et(vec![ep("AUD -84.20", "AUD"), ep("AUD 1.00", "AUD")]);
+        assert!(w.to_edit_transaction(&registry()).is_ok());
     }
 
     #[test]
     fn to_edit_bad_date_errors() {
-        let mut w = et(vec![ep("-1.00", "AUD"), ep("1.00", "AUD")]);
+        let mut w = et(vec![ep("AUD -1.00", "AUD"), ep("AUD 1.00", "AUD")]);
         w.date = "not-a-date".to_owned();
-        assert!(matches!(w.to_edit_transaction(), Err(EditError::Date(_))));
+        assert!(matches!(
+            w.to_edit_transaction(&registry()),
+            Err(EditError::Date(_))
+        ));
     }
 
     #[test]
     fn to_edit_two_elided_errors() {
         let w = et(vec![ep("", "AUD"), ep("", "AUD")]);
-        assert_eq!(w.to_edit_transaction(), Err(EditError::Ambiguous));
+        assert_eq!(
+            w.to_edit_transaction(&registry()),
+            Err(EditError::Ambiguous)
+        );
     }
 
     #[test]
     #[expect(clippy::indexing_slicing, reason = "test code with known length")]
     fn to_edit_missing_account_errors() {
-        let mut w = et(vec![ep("-1.00", "AUD"), ep("1.00", "AUD")]);
+        let mut w = et(vec![ep("AUD -1.00", "AUD"), ep("AUD 1.00", "AUD")]);
         w.postings[0].account_id = String::new();
         assert_eq!(
-            w.to_edit_transaction(),
+            w.to_edit_transaction(&registry()),
             Err(EditError::MissingAccount { index: 0 })
         );
     }
@@ -784,10 +902,10 @@ pub mod tests {
     #[test]
     #[expect(clippy::indexing_slicing, reason = "test code with known length")]
     fn to_edit_bad_amount_errors() {
-        let mut w = et(vec![ep("xx", "AUD"), ep("1.00", "AUD")]);
+        let mut w = et(vec![ep("xx", "AUD"), ep("AUD 1.00", "AUD")]);
         w.postings[0].amount = "xx".to_owned();
         assert!(matches!(
-            w.to_edit_transaction(),
+            w.to_edit_transaction(&registry()),
             Err(EditError::Amount { index: 0, .. })
         ));
     }
