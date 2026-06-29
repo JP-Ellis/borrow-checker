@@ -50,6 +50,7 @@ pub fn PostingLine(
     let working = ctx.working;
     let ctx_accounts = ctx.accounts;
     let all_tags = ctx.all_tags;
+    let currencies = ctx.currencies;
     let reset_epoch = ctx.reset_epoch;
 
     // Resolve the live index from the stable uid on every access. Returns None
@@ -202,8 +203,7 @@ pub fn PostingLine(
                 .unwrap_or_default()
         });
         let mut cls = style::p_row.to_owned();
-        match parse_amount(&[], amount_str.trim()) {
-            // TODO(task7): pass ctx.currencies
+        match parse_amount(&currencies.get(), amount_str.trim()) {
             Ok((v, _)) if v < Decimal::ZERO => {
                 cls = format!("{} {}", cls, style::p_out);
             }
@@ -223,7 +223,11 @@ pub fn PostingLine(
             .iter()
             .find(|p| p.uid == uid)
             .is_some_and(EditablePosting::is_elided);
-        is_elided && matches!(derive_balance(&w, &[]), BalanceState::Inferred { .. }) // TODO(task7): pass ctx.currencies
+        is_elided
+            && matches!(
+                derive_balance(&w, &currencies.get()),
+                BalanceState::Inferred { .. }
+            )
     };
 
     let ghost_placeholder = move || {
@@ -236,8 +240,7 @@ pub fn PostingLine(
         if !is_elided {
             return String::new();
         }
-        match derive_balance(&w, &[]) {
-            // TODO(task7): pass ctx.currencies
+        match derive_balance(&w, &currencies.get()) {
             BalanceState::Inferred {
                 remainder,
                 currency,
