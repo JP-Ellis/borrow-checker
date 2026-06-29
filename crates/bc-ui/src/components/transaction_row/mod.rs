@@ -243,7 +243,34 @@ pub fn focal_on_account<'a>(
 pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount {
     match perspective {
         RowPerspective::Account { account_id } => {
-            sum_focal(focal_on_account(tx, account_id).filter_map(|p| p.amount.as_ref()))
+            let inferred = inferred_amount(tx);
+            let mut total = Decimal::ZERO;
+            let mut currency = String::new();
+            let mut any = false;
+            for p in focal_on_account(tx, account_id) {
+                let amt = match p.amount.as_ref() {
+                    Some(a) => Some(a.clone()),
+                    None => inferred.clone(),
+                };
+                if let Some(a) = amt {
+                    if currency.is_empty() {
+                        currency.clone_from(&a.currency_code);
+                    }
+                    #[expect(
+                        clippy::arithmetic_side_effects,
+                        reason = "same-commodity focal sum within one transaction"
+                    )]
+                    {
+                        total += a.value;
+                    }
+                    any = true;
+                }
+            }
+            if any {
+                Amount::new(total, currency)
+            } else {
+                Amount::new(Decimal::ZERO, "")
+            }
         }
         RowPerspective::Budget {
             account_id,
@@ -251,17 +278,35 @@ pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount
             window_end,
             ..
         } => {
-            let focal: Vec<&Posting> = focal_on_account(tx, account_id)
-                .filter(|p| p.amount.is_some())
-                .collect();
-            let currency = focal
-                .first()
-                .and_then(|p| p.amount.as_ref())
-                .map_or("", |a| a.currency_code.as_str());
-            let total: Decimal = focal
-                .iter()
-                .map(|p| prorated_value(p, *window_start, *window_end))
-                .sum();
+            let inferred = inferred_amount(tx);
+            let mut total = Decimal::ZERO;
+            let mut currency = String::new();
+            for p in focal_on_account(tx, account_id) {
+                let contribution = match p.amount.as_ref() {
+                    Some(a) => {
+                        if currency.is_empty() {
+                            currency.clone_from(&a.currency_code);
+                        }
+                        prorated_value(p, *window_start, *window_end)
+                    }
+                    None => match inferred.as_ref() {
+                        Some(a) => {
+                            if currency.is_empty() {
+                                currency.clone_from(&a.currency_code);
+                            }
+                            a.value // inferred leg has no spread; contributes whole value
+                        }
+                        None => Decimal::ZERO,
+                    },
+                };
+                #[expect(
+                    clippy::arithmetic_side_effects,
+                    reason = "prorated same-commodity focal sum"
+                )]
+                {
+                    total += contribution;
+                }
+            }
             Amount::new(total, currency)
         }
         RowPerspective::Global => sum_focal(
@@ -271,6 +316,43 @@ pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount
                 .filter(|a| a.value > Decimal::ZERO),
         ),
     }
+}
+
+/// Returns the amount a single elided leg infers to, or `None` when zero or two
+/// or more legs are elided (inference undefined). Mirrors `is_balanced`.
+///
+/// # Arguments
+///
+/// * `tx` - The transaction to infer from.
+///
+/// # Returns
+///
+/// The inferred [`Amount`] for the single elided leg, or `None` if inference
+/// is undefined.
+fn inferred_amount(tx: &Transaction) -> Option<Amount> {
+    let elided = tx.postings.iter().filter(|p| p.amount.is_none()).count();
+    if elided != 1 {
+        return None;
+    }
+    let mut total = Decimal::ZERO;
+    let mut currency = String::new();
+    for a in tx.postings.iter().filter_map(|p| p.amount.as_ref()) {
+        if currency.is_empty() {
+            currency.clone_from(&a.currency_code);
+        }
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "same-commodity sum within one transaction; no overflow in practice"
+        )]
+        {
+            total += a.value;
+        }
+    }
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "same-commodity sum within one transaction; no overflow in practice"
+    )]
+    Some(Amount::new(Decimal::ZERO - total, currency))
 }
 
 /// Sums a sequence of amounts, taking the currency from the first one.
@@ -1265,5 +1347,54 @@ mod tests {
             super::format_date_display(jiff::civil::Date::constant(2026, 4, 30)),
             "04/30"
         );
+    }
+
+    #[test]
+    fn account_headline_infers_elided_focal_leg() {
+        let t = tx(vec![
+            posting("a", "groceries", Some(8_420)),
+            posting("b", "checking", None), // elided focal leg
+        ]);
+        let amt = headline_amount(
+            &t,
+            &RowPerspective::Account {
+                account_id: "checking".to_owned(),
+            },
+        );
+        assert_eq!(amt.value, Decimal::new(-8_420, 2));
+        assert_eq!(amt.currency_code, "AUD");
+    }
+
+    #[test]
+    fn account_headline_ambiguous_elided_is_empty() {
+        let t = tx(vec![
+            posting("a", "checking", None),
+            posting("b", "groceries", None),
+        ]);
+        let amt = headline_amount(
+            &t,
+            &RowPerspective::Account {
+                account_id: "checking".to_owned(),
+            },
+        );
+        assert_eq!(amt.currency_code, "");
+    }
+
+    #[test]
+    fn budget_headline_infers_elided_focal_leg() {
+        let t = tx(vec![
+            posting("a", "groceries", Some(8_420)),
+            posting("b", "checking", None),
+        ]);
+        let amt = headline_amount(
+            &t,
+            &RowPerspective::Budget {
+                account_id: "checking".to_owned(),
+                tag_filter: None,
+                window_start: Date::constant(2026, 1, 1),
+                window_end: Date::constant(2026, 12, 31),
+            },
+        );
+        assert_eq!(amt.value, Decimal::new(-8_420, 2));
     }
 }
