@@ -18,6 +18,7 @@ use crate::BcError;
 use crate::BudgetRevisionView;
 use crate::BudgetSummary;
 use crate::BudgetTreeNode;
+use crate::CommodityInfo;
 use crate::EditTransaction;
 use crate::NativePeriodRow;
 use crate::NewTransaction;
@@ -104,6 +105,20 @@ pub async fn create_transaction(tx: &NewTransaction) -> Result<String, BcError> 
 #[inline]
 pub async fn list_tags() -> Result<Vec<TagInfo>, BcError> {
     tauri_sys::core::invoke_result::<Vec<TagInfo>, BcError>(commands::LIST_TAGS, NoArgs {}).await
+}
+
+/// Lists registered commodities/currencies.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn list_currencies() -> Result<Vec<CommodityInfo>, BcError> {
+    tauri_sys::core::invoke_result::<Vec<CommodityInfo>, BcError>(
+        commands::LIST_CURRENCIES,
+        NoArgs {},
+    )
+    .await
 }
 
 /// Argument struct for [`create_tag`].
