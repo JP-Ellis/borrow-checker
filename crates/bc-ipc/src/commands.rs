@@ -75,6 +75,9 @@ pub const GET_TRANSACTION_AUDIT: &str = "get_transaction_audit";
 /// Command: list all tags as id/path pairs.
 pub const LIST_TAGS: &str = "list_tags";
 
+/// Lists registered commodities/currencies.
+pub const LIST_CURRENCIES: &str = "list_currencies";
+
 /// Command: create the full colon-path tag hierarchy, returning the leaf ID.
 pub const CREATE_TAG: &str = "create_tag";
 
