@@ -841,10 +841,14 @@ fn TransactionDetail(
 
     let balance_state =
         Signal::derive(move || working.with(|w| derive_balance(w, &currencies.get())));
+    // Unbalanced transactions are saveable (flagged, not blocked) so partial,
+    // iterative edits can be persisted. Only the genuinely unrepresentable states
+    // block saving: Ambiguous (two-plus elided legs), Invalid (an amount does not
+    // parse), and Empty (no amounts to record).
     let save_disabled = Signal::derive(move || {
-        !matches!(
+        matches!(
             balance_state.get(),
-            BalanceState::Balanced | BalanceState::Inferred { .. }
+            BalanceState::Ambiguous | BalanceState::Invalid | BalanceState::Empty
         )
     });
 
