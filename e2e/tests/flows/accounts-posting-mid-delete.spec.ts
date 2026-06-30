@@ -28,12 +28,6 @@ const DB_PATH   = resolve(__dirname, '../../fixtures/test.db');
 
 // ── DB helpers ──────────────────────────────────────────────────────────────
 
-interface PostingRow {
-    id:         string;
-    account_id: string;
-    tx_id:      string;
-}
-
 /** Returns the id of the first transaction that has exactly 3+ postings. */
 function dbFindMultiPostingTx(): string | undefined {
     const db = new Database(DB_PATH, { readonly: true });
@@ -66,14 +60,13 @@ function dbTxPayee(txId: string): string | undefined {
     }
 }
 
-/** Returns all posting ids for a transaction, in display order. */
-function dbPostingIds(txId: string): string[] {
+/** Returns all posting (id, account_id) pairs for a transaction, in display order. */
+function dbPostingAccounts(txId: string): { id: string; account_id: string }[] {
     const db = new Database(DB_PATH, { readonly: true });
     try {
-        const rows = db
-            .prepare('SELECT id FROM postings WHERE transaction_id = ? ORDER BY rowid')
-            .all(txId) as { id: string }[];
-        return rows.map(r => r.id);
+        return db
+            .prepare('SELECT id, account_id FROM postings WHERE transaction_id = ? ORDER BY rowid')
+            .all(txId) as { id: string; account_id: string }[];
     } finally {
         db.close();
     }
@@ -173,21 +166,19 @@ describe('Accounts — posting mid-list delete does not clobber remaining rows (
             this.skip();
         }
 
-        // ── Capture all posting rows. ────────────────────────────────────────
+        // ── Capture the postings (id + account) before the delete. ───────────
+        // #210's clobber corrupts a surviving row's *account* (a per-row signal
+        // synced by index), not its amount (read/written by index each render).
+        // So the meaningful assertion is the *persisted* account_ids of the
+        // survivors after save — "saving persists the wrong values" is the bug.
+        const beforeAccts = dbPostingAccounts(txId);
+        expect(beforeAccts.length).toBeGreaterThanOrEqual(3);
+
         const amountInputs = await $$('[data-testid="posting-amount"]');
-        expect(amountInputs.length).toBeGreaterThanOrEqual(3);
-
         const initialCount = await amountInputs.length;
+        expect(initialCount).toBeGreaterThanOrEqual(3);
 
-        const before: string[] = [];
-        for (const input of amountInputs) {
-            before.push(await browser.execute(
-                (el: Element) => (el as HTMLInputElement).value,
-                await input.getElement() as unknown as Element,
-            ));
-        }
-
-        // ── Delete the second (middle) delete button. ────────────────────────
+        // ── Delete the middle posting. ───────────────────────────────────────
         const delBtns = await $$('[aria-label="remove posting"]');
         expect(delBtns.length).toBeGreaterThanOrEqual(3);
         await delBtns[1].click();
@@ -196,42 +187,30 @@ describe('Accounts — posting mid-list delete does not clobber remaining rows (
         await browser.waitUntil(
             async () => {
                 const rows = await $$('[data-testid="posting-amount"]');
-                const count = await rows.length;
-                return count === initialCount - 1;
+                return (await rows.length) === initialCount - 1;
             },
             { timeout: 3_000, timeoutMsg: 'Posting row count did not decrease after delete' },
         );
 
-        // ── Assert surviving rows kept their original amounts. ───────────────
-        const after = await $$('[data-testid="posting-amount"]');
-
-        const val0 = await browser.execute(
-            (el: Element) => (el as HTMLInputElement).value,
-            await after[0].getElement() as unknown as Element,
-        );
-        const val1 = await browser.execute(
-            (el: Element) => (el as HTMLInputElement).value,
-            await after[1].getElement() as unknown as Element,
-        );
-
-        // The first surviving row must match what was row 0 before the delete.
-        expect(val0).toBe(before[0]);
-        // The second surviving row must match what was row 2 (not row 1).
-        expect(val1).toBe(before[2]);
-
-        // ── Save and verify the change persisted. ────────────────────────────
+        // ── Save. Deleting a leg leaves the transaction unbalanced, which is a
+        //    saveable (flagged) state, so Save must still go through. ──────────
         const saveBtn = await $('[aria-label="save transaction"]');
-        const saveVisible = await saveBtn.isDisplayed().catch(() => false);
-        if (saveVisible) {
-            await saveBtn.click();
-            await browser.waitUntil(
-                async () => !(await saveBtn.isDisplayed().catch(() => false)),
-                { timeout: 10_000, timeoutMsg: 'Save bar did not disappear after clicking Save' },
-            );
-            // After save the transaction should now have one fewer posting in the DB.
-            await browser.pause(300);
-            const postingIds = dbPostingIds(txId);
-            expect(postingIds.length).toBeLessThan(3);
-        }
+        await saveBtn.waitForDisplayed({ timeout: 5_000 });
+        await saveBtn.click();
+        await browser.waitUntil(
+            async () => !(await saveBtn.isDisplayed().catch(() => false)),
+            { timeout: 10_000, timeoutMsg: 'Save bar did not disappear after clicking Save' },
+        );
+        await browser.pause(300);
+
+        // ── The survivors must be exactly postings 0 and 2, each keeping its
+        //    OWN id and account — not clobbered by the shifted middle row. ─────
+        const afterAccts = dbPostingAccounts(txId);
+        expect(afterAccts.length).toBe(beforeAccts.length - 1);
+        expect(afterAccts.map(p => p.id)).toEqual([beforeAccts[0].id, beforeAccts[2].id]);
+        expect(afterAccts.map(p => p.account_id)).toEqual([
+            beforeAccts[0].account_id,
+            beforeAccts[2].account_id,
+        ]);
     });
 });
