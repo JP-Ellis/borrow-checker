@@ -544,24 +544,14 @@ pub mod tests {
         ]
     }
 
-    fn sample_two_posting_tx() -> Transaction {
-        Transaction::new(
-            "tx-1",
-            Date::constant(2026, 4, 30),
-            "Coles",
-            "",
-            None::<&str>,
-            vec![],
-            Reconciliation::Unreconciled,
-            vec![],
-            two_balanced_postings(),
-            vec![],
-        )
-    }
-
     /// A one-entry registry containing AUD with symbol "A$".
     fn registry() -> Vec<CommodityInfo> {
-        vec![CommodityInfo::new("c2", "AUD", Some("A$".to_owned()), vec![])]
+        vec![CommodityInfo::new(
+            "c2",
+            "AUD",
+            Some("A$".to_owned()),
+            vec![],
+        )]
     }
 
     fn sample_tx() -> Transaction {
@@ -950,7 +940,7 @@ pub mod tests {
             e.extra_dates,
             vec![("cleared".to_owned(), "2026-05-02".to_owned())]
         );
-        let edit = e.to_edit_transaction().expect("valid");
+        let edit = e.to_edit_transaction(&registry()).expect("valid");
         assert_eq!(
             edit.extra_dates,
             vec![("cleared".to_owned(), Date::constant(2026, 5, 2))]
@@ -975,30 +965,30 @@ pub mod tests {
         let mut e = EditableTransaction::from_transaction(&t);
         e.extra_dates[0].1 = "not-a-date".to_owned();
         assert!(matches!(
-            e.to_edit_transaction(),
+            e.to_edit_transaction(&registry()),
             Err(EditError::ExtraDate { index: 0, .. })
         ));
     }
 
     #[test]
     fn empty_extra_date_row_is_dropped_not_blocking() {
-        let mut e = et(vec![ep("-1.00", "AUD"), ep("1.00", "AUD")]);
+        let mut e = et(vec![ep("AUD -1.00", "AUD"), ep("AUD 1.00", "AUD")]);
         e.extra_dates = vec![(String::new(), String::new())];
         let edit = e
-            .to_edit_transaction()
+            .to_edit_transaction(&registry())
             .expect("blank extra-date row is pruned");
         assert!(edit.extra_dates.is_empty());
     }
 
     #[test]
     fn filled_extra_date_row_is_kept_among_blanks() {
-        let mut e = et(vec![ep("-1.00", "AUD"), ep("1.00", "AUD")]);
+        let mut e = et(vec![ep("AUD -1.00", "AUD"), ep("AUD 1.00", "AUD")]);
         e.extra_dates = vec![
             ("cleared".to_owned(), "2026-05-02".to_owned()),
             (String::new(), "  ".to_owned()),
         ];
         let edit = e
-            .to_edit_transaction()
+            .to_edit_transaction(&registry())
             .expect("blank row pruned, filled kept");
         assert_eq!(
             edit.extra_dates,
@@ -1008,10 +998,10 @@ pub mod tests {
 
     #[test]
     fn nonempty_malformed_extra_date_still_errors() {
-        let mut e = et(vec![ep("-1.00", "AUD"), ep("1.00", "AUD")]);
+        let mut e = et(vec![ep("AUD -1.00", "AUD"), ep("AUD 1.00", "AUD")]);
         e.extra_dates = vec![("cleared".to_owned(), "not-a-date".to_owned())];
         assert!(matches!(
-            e.to_edit_transaction(),
+            e.to_edit_transaction(&registry()),
             Err(EditError::ExtraDate { index: 0, .. })
         ));
     }
