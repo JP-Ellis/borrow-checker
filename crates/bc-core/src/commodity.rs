@@ -202,6 +202,68 @@ impl Service {
         Ok(out)
     }
 
+    /// Deletes a commodity and its aliases, refusing if it is still referenced.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The commodity to delete.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if the id is unknown, [`BcError::CommodityInUse`]
+    /// with a human-readable reference summary if the commodity is still referenced,
+    /// or [`BcError`] on database failure.
+    pub async fn delete(&self, id: &CommodityId) -> BcResult<()> {
+        let all = self.list_all().await?;
+        let target = all
+            .iter()
+            .find(|c| c.id() == id)
+            .ok_or_else(|| BcError::NotFound(id.to_string()))?;
+        let code = target.code();
+        let id_str = id.to_string();
+
+        let accounts: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM account_commodities WHERE commodity_id = ?")
+                .bind(&id_str)
+                .fetch_one(&self.pool)
+                .await?;
+        let postings: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM postings WHERE commodity = ? OR cost_total_commodity = ?",
+        )
+        .bind(code)
+        .bind(code)
+        .fetch_one(&self.pool)
+        .await?;
+        let depreciations: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM asset_depreciations WHERE commodity = ?")
+                .bind(code)
+                .fetch_one(&self.pool)
+                .await?;
+        let budgets: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM budget_revisions WHERE target_currency = ?")
+                .bind(code)
+                .fetch_one(&self.pool)
+                .await?;
+
+        if accounts > 0 || postings > 0 || depreciations > 0 || budgets > 0 {
+            return Err(BcError::CommodityInUse(format!(
+                "{code}: {accounts} account(s), {postings} posting(s), {depreciations} depreciation(s), {budgets} budget(s)"
+            )));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM commodity_aliases WHERE commodity_id = ?")
+            .bind(&id_str)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM commodities WHERE id = ?")
+            .bind(&id_str)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Seeds the default currency set when the table is empty (idempotent).
     ///
     /// # Errors
@@ -517,6 +579,55 @@ mod tests {
             .aliases(vec!["AU$".to_owned()])
             .build();
         check_ambiguity(&existing, &ok).expect("no collision");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn delete_unreferenced_ok_referenced_blocked(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let aud = bc_models::Commodity::builder()
+            .code("AUD")
+            .symbol("A$")
+            .build();
+        let stored = svc.create(&aud).await.expect("create");
+
+        // Unreferenced → deletes.
+        svc.delete(stored.id()).await.expect("delete unreferenced");
+        assert!(
+            svc.list_all()
+                .await
+                .expect("list")
+                .iter()
+                .all(|c| c.code() != "AUD")
+        );
+
+        // Recreate and reference it from a posting, then deletion must be blocked.
+        let restored = svc.create(&aud).await.expect("recreate");
+        sqlx::query(
+            "INSERT INTO accounts (id, name, account_type, created_at) \
+             VALUES ('a1', 'Test Account', 'asset', '2024-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed account");
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+             VALUES ('t1', '2024-01-01', 'test', 'unreconciled', '2024-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed transaction");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) \
+             VALUES ('p1', 't1', 'a1', 100, 'AUD', 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed posting");
+        let err = svc
+            .delete(restored.id())
+            .await
+            .expect_err("referenced blocked");
+        assert!(matches!(err, BcError::CommodityInUse(_)));
     }
 
     #[test]
