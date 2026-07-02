@@ -67,6 +67,22 @@ pub struct Commodity {
     #[builder(default)]
     aliases: Vec<String>,
 
+    /// Number of minor-unit digits shown when formatting amounts (e.g. `2` for
+    /// cents, `0` for yen, `8` for satoshis). Defaults to `2`.
+    #[builder(default = 2)]
+    decimals: u8,
+
+    /// Whether this is an ISO 4217 currency. When `true`, display delegates
+    /// symbol and grouping to `Intl.NumberFormat`'s currency style; when
+    /// `false` (e.g. crypto), the symbol is placed manually. Defaults to `true`.
+    #[builder(default = true)]
+    is_iso: bool,
+
+    /// Whether the display symbol follows the amount (e.g. `100 ETH`) rather than
+    /// preceding it (`$100`). Ignored for ISO currencies. Defaults to `false`.
+    #[builder(default)]
+    symbol_after: bool,
+
     /// First date from which this commodity is considered valid. `None` means there is
     /// no lower bound on validity.
     active_from: Option<Date>,
@@ -124,6 +140,27 @@ impl Commodity {
     #[must_use]
     pub fn aliases(&self) -> &[String] {
         &self.aliases
+    }
+
+    /// Returns the number of minor-unit digits used when formatting amounts.
+    #[inline]
+    #[must_use]
+    pub fn decimals(&self) -> u8 {
+        self.decimals
+    }
+
+    /// Returns whether this is an ISO 4217 currency.
+    #[inline]
+    #[must_use]
+    pub fn is_iso(&self) -> bool {
+        self.is_iso
+    }
+
+    /// Returns whether the display symbol follows the amount.
+    #[inline]
+    #[must_use]
+    pub fn symbol_after(&self) -> bool {
+        self.symbol_after
     }
 
     /// Returns the date from which this commodity is valid.
@@ -213,5 +250,23 @@ mod tests {
             .aliases(vec!["A$".to_owned(), "AU$".to_owned()])
             .build();
         assert_eq!(c2.aliases(), &["A$".to_owned(), "AU$".to_owned()]);
+    }
+
+    #[test]
+    fn display_metadata_defaults_and_overrides() {
+        let default = Commodity::builder().code("AUD").build();
+        assert_eq!(default.decimals(), 2);
+        assert!(default.is_iso());
+        assert!(!default.symbol_after());
+
+        let eth = Commodity::builder()
+            .code("ETH")
+            .decimals(9)
+            .is_iso(false)
+            .symbol_after(true)
+            .build();
+        assert_eq!(eth.decimals(), 9);
+        assert!(!eth.is_iso());
+        assert!(eth.symbol_after());
     }
 }
