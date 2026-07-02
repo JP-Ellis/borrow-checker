@@ -121,6 +121,62 @@ pub async fn list_currencies() -> Result<Vec<CommodityInfo>, BcError> {
     .await
 }
 
+/// Argument struct for [`create_currency`] / [`update_currency`].
+#[derive(Serialize)]
+struct CurrencyArgs<'a> {
+    /// The commodity to persist.
+    info: &'a CommodityInfo,
+}
+
+/// Creates a new commodity, returning the stored value.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] on a marker conflict, or [`BcError::Internal`]
+/// if the invoke fails.
+#[inline]
+pub async fn create_currency(info: &CommodityInfo) -> Result<CommodityInfo, BcError> {
+    tauri_sys::core::invoke_result::<CommodityInfo, BcError>(
+        commands::CREATE_CURRENCY,
+        CurrencyArgs { info },
+    )
+    .await
+}
+
+/// Updates an existing commodity (its code is immutable).
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] on a marker conflict or code change, or
+/// [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn update_currency(info: &CommodityInfo) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result::<(), BcError>(commands::UPDATE_CURRENCY, CurrencyArgs { info })
+        .await
+}
+
+/// Argument struct for [`delete_currency`].
+#[derive(Serialize)]
+struct DeleteCurrencyArgs<'a> {
+    /// The commodity id to delete.
+    id: &'a str,
+}
+
+/// Deletes a commodity, refusing if it is still referenced.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] if the commodity is referenced, or
+/// [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn delete_currency(id: &str) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result::<(), BcError>(
+        commands::DELETE_CURRENCY,
+        DeleteCurrencyArgs { id },
+    )
+    .await
+}
+
 /// Argument struct for [`create_tag`].
 #[derive(Serialize)]
 struct CreateTagArgs<'a> {
