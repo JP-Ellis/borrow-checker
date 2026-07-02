@@ -61,6 +61,17 @@ fn aud(value: Decimal) -> Amount {
     Amount::new(value, CommodityCode::new("AUD"))
 }
 
+/// `(code, symbol, name, aliases, decimals, is_iso, symbol_after)`.
+type SeedCurrency = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+    u8,
+    bool,
+    bool,
+);
+
 /// Returns the first day of the calendar month `months_ago` months before
 /// the current wall-clock date (intercepted by libfaketime in CI).
 fn month_start(months_ago: i64) -> Date {
@@ -104,6 +115,45 @@ async fn main() -> anyhow::Result<()> {
     let accounts = AccountService::new(pool.clone());
     let budgets = BudgetService::new(pool.clone());
     let transactions = TransactionService::new(pool.clone());
+
+    // =========================================================================
+    // COMMODITIES (9 currencies with richer, collectively-unambiguous aliases)
+    // =========================================================================
+
+    let commodities = bc_core::CommodityService::new(pool.clone());
+    // Richer-than-default alias sets for demo/testing marker resolution. Codes,
+    // symbols, and aliases must stay collectively unambiguous.
+    let seed: &[SeedCurrency] = &[
+        ("USD", "$", "US Dollar", &["US$", "USD$"], 2, true, false),
+        (
+            "AUD",
+            "A$",
+            "Australian Dollar",
+            &["AU$", "AUD$"],
+            2,
+            true,
+            false,
+        ),
+        ("EUR", "€", "Euro", &["EUR€"], 2, true, false),
+        ("GBP", "£", "British Pound", &["GBP£"], 2, true, false),
+        ("JPY", "¥", "Japanese Yen", &["JP¥"], 0, true, false),
+        ("KRW", "₩", "Korean Won", &["KR₩"], 0, true, false),
+        ("INR", "₹", "Indian Rupee", &["IN₹"], 2, true, false),
+        ("BTC", "₿", "Bitcoin", &["XBT"], 8, false, false),
+        ("ETH", "Ξ", "Ethereum", &["ETHΞ"], 9, false, true),
+    ];
+    for (code, symbol, name, aliases, decimals, is_iso, symbol_after) in seed {
+        let c = bc_models::Commodity::builder()
+            .code(*code)
+            .symbol(*symbol)
+            .name(*name)
+            .aliases(aliases.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
+            .decimals(*decimals)
+            .is_iso(*is_iso)
+            .symbol_after(*symbol_after)
+            .build();
+        commodities.create(&c).await?;
+    }
 
     // =========================================================================
     // ACCOUNTS (26 total: 5 root + 21 leaf)
