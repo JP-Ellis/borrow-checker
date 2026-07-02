@@ -38,6 +38,7 @@ pub fn CommandPalette(
     let selected_idx = RwSignal::new(0_usize);
     let input_ref = NodeRef::<leptos::html::Input>::new();
     let navigate = StoredValue::new(use_navigate());
+    let currencies = crate::currency_ctx::use_currency_store();
 
     /* Increment only when opening so closing does not reset the cached list. */
     let open_count = RwSignal::new(0_usize);
@@ -191,6 +192,7 @@ pub fn CommandPalette(
                                 view! { <div class=style::empty>{msg}</div> }.into_any()
                             } else {
                                 let sel = selected_idx.get();
+                                let currency_set = currencies.get();
                                 items
                                     .into_iter()
                                     .enumerate()
@@ -204,7 +206,13 @@ pub fn CommandPalette(
                                             .as_ref()
                                             .map_or_else(
                                                 || "\u{2014}".to_owned(),
-                                                bc_ipc::Amount::format_short,
+                                                |b| {
+                                                    let (sym, after) = crate::currency_ctx::short_symbol(
+                                                        &b.currency_code,
+                                                        &currency_set,
+                                                    );
+                                                    b.format_short(sym.as_deref(), after)
+                                                },
                                             );
                                         let type_label = node.account_type.label();
                                         let item_class = if idx == sel {

@@ -41,3 +41,24 @@ pub fn provide_currency_store() -> CurrencyStore {
 pub fn use_currency_store() -> RwSignal<Vec<CommodityInfo>> {
     use_context::<CurrencyStore>().map_or_else(|| RwSignal::new(Vec::new()), |s| s.0)
 }
+
+/// Resolves the raw display symbol + placement for a currency code from the served set.
+/// Returns `(None, false)` when the code is unknown or has no symbol, so
+/// [`bc_ipc::Amount::format_short`] falls back to its code-with-space form.
+///
+/// # Arguments
+///
+/// * `code` - The currency code to resolve.
+/// * `currencies` - The served commodity set to search.
+///
+/// # Returns
+///
+/// The resolved symbol and whether it should be placed after the amount.
+#[cfg(target_arch = "wasm32")]
+#[must_use]
+pub fn short_symbol(code: &str, currencies: &[CommodityInfo]) -> (Option<String>, bool) {
+    currencies
+        .iter()
+        .find(|c| c.code.eq_ignore_ascii_case(code))
+        .map_or((None, false), |c| (c.symbol.clone(), c.symbol_after))
+}

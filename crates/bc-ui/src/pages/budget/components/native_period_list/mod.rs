@@ -77,13 +77,24 @@ fn fill_percent(row: &NativePeriodRow) -> u32 {
 ///
 /// In `pct_mode`, returns `"N%"` (integer, spent ÷ target × 100).
 /// Falls back to absolute amounts when tracking-only or when target is zero.
+///
+/// `spent` and `target` are resolved independently against `currencies`, each
+/// from its own `currency_code`, since they may differ.
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "pct calculation: budget Decimal values are bounded; cannot overflow or panic"
 )]
-fn display_str(row: &NativePeriodRow, pct_mode: bool) -> String {
+fn display_str(
+    row: &NativePeriodRow,
+    pct_mode: bool,
+    currencies: &[bc_ipc::CommodityInfo],
+) -> String {
+    let spent_short = || {
+        let (sym, after) = crate::currency_ctx::short_symbol(&row.spent.currency_code, currencies);
+        row.spent.format_short(sym.as_deref(), after)
+    };
     match &row.effective_target {
-        None => format!("{} \u{00b7} tracking", row.spent.format_short()),
+        None => format!("{} \u{00b7} tracking", spent_short()),
         Some(target) if pct_mode => {
             if target.value == Decimal::ZERO {
                 "\u{2013}".into()
@@ -95,7 +106,15 @@ fn display_str(row: &NativePeriodRow, pct_mode: bool) -> String {
                 format!("{pct}%")
             }
         }
-        Some(target) => format!("{} / {}", row.spent.format_short(), target.format_short()),
+        Some(target) => {
+            let (tsym, tafter) =
+                crate::currency_ctx::short_symbol(&target.currency_code, currencies);
+            format!(
+                "{} / {}",
+                spent_short(),
+                target.format_short(tsym.as_deref(), tafter)
+            )
+        }
     }
 }
 
@@ -116,6 +135,7 @@ pub fn NativePeriodList(
     let window_start = ctx.window_start;
     let pct_mode = ctx.pct_mode;
     let data_version = ctx.data_version;
+    let currencies = crate::currency_ctx::use_currency_store();
 
     let rows: LocalResource<Result<Vec<NativePeriodRow>, BcError>> =
         LocalResource::new(move || {
@@ -135,6 +155,7 @@ pub fn NativePeriodList(
         }>
             {move || {
                 let pct = pct_mode.get();
+                let currencies = currencies.get();
                 rows.get()
                     .map(|result| match result {
                         Err(e) => {
@@ -148,7 +169,7 @@ pub fn NativePeriodList(
                                     let status = row_status(&row);
                                     let fill_pct = fill_percent(&row);
                                     let fill_style = format!("width: {fill_pct}%; height: 100%");
-                                    let amounts = display_str(&row, pct);
+                                    let amounts = display_str(&row, pct, &currencies);
                                     let label = row.label.clone();
                                     let status_class = match status {
                                         Status::Good => style::status_good,
