@@ -551,6 +551,9 @@ pub mod tests {
             "AUD",
             Some("A$".to_owned()),
             vec![],
+            2,
+            true,
+            false,
         )]
     }
 
