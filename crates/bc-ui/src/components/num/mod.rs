@@ -3,12 +3,14 @@
 use core::cmp::Ordering;
 
 use bc_ipc::Amount;
-pub use bc_ipc::Currency;
-pub use bc_ipc::USD;
-pub use bc_ipc::currency_from_code;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 use stylance::import_style;
+
+use crate::components::num::meta::DisplayMeta;
+
+/// Pure display-metadata resolution — native-testable.
+pub mod meta;
 
 import_style!(style, "num.module.scss");
 
@@ -20,7 +22,7 @@ import_style!(style, "num.module.scss");
 /// `value`'s magnitude is formatted; the sign prefix is added by
 /// [`format_amount`].
 #[cfg(target_arch = "wasm32")]
-fn format_with_symbol(value: &Decimal, currency: &Currency) -> String {
+fn format_with_symbol(value: &Decimal, meta: &DisplayMeta) -> String {
     use js_sys::Array;
     use js_sys::Intl::NumberFormat;
     use js_sys::Object;
@@ -30,12 +32,12 @@ fn format_with_symbol(value: &Decimal, currency: &Currency) -> String {
 
     let abs = value.abs();
     let mut abs_scaled = abs;
-    abs_scaled.rescale(u32::from(currency.decimals));
+    abs_scaled.rescale(u32::from(meta.decimals));
     let js_value = JsValue::from_f64(abs.to_f64().unwrap_or(0.0_f64));
-    let d = JsValue::from_f64(f64::from(currency.decimals));
+    let d = JsValue::from_f64(f64::from(meta.decimals));
 
     let options = Object::new();
-    if currency.is_iso {
+    if meta.is_iso {
         drop(Reflect::set(
             &options,
             &JsValue::from_str("style"),
@@ -44,7 +46,7 @@ fn format_with_symbol(value: &Decimal, currency: &Currency) -> String {
         drop(Reflect::set(
             &options,
             &JsValue::from_str("currency"),
-            &JsValue::from_str(currency.code),
+            &JsValue::from_str(&meta.code),
         ));
     } else {
         drop(Reflect::set(
@@ -72,19 +74,19 @@ fn format_with_symbol(value: &Decimal, currency: &Currency) -> String {
         .and_then(|v| v.as_string())
         .unwrap_or_else(|| {
             let decimal = abs_scaled.to_string();
-            if currency.symbol_after {
-                format!("{decimal}\u{00a0}{}", currency.symbol)
+            if meta.symbol_after {
+                format!("{decimal}\u{00a0}{}", meta.symbol)
             } else {
-                format!("{}{decimal}", currency.symbol)
+                format!("{}{decimal}", meta.symbol)
             }
         });
 
-    if currency.is_iso {
+    if meta.is_iso {
         output
-    } else if currency.symbol_after {
-        format!("{output}\u{00a0}{}", currency.symbol)
+    } else if meta.symbol_after {
+        format!("{output}\u{00a0}{}", meta.symbol)
     } else {
-        format!("{}{output}", currency.symbol)
+        format!("{}{output}", meta.symbol)
     }
 }
 
@@ -102,8 +104,8 @@ fn format_with_symbol(value: &Decimal, currency: &Currency) -> String {
 /// intrinsic scale. For compact display using the value's own scale, see `Amount::format_short`.
 #[must_use]
 #[inline]
-pub fn format_amount(value: &Decimal, currency: &Currency) -> String {
-    let formatted = format_with_symbol(value, currency);
+pub fn format_amount(value: &Decimal, meta: &DisplayMeta) -> String {
+    let formatted = format_with_symbol(value, meta);
     match value.cmp(&Decimal::ZERO) {
         Ordering::Greater => format!("+{formatted}"),
         Ordering::Less => format!("\u{2212}{formatted}"),
