@@ -50,6 +50,7 @@ function dbHasCommodityCode(code: string): boolean {
  */
 async function openSettingsCurrencies(): Promise<void> {
     const nav = await $('nav[aria-label="main navigation"]');
+    await nav.waitForExist({ timeout: 20_000 });
     const settingsLink = await nav.$('a=settings');
     await settingsLink.waitForDisplayed({ timeout: 5_000 });
     await settingsLink.click();
