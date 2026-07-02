@@ -50,6 +50,7 @@ pub fn AccountDashboard(
     #[prop(optional)]
     on_add_tx: Option<Callback<()>>,
 ) -> impl IntoView {
+    let currencies = crate::currency_ctx::use_currency_store();
     let account_id = node.id.clone();
     let sparkline_account_id = node.id.clone();
     let posting_count_account_id = node.id.clone();
@@ -88,11 +89,13 @@ pub fn AccountDashboard(
         .as_ref()
         .map_or_else(String::new, |b| b.currency_code.clone());
 
-    let balance_str = match node.balance.as_ref() {
-        None => "\u{2014}".into(),
+    let balance = node.balance.clone();
+    let balance_str = move || match balance.as_ref() {
+        None => "\u{2014}".to_owned(),
         Some(b) => {
-            let currency = bc_ipc::currency_from_code(&b.currency_code).unwrap_or(&bc_ipc::USD);
-            crate::components::num::format_amount(&b.value, currency)
+            let meta =
+                crate::components::num::meta::display_meta_for(&b.currency_code, &currencies.get());
+            crate::components::num::format_amount(&b.value, &meta)
         }
     };
 
@@ -215,17 +218,17 @@ pub fn AccountDashboard(
                             .map_or_else(
                                 || ("—".into(), "—".into()),
                                 |s| {
-                                    let currency = bc_ipc::currency_from_code(
-                                            &s.income.currency_code,
-                                        )
-                                        .unwrap_or(&bc_ipc::USD);
+                                    let meta = crate::components::num::meta::display_meta_for(
+                                        &s.income.currency_code,
+                                        &currencies.get(),
+                                    );
                                     let inc = crate::components::num::format_amount(
                                         &s.income.value,
-                                        currency,
+                                        &meta,
                                     );
                                     let exp = crate::components::num::format_amount(
                                         &s.expenses.value,
-                                        currency,
+                                        &meta,
                                     );
                                     (inc, exp)
                                 },
@@ -383,8 +386,6 @@ pub fn AccountDashboard(
                     }
                     None => vec![],
                 };
-                let currency = bc_ipc::currency_from_code(&sparkline_currency_code)
-                    .unwrap_or(&bc_ipc::USD);
                 let title = match p {
                     bc_ipc::Period::Daily => format!("Cash Flow (Last {n} Days)"),
                     bc_ipc::Period::Weekly => format!("Cash Flow (Last {n} Weeks)"),
@@ -398,7 +399,7 @@ pub fn AccountDashboard(
                     _ => format!("Cash Flow (Last {n} Months)"),
                 };
                 view! {
-                    <Sparkline points=points currency=currency>
+                    <Sparkline points=points currency_code=sparkline_currency_code.clone()>
                         <Title slot>{title}</Title>
                     </Sparkline>
                 }

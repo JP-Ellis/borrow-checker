@@ -583,11 +583,20 @@ pub fn TransactionRow(
     };
 
     let amount = headline_amount(&tx, &perspective);
-    let currency = bc_ipc::currency_from_code(&amount.currency_code).unwrap_or(&bc_ipc::USD);
-    let amount_str = if amount.currency_code.is_empty() {
-        "\u{2014}".to_owned()
-    } else {
-        crate::components::num::format_amount(&amount.value, currency)
+    let currencies = crate::currency_ctx::use_currency_store();
+    let amount_str = {
+        let amount = amount.clone();
+        move || {
+            if amount.currency_code.is_empty() {
+                "\u{2014}".to_owned()
+            } else {
+                let meta = crate::components::num::meta::display_meta_for(
+                    &amount.currency_code,
+                    &currencies.get(),
+                );
+                crate::components::num::format_amount(&amount.value, &meta)
+            }
+        }
     };
     let amt_class = match amount.value.cmp(&Decimal::ZERO) {
         core::cmp::Ordering::Greater => style::amt_pos,
@@ -793,10 +802,9 @@ fn TransactionDetail(
     });
 
     let currencies = ctx.currencies;
-    let _currencies_resource = LocalResource::new(move || async move {
-        if let Ok(list) = bc_ipc::client::list_currencies().await {
-            currencies.set(list);
-        }
+    let shared_currencies = crate::currency_ctx::use_currency_store();
+    Effect::new(move |_| {
+        currencies.set(shared_currencies.get());
     });
 
     let error: RwSignal<Option<String>> = RwSignal::new(None);
@@ -969,14 +977,20 @@ fn TransactionDetail(
                 let (extra, text) = match balance_state.get() {
                     BalanceState::Balanced => (style::balance_ok, "balances".to_owned()),
                     BalanceState::Inferred { remainder, currency } => {
-                        let cur = bc_ipc::currency_from_code(&currency).unwrap_or(&bc_ipc::USD);
-                        let amt = crate::components::num::format_amount(&remainder, cur);
+                        let meta = crate::components::num::meta::display_meta_for(
+                            &currency,
+                            &currencies.get(),
+                        );
+                        let amt = crate::components::num::format_amount(&remainder, &meta);
                         (style::balance_ok, format!("balances \u{2014} auto {amt}"))
                     }
                     BalanceState::Empty => (style::balance_ok, "no amounts yet".to_owned()),
                     BalanceState::Unbalanced { delta, currency } => {
-                        let cur = bc_ipc::currency_from_code(&currency).unwrap_or(&bc_ipc::USD);
-                        let amt = crate::components::num::format_amount(&delta, cur);
+                        let meta = crate::components::num::meta::display_meta_for(
+                            &currency,
+                            &currencies.get(),
+                        );
+                        let amt = crate::components::num::format_amount(&delta, &meta);
                         (style::balance_bad, format!("unbalanced \u{2014} \u{03A3} = {amt}"))
                     }
                     BalanceState::Ambiguous => {
