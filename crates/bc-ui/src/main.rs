@@ -87,6 +87,11 @@ mod components_tests {
             include!("components/account_picker/matching.rs");
         }
     }
+    pub mod num {
+        pub mod meta {
+            include!("components/num/meta.rs");
+        }
+    }
 }
 
 #[cfg(test)]
