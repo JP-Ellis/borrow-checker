@@ -88,35 +88,35 @@ function dbExtraDates(txId: string): ExtraDateRow[] {
  */
 async function openGroceriesAccount(): Promise<void> {
     const navAccounts = await $('[data-testid="nav-accounts"]');
-    await navAccounts.waitForDisplayed({ timeout: 5_000 });
+    await navAccounts.waitForDisplayed();
     await navAccounts.click();
 
     await browser.waitUntil(
         async () => (await browser.getUrl()).includes('/accounts'),
-        { timeout: 5_000, timeoutMsg: 'URL did not reach /accounts within 5 s' },
+        { timeoutMsg: 'URL did not reach /accounts within 5 s' },
     );
 
     const sidebarNav = await $('nav[aria-label="account navigation"]');
-    await sidebarNav.$('a').waitForDisplayed({ timeout: 10_000 });
+    await sidebarNav.$('a').waitForDisplayed();
 
     const groceriesSpan = await sidebarNav.$('span=Groceries');
-    await groceriesSpan.waitForDisplayed({ timeout: 10_000 });
+    await groceriesSpan.waitForDisplayed();
     await groceriesSpan.click();
 
     await browser.waitUntil(
         async () => (await browser.getUrl()).includes('/accounts/'),
-        { timeout: 5_000, timeoutMsg: 'URL did not update to account route within 5 s' },
+        { timeoutMsg: 'URL did not update to account route within 5 s' },
     );
 
     // Wait for at least one register row.
     const register = await $('[aria-label="transaction register"]');
-    await register.waitForDisplayed({ timeout: 10_000 });
+    await register.waitForDisplayed();
     await browser.waitUntil(
         () => browser.execute(
             () => (document.querySelector('[aria-label="transaction register"]')
                 ?.querySelectorAll('[role="button"]').length ?? 0) > 0,
         ),
-        { timeout: 15_000, timeoutMsg: 'No transaction rows appeared in the Groceries register' },
+        { timeoutMsg: 'No transaction rows appeared in the Groceries register' },
     );
 }
 
@@ -129,9 +129,7 @@ async function expandColesRow(): Promise<void> {
 
     // Coles may appear multiple times — grab the first one.
     const colesSpan = await register.$('span=Coles');
-    await colesSpan.waitForDisplayed({
-        timeout: 10_000,
-        timeoutMsg: '"Coles" row did not appear in the Groceries register',
+    await colesSpan.waitForDisplayed({ timeoutMsg: '"Coles" row did not appear in the Groceries register',
     });
 
     // Click the parent [role="button"] row via JS to avoid scrolling issues.
@@ -142,9 +140,7 @@ async function expandColesRow(): Promise<void> {
 
     // Assert the detail (status pill) is now visible.
     const pill = await $('[data-testid="status-pill"]');
-    await pill.waitForDisplayed({
-        timeout: 5_000,
-        timeoutMsg: 'Status pill did not appear after expanding the Coles row',
+    await pill.waitForDisplayed({ timeoutMsg: 'Status pill did not appear after expanding the Coles row',
     });
 }
 
@@ -169,16 +165,14 @@ describe('Accounts — edit transaction detail', () => {
 
         await browser.waitUntil(
             async () => (await pill.getText()) !== labelBefore,
-            { timeout: 3_000, timeoutMsg: 'Status pill label did not change after click' },
+            { timeoutMsg: 'Status pill label did not change after click' },
         );
         const labelAfter = await pill.getText();
         expect(labelAfter).not.toBe(labelBefore);
 
         // ── Save bar must appear. ────────────────────────────────────────
         const saveBtn = await $('[aria-label="save transaction"]');
-        await saveBtn.waitForDisplayed({
-            timeout: 3_000,
-            timeoutMsg: 'Save button did not appear after toggling reconciliation',
+        await saveBtn.waitForDisplayed({ timeoutMsg: 'Save button did not appear after toggling reconciliation',
         });
 
         const isDisabled: boolean = await browser.execute(
@@ -193,7 +187,7 @@ describe('Accounts — edit transaction detail', () => {
         // Save bar disappears once the IPC write completes.
         await browser.waitUntil(
             async () => !(await saveBtn.isDisplayed().catch(() => false)),
-            { timeout: 10_000, timeoutMsg: 'Save bar did not disappear after clicking Save' },
+            { timeoutMsg: 'Save bar did not disappear after clicking Save' },
         );
 
         // ── Verify in SQLite. ────────────────────────────────────────────
@@ -241,9 +235,7 @@ describe('Accounts — edit transaction detail', () => {
 
         // The "+ date" button must be visible in the metamix bar.
         const addDateBtn = await $('button=+ date');
-        await addDateBtn.waitForDisplayed({
-            timeout: 5_000,
-            timeoutMsg: '"+ date" button did not appear in the metamix bar',
+        await addDateBtn.waitForDisplayed({ timeoutMsg: '"+ date" button did not appear in the metamix bar',
         });
 
         // Click "+ date" to insert a new extra-date row.
@@ -251,14 +243,12 @@ describe('Accounts — edit transaction detail', () => {
 
         // A "×" remove span must now be visible.
         const xSpan = await $('span=×');
-        await xSpan.waitForDisplayed({
-            timeout: 3_000,
-            timeoutMsg: '"×" remove button did not appear after adding extra date',
+        await xSpan.waitForDisplayed({ timeoutMsg: '"×" remove button did not appear after adding extra date',
         });
 
         // Fill the label and date fields of the newly added row.
         const labelInput = await $('input[placeholder="label"]');
-        await labelInput.waitForDisplayed({ timeout: 3_000 });
+        await labelInput.waitForDisplayed();
         await labelInput.setValue('settlement');
 
         // The last YYYY-MM-DD input is the extra-date one; pick it via JS.
@@ -281,16 +271,14 @@ describe('Accounts — edit transaction detail', () => {
 
         // Save bar must appear.
         const saveBtn = await $('[aria-label="save transaction"]');
-        await saveBtn.waitForDisplayed({
-            timeout: 3_000,
-            timeoutMsg: 'Save button did not appear after adding extra date',
+        await saveBtn.waitForDisplayed({ timeoutMsg: 'Save button did not appear after adding extra date',
         });
 
         // Save.
         await saveBtn.click();
         await browser.waitUntil(
             async () => !(await saveBtn.isDisplayed().catch(() => false)),
-            { timeout: 10_000, timeoutMsg: 'Save bar did not disappear after saving extra date' },
+            { timeoutMsg: 'Save bar did not disappear after saving extra date' },
         );
 
         // Verify the extra date persisted in SQLite.

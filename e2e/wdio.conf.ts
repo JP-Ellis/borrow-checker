@@ -71,6 +71,12 @@ export const config: Options.Testrunner = {
   framework: 'mocha',
   reporters: ['spec'],
 
+  /* Default wait for `waitForDisplayed`/`waitForExist`/`waitUntil` and
+   * `expect(...)` polling. Deliberately generous to absorb container-in-CI
+   * cold-start and slowness; specs should only override when a wait genuinely
+   * needs to be shorter or much longer than this. */
+  waitforTimeout: 15_000,
+
   mochaOpts: {
     ui:      'bdd',
     timeout: 60_000,
