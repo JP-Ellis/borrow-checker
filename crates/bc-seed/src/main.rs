@@ -140,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
         ("KRW", "₩", "Korean Won", &["KR₩"], 0, true, false),
         ("INR", "₹", "Indian Rupee", &["IN₹"], 2, true, false),
         ("BTC", "₿", "Bitcoin", &["XBT"], 8, false, false),
-        ("ETH", "Ξ", "Ethereum", &["ETHΞ"], 9, false, true),
+        ("ETH", "ETH", "Ethereum", &["Ξ"], 9, false, true),
     ];
     for (code, symbol, name, aliases, decimals, is_iso, symbol_after) in seed {
         let c = bc_models::Commodity::builder()
