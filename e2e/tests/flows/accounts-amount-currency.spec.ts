@@ -22,34 +22,34 @@ import { browser, $$, $ }    from '@wdio/globals';
  */
 async function openGroceriesAccount(): Promise<void> {
     const navAccounts = await $('[data-testid="nav-accounts"]');
-    await navAccounts.waitForDisplayed({ timeout: 5_000 });
+    await navAccounts.waitForDisplayed();
     await navAccounts.click();
 
     await browser.waitUntil(
         async () => (await browser.getUrl()).includes('/accounts'),
-        { timeout: 5_000, timeoutMsg: 'URL did not reach /accounts within 5 s' },
+        { timeoutMsg: 'URL did not reach /accounts within 5 s' },
     );
 
     const sidebarNav = await $('nav[aria-label="account navigation"]');
-    await sidebarNav.$('a').waitForDisplayed({ timeout: 10_000 });
+    await sidebarNav.$('a').waitForDisplayed();
 
     const groceriesSpan = await sidebarNav.$('span=Groceries');
-    await groceriesSpan.waitForDisplayed({ timeout: 10_000 });
+    await groceriesSpan.waitForDisplayed();
     await groceriesSpan.click();
 
     await browser.waitUntil(
         async () => (await browser.getUrl()).includes('/accounts/'),
-        { timeout: 5_000, timeoutMsg: 'URL did not update to account route within 5 s' },
+        { timeoutMsg: 'URL did not update to account route within 5 s' },
     );
 
     const register = await $('[aria-label="transaction register"]');
-    await register.waitForDisplayed({ timeout: 10_000 });
+    await register.waitForDisplayed();
     await browser.waitUntil(
         () => browser.execute(
             () => (document.querySelector('[aria-label="transaction register"]')
                 ?.querySelectorAll('[role="button"]').length ?? 0) > 0,
         ),
-        { timeout: 15_000, timeoutMsg: 'No transaction rows appeared in the Groceries register' },
+        { timeoutMsg: 'No transaction rows appeared in the Groceries register' },
     );
 }
 
@@ -60,9 +60,7 @@ async function expandColesRow(): Promise<void> {
     const register = await $('[aria-label="transaction register"]');
 
     const colesSpan = await register.$('span=Coles');
-    await colesSpan.waitForDisplayed({
-        timeout: 10_000,
-        timeoutMsg: '"Coles" row did not appear in the Groceries register',
+    await colesSpan.waitForDisplayed({ timeoutMsg: '"Coles" row did not appear in the Groceries register',
     });
 
     await browser.execute((el: Element) => {
@@ -71,9 +69,7 @@ async function expandColesRow(): Promise<void> {
     }, await colesSpan.getElement() as unknown as Element);
 
     const pill = await $('[data-testid="status-pill"]');
-    await pill.waitForDisplayed({
-        timeout: 5_000,
-        timeoutMsg: 'Status pill did not appear after expanding the Coles row',
+    await pill.waitForDisplayed({ timeoutMsg: 'Status pill did not appear after expanding the Coles row',
     });
 
     /* Give the currencies LocalResource time to resolve before we inspect
@@ -92,7 +88,7 @@ async function setPostingAmount(inputIndex: number, value: string): Promise<void
     const inputs = await $$('[data-testid="posting-amount"]');
     const input = inputs[inputIndex];
     if (!input) throw new Error(`posting-amount input [${inputIndex}] not found`);
-    await input.waitForDisplayed({ timeout: 3_000 });
+    await input.waitForDisplayed();
     await input.click();
     await browser.keys(['Control', 'a']);
     if (value === '') {
@@ -116,9 +112,7 @@ describe('Accounts — currency-marker validation on posting amounts', () => {
 
         /* The save bar must appear (the transaction is now dirty). */
         const saveBtn = await $('[aria-label="save transaction"]');
-        await saveBtn.waitForDisplayed({
-            timeout: 3_000,
-            timeoutMsg: 'Save bar did not appear after changing a posting amount',
+        await saveBtn.waitForDisplayed({ timeoutMsg: 'Save bar did not appear after changing a posting amount',
         });
 
         /* The Save button must be disabled because balance is Invalid. */
@@ -137,9 +131,7 @@ describe('Accounts — currency-marker validation on posting amounts', () => {
         await setPostingAmount(0, 'XYZ 999');
 
         const saveBtn = await $('[aria-label="save transaction"]');
-        await saveBtn.waitForDisplayed({
-            timeout: 3_000,
-            timeoutMsg: 'Save bar did not appear after typing an unknown currency',
+        await saveBtn.waitForDisplayed({ timeoutMsg: 'Save bar did not appear after typing an unknown currency',
         });
 
         const isDisabled: boolean = await browser.execute(
@@ -161,9 +153,7 @@ describe('Accounts — currency-marker validation on posting amounts', () => {
         await setPostingAmount(1, '');
 
         const saveBtn = await $('[aria-label="save transaction"]');
-        await saveBtn.waitForDisplayed({
-            timeout: 3_000,
-            timeoutMsg: 'Save bar did not appear after clearing the second posting amount',
+        await saveBtn.waitForDisplayed({ timeoutMsg: 'Save bar did not appear after clearing the second posting amount',
         });
 
         const isDisabled: boolean = await browser.execute(

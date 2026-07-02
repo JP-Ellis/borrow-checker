@@ -31,7 +31,7 @@ describe('Smoke — app launches and shell renders', () => {
 
     await browser.waitUntil(
       async () => (await browser.getUrl()).includes('/accounts'),
-      { timeout: 5_000, timeoutMsg: 'URL did not reach /accounts within 5 s' },
+      { timeoutMsg: 'URL did not reach /accounts within 5 s' },
     );
 
     await expect(await $('main')).toBeDisplayed();

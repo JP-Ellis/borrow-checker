@@ -13,24 +13,24 @@ import { browser, $ } from '@wdio/globals';
 
 async function openCheckingAccount(): Promise<void> {
     const navAccounts = $('[data-testid="nav-accounts"]');
-    await navAccounts.waitForDisplayed({ timeout: 5_000 });
+    await navAccounts.waitForDisplayed();
     await navAccounts.click();
 
     await browser.waitUntil(
         async () => (await browser.getUrl()).includes('/accounts'),
-        { timeout: 5_000, timeoutMsg: 'URL did not reach /accounts within 5 s' },
+        { timeoutMsg: 'URL did not reach /accounts within 5 s' },
     );
 
     const sidebarNav = $('nav[aria-label="account navigation"]');
-    await sidebarNav.$('a').waitForDisplayed({ timeout: 10_000 });
+    await sidebarNav.$('a').waitForDisplayed();
 
     const checkingSpan = sidebarNav.$('span=Checking');
-    await checkingSpan.waitForDisplayed({ timeout: 10_000 });
+    await checkingSpan.waitForDisplayed();
     await checkingSpan.click();
 
     await browser.waitUntil(
         async () => (await browser.getUrl()).includes('/accounts/'),
-        { timeout: 5_000, timeoutMsg: 'URL did not update to account route within 5 s' },
+        { timeoutMsg: 'URL did not update to account route within 5 s' },
     );
 }
 
@@ -41,7 +41,7 @@ describe('Accounts — transaction register display', () => {
         await openCheckingAccount();
 
         const register = $('[aria-label="transaction register"]');
-        await register.waitForDisplayed({ timeout: 10_000 });
+        await register.waitForDisplayed();
 
         // Wait for at least one transaction row to appear (confirms IPC round-trip).
         await browser.waitUntil(
@@ -49,7 +49,7 @@ describe('Accounts — transaction register display', () => {
                 () => (document.querySelector('[aria-label="transaction register"]')
                     ?.querySelectorAll('[role="button"]').length ?? 0) > 0,
             ),
-            { timeout: 15_000, timeoutMsg: 'No transaction rows appeared in the register' },
+            { timeoutMsg: 'No transaction rows appeared in the register' },
         );
 
         // Use textContent (not innerText/getText) to capture all DOM text including
