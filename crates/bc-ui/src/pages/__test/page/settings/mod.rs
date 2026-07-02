@@ -4,6 +4,7 @@
 //! - A fully-populated snapshot (anchor date + plugin paths).
 //! - A minimal snapshot (no anchor, no plugin paths).
 //! - A snapshot where `config_file_path` is `None` (fallback hint text).
+//! - The editable currencies panel, seeded with a mock currency set.
 
 use bc_ipc::SettingsInfo;
 use leptos::prelude::*;
@@ -16,6 +17,7 @@ use leptos_router::path;
 
 use crate::pages::__test::index::QaCard;
 use crate::pages::settings::SettingsPanel;
+use crate::pages::settings::currencies::qa::CurrenciesPanelQa;
 
 /// Display name shown in the QA index.
 pub const TITLE: &str = "settings";
@@ -33,6 +35,7 @@ pub fn SettingsRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
             <Route path=path!("/populated") view=SettingsPopulatedQa />
             <Route path=path!("/minimal") view=SettingsMinimalQa />
             <Route path=path!("/no-config-path") view=SettingsNoConfigPathQa />
+            <Route path=path!("/currencies") view=CurrenciesPanelQa />
         </ParentRoute>
     }
     .into_inner()
@@ -62,6 +65,11 @@ pub fn SettingsIndex() -> impl IntoView {
                     title="No config path"
                     path="/__test/page/settings/no-config-path"
                     description="Settings where config_file_path is None (fallback hint)."
+                />
+                <QaCard
+                    title="Currencies"
+                    path="/__test/page/settings/currencies"
+                    description="Editable currency registry with mock USD/AUD/EUR/BTC data."
                 />
             </div>
         </div>
