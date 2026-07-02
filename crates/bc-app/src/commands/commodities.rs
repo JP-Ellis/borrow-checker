@@ -38,6 +38,9 @@ pub async fn list_currencies(
                 c.code().to_owned(),
                 c.symbol().map(ToOwned::to_owned),
                 c.aliases().to_vec(),
+                c.decimals(),
+                c.is_iso(),
+                c.symbol_after(),
             )
         })
         .collect())

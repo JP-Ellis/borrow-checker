@@ -24,6 +24,12 @@ pub struct CommodityInfo {
     pub symbol: Option<String>,
     /// Alternate input markers (e.g. `["AU$"]`).
     pub aliases: Vec<String>,
+    /// Minor-unit digits shown when formatting (e.g. `2`, `0`, `8`).
+    pub decimals: u8,
+    /// Whether this is an ISO 4217 currency (drives `Intl.NumberFormat` style).
+    pub is_iso: bool,
+    /// Whether the symbol follows the amount (ignored for ISO currencies).
+    pub symbol_after: bool,
 }
 
 impl CommodityInfo {
@@ -35,12 +41,18 @@ impl CommodityInfo {
         code: impl Into<String>,
         symbol: Option<String>,
         aliases: Vec<String>,
+        decimals: u8,
+        is_iso: bool,
+        symbol_after: bool,
     ) -> Self {
         Self {
             id: id.into(),
             code: code.into(),
             symbol,
             aliases,
+            decimals,
+            is_iso,
+            symbol_after,
         }
     }
 }
@@ -59,6 +71,9 @@ mod tests {
             "AUD",
             Some("A$".to_owned()),
             vec!["AU$".to_owned()],
+            2,
+            true,
+            false,
         );
         let json = serde_json::to_string(&c).unwrap();
         assert_eq!(serde_json::from_str::<CommodityInfo>(&json).unwrap(), c);
