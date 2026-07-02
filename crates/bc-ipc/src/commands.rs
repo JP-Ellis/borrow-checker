@@ -78,6 +78,13 @@ pub const LIST_TAGS: &str = "list_tags";
 /// Lists registered commodities/currencies.
 pub const LIST_CURRENCIES: &str = "list_currencies";
 
+/// Command: create a new commodity/currency.
+pub const CREATE_CURRENCY: &str = "create_currency";
+/// Command: update an existing commodity/currency.
+pub const UPDATE_CURRENCY: &str = "update_currency";
+/// Command: delete a commodity/currency.
+pub const DELETE_CURRENCY: &str = "delete_currency";
+
 /// Command: create the full colon-path tag hierarchy, returning the leaf ID.
 pub const CREATE_TAG: &str = "create_tag";
 
