@@ -218,8 +218,24 @@ mod tests {
 
     fn registry() -> Vec<CommodityInfo> {
         vec![
-            CommodityInfo::new("c1", "USD", Some("$".to_owned()), vec!["US$".to_owned()]),
-            CommodityInfo::new("c2", "AUD", Some("A$".to_owned()), vec!["AU$".to_owned()]),
+            CommodityInfo::new(
+                "c1",
+                "USD",
+                Some("$".to_owned()),
+                vec!["US$".to_owned()],
+                2,
+                true,
+                false,
+            ),
+            CommodityInfo::new(
+                "c2",
+                "AUD",
+                Some("A$".to_owned()),
+                vec!["AU$".to_owned()],
+                2,
+                true,
+                false,
+            ),
         ]
     }
 
@@ -280,6 +296,9 @@ mod tests {
             "USD",
             Some("us$".to_owned()),
             vec![],
+            2,
+            true,
+            false,
         )];
 
         // "US$100" — uppercase "US$" does NOT match the lowercase symbol "us$".
@@ -362,8 +381,8 @@ mod tests {
     #[test]
     fn ambiguous_marker_is_error() {
         let amb = vec![
-            CommodityInfo::new("c1", "USD", Some("$".to_owned()), vec![]),
-            CommodityInfo::new("c2", "AUD", Some("$".to_owned()), vec![]),
+            CommodityInfo::new("c1", "USD", Some("$".to_owned()), vec![], 2, true, false),
+            CommodityInfo::new("c2", "AUD", Some("$".to_owned()), vec![], 2, true, false),
         ];
         assert!(matches!(
             split_marked_amount(&amb, "$100"),
