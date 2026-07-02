@@ -107,9 +107,14 @@ pub fn CurrenciesPanel() -> impl IntoView {
     let banner = RwSignal::new(Option::<String>::None);
     let saving = RwSignal::new(false);
 
-    // Seed working + pristine from the served store whenever it changes and we are clean.
+    // Seed the working + pristine sets once, on the initial store load.
+    // Post-save reconciliation is handled explicitly in `save()` so a failed
+    // or in-flight edit is never clobbered by a store refresh.
     Effect::new(move |_| {
         let served = store.get();
+        if !pristine.get_untracked().is_empty() {
+            return;
+        }
         let seeded: Vec<Row> = served
             .into_iter()
             .enumerate()
@@ -197,10 +202,33 @@ pub fn CurrenciesPanel() -> impl IntoView {
                 }
             }
             saving.set(false);
-            banner.set(err);
-            // Refresh the shared store so display + parsing pick up the changes.
-            if let Ok(list) = bc_ipc::client::list_currencies().await {
-                store.set(list);
+            if let Some(e) = err {
+                // Failure: keep the working edits intact so the user can
+                // correct/retry; only surface the error in the banner.
+                banner.set(Some(e));
+            } else {
+                banner.set(None);
+                // Success: refresh the shared store AND rebuild a clean
+                // working+pristine snapshot from server truth, so is_new/deleted
+                // flags clear and the save bar retracts. The seed Effect no
+                // longer re-fires (pristine is non-empty), so this explicit
+                // reseed is what clears the dirty state.
+                if let Ok(list) = bc_ipc::client::list_currencies().await {
+                    store.set(list.clone());
+                    let fresh: Vec<Row> = list
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, info)| Row {
+                            key: u32::try_from(i).unwrap_or(u32::MAX),
+                            info,
+                            is_new: false,
+                            deleted: false,
+                        })
+                        .collect();
+                    next_key.set(u32::try_from(fresh.len()).unwrap_or(u32::MAX));
+                    rows.set(fresh.clone());
+                    pristine.set(fresh);
+                }
             }
         });
     };
