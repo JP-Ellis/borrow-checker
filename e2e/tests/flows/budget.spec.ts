@@ -82,7 +82,7 @@ async function navigateToBudget(): Promise<void> {
 
     await browser.waitUntil(
         () => browser.execute(() => window.location.pathname === '/budget'),
-        { timeout: 5_000, timeoutMsg: 'URL did not reach /budget within 5 s' },
+        { timeoutMsg: 'URL did not reach /budget within 5 s' },
     );
 
     const tree = await $('[aria-label="budget tree"]');
@@ -90,7 +90,7 @@ async function navigateToBudget(): Promise<void> {
     /* Wait for the tree. On timeout, capture page text to diagnose whether
      * the budget page is stuck in loading / error / empty state. */
     try {
-        await tree.waitForDisplayed({ timeout: 15_000 });
+        await tree.waitForDisplayed();
     } catch {
         const body = await (await $('body')).getText().catch(() => '<body unavailable>');
         throw new Error(
@@ -101,7 +101,7 @@ async function navigateToBudget(): Promise<void> {
 
     await browser.waitUntil(
         async () => (await tree.getText()).includes('Groceries'),
-        { timeout: 15_000, timeoutMsg: 'Budget tree did not populate within 15 s' },
+        { timeoutMsg: 'Budget tree did not populate within 15 s' },
     );
 }
 
@@ -112,7 +112,7 @@ async function navigateToBudget(): Promise<void> {
 async function openDetail(name: string): Promise<void> {
     const tree = await $('[aria-label="budget tree"]');
     await (await tree.$(`span=${name}`)).click();
-    await (await $('[aria-label="budget detail"]')).waitForDisplayed({ timeout: 5_000 });
+    await (await $('[aria-label="budget detail"]')).waitForDisplayed();
 }
 
 /**
@@ -193,7 +193,7 @@ describe('Budget — period navigation', () => {
                 const after = await getMonthLabel();
                 return after !== null && after !== before;
             },
-            { timeout: 5_000, timeoutMsg: 'Period did not change after ◀' },
+            { timeoutMsg: 'Period did not change after ◀' },
         );
     });
 
@@ -205,7 +205,7 @@ describe('Budget — period navigation', () => {
                 const after = await getMonthLabel();
                 return after !== null && after !== before;
             },
-            { timeout: 5_000, timeoutMsg: 'Period did not change after ▶' },
+            { timeoutMsg: 'Period did not change after ▶' },
         );
     });
 
@@ -213,12 +213,12 @@ describe('Budget — period navigation', () => {
         await setSelectValue('quarterly');
         await browser.waitUntil(
             async () => Boolean((await (await $('main')).getText()).match(/Q[1-4] \d{4}/)),
-            { timeout: 5_000, timeoutMsg: 'Period label did not update to quarterly format' },
+            { timeoutMsg: 'Period label did not update to quarterly format' },
         );
         await setSelectValue('monthly');
         await browser.waitUntil(
             async () => Boolean(await getMonthLabel()),
-            { timeout: 5_000, timeoutMsg: 'Period label did not restore to monthly format' },
+            { timeoutMsg: 'Period label did not restore to monthly format' },
         );
     });
 
@@ -275,7 +275,7 @@ describe('Budget — detail panel', () => {
                 );
                 return count >= 1;
             },
-            { timeout: 10_000, timeoutMsg: 'No revision rows appeared in the detail panel' },
+            { timeoutMsg: 'No revision rows appeared in the detail panel' },
         );
     });
 
@@ -288,7 +288,6 @@ describe('Budget — detail panel', () => {
     it('clicking Groceries row again closes the detail panel', async () => {
         await (await (await $('[aria-label="budget tree"]')).$('span=Groceries')).click();
         await (await $('[aria-label="budget detail"]')).waitForDisplayed({
-            timeout: 5_000,
             reverse: true,
         });
     });
@@ -317,14 +316,14 @@ describe('Budget — archive', () => {
     it('confirming archive removes the row from the tree and sets archived_at in DB', async () => {
         /* Re-open confirmation. */
         await (await (await $('[aria-label="budget detail"]')).$('button*=Archive budget')).click();
-        await (await $('button=Yes, archive')).waitForDisplayed({ timeout: 3_000 });
+        await (await $('button=Yes, archive')).waitForDisplayed();
         await clickButton('Yes, archive');
 
         /* — UI: Subscriptions disappears from the tree. */
         const tree = await $('[aria-label="budget tree"]');
         await browser.waitUntil(
             async () => !(await tree.getText()).includes('Subscriptions'),
-            { timeout: 10_000, timeoutMsg: 'Subscriptions did not disappear from tree after archive' },
+            { timeoutMsg: 'Subscriptions did not disappear from tree after archive' },
         );
 
         /* — DB: archived_at is now set (non-null) on the budgets anchor row. */
@@ -346,13 +345,13 @@ describe('Budget — revision timeline', () => {
             );
         await browser.waitUntil(
             async () => (await countRevRows()) >= 1,
-            { timeout: 10_000, timeoutMsg: 'Revision rows did not appear before add test' },
+            { timeoutMsg: 'Revision rows did not appear before add test' },
         );
         const beforeCount = await countRevRows();
 
         /* Open the add-revision form. */
         await clickButton('＋ add revision');
-        await (await $('[aria-label="revision form"]')).waitForDisplayed({ timeout: 5_000 });
+        await (await $('[aria-label="revision form"]')).waitForDisplayed();
 
         /* Set a clearly-future effective date and a target amount. */
         await setInputValue('[aria-label="revision form"] input[type="date"]', '2027-01-01');
@@ -362,7 +361,7 @@ describe('Budget — revision timeline', () => {
         await clickButton('Save');
         await browser.waitUntil(
             async () => (await countRevRows()) === beforeCount + 1,
-            { timeout: 10_000, timeoutMsg: 'New revision row did not appear after Save' },
+            { timeoutMsg: 'New revision row did not appear after Save' },
         );
     });
 
@@ -371,7 +370,7 @@ describe('Budget — revision timeline', () => {
         await (await $('nav[aria-label="main navigation"]')).$('a=accounts').click();
         await browser.waitUntil(
             () => browser.execute(() => window.location.pathname.startsWith('/accounts')),
-            { timeout: 5_000, timeoutMsg: 'URL did not reach /accounts within 5 s' },
+            { timeoutMsg: 'URL did not reach /accounts within 5 s' },
         );
         await navigateToBudget();
         await openDetail('Groceries');
@@ -384,14 +383,14 @@ describe('Budget — revision timeline', () => {
                 );
                 return count >= 1;
             },
-            { timeout: 10_000, timeoutMsg: 'Revision rows did not appear before amend test' },
+            { timeoutMsg: 'Revision rows did not appear before amend test' },
         );
 
         /* Click the first revision row to open the amend form. */
         const revRows = await $$('[data-testid="revision-row"]');
         const firstRow = revRows[0];
         await firstRow.click();
-        await (await $('[aria-label="revision form"]')).waitForDisplayed({ timeout: 5_000 });
+        await (await $('[aria-label="revision form"]')).waitForDisplayed();
 
         /* Change the target amount to a distinctive value. */
         await setInputValue('[aria-label="revision form"] input[type="number"]', '999.00');
@@ -399,7 +398,6 @@ describe('Budget — revision timeline', () => {
         /* Save and wait for the revision form to close. */
         await clickButton('Save');
         await (await $('[aria-label="revision form"]')).waitForDisplayed({
-            timeout: 10_000,
             reverse: true,
         });
 
@@ -409,7 +407,7 @@ describe('Budget — revision timeline', () => {
                 const text = await (await $('[aria-label="budget detail"]')).getText();
                 return text.includes('999');
             },
-            { timeout: 10_000, timeoutMsg: 'Detail panel did not show "999" after amend' },
+            { timeoutMsg: 'Detail panel did not show "999" after amend' },
         );
 
         /* — DB: the first (oldest) revision for Groceries now has target_amount ~999

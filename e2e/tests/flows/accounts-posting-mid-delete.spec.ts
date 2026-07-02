@@ -83,26 +83,26 @@ function dbPostingAccounts(txId: string): { id: string; account_id: string }[] {
  */
 async function openFirstAccount(): Promise<void> {
     const navAccounts = await $('[data-testid="nav-accounts"]');
-    await navAccounts.waitForDisplayed({ timeout: 5_000 });
+    await navAccounts.waitForDisplayed();
     await navAccounts.click();
 
     await browser.waitUntil(
         async () => (await browser.getUrl()).includes('/accounts'),
-        { timeout: 5_000, timeoutMsg: 'URL did not reach /accounts within 5 s' },
+        { timeoutMsg: 'URL did not reach /accounts within 5 s' },
     );
 
     const sidebarNav = await $('nav[aria-label="account navigation"]');
     const firstLink = await sidebarNav.$('a');
-    await firstLink.waitForDisplayed({ timeout: 10_000 });
+    await firstLink.waitForDisplayed();
     await firstLink.click();
 
     await browser.waitUntil(
         async () => (await browser.getUrl()).includes('/accounts/'),
-        { timeout: 5_000, timeoutMsg: 'URL did not update to account route within 5 s' },
+        { timeoutMsg: 'URL did not update to account route within 5 s' },
     );
 
     const register = await $('[aria-label="transaction register"]');
-    await register.waitForDisplayed({ timeout: 10_000 });
+    await register.waitForDisplayed();
 }
 
 /** Scroll through accounts until the given payee appears; click to expand it. */
@@ -132,7 +132,7 @@ async function expandTxRow(payee: string): Promise<boolean> {
             }, await payeeEl.getElement() as unknown as Element);
 
             const pill = await $('[data-testid="status-pill"]');
-            const appeared = await pill.waitForDisplayed({ timeout: 5_000 }).then(() => true).catch(() => false);
+            const appeared = await pill.waitForDisplayed().then(() => true).catch(() => false);
             if (appeared) return true;
         }
     }
@@ -189,17 +189,17 @@ describe('Accounts — posting mid-list delete does not clobber remaining rows (
                 const rows = await $$('[data-testid="posting-amount"]');
                 return (await rows.length) === initialCount - 1;
             },
-            { timeout: 3_000, timeoutMsg: 'Posting row count did not decrease after delete' },
+            { timeoutMsg: 'Posting row count did not decrease after delete' },
         );
 
         // ── Save. Deleting a leg leaves the transaction unbalanced, which is a
         //    saveable (flagged) state, so Save must still go through. ──────────
         const saveBtn = await $('[aria-label="save transaction"]');
-        await saveBtn.waitForDisplayed({ timeout: 5_000 });
+        await saveBtn.waitForDisplayed();
         await saveBtn.click();
         await browser.waitUntil(
             async () => !(await saveBtn.isDisplayed().catch(() => false)),
-            { timeout: 10_000, timeoutMsg: 'Save bar did not disappear after clicking Save' },
+            { timeoutMsg: 'Save bar did not disappear after clicking Save' },
         );
         await browser.pause(300);
 

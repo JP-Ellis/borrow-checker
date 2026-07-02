@@ -50,18 +50,18 @@ function dbHasCommodityCode(code: string): boolean {
  */
 async function openSettingsCurrencies(): Promise<void> {
     const nav = await $('nav[aria-label="main navigation"]');
-    await nav.waitForExist({ timeout: 20_000 });
+    await nav.waitForExist();
     const settingsLink = await nav.$('a=settings');
-    await settingsLink.waitForDisplayed({ timeout: 5_000 });
+    await settingsLink.waitForDisplayed();
     await settingsLink.click();
 
     await browser.waitUntil(
         () => browser.execute(() => window.location.pathname === '/settings'),
-        { timeout: 5_000, timeoutMsg: 'Pathname did not reach /settings within 5 s' },
+        { timeoutMsg: 'Pathname did not reach /settings within 5 s' },
     );
 
     const currenciesNav = await $('[data-testid="settings-nav-currencies"]');
-    await currenciesNav.waitForDisplayed({ timeout: 5_000 });
+    await currenciesNav.waitForDisplayed();
     await currenciesNav.click();
 
     await browser.waitUntil(
@@ -69,7 +69,7 @@ async function openSettingsCurrencies(): Promise<void> {
             const rows = await $$('[data-testid="currency-row"]');
             return (await rows.length) > 0;
         },
-        { timeout: 10_000, timeoutMsg: 'No currency rows appeared in the Currencies panel' },
+        { timeoutMsg: 'No currency rows appeared in the Currencies panel' },
     );
 }
 
@@ -137,7 +137,7 @@ describe('Settings — Currencies', () => {
         // Save bar must be showing (dirty) before saving.
         await browser.waitUntil(
             async () => (await saveBarHeight()) > 0,
-            { timeout: 3_000, timeoutMsg: 'Save bar did not appear after adding a currency' },
+            { timeoutMsg: 'Save bar did not appear after adding a currency' },
         );
 
         const saveBtn = await $('[data-testid="currency-save"]');
@@ -146,7 +146,7 @@ describe('Settings — Currencies', () => {
         // Save bar retracts once the IPC writes complete.
         await browser.waitUntil(
             async () => (await saveBarHeight()) === 0,
-            { timeout: 10_000, timeoutMsg: 'Save bar did not retract after saving NZD' },
+            { timeoutMsg: 'Save bar did not retract after saving NZD' },
         );
 
         // Re-navigate away and back, then confirm NZD is still present.
@@ -155,7 +155,7 @@ describe('Settings — Currencies', () => {
         await accountsLink.click();
         await browser.waitUntil(
             () => browser.execute(() => window.location.pathname === '/accounts'),
-            { timeout: 5_000, timeoutMsg: 'Pathname did not reach /accounts within 5 s' },
+            { timeoutMsg: 'Pathname did not reach /accounts within 5 s' },
         );
 
         await openSettingsCurrencies();
@@ -178,7 +178,7 @@ describe('Settings — Currencies', () => {
         const conflict = await $('[data-testid="currency-conflict"]');
         await browser.waitUntil(
             async () => (await conflict.getText()) !== '',
-            { timeout: 3_000, timeoutMsg: 'Conflict message did not appear' },
+            { timeoutMsg: 'Conflict message did not appear' },
         );
         const conflictText = await conflict.getText();
         expect(conflictText).toContain('$');
@@ -190,7 +190,7 @@ describe('Settings — Currencies', () => {
         await discardBtn.click();
         await browser.waitUntil(
             async () => (await saveBarHeight()) === 0,
-            { timeout: 3_000, timeoutMsg: 'Save bar did not retract after discarding' },
+            { timeoutMsg: 'Save bar did not retract after discarding' },
         );
     });
 
@@ -208,14 +208,14 @@ describe('Settings — Currencies', () => {
 
         await browser.waitUntil(
             async () => (await audRowBefore.row.getAttribute('data-deleted')) === 'true',
-            { timeout: 3_000, timeoutMsg: 'AUD row was not flagged as staged for deletion' },
+            { timeoutMsg: 'AUD row was not flagged as staged for deletion' },
         );
 
         // Row remains present (staged, not removed) with an undo button.
         const rowsStaged = await currencyRows();
         expect(rowsStaged.map(r => r.code)).toContain('AUD');
         const undoBtn = await audRowBefore.row.$('[data-testid="currency-undo"]');
-        await undoBtn.waitForDisplayed({ timeout: 3_000 });
+        await undoBtn.waitForDisplayed();
 
         // Save must be enabled (staged delete is a valid, non-conflicting change).
         expect(await isSaveDisabled()).toBe(false);
@@ -225,9 +225,7 @@ describe('Settings — Currencies', () => {
 
         // The in-use block banner must appear, referencing AUD.
         const banner = await $('[data-testid="currency-banner"]');
-        await banner.waitForDisplayed({
-            timeout: 10_000,
-            timeoutMsg: 'In-use block banner did not appear after saving a referenced delete',
+        await banner.waitForDisplayed({ timeoutMsg: 'In-use block banner did not appear after saving a referenced delete',
         });
         const bannerText = await banner.getText();
         expect(bannerText).toContain('AUD');

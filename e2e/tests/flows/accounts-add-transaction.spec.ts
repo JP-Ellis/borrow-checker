@@ -16,25 +16,25 @@ const TEST_DB_PATH = resolve(__dirname, '../../fixtures/test.db');
  */
 async function openCheckingAccount(): Promise<void> {
     const navAccounts = await $('[data-testid="nav-accounts"]');
-    await navAccounts.waitForDisplayed({ timeout: 5_000 });
+    await navAccounts.waitForDisplayed();
     await navAccounts.click();
 
     await browser.waitUntil(
         async () => (await browser.getUrl()).includes('/accounts'),
-        { timeout: 5_000, timeoutMsg: 'URL did not reach /accounts within 5 s' },
+        { timeoutMsg: 'URL did not reach /accounts within 5 s' },
     );
 
     // Accounts are loaded via async IPC — wait for any link to appear.
     const sidebarNav = await $('nav[aria-label="account navigation"]');
-    await sidebarNav.$('a').waitForDisplayed({ timeout: 10_000 });
+    await sidebarNav.$('a').waitForDisplayed();
 
     const checkingSpan = await sidebarNav.$('span=Checking');
-    await checkingSpan.waitForDisplayed({ timeout: 10_000 });
+    await checkingSpan.waitForDisplayed();
     await checkingSpan.click();
 
     await browser.waitUntil(
         async () => (await browser.getUrl()).includes('/accounts/'),
-        { timeout: 5_000, timeoutMsg: 'URL did not update to account route within 5 s' },
+        { timeoutMsg: 'URL did not update to account route within 5 s' },
     );
 
     // Wait for the dashboard to render (triggered once account IPC data arrives).
@@ -45,7 +45,7 @@ async function openCheckingAccount(): Promise<void> {
             }
             return false;
         },
-        { timeout: 10_000, timeoutMsg: '"+ transaction" button did not appear within 10 s' },
+        { timeoutMsg: '"+ transaction" button did not appear within 10 s' },
     );
 }
 
@@ -74,9 +74,7 @@ async function clickAddPostingButton(): Promise<void> {
 /** Wait until the add-transaction form is visible and return it. */
 async function waitForForm(): Promise<WebdriverIO.Element> {
     const form = await $('[data-testid="add-transaction-form"]');
-    await form.waitForDisplayed({
-        timeout: 5_000,
-        timeoutMsg: 'AddTransactionForm did not appear within 5 s',
+    await form.waitForDisplayed({ timeoutMsg: 'AddTransactionForm did not appear within 5 s',
     });
     return form;
 }
@@ -158,9 +156,7 @@ describe('Accounts — add transaction', () => {
         // ── UI assertion ──────────────────────────────────────────────────
         // Wait for the payee to appear as a cell in the transaction register.
         const payeeCell = await $('span=E2E Test Payee');
-        await payeeCell.waitForDisplayed({
-            timeout: 10_000,
-            timeoutMsg: '"E2E Test Payee" did not appear in the register within 10 s',
+        await payeeCell.waitForDisplayed({ timeoutMsg: '"E2E Test Payee" did not appear in the register within 10 s',
         });
 
         // ── DB assertions ─────────────────────────────────────────────────
@@ -224,7 +220,7 @@ describe('Accounts — add transaction', () => {
 
         // Wait for the second posting row to appear.
         const secondOffsetAmount = await $('[data-testid="atf-offset-amount-1"]');
-        await secondOffsetAmount.waitForDisplayed({ timeout: 5_000 });
+        await secondOffsetAmount.waitForDisplayed();
 
         // Change the second offset account to a different account if possible.
         const secondOffsetAccount = await $('[data-testid="atf-offset-account-1"]');
@@ -241,9 +237,7 @@ describe('Accounts — add transaction', () => {
 
         // ── UI assertion ──────────────────────────────────────────────────
         const payeeCell = await $('span=E2E Split Payee');
-        await payeeCell.waitForDisplayed({
-            timeout: 10_000,
-            timeoutMsg: '"E2E Split Payee" did not appear in the register within 10 s',
+        await payeeCell.waitForDisplayed({ timeoutMsg: '"E2E Split Payee" did not appear in the register within 10 s',
         });
 
         // ── DB assertions ─────────────────────────────────────────────────
