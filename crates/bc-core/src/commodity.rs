@@ -66,6 +66,87 @@ impl Service {
         Ok(())
     }
 
+    /// Registers a new commodity after validating it introduces no marker ambiguity.
+    ///
+    /// # Arguments
+    ///
+    /// * `c` - The commodity to create.
+    ///
+    /// # Returns
+    ///
+    /// The stored commodity (as supplied; its id is authoritative).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::MarkerConflict`] if any marker collides, or [`BcError`]
+    /// on database failure.
+    pub async fn create(&self, c: &Commodity) -> BcResult<Commodity> {
+        let existing = self.list_all().await?;
+        check_ambiguity(&existing, c)?;
+        let mut tx = self.pool.begin().await?;
+        insert_with(&mut tx, c).await?;
+        tx.commit().await?;
+        Ok(c.clone())
+    }
+
+    /// Updates an existing commodity's metadata and aliases (its code is immutable).
+    ///
+    /// # Arguments
+    ///
+    /// * `c` - The commodity to update, identified by its id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if the id is unknown, [`BcError::InvalidInput`]
+    /// if the code differs from the persisted row, [`BcError::MarkerConflict`] on a
+    /// marker collision, or [`BcError`] on database failure.
+    pub async fn update(&self, c: &Commodity) -> BcResult<()> {
+        let existing = self.list_all().await?;
+        let current = existing
+            .iter()
+            .find(|e| e.id() == c.id())
+            .ok_or_else(|| BcError::NotFound(c.id().to_string()))?;
+        if current.code() != c.code() {
+            return Err(BcError::InvalidInput(format!(
+                "commodity code is immutable ({} → {})",
+                current.code(),
+                c.code()
+            )));
+        }
+        check_ambiguity(&existing, c)?;
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM commodity_aliases WHERE commodity_id = ?")
+            .bind(c.id().to_string())
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE commodities SET symbol = ?, decimals = ?, is_iso = ?, symbol_after = ? WHERE id = ?",
+        )
+        .bind(c.symbol())
+        .bind(i64::from(c.decimals()))
+        .bind(i64::from(c.is_iso()))
+        .bind(i64::from(c.symbol_after()))
+        .bind(c.id().to_string())
+        .execute(&mut *tx)
+        .await?;
+        for (position, alias) in c.aliases().iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO commodity_aliases (commodity_id, alias, position) VALUES (?, ?, ?)",
+            )
+            .bind(c.id().to_string())
+            .bind(alias)
+            .bind(
+                i64::try_from(position)
+                    .map_err(|e| BcError::BadData(format!("alias position overflow: {e}")))?,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Returns all commodities with their aliases populated.
     ///
     /// # Errors
@@ -215,13 +296,6 @@ async fn insert_with(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, c: &Commodity
 /// # Errors
 ///
 /// Returns [`BcError::MarkerConflict`] on the first colliding marker.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by the create/update commodity flows added in a later task"
-    )
-)]
 fn check_ambiguity(existing: &[Commodity], candidate: &Commodity) -> BcResult<()> {
     /// Normalised key for a marker: codes upper-cased, symbols/aliases verbatim.
     fn norm(marker: &str, is_code: bool) -> String {
@@ -344,6 +418,59 @@ mod tests {
         let btc = all.iter().find(|c| c.code() == "BTC").expect("BTC");
         assert_eq!(btc.decimals(), 8);
         assert!(!btc.is_iso());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_rejects_ambiguous_marker(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        svc.seed_defaults().await.expect("seed");
+        let clash = bc_models::Commodity::builder()
+            .code("XAU")
+            .symbol("$")
+            .build();
+        let err = svc
+            .create(&clash)
+            .await
+            .expect_err("must conflict with USD $");
+        assert!(matches!(err, BcError::MarkerConflict { .. }));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn update_changes_metadata_but_not_code(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let aud = bc_models::Commodity::builder()
+            .code("AUD")
+            .symbol("A$")
+            .build();
+        let stored = svc.create(&aud).await.expect("create");
+
+        let edited = bc_models::Commodity::builder()
+            .id(stored.id().clone())
+            .code("AUD")
+            .symbol("A$")
+            .aliases(vec!["AU$".to_owned()])
+            .decimals(3)
+            .build();
+        svc.update(&edited).await.expect("update");
+        let found = svc
+            .list_all()
+            .await
+            .expect("list")
+            .into_iter()
+            .find(|c| c.code() == "AUD")
+            .expect("AUD");
+        assert_eq!(found.aliases(), &["AU$".to_owned()]);
+        assert_eq!(found.decimals(), 3);
+
+        let renamed = bc_models::Commodity::builder()
+            .id(stored.id().clone())
+            .code("NZD")
+            .build();
+        let err = svc
+            .update(&renamed)
+            .await
+            .expect_err("code change rejected");
+        assert!(matches!(err, BcError::InvalidInput(_)));
     }
 
     #[test]
