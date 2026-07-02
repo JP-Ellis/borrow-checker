@@ -49,8 +49,17 @@ fn period_to_str(p: &Period) -> &'static str {
 }
 
 /// Formats an optional [`Amount`] for display, returning `"–"` when `None`.
-fn format_amount(amount: Option<&Amount>) -> String {
-    amount.map_or_else(|| "\u{2013}".into(), Amount::format_short)
+///
+/// The symbol is resolved from `currencies` (the served commodity set) using the
+/// amount's own `currency_code`.
+fn format_amount(amount: Option<&Amount>, currencies: &[bc_ipc::CommodityInfo]) -> String {
+    amount.map_or_else(
+        || "\u{2013}".into(),
+        |a| {
+            let (sym, after) = crate::currency_ctx::short_symbol(&a.currency_code, currencies);
+            a.format_short(sym.as_deref(), after)
+        },
+    )
 }
 
 /// A single KPI tile showing a label and a value.
@@ -80,24 +89,42 @@ fn KpiTileRow(
     /// The budget summary containing aggregated totals.
     summary: Option<BudgetSummary>,
 ) -> impl IntoView {
-    let budgeted = format_amount(summary.as_ref().and_then(|s| s.total_budgeted.as_ref()));
-    let spent = format_amount(summary.as_ref().and_then(|s| s.total_spent.as_ref()));
-    let remaining = format_amount(summary.as_ref().and_then(|s| s.total_remaining.as_ref()));
-    let (net, net_class) = match summary.as_ref().and_then(|s| s.total_remaining.as_ref()) {
-        None => ("\u{2013}".to_owned(), style::kpi_value),
-        Some(a) if a.value < rust_decimal::Decimal::ZERO => {
-            (a.format_short(), style::kpi_value_bad)
-        }
-        Some(a) => (a.format_short(), style::kpi_value_good),
-    };
+    let currencies = crate::currency_ctx::use_currency_store();
 
-    view! {
-        <div class=style::kpi_row>
-            <KpiTile label="Budgeted" value=budgeted />
-            <KpiTile label="Spent" value=spent />
-            <KpiTile label="Remaining" value=remaining />
-            <KpiTile label="Net" value=net value_class=net_class />
-        </div>
+    move || {
+        let currencies = currencies.get();
+        let budgeted = format_amount(
+            summary.as_ref().and_then(|s| s.total_budgeted.as_ref()),
+            &currencies,
+        );
+        let spent = format_amount(
+            summary.as_ref().and_then(|s| s.total_spent.as_ref()),
+            &currencies,
+        );
+        let remaining = format_amount(
+            summary.as_ref().and_then(|s| s.total_remaining.as_ref()),
+            &currencies,
+        );
+        let (net, net_class) = match summary.as_ref().and_then(|s| s.total_remaining.as_ref()) {
+            None => ("\u{2013}".to_owned(), style::kpi_value),
+            Some(a) if a.value < rust_decimal::Decimal::ZERO => {
+                let (sym, after) = crate::currency_ctx::short_symbol(&a.currency_code, &currencies);
+                (a.format_short(sym.as_deref(), after), style::kpi_value_bad)
+            }
+            Some(a) => {
+                let (sym, after) = crate::currency_ctx::short_symbol(&a.currency_code, &currencies);
+                (a.format_short(sym.as_deref(), after), style::kpi_value_good)
+            }
+        };
+
+        view! {
+            <div class=style::kpi_row>
+                <KpiTile label="Budgeted" value=budgeted />
+                <KpiTile label="Spent" value=spent />
+                <KpiTile label="Remaining" value=remaining />
+                <KpiTile label="Net" value=net value_class=net_class />
+            </div>
+        }
     }
 }
 

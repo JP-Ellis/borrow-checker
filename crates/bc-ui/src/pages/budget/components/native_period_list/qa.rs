@@ -141,7 +141,7 @@ fn NativePeriodRowPreview(
             let row_status = super::row_status(&row);
             let pct = super::fill_percent(&row);
             let fill_style = format!("width: {pct}%; height: 100%");
-            let amounts = super::display_str(&row, false);
+            let amounts = super::display_str(&row, false, &[]);
             let label = row.label.clone();
 
             let status_class = match row_status {

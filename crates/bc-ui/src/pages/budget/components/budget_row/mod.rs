@@ -128,16 +128,27 @@ fn prorated_marker_style(ctx: Option<BudgetPageCtx>) -> Option<String> {
 ///
 /// In `pct_mode`, returns `"N%"` (integer, spent ÷ target × 100).
 /// Falls back to absolute amounts when tracking-only or when target is zero.
+///
+/// `spent` and `target` are resolved independently against `currencies`, each
+/// from its own `currency_code`, since they may differ.
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "pct calculation: budget Decimal values are bounded; cannot overflow or panic"
 )]
-fn display_str(node: &BudgetTreeNode, pct_mode: bool) -> String {
+fn display_str(
+    node: &BudgetTreeNode,
+    pct_mode: bool,
+    currencies: &[bc_ipc::CommodityInfo],
+) -> String {
+    let spent_short = || {
+        let (sym, after) = crate::currency_ctx::short_symbol(&node.spent.currency_code, currencies);
+        node.spent.format_short(sym.as_deref(), after)
+    };
     if node.is_tracking_only {
-        return format!("{} \u{00b7} tracking", node.spent.format_short());
+        return format!("{} \u{00b7} tracking", spent_short());
     }
     match &node.effective_target {
-        None => node.spent.format_short(),
+        None => spent_short(),
         Some(target) if pct_mode => {
             if target.value == Decimal::ZERO {
                 "\u{2013}".into()
@@ -149,7 +160,15 @@ fn display_str(node: &BudgetTreeNode, pct_mode: bool) -> String {
                 format!("{pct}%")
             }
         }
-        Some(target) => format!("{} / {}", node.spent.format_short(), target.format_short()),
+        Some(target) => {
+            let (tsym, tafter) =
+                crate::currency_ctx::short_symbol(&target.currency_code, currencies);
+            format!(
+                "{} / {}",
+                spent_short(),
+                target.format_short(tsym.as_deref(), tafter)
+            )
+        }
     }
 }
 
@@ -172,6 +191,7 @@ pub fn BudgetRow(
     node: BudgetTreeNode,
 ) -> impl IntoView {
     let ctx = use_context::<BudgetPageCtx>();
+    let currencies = crate::currency_ctx::use_currency_store();
 
     let is_parent = !node.children.is_empty();
     let status = row_status(&node);
@@ -286,6 +306,7 @@ pub fn BudgetRow(
                         {move || display_str(
                             &node_sv.get_value(),
                             ctx.is_some_and(|c| c.pct_mode.get()),
+                            &currencies.get(),
                         )}
                     </span>
                 </div>
@@ -356,6 +377,7 @@ pub fn BudgetRow(
                         {move || display_str(
                             &node_sv.get_value(),
                             ctx.is_some_and(|c| c.pct_mode.get()),
+                            &currencies.get(),
                         )}
                     </span>
                 </div>

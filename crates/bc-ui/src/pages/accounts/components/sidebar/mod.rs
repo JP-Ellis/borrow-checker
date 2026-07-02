@@ -220,11 +220,19 @@ fn SidebarRow(
     /// Whether this row is indented (child account).
     indent: bool,
 ) -> impl IntoView {
+    let currencies = crate::currency_ctx::use_currency_store();
     let id = node.id.clone();
-    let balance = node
-        .balance
-        .as_ref()
-        .map_or_else(|| "\u{2014}".into(), bc_ipc::Amount::format_short);
+    let balance_amount = node.balance.clone();
+    let balance = move || {
+        balance_amount.as_ref().map_or_else(
+            || "\u{2014}".to_owned(),
+            |b| {
+                let (sym, after) =
+                    crate::currency_ctx::short_symbol(&b.currency_code, &currencies.get());
+                b.format_short(sym.as_deref(), after)
+            },
+        )
+    };
     let is_active = Signal::derive(move || selected_id.get().as_deref() == Some(id.as_str()));
     let balance_class = if node
         .balance
