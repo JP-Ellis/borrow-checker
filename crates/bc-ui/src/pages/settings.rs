@@ -136,33 +136,85 @@ fn SettingsSkeleton() -> impl IntoView {
     }
 }
 
-/// Settings page — displays current application configuration in a read-only
-/// info panel, grouped into logical sections.
+/// Which settings section is currently shown in the main area.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsSection {
+    /// The read-only configuration panel (financial year, display, data, plugins).
+    General,
+    /// The editable currency registry.
+    Currencies,
+}
+
+/// Placeholder for the editable currencies panel (implemented in a later task).
+#[component]
+fn CurrenciesPanel() -> impl IntoView {
+    view! { <p>"Currencies management — coming soon."</p> }
+}
+
+/// Settings page — sidebar shell with sections for read-only configuration
+/// and (in future) editable settings such as the currency registry.
 ///
 /// Settings are fetched from the native backend via the `get_settings` Tauri
-/// command. The page is intentionally read-only; to change settings the user
-/// must edit the TOML config file directly.
+/// command. The `General` section is intentionally read-only; to change those
+/// settings the user must edit the TOML config file directly.
 ///
 /// Settings are immutable at runtime; no `data_version` subscription is needed
 /// because no mutation command can invalidate this resource.
-// TODO: add a manual refresh button once settings become editable
+// TODO: add a manual refresh button once general settings become editable
 #[component]
 pub fn Settings() -> impl IntoView {
     let settings = LocalResource::new(move || async move { bc_ipc::client::get_settings().await });
+    let section = RwSignal::new(SettingsSection::General);
+
+    let nav_item = move |label: &'static str, target: SettingsSection| {
+        let cls = move || {
+            if section.get() == target {
+                format!("{} {}", style::side_row, style::side_row_active)
+            } else {
+                style::side_row.to_owned()
+            }
+        };
+        view! {
+            <a class=cls on:click=move |_| section.set(target)>
+                {label}
+            </a>
+        }
+    };
 
     view! {
-        <div class=format!(
-            "page {}",
-            style::page_settings,
-        )>
-            {move || match settings.get() {
-                None => view! { <SettingsSkeleton /> }.into_any(),
-                Some(Err(e)) => {
-                    view! { <ErrorBanner message=format!("Failed to load settings: {e}") /> }
-                        .into_any()
-                }
-                Some(Ok(s)) => view! { <SettingsPanel info=s /> }.into_any(),
-            }}
+        <div class=style::shell>
+            <aside class=style::sidebar>
+                <div class=style::side_label>"Settings"</div>
+                {nav_item("General", SettingsSection::General)}
+                {nav_item("Currencies", SettingsSection::Currencies)}
+            </aside>
+            <main class=style::main>
+                {move || match section.get() {
+                    SettingsSection::General => {
+                        view! {
+                            <div class=format!(
+                                "page {}",
+                                style::page_settings,
+                            )>
+                                {move || match settings.get() {
+                                    None => view! { <SettingsSkeleton /> }.into_any(),
+                                    Some(Err(e)) => {
+                                        view! {
+                                            <ErrorBanner message=format!(
+                                                "Failed to load settings: {e}",
+                                            ) />
+                                        }
+                                            .into_any()
+                                    }
+                                    Some(Ok(s)) => view! { <SettingsPanel info=s /> }.into_any(),
+                                }}
+                            </div>
+                        }
+                            .into_any()
+                    }
+                    SettingsSection::Currencies => view! { <CurrenciesPanel /> }.into_any(),
+                }}
+            </main>
         </div>
     }
 }
