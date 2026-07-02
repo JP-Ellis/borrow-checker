@@ -45,3 +45,114 @@ pub async fn list_currencies(
         })
         .collect())
 }
+
+/// Maps a `CommodityService` error to the IPC error surfaced to the UI.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "bc_core::BcError is #[non_exhaustive] and covers many unrelated failure modes (database, migration, serialisation, etc.) that all collapse to Internal; enumerating them individually adds no value"
+)]
+fn map_err(e: bc_core::BcError) -> bc_ipc::BcError {
+    match e {
+        bc_core::BcError::MarkerConflict { marker, existing } => {
+            bc_ipc::BcError::Validation(format!("'{marker}' already maps to {existing}"))
+        }
+        bc_core::BcError::CommodityInUse(msg) => {
+            bc_ipc::BcError::Validation(format!("cannot delete: {msg}"))
+        }
+        bc_core::BcError::InvalidInput(msg) => bc_ipc::BcError::Validation(msg),
+        bc_core::BcError::NotFound(id) => bc_ipc::BcError::NotFound(id),
+        other => bc_ipc::BcError::Internal(other.to_string()),
+    }
+}
+
+/// Builds a `bc_models::Commodity` from an IPC `CommodityInfo`. A blank id yields
+/// a fresh commodity (create); a populated id round-trips (update).
+fn to_commodity(info: bc_ipc::CommodityInfo) -> Result<bc_models::Commodity, bc_ipc::BcError> {
+    let id = if info.id.is_empty() {
+        None
+    } else {
+        Some(
+            info.id
+                .parse::<bc_models::CommodityId>()
+                .map_err(|e| bc_ipc::BcError::Validation(format!("invalid commodity id: {e}")))?,
+        )
+    };
+    Ok(bc_models::Commodity::builder()
+        .code(info.code)
+        .aliases(info.aliases)
+        .decimals(info.decimals)
+        .is_iso(info.is_iso)
+        .symbol_after(info.symbol_after)
+        .maybe_symbol(info.symbol)
+        .maybe_id(id)
+        .build())
+}
+
+/// Creates a new commodity/currency.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] if the id or a marker is invalid,
+/// or [`bc_ipc::BcError::Internal`] if the database write fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn create_currency(
+    info: bc_ipc::CommodityInfo,
+    state: State<'_, AppState>,
+) -> Result<bc_ipc::CommodityInfo, bc_ipc::BcError> {
+    let c = to_commodity(info)?;
+    let stored = state.commodities.create(&c).await.map_err(map_err)?;
+    Ok(bc_ipc::CommodityInfo::new(
+        stored.id().to_string(),
+        stored.code().to_owned(),
+        stored.symbol().map(ToOwned::to_owned),
+        stored.aliases().to_vec(),
+        stored.decimals(),
+        stored.is_iso(),
+        stored.symbol_after(),
+    ))
+}
+
+/// Updates an existing commodity/currency (its code is immutable).
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] if the id or a marker is invalid,
+/// or [`bc_ipc::BcError::Internal`] if the database write fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn update_currency(
+    info: bc_ipc::CommodityInfo,
+    state: State<'_, AppState>,
+) -> Result<(), bc_ipc::BcError> {
+    let c = to_commodity(info)?;
+    state.commodities.update(&c).await.map_err(map_err)
+}
+
+/// Deletes a commodity/currency, refusing if it is still referenced.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] if the id is invalid or the
+/// commodity is still referenced, or [`bc_ipc::BcError::Internal`] if the
+/// database write fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn delete_currency(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), bc_ipc::BcError> {
+    let cid = id
+        .parse::<bc_models::CommodityId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid commodity id '{id}': {e}")))?;
+    state.commodities.delete(&cid).await.map_err(map_err)
+}
