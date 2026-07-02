@@ -243,7 +243,7 @@ pub fn CurrenciesPanel() -> impl IntoView {
                         style::savebar.to_owned()
                     }
                 }
-                attr:data-testid="currency-savebar"
+                data-testid="currency-savebar"
             >
                 <span class=style::savebar_count>
                     {move || {
@@ -265,7 +265,7 @@ pub fn CurrenciesPanel() -> impl IntoView {
                         }
                     }}
                 </span>
-                <span class=style::savebar_err attr:data-testid="currency-conflict">
+                <span class=style::savebar_err data-testid="currency-conflict">
                     {move || {
                         conflict()
                             .map(|(m, a, b)| format!("“{m}” maps to both {a} and {b}"))
@@ -273,12 +273,12 @@ pub fn CurrenciesPanel() -> impl IntoView {
                     }}
                 </span>
                 <span class=style::spacer />
-                <button class=style::abtn attr:data-testid="currency-discard" on:click=discard>
+                <button class=style::abtn data-testid="currency-discard" on:click=discard>
                     "discard"
                 </button>
                 <button
                     class=format!("{} {}", style::abtn, style::abtn_primary)
-                    attr:data-testid="currency-save"
+                    data-testid="currency-save"
                     prop:disabled=move || conflict().is_some() || saving.get()
                     on:click=save
                 >
@@ -297,7 +297,7 @@ pub fn CurrenciesPanel() -> impl IntoView {
                         .get()
                         .map(|msg| {
                             view! {
-                                <div class=style::banner attr:data-testid="currency-banner">
+                                <div class=style::banner data-testid="currency-banner">
                                     {msg}
                                 </div>
                             }
@@ -323,7 +323,7 @@ pub fn CurrenciesPanel() -> impl IntoView {
                     </tbody>
                 </table>
 
-                <button class=style::addbtn attr:data-testid="currency-add" on:click=add>
+                <button class=style::addbtn data-testid="currency-add" on:click=add>
                     "+ add currency"
                 </button>
 
@@ -366,26 +366,40 @@ fn currency_row(
     let iso_val = row.info.is_iso;
     let after_val = row.info.symbol_after;
     let aliases = row.info.aliases.clone();
-    let deleted = row.deleted;
     let is_new = row.is_new;
     let id = row.info.id.clone();
 
-    let tr_class = if deleted {
-        style::row_del.to_owned()
-    } else if is_new {
-        style::row_new.to_owned()
-    } else {
-        String::new()
+    // The row's `deleted` flag is toggled after render (staging/undoing a delete),
+    // but the keyed `<For>` does not re-run this view, so derive it reactively from
+    // the shared signal rather than the captured snapshot.
+    let is_deleted = Signal::derive(move || {
+        rows.get()
+            .iter()
+            .find(|r| r.key == key)
+            .is_some_and(|r| r.deleted)
+    });
+    let tr_class = move || {
+        if is_deleted.get() {
+            style::row_del.to_owned()
+        } else if is_new {
+            style::row_new.to_owned()
+        } else {
+            String::new()
+        }
     };
 
     let new_alias = RwSignal::new(String::new());
 
     view! {
-        <tr class=tr_class attr:data-testid="currency-row" attr:data-deleted=deleted.to_string()>
+        <tr
+            class=tr_class
+            data-testid="currency-row"
+            data-deleted=move || is_deleted.get().to_string()
+        >
             <td>
                 <input
                     class=format!("{} {}", style::fld, style::fld_code)
-                    attr:data-testid="currency-code"
+                    data-testid="currency-code"
                     prop:value=code_val
                     prop:readonly=code_ro
                     on:input=move |ev| {
@@ -397,7 +411,7 @@ fn currency_row(
             <td>
                 <input
                     class=format!("{} {}", style::fld, style::fld_sym)
-                    attr:data-testid="currency-symbol"
+                    data-testid="currency-symbol"
                     prop:value=sym_val
                     on:input=move |ev| {
                         let v = event_target_value(&ev);
@@ -435,7 +449,7 @@ fn currency_row(
                         .collect::<Vec<_>>()}
                     <input
                         class=format!("{} {}", style::fld, style::fld_alias)
-                        attr:data-testid="currency-alias-input"
+                        data-testid="currency-alias-input"
                         prop:value=move || new_alias.get()
                         placeholder="+ alias"
                         on:input=move |ev| new_alias.set(event_target_value(&ev))
@@ -486,34 +500,37 @@ fn currency_row(
                 />
             </td>
             <td class=style::actions>
-                {if deleted {
-                    view! {
-                        <button
-                            class=style::iconbtn
-                            attr:data-testid="currency-undo"
-                            on:click=move |_| {
-                                rows.update(|rs| {
-                                    if let Some(r) = rs.iter_mut().find(|r| r.key == key) {
-                                        r.deleted = false;
-                                    }
-                                });
-                            }
-                        >
-                            "↺"
-                        </button>
+                {move || {
+                    if is_deleted.get() {
+                        view! {
+                            <button
+                                class=style::iconbtn
+                                data-testid="currency-undo"
+                                on:click=move |_| {
+                                    rows.update(|rs| {
+                                        if let Some(r) = rs.iter_mut().find(|r| r.key == key) {
+                                            r.deleted = false;
+                                        }
+                                    });
+                                }
+                            >
+                                "↺"
+                            </button>
+                        }
+                            .into_any()
+                    } else {
+                        let id = id.clone();
+                        view! {
+                            <button
+                                class=style::iconbtn
+                                data-testid="currency-delete"
+                                on:click=move |_| delete_row(rows, key, is_new, id.clone(), banner)
+                            >
+                                "🗑"
+                            </button>
+                        }
+                            .into_any()
                     }
-                        .into_any()
-                } else {
-                    view! {
-                        <button
-                            class=style::iconbtn
-                            attr:data-testid="currency-delete"
-                            on:click=move |_| delete_row(rows, key, is_new, id.clone(), banner)
-                        >
-                            "🗑"
-                        </button>
-                    }
-                        .into_any()
                 }}
             </td>
         </tr>

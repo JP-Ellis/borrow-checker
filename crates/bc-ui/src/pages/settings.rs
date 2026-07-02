@@ -175,7 +175,7 @@ pub fn Settings() -> impl IntoView {
         view! {
             <a
                 class=cls
-                attr:data-testid=(target == SettingsSection::Currencies)
+                data-testid=(target == SettingsSection::Currencies)
                     .then_some("settings-nav-currencies")
                 on:click=move |_| section.set(target)
             >
