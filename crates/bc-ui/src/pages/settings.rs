@@ -1,6 +1,10 @@
 //! Settings page — read-only view of application configuration.
 
+/// Editable currency-registry panel — see [`currencies::CurrenciesPanel`].
+pub(crate) mod currencies;
+
 use bc_ipc::SettingsInfo;
+use currencies::CurrenciesPanel;
 use leptos::prelude::*;
 use stylance::import_style;
 
@@ -143,12 +147,6 @@ enum SettingsSection {
     General,
     /// The editable currency registry.
     Currencies,
-}
-
-/// Placeholder for the editable currencies panel (implemented in a later task).
-#[component]
-fn CurrenciesPanel() -> impl IntoView {
-    view! { <p>"Currencies management — coming soon."</p> }
 }
 
 /// Settings page — sidebar shell with sections for read-only configuration
