@@ -34,6 +34,17 @@ pub enum BcError {
     /// A tag could not be deleted because it is still referenced by a budget filter.
     #[error("tag in use: {0}")]
     TagInUse(String),
+    /// A commodity marker (code, symbol, or alias) collides with another commodity.
+    #[error("marker conflict: '{marker}' already maps to {existing}")]
+    MarkerConflict {
+        /// The colliding marker string.
+        marker: String,
+        /// The canonical code of the commodity that already owns the marker.
+        existing: String,
+    },
+    /// A commodity could not be deleted because it is still referenced.
+    #[error("commodity in use: {0}")]
+    CommodityInUse(String),
     /// A database error.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
