@@ -96,6 +96,24 @@ mod components_tests {
     }
 }
 
+/// Native-test access to pure logic modules that live under the wasm-only
+/// `pages` tree.
+///
+/// Same rationale as [`components_tests`]: `pages::settings` is gated on
+/// `target_arch = "wasm32"` in `pages.rs`, so its pure, host-testable
+/// submodules (e.g. `first_conflict`) are unreachable from a native
+/// `cargo nextest` run through the normal module path. Re-mounted here under
+/// `cfg(test)` via `include!`; the file is authored once at its canonical
+/// path.
+#[cfg(test)]
+mod pages_tests {
+    pub mod settings {
+        pub mod currencies {
+            include!("pages/settings/currencies/mod.rs");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
