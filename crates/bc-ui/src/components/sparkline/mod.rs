@@ -12,10 +12,6 @@ use core::cmp::Ordering;
 use core::sync::atomic::AtomicUsize;
 
 #[cfg(target_arch = "wasm32")]
-use bc_ipc::Currency;
-#[cfg(target_arch = "wasm32")]
-use bc_ipc::USD;
-#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use leptos::web_sys;
@@ -206,7 +202,9 @@ pub struct Title {
 ///
 /// * `points` - Time-series data points, oldest first.
 /// * `title` - Title slot — use `<Title slot>` to pass text or rich markup.
-/// * `currency` - Currency for formatting y-axis and hover labels. Defaults to [`USD`].
+/// * `currency_code` - Currency code for formatting y-axis and hover labels,
+///   resolved against the app-level [`crate::currency_ctx`] store. Defaults
+///   to `"USD"`.
 #[cfg(target_arch = "wasm32")]
 #[component]
 #[expect(
@@ -222,9 +220,9 @@ pub fn Sparkline(
     points: Vec<SparkPoint>,
     /// Title slot — plain text or rich markup via `<Title slot>`.
     title: Title,
-    /// Currency for formatting values. Defaults to [`USD`].
-    #[prop(default = &USD)]
-    currency: &'static Currency,
+    /// Currency code for formatting values. Defaults to `"USD"`.
+    #[prop(default = "USD".to_owned(), into)]
+    currency_code: String,
     /// Show gradient fill under each series. Defaults to `true`.
     #[prop(default = true)]
     show_fill: bool,
@@ -235,10 +233,14 @@ pub fn Sparkline(
     const CHART_TOP: f32 = PAD;
     const CHART_BOT: f32 = H - PAD;
 
+    let currencies = crate::currency_ctx::use_currency_store();
+    let meta =
+        crate::components::num::meta::display_meta_for(&currency_code, &currencies.get_untracked());
+
     // Gather series values.
     let to_plot = |amt: &bc_ipc::Amount| -> i64 {
         let mut scaled = amt.value;
-        scaled.rescale(u32::from(currency.decimals));
+        scaled.rescale(u32::from(meta.decimals));
         scaled.mantissa().to_i64().unwrap_or(0)
     };
     let income_vals: Vec<i64> = points.iter().map(|p| to_plot(&p.income)).collect();
@@ -349,14 +351,16 @@ pub fn Sparkline(
 
     let hover_info = move || {
         let i = hovered.get()?;
+        let hover_meta =
+            crate::components::num::meta::display_meta_for(&currency_code, &currencies.get());
         stored_points.with_value(|pts| {
             let p = pts.get(i)?;
             let inc = {
-                let s = format_amount(&p.income.value, currency);
+                let s = format_amount(&p.income.value, &hover_meta);
                 s.strip_prefix('+').map(ToOwned::to_owned).unwrap_or(s)
             };
             let exp = {
-                let s = format_amount(&p.expenses.value, currency);
+                let s = format_amount(&p.expenses.value, &hover_meta);
                 s.strip_prefix('+').map(ToOwned::to_owned).unwrap_or(s)
             };
             Some(view! {

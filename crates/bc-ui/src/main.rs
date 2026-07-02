@@ -44,6 +44,8 @@ mod label;
 mod app;
 #[cfg(any(target_arch = "wasm32", test))]
 mod components;
+#[cfg(target_arch = "wasm32")]
+mod currency_ctx;
 #[cfg(any(target_arch = "wasm32", test))]
 mod pages;
 #[cfg(any(target_arch = "wasm32", test))]

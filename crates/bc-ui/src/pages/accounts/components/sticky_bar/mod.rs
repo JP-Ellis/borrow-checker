@@ -24,6 +24,7 @@ pub fn StickyAccountBar(
     /// Whether the bar should be shown.
     visible: ReadSignal<bool>,
 ) -> impl IntoView {
+    let currencies = crate::currency_ctx::use_currency_store();
     view! {
         <div class=move || {
             if visible.get() {
@@ -36,9 +37,11 @@ pub fn StickyAccountBar(
                 node.get()
                     .map(|n| {
                         let balance = if let Some(ref b) = n.balance {
-                            let currency = bc_ipc::currency_from_code(&b.currency_code)
-                                .unwrap_or(&bc_ipc::USD);
-                            crate::components::num::format_amount(&b.value, currency)
+                            let meta = crate::components::num::meta::display_meta_for(
+                                &b.currency_code,
+                                &currencies.get(),
+                            );
+                            crate::components::num::format_amount(&b.value, &meta)
                         } else {
                             "\u{2014}".into()
                         };

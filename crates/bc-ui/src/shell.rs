@@ -24,6 +24,7 @@ use crate::shell::palette::CommandPalette;
 #[cfg(target_arch = "wasm32")]
 #[component]
 pub fn ConsoleShell() -> impl IntoView {
+    let _currency_store = crate::currency_ctx::provide_currency_store();
     let palette_open = RwSignal::new(false);
 
     /* Global ⌘K / Ctrl+K shortcut — toggles the command palette from anywhere. */

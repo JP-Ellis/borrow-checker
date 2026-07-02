@@ -44,6 +44,7 @@ import_style!(style, "accounts.module.scss");
     reason = "Leptos view! macro expands verbosely; logic is straightforward"
 )]
 pub fn Accounts() -> impl IntoView {
+    let currencies = crate::currency_ctx::use_currency_store();
     let params = use_params_map();
     let selected_id = Signal::derive(move || params.with(|p| p.get("id")));
 
@@ -248,8 +249,11 @@ pub fn Accounts() -> impl IntoView {
                                     .balance
                                     .as_ref()
                                     .map_or_else(String::new, |b| b.currency_code.clone());
-                                let scale = bc_ipc::currency_from_code(&currency_code)
-                                    .map_or(2, |c| c.decimals);
+                                let scale = crate::components::num::meta::display_meta_for(
+                                        &currency_code,
+                                        &currencies.get(),
+                                    )
+                                    .decimals;
                                 Some(
                                     // Gate on accounts being loaded — prevents an empty offset
                                     // dropdown from showing before the resource resolves.
