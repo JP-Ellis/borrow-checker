@@ -187,15 +187,28 @@ impl Amount {
     /// Returns a compact display string. Large amounts are abbreviated (`64k`, `1m`). Small
     /// amounts show the currency symbol. Returns `"—"` when no currency is set.
     ///
+    /// The symbol is supplied by the caller (typically resolved from the served currency
+    /// store) rather than looked up from a global registry, so this method has no dependency
+    /// on any static currency table.
+    ///
     /// Fraction digits follow the value's own [`Decimal`] scale. For currency-canonical
     /// fraction digits used by the main UI money display, see bc-ui's `format_amount`.
+    ///
+    /// # Arguments
+    ///
+    /// * `symbol` - The currency's display symbol, or `None` if unknown/symbol-less.
+    /// * `symbol_after` - Whether the symbol should be placed after the amount.
+    ///
+    /// # Returns
+    ///
+    /// The formatted display string.
     #[must_use]
     #[inline]
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "display approximation — Decimal division by non-zero constants for k/m thresholds cannot overflow or panic"
     )]
-    pub fn format_short(&self) -> String {
+    pub fn format_short(&self, symbol: Option<&str>, symbol_after: bool) -> String {
         if self.currency_code.is_empty() {
             return "\u{2014}".into();
         }
@@ -218,9 +231,9 @@ impl Amount {
                 core::cmp::Ordering::Equal => "",
             };
             let decimal = abs.to_string();
-            match crate::currency_from_code(&self.currency_code) {
-                Some(c) if c.symbol_after => format!("{sign}{decimal}\u{00a0}{}", c.symbol),
-                Some(c) => format!("{sign}{}{decimal}", c.symbol),
+            match symbol {
+                Some(sym) if symbol_after => format!("{sign}{decimal}\u{00a0}{sym}"),
+                Some(sym) => format!("{sign}{sym}{decimal}"),
                 None => format!("{sign}{} {decimal}", self.currency_code),
             }
         }
@@ -238,7 +251,7 @@ mod tests {
     #[test]
     fn balance_short_thousands() {
         assert_eq!(
-            Amount::new(Decimal::new(6_400_000, 2), "USD").format_short(),
+            Amount::new(Decimal::new(6_400_000, 2), "USD").format_short(Some("$"), false),
             "64k"
         );
     }
@@ -246,7 +259,7 @@ mod tests {
     #[test]
     fn balance_short_millions() {
         assert_eq!(
-            Amount::new(Decimal::new(120_000_000, 2), "USD").format_short(),
+            Amount::new(Decimal::new(120_000_000, 2), "USD").format_short(Some("$"), false),
             "1m"
         );
     }
@@ -254,7 +267,7 @@ mod tests {
     #[test]
     fn balance_short_negative() {
         assert_eq!(
-            Amount::new(Decimal::new(-244_000, 2), "USD").format_short(),
+            Amount::new(Decimal::new(-244_000, 2), "USD").format_short(Some("$"), false),
             "\u{2212}2k"
         );
     }
@@ -262,15 +275,31 @@ mod tests {
     #[test]
     fn balance_short_small() {
         assert_eq!(
-            Amount::new(Decimal::new(42_100, 2), "USD").format_short(),
+            Amount::new(Decimal::new(42_100, 2), "USD").format_short(Some("$"), false),
             "+$421.00"
+        );
+    }
+
+    #[test]
+    fn balance_short_small_no_symbol() {
+        assert_eq!(
+            Amount::new(Decimal::new(42_100, 2), "USD").format_short(None, false),
+            "+USD 421.00"
+        );
+    }
+
+    #[test]
+    fn balance_short_small_symbol_after() {
+        assert_eq!(
+            Amount::new(Decimal::new(42_100, 2), "ETH").format_short(Some("ETH"), true),
+            "+421.00\u{00a0}ETH"
         );
     }
 
     #[test]
     fn balance_short_jpy_millions() {
         assert_eq!(
-            Amount::new(Decimal::new(1_500_000, 0), "JPY").format_short(),
+            Amount::new(Decimal::new(1_500_000, 0), "JPY").format_short(Some("¥"), false),
             "1m"
         );
     }
@@ -278,7 +307,7 @@ mod tests {
     #[test]
     fn balance_short_negative_thousands() {
         assert_eq!(
-            Amount::new(Decimal::new(-150_000, 2), "USD").format_short(),
+            Amount::new(Decimal::new(-150_000, 2), "USD").format_short(Some("$"), false),
             "\u{2212}1k"
         );
     }

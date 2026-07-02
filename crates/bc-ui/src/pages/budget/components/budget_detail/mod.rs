@@ -39,6 +39,7 @@ pub fn BudgetDetail(
     let open_detail_id = ctx.open_detail_id;
     let period = ctx.display_period;
     let window_start = ctx.window_start;
+    let currencies = crate::currency_ctx::use_currency_store();
 
     /* --- revision timeline state --- */
     let budget_id_for_revs = StoredValue::new(node.id.clone());
@@ -158,18 +159,26 @@ pub fn BudgetDetail(
                                                                 format!("from {} \u{00b7} until {e}", r.effective_from)
                                                             },
                                                         );
-                                                    let summary = format!(
-                                                        "{} \u{00b7} {} \u{00b7} {}",
-                                                        r
-                                                            .target
+                                                    let target_for_summary = r.target.clone();
+                                                    let period_label_for_summary = r.period_label.clone();
+                                                    let rollover_for_summary = r.rollover;
+                                                    let summary = move || {
+                                                        let target_str = target_for_summary
                                                             .as_ref()
                                                             .map_or_else(
                                                                 || "tracking".to_owned(),
-                                                                bc_ipc::Amount::format_short,
-                                                            ),
-                                                        r.period_label,
-                                                        r.rollover,
-                                                    );
+                                                                |t| {
+                                                                    let (sym, after) = crate::currency_ctx::short_symbol(
+                                                                        &t.currency_code,
+                                                                        &currencies.get(),
+                                                                    );
+                                                                    t.format_short(sym.as_deref(), after)
+                                                                },
+                                                            );
+                                                        format!(
+                                                            "{target_str} \u{00b7} {period_label_for_summary} \u{00b7} {rollover_for_summary}",
+                                                        )
+                                                    };
                                                     let badge = if !active {
                                                         ("not in window", style::badge_off)
                                                     } else if full {
