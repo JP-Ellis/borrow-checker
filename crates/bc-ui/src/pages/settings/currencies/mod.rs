@@ -501,32 +501,24 @@ fn currency_row(
     }
 }
 
-/// Stages deletion of a row. New rows are dropped locally; saved rows are
-/// pre-checked against the backend so a referenced currency shows the block
-/// banner instead of being staged.
+/// Stages a row for deletion; the actual backend delete is committed on Save.
+/// New (unsaved) rows are dropped outright; saved rows are flagged `deleted`
+/// (struck-through with an undo) and removed on Save via the delete loop in
+/// `save()`. A referenced currency is refused at Save time (the backend
+/// `delete_currency` returns an in-use error surfaced in the banner).
 #[cfg(target_arch = "wasm32")]
 fn delete_row(
     rows: RwSignal<Vec<Row>>,
     key: u32,
     is_new: bool,
-    id: String,
-    banner: RwSignal<Option<String>>,
+    _id: String,
+    _banner: RwSignal<Option<String>>,
 ) {
-    if is_new {
-        rows.update(|rs| rs.retain(|r| r.key != key));
-        return;
-    }
-    leptos::task::spawn_local(async move {
-        match bc_ipc::client::delete_currency(&id).await {
-            Ok(()) => {
-                rows.update(|rs| {
-                    if let Some(r) = rs.iter_mut().find(|r| r.key == key) {
-                        r.deleted = true;
-                    }
-                });
-                banner.set(None);
-            }
-            Err(e) => banner.set(Some(e.to_string())),
+    rows.update(|rs| {
+        if is_new {
+            rs.retain(|r| r.key != key);
+        } else if let Some(r) = rs.iter_mut().find(|r| r.key == key) {
+            r.deleted = true;
         }
     });
 }
