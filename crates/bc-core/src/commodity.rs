@@ -2,6 +2,7 @@
 //! alternate input markers (aliases).
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use bc_models::Commodity;
 use bc_models::CommodityId;
@@ -198,6 +199,80 @@ async fn insert_with(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, c: &Commodity
     Ok(())
 }
 
+/// Rejects a candidate commodity whose markers (code, symbol, aliases) collide
+/// with another commodity's markers, or repeat within the candidate itself.
+///
+/// Codes match case-insensitively; symbols and aliases match exactly — mirroring
+/// the UI resolution helper so the store and the amount parser never disagree.
+/// Entries in `existing` sharing the candidate's id are skipped so an update does
+/// not conflict with its own persisted markers.
+///
+/// # Arguments
+///
+/// * `existing` - The currently registered commodities.
+/// * `candidate` - The commodity being created or updated.
+///
+/// # Errors
+///
+/// Returns [`BcError::MarkerConflict`] on the first colliding marker.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "consumed by the create/update commodity flows added in a later task"
+    )
+)]
+fn check_ambiguity(existing: &[Commodity], candidate: &Commodity) -> BcResult<()> {
+    /// Normalised key for a marker: codes upper-cased, symbols/aliases verbatim.
+    fn norm(marker: &str, is_code: bool) -> String {
+        if is_code {
+            marker.to_uppercase()
+        } else {
+            marker.to_owned()
+        }
+    }
+
+    // Build the taken-marker map from every *other* commodity.
+    let mut taken: HashMap<String, String> = HashMap::new();
+    for c in existing {
+        if c.id() == candidate.id() {
+            continue;
+        }
+        taken.insert(norm(c.code(), true), c.code().to_owned());
+        if let Some(s) = c.symbol() {
+            taken.insert(norm(s, false), c.code().to_owned());
+        }
+        for a in c.aliases() {
+            taken.insert(norm(a, false), c.code().to_owned());
+        }
+    }
+
+    // Candidate's own markers: (raw, is_code).
+    let mut own = vec![(candidate.code().to_owned(), true)];
+    if let Some(s) = candidate.symbol() {
+        own.push((s.to_owned(), false));
+    }
+    own.extend(candidate.aliases().iter().map(|a| (a.clone(), false)));
+
+    let mut seen: HashSet<String> = HashSet::new();
+    for (raw, is_code) in own {
+        let key = norm(&raw, is_code);
+        if let Some(existing_code) = taken.get(&key) {
+            return Err(BcError::MarkerConflict {
+                marker: raw,
+                existing: existing_code.clone(),
+            });
+        }
+        if !seen.insert(key) {
+            return Err(BcError::MarkerConflict {
+                marker: raw,
+                existing: candidate.code().to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Parses an optional `YYYY-MM-DD` column.
 fn parse_opt_date(s: Option<String>) -> BcResult<Option<jiff::civil::Date>> {
     s.map(|v| {
@@ -269,5 +344,59 @@ mod tests {
         let btc = all.iter().find(|c| c.code() == "BTC").expect("BTC");
         assert_eq!(btc.decimals(), 8);
         assert!(!btc.is_iso());
+    }
+
+    #[test]
+    fn ambiguity_detects_cross_and_self_collisions() {
+        let usd = Commodity::builder()
+            .code("USD")
+            .symbol("$")
+            .aliases(vec!["US$".to_owned()])
+            .build();
+        let existing = vec![usd];
+
+        // alias collides with existing symbol
+        let clash = Commodity::builder()
+            .code("AUD")
+            .aliases(vec!["$".to_owned()])
+            .build();
+        assert!(matches!(
+            check_ambiguity(&existing, &clash),
+            Err(BcError::MarkerConflict { .. })
+        ));
+
+        // code collides case-insensitively with existing code
+        let clash_code = Commodity::builder().code("usd").build();
+        assert!(matches!(
+            check_ambiguity(&existing, &clash_code),
+            Err(BcError::MarkerConflict { .. })
+        ));
+
+        // internal self-collision (alias equals own symbol)
+        let self_clash = Commodity::builder()
+            .code("NZD")
+            .symbol("N$")
+            .aliases(vec!["N$".to_owned()])
+            .build();
+        assert!(matches!(
+            check_ambiguity(&[], &self_clash),
+            Err(BcError::MarkerConflict { .. })
+        ));
+
+        // no collision
+        let ok = Commodity::builder()
+            .code("AUD")
+            .symbol("A$")
+            .aliases(vec!["AU$".to_owned()])
+            .build();
+        check_ambiguity(&existing, &ok).expect("no collision");
+    }
+
+    #[test]
+    fn ambiguity_skips_same_id() {
+        let usd = Commodity::builder().code("USD").symbol("$").build();
+        let existing = vec![usd.clone()];
+        // Same id, re-registering its own markers — must not self-conflict.
+        check_ambiguity(&existing, &usd).expect("same-id update must not self-conflict");
     }
 }
