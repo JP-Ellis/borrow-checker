@@ -399,7 +399,12 @@ fn check_ambiguity(existing: &[Commodity], candidate: &Commodity) -> BcResult<()
                 existing: existing_code.clone(),
             });
         }
-        if !seen.insert(key) {
+        // The canonical code is the commodity's identity; a symbol or alias that
+        // echoes it is harmless (it still resolves to this same commodity), so the
+        // code itself does not participate in the internal-duplicate check. This
+        // mirrors the UI's `first_conflict` (which treats `prev == code` as
+        // non-conflicting) and preserves the shipped default ETH (code == symbol).
+        if !is_code && !seen.insert(key) {
             return Err(BcError::MarkerConflict {
                 marker: raw,
                 existing: candidate.code().to_owned(),
@@ -579,6 +584,22 @@ mod tests {
             .aliases(vec!["AU$".to_owned()])
             .build();
         check_ambiguity(&existing, &ok).expect("no collision");
+    }
+
+    #[test]
+    fn ambiguity_allows_code_equal_symbol() {
+        // A ticker used as its own symbol (e.g. ETH/ETH) is unambiguous and must be
+        // accepted — matching the UI's first_conflict and the shipped default.
+        let eth = Commodity::builder().code("ETH").symbol("ETH").build();
+        check_ambiguity(&[], &eth).expect("code equal to symbol is unambiguous");
+
+        // But a symbol still cannot collide with a *different* existing commodity.
+        let existing = vec![Commodity::builder().code("USD").symbol("$").build()];
+        let clash = Commodity::builder().code("XAU").symbol("$").build();
+        assert!(matches!(
+            check_ambiguity(&existing, &clash),
+            Err(BcError::MarkerConflict { .. })
+        ));
     }
 
     #[sqlx::test(migrations = "./migrations")]
