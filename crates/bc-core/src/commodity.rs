@@ -11,18 +11,31 @@ use sqlx::SqlitePool;
 use crate::BcError;
 use crate::BcResult;
 
-/// Default currencies seeded into a fresh database: (code, symbol, name, aliases).
+/// `(code, symbol, name, aliases, decimals, is_iso, symbol_after)`.
+type DefaultCurrency = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+    u8,
+    bool,
+    bool,
+);
+
+/// Default currencies seeded into a fresh database.
+///
 /// Alias sets are deliberately unambiguous (no marker maps to two currencies).
-const DEFAULT_CURRENCIES: &[(&str, &str, &str, &[&str])] = &[
-    ("USD", "$", "US Dollar", &["US$"]),
-    ("AUD", "A$", "Australian Dollar", &["AU$"]),
-    ("EUR", "€", "Euro", &[]),
-    ("GBP", "£", "British Pound", &[]),
-    ("JPY", "¥", "Japanese Yen", &[]),
-    ("KRW", "₩", "Korean Won", &[]),
-    ("INR", "₹", "Indian Rupee", &[]),
-    ("BTC", "₿", "Bitcoin", &[]),
-    ("ETH", "ETH", "Ethereum", &[]),
+/// Display metadata mirrors the retired static registry exactly.
+const DEFAULT_CURRENCIES: &[DefaultCurrency] = &[
+    ("USD", "$", "US Dollar", &["US$"], 2, true, false),
+    ("AUD", "A$", "Australian Dollar", &["AU$"], 2, true, false),
+    ("EUR", "€", "Euro", &[], 2, true, false),
+    ("GBP", "£", "British Pound", &[], 2, true, false),
+    ("JPY", "¥", "Japanese Yen", &[], 0, true, false),
+    ("KRW", "₩", "Korean Won", &[], 0, true, false),
+    ("INR", "₹", "Indian Rupee", &[], 2, true, false),
+    ("BTC", "₿", "Bitcoin", &[], 8, false, false),
+    ("ETH", "ETH", "Ethereum", &[], 9, false, true),
 ];
 
 /// Read/write access to the commodity registry.
@@ -59,7 +72,7 @@ impl Service {
     /// Returns [`BcError`] on database failure or an unparsable stored id.
     pub async fn list_all(&self) -> BcResult<Vec<Commodity>> {
         let rows = sqlx::query(
-            "SELECT id, code, exchange, name, description, symbol, active_from, active_until \
+            "SELECT id, code, exchange, name, description, symbol, decimals, is_iso, symbol_after, active_from, active_until \
              FROM commodities ORDER BY code ASC",
         )
         .fetch_all(&self.pool)
@@ -96,6 +109,9 @@ impl Service {
                 .maybe_description(r.get::<Option<String>, _>("description"))
                 .maybe_symbol(r.get::<Option<String>, _>("symbol"))
                 .aliases(row_aliases)
+                .decimals(u8::try_from(r.get::<i64, _>("decimals")).unwrap_or(2))
+                .is_iso(r.get::<i64, _>("is_iso") != 0)
+                .symbol_after(r.get::<i64, _>("symbol_after") != 0)
                 .maybe_active_from(active_from)
                 .maybe_active_until(active_until)
                 .build();
@@ -117,12 +133,15 @@ impl Service {
             return Ok(());
         }
         let mut tx = self.pool.begin().await?;
-        for (code, symbol, name, aliases) in DEFAULT_CURRENCIES {
+        for (code, symbol, name, aliases, decimals, is_iso, symbol_after) in DEFAULT_CURRENCIES {
             let c = Commodity::builder()
                 .code(*code)
                 .symbol(*symbol)
                 .name(*name)
                 .aliases(aliases.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
+                .decimals(*decimals)
+                .is_iso(*is_iso)
+                .symbol_after(*symbol_after)
                 .build();
             insert_with(&mut tx, &c).await?;
         }
@@ -147,8 +166,8 @@ impl Service {
 /// Returns [`BcError`] on database failure or an alias position overflow.
 async fn insert_with(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, c: &Commodity) -> BcResult<()> {
     sqlx::query(
-        "INSERT INTO commodities (id, code, exchange, name, description, symbol, active_from, active_until) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO commodities (id, code, exchange, name, description, symbol, decimals, is_iso, symbol_after, active_from, active_until) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(c.id().to_string())
     .bind(c.code())
@@ -156,6 +175,9 @@ async fn insert_with(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, c: &Commodity
     .bind(c.name())
     .bind(c.description())
     .bind(c.symbol())
+    .bind(i64::from(c.decimals()))
+    .bind(i64::from(c.is_iso()))
+    .bind(i64::from(c.symbol_after()))
     .bind(c.active_from().map(|d| d.to_string()))
     .bind(c.active_until().map(|d| d.to_string()))
     .execute(&mut **tx)
@@ -216,5 +238,36 @@ mod tests {
         let second = svc.list_all().await.expect("list 2").len();
         assert_eq!(first, 9);
         assert_eq!(first, second, "seeding twice must not duplicate");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn display_metadata_round_trips(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let eth = bc_models::Commodity::builder()
+            .code("ETH")
+            .symbol("ETH")
+            .decimals(9)
+            .is_iso(false)
+            .symbol_after(true)
+            .build();
+        svc.register(&eth).await.expect("register");
+        let all = svc.list_all().await.expect("list");
+        let found = all.iter().find(|c| c.code() == "ETH").expect("ETH present");
+        assert_eq!(found.decimals(), 9);
+        assert!(!found.is_iso());
+        assert!(found.symbol_after());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn seed_defaults_carry_display_metadata(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        svc.seed_defaults().await.expect("seed");
+        let all = svc.list_all().await.expect("list");
+        let jpy = all.iter().find(|c| c.code() == "JPY").expect("JPY");
+        assert_eq!(jpy.decimals(), 0);
+        assert!(jpy.is_iso());
+        let btc = all.iter().find(|c| c.code() == "BTC").expect("BTC");
+        assert_eq!(btc.decimals(), 8);
+        assert!(!btc.is_iso());
     }
 }
