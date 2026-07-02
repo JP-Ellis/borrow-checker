@@ -244,10 +244,26 @@ impl Service {
                 .bind(code)
                 .fetch_one(&self.pool)
                 .await?;
+        let valuations: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM asset_valuations WHERE commodity = ?")
+                .bind(code)
+                .fetch_one(&self.pool)
+                .await?;
+        let loan_terms: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM loan_terms WHERE commodity = ?")
+                .bind(code)
+                .fetch_one(&self.pool)
+                .await?;
 
-        if accounts > 0 || postings > 0 || depreciations > 0 || budgets > 0 {
+        if accounts > 0
+            || postings > 0
+            || depreciations > 0
+            || budgets > 0
+            || valuations > 0
+            || loan_terms > 0
+        {
             return Err(BcError::CommodityInUse(format!(
-                "{code}: {accounts} account(s), {postings} posting(s), {depreciations} depreciation(s), {budgets} budget(s)"
+                "{code}: {accounts} account(s), {postings} posting(s), {depreciations} depreciation(s), {budgets} budget(s), {valuations} valuation(s), {loan_terms} loan term(s)"
             )));
         }
 
@@ -648,6 +664,38 @@ mod tests {
             .delete(restored.id())
             .await
             .expect_err("referenced blocked");
+        assert!(matches!(err, BcError::CommodityInUse(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn delete_blocked_by_asset_valuation(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let jpy = bc_models::Commodity::builder()
+            .code("JPY")
+            .symbol("Y")
+            .build();
+        let stored = svc.create(&jpy).await.expect("create");
+
+        sqlx::query(
+            "INSERT INTO accounts (id, name, account_type, created_at) \
+             VALUES ('a1', 'Test Account', 'asset', '2024-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed account");
+        sqlx::query(
+            "INSERT INTO asset_valuations \
+             (id, account_id, market_value, commodity, source, recorded_at, created_at) \
+             VALUES ('v1', 'a1', '100', 'JPY', 'manual_estimate', '2024-01-01', '2024-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed valuation");
+
+        let err = svc
+            .delete(stored.id())
+            .await
+            .expect_err("referenced by valuation blocked");
         assert!(matches!(err, BcError::CommodityInUse(_)));
     }
 
