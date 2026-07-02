@@ -123,9 +123,9 @@ pub fn format_amount(value: &Decimal, meta: &DisplayMeta) -> String {
 ///
 /// # Arguments
 ///
-/// * `money` - Amount and currency code. Currency code must be in the
-///   stop-gap registry; unknown codes fall back to USD formatting with a
-///   warning in debug builds.
+/// * `money` - Amount and currency code, resolved reactively against the
+///   app-level [`crate::currency_ctx`] currency store. Unknown codes fall
+///   back to sane defaults (see [`meta::display_meta_for`]).
 #[component]
 #[expect(
     clippy::needless_pass_by_value,
@@ -135,23 +135,23 @@ pub fn Num(
     /// Monetary value (amount + currency code).
     money: Amount,
 ) -> impl IntoView {
-    let currency = currency_from_code(&money.currency_code).unwrap_or_else(|| {
-        #[cfg(debug_assertions)]
-        leptos::logging::warn!(
-            "Num: unknown currency code {:?}, falling back to USD",
-            money.currency_code
-        );
-        &USD
-    });
+    let currencies = crate::currency_ctx::use_currency_store();
+    let value = money.value;
+    let code = money.currency_code.clone();
 
-    let tone = match money.value.cmp(&Decimal::ZERO) {
+    let tone = match value.cmp(&Decimal::ZERO) {
         Ordering::Greater => style::positive,
         Ordering::Less => style::negative,
         Ordering::Equal => style::neutral,
     };
     let class = format!("{} {}", style::num, tone);
 
-    view! { <span class=class>{format_amount(&money.value, currency)}</span> }
+    let text = move || {
+        let meta = crate::components::num::meta::display_meta_for(&code, &currencies.get());
+        format_amount(&value, &meta)
+    };
+
+    view! { <span class=class>{text}</span> }
 }
 
 #[cfg(debug_assertions)]

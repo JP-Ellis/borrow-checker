@@ -1,8 +1,6 @@
 //! Posting lines and list for the expanded transaction detail.
 
 use bc_ipc::AccountRef;
-use bc_ipc::USD;
-use bc_ipc::currency_from_code;
 use jiff::civil::Date;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
@@ -245,8 +243,9 @@ pub fn PostingLine(
                 remainder,
                 currency,
             } => {
-                let cur = currency_from_code(&currency).unwrap_or(&USD);
-                format_amount(&remainder, cur)
+                let meta =
+                    crate::components::num::meta::display_meta_for(&currency, &currencies.get());
+                format_amount(&remainder, &meta)
             }
             BalanceState::Balanced
             | BalanceState::Unbalanced { .. }

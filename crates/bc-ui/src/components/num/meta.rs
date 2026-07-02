@@ -5,6 +5,10 @@ use bc_ipc::CommodityInfo;
 
 /// Formatting metadata resolved for a single currency code.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "DisplayMeta is the canonical type name; the crate-level expect for this lint is wasm32-gated and does not reach the native `components_tests` shim used to test this pure module"
+)]
 pub struct DisplayMeta {
     /// Canonical code (e.g. `"AUD"`).
     pub code: String,
