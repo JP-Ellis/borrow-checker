@@ -60,13 +60,16 @@ fn no_mask_node() -> AccountNode {
 /// others). CalendarYear and FinancialYear title labels are covered by the
 /// wildcard arm in `mod.rs`.
 ///
-/// Note: `posting_count_resource` always resolves to an error in this QA harness
-/// because there is no real IPC connection. The posting count stat card will show
-/// "—" (the fallback value for a failed or pending resource). To visually verify
-/// the non-error rendering (e.g. a numeric count with warn/neutral tone), use the
-/// stat card QA page directly.
+/// Note: `stats_resource` always resolves to an error in this QA harness
+/// because there is no real IPC connection. The stat cards and balance headline
+/// will show "—" (the fallback value for a failed or pending resource). To
+/// visually verify the non-error rendering (e.g. a numeric count with
+/// warn/neutral tone), use the stat card QA page directly.
 #[component]
 pub fn AccountDashboardQa() -> impl IntoView {
+    let period_window = Signal::derive(|| bc_ipc::Period::Monthly);
+    let window_start = Signal::derive(|| jiff::Zoned::now().date());
+
     view! {
         <div style="display:flex;flex-direction:column;gap:48px;padding:24px">
 
@@ -74,21 +77,33 @@ pub fn AccountDashboardQa() -> impl IntoView {
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
                     "asset account with mask and tags (default: monthly)"
                 </p>
-                <AccountDashboard node=asset_node() />
+                <AccountDashboard
+                    node=asset_node()
+                    period_window=period_window
+                    window_start=window_start
+                />
             </section>
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
                     "liability — negative balance (default: monthly)"
                 </p>
-                <AccountDashboard node=liability_node() />
+                <AccountDashboard
+                    node=liability_node()
+                    period_window=period_window
+                    window_start=window_start
+                />
             </section>
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
                     "no mask, no tags, no parent (default: monthly)"
                 </p>
-                <AccountDashboard node=no_mask_node() />
+                <AccountDashboard
+                    node=no_mask_node()
+                    period_window=period_window
+                    window_start=window_start
+                />
             </section>
 
         </div>

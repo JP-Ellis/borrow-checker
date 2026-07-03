@@ -28,8 +28,10 @@ static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 /// # Arguments
 ///
 /// * `node` - The account to display.
-/// * `data_version` - Optional monotonic counter; when it changes, stats, sparkline, and posting-count re-fetch.
+/// * `data_version` - Optional monotonic counter; when it changes, stats and sparkline re-fetch.
 /// * `on_add_tx` - Optional callback fired when the user clicks "+ transaction".
+/// * `period_window` - Page-level period granularity (read-only; the register's `PeriodNav` writes it).
+/// * `window_start` - Page-level display-window start (read-only).
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -43,24 +45,29 @@ pub fn AccountDashboard(
     /// Account to display.
     node: AccountNode,
     /// Monotonic counter bumped by the parent after any successful mutation.
-    /// Stats, sparkline, and posting-count LocalResources re-fetch whenever this changes.
+    /// Stats and sparkline LocalResources re-fetch whenever this changes.
     #[prop(optional)]
     data_version: Option<ReadSignal<u32>>,
     /// Optional callback fired when the user clicks the "+ transaction" action button.
     #[prop(optional)]
     on_add_tx: Option<Callback<()>>,
+    /// Page-level period granularity (read-only; the register's `PeriodNav` writes it).
+    period_window: Signal<bc_ipc::Period>,
+    /// Page-level display-window start (read-only).
+    window_start: Signal<jiff::civil::Date>,
 ) -> impl IntoView {
     let currencies = crate::currency_ctx::use_currency_store();
     let account_id = node.id.clone();
     let sparkline_account_id = node.id.clone();
-    let posting_count_account_id = node.id.clone();
 
     let stats_resource = LocalResource::new(move || {
         let id = account_id.clone();
+        let start = window_start.get();
+        let until = crate::components::period_nav::period_end(&period_window.get(), start);
         if let Some(v) = data_version {
             v.get();
         }
-        async move { bc_ipc::client::get_account_stats(&id).await }
+        async move { bc_ipc::client::get_account_stats(&id, start, until).await }
     });
 
     let period = RwSignal::new(bc_ipc::Period::Monthly);
@@ -76,26 +83,34 @@ pub fn AccountDashboard(
         async move { bc_ipc::client::get_account_sparkline(&id, p, n).await }
     });
 
-    let posting_count_resource = LocalResource::new(move || {
-        let id = posting_count_account_id.clone();
-        if let Some(v) = data_version {
-            v.get();
-        }
-        async move { bc_ipc::client::get_posting_count(&id).await }
-    });
-
     let sparkline_currency_code = node
         .balance
         .as_ref()
         .map_or_else(String::new, |b| b.currency_code.clone());
 
-    let balance = node.balance.clone();
-    let balance_str = move || match balance.as_ref() {
-        None => "\u{2014}".to_owned(),
-        Some(b) => {
-            let meta =
-                crate::components::num::meta::display_meta_for(&b.currency_code, &currencies.get());
-            crate::components::num::format_amount(&b.value, &meta)
+    let balance_line = move || {
+        let stats = stats_resource.get().and_then(Result::ok);
+        let cur = currencies.get();
+        let fmt = |a: &bc_ipc::Amount| {
+            let meta = crate::components::num::meta::display_meta_for(&a.currency_code, &cur);
+            crate::components::num::format_amount(&a.value, &meta)
+        };
+        match stats {
+            None => (
+                "\u{2014}".to_owned(),
+                "\u{2014}".to_owned(),
+                "\u{2014}".to_owned(),
+                false,
+            ),
+            Some(s) => {
+                let net_neg = s.net.value < rust_decimal::Decimal::ZERO;
+                (
+                    fmt(&s.closing_balance),
+                    fmt(&s.opening_balance),
+                    fmt(&s.net),
+                    net_neg,
+                )
+            }
         }
     };
 
@@ -205,18 +220,28 @@ pub fn AccountDashboard(
             </div>
 
             <div class=style::balance_row>
-                <span class=style::balance>{balance_str}</span>
-                <span class=style::balance_meta>"// available"</span>
+                <span class=style::balance>{move || balance_line().0}</span>
+                <span class=style::balance_meta>"// closing"</span>
+            </div>
+            <div class=style::balance_sub>
+                <span class=style::opening>"opening " {move || balance_line().1}</span>
+                <span class=move || {
+                    if balance_line().3 { style::net_bad } else { style::net_good }
+                }>"net " {move || balance_line().2}</span>
             </div>
 
             <div class=style::stat_row>
                 <StatCards count=4>
                     {move || {
                         let stats = stats_resource.get().and_then(Result::ok);
-                        let (income_str, expense_str) = stats
+                        let window_label = crate::components::period_nav::window_label(
+                            &period_window.get(),
+                            window_start.get(),
+                        );
+                        let (income_str, expense_str, tx_count_str) = stats
                             .as_ref()
                             .map_or_else(
-                                || ("—".into(), "—".into()),
+                                || ("—".into(), "—".into(), "—".into()),
                                 |s| {
                                     let meta = crate::components::num::meta::display_meta_for(
                                         &s.income.currency_code,
@@ -230,43 +255,27 @@ pub fn AccountDashboard(
                                         &s.expenses.value,
                                         &meta,
                                     );
-                                    (inc, exp)
+                                    (inc, exp, s.tx_count.to_string())
                                 },
                             );
 
                         view! {
                             <StatCard
-                                label="income (30d)".into()
+                                label="income".into()
                                 value=income_str
-                                sub="last 30 days"
+                                sub=window_label.clone()
                                 tone=StatTone::Good
                             />
                             <StatCard
-                                label="expenses (30d)".into()
+                                label="expenses".into()
                                 value=expense_str
-                                sub="last 30 days"
+                                sub=window_label.clone()
                                 tone=StatTone::Bad
                             />
-                        }
-                    }}
-                    {move || {
-                        let posting_count_str = match posting_count_resource
-                            .get()
-                            .and_then(|r| {
-                                r.map_err(|e| {
-                                        leptos::logging::warn!("posting_count failed: {e}");
-                                    })
-                                    .ok()
-                            })
-                        {
-                            Some(n) => n.to_string(),
-                            None => "—".into(),
-                        };
-                        view! {
                             <StatCard
                                 label="transactions".into()
-                                value=posting_count_str
-                                sub="non-voided postings"
+                                value=tx_count_str
+                                sub=window_label
                                 tone=StatTone::Neutral
                             />
                         }
