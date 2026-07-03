@@ -119,6 +119,13 @@ pub fn Accounts() -> impl IntoView {
         let period = display_period.get_untracked();
         leptos::task::spawn_local(async move {
             if let Ok(latest) = bc_ipc::client::account_latest_activity(&id).await {
+                // Guard against a stale resolution: if the user switched
+                // accounts while this request was in flight, the request for the
+                // now-selected account owns the window. Only apply (and mark
+                // seeded) when this account is still the selected one.
+                if selected_id.get_untracked().as_deref() != Some(id.as_str()) {
+                    return;
+                }
                 let anchor = latest.unwrap_or_else(|| jiff::Zoned::now().date());
                 window_start.set(crate::components::period_nav::window_containing(
                     &period, anchor,

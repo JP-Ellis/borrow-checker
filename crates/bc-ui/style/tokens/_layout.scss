@@ -16,6 +16,11 @@
     /* MARK: Top Bar */
     --bc-topbar-height: 52px;
 
+    /* MARK: Accounts */
+    /* Resting height of the sticky account bar; the register header pins
+       directly beneath it, so both must reference this single value. */
+    --bc-account-bar-height: 40px;
+
     /* MARK: Shadows */
     --bc-shadow-card:   0 4px 12px color-mix(in oklch, var(--bc-ink) 8%, transparent);
     --bc-shadow-sticky: 0 2px 4px  color-mix(in oklch, var(--bc-ink) 8%, transparent);
