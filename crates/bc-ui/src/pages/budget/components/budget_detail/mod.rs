@@ -10,11 +10,11 @@ use jiff::Span;
 use leptos::prelude::*;
 use stylance::import_style;
 
+use crate::components::period_nav;
 use crate::components::transaction_row::RowPerspective;
 use crate::components::transaction_row::TransactionRow;
 use crate::pages::budget::BudgetPageCtx;
 use crate::pages::budget::components::revision_form::RevisionForm;
-use crate::pages::budget::period_nav;
 
 import_style!(style, "detail.module.scss");
 

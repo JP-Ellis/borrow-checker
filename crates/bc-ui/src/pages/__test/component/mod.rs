@@ -2,6 +2,7 @@
 
 pub mod account_picker;
 pub mod num;
+pub mod period_nav;
 pub mod sparkline;
 pub mod stat_card;
 pub mod status_pill;
@@ -29,6 +30,7 @@ pub fn ComponentRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
             <Route path=path!("/sparkline") view=sparkline::SparklineQa />
             <Route path=path!("/stat-card") view=stat_card::StatCardQa />
             <Route path=path!("/num") view=num::NumQa />
+            <Route path=path!("/period-nav") view=period_nav::PeriodNavQa />
             <Route path=path!("/status-pill") view=status_pill::StatusPillQa />
             <Route path=path!("/tag-picker") view=tag_picker::TagPickerQa />
             <Route path=path!("/tag-token") view=tag_token::TagTokenQa />
@@ -64,6 +66,11 @@ pub fn ComponentIndex() -> impl IntoView {
                     description=stat_card::DESCRIPTION
                 />
                 <QaCard title=num::TITLE path=num::PATH description=num::DESCRIPTION />
+                <QaCard
+                    title=period_nav::TITLE
+                    path=period_nav::PATH
+                    description=period_nav::DESCRIPTION
+                />
                 <QaCard
                     title=status_pill::TITLE
                     path=status_pill::PATH

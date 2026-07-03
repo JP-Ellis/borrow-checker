@@ -9,10 +9,10 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive as _;
 use stylance::import_style;
 
+use crate::components::period_nav;
 use crate::pages::budget::BudgetPageCtx;
 use crate::pages::budget::components::budget_detail::BudgetDetail;
 use crate::pages::budget::components::native_period_list::NativePeriodList;
-use crate::pages::budget::period_nav;
 
 import_style!(style, "row.module.scss");
 

@@ -11,26 +11,6 @@
     box-shadow: var(--bc-shadow-sticky);
 }
 
-.nav_btn {
-    background: none;
-    border: 1px solid var(--bc-border);
-    border-radius: var(--bc-radius-control);
-    padding: var(--bc-space-1) var(--bc-space-2);
-    font-family: var(--bc-font-mono);
-    font-size: var(--bc-text-caption);
-    color: var(--bc-ink);
-    cursor: pointer;
-    @include interactive.button-interactive();
-}
-
-.label {
-    font-family: var(--bc-font-mono);
-    font-size: var(--bc-text-caption);
-    font-weight: 600;
-    min-width: 120px;
-    text-align: center;
-}
-
 .kpi_compact {
     margin-left: auto;
     display: flex;

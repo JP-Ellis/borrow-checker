@@ -10,8 +10,8 @@ use bc_ipc::BudgetTreeNode;
 use leptos::prelude::*;
 use stylance::import_style;
 
+use crate::components::period_nav::PeriodNav;
 use crate::pages::budget::BudgetPageCtx;
-use crate::pages::budget::period_nav;
 
 import_style!(style, "sticky_bar.module.scss");
 
@@ -45,29 +45,9 @@ pub fn StickyBar(
     let window_start = ctx.window_start;
     let currencies = crate::currency_ctx::use_currency_store();
 
-    let period_label = move || period_nav::window_label(&period.get(), window_start.get());
-
     view! {
         <div class=style::sticky_bar>
-            <button
-                class=style::nav_btn
-                on:click=move |_| {
-                    window_start
-                        .update(|ws| *ws = period_nav::step_window(&period.get(), *ws, false));
-                }
-            >
-                "\u{25C0}"
-            </button>
-            <span class=style::label>{period_label}</span>
-            <button
-                class=style::nav_btn
-                on:click=move |_| {
-                    window_start
-                        .update(|ws| *ws = period_nav::step_window(&period.get(), *ws, true));
-                }
-            >
-                "\u{25B6}"
-            </button>
+            <PeriodNav period=period window_start=window_start compact=true />
 
             <div class=style::kpi_compact>
                 <Suspense fallback=move || {
