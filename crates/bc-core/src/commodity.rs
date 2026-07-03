@@ -689,8 +689,8 @@ mod tests {
         // Recreate and reference it from a posting, then deletion must be blocked.
         let restored = svc.create(&aud).await.expect("recreate");
         sqlx::query(
-            "INSERT INTO accounts (id, name, account_type, created_at) \
-             VALUES ('a1', 'Test Account', 'asset', '2024-01-01T00:00:00Z')",
+            "INSERT INTO accounts (id, name, account_type, kind, created_at) \
+             VALUES ('a1', 'Test Account', 'asset', 'deposit_account', '2024-01-01T00:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -727,8 +727,8 @@ mod tests {
         let stored = svc.create(&jpy).await.expect("create");
 
         sqlx::query(
-            "INSERT INTO accounts (id, name, account_type, created_at) \
-             VALUES ('a1', 'Test Account', 'asset', '2024-01-01T00:00:00Z')",
+            "INSERT INTO accounts (id, name, account_type, kind, created_at) \
+             VALUES ('a1', 'Test Account', 'asset', 'deposit_account', '2024-01-01T00:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -805,8 +805,8 @@ mod tests {
         let stored = svc.create(&jpy).await.expect("create");
 
         sqlx::query(
-            "INSERT INTO accounts (id, name, account_type, created_at) \
-             VALUES ('a1', 'Test Account', 'asset', '2024-01-01T00:00:00Z')",
+            "INSERT INTO accounts (id, name, account_type, kind, created_at) \
+             VALUES ('a1', 'Test Account', 'asset', 'deposit_account', '2024-01-01T00:00:00Z')",
         )
         .execute(&pool)
         .await

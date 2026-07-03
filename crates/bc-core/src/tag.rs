@@ -621,7 +621,7 @@ mod tests {
         // account_tags.account_id has an FK, so insert a real account first.
         let account_id = bc_models::AccountId::new();
         sqlx::query(
-            "INSERT INTO accounts (id, name, account_type, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO accounts (id, name, account_type, kind, created_at) VALUES (?, ?, ?, 'deposit_account', ?)",
         )
         .bind(account_id.to_string())
         .bind("Test")
@@ -657,7 +657,7 @@ mod tests {
 
         let account_id = bc_models::AccountId::new();
         sqlx::query(
-            "INSERT INTO accounts (id, name, account_type, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO accounts (id, name, account_type, kind, created_at) VALUES (?, ?, ?, 'deposit_account', ?)",
         )
         .bind(account_id.to_string())
         .bind("Test")
