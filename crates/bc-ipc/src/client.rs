@@ -50,7 +50,7 @@ struct ListTransactionsArgs<'a> {
     account_id: &'a str,
     /// Start of the date range (inclusive).
     date_from: jiff::civil::Date,
-    /// End of the date range (inclusive).
+    /// End of the date range (exclusive).
     date_until: jiff::civil::Date,
 }
 
@@ -72,7 +72,7 @@ pub async fn list_accounts() -> Result<Vec<AccountNode>, BcError> {
         .await
 }
 
-/// Lists transactions for `account_id` within `[date_from, date_until]` from the backend.
+/// Lists transactions for `account_id` within `[date_from, date_until)` from the backend.
 ///
 /// # Errors
 ///
@@ -219,7 +219,7 @@ struct GetAccountStatsArgs<'a> {
     commodity: Option<&'a str>,
     /// Start of the date range (inclusive).
     date_from: jiff::civil::Date,
-    /// End of the date range (inclusive).
+    /// End of the date range (exclusive).
     date_until: jiff::civil::Date,
 }
 
