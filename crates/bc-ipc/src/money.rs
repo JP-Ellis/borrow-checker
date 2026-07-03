@@ -240,6 +240,31 @@ impl Amount {
     }
 }
 
+// MARK: models conversions
+
+#[cfg(feature = "models")]
+impl From<&bc_models::Amount> for Amount {
+    /// Converts a [`bc_models::Amount`] to an IPC [`Amount`], carrying the
+    /// decimal value across the boundary verbatim — no lossy minor-unit
+    /// conversion.
+    #[inline]
+    fn from(a: &bc_models::Amount) -> Self {
+        Self::new(a.value(), a.commodity().as_str())
+    }
+}
+
+#[cfg(feature = "models")]
+impl From<&Amount> for bc_models::Amount {
+    /// Converts an IPC [`Amount`] to a [`bc_models::Amount`].
+    #[inline]
+    fn from(a: &Amount) -> Self {
+        bc_models::Amount::new(
+            a.value,
+            bc_models::CommodityCode::new(a.currency_code.clone()),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -390,5 +415,67 @@ mod tests {
         let a = Amount::new(Decimal::new(10, 0), "USD");
         let b = Amount::new(Decimal::new(3, 0), "USD");
         assert_eq!(a.sub_unchecked(&b).value, Decimal::new(7, 0));
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "models")]
+mod models_tests {
+    use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
+
+    use super::Amount;
+
+    #[test]
+    fn amount_into_ipc_aud() {
+        let model = bc_models::Amount::new(
+            rust_decimal::Decimal::new(1050, 2), // 10.50
+            bc_models::CommodityCode::new("AUD"),
+        );
+        let ipc = Amount::from(&model);
+        assert_eq!(ipc.value, rust_decimal::Decimal::new(1050, 2));
+        assert_eq!(ipc.currency_code, "AUD");
+    }
+
+    #[test]
+    fn amount_into_model_aud() {
+        let ipc = Amount::new(Decimal::new(1050, 2), "AUD");
+        let model = bc_models::Amount::from(&ipc);
+        assert_eq!(model.value(), rust_decimal::Decimal::new(1050, 2));
+        assert_eq!(model.commodity().as_str(), "AUD");
+    }
+
+    #[test]
+    fn amount_round_trip_jpy() {
+        let model = bc_models::Amount::new(
+            rust_decimal::Decimal::new(1234, 0),
+            bc_models::CommodityCode::new("JPY"),
+        );
+        let ipc = Amount::from(&model);
+        assert_eq!(ipc.value, rust_decimal::Decimal::new(1234, 0));
+        let back = bc_models::Amount::from(&ipc);
+        assert_eq!(back, model);
+    }
+
+    #[test]
+    fn amount_round_trip_btc() {
+        let model = bc_models::Amount::new(
+            rust_decimal::Decimal::new(12345, 8), // 0.00012345 BTC
+            bc_models::CommodityCode::new("BTC"),
+        );
+        let ipc = Amount::from(&model);
+        assert_eq!(ipc.value, rust_decimal::Decimal::new(12345, 8));
+        let back = bc_models::Amount::from(&ipc);
+        assert_eq!(back, model);
+    }
+
+    #[test]
+    fn amount_round_trip_large_btc_no_overflow() {
+        let big = rust_decimal::Decimal::from_i128_with_scale(100_000_000_000_000_000_000_i128, 8);
+        let model = bc_models::Amount::new(big, bc_models::CommodityCode::new("BTC"));
+        let ipc = Amount::from(&model);
+        assert_eq!(ipc.value, big);
+        let back = bc_models::Amount::from(&ipc);
+        assert_eq!(back, model);
     }
 }

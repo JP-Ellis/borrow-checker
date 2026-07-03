@@ -28,6 +28,38 @@ impl core::fmt::Display for RolloverPolicy {
     }
 }
 
+// MARK: models conversions
+
+#[cfg(feature = "models")]
+impl From<bc_models::RolloverPolicy> for RolloverPolicy {
+    #[inline]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "both bc_models::RolloverPolicy and bc_ipc::RolloverPolicy are #[non_exhaustive]; \
+                  the wildcard fallback to ResetToZero is intentional for future unknown variants"
+    )]
+    fn from(value: bc_models::RolloverPolicy) -> Self {
+        match value {
+            bc_models::RolloverPolicy::CarryForward => Self::CarryForward,
+            bc_models::RolloverPolicy::ResetToZero => Self::ResetToZero,
+            bc_models::RolloverPolicy::CapAtTarget => Self::CapAtTarget,
+            _ => Self::ResetToZero,
+        }
+    }
+}
+
+#[cfg(feature = "models")]
+impl From<RolloverPolicy> for bc_models::RolloverPolicy {
+    #[inline]
+    fn from(value: RolloverPolicy) -> Self {
+        match value {
+            RolloverPolicy::CarryForward => Self::CarryForward,
+            RolloverPolicy::ResetToZero => Self::ResetToZero,
+            RolloverPolicy::CapAtTarget => Self::CapAtTarget,
+        }
+    }
+}
+
 /// The intersection of a revision's reign with a display window.
 ///
 /// `start`/`end` are the inclusive/exclusive bounds of the slice of the window
