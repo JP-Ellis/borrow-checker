@@ -120,7 +120,7 @@ pub struct EditableTransaction {
     pub postings: Vec<EditablePosting>,
 }
 
-impl EditableTransaction {
+impl From<&Transaction> for EditableTransaction {
     /// Builds an [`EditableTransaction`] from a read-model [`Transaction`].
     ///
     /// # Arguments
@@ -130,8 +130,7 @@ impl EditableTransaction {
     /// # Returns
     ///
     /// The working buffer seeded from `tx`.
-    #[must_use]
-    pub fn from_transaction(tx: &Transaction) -> Self {
+    fn from(tx: &Transaction) -> Self {
         Self {
             id: tx.id.clone(),
             date: tx.date.to_string(),
@@ -155,7 +154,9 @@ impl EditableTransaction {
                 .collect(),
         }
     }
+}
 
+impl EditableTransaction {
     /// Returns the currency of the first posting carrying a concrete amount.
     ///
     /// Used to seed the currency of newly added legs.
@@ -628,7 +629,7 @@ pub mod tests {
 
     #[test]
     fn from_transaction_maps_scalars_and_postings() {
-        let e = EditableTransaction::from_transaction(&sample_tx());
+        let e = EditableTransaction::from(&sample_tx());
         assert_eq!(e.id, "tx-1");
         assert_eq!(e.date, "2026-04-30");
         assert_eq!(e.payee, "Coles");
@@ -641,7 +642,7 @@ pub mod tests {
     #[test]
     #[expect(clippy::indexing_slicing, reason = "test code with known length")]
     fn present_amount_posting_round_trips_fields() {
-        let e = EditableTransaction::from_transaction(&sample_tx());
+        let e = EditableTransaction::from(&sample_tx());
         let p = &e.postings[0];
         assert_eq!(p.id.as_deref(), Some("p-1"));
         assert_eq!(p.account_id, "acct-checking");
@@ -654,7 +655,7 @@ pub mod tests {
     #[test]
     #[expect(clippy::indexing_slicing, reason = "test code with known length")]
     fn elided_posting_has_blank_amount() {
-        let e = EditableTransaction::from_transaction(&sample_tx());
+        let e = EditableTransaction::from(&sample_tx());
         let p = &e.postings[1];
         assert_eq!(p.amount, "");
         assert!(p.is_elided());
@@ -664,7 +665,7 @@ pub mod tests {
 
     #[test]
     fn default_currency_is_first_present() {
-        let e = EditableTransaction::from_transaction(&sample_tx());
+        let e = EditableTransaction::from(&sample_tx());
         assert_eq!(e.default_currency(), "AUD");
     }
 
@@ -754,7 +755,7 @@ pub mod tests {
     )]
     fn from_transaction_seeds_marked_amount() {
         let t = sample_two_posting_tx();
-        let e = EditableTransaction::from_transaction(&t);
+        let e = EditableTransaction::from(&t);
         assert!(parse_amount(&registry(), &e.postings[0].amount).is_ok());
     }
 
@@ -907,7 +908,7 @@ pub mod tests {
     #[expect(clippy::indexing_slicing, reason = "test code with known length")]
     fn from_transaction_assigns_unique_uids() {
         let t = sample_two_posting_tx();
-        let e = EditableTransaction::from_transaction(&t);
+        let e = EditableTransaction::from(&t);
         assert_eq!(e.postings.len(), 2);
         assert_ne!(e.postings[0].uid, e.postings[1].uid);
     }
@@ -915,7 +916,7 @@ pub mod tests {
     #[test]
     fn push_blank_posting_returns_fresh_uid() {
         let t = sample_two_posting_tx();
-        let mut e = EditableTransaction::from_transaction(&t);
+        let mut e = EditableTransaction::from(&t);
         let max_before = e.postings.iter().map(|p| p.uid).max().unwrap_or(0);
         let new_uid = e.push_blank_posting();
         assert_eq!(e.postings.len(), 3);
@@ -938,7 +939,7 @@ pub mod tests {
             two_balanced_postings(),
             vec![],
         );
-        let e = EditableTransaction::from_transaction(&t);
+        let e = EditableTransaction::from(&t);
         assert_eq!(
             e.extra_dates,
             vec![("cleared".to_owned(), "2026-05-02".to_owned())]
@@ -965,7 +966,7 @@ pub mod tests {
             two_balanced_postings(),
             vec![],
         );
-        let mut e = EditableTransaction::from_transaction(&t);
+        let mut e = EditableTransaction::from(&t);
         e.extra_dates[0].1 = "not-a-date".to_owned();
         assert!(matches!(
             e.to_edit_transaction(&registry()),
