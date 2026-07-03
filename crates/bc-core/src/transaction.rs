@@ -1948,6 +1948,37 @@ impl Service {
             })
             .collect()
     }
+
+    /// Returns the most recent canonical transaction date for `account_id`, or
+    /// `None` if the account has no transactions.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account to query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or date-parse failure.
+    pub async fn latest_activity_date(
+        &self,
+        account_id: &AccountId,
+    ) -> BcResult<Option<jiff::civil::Date>> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT MAX(t.date) FROM transactions t \
+             WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
+        )
+        .bind(account_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row.and_then(|(d,)| d) {
+            None => Ok(None),
+            Some(s) => s
+                .parse::<jiff::civil::Date>()
+                .map(Some)
+                .map_err(|e| BcError::BadData(format!("invalid date '{s}': {e}"))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2536,6 +2567,59 @@ mod tests {
             .collect();
 
         assert_eq!(dates, vec![date(2026, 6, 30), date(2026, 6, 1)]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn latest_activity_date_returns_max_and_none(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc_a = acct_svc
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create A should succeed");
+        let acc_b = acct_svc
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create B should succeed");
+
+        let svc = Service::new(pool.clone());
+
+        assert_eq!(svc.latest_activity_date(&acc_a).await.expect("query"), None);
+
+        for d in [date(2026, 1, 5), date(2026, 6, 30), date(2026, 3, 1)] {
+            let tx = Transaction::builder()
+                .id(bc_models::TransactionId::new())
+                .date(d)
+                .description("Test")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(acc_a.clone())
+                        .amount(Amount::new(dec!(100.00), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(acc_b.clone())
+                        .amount(Amount::new(dec!(-100.00), CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(Timestamp::now())
+                .build();
+            svc.create(tx).await.expect("create tx should succeed");
+        }
+
+        assert_eq!(
+            svc.latest_activity_date(&acc_a).await.expect("query"),
+            Some(date(2026, 6, 30))
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
