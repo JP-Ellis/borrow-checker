@@ -66,7 +66,7 @@ pub fn run() {
             commands::accounts::get_transaction_audit,
             commands::accounts::get_account_stats,
             commands::accounts::get_account_sparkline,
-            commands::accounts::get_posting_count,
+            commands::accounts::account_latest_activity,
             commands::tags::create_tag,
             commands::tags::rename_tag,
             commands::tags::delete_tag,
