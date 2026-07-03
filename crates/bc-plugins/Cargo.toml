@@ -12,6 +12,7 @@ license.workspace      = true
 
 [dependencies]
 bc-core       = { workspace = true }
+bc-ipc        = { workspace = true, optional = true }
 bc-models     = { workspace = true }
 jiff          = { workspace = true }
 rust_decimal  = { workspace = true }
@@ -23,6 +24,10 @@ wasmtime-wasi = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+
+[features]
+# Conversion from bc-plugins::PluginImporter into bc-ipc::PluginInfo (native/Tauri side only).
+ipc = ["dep:bc-ipc"]
 
 [lints]
 workspace = true
