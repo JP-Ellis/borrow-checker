@@ -141,7 +141,7 @@ BC_DB_PATH="$DEV_DB" cargo tauri dev
   ]
   run         = [
     "cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings",
-    "cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown -- -D warnings",
+    "cargo hack --feature-powerset --exclude-features models -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown -- -D warnings",
   ]
 
   [tasks.lint]
@@ -155,7 +155,7 @@ BC_DB_PATH="$DEV_DB" cargo tauri dev
   run         = '''
 {% if usage.fix %}
   cargo hack --feature-powerset --workspace clippy --all-targets --fix --allow-staged --allow-dirty -- -D warnings
-  cargo hack --feature-powerset -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings
+  cargo hack --feature-powerset --exclude-features models -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings
 {% else %}
   cargo clippy --workspace --all-targets -- -D warnings
   cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings
