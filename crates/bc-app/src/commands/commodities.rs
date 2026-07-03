@@ -30,20 +30,24 @@ pub async fn list_currencies(
         .list_all()
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    Ok(list
-        .into_iter()
-        .map(|c| {
-            bc_ipc::CommodityInfo::new(
-                c.id().to_string(),
-                c.code().to_owned(),
-                c.symbol().map(ToOwned::to_owned),
-                c.aliases().to_vec(),
-                c.decimals(),
-                c.is_iso(),
-                c.symbol_after(),
-            )
-        })
-        .collect())
+    Ok(list.iter().map(from_commodity).collect())
+}
+
+/// Builds an IPC `CommodityInfo` from a `bc_models::Commodity`.
+///
+/// The reverse of [`to_commodity`]. Kept as a free function rather than a
+/// `From` impl because neither type is local to this crate (orphan rule) and
+/// `bc-ipc` deliberately does not depend on `bc-models`.
+fn from_commodity(c: &bc_models::Commodity) -> bc_ipc::CommodityInfo {
+    bc_ipc::CommodityInfo::new(
+        c.id().to_string(),
+        c.code().to_owned(),
+        c.symbol().map(ToOwned::to_owned),
+        c.aliases().to_vec(),
+        c.decimals(),
+        c.is_iso(),
+        c.symbol_after(),
+    )
 }
 
 /// Maps a `CommodityService` error to the IPC error surfaced to the UI.
@@ -105,15 +109,7 @@ pub async fn create_currency(
 ) -> Result<bc_ipc::CommodityInfo, bc_ipc::BcError> {
     let c = to_commodity(info)?;
     let stored = state.commodities.create(&c).await.map_err(map_err)?;
-    Ok(bc_ipc::CommodityInfo::new(
-        stored.id().to_string(),
-        stored.code().to_owned(),
-        stored.symbol().map(ToOwned::to_owned),
-        stored.aliases().to_vec(),
-        stored.decimals(),
-        stored.is_iso(),
-        stored.symbol_after(),
-    ))
+    Ok(from_commodity(&stored))
 }
 
 /// Updates an existing commodity/currency (its code is immutable).
