@@ -63,11 +63,13 @@ pub async fn list_accounts(
     Ok(nodes)
 }
 
-/// List transactions for the given account.
+/// List transactions for the given account within a date window.
 ///
 /// # Arguments
 ///
 /// * `account_id` - The account ID to filter by.
+/// * `date_from` - The inclusive start of the date window.
+/// * `date_until` - The inclusive end of the date window.
 /// * `state` - Tauri managed application state.
 ///
 /// # Errors
@@ -80,6 +82,8 @@ pub async fn list_accounts(
 #[tauri::command(rename_all = "snake_case")]
 pub async fn list_transactions(
     account_id: String,
+    date_from: jiff::civil::Date,
+    date_until: jiff::civil::Date,
     state: State<'_, AppState>,
 ) -> Result<Vec<bc_ipc::Transaction>, bc_ipc::BcError> {
     let id = account_id
@@ -105,7 +109,7 @@ pub async fn list_transactions(
 
     let txs = state
         .transactions
-        .list_for_account(&id)
+        .list_for_account_in_range(&id, date_from, date_until)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
@@ -311,12 +315,15 @@ pub async fn reverse_transaction(
     Ok(reversal_id.to_string())
 }
 
-/// Returns income and expense totals for `account_id` over the last 30 days.
+/// Returns income, expense, and balance totals for `account_id` over an
+/// explicit date window.
 ///
 /// # Arguments
 ///
 /// * `account_id` - The account to query.
 /// * `commodity`  - Optional commodity code override. Defaults to the account's first commodity.
+/// * `date_from`  - The inclusive start of the date window.
+/// * `date_until` - The exclusive end of the date window.
 /// * `state`      - Tauri managed application state.
 ///
 /// # Errors
@@ -330,6 +337,8 @@ pub async fn reverse_transaction(
 pub async fn get_account_stats(
     account_id: String,
     commodity: Option<String>,
+    date_from: jiff::civil::Date,
+    date_until: jiff::civil::Date,
     state: State<'_, AppState>,
 ) -> Result<bc_ipc::AccountStats, bc_ipc::BcError> {
     let id = account_id
@@ -346,25 +355,23 @@ pub async fn get_account_stats(
             .unwrap_or_default(),
     };
 
-    let today = jiff::Zoned::now().date();
-    let from = today.saturating_sub(jiff::Span::new().days(29_i32));
-    let tomorrow = today.saturating_add(jiff::Span::new().days(1_i32));
-
-    let (inflow, outflow) = state
+    let s = state
         .balance_engine
-        .posting_flows(&id, &commodity_code, from, tomorrow)
+        .account_period_stats(&id, &commodity_code, date_from, date_until)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
     Ok(bc_ipc::AccountStats::new(
-        bc_ipc::Amount::from(&inflow),
-        bc_ipc::Amount::from(&outflow),
+        bc_ipc::Amount::from(&s.income),
+        bc_ipc::Amount::from(&s.expenses),
+        bc_ipc::Amount::from(&s.net),
+        bc_ipc::Amount::from(&s.opening),
+        bc_ipc::Amount::from(&s.closing),
+        s.tx_count,
     ))
 }
 
-/// Returns the count of non-voided postings for `account_id`.
-///
-/// Voided transactions are excluded.
+/// Returns the most recent transaction date for `account_id`, or `None`.
 ///
 /// # Arguments
 ///
@@ -373,22 +380,22 @@ pub async fn get_account_stats(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError`] if the account ID is invalid or the query fails.
+/// Returns [`bc_ipc::BcError`] if the ID is invalid or the query fails.
 #[expect(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
 )]
 #[tauri::command(rename_all = "snake_case")]
-pub async fn get_posting_count(
+pub async fn account_latest_activity(
     account_id: String,
     state: State<'_, AppState>,
-) -> Result<u32, bc_ipc::BcError> {
+) -> Result<Option<jiff::civil::Date>, bc_ipc::BcError> {
     let id = account_id
         .parse::<bc_models::AccountId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
     state
-        .balance_engine
-        .posting_count(&id)
+        .transactions
+        .latest_activity_date(&id)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
 }
