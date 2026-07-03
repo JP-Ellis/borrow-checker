@@ -20,6 +20,8 @@ pub(crate) mod events;
 pub(crate) mod export;
 pub(crate) mod fx;
 pub(crate) mod import;
+#[cfg(feature = "ipc")]
+pub mod ipc;
 pub(crate) mod loan;
 pub(crate) mod period_overlap;
 pub(crate) mod settings;
