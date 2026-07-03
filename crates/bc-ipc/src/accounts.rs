@@ -186,7 +186,8 @@ impl AccountNode {
     /// Builds an [`AccountNode`] from a domain account with a pre-computed
     /// balance, resolving tag IDs to display paths via `forest`.
     ///
-    /// Used by `list_accounts` which fetches balances in a separate batch query.
+    /// The balance is supplied by the caller (typically fetched in a separate
+    /// batch query) rather than computed here.
     ///
     /// # Arguments
     ///
