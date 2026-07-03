@@ -163,4 +163,34 @@ mod models_tests {
         let err = bc_models::Commodity::try_from(info).expect_err("invalid id must fail");
         assert!(matches!(err, crate::BcError::Validation(_)));
     }
+
+    #[test]
+    fn commodity_round_trips_all_fields() {
+        let original = bc_models::Commodity::builder()
+            .code("BTC")
+            .symbol("₿")
+            .aliases(vec!["XBT".to_owned(), "BTC".to_owned()])
+            .decimals(8)
+            .is_iso(false)
+            .symbol_after(true)
+            .build();
+
+        let info = CommodityInfo::from(&original);
+        assert_eq!(info.id, original.id().to_string());
+        assert_eq!(info.code, "BTC");
+        assert_eq!(info.symbol.as_deref(), Some("₿"));
+        assert_eq!(info.aliases, vec!["XBT".to_owned(), "BTC".to_owned()]);
+        assert_eq!(info.decimals, 8);
+        assert!(!info.is_iso);
+        assert!(info.symbol_after);
+
+        let back = bc_models::Commodity::try_from(info).expect("round-trips back to model");
+        assert_eq!(back.id(), original.id());
+        assert_eq!(back.code(), original.code());
+        assert_eq!(back.symbol(), original.symbol());
+        assert_eq!(back.aliases(), original.aliases());
+        assert_eq!(back.decimals(), original.decimals());
+        assert_eq!(back.is_iso(), original.is_iso());
+        assert_eq!(back.symbol_after(), original.symbol_after());
+    }
 }
