@@ -1,15 +1,17 @@
 /**
  * Flow tests for the always-editable transaction detail panel.
  *
- * The seeded database has Coles grocery transactions posted to the Groceries
- * account (debit) and CreditCard (credit). We navigate to the Groceries
- * account and expand the "Coles" row that is seeded as Unreconciled (1 month
- * ago, April fortnightly groceries, 110 AUD).
+ * The seeded database has a "Supermarket" grocery transaction posted to the
+ * Groceries account (debit) and Checking (credit), dated in the current
+ * month (day 3, 95 AUD, Reconciled). We navigate to the Groceries account and
+ * expand this row — it's used instead of the seed's historical "Coles"
+ * transactions because the register is now scoped to the account's
+ * auto-jumped current period, and "Coles" only appears in past months.
  *
  * Test sequence:
  *   1. Navigate to Accounts → Groceries (sidebar).
- *   2. Expand the "Coles" row (click; assert detail appears).
- *   3. Toggle the reconciliation status pill (Unreconciled → Flagged).
+ *   2. Expand the "Supermarket" row (click; assert detail appears).
+ *   3. Toggle the reconciliation status pill (Reconciled → Flagged).
  *   4. Assert the Save button is visible and enabled.
  *   5. Save (click Save).
  *   6. Verify the new reconciliation status persisted in SQLite.
@@ -37,14 +39,14 @@ interface ExtraDateRow {
     date:           string;
 }
 
-function dbFetchColesTx(): TxRow | undefined {
+function dbFetchSupermarketTx(): TxRow | undefined {
     const db = new Database(DB_PATH, { readonly: true });
     try {
         return db
             .prepare(
                 `SELECT id, payee, reconciliation
                    FROM transactions
-                  WHERE payee = 'Coles'
+                  WHERE payee = 'Supermarket'
                   ORDER BY date DESC
                   LIMIT 1`,
             )
@@ -83,8 +85,8 @@ function dbExtraDates(txId: string): ExtraDateRow[] {
 
 /**
  * Navigate to the accounts page and click on the Groceries account in the
- * sidebar. Coles transactions debit the Groceries account so they appear in
- * that register.
+ * sidebar. The "Supermarket" transaction debits the Groceries account so it
+ * appears in that register.
  */
 async function openGroceriesAccount(): Promise<void> {
     const navAccounts = await $('[data-testid="nav-accounts"]');
@@ -121,26 +123,26 @@ async function openGroceriesAccount(): Promise<void> {
 }
 
 /**
- * Find and click the first "Coles" transaction row in the register to expand it.
+ * Find and click the first "Supermarket" transaction row in the register to expand it.
  * Returns once the detail panel with the status pill is visible.
  */
-async function expandColesRow(): Promise<void> {
+async function expandSupermarketRow(): Promise<void> {
     const register = await $('[aria-label="transaction register"]');
 
-    // Coles may appear multiple times — grab the first one.
-    const colesSpan = await register.$('span=Coles');
-    await colesSpan.waitForDisplayed({ timeoutMsg: '"Coles" row did not appear in the Groceries register',
+    // Supermarket may appear multiple times — grab the first one.
+    const supermarketSpan = await register.$('span=Supermarket');
+    await supermarketSpan.waitForDisplayed({ timeoutMsg: '"Supermarket" row did not appear in the Groceries register',
     });
 
     // Click the parent [role="button"] row via JS to avoid scrolling issues.
     await browser.execute((el: Element) => {
         const row = el.closest('[role="button"]');
         if (row instanceof HTMLElement) row.click();
-    }, await colesSpan.getElement() as unknown as Element);
+    }, await supermarketSpan.getElement() as unknown as Element);
 
     // Assert the detail (status pill) is now visible.
     const pill = await $('[data-testid="status-pill"]');
-    await pill.waitForDisplayed({ timeoutMsg: 'Status pill did not appear after expanding the Coles row',
+    await pill.waitForDisplayed({ timeoutMsg: 'Status pill did not appear after expanding the Supermarket row',
     });
 }
 
@@ -148,14 +150,14 @@ async function expandColesRow(): Promise<void> {
 
 describe('Accounts — edit transaction detail', () => {
     it('can toggle the reconciliation status and save the change', async function () {
-        const seedTx = dbFetchColesTx();
+        const seedTx = dbFetchSupermarketTx();
         if (!seedTx) {
-            console.warn('No Coles tx found in DB — skipping edit test');
+            console.warn('No Supermarket tx found in DB — skipping edit test');
             this.skip();
         }
 
         await openGroceriesAccount();
-        await expandColesRow();
+        await expandSupermarketRow();
 
         // ── Toggle status. ──────────────────────────────────────────────
         const pill = await $('[data-testid="status-pill"]');
@@ -201,7 +203,7 @@ describe('Accounts — edit transaction detail', () => {
 
     it('shows posting-amount and account-input elements inside the expanded detail', async () => {
         await openGroceriesAccount();
-        await expandColesRow();
+        await expandSupermarketRow();
 
         // At least one posting-amount input must be present in the detail.
         const amountInputs = await $$('[data-testid="posting-amount"]');
@@ -214,7 +216,7 @@ describe('Accounts — edit transaction detail', () => {
 
     it('does not show the save bar when no changes have been made', async () => {
         await openGroceriesAccount();
-        await expandColesRow();
+        await expandSupermarketRow();
 
         // The save bar must NOT be present immediately on open (no edits yet).
         const saveBtn = await $('[aria-label="save transaction"]');
@@ -224,14 +226,14 @@ describe('Accounts — edit transaction detail', () => {
     });
 
     it('can add an extra date via "+ date" and persist it on save', async function () {
-        const seedTx = dbFetchColesTx();
+        const seedTx = dbFetchSupermarketTx();
         if (!seedTx) {
-            console.warn('No Coles tx found in DB — skipping extra-date test');
+            console.warn('No Supermarket tx found in DB — skipping extra-date test');
             this.skip();
         }
 
         await openGroceriesAccount();
-        await expandColesRow();
+        await expandSupermarketRow();
 
         // The "+ date" button must be visible in the metamix bar.
         const addDateBtn = await $('button=+ date');
