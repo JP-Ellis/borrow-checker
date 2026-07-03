@@ -18,6 +18,7 @@ crate::define_id!(CommodityId, "commodity");
 ///     .code("AUD")
 ///     .name("Australian Dollar")
 ///     .symbol("$")
+///     .decimals(2)
 ///     .build();
 ///
 /// assert_eq!(commodity.code(), "AUD");
@@ -68,8 +69,8 @@ pub struct Commodity {
     aliases: Vec<String>,
 
     /// Number of minor-unit digits shown when formatting amounts (e.g. `2` for
-    /// cents, `0` for yen, `8` for satoshis). Defaults to `2`.
-    #[builder(default = 2)]
+    /// cents, `0` for yen, `8` for satoshis). Required — there is no universally
+    /// safe default, so every commodity must state its own precision.
     decimals: u8,
 
     /// Whether this is an ISO 4217 currency. When `true`, display delegates
@@ -191,7 +192,7 @@ mod tests {
 
     #[test]
     fn commodity_builder_requires_code() {
-        let c = Commodity::builder().code("AUD").build();
+        let c = Commodity::builder().code("AUD").decimals(2).build();
         assert_eq!(c.code(), "AUD");
         assert!(c.name().is_none());
     }
@@ -201,6 +202,7 @@ mod tests {
         let c = Commodity::builder()
             .code("BTC")
             .name("Bitcoin".to_owned())
+            .decimals(2)
             .build();
         assert_eq!(c.name(), Some("Bitcoin"));
     }
@@ -217,6 +219,7 @@ mod tests {
             .symbol("$")
             .active_from(date(2000, 1, 1))
             .active_until(date(2099, 12, 31))
+            .decimals(2)
             .build();
 
         assert_eq!(c.code(), "AAPL");
@@ -230,7 +233,7 @@ mod tests {
 
     #[test]
     fn commodity_no_optional_fields_returns_none() {
-        let c = Commodity::builder().code("EUR").build();
+        let c = Commodity::builder().code("EUR").decimals(2).build();
 
         assert_eq!(c.code(), "EUR");
         assert!(c.exchange().is_none());
@@ -243,18 +246,19 @@ mod tests {
 
     #[test]
     fn aliases_default_empty_and_settable() {
-        let c = Commodity::builder().code("AUD").build();
+        let c = Commodity::builder().code("AUD").decimals(2).build();
         assert!(c.aliases().is_empty());
         let c2 = Commodity::builder()
             .code("AUD")
             .aliases(vec!["A$".to_owned(), "AU$".to_owned()])
+            .decimals(2)
             .build();
         assert_eq!(c2.aliases(), &["A$".to_owned(), "AU$".to_owned()]);
     }
 
     #[test]
     fn display_metadata_defaults_and_overrides() {
-        let default = Commodity::builder().code("AUD").build();
+        let default = Commodity::builder().code("AUD").decimals(2).build();
         assert_eq!(default.decimals(), 2);
         assert!(default.is_iso());
         assert!(!default.symbol_after());

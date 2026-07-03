@@ -479,6 +479,7 @@ mod tests {
             .symbol("A$")
             .name("Australian Dollar")
             .aliases(vec!["AU$".to_owned()])
+            .decimals(2)
             .build();
         svc.register(&aud).await.expect("register");
         let all = svc.list_all().await.expect("list");
@@ -536,6 +537,7 @@ mod tests {
         let clash = bc_models::Commodity::builder()
             .code("XAU")
             .symbol("$")
+            .decimals(2)
             .build();
         let err = svc
             .create(&clash)
@@ -550,6 +552,7 @@ mod tests {
         let aud = bc_models::Commodity::builder()
             .code("AUD")
             .symbol("A$")
+            .decimals(2)
             .build();
         let stored = svc.create(&aud).await.expect("create");
 
@@ -574,6 +577,7 @@ mod tests {
         let renamed = bc_models::Commodity::builder()
             .id(stored.id().clone())
             .code("NZD")
+            .decimals(2)
             .build();
         let err = svc
             .update(&renamed)
@@ -588,6 +592,7 @@ mod tests {
             .code("USD")
             .symbol("$")
             .aliases(vec!["US$".to_owned()])
+            .decimals(2)
             .build();
         let existing = vec![usd];
 
@@ -595,6 +600,7 @@ mod tests {
         let clash = Commodity::builder()
             .code("AUD")
             .aliases(vec!["$".to_owned()])
+            .decimals(2)
             .build();
         assert!(matches!(
             check_ambiguity(&existing, &clash),
@@ -602,7 +608,7 @@ mod tests {
         ));
 
         // code collides case-insensitively with existing code
-        let clash_code = Commodity::builder().code("usd").build();
+        let clash_code = Commodity::builder().code("usd").decimals(2).build();
         assert!(matches!(
             check_ambiguity(&existing, &clash_code),
             Err(BcError::MarkerConflict { .. })
@@ -613,6 +619,7 @@ mod tests {
             .code("NZD")
             .symbol("N$")
             .aliases(vec!["N$".to_owned()])
+            .decimals(2)
             .build();
         assert!(matches!(
             check_ambiguity(&[], &self_clash),
@@ -624,6 +631,7 @@ mod tests {
             .code("AUD")
             .symbol("A$")
             .aliases(vec!["AU$".to_owned()])
+            .decimals(2)
             .build();
         check_ambiguity(&existing, &ok).expect("no collision");
     }
@@ -632,12 +640,26 @@ mod tests {
     fn ambiguity_allows_code_equal_symbol() {
         // A ticker used as its own symbol (e.g. ETH/ETH) is unambiguous and must be
         // accepted — matching the UI's first_conflict and the shipped default.
-        let eth = Commodity::builder().code("ETH").symbol("ETH").build();
+        let eth = Commodity::builder()
+            .code("ETH")
+            .symbol("ETH")
+            .decimals(2)
+            .build();
         check_ambiguity(&[], &eth).expect("code equal to symbol is unambiguous");
 
         // But a symbol still cannot collide with a *different* existing commodity.
-        let existing = vec![Commodity::builder().code("USD").symbol("$").build()];
-        let clash = Commodity::builder().code("XAU").symbol("$").build();
+        let existing = vec![
+            Commodity::builder()
+                .code("USD")
+                .symbol("$")
+                .decimals(2)
+                .build(),
+        ];
+        let clash = Commodity::builder()
+            .code("XAU")
+            .symbol("$")
+            .decimals(2)
+            .build();
         assert!(matches!(
             check_ambiguity(&existing, &clash),
             Err(BcError::MarkerConflict { .. })
@@ -650,6 +672,7 @@ mod tests {
         let aud = bc_models::Commodity::builder()
             .code("AUD")
             .symbol("A$")
+            .decimals(2)
             .build();
         let stored = svc.create(&aud).await.expect("create");
 
@@ -699,6 +722,7 @@ mod tests {
         let jpy = bc_models::Commodity::builder()
             .code("JPY")
             .symbol("Y")
+            .decimals(2)
             .build();
         let stored = svc.create(&jpy).await.expect("create");
 
@@ -732,6 +756,7 @@ mod tests {
         let blank = bc_models::Commodity::builder()
             .code("   ")
             .symbol("$")
+            .decimals(2)
             .build();
         let blank_err = svc
             .create(&blank)
@@ -739,7 +764,11 @@ mod tests {
             .expect_err("blank code rejected on create");
         assert!(matches!(blank_err, BcError::EmptyCommodityCode));
 
-        let empty = bc_models::Commodity::builder().code("").symbol("$").build();
+        let empty = bc_models::Commodity::builder()
+            .code("")
+            .symbol("$")
+            .decimals(2)
+            .build();
         let empty_err = svc
             .create(&empty)
             .await
@@ -749,12 +778,14 @@ mod tests {
         let aud = bc_models::Commodity::builder()
             .code("AUD")
             .symbol("A$")
+            .decimals(2)
             .build();
         let stored = svc.create(&aud).await.expect("create");
 
         let renamed_blank = bc_models::Commodity::builder()
             .id(stored.id().clone())
             .code(" ")
+            .decimals(2)
             .build();
         let update_err = svc
             .update(&renamed_blank)
@@ -769,6 +800,7 @@ mod tests {
         let jpy = bc_models::Commodity::builder()
             .code("JPY")
             .symbol("Y")
+            .decimals(2)
             .build();
         let stored = svc.create(&jpy).await.expect("create");
 
@@ -796,7 +828,11 @@ mod tests {
 
     #[test]
     fn ambiguity_skips_same_id() {
-        let usd = Commodity::builder().code("USD").symbol("$").build();
+        let usd = Commodity::builder()
+            .code("USD")
+            .symbol("$")
+            .decimals(2)
+            .build();
         let existing = vec![usd.clone()];
         // Same id, re-registering its own markers — must not self-conflict.
         check_ambiguity(&existing, &usd).expect("same-id update must not self-conflict");
