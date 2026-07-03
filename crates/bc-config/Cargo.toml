@@ -11,6 +11,7 @@ repository.workspace   = true
 license.workspace      = true
 
 [dependencies]
+bc-ipc      = { workspace = true, optional = true }
 bc-models   = { workspace = true }
 config      = { workspace = true }
 directories = { workspace = true }
@@ -21,6 +22,10 @@ tracing     = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+
+[features]
+# Conversion from bc-config::Settings into bc-ipc::SettingsInfo (native/Tauri side only).
+ipc = ["dep:bc-ipc"]
 
 [lints]
 workspace = true
