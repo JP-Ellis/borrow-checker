@@ -8,6 +8,9 @@ use std::path::PathBuf;
 use bc_models::CommodityCode;
 use jiff::civil::Date;
 
+#[cfg(feature = "ipc")]
+mod ipc;
+
 /// Returns the user-local plugin directory.
 ///
 /// This is the XDG data home equivalent: `~/.local/share/borrow-checker/plugins/`
