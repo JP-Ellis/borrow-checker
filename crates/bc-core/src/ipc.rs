@@ -11,9 +11,15 @@
 //! bc_ipc::Dto` blocks, which the orphan rule permits because the source type
 //! is local to this crate. Conversions that genuinely need more than one
 //! argument (`bc_ipc::AuditEntry::from_event`,
-//! `bc_ipc::NativePeriodRow::from_native`) cannot be expressed as `From`, so
-//! they are exposed as extension traits instead; callers bring the trait into
-//! scope to use the named constructor.
+//! `bc_ipc::NativePeriodRow::from_native`, `bc_ipc::AccountNode::from_model`,
+//! `bc_ipc::Transaction::from_model_with_accounts`) cannot be expressed as
+//! `From`, so they are exposed as extension traits instead; callers bring the
+//! trait into scope to use the named constructor.
+//!
+//! Domain-walking presentation helpers (account-path building, tag resolution)
+//! live here rather than in `bc-ipc`, so that crate stays a thin serde contract
+//! carrying only basic scalar/enum/`Commodity` conversions behind its `models`
+//! feature.
 
 use rust_decimal::Decimal;
 
@@ -31,6 +37,10 @@ use crate::budget_tree::BudgetTreeSummary;
 /// [`bc_ipc::BcError::Validation`] so the UI can render a friendly message;
 /// `NotFound` maps to [`bc_ipc::BcError::NotFound`]; everything genuinely
 /// internal (database, IO, serialisation) becomes [`bc_ipc::BcError::Internal`].
+///
+/// `NotFound` carries only its inner payload — not the full `Display` string —
+/// because [`bc_ipc::BcError::NotFound`] already prepends its own `"not found:"`
+/// prefix; passing `e.to_string()` would duplicate it.
 impl From<crate::BcError> for bc_ipc::BcError {
     #[expect(
         clippy::wildcard_enum_match_arm,
@@ -40,7 +50,7 @@ impl From<crate::BcError> for bc_ipc::BcError {
         use crate::BcError as Core;
 
         match &e {
-            Core::NotFound(_) => bc_ipc::BcError::NotFound(e.to_string()),
+            Core::NotFound(id) => bc_ipc::BcError::NotFound(id.clone()),
             Core::InvalidInput(_)
             | Core::BadData(_)
             | Core::AlreadyArchived(_)
@@ -68,10 +78,12 @@ pub trait AuditEntryExt {
     ///
     /// A [`bc_ipc::AuditEntry`] with a short kind tag and a human-readable
     /// message.
+    #[must_use]
     fn from_event(ts: jiff::Timestamp, event: &Event) -> Self;
 }
 
 impl AuditEntryExt for bc_ipc::AuditEntry {
+    #[inline]
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "Event is #[non_exhaustive]; catch-all arm required for exhaustiveness against future variants"
@@ -269,10 +281,12 @@ pub trait NativePeriodRowExt {
     /// # Returns
     ///
     /// The equivalent IPC native period row.
+    #[must_use]
     fn from_native(status: &NativePeriodStatus, label: impl Into<String>, commodity: &str) -> Self;
 }
 
 impl NativePeriodRowExt for bc_ipc::NativePeriodRow {
+    #[inline]
     fn from_native(status: &NativePeriodStatus, label: impl Into<String>, commodity: &str) -> Self {
         let effective_target = status
             .effective_target
@@ -288,8 +302,190 @@ impl NativePeriodRowExt for bc_ipc::NativePeriodRow {
     }
 }
 
+// MARK: Account path helpers
+
+/// Builds a display path for an account by walking up the parent chain.
+///
+/// Returns a `" :: "`-separated path from the root ancestor down to the account
+/// (e.g. `"Assets :: Smart Access"`). Falls back to `account_id` if the account
+/// is not present in the map.
+///
+/// # Arguments
+///
+/// * `account_id` - ID string of the account to resolve.
+/// * `account_map` - Map from ID string to account reference.
+fn build_account_path(
+    account_id: &str,
+    account_map: &std::collections::HashMap<String, &bc_models::Account>,
+) -> String {
+    let mut parts = Vec::new();
+    let mut current = account_id.to_owned();
+    let mut visited = std::collections::HashSet::new();
+
+    loop {
+        if !visited.insert(current.clone()) {
+            break;
+        }
+        let Some(account) = account_map.get(&current) else {
+            break;
+        };
+        parts.push(account.name().to_owned());
+        match account.parent_id() {
+            Some(parent) => current = parent.to_string(),
+            None => break,
+        }
+    }
+
+    parts.reverse();
+    if parts.is_empty() {
+        account_id.to_owned()
+    } else {
+        parts.join(" :: ")
+    }
+}
+
+/// Resolves a slice of tag IDs to colon-joined path strings, dropping any ID that
+/// is absent from `forest`. Order is preserved; duplicates by path are removed.
+///
+/// # Arguments
+///
+/// * `forest` - The loaded tag hierarchy.
+/// * `ids` - The tag IDs to resolve.
+fn resolve_tag_paths(forest: &bc_models::TagForest, ids: &[bc_models::TagId]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    ids.iter()
+        .filter_map(|id| forest.path_of(id).map(|p| p.to_string()))
+        .filter(|path| seen.insert(path.clone()))
+        .collect()
+}
+
+// MARK: Account nodes
+
+/// Extension trait building a [`bc_ipc::AccountNode`] from a domain account.
+pub trait AccountNodeExt {
+    /// Builds an [`bc_ipc::AccountNode`] from a domain account with a
+    /// pre-computed balance, resolving tag IDs to display paths via `forest`.
+    ///
+    /// The balance is supplied by the caller (typically fetched in a separate
+    /// batch query) rather than computed here.
+    ///
+    /// # Arguments
+    ///
+    /// * `account` - The account to convert.
+    /// * `forest` - The loaded tag hierarchy used to resolve account tag IDs to paths.
+    /// * `balance` - The pre-computed balance for this account.
+    ///
+    /// # Returns
+    ///
+    /// The equivalent IPC account node.
+    #[must_use]
+    fn from_model(
+        account: &bc_models::Account,
+        forest: &bc_models::TagForest,
+        balance: Option<bc_ipc::Amount>,
+    ) -> Self;
+}
+
+impl AccountNodeExt for bc_ipc::AccountNode {
+    #[inline]
+    fn from_model(
+        account: &bc_models::Account,
+        forest: &bc_models::TagForest,
+        balance: Option<bc_ipc::Amount>,
+    ) -> Self {
+        Self::new(
+            account.id().to_string(),
+            account.name(),
+            None::<&str>,
+            balance,
+            account.parent_id().map(ToString::to_string),
+            account.account_type().into(),
+            resolve_tag_paths(forest, account.tag_ids()),
+        )
+    }
+}
+
+// MARK: Transactions
+
+/// Extension trait building a [`bc_ipc::Transaction`] from a domain transaction.
+pub trait TransactionExt {
+    /// Builds a [`bc_ipc::Transaction`] from a domain transaction, resolving
+    /// posting account names from `account_map` and tag IDs to paths via
+    /// `forest`.
+    ///
+    /// The effective tags for each posting are the union of the transaction's
+    /// own tags and the posting's own tags, deduplicated by resolved path.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - The transaction to convert.
+    /// * `account_map` - Map from account ID string to account reference.
+    /// * `forest` - The loaded tag hierarchy used to resolve tag IDs to paths.
+    ///
+    /// # Returns
+    ///
+    /// The equivalent IPC transaction.
+    #[must_use]
+    fn from_model_with_accounts(
+        tx: &bc_models::Transaction,
+        account_map: &std::collections::HashMap<String, &bc_models::Account>,
+        forest: &bc_models::TagForest,
+    ) -> Self;
+}
+
+impl TransactionExt for bc_ipc::Transaction {
+    #[inline]
+    fn from_model_with_accounts(
+        tx: &bc_models::Transaction,
+        account_map: &std::collections::HashMap<String, &bc_models::Account>,
+        forest: &bc_models::TagForest,
+    ) -> Self {
+        let tx_tag_ids = tx.tag_ids();
+        let postings = tx
+            .postings()
+            .iter()
+            .map(|p| {
+                let account_id = p.account_id().to_string();
+                let account_name = build_account_path(&account_id, account_map);
+                let amount = p.amount().map(bc_ipc::Amount::from);
+                bc_ipc::Posting::new(
+                    p.id().to_string(),
+                    bc_ipc::AccountRef::new(account_id, account_name),
+                    amount,
+                    p.note(),
+                    resolve_tag_paths(forest, &tx.effective_tag_ids(p)),
+                    p.spread_from(),
+                    p.spread_until(),
+                )
+            })
+            .collect();
+
+        let extra_dates = tx
+            .extra_dates()
+            .iter()
+            .map(|(label, date)| (label.clone(), *date))
+            .collect();
+
+        Self::new(
+            tx.id().to_string(),
+            tx.date(),
+            tx.payee().unwrap_or_default(),
+            tx.description(),
+            tx.note(),
+            extra_dates,
+            tx.reconciliation().into(),
+            resolve_tag_paths(forest, tx_tag_ids),
+            postings,
+            vec![],
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use jiff::Timestamp;
     use pretty_assertions::assert_eq;
 
     use crate::budget_tree::BudgetTreeSummary;
@@ -346,34 +542,103 @@ mod tests {
     }
 
     #[test]
-    fn core_not_found_maps_to_not_found() {
+    fn core_not_found_carries_bare_id_without_double_prefix() {
         let err = crate::BcError::NotFound("txn-001".to_owned());
-        assert!(matches!(
-            bc_ipc::BcError::from(err),
-            bc_ipc::BcError::NotFound(_)
-        ));
+        let mapped = bc_ipc::BcError::from(err);
+        // The payload is the bare id — the ipc `Display` adds the sole
+        // `"not found:"` prefix, so the rendered string must not repeat it.
+        assert!(matches!(&mapped, bc_ipc::BcError::NotFound(id) if id == "txn-001"));
+        assert_eq!(mapped.to_string(), "not found: txn-001");
     }
 
     #[test]
-    fn marker_conflict_maps_to_validation() {
+    fn marker_conflict_maps_to_validation_with_message() {
         let err = crate::BcError::MarkerConflict {
             marker: "$".to_owned(),
             existing: "USD".to_owned(),
         };
         let mapped = bc_ipc::BcError::from(err);
         assert!(
-            matches!(mapped, bc_ipc::BcError::Validation(_)),
-            "MarkerConflict must surface as Validation, got {mapped:?}"
+            matches!(&mapped, bc_ipc::BcError::Validation(msg)
+                if msg == "marker conflict: '$' already maps to USD"),
+            "MarkerConflict must surface as Validation with variant wording, got {mapped:?}"
         );
     }
 
     #[test]
-    fn commodity_in_use_maps_to_validation() {
+    fn commodity_in_use_maps_to_validation_with_message() {
         let err = crate::BcError::CommodityInUse("used by 3 transactions".to_owned());
         let mapped = bc_ipc::BcError::from(err);
         assert!(
-            matches!(mapped, bc_ipc::BcError::Validation(_)),
-            "CommodityInUse must surface as Validation, got {mapped:?}"
+            matches!(&mapped, bc_ipc::BcError::Validation(msg)
+                if msg == "commodity in use: used by 3 transactions"),
+            "CommodityInUse must surface as Validation with variant wording, got {mapped:?}"
         );
+    }
+
+    #[test]
+    fn resolve_tag_paths_renders_hierarchy_and_dedupes() {
+        let person = bc_models::TagId::new();
+        let josh = bc_models::TagId::new();
+        let forest = bc_models::TagForest::new(vec![
+            bc_models::Tag::builder()
+                .id(person.clone())
+                .name("person")
+                .created_at(Timestamp::now())
+                .build(),
+            bc_models::Tag::builder()
+                .id(josh.clone())
+                .name("josh")
+                .parent_id(person.clone())
+                .created_at(Timestamp::now())
+                .build(),
+        ]);
+        let paths =
+            super::resolve_tag_paths(&forest, &[josh.clone(), josh.clone(), person.clone()]);
+        assert_eq!(paths, vec!["person:josh".to_owned(), "person".to_owned()]);
+    }
+
+    #[test]
+    fn build_account_path_returns_name_for_root_account() {
+        let account = bc_models::Account::builder()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .build();
+
+        let account_id = account.id().to_string();
+        let map = HashMap::from([(account_id.clone(), &account)]);
+
+        assert_eq!(super::build_account_path(&account_id, &map), "Checking");
+    }
+
+    #[test]
+    fn build_account_path_returns_hierarchical_path() {
+        let parent = bc_models::Account::builder()
+            .name("Assets")
+            .account_type(bc_models::AccountType::Asset)
+            .build();
+
+        let child = bc_models::Account::builder()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .parent_id(parent.id().clone())
+            .build();
+
+        let map = HashMap::from([
+            (parent.id().to_string(), &parent),
+            (child.id().to_string(), &child),
+        ]);
+
+        assert_eq!(
+            super::build_account_path(&child.id().to_string(), &map),
+            "Assets :: Checking"
+        );
+    }
+
+    #[test]
+    fn build_account_path_falls_back_to_id_when_not_found() {
+        let map: HashMap<String, &bc_models::Account> = HashMap::new();
+        let fake_id = "account_00000000000000000000000000";
+        assert_eq!(super::build_account_path(fake_id, &map), fake_id);
     }
 }
