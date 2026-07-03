@@ -152,6 +152,8 @@ fn sample_transactions() -> Vec<Transaction> {
 pub fn AccountFullQa() -> impl IntoView {
     let selected_id: RwSignal<Option<String>> = RwSignal::new(Some("cb-smart-access".to_owned()));
     let (collapsed, _) = signal(false);
+    let period = RwSignal::new(bc_ipc::Period::Monthly);
+    let window_start = RwSignal::new(jiff::Zoned::now().date());
 
     view! {
         <div class=style::layout>
@@ -161,10 +163,16 @@ pub fn AccountFullQa() -> impl IntoView {
                 collapsed=collapsed
             />
             <div class=style::content>
-                <AccountDashboard node=smart_access_node() />
+                <AccountDashboard
+                    node=smart_access_node()
+                    period_window=period.read_only().into()
+                    window_start=window_start.read_only().into()
+                />
                 <TransactionRegister
                     transactions=Signal::derive(sample_transactions)
                     viewing_account_id="cb-smart-access"
+                    period=period
+                    window_start=window_start
                 />
             </div>
         </div>

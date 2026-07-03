@@ -76,6 +76,10 @@ pub fn TransactionRegister(
     /// All selectable accounts for the per-row recategorise picker.
     #[prop(optional)]
     accounts: Vec<AccountRef>,
+    /// Page-level period granularity (shared with the dashboard).
+    period: RwSignal<bc_ipc::Period>,
+    /// Page-level display-window start.
+    window_start: RwSignal<jiff::civil::Date>,
 ) -> impl IntoView {
     let accounts = StoredValue::new(accounts);
     let instance = REGISTER_INSTANCE.fetch_add(1, Ordering::Relaxed);
@@ -155,6 +159,11 @@ pub fn TransactionRegister(
             aria-label="transaction register"
         >
             <div class=style::header>
+                <crate::components::period_nav::PeriodNav
+                    period=period
+                    window_start=window_start
+                    compact=true
+                />
                 <span class=style::reg_title>
                     "register" <span class=style::bracket>"["</span>
                     <span class=style::count>{move || filtered.get().len().to_string()}</span>

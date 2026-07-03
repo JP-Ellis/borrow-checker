@@ -83,16 +83,49 @@ pub fn Accounts() -> impl IntoView {
         bc_ipc::client::list_accounts()
     });
 
-    // Re-fetches whenever the selected account or data_version changes.
+    // Page-level period/window state, shared with TransactionRegister
+    // (Task 10) and AccountDashboard (Task 11).
+    let display_period = RwSignal::new(bc_ipc::Period::Monthly);
+    let window_start = RwSignal::new({
+        let today = jiff::Zoned::now().date();
+        crate::components::period_nav::window_containing(&bc_ipc::Period::Monthly, today)
+    });
+    let has_seeded = RwSignal::new(false);
+
+    // Re-fetches whenever the selected account, data_version, or the
+    // displayed window changes.
     // Note: `LocalResource::new` requires `Fn() -> Future`, which async closures
     // (`async move ||`) do not satisfy when they capture from the environment;
     // the `move || async move {}` form is required here.
     let transactions_resource = LocalResource::new(move || async move {
         data_version.get();
+        let period = display_period.get();
+        let start = window_start.get();
+        let until = crate::components::period_nav::period_end(&period, start);
         match selected_id.get() {
-            Some(ref id) => bc_ipc::client::list_transactions(id).await,
+            Some(ref id) => bc_ipc::client::list_transactions(id, start, until).await,
             None => Ok(vec![]),
         }
+    });
+
+    // Seed the window once from the account's most recent activity, the
+    // first time an account becomes selected. Subsequent account switches
+    // do not re-seed.
+    Effect::new(move |_| {
+        if has_seeded.get() {
+            return;
+        }
+        let Some(id) = selected_id.get() else { return };
+        let period = display_period.get_untracked();
+        leptos::task::spawn_local(async move {
+            if let Ok(latest) = bc_ipc::client::account_latest_activity(&id).await {
+                let anchor = latest.unwrap_or_else(|| jiff::Zoned::now().date());
+                window_start.set(crate::components::period_nav::window_containing(
+                    &period, anchor,
+                ));
+                has_seeded.set(true);
+            }
+        });
     });
 
     // Derive a flat signal from the resource for TransactionRegister.
@@ -238,6 +271,8 @@ pub fn Accounts() -> impl IntoView {
                                 node=node.clone()
                                 data_version=data_version.read_only()
                                 on_add_tx=Callback::new(move |()| open_add_tx())
+                                period_window=display_period.read_only().into()
+                                window_start=window_start.read_only().into()
                             />
 
                             {move || {
@@ -277,6 +312,8 @@ pub fn Accounts() -> impl IntoView {
                                 transactions=transactions_signal
                                 viewing_account_id=node_id_register
                                 accounts=account_refs
+                                period=display_period
+                                window_start=window_start
                                 on_change=Callback::new(move |()| {
                                     data_version.update(|v| *v = v.wrapping_add(1));
                                 })

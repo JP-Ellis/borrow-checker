@@ -9,6 +9,9 @@
   padding: var(--bc-space-4) var(--bc-space-7);
   border-bottom: 1px solid var(--bc-border);
   background: var(--bc-surface);
+  position: sticky;
+  top: 40px; /* below the 40px StickyAccountBar */
+  z-index: 1; /* under the account bar's --bc-z-raised */
 }
 
 .reg_title {
