@@ -6,11 +6,16 @@
  * button; a correctly-marked amount that leaves the transaction balanced or
  * inferred must enable it.
  *
- * The seeded Coles/Groceries transaction has two postings:
- *   - Groceries  +AUD 110.00
- *   - CreditCard −AUD 110.00
+ * The seeded current-month Supermarket/Groceries transaction has two postings:
+ *   - Groceries  +AUD 95.00
+ *   - Checking   −AUD 95.00
  *
- * `from_posting` seeds the working buffer as "<code> <value>" (e.g. "AUD 110"),
+ * It is retargeted from the seed's historical "Coles" transactions because the
+ * register is now scoped to the account's auto-jumped current period, and
+ * "Coles" only appears in past months — "Supermarket" is the seed's
+ * current-month Groceries transaction and is always visible on load.
+ *
+ * `from_posting` seeds the working buffer as "<code> <value>" (e.g. "AUD 95"),
  * so both postings already carry markers on open.
  */
 import { browser, $$, $ }    from '@wdio/globals';
@@ -54,22 +59,23 @@ async function openGroceriesAccount(): Promise<void> {
 }
 
 /**
- * Expand the first "Coles" transaction row and wait for the status pill.
+ * Expand the current-month "Supermarket" transaction row and wait for the
+ * status pill.
  */
-async function expandColesRow(): Promise<void> {
+async function expandSupermarketRow(): Promise<void> {
     const register = await $('[aria-label="transaction register"]');
 
-    const colesSpan = await register.$('span=Coles');
-    await colesSpan.waitForDisplayed({ timeoutMsg: '"Coles" row did not appear in the Groceries register',
+    const supermarketSpan = await register.$('span=Supermarket');
+    await supermarketSpan.waitForDisplayed({ timeoutMsg: '"Supermarket" row did not appear in the Groceries register',
     });
 
     await browser.execute((el: Element) => {
         const row = el.closest('[role="button"]');
         if (row instanceof HTMLElement) row.click();
-    }, await colesSpan.getElement() as unknown as Element);
+    }, await supermarketSpan.getElement() as unknown as Element);
 
     const pill = await $('[data-testid="status-pill"]');
-    await pill.waitForDisplayed({ timeoutMsg: 'Status pill did not appear after expanding the Coles row',
+    await pill.waitForDisplayed({ timeoutMsg: 'Status pill did not appear after expanding the Supermarket row',
     });
 
     /* Give the currencies LocalResource time to resolve before we inspect
@@ -105,7 +111,7 @@ async function setPostingAmount(inputIndex: number, value: string): Promise<void
 describe('Accounts — currency-marker validation on posting amounts', () => {
     it('blocks Save when the amount has no currency marker', async () => {
         await openGroceriesAccount();
-        await expandColesRow();
+        await expandSupermarketRow();
 
         /* Type a bare number — missing the required currency prefix. */
         await setPostingAmount(0, '999');
@@ -125,7 +131,7 @@ describe('Accounts — currency-marker validation on posting amounts', () => {
 
     it('blocks Save when the amount uses an unknown currency marker', async () => {
         await openGroceriesAccount();
-        await expandColesRow();
+        await expandSupermarketRow();
 
         /* "XYZ" is not a known commodity code, symbol, or alias. */
         await setPostingAmount(0, 'XYZ 999');
@@ -143,11 +149,11 @@ describe('Accounts — currency-marker validation on posting amounts', () => {
 
     it('enables Save when a valid currency marker produces an inferred balance', async () => {
         await openGroceriesAccount();
-        await expandColesRow();
+        await expandSupermarketRow();
 
         /*
          * Clear the second posting's amount so it becomes elided (inferred).
-         * The first posting still carries "AUD 110.00" from the seed, so
+         * The first posting still carries "AUD 95.00" from the seed, so
          * derive_balance will return BalanceState::Inferred which enables Save.
          */
         await setPostingAmount(1, '');
