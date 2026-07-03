@@ -163,6 +163,43 @@ describe('Settings — Currencies', () => {
         expect(rows.map(r => r.code)).toContain('NZD');
     });
 
+    it('reverts an edited field to its original value on Discard', async () => {
+        await openSettingsCurrencies();
+
+        // Edit a saved currency's symbol, then Discard — the input's displayed
+        // value must visibly revert (regression guard for the non-reactive,
+        // keyed-<For> field binding: Discard resets the model but the row is not
+        // re-created, so the value binding must derive from the shared signal).
+        const rows = await currencyRows();
+        const usdRow = rows.find(r => r.code === 'USD');
+        if (!usdRow) throw new Error('USD row not found');
+
+        const symbolInput = await usdRow.row.$('[data-testid="currency-symbol"]');
+        const original = await symbolInput.getValue();
+
+        await symbolInput.setValue('ZZZ');
+        expect(await symbolInput.getValue()).toBe('ZZZ');
+
+        // Save bar must be showing (dirty) before discarding.
+        await browser.waitUntil(
+            async () => (await saveBarHeight()) > 0,
+            { timeoutMsg: 'Save bar did not appear after editing a symbol' },
+        );
+
+        const discardBtn = await $('[data-testid="currency-discard"]');
+        await discardBtn.click();
+
+        // The displayed value must revert to the original, and the bar retract.
+        await browser.waitUntil(
+            async () => (await symbolInput.getValue()) === original,
+            { timeoutMsg: 'Symbol input did not revert to its original value on Discard' },
+        );
+        await browser.waitUntil(
+            async () => (await saveBarHeight()) === 0,
+            { timeoutMsg: 'Save bar did not retract after discarding' },
+        );
+    });
+
     it('disables Save and shows the conflict message on an alias collision', async () => {
         await openSettingsCurrencies();
 
