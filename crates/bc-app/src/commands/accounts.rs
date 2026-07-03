@@ -12,7 +12,9 @@
     reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
 )]
 
+use bc_core::ipc::AccountNodeExt as _;
 use bc_core::ipc::AuditEntryExt as _;
+use bc_core::ipc::TransactionExt as _;
 use tauri::State;
 
 use crate::AppState;

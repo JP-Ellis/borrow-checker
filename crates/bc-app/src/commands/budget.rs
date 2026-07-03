@@ -9,6 +9,7 @@
 )]
 
 use bc_core::ipc::NativePeriodRowExt as _;
+use bc_core::ipc::TransactionExt as _;
 use tauri::State;
 
 use crate::AppState;

@@ -29,7 +29,7 @@ rust_decimal_macros = { workspace = true }
 
 [features]
 # Conversions from bc-core types into bc-ipc DTOs (native/Tauri side only).
-ipc = ["bc-ipc/models", "dep:bc-ipc"]
+ipc = ["bc-ipc/models"]
 
 [lints]
 workspace = true
