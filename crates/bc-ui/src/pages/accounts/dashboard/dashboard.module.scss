@@ -175,6 +175,26 @@
   color: var(--bc-comment);
 }
 
+.balance_sub {
+  display: flex;
+  gap: var(--bc-space-4);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  margin-top: var(--bc-space-1);
+}
+
+.opening {
+  color: var(--bc-ink-mute);
+}
+
+.net_good {
+  color: var(--bc-good);
+}
+
+.net_bad {
+  color: var(--bc-bad);
+}
+
 .stat_row {
   margin-bottom: var(--bc-space-6);
 }
