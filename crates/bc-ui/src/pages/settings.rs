@@ -172,15 +172,18 @@ pub fn Settings() -> impl IntoView {
                 style::side_row.to_owned()
             }
         };
+        let aria_current = move || section.get() == target;
         view! {
-            <a
+            <button
+                type="button"
                 class=cls
+                aria-current=move || aria_current().then_some("page")
                 data-testid=(target == SettingsSection::Currencies)
                     .then_some("settings-nav-currencies")
                 on:click=move |_| section.set(target)
             >
                 {label}
-            </a>
+            </button>
         }
     };
 
