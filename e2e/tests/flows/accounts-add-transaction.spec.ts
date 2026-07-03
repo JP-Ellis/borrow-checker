@@ -135,14 +135,11 @@ describe('Accounts — add transaction', () => {
         await clickAddTransactionButton();
         await waitForForm();
 
-        // Fill in date and payee.
-        // setValue on type="date" sends chars into native date-picker slots on
-        // Linux/WebKit and produces garbage; set .value via JS instead.
-        await browser.execute((val: string) => {
-            const el = document.getElementById('atf-date') as HTMLInputElement;
-            el.value = val;
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-        }, '2026-06-01');
+        // Leave the date field at its default (today, per js_sys::Date) so the
+        // transaction lands in the account's auto-jumped current-period window.
+        const expectedDate: string = await browser.execute(
+            () => new Date().toISOString().slice(0, 10),
+        );
         await $('#atf-payee').setValue('E2E Test Payee');
 
         // Primary posting amount (Checking account debited).
@@ -162,7 +159,7 @@ describe('Accounts — add transaction', () => {
         // ── DB assertions ─────────────────────────────────────────────────
         const tx = dbQueryTransaction('E2E Test Payee');
         wdioExpect(tx).toBeDefined();
-        wdioExpect(tx!.date).toBe('2026-06-01');
+        wdioExpect(tx!.date).toBe(expectedDate);
         wdioExpect(tx!.reconciliation).toBe('flagged');
 
         const postings = dbQueryPostings(tx!.id);
@@ -202,11 +199,11 @@ describe('Accounts — add transaction', () => {
 
         await waitForForm();
 
-        await browser.execute((val: string) => {
-            const el = document.getElementById('atf-date') as HTMLInputElement;
-            el.value = val;
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-        }, '2026-06-02');
+        // Leave the date field at its default (today) so the split transaction
+        // lands in the account's auto-jumped current-period window.
+        const expectedDate: string = await browser.execute(
+            () => new Date().toISOString().slice(0, 10),
+        );
         await $('#atf-payee').setValue('E2E Split Payee');
 
         // Primary posting: Checking debited -50.00.
@@ -243,7 +240,7 @@ describe('Accounts — add transaction', () => {
         // ── DB assertions ─────────────────────────────────────────────────
         const tx = dbQueryTransaction('E2E Split Payee');
         wdioExpect(tx).toBeDefined();
-        wdioExpect(tx!.date).toBe('2026-06-02');
+        wdioExpect(tx!.date).toBe(expectedDate);
 
         const postings = dbQueryPostings(tx!.id);
         // A split transaction has three postings: one primary + two offsets.
