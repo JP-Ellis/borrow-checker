@@ -90,65 +90,6 @@ pub struct AccountNode {
     pub tags: Vec<String>,
 }
 
-// MARK: Account path helpers
-
-/// Builds a display path for an account by walking up the parent chain.
-///
-/// Returns a `" :: "`-separated path from the root ancestor down to the account
-/// (e.g. `"Assets :: Smart Access"`). Falls back to `account_id` if the account
-/// is not present in the map.
-///
-/// # Arguments
-///
-/// * `account_id` - ID string of the account to resolve.
-/// * `account_map` - Map from ID string to account reference.
-#[cfg(feature = "models")]
-pub fn build_account_path(
-    account_id: &str,
-    account_map: &std::collections::HashMap<String, &bc_models::Account>,
-) -> String {
-    let mut parts = Vec::new();
-    let mut current = account_id.to_owned();
-    let mut visited = std::collections::HashSet::new();
-
-    loop {
-        if !visited.insert(current.clone()) {
-            break;
-        }
-        let Some(account) = account_map.get(&current) else {
-            break;
-        };
-        parts.push(account.name().to_owned());
-        match account.parent_id() {
-            Some(parent) => current = parent.to_string(),
-            None => break,
-        }
-    }
-
-    parts.reverse();
-    if parts.is_empty() {
-        account_id.to_owned()
-    } else {
-        parts.join(" :: ")
-    }
-}
-
-/// Resolves a slice of tag IDs to colon-joined path strings, dropping any ID that
-/// is absent from `forest`. Order is preserved; duplicates by path are removed.
-///
-/// # Arguments
-///
-/// * `forest` - The loaded tag hierarchy.
-/// * `ids` - The tag IDs to resolve.
-#[cfg(feature = "models")]
-pub fn resolve_tag_paths(forest: &bc_models::TagForest, ids: &[bc_models::TagId]) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    ids.iter()
-        .filter_map(|id| forest.path_of(id).map(|p| p.to_string()))
-        .filter(|path| seen.insert(path.clone()))
-        .collect()
-}
-
 impl AccountNode {
     /// Creates a new [`AccountNode`].
     ///
@@ -181,36 +122,6 @@ impl AccountNode {
             account_type,
             tags,
         }
-    }
-
-    /// Builds an [`AccountNode`] from a domain account with a pre-computed
-    /// balance, resolving tag IDs to display paths via `forest`.
-    ///
-    /// The balance is supplied by the caller (typically fetched in a separate
-    /// batch query) rather than computed here.
-    ///
-    /// # Arguments
-    ///
-    /// * `account` - The account to convert.
-    /// * `forest` - The loaded tag hierarchy used to resolve account tag IDs to paths.
-    /// * `balance` - The pre-computed balance for this account.
-    #[cfg(feature = "models")]
-    #[must_use]
-    #[inline]
-    pub fn from_model(
-        account: &bc_models::Account,
-        forest: &bc_models::TagForest,
-        balance: Option<Amount>,
-    ) -> Self {
-        Self::new(
-            account.id().to_string(),
-            account.name(),
-            None::<&str>,
-            balance,
-            account.parent_id().map(ToString::to_string),
-            account.account_type().into(),
-            resolve_tag_paths(forest, account.tag_ids()),
-        )
     }
 }
 
@@ -482,65 +393,6 @@ impl Transaction {
             postings,
             audit,
         }
-    }
-
-    /// Builds a [`Transaction`] from a domain transaction, resolving posting
-    /// account names from `account_map` and tag IDs to paths via `forest`.
-    ///
-    /// The effective tags for each posting are the union of the transaction's own
-    /// tags and the posting's own tags, deduplicated by resolved path.
-    ///
-    /// # Arguments
-    ///
-    /// * `tx` - The transaction to convert.
-    /// * `account_map` - Map from account ID string to account reference.
-    /// * `forest` - The loaded tag hierarchy used to resolve tag IDs to paths.
-    #[cfg(feature = "models")]
-    #[must_use]
-    #[inline]
-    pub fn from_model_with_accounts(
-        tx: &bc_models::Transaction,
-        account_map: &std::collections::HashMap<String, &bc_models::Account>,
-        forest: &bc_models::TagForest,
-    ) -> Self {
-        let tx_tag_ids = tx.tag_ids();
-        let postings = tx
-            .postings()
-            .iter()
-            .map(|p| {
-                let account_id = p.account_id().to_string();
-                let account_name = build_account_path(&account_id, account_map);
-                let amount = p.amount().map(Amount::from);
-                Posting::new(
-                    p.id().to_string(),
-                    AccountRef::new(account_id, account_name),
-                    amount,
-                    p.note(),
-                    resolve_tag_paths(forest, &tx.effective_tag_ids(p)),
-                    p.spread_from(),
-                    p.spread_until(),
-                )
-            })
-            .collect();
-
-        let extra_dates = tx
-            .extra_dates()
-            .iter()
-            .map(|(label, date)| (label.clone(), *date))
-            .collect();
-
-        Self::new(
-            tx.id().to_string(),
-            tx.date(),
-            tx.payee().unwrap_or_default(),
-            tx.description(),
-            tx.note(),
-            extra_dates,
-            tx.reconciliation().into(),
-            resolve_tag_paths(forest, tx_tag_ids),
-            postings,
-            vec![],
-        )
     }
 }
 
@@ -1346,9 +1198,6 @@ mod tests {
 #[cfg(test)]
 #[cfg(feature = "models")]
 mod models_tests {
-    use std::collections::HashMap;
-
-    use jiff::Timestamp;
     use pretty_assertions::assert_eq;
 
     use super::Period;
@@ -1365,71 +1214,5 @@ mod models_tests {
             }),
             Period::Daily
         );
-    }
-
-    #[test]
-    fn resolve_tag_paths_renders_hierarchy_and_dedupes() {
-        let person = bc_models::TagId::new();
-        let josh = bc_models::TagId::new();
-        let forest = bc_models::TagForest::new(vec![
-            bc_models::Tag::builder()
-                .id(person.clone())
-                .name("person")
-                .created_at(Timestamp::now())
-                .build(),
-            bc_models::Tag::builder()
-                .id(josh.clone())
-                .name("josh")
-                .parent_id(person.clone())
-                .created_at(Timestamp::now())
-                .build(),
-        ]);
-        let paths =
-            super::resolve_tag_paths(&forest, &[josh.clone(), josh.clone(), person.clone()]);
-        assert_eq!(paths, vec!["person:josh".to_owned(), "person".to_owned()]);
-    }
-
-    #[test]
-    fn build_account_path_returns_name_for_root_account() {
-        let account = bc_models::Account::builder()
-            .name("Checking")
-            .account_type(bc_models::AccountType::Asset)
-            .build();
-
-        let account_id = account.id().to_string();
-        let map = HashMap::from([(account_id.clone(), &account)]);
-
-        assert_eq!(super::build_account_path(&account_id, &map), "Checking");
-    }
-
-    #[test]
-    fn build_account_path_returns_hierarchical_path() {
-        let parent = bc_models::Account::builder()
-            .name("Assets")
-            .account_type(bc_models::AccountType::Asset)
-            .build();
-
-        let child = bc_models::Account::builder()
-            .name("Checking")
-            .account_type(bc_models::AccountType::Asset)
-            .parent_id(parent.id().clone())
-            .build();
-
-        let map = HashMap::from([
-            (parent.id().to_string(), &parent),
-            (child.id().to_string(), &child),
-        ]);
-
-        assert_eq!(
-            super::build_account_path(&child.id().to_string(), &map),
-            "Assets :: Checking"
-        );
-    }
-
-    #[test]
-    fn build_account_path_falls_back_to_id_when_not_found() {
-        let map: HashMap<String, &bc_models::Account> = HashMap::new();
-        let fake_id = "account_00000000000000000000000000";
-        assert_eq!(super::build_account_path(fake_id, &map), fake_id);
     }
 }
