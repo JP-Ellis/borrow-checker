@@ -989,10 +989,6 @@ impl Service {
     ///
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "loading transactions with postings, cost, and tags for a specific account inherently requires several queries and field mappings"
-    )]
     pub async fn list_for_account(
         &self,
         account_id: &AccountId,
@@ -1009,6 +1005,64 @@ impl Service {
         .fetch_all(&self.pool)
         .await?;
 
+        self.assemble_transactions(&account_id_str, tx_rows).await
+    }
+
+    /// Lists transactions involving `account_id` whose canonical date falls in the
+    /// half-open interval `[from, until)`, newest first.
+    ///
+    /// Filters strictly on `t.date` (no accrual-spread overlap).
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account to query.
+    /// * `from` - Inclusive lower bound on `t.date`.
+    /// * `until` - Exclusive upper bound on `t.date`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or data-parse failure.
+    pub async fn list_for_account_in_range(
+        &self,
+        account_id: &AccountId,
+        from: jiff::civil::Date,
+        until: jiff::civil::Date,
+    ) -> BcResult<impl Iterator<Item = Transaction>> {
+        let account_id_str = account_id.to_string();
+        let from_str = from.to_string();
+        let until_str = until.to_string();
+
+        let tx_rows: Vec<TxRow> = sqlx::query_as(
+            "SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
+                 FROM transactions t \
+                 WHERE t.date >= ? AND t.date < ? \
+                   AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
+                 ORDER BY t.date DESC",
+        )
+        .bind(&from_str)
+        .bind(&until_str)
+        .bind(&account_id_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        self.assemble_transactions(&account_id_str, tx_rows).await
+    }
+
+    /// Loads tx-tags, extra dates, and postings for `tx_rows` (all scoped to
+    /// `account_id_str`) and assembles the full [`Transaction`] values.
+    ///
+    /// Shared by [`Service::list_for_account`] and
+    /// [`Service::list_for_account_in_range`], which differ only in how
+    /// `tx_rows` is selected.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "loading transactions with postings, cost, and tags for a specific account inherently requires several queries and field mappings"
+    )]
+    async fn assemble_transactions(
+        &self,
+        account_id_str: &str,
+        tx_rows: Vec<TxRow>,
+    ) -> BcResult<impl Iterator<Item = Transaction> + use<>> {
         if tx_rows.is_empty() {
             return Ok(vec![].into_iter());
         }
@@ -1019,7 +1073,7 @@ impl Service {
              JOIN transactions t ON tt.transaction_id = t.id \
              WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
         )
-        .bind(&account_id_str)
+        .bind(account_id_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1038,7 +1092,7 @@ impl Service {
              JOIN transactions t ON td.transaction_id = t.id \
              WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
         )
-        .bind(&account_id_str)
+        .bind(account_id_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1062,7 +1116,7 @@ impl Service {
                  (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
              ORDER BY p.transaction_id, p.position ASC",
         )
-        .bind(&account_id_str)
+        .bind(account_id_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1073,7 +1127,7 @@ impl Service {
              WHERE p.transaction_id IN \
                  (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
         )
-        .bind(&account_id_str)
+        .bind(account_id_str)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2420,6 +2474,68 @@ mod tests {
         let ids: Vec<_> = txns.iter().map(Transaction::id).collect();
         assert!(ids.contains(&&id1));
         assert!(ids.contains(&&id2));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn list_for_account_in_range_is_half_open(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc_a = acct_svc
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create A should succeed");
+        let acc_b = acct_svc
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create B should succeed");
+
+        let svc = Service::new(pool.clone());
+
+        for d in [
+            date(2026, 5, 31),
+            date(2026, 6, 1),
+            date(2026, 6, 30),
+            date(2026, 7, 1),
+        ] {
+            let tx = Transaction::builder()
+                .id(bc_models::TransactionId::new())
+                .date(d)
+                .description("Test")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(acc_a.clone())
+                        .amount(Amount::new(dec!(100.00), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(acc_b.clone())
+                        .amount(Amount::new(dec!(-100.00), CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(Timestamp::now())
+                .build();
+            svc.create(tx).await.expect("create tx should succeed");
+        }
+
+        let from = date(2026, 6, 1);
+        let until = date(2026, 7, 1);
+        let dates: Vec<Date> = svc
+            .list_for_account_in_range(&acc_a, from, until)
+            .await
+            .expect("range query")
+            .map(|t| t.date())
+            .collect();
+
+        assert_eq!(dates, vec![date(2026, 6, 30), date(2026, 6, 1)]);
     }
 
     #[sqlx::test(migrations = "./migrations")]
