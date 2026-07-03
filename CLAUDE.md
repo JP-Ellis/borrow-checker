@@ -57,12 +57,19 @@ bc-models  ←─ referenced by everything
 bc-config  ←─ bc-core, bc-app
 bc-core    ←─ bc-app, bc-cli           (SQLite + event log)
 bc-ipc     ←─ bc-app (native side) + bc-ui (WASM side)
+bc-ipc     ─→ bc-models                (optional, `models` feature — native only)
 bc-plugins ←─ bc-app                   (Wasmtime host)
 bc-sdk     ←─ plugins/*                (compiled to wasm32-wasip2)
 bc-ui      ←─ bc-app via Tauri WebView (compiled to wasm32-unknown-unknown)
 ```
 
 `bc-models` defines all domain types (Account, Transaction, etc.) using a `define_id!` macro for typed ID newtypes. `bc-core` services own all business logic and talk to SQLite via `sqlx`. `bc-ipc` is the contract between Tauri commands (native) and Leptos (WASM) — keep it minimal and `serde`-serialisable.
+
+### `bc-ipc` conversions and the `models` feature
+
+DTO↔domain conversions live in the crate owning the non-IPC side, so they can be idiomatic `From`/`TryFrom` (the orphan rule forbids hosting them in `bc-app`). To keep the default (WASM) build of `bc-ipc` free of `bc-models`, the `bc-models`-facing impls are gated behind an optional `bc-ipc/models` feature; `bc-core`/`bc-config`/`bc-plugins` each gain an opt-in `ipc` feature for their own `From` impls into `bc-ipc`. `bc-ui` depends on `bc-ipc` with default features only, so the WASM bundle never pulls in `bc-models`.
+
+Keep only **basic** conversions (scalar/enum/`Commodity`↔DTO) inside `bc-ipc` behind `models`. Presentation logic that walks the domain (account-path building, tag resolution, `Transaction`/`AccountNode` assembly) belongs in `bc-core` as extension traits (e.g. `AccountNodeExt`, `TransactionExt`, `AuditEntryExt`) — `bc-ipc` stays a thin contract, and the dependency graph stays acyclic (all arrows point toward `bc-ipc`).
 
 ## Lints
 
