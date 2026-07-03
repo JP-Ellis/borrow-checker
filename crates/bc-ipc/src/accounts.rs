@@ -635,14 +635,22 @@ impl EditTransaction {
     }
 }
 
-/// Aggregate income and expense totals for a time window.
+/// Windowed account statistics for the dashboard.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct AccountStats {
-    /// Sum of positive postings (money entering the account).
+    /// In-window inflow (money entering the account).
     pub income: Amount,
-    /// Sum of negative postings, as a positive magnitude (money leaving the account).
+    /// In-window outflow, as a positive magnitude.
     pub expenses: Amount,
+    /// `income − expenses` (signed).
+    pub net: Amount,
+    /// Running balance at the window start.
+    pub opening_balance: Amount,
+    /// Running balance at the window end (period-end closing balance).
+    pub closing_balance: Amount,
+    /// Count of in-window postings.
+    pub tx_count: u32,
 }
 
 impl AccountStats {
@@ -650,12 +658,30 @@ impl AccountStats {
     ///
     /// # Arguments
     ///
-    /// * `income`   - Total inflow amount.
-    /// * `expenses` - Total outflow amount (positive magnitude).
+    /// * `income` - In-window inflow.
+    /// * `expenses` - In-window outflow magnitude.
+    /// * `net` - Signed net movement.
+    /// * `opening_balance` - Balance at window start.
+    /// * `closing_balance` - Balance at window end.
+    /// * `tx_count` - In-window posting count.
     #[must_use]
     #[inline]
-    pub fn new(income: Amount, expenses: Amount) -> Self {
-        Self { income, expenses }
+    pub fn new(
+        income: Amount,
+        expenses: Amount,
+        net: Amount,
+        opening_balance: Amount,
+        closing_balance: Amount,
+        tx_count: u32,
+    ) -> Self {
+        Self {
+            income,
+            expenses,
+            net,
+            opening_balance,
+            closing_balance,
+            tx_count,
+        }
     }
 }
 

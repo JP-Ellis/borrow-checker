@@ -18,8 +18,8 @@ pub const GET_ACCOUNT_STATS: &str = "get_account_stats";
 /// Command: get period-bucketed cash-flow data for a sparkline chart.
 pub const GET_ACCOUNT_SPARKLINE: &str = "get_account_sparkline";
 
-/// Command: get the count of non-voided postings for an account.
-pub const GET_POSTING_COUNT: &str = "get_posting_count";
+/// Command: get the most recent transaction date for an account.
+pub const ACCOUNT_LATEST_ACTIVITY: &str = "account_latest_activity";
 
 /// Command: list installed plugins.
 pub const LIST_PLUGINS: &str = "list_plugins";

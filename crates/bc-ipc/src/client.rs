@@ -48,6 +48,10 @@ struct NoArgs {}
 struct ListTransactionsArgs<'a> {
     /// The account ID to query transactions for.
     account_id: &'a str,
+    /// Start of the date range (inclusive).
+    date_from: jiff::civil::Date,
+    /// End of the date range (inclusive).
+    date_until: jiff::civil::Date,
 }
 
 /// Argument struct for [`create_transaction`]. Must match the Tauri command param name.
@@ -68,16 +72,24 @@ pub async fn list_accounts() -> Result<Vec<AccountNode>, BcError> {
         .await
 }
 
-/// Lists transactions for `account_id` from the backend.
+/// Lists transactions for `account_id` within `[date_from, date_until]` from the backend.
 ///
 /// # Errors
 ///
 /// Returns [`BcError::Internal`] if the Tauri invoke fails.
 #[inline]
-pub async fn list_transactions(account_id: &str) -> Result<Vec<Transaction>, BcError> {
+pub async fn list_transactions(
+    account_id: &str,
+    date_from: jiff::civil::Date,
+    date_until: jiff::civil::Date,
+) -> Result<Vec<Transaction>, BcError> {
     tauri_sys::core::invoke_result::<Vec<Transaction>, BcError>(
         commands::LIST_TRANSACTIONS,
-        ListTransactionsArgs { account_id },
+        ListTransactionsArgs {
+            account_id,
+            date_from,
+            date_until,
+        },
     )
     .await
 }
@@ -205,6 +217,10 @@ struct GetAccountStatsArgs<'a> {
     account_id: &'a str,
     /// Optional commodity code override.
     commodity: Option<&'a str>,
+    /// Start of the date range (inclusive).
+    date_from: jiff::civil::Date,
+    /// End of the date range (inclusive).
+    date_until: jiff::civil::Date,
 }
 
 /// Argument struct for [`get_account_sparkline`].
@@ -220,40 +236,48 @@ struct GetAccountSparklineArgs<'a> {
     period: crate::Period,
 }
 
-/// Gets income and expense totals for `account_id` over the last 30 days.
+/// Gets windowed income, expense, and balance stats for `account_id`.
 ///
 /// # Errors
 ///
 /// Returns [`BcError`] if the backend call fails.
 #[inline]
-pub async fn get_account_stats(account_id: &str) -> Result<crate::AccountStats, BcError> {
+pub async fn get_account_stats(
+    account_id: &str,
+    date_from: jiff::civil::Date,
+    date_until: jiff::civil::Date,
+) -> Result<crate::AccountStats, BcError> {
     tauri_sys::core::invoke_result::<crate::AccountStats, BcError>(
         commands::GET_ACCOUNT_STATS,
         GetAccountStatsArgs {
             account_id,
             commodity: None,
+            date_from,
+            date_until,
         },
     )
     .await
 }
 
-/// Argument struct for [`get_posting_count`].
+/// Argument struct for [`account_latest_activity`].
 #[derive(Serialize)]
-struct GetPostingCountArgs<'a> {
+struct AccountLatestActivityArgs<'a> {
     /// Account ID to query.
     account_id: &'a str,
 }
 
-/// Returns the number of non-voided postings for `account_id`.
+/// Returns the most recent transaction date for `account_id`, or `None`.
 ///
 /// # Errors
 ///
-/// Returns [`BcError`] if the backend call fails.
+/// Returns [`BcError::Internal`] if the Tauri invoke fails.
 #[inline]
-pub async fn get_posting_count(account_id: &str) -> Result<u32, BcError> {
-    tauri_sys::core::invoke_result::<u32, BcError>(
-        commands::GET_POSTING_COUNT,
-        GetPostingCountArgs { account_id },
+pub async fn account_latest_activity(
+    account_id: &str,
+) -> Result<Option<jiff::civil::Date>, BcError> {
+    tauri_sys::core::invoke_result::<Option<jiff::civil::Date>, BcError>(
+        commands::ACCOUNT_LATEST_ACTIVITY,
+        AccountLatestActivityArgs { account_id },
     )
     .await
 }
