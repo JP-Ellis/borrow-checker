@@ -7,46 +7,12 @@ use bc_ipc::Amount;
 use bc_ipc::BcError;
 use bc_ipc::BudgetSummary;
 use bc_ipc::BudgetTreeNode;
-use bc_ipc::Period;
 use leptos::prelude::*;
 use stylance::import_style;
 
 use crate::pages::budget::BudgetPageCtx;
-use crate::pages::budget::period_nav;
 
 import_style!(style, "header.module.scss");
-
-/// Parses a period granularity from the select element value attribute.
-fn parse_period(val: &str) -> Period {
-    match val {
-        "weekly" => Period::Weekly,
-        "fortnightly" => Period::Fortnightly,
-        "quarterly" => Period::Quarterly,
-        "financial_quarter" => Period::FinancialQuarter {
-            start_month: 7,
-            start_day: 1,
-        },
-        "financial_year" => Period::FinancialYear {
-            start_month: 7,
-            start_day: 1,
-        },
-        "calendar_year" => Period::CalendarYear,
-        _ => Period::Monthly,
-    }
-}
-
-/// Converts a [`Period`] back to the `<select>` option value string.
-fn period_to_str(p: &Period) -> &'static str {
-    match p {
-        Period::Weekly => "weekly",
-        Period::Fortnightly => "fortnightly",
-        Period::Quarterly => "quarterly",
-        Period::FinancialQuarter { .. } => "financial_quarter",
-        Period::FinancialYear { .. } => "financial_year",
-        Period::CalendarYear => "calendar_year",
-        Period::Monthly | Period::Daily | _ => "monthly",
-    }
-}
 
 /// Formats an optional [`Amount`] for display, returning `"–"` when `None`.
 ///
@@ -142,8 +108,6 @@ pub fn BudgetHeader(
     let window_start = ctx.window_start;
     let pct_mode = ctx.pct_mode;
 
-    let period_label = move || period_nav::window_label(&period.get(), window_start.get());
-
     let agg_label = move || {
         if pct_mode.get() {
             "% target"
@@ -163,43 +127,7 @@ pub fn BudgetHeader(
     view! {
         <div class=style::header>
             <div class=style::nav_row>
-                <button
-                    class=style::nav_btn
-                    on:click=move |_| {
-                        window_start
-                            .update(|ws| *ws = period_nav::step_window(&period.get(), *ws, false));
-                    }
-                >
-                    "\u{25C0}"
-                </button>
-                <span class=style::nav_label>{period_label}</span>
-                <button
-                    class=style::nav_btn
-                    on:click=move |_| {
-                        window_start
-                            .update(|ws| *ws = period_nav::step_window(&period.get(), *ws, true));
-                    }
-                >
-                    "\u{25B6}"
-                </button>
-
-                <select
-                    class=style::period_select
-                    prop:value=move || period_to_str(&period.get())
-                    on:change=move |ev| {
-                        let val = event_target_value(&ev);
-                        period.set(parse_period(&val));
-                    }
-                >
-                    <option value="weekly">"Weekly"</option>
-                    <option value="fortnightly">"Fortnightly"</option>
-                    <option value="monthly">"Monthly"</option>
-                    <option value="quarterly">"Quarterly"</option>
-                    <option value="financial_quarter">"Financial Quarter"</option>
-                    <option value="financial_year">"Financial Year"</option>
-                    <option value="calendar_year">"Calendar Year"</option>
-                </select>
-
+                <crate::components::period_nav::PeriodNav period=period window_start=window_start />
                 <button
                     class=agg_class
                     on:click=move |_| {

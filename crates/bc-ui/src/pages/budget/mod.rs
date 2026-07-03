@@ -10,7 +10,6 @@
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod components;
-pub mod period_nav;
 
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::BcError;

@@ -1,11 +1,25 @@
-//! Period navigation utilities for the budget page.
+//! Shared period navigation: window labels, stepping, and the period stepper component.
 //!
 //! Provides helpers for computing human-readable window labels and for
 //! stepping the display window forward or backward by one period.
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::mod_module_files,
+        reason = "mod.rs collocates the component source with its SCSS module file"
+    )
+)]
 
 use bc_ipc::Period;
 use jiff::Span;
 use jiff::civil::Date;
+#[cfg(target_arch = "wasm32")]
+use leptos::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use stylance::import_style;
+
+#[cfg(target_arch = "wasm32")]
+import_style!(style, "period_nav.module.scss");
 
 // MARK: Private helpers
 
@@ -61,7 +75,7 @@ fn period_start(period: &Period, date: Date) -> Date {
     clippy::expect_used,
     reason = "Date::new arguments are computed from valid calendar offsets; overflow is not possible"
 )]
-pub(crate) fn period_end(period: &Period, start: Date) -> Date {
+pub fn period_end(period: &Period, start: Date) -> Date {
     match period {
         Period::Weekly => start.saturating_add(Span::new().days(7_i64)),
         Period::Fortnightly => start.saturating_add(Span::new().days(14_i64)),
@@ -181,6 +195,34 @@ fn months_between(from: Date, to: Date) -> i32 {
 }
 
 // MARK: Public API
+
+/// Returns the start date of the period window that contains `date`.
+///
+/// This is the inverse anchor of [`window_label`]: given any date, it returns
+/// the first day of the enclosing window for `period`.
+///
+/// # Arguments
+///
+/// * `period` - The period granularity.
+/// * `date` - Any date within the desired window.
+///
+/// # Returns
+///
+/// The first day of the window containing `date`.
+///
+/// # Example
+///
+/// ```ignore
+/// use bc_ipc::Period;
+/// use jiff::civil::Date;
+/// let d = Date::constant(2026, 6, 15);
+/// assert_eq!(window_containing(&Period::Monthly, d), Date::constant(2026, 6, 1));
+/// ```
+#[must_use]
+#[inline]
+pub fn window_containing(period: &Period, date: jiff::civil::Date) -> jiff::civil::Date {
+    period_start(period, date)
+}
 
 /// Returns a human-readable label for the period window that begins at `start`.
 ///
@@ -400,6 +442,116 @@ fn fortnightly_label(start: Date, end_inclusive: Date) -> String {
         )
     }
 }
+
+// MARK: Component
+
+/// Parses a period granularity from a `<select>` value attribute.
+#[cfg(target_arch = "wasm32")]
+fn parse_period(val: &str) -> Period {
+    match val {
+        "weekly" => Period::Weekly,
+        "fortnightly" => Period::Fortnightly,
+        "quarterly" => Period::Quarterly,
+        "financial_quarter" => Period::FinancialQuarter {
+            start_month: 7,
+            start_day: 1,
+        },
+        "financial_year" => Period::FinancialYear {
+            start_month: 7,
+            start_day: 1,
+        },
+        "calendar_year" => Period::CalendarYear,
+        _ => Period::Monthly,
+    }
+}
+
+/// Converts a [`Period`] back to its `<select>` option value string.
+#[cfg(target_arch = "wasm32")]
+fn period_to_str(p: &Period) -> &'static str {
+    match p {
+        Period::Weekly => "weekly",
+        Period::Fortnightly => "fortnightly",
+        Period::Quarterly => "quarterly",
+        Period::FinancialQuarter { .. } => "financial_quarter",
+        Period::FinancialYear { .. } => "financial_year",
+        Period::CalendarYear => "calendar_year",
+        Period::Monthly | Period::Daily | _ => "monthly",
+    }
+}
+
+/// Shared period stepper: `◀ label ▶` plus a granularity `<select>`.
+///
+/// The control writes both signals: `◀`/`▶` step `window_start`, and changing
+/// the granularity re-snaps `window_start` to the window containing the current
+/// start. It renders no page-specific chrome.
+///
+/// # Arguments
+///
+/// * `period` - Selected granularity. Owned by the page; this control writes it.
+/// * `window_start` - Start of the display window. Owned by the page; written here.
+/// * `compact` - When `true`, trims the label width for tight contexts.
+#[cfg(target_arch = "wasm32")]
+#[component]
+pub fn PeriodNav(
+    /// Selected granularity (page-owned; written by this control).
+    period: RwSignal<Period>,
+    /// Display-window start (page-owned; written by this control).
+    window_start: RwSignal<Date>,
+    /// Trims chrome for tight contexts (e.g. a compact sticky bar).
+    #[prop(optional)]
+    compact: bool,
+) -> impl IntoView {
+    let label = move || window_label(&period.get(), window_start.get());
+    let row_class = if compact {
+        format!("{} {}", style::nav_row, style::compact)
+    } else {
+        style::nav_row.to_owned()
+    };
+
+    view! {
+        <div class=row_class>
+            <button
+                class=style::nav_btn
+                aria-label="previous period"
+                on:click=move |_| {
+                    window_start.update(|ws| *ws = step_window(&period.get(), *ws, false));
+                }
+            >
+                "\u{25C0}"
+            </button>
+            <span class=style::nav_label>{label}</span>
+            <button
+                class=style::nav_btn
+                aria-label="next period"
+                on:click=move |_| {
+                    window_start.update(|ws| *ws = step_window(&period.get(), *ws, true));
+                }
+            >
+                "\u{25B6}"
+            </button>
+            <select
+                class=style::period_select
+                prop:value=move || period_to_str(&period.get())
+                on:change=move |ev| {
+                    let new_period = parse_period(&event_target_value(&ev));
+                    window_start.update(|ws| *ws = window_containing(&new_period, *ws));
+                    period.set(new_period);
+                }
+            >
+                <option value="weekly">"Weekly"</option>
+                <option value="fortnightly">"Fortnightly"</option>
+                <option value="monthly">"Monthly"</option>
+                <option value="quarterly">"Quarterly"</option>
+                <option value="financial_quarter">"Financial Quarter"</option>
+                <option value="financial_year">"Financial Year"</option>
+                <option value="calendar_year">"Calendar Year"</option>
+            </select>
+        </div>
+    }
+}
+
+#[cfg(all(debug_assertions, target_arch = "wasm32"))]
+pub mod qa;
 
 // MARK: Tests
 
@@ -771,5 +923,36 @@ mod tests {
     #[case(Date::constant(2026, 6, 1), false, Date::constant(2026, 5, 18))]
     fn step_window_fortnightly(#[case] start: Date, #[case] forward: bool, #[case] expected: Date) {
         assert_eq!(step_window(&Period::Fortnightly, start, forward), expected);
+    }
+
+    // MARK: window_containing
+
+    #[rstest]
+    #[case(
+        Period::Monthly,
+        Date::constant(2026, 6, 15),
+        Date::constant(2026, 6, 1)
+    )]
+    #[case(
+        Period::Quarterly,
+        Date::constant(2026, 6, 15),
+        Date::constant(2026, 4, 1)
+    )]
+    #[case(
+        Period::CalendarYear,
+        Date::constant(2026, 6, 15),
+        Date::constant(2026, 1, 1)
+    )]
+    #[case(
+        Period::Weekly,
+        Date::constant(2026, 6, 17),
+        Date::constant(2026, 6, 15)
+    )]
+    fn window_containing_snaps_to_window_start(
+        #[case] period: Period,
+        #[case] input: Date,
+        #[case] expected: Date,
+    ) {
+        assert_eq!(window_containing(&period, input), expected);
     }
 }
