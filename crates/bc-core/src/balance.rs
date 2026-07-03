@@ -44,7 +44,8 @@ pub struct PeriodStats {
     pub opening: Amount,
     /// Running balance at the window end (`opening + net`).
     pub closing: Amount,
-    /// Count of in-window postings for the account in this commodity.
+    /// Count of distinct in-window transactions involving the account
+    /// (commodity-agnostic; matches the register's row count).
     pub tx_count: u32,
 }
 
@@ -252,9 +253,34 @@ impl Engine {
             .fetch_postings_in_range(account_id, commodity, from, to)
             .await?;
 
-        let (inflow, outflow) = rows.into_iter().try_fold(
+        Self::sum_flows(&rows, commodity)
+    }
+
+    /// Splits signed posting amounts into non-negative `(inflow, outflow)` totals.
+    ///
+    /// `inflow` is the sum of positive amounts; `outflow` is the absolute sum of
+    /// negative amounts. Both carry `commodity`. Shared by [`Service::posting_flows`]
+    /// and [`Service::account_period_stats`] so a single fetch can serve both.
+    ///
+    /// # Arguments
+    ///
+    /// * `rows`      - `(date, amount)` pairs; only the amounts are summed.
+    /// * `commodity` - Commodity code carried by the returned amounts.
+    ///
+    /// # Returns
+    ///
+    /// `(inflow, outflow)` as [`Amount`] values, both non-negative.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if either running total overflows [`Decimal`].
+    fn sum_flows(
+        rows: &[(jiff::civil::Date, Decimal)],
+        commodity: &str,
+    ) -> BcResult<(Amount, Amount)> {
+        let (inflow, outflow) = rows.iter().try_fold(
             (Decimal::ZERO, Decimal::ZERO),
-            |(inflow, outflow), (_, amount)| -> BcResult<(Decimal, Decimal)> {
+            |(inflow, outflow), &(_, amount)| -> BcResult<(Decimal, Decimal)> {
                 if amount >= Decimal::ZERO {
                     let new_inflow = inflow.checked_add(amount).ok_or_else(|| {
                         BcError::BadData("inflow overflow: sum exceeds Decimal range".into())
@@ -272,6 +298,47 @@ impl Engine {
             Amount::new(inflow, commodity),
             Amount::new(outflow, commodity),
         ))
+    }
+
+    /// Counts distinct transactions involving `account_id` whose canonical date
+    /// falls in the half-open interval `[from, until)`.
+    ///
+    /// Commodity-agnostic, so the count matches the row count of
+    /// [`Service::list_for_account_in_range`] — a dashboard "transactions" stat
+    /// agrees with the register even when a transaction has multiple postings to
+    /// the account or spans several commodities.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account to query.
+    /// * `from`       - Inclusive lower bound on `t.date`.
+    /// * `until`      - Exclusive upper bound on `t.date`.
+    ///
+    /// # Returns
+    ///
+    /// The number of matching transactions, saturating at [`u32::MAX`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database failure.
+    async fn count_transactions_in_range(
+        &self,
+        account_id: &AccountId,
+        from: jiff::civil::Date,
+        until: jiff::civil::Date,
+    ) -> BcResult<u32> {
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM transactions t \
+             WHERE t.date >= ? AND t.date < ? \
+               AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
+        )
+        .bind(from.to_string())
+        .bind(until.to_string())
+        .bind(account_id.to_string())
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 
     /// Computes [`PeriodStats`] for `account_id` in `commodity` over `[from, until)`.
@@ -300,9 +367,7 @@ impl Engine {
         let in_window = self
             .fetch_postings_in_range(account_id, commodity, from, until)
             .await?;
-        let (income, expenses) = self
-            .posting_flows(account_id, commodity, from, until)
-            .await?;
+        let (income, expenses) = Self::sum_flows(&in_window, commodity)?;
 
         let (open_in, open_out) = self
             .posting_flows(account_id, commodity, genesis, from)
@@ -319,7 +384,9 @@ impl Engine {
             .checked_add(net)
             .ok_or_else(|| BcError::BadData("closing balance overflow".into()))?;
 
-        let tx_count = u32::try_from(in_window.len()).unwrap_or(u32::MAX);
+        let tx_count = self
+            .count_transactions_in_range(account_id, from, until)
+            .await?;
 
         Ok(PeriodStats {
             income,
@@ -1282,5 +1349,69 @@ mod tests {
         assert_eq!(s.opening.value(), dec!(100));
         assert_eq!(s.closing.value(), dec!(120));
         assert_eq!(s.tx_count, 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn account_period_stats_tx_count_is_distinct_transactions(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let wallet = acct_svc
+            .create()
+            .name("Wallet")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Wallet should succeed");
+        let other = acct_svc
+            .create()
+            .name("Other")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Other account should succeed");
+
+        // A single transaction with TWO postings to the wallet (a within-account
+        // split). tx_count must count the transaction once, matching the
+        // register's row count — not the two commodity-scoped postings.
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 6, 10))
+            .description("Split")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(wallet.clone())
+                    .amount(Amount::new(dec!(60), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(wallet.clone())
+                    .amount(Amount::new(dec!(40), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(other.clone())
+                    .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(jiff::Timestamp::now())
+            .build();
+        crate::transaction::Service::new(pool.clone())
+            .create(tx)
+            .await
+            .expect("seed split transaction should succeed");
+
+        let engine = Engine::new(pool.clone());
+        let s = engine
+            .account_period_stats(&wallet, "AUD", date(2026, 6, 1), date(2026, 7, 1))
+            .await
+            .expect("account_period_stats should succeed");
+
+        // One distinct transaction, even though it has two wallet postings.
+        assert_eq!(s.tx_count, 1);
+        // Flows still aggregate every posting: 60 + 40 in.
+        assert_eq!(s.income.value(), dec!(100));
     }
 }
