@@ -21,7 +21,7 @@
 
 /* animation targets: match the bar's resting height and border width */
 .bar_visible {
-  max-height: 40px;
+  max-height: var(--bc-account-bar-height);
   border-bottom-width: 2px;
 }
 

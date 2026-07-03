@@ -70,12 +70,14 @@ pub fn AccountDashboard(
         async move { bc_ipc::client::get_account_stats(&id, start, until).await }
     });
 
-    let period = RwSignal::new(bc_ipc::Period::Monthly);
+    // Sparkline granularity/count are independent of the page-level
+    // `period_window` (see #255); named distinctly to avoid confusion.
+    let sparkline_period = RwSignal::new(bc_ipc::Period::Monthly);
     let count = RwSignal::new(bc_ipc::Period::Monthly.default_sparkline_count());
 
     let sparkline_resource = LocalResource::new(move || {
         let id = sparkline_account_id.clone();
-        let p = period.get();
+        let p = sparkline_period.get();
         let n = count.get();
         if let Some(v) = data_version {
             v.get();
@@ -88,7 +90,10 @@ pub fn AccountDashboard(
         .as_ref()
         .map_or_else(String::new, |b| b.currency_code.clone());
 
-    let balance_line = move || {
+    // Closing / opening / net (formatted) plus a net-is-negative flag, computed
+    // once per dependency change. A `Memo` avoids re-reading the resource and
+    // re-formatting three amounts in each of the four view closures below.
+    let balance_line = Memo::new(move |_| {
         let stats = stats_resource.get().and_then(Result::ok);
         let cur = currencies.get();
         let fmt = |a: &bc_ipc::Amount| {
@@ -112,7 +117,7 @@ pub fn AccountDashboard(
                 )
             }
         }
-    };
+    });
 
     let breadcrumb = if node.parent_id.is_some() {
         let section = match node.account_type {
@@ -220,14 +225,16 @@ pub fn AccountDashboard(
             </div>
 
             <div class=style::balance_row>
-                <span class=style::balance>{move || balance_line().0}</span>
+                <span class=style::balance>{move || balance_line.with(|b| b.0.clone())}</span>
                 <span class=style::balance_meta>"// closing"</span>
             </div>
             <div class=style::balance_sub>
-                <span class=style::opening>"opening " {move || balance_line().1}</span>
+                <span class=style::opening>
+                    "opening " {move || balance_line.with(|b| b.1.clone())}
+                </span>
                 <span class=move || {
-                    if balance_line().3 { style::net_bad } else { style::net_good }
-                }>"net " {move || balance_line().2}</span>
+                    if balance_line.with(|b| b.3) { style::net_bad } else { style::net_good }
+                }>"net " {move || balance_line.with(|b| b.2.clone())}</span>
             </div>
 
             <div class=style::stat_row>
@@ -314,43 +321,49 @@ pub fn AccountDashboard(
                             _ => bc_ipc::Period::Monthly,
                         };
                         count.set(new_period.default_sparkline_count());
-                        period.set(new_period);
+                        sparkline_period.set(new_period);
                     }
                 >
-                    <option value="daily" selected=move || period.get() == bc_ipc::Period::Daily>
+                    <option
+                        value="daily"
+                        selected=move || sparkline_period.get() == bc_ipc::Period::Daily
+                    >
                         "daily"
                     </option>
-                    <option value="weekly" selected=move || period.get() == bc_ipc::Period::Weekly>
+                    <option
+                        value="weekly"
+                        selected=move || sparkline_period.get() == bc_ipc::Period::Weekly
+                    >
                         "weekly"
                     </option>
                     <option
                         value="fortnightly"
-                        selected=move || period.get() == bc_ipc::Period::Fortnightly
+                        selected=move || sparkline_period.get() == bc_ipc::Period::Fortnightly
                     >
                         "fortnightly"
                     </option>
                     <option
                         value="monthly"
-                        selected=move || period.get() == bc_ipc::Period::Monthly
+                        selected=move || sparkline_period.get() == bc_ipc::Period::Monthly
                     >
                         "monthly"
                     </option>
                     <option
                         value="quarterly"
-                        selected=move || period.get() == bc_ipc::Period::Quarterly
+                        selected=move || sparkline_period.get() == bc_ipc::Period::Quarterly
                     >
                         "quarterly"
                     </option>
                     <option
                         value="calendar_year"
-                        selected=move || period.get() == bc_ipc::Period::CalendarYear
+                        selected=move || sparkline_period.get() == bc_ipc::Period::CalendarYear
                     >
                         "calendar year"
                     </option>
                     <option
                         value="financial_year"
                         selected=move || {
-                            matches!(period.get(), bc_ipc::Period::FinancialYear { .. })
+                            matches!(sparkline_period.get(), bc_ipc::Period::FinancialYear { .. })
                         }
                     >
                         "financial year"
@@ -358,7 +371,10 @@ pub fn AccountDashboard(
                     <option
                         value="financial_quarter"
                         selected=move || {
-                            matches!(period.get(), bc_ipc::Period::FinancialQuarter { .. })
+                            matches!(
+                                sparkline_period.get(),
+                                bc_ipc::Period::FinancialQuarter { .. }
+                            )
                         }
                     >
                         "financial quarter"
@@ -385,7 +401,7 @@ pub fn AccountDashboard(
             </div>
 
             {move || {
-                let p = period.get();
+                let p = sparkline_period.get();
                 let n = count.get();
                 let points = match sparkline_resource.get() {
                     Some(Ok(pts)) => pts,
