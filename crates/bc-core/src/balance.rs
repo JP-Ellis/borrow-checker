@@ -24,6 +24,30 @@ pub struct PostingBucket {
     pub outflow: Amount,
 }
 
+/// Windowed account statistics for the dashboard: in-window flows plus the
+/// opening/closing running balances that bracket the window.
+///
+/// All [`Amount`]s carry the queried commodity. `income`, `expenses`, and
+/// `tx_count` cover `[from, until)`; `opening` is the running balance
+/// immediately before the window; `closing` is the running balance at the
+/// window end.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct PeriodStats {
+    /// In-window inflow (non-negative).
+    pub income: Amount,
+    /// In-window outflow magnitude (non-negative).
+    pub expenses: Amount,
+    /// `income − expenses` (signed).
+    pub net: Amount,
+    /// Running balance immediately before the window (`[genesis, from)`).
+    pub opening: Amount,
+    /// Running balance at the window end (`opening + net`).
+    pub closing: Amount,
+    /// Count of in-window postings for the account in this commodity.
+    pub tx_count: u32,
+}
+
 /// Calculates account balances from the `postings` projection table.
 #[derive(Debug, Clone)]
 pub struct Engine {
@@ -248,6 +272,63 @@ impl Engine {
             Amount::new(inflow, commodity),
             Amount::new(outflow, commodity),
         ))
+    }
+
+    /// Computes [`PeriodStats`] for `account_id` in `commodity` over `[from, until)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account to query.
+    /// * `commodity` - Commodity code (e.g. `"AUD"`).
+    /// * `from` - Inclusive window start.
+    /// * `until` - Exclusive window end.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or parse failure, or if a running
+    /// balance would overflow [`Decimal`]'s range.
+    #[inline]
+    pub async fn account_period_stats(
+        &self,
+        account_id: &AccountId,
+        commodity: &str,
+        from: jiff::civil::Date,
+        until: jiff::civil::Date,
+    ) -> BcResult<PeriodStats> {
+        let genesis = jiff::civil::Date::MIN;
+
+        let in_window = self
+            .fetch_postings_in_range(account_id, commodity, from, until)
+            .await?;
+        let (income, expenses) = self
+            .posting_flows(account_id, commodity, from, until)
+            .await?;
+
+        let (open_in, open_out) = self
+            .posting_flows(account_id, commodity, genesis, from)
+            .await?;
+        let opening = open_in
+            .value()
+            .checked_sub(open_out.value())
+            .ok_or_else(|| BcError::BadData("opening balance overflow".into()))?;
+        let net = income
+            .value()
+            .checked_sub(expenses.value())
+            .ok_or_else(|| BcError::BadData("net overflow".into()))?;
+        let closing = opening
+            .checked_add(net)
+            .ok_or_else(|| BcError::BadData("closing balance overflow".into()))?;
+
+        let tx_count = u32::try_from(in_window.len()).unwrap_or(u32::MAX);
+
+        Ok(PeriodStats {
+            income,
+            expenses,
+            net: Amount::new(net, commodity),
+            opening: Amount::new(opening, commodity),
+            closing: Amount::new(closing, commodity),
+            tx_count,
+        })
     }
 
     /// Returns `count` contiguous period buckets ending with the period containing `as_of`.
@@ -1351,5 +1432,92 @@ mod tests {
             .expect("posting_count should succeed");
         // Unreconciled transactions are counted.
         assert_eq!(count, 1, "unreconciled transaction should be counted");
+    }
+
+    /// Seeds `wallet` with one transaction per `(date, amount)` pair in AUD,
+    /// each balanced against a counter "Other" account.
+    async fn seed_postings_aud(
+        pool: &sqlx::SqlitePool,
+        wallet: &AccountId,
+        pairs: &[(jiff::civil::Date, Decimal)],
+    ) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let other = acct_svc
+            .create()
+            .name("Other")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Other account should succeed");
+
+        let tx_svc = crate::transaction::Service::new(pool.clone());
+        for &(date, amount) in pairs {
+            let tx = Transaction::builder()
+                .id(bc_models::TransactionId::new())
+                .date(date)
+                .description("Seed")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(wallet.clone())
+                        .amount(Amount::new(amount, CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(other.clone())
+                        .amount(Amount::new(
+                            Decimal::ZERO
+                                .checked_sub(amount)
+                                .expect("negation should not overflow"),
+                            CommodityCode::new("AUD"),
+                        ))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(jiff::Timestamp::now())
+                .build();
+            tx_svc
+                .create(tx)
+                .await
+                .expect("seed transaction should succeed");
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn account_period_stats_windows_flows_and_balances(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let acc = acct_svc
+            .create()
+            .name("Wallet")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Wallet should succeed");
+
+        seed_postings_aud(
+            &pool,
+            &acc,
+            &[
+                (date(2026, 5, 20), dec!(100)),
+                (date(2026, 6, 10), dec!(-30)),
+                (date(2026, 6, 20), dec!(50)),
+            ],
+        )
+        .await;
+
+        let engine = Engine::new(pool.clone());
+        let s = engine
+            .account_period_stats(&acc, "AUD", date(2026, 6, 1), date(2026, 7, 1))
+            .await
+            .expect("account_period_stats should succeed");
+
+        assert_eq!(s.income.value(), dec!(50));
+        assert_eq!(s.expenses.value(), dec!(30));
+        assert_eq!(s.net.value(), dec!(20));
+        assert_eq!(s.opening.value(), dec!(100));
+        assert_eq!(s.closing.value(), dec!(120));
+        assert_eq!(s.tx_count, 2);
     }
 }
