@@ -52,6 +52,57 @@ impl CommodityInfo {
     }
 }
 
+// MARK: models conversions
+
+#[cfg(feature = "models")]
+impl From<&bc_models::Commodity> for CommodityInfo {
+    /// Converts a [`bc_models::Commodity`] to an IPC [`CommodityInfo`].
+    ///
+    /// The reverse of [`TryFrom<CommodityInfo>`]. Kept as a `From` impl now
+    /// that bc-ipc depends on bc-models via the `models` feature.
+    #[inline]
+    fn from(c: &bc_models::Commodity) -> Self {
+        Self::new(
+            c.id().to_string(),
+            c.code().to_owned(),
+            c.symbol().map(ToOwned::to_owned),
+            c.aliases().to_vec(),
+            c.decimals(),
+            c.is_iso(),
+            c.symbol_after(),
+        )
+    }
+}
+
+#[cfg(feature = "models")]
+impl TryFrom<CommodityInfo> for bc_models::Commodity {
+    type Error = crate::BcError;
+
+    /// Builds a [`bc_models::Commodity`] from an IPC [`CommodityInfo`]. A blank
+    /// id yields a fresh commodity (create); a populated id round-trips
+    /// (update).
+    #[inline]
+    fn try_from(info: CommodityInfo) -> Result<Self, Self::Error> {
+        let id =
+            if info.id.is_empty() {
+                None
+            } else {
+                Some(info.id.parse::<bc_models::CommodityId>().map_err(|e| {
+                    crate::BcError::Validation(format!("invalid commodity id: {e}"))
+                })?)
+            };
+        Ok(bc_models::Commodity::builder()
+            .code(info.code)
+            .aliases(info.aliases)
+            .decimals(info.decimals)
+            .is_iso(info.is_iso)
+            .symbol_after(info.symbol_after)
+            .maybe_symbol(info.symbol)
+            .maybe_id(id)
+            .build())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -72,5 +123,44 @@ mod tests {
         );
         let json = serde_json::to_string(&c).unwrap();
         assert_eq!(serde_json::from_str::<CommodityInfo>(&json).unwrap(), c);
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "models")]
+mod models_tests {
+    use pretty_assertions::assert_eq;
+
+    use super::CommodityInfo;
+
+    #[test]
+    fn try_from_valid_id_round_trips() {
+        let id = bc_models::CommodityId::new();
+        let info = CommodityInfo::new(
+            id.to_string(),
+            "AUD",
+            Some("A$".to_owned()),
+            vec![],
+            2,
+            true,
+            false,
+        );
+        let commodity = bc_models::Commodity::try_from(info).expect("valid id parses");
+        assert_eq!(commodity.id(), &id);
+        assert_eq!(commodity.code(), "AUD");
+    }
+
+    #[test]
+    fn try_from_blank_id_creates_new() {
+        let info = CommodityInfo::new(String::new(), "USD", None, vec![], 2, true, false);
+        let commodity = bc_models::Commodity::try_from(info).expect("blank id creates");
+        assert_eq!(commodity.code(), "USD");
+    }
+
+    #[test]
+    fn try_from_invalid_id_errors() {
+        let info = CommodityInfo::new("not-an-id", "USD", None, vec![], 2, true, false);
+        let err = bc_models::Commodity::try_from(info).expect_err("invalid id must fail");
+        assert!(matches!(err, crate::BcError::Validation(_)));
     }
 }

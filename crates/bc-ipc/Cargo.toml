@@ -13,11 +13,13 @@ license.workspace      = true
 publish = false
 
 [dependencies]
+bc-models    = { workspace = true, optional = true }
 bon          = { workspace = true }
 jiff         = { workspace = true }
 rust_decimal = { workspace = true }
 serde        = { workspace = true }
 thiserror    = { workspace = true }
+tracing      = { workspace = true, optional = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
@@ -29,6 +31,9 @@ serde_json        = { workspace = true }
 tauri-sys = { git = "https://github.com/JonasKruckenberg/tauri-sys", branch = "v2", features = [
   "core"
 ] }
+
+[features]
+models = ["dep:bc-models", "dep:tracing"]
 
 [lints]
 workspace = true

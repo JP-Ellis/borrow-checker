@@ -48,6 +48,28 @@ impl AccountType {
     }
 }
 
+// MARK: models conversions
+
+#[cfg(feature = "models")]
+impl From<bc_models::AccountType> for AccountType {
+    #[inline]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "both bc_models::AccountType and bc_ipc::AccountType are #[non_exhaustive]; \
+                  the wildcard fallback to Asset is intentional for future unknown variants"
+    )]
+    fn from(value: bc_models::AccountType) -> Self {
+        match value {
+            bc_models::AccountType::Asset => Self::Asset,
+            bc_models::AccountType::Liability => Self::Liability,
+            bc_models::AccountType::Equity => Self::Equity,
+            bc_models::AccountType::Income => Self::Income,
+            bc_models::AccountType::Expense => Self::Expense,
+            _ => Self::Asset,
+        }
+    }
+}
+
 /// A single node in the account tree sidebar.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -133,6 +155,37 @@ impl Reconciliation {
             Self::Unreconciled => "unreconciled",
             Self::Flagged => "flagged",
             Self::Reconciled => "reconciled",
+        }
+    }
+}
+
+// MARK: models conversions
+
+#[cfg(feature = "models")]
+impl From<bc_models::Reconciliation> for Reconciliation {
+    #[inline]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "bc_models::Reconciliation is #[non_exhaustive]; the wildcard fallback is intentional"
+    )]
+    fn from(value: bc_models::Reconciliation) -> Self {
+        match value {
+            bc_models::Reconciliation::Unreconciled => Self::Unreconciled,
+            bc_models::Reconciliation::Flagged => Self::Flagged,
+            bc_models::Reconciliation::Reconciled => Self::Reconciled,
+            _ => Self::Unreconciled,
+        }
+    }
+}
+
+#[cfg(feature = "models")]
+impl From<Reconciliation> for bc_models::Reconciliation {
+    #[inline]
+    fn from(value: Reconciliation) -> Self {
+        match value {
+            Reconciliation::Unreconciled => Self::Unreconciled,
+            Reconciliation::Flagged => Self::Flagged,
+            Reconciliation::Reconciled => Self::Reconciled,
         }
     }
 }
@@ -708,6 +761,100 @@ impl Period {
     }
 }
 
+// MARK: models conversions
+
+#[cfg(feature = "models")]
+impl From<&bc_models::Period> for Period {
+    #[inline]
+    fn from(value: &bc_models::Period) -> Self {
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "bc_models::Period is #[non_exhaustive]; unknown future variants fall back to Monthly"
+        )]
+        match value {
+            bc_models::Period::Weekly => Self::Weekly,
+            bc_models::Period::Fortnightly { .. } => Self::Fortnightly,
+            bc_models::Period::Monthly => Self::Monthly,
+            bc_models::Period::Quarterly => Self::Quarterly,
+            bc_models::Period::CalendarYear => Self::CalendarYear,
+            bc_models::Period::FinancialYear {
+                start_month,
+                start_day,
+            } => Self::FinancialYear {
+                start_month: *start_month,
+                start_day: *start_day,
+            },
+            bc_models::Period::FinancialQuarter {
+                start_month,
+                start_day,
+            } => Self::FinancialQuarter {
+                start_month: *start_month,
+                start_day: *start_day,
+            },
+            bc_models::Period::Custom {
+                days: Some(1),
+                weeks: None,
+                months: None,
+            } => Self::Daily,
+            other => {
+                tracing::warn!(
+                    ?other,
+                    "Period has no bc_ipc equivalent; defaulting to monthly"
+                );
+                Self::Monthly
+            }
+        }
+    }
+}
+
+#[cfg(feature = "models")]
+impl From<Period> for bc_models::Period {
+    #[inline]
+    fn from(value: Period) -> Self {
+        match value {
+            Period::Daily => Self::Custom {
+                days: Some(1),
+                weeks: None,
+                months: None,
+            },
+            Period::Weekly => Self::Weekly,
+            Period::Fortnightly => {
+                // TODO: use the globally-configured fortnightly anchor (Milestone 5 config).
+                // 2026-01-05 (Monday) is a placeholder; any user whose pay cycle does not
+                // align to this anchor will see misaligned fortnightly buckets.
+                tracing::warn!(
+                    anchor = "2026-01-05",
+                    "fortnightly anchor is hardcoded; user pay cycles may not align"
+                );
+                #[expect(
+                    clippy::expect_used,
+                    reason = "2026-01-05 is a valid date; this can never panic"
+                )]
+                let anchor =
+                    jiff::civil::Date::new(2026, 1, 5).expect("2026-01-05 is a valid date");
+                Self::Fortnightly { anchor }
+            }
+            Period::Monthly => Self::Monthly,
+            Period::Quarterly => Self::Quarterly,
+            Period::CalendarYear => Self::CalendarYear,
+            Period::FinancialYear {
+                start_month,
+                start_day,
+            } => Self::FinancialYear {
+                start_month,
+                start_day,
+            },
+            Period::FinancialQuarter {
+                start_month,
+                start_day,
+            } => Self::FinancialQuarter {
+                start_month,
+                start_day,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -1045,5 +1192,27 @@ mod tests {
         assert_eq!(tx.payee, "Coles");
         assert_eq!(tx.note.as_deref(), Some("note"));
         assert_eq!(tx.postings, vec![p]);
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "models")]
+mod models_tests {
+    use pretty_assertions::assert_eq;
+
+    use super::Period;
+
+    #[test]
+    fn model_period_into_ipc_maps_known_variants() {
+        assert_eq!(Period::from(&bc_models::Period::Weekly), Period::Weekly);
+        assert_eq!(Period::from(&bc_models::Period::Monthly), Period::Monthly);
+        assert_eq!(
+            Period::from(&bc_models::Period::Custom {
+                days: Some(1),
+                weeks: None,
+                months: None
+            }),
+            Period::Daily
+        );
     }
 }

@@ -417,6 +417,7 @@ dependencies = [
 name = "bc-ipc"
 version = "0.1.0"
 dependencies = [
+ "bc-models",
  "bon",
  "jiff",
  "pretty_assertions",
@@ -426,6 +427,7 @@ dependencies = [
  "serde_json",
  "tauri-sys",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
