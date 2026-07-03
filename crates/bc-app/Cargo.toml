@@ -17,11 +17,11 @@ publish = false
   ignored = ["bc-models", "serde", "tauri-build"]
 
 [dependencies]
-bc-config    = { workspace = true }
-bc-core      = { workspace = true }
-bc-ipc       = { workspace = true }
+bc-config    = { workspace = true, features = ["ipc"] }
+bc-core      = { workspace = true, features = ["ipc"] }
+bc-ipc       = { workspace = true, features = ["models"] }
 bc-models    = { workspace = true }
-bc-plugins   = { workspace = true }
+bc-plugins   = { workspace = true, features = ["ipc"] }
 jiff         = { workspace = true }
 rust_decimal = { workspace = true }
 serde        = { workspace = true }

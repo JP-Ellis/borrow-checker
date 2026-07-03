@@ -53,8 +53,6 @@ pub async fn list_plugins(
 /// Returns an empty `Vec` if no plugins are found or the registry fails to
 /// initialise.
 pub(crate) fn collect_plugin_info() -> Vec<bc_ipc::PluginInfo> {
-    use bc_core::Importer as _;
-
     let settings = bc_config::Settings::load().unwrap_or_else(|e| {
         tracing::warn!(error = %e, "failed to load settings; using defaults");
         bc_config::Settings::default()
@@ -72,31 +70,7 @@ pub(crate) fn collect_plugin_info() -> Vec<bc_ipc::PluginInfo> {
         |registry| {
             registry
                 .plugins()
-                .map(|p| {
-                    let file_name = p
-                        .source_path()
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or_else(|| {
-                            // A plugin path without a filename component is
-                            // effectively impossible (the registry only loads
-                            // *.wasm files from directories), but fall back
-                            // gracefully rather than panicking.
-                            tracing::warn!(
-                                path = %p.source_path().display(),
-                                "plugin source path has no valid filename component"
-                            );
-                            ""
-                        })
-                        .to_owned();
-                    let is_deprecated = p.is_deprecated();
-                    bc_ipc::PluginInfo::new(
-                        p.name().to_owned(),
-                        p.sdk_abi(),
-                        file_name,
-                        is_deprecated,
-                    )
-                })
+                .map(|p| bc_ipc::PluginInfo::from(p.as_ref()))
                 .collect()
         },
     )
