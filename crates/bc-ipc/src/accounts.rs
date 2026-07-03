@@ -649,7 +649,8 @@ pub struct AccountStats {
     pub opening_balance: Amount,
     /// Running balance at the window end (period-end closing balance).
     pub closing_balance: Amount,
-    /// Count of in-window postings.
+    /// Count of distinct in-window transactions involving the account
+    /// (commodity-agnostic; matches the register's row count).
     pub tx_count: u32,
 }
 
@@ -663,7 +664,7 @@ impl AccountStats {
     /// * `net` - Signed net movement.
     /// * `opening_balance` - Balance at window start.
     /// * `closing_balance` - Balance at window end.
-    /// * `tx_count` - In-window posting count.
+    /// * `tx_count` - Count of distinct in-window transactions (matches the register).
     #[must_use]
     #[inline]
     pub fn new(

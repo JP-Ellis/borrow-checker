@@ -69,6 +69,21 @@ type TxRow = (
     String,
 );
 
+/// Builds a comma-separated list of `n` SQL bind placeholders, e.g. `?,?,?`.
+///
+/// Used to bind a variable-length set of IDs into an `IN (…)` clause, since
+/// SQLite has no native array binding.
+fn sql_placeholders(n: usize) -> String {
+    let mut out = String::with_capacity(n.saturating_mul(2));
+    for i in 0..n {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('?');
+    }
+    out
+}
+
 /// Returns a posting's spread window as a `(from, until)` pair when both ends are set.
 ///
 /// Returns `None` if either end of the spread window is absent.
@@ -1005,7 +1020,7 @@ impl Service {
         .fetch_all(&self.pool)
         .await?;
 
-        self.assemble_transactions(&account_id_str, tx_rows).await
+        self.assemble_transactions(tx_rows).await
     }
 
     /// Lists transactions involving `account_id` whose canonical date falls in the
@@ -1045,37 +1060,44 @@ impl Service {
         .fetch_all(&self.pool)
         .await?;
 
-        self.assemble_transactions(&account_id_str, tx_rows).await
+        self.assemble_transactions(tx_rows).await
     }
 
-    /// Loads tx-tags, extra dates, and postings for `tx_rows` (all scoped to
-    /// `account_id_str`) and assembles the full [`Transaction`] values.
+    /// Loads tx-tags, extra dates, and postings for `tx_rows` and assembles the
+    /// full [`Transaction`] values.
     ///
     /// Shared by [`Service::list_for_account`] and
     /// [`Service::list_for_account_in_range`], which differ only in how
-    /// `tx_rows` is selected.
+    /// `tx_rows` is selected. All sub-queries are scoped to the transaction IDs
+    /// already present in `tx_rows` (not the account's full history), so the
+    /// work tracks the selected window rather than the account lifetime.
     #[expect(
         clippy::too_many_lines,
         reason = "loading transactions with postings, cost, and tags for a specific account inherently requires several queries and field mappings"
     )]
     async fn assemble_transactions(
         &self,
-        account_id_str: &str,
         tx_rows: Vec<TxRow>,
     ) -> BcResult<impl Iterator<Item = Transaction> + use<>> {
         if tx_rows.is_empty() {
             return Ok(vec![].into_iter());
         }
 
-        let tx_tag_rows: Vec<(String, String)> = sqlx::query_as(
+        // Bind the already-selected transaction IDs into every sub-query so each
+        // one touches only these rows, not the whole account history.
+        let tx_ids: Vec<&str> = tx_rows.iter().map(|row| row.0.as_str()).collect();
+        let placeholders = sql_placeholders(tx_ids.len());
+
+        let tx_tag_query = format!(
             "SELECT tt.transaction_id, tt.tag_id \
              FROM transaction_tags tt \
-             JOIN transactions t ON tt.transaction_id = t.id \
-             WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
-        )
-        .bind(account_id_str)
-        .fetch_all(&self.pool)
-        .await?;
+             WHERE tt.transaction_id IN ({placeholders})"
+        );
+        let mut tx_tag_stmt = sqlx::query_as(sqlx::AssertSqlSafe(tx_tag_query));
+        for id in &tx_ids {
+            tx_tag_stmt = tx_tag_stmt.bind(*id);
+        }
+        let tx_tag_rows: Vec<(String, String)> = tx_tag_stmt.fetch_all(&self.pool).await?;
 
         let mut tx_tags_map: HashMap<String, Vec<TagId>> = HashMap::new();
         for (tx_id_str, tag_id_str) in tx_tag_rows {
@@ -1086,15 +1108,17 @@ impl Service {
         }
 
         // Load extra labeled dates for the matching transactions.
-        let extra_date_rows: Vec<(String, String, String)> = sqlx::query_as(
+        let extra_date_query = format!(
             "SELECT td.transaction_id, td.label, td.date \
              FROM transaction_dates td \
-             JOIN transactions t ON td.transaction_id = t.id \
-             WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
-        )
-        .bind(account_id_str)
-        .fetch_all(&self.pool)
-        .await?;
+             WHERE td.transaction_id IN ({placeholders})"
+        );
+        let mut extra_date_stmt = sqlx::query_as(sqlx::AssertSqlSafe(extra_date_query));
+        for id in &tx_ids {
+            extra_date_stmt = extra_date_stmt.bind(*id);
+        }
+        let extra_date_rows: Vec<(String, String, String)> =
+            extra_date_stmt.fetch_all(&self.pool).await?;
 
         let mut tx_extra_dates_map: HashMap<String, Vec<(String, Date)>> = HashMap::new();
         for (tx_id_str, label, date_str) in extra_date_rows {
@@ -1107,29 +1131,32 @@ impl Service {
                 .push((label, d));
         }
 
-        let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
+        let posting_query = format!(
             "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.note, \
                     p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
-             WHERE p.transaction_id IN \
-                 (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
-             ORDER BY p.transaction_id, p.position ASC",
-        )
-        .bind(account_id_str)
-        .fetch_all(&self.pool)
-        .await?;
+             WHERE p.transaction_id IN ({placeholders}) \
+             ORDER BY p.transaction_id, p.position ASC"
+        );
+        let mut posting_stmt = sqlx::query_as(sqlx::AssertSqlSafe(posting_query));
+        for id in &tx_ids {
+            posting_stmt = posting_stmt.bind(*id);
+        }
+        let posting_rows: Vec<ListPostingRow> = posting_stmt.fetch_all(&self.pool).await?;
 
-        let posting_tag_rows: Vec<(String, String)> = sqlx::query_as(
+        let posting_tag_query = format!(
             "SELECT pt.posting_id, pt.tag_id \
              FROM posting_tags pt \
              JOIN postings p ON pt.posting_id = p.id \
-             WHERE p.transaction_id IN \
-                 (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
-        )
-        .bind(account_id_str)
-        .fetch_all(&self.pool)
-        .await?;
+             WHERE p.transaction_id IN ({placeholders})"
+        );
+        let mut posting_tag_stmt = sqlx::query_as(sqlx::AssertSqlSafe(posting_tag_query));
+        for id in &tx_ids {
+            posting_tag_stmt = posting_tag_stmt.bind(*id);
+        }
+        let posting_tag_rows: Vec<(String, String)> =
+            posting_tag_stmt.fetch_all(&self.pool).await?;
 
         let mut posting_tags_map: HashMap<String, Vec<TagId>> = HashMap::new();
         for (posting_id, tag_id_str) in posting_tag_rows {
