@@ -1,0 +1,24 @@
+---
+source: crates/bc-cli/tests/cli/account.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+[
+  {
+    "balance": "100",
+    "commodity": "AUD",
+    "id": "[ACCOUNT_ID]",
+    "name": "Savings",
+    "type": "asset"
+  },
+  {
+    "balance": "-100",
+    "commodity": "AUD",
+    "id": "[ACCOUNT_ID]",
+    "name": "Groceries",
+    "type": "expense"
+  }
+]
+----- stderr -----
