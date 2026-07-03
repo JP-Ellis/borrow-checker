@@ -1,4 +1,4 @@
-//! Account management sub-commands: list, create, archive.
+//! Account management sub-commands: list, create, archive, balance.
 
 use core::str::FromStr as _;
 
@@ -60,6 +60,14 @@ pub enum Command {
     Archive {
         /// Account ID to archive.
         id: String,
+    },
+    /// List account balances (default commodity) in a table.
+    Balance {
+        /// Optional account ID to filter to a single account.
+        account_id: Option<String>,
+        /// Filter balances to a single commodity code.
+        #[arg(long, value_name = "CODE")]
+        commodity: Option<String>,
     },
 }
 
@@ -143,6 +151,10 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             .await
         }
         Command::Archive { id } => archive(ctx, id).await,
+        Command::Balance {
+            account_id,
+            commodity,
+        } => balance(ctx, account_id, commodity).await,
     }
 }
 
@@ -313,5 +325,122 @@ async fn archive(ctx: &AppContext, id: String) -> CliResult<()> {
     {
         println!("Archived account: {id}");
     }
+    Ok(())
+}
+
+/// Human-readable label for an [`AccountType`], matching the `list` table.
+fn type_label(account_type: AccountType) -> &'static str {
+    match account_type {
+        AccountType::Asset => "Asset",
+        AccountType::Liability => "Liability",
+        AccountType::Equity => "Equity",
+        AccountType::Income => "Income",
+        AccountType::Expense => "Expense",
+        _ => "Unknown",
+    }
+}
+
+/// Sort rank for an [`AccountType`]: Asset → Liability → Equity → Income → Expense.
+///
+/// [`AccountType`] does not derive [`Ord`], so ordering is defined explicitly.
+/// Unknown future variants sort last.
+fn type_rank(account_type: AccountType) -> u8 {
+    match account_type {
+        AccountType::Asset => 0,
+        AccountType::Liability => 1,
+        AccountType::Equity => 2,
+        AccountType::Income => 3,
+        AccountType::Expense => 4,
+        _ => u8::MAX,
+    }
+}
+
+/// Lists account balances in the default commodity.
+///
+/// Balances come from [`bc_core::BalanceEngine::default_balances`]; account
+/// names and types are joined from the active account list. Rows are sorted by
+/// account type (Asset → Liability → Equity → Income → Expense) then
+/// alphabetically by name.
+///
+/// # Arguments
+///
+/// * `ctx` - Shared application context.
+/// * `account_id` - Optional account ID to filter to a single account.
+/// * `commodity` - Optional commodity code to filter balances.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError::Arg`] if `account_id` is not a valid
+/// account ID. Propagates [`crate::error::CliError`] from the balance or account
+/// service, or JSON serialisation.
+async fn balance(
+    ctx: &AppContext,
+    account_id: Option<String>,
+    commodity: Option<String>,
+) -> CliResult<()> {
+    let filter_id = account_id
+        .as_deref()
+        .map(bc_models::AccountId::from_str)
+        .transpose()
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID: {e}")))?;
+
+    let balances = ctx.balances.default_balances().await?;
+    let accounts = ctx.accounts.list_active().await?;
+
+    // Join balances with account metadata, applying the ID and commodity filters.
+    let mut rows: Vec<(&bc_models::Account, &bc_models::Amount)> = accounts
+        .iter()
+        .filter_map(|account| balances.get(account.id()).map(|amount| (account, amount)))
+        .filter(|(account, _)| filter_id.as_ref().is_none_or(|id| account.id() == id))
+        .filter(|(_, amount)| {
+            commodity
+                .as_deref()
+                .is_none_or(|code| amount.commodity().as_str() == code)
+        })
+        .collect();
+
+    rows.sort_by(|(a, _), (b, _)| {
+        type_rank(a.account_type())
+            .cmp(&type_rank(b.account_type()))
+            .then_with(|| a.name().cmp(b.name()))
+    });
+
+    if ctx.json {
+        let json_rows: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(account, amount)| {
+                serde_json::json!({
+                    "id": account.id().to_string(),
+                    "name": account.name(),
+                    "type": account.account_type(),
+                    "balance": amount.value().to_string(),
+                    "commodity": amount.commodity().as_str(),
+                })
+            })
+            .collect();
+        return crate::output::print_json(&json_rows);
+    }
+
+    if rows.is_empty() {
+        #[expect(clippy::print_stdout, reason = "CLI output")]
+        {
+            println!("No account balances.");
+        }
+        return Ok(());
+    }
+
+    let table_rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|(account, amount)| {
+            vec![
+                account.id().to_string(),
+                account.name().to_owned(),
+                type_label(account.account_type()).to_owned(),
+                amount.value().to_string(),
+                amount.commodity().as_str().to_owned(),
+            ]
+        })
+        .collect();
+    crate::output::print_table(&["ID", "NAME", "TYPE", "BALANCE", "COMMODITY"], &table_rows);
     Ok(())
 }
