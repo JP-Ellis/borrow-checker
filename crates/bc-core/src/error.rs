@@ -45,6 +45,9 @@ pub enum BcError {
     /// A commodity could not be deleted because it is still referenced.
     #[error("commodity in use: {0}")]
     CommodityInUse(String),
+    /// A commodity code was empty or contained only whitespace.
+    #[error("commodity code must not be empty or blank")]
+    EmptyCommodityCode,
     /// A database error.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
