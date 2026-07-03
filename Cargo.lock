@@ -468,6 +468,7 @@ name = "bc-plugins"
 version = "0.1.0"
 dependencies = [
  "bc-core",
+ "bc-ipc",
  "bc-models",
  "jiff",
  "pretty_assertions",
