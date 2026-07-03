@@ -671,7 +671,7 @@ mod tests {
         use rust_decimal_macros::dec;
 
         // Create commodity
-        sqlx::query("INSERT INTO commodities (id, code) VALUES ('com_aud', 'AUD')")
+        sqlx::query("INSERT INTO commodities (id, code, decimals, is_iso, symbol_after) VALUES ('com_aud', 'AUD', 2, 1, 0)")
             .execute(&pool)
             .await
             .expect("insert commodity");
@@ -729,7 +729,7 @@ mod tests {
         use bc_models::AccountKind;
         use bc_models::AccountType;
 
-        sqlx::query("INSERT INTO commodities (id, code) VALUES ('com_aud2', 'AUD')")
+        sqlx::query("INSERT INTO commodities (id, code, decimals, is_iso, symbol_after) VALUES ('com_aud2', 'AUD', 2, 1, 0)")
             .execute(&pool)
             .await
             .expect("insert commodity");

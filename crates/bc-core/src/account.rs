@@ -598,7 +598,7 @@ mod tests {
     async fn create_account_with_commodities_and_tags(pool: sqlx::SqlitePool) {
         // Insert a commodity row directly since there is no CommodityService yet.
         let commodity_id = bc_models::CommodityId::new();
-        sqlx::query("INSERT INTO commodities (id, code) VALUES (?, ?)")
+        sqlx::query("INSERT INTO commodities (id, code, decimals, is_iso, symbol_after) VALUES (?, ?, 2, 1, 0)")
             .bind(commodity_id.to_string())
             .bind("USD")
             .execute(&pool)
