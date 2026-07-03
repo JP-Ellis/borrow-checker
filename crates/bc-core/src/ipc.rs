@@ -289,8 +289,43 @@ impl NativePeriodRowExt for bc_ipc::NativePeriodRow {
 }
 
 #[cfg(test)]
-#[cfg(feature = "ipc")]
 mod tests {
+    use pretty_assertions::assert_eq;
+
+    use crate::budget_tree::BudgetTreeSummary;
+    use crate::ipc::AuditEntryExt as _;
+
+    #[test]
+    fn audit_entry_from_recategorise_uses_recat_kind() {
+        let event = crate::Event::PostingRecategorised {
+            id: bc_models::TransactionId::new(),
+            posting_id: bc_models::PostingId::new(),
+            from_account: bc_models::AccountId::new(),
+            to_account: bc_models::AccountId::new(),
+        };
+        let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event);
+        assert_eq!(entry.kind, "recat");
+        assert!(!entry.message.is_empty());
+    }
+
+    #[test]
+    fn budget_summary_from_mixed_currency_tree_has_no_total_spent() {
+        let summary = BudgetTreeSummary {
+            total_effective_target: rust_decimal::Decimal::ZERO,
+            total_actuals: vec![
+                bc_models::Amount::new(rust_decimal::Decimal::from(10_i32), "USD"),
+                bc_models::Amount::new(rust_decimal::Decimal::from(20_i32), "EUR"),
+            ],
+            commodity: None,
+            overspent_count: 0,
+        };
+
+        let ipc_summary = bc_ipc::BudgetSummary::from(&summary);
+
+        assert_eq!(ipc_summary.total_spent, None);
+        assert!(ipc_summary.has_mixed_commodities);
+    }
+
     #[test]
     fn core_bad_data_maps_to_validation() {
         let err = crate::BcError::BadData("cannot reconcile an unbalanced transaction".to_owned());
