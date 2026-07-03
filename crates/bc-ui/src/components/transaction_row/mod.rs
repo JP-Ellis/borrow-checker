@@ -782,7 +782,7 @@ fn TransactionDetail(
     all_tags: Vec<bc_ipc::TagInfo>,
 ) -> impl IntoView {
     let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
-    let editable = EditableTransaction::from_transaction(&tx);
+    let editable = EditableTransaction::from(&tx);
     let ctx = TxEditCtx::new(editable, accounts);
     provide_context(ctx.clone());
 
