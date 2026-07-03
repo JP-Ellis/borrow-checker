@@ -6,6 +6,8 @@
 //! [`ImporterRegistry`](bc_core::ImporterRegistry).
 
 pub(crate) mod host;
+#[cfg(feature = "ipc")]
+mod ipc;
 pub(crate) mod plugin_importer;
 pub(crate) mod registry;
 pub(crate) mod translate;
