@@ -69,7 +69,7 @@ pub async fn list_accounts(
 ///
 /// * `account_id` - The account ID to filter by.
 /// * `date_from` - The inclusive start of the date window.
-/// * `date_until` - The inclusive end of the date window.
+/// * `date_until` - The exclusive end of the date window.
 /// * `state` - Tauri managed application state.
 ///
 /// # Errors
