@@ -12,11 +12,10 @@
     reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
 )]
 
+use bc_core::ipc::AuditEntryExt as _;
 use tauri::State;
 
 use crate::AppState;
-use crate::ipc::IntoIpc;
-use crate::ipc::IntoModel;
 
 // MARK: Command handlers
 
@@ -54,8 +53,8 @@ pub async fn list_accounts(
     let nodes = accounts
         .iter()
         .map(|account| {
-            let balance = balances.get(account.id()).map(IntoIpc::into_ipc);
-            crate::ipc::into_ipc_with_balance(account, balance, &forest)
+            let balance = balances.get(account.id()).map(bc_ipc::Amount::from);
+            bc_ipc::AccountNode::from_model(account, &forest, balance)
         })
         .collect::<Vec<_>>();
 
@@ -109,7 +108,7 @@ pub async fn list_transactions(
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
     Ok(txs
-        .map(|tx| crate::ipc::transaction_into_ipc_with_accounts(&tx, &account_map, &forest))
+        .map(|tx| bc_ipc::Transaction::from_model_with_accounts(&tx, &account_map, &forest))
         .collect())
 }
 
@@ -133,7 +132,7 @@ pub async fn create_transaction(
     tx: bc_ipc::NewTransaction,
     state: State<'_, AppState>,
 ) -> Result<String, bc_ipc::BcError> {
-    let reconciliation = tx.reconciliation.into_model();
+    let reconciliation = bc_models::Reconciliation::from(tx.reconciliation);
 
     let mut postings = Vec::with_capacity(tx.postings.len());
     for p in &tx.postings {
@@ -144,7 +143,7 @@ pub async fn create_transaction(
         let posting = bc_models::Posting::builder()
             .id(bc_models::PostingId::new())
             .account_id(account_id)
-            .maybe_amount(p.amount.as_ref().map(IntoModel::into_model))
+            .maybe_amount(p.amount.as_ref().map(bc_models::Amount::from))
             .maybe_note(p.note.clone())
             .tag_ids(tag_ids)
             .maybe_spread_from(p.spread_from)
@@ -201,7 +200,7 @@ pub async fn edit_transaction(
         .id
         .parse::<bc_models::TransactionId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid transaction id: {e}")))?;
-    let reconciliation = tx.reconciliation.into_model();
+    let reconciliation = bc_models::Reconciliation::from(tx.reconciliation);
 
     let mut postings = Vec::with_capacity(tx.postings.len());
     for p in &tx.postings {
@@ -219,7 +218,7 @@ pub async fn edit_transaction(
         let posting = bc_models::Posting::builder()
             .id(posting_id)
             .account_id(account_id)
-            .maybe_amount(p.amount.as_ref().map(IntoModel::into_model))
+            .maybe_amount(p.amount.as_ref().map(bc_models::Amount::from))
             .maybe_note(p.note.clone())
             .tag_ids(tag_ids)
             .maybe_spread_from(p.spread_from)
@@ -243,11 +242,7 @@ pub async fn edit_transaction(
         .created_at(jiff::Timestamp::now())
         .build();
 
-    state
-        .transactions
-        .edit(model_tx)
-        .await
-        .map_err(|e| e.into_ipc())
+    Ok(state.transactions.edit(model_tx).await?)
 }
 
 /// Sets a transaction's reconciliation state.
@@ -276,11 +271,10 @@ pub async fn set_reconciliation(
     let tx_id = id
         .parse::<bc_models::TransactionId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid transaction id: {e}")))?;
-    state
+    Ok(state
         .transactions
-        .reconcile(&tx_id, reconciliation.into_model())
-        .await
-        .map_err(|e| e.into_ipc())
+        .reconcile(&tx_id, bc_models::Reconciliation::from(reconciliation))
+        .await?)
 }
 
 /// Reverses a transaction, returning the new reversal transaction's id.
@@ -361,8 +355,8 @@ pub async fn get_account_stats(
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
     Ok(bc_ipc::AccountStats::new(
-        (&inflow).into_ipc(),
-        (&outflow).into_ipc(),
+        bc_ipc::Amount::from(&inflow),
+        bc_ipc::Amount::from(&outflow),
     ))
 }
 
@@ -510,69 +504,6 @@ fn spark_label(start: jiff::civil::Date, period: &bc_models::Period) -> String {
 
 // MARK: Audit helpers
 
-/// Maps a core [`bc_core::Event`] to a UI audit entry with a short kind tag.
-///
-/// # Arguments
-///
-/// * `ts` - When the event was recorded.
-/// * `event` - The core event to describe.
-///
-/// # Returns
-///
-/// A [`bc_ipc::AuditEntry`] with a short kind and a human-readable message.
-fn audit_entry_from(ts: jiff::Timestamp, event: &bc_core::Event) -> bc_ipc::AuditEntry {
-    use bc_core::Event;
-    #[expect(
-        clippy::wildcard_enum_match_arm,
-        reason = "Event is #[non_exhaustive]; catch-all arm required for exhaustiveness against future variants"
-    )]
-    let (kind, message): (&str, String) = match event {
-        Event::TransactionCreated { .. } => ("create", "transaction created".to_owned()),
-        Event::TransactionAmended { .. } => ("amend", "transaction amended".to_owned()),
-        Event::TransactionVoided { .. } => ("void", "transaction voided".to_owned()),
-        Event::TransactionReversed { .. } => ("reverse", "transaction reversed".to_owned()),
-        Event::TransactionPayeeChanged { to, .. } => (
-            "payee",
-            format!("payee → {}", to.as_deref().unwrap_or("(none)")),
-        ),
-        Event::TransactionDateChanged { to, .. } => ("date", format!("date → {to}")),
-        Event::TransactionExtraDatesChanged { .. } => ("dates", "extra dates changed".to_owned()),
-        Event::TransactionDescriptionChanged { .. } => ("desc", "description changed".to_owned()),
-        Event::TransactionNoteChanged { to, .. } => (
-            "note",
-            match to {
-                Some(_) => "note changed".to_owned(),
-                None => "note removed".to_owned(),
-            },
-        ),
-        Event::TransactionTagsChanged { added, removed, .. } => {
-            ("tags", format!("tags +{} -{}", added.len(), removed.len()))
-        }
-        Event::TransactionReconciled { from, to, .. } => {
-            ("reconcile", format!("reconciliation {from:?} → {to:?}"))
-        }
-        Event::PostingRecategorised { to_account, .. } => {
-            ("recat", format!("recategorised → {to_account}"))
-        }
-        Event::PostingAmountChanged { .. } => ("amount", "amount changed".to_owned()),
-        Event::PostingNoteChanged { .. } => ("note", "posting note changed".to_owned()),
-        Event::PostingSpreadChanged { to, .. } => (
-            "spread",
-            match to {
-                Some((from, until)) => format!("spread {from}..{until}"),
-                None => "spread cleared".to_owned(),
-            },
-        ),
-        Event::PostingAdded { account, .. } => ("split", format!("+leg {account}")),
-        Event::PostingRemoved { .. } => ("split", "removed leg".to_owned()),
-        other => {
-            let k = other.kind();
-            (k, k.to_owned())
-        }
-    };
-    bc_ipc::AuditEntry::new(ts, kind.to_owned(), message)
-}
-
 /// Loads the audit trail for a transaction.
 ///
 /// # Arguments
@@ -603,7 +534,7 @@ pub async fn get_transaction_audit(
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
     Ok(trail
         .iter()
-        .map(|(ts, event)| audit_entry_from(*ts, event))
+        .map(|(ts, event)| bc_ipc::AuditEntry::from_event(*ts, event))
         .collect())
 }
 
@@ -665,7 +596,7 @@ pub async fn get_account_sparkline(
             NonZeroUsize::new(6).expect("6 > 0")
         });
 
-    let model_period = period.map_or(bc_models::Period::Monthly, IntoModel::into_model);
+    let model_period = period.map_or(bc_models::Period::Monthly, bc_models::Period::from);
 
     let as_of = jiff::Zoned::now().date();
 
@@ -680,8 +611,8 @@ pub async fn get_account_sparkline(
         .map(|b| {
             bc_ipc::SparkPoint::new(
                 spark_label(b.start, &model_period),
-                (&b.inflow).into_ipc(),
-                (&b.outflow).into_ipc(),
+                bc_ipc::Amount::from(&b.inflow),
+                bc_ipc::Amount::from(&b.outflow),
             )
         })
         .collect::<Vec<_>>();
@@ -691,8 +622,6 @@ pub async fn get_account_sparkline(
 
 #[cfg(test)]
 mod tests {
-    use pretty_assertions::assert_eq;
-
     #[test]
     fn resolve_tag_inputs_errors_on_unknown_tag() {
         tauri::async_runtime::block_on(async {
@@ -703,18 +632,5 @@ mod tests {
                 .expect_err("unknown tag must error");
             assert!(matches!(err, bc_ipc::BcError::Validation(_)));
         });
-    }
-
-    #[test]
-    fn audit_entry_from_recategorise_uses_recat_kind() {
-        let event = bc_core::Event::PostingRecategorised {
-            id: bc_models::TransactionId::new(),
-            posting_id: bc_models::PostingId::new(),
-            from_account: bc_models::AccountId::new(),
-            to_account: bc_models::AccountId::new(),
-        };
-        let entry = super::audit_entry_from(jiff::Timestamp::now(), &event);
-        assert_eq!(entry.kind, "recat");
-        assert!(!entry.message.is_empty());
     }
 }
