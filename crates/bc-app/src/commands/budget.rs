@@ -8,11 +8,10 @@
     reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
 )]
 
+use bc_core::ipc::NativePeriodRowExt as _;
 use tauri::State;
 
 use crate::AppState;
-use crate::ipc::IntoIpc;
-use crate::ipc::IntoModel as _;
 
 // MARK: Overview
 
@@ -37,7 +36,7 @@ pub async fn get_budget_overview(
     period_start: jiff::civil::Date,
     state: State<'_, AppState>,
 ) -> Result<(bc_ipc::BudgetSummary, Vec<bc_ipc::BudgetTreeNode>), bc_ipc::BcError> {
-    let period = period_type.into_model();
+    let period = bc_models::Period::from(period_type);
 
     let overview = state
         .budget_tree
@@ -48,43 +47,10 @@ pub async fn get_budget_overview(
     let nodes: Vec<bc_ipc::BudgetTreeNode> = overview
         .nodes
         .iter()
-        .map(crate::ipc::budget_tree_item_into_ipc)
+        .map(bc_ipc::BudgetTreeNode::from)
         .collect::<Vec<_>>();
 
-    let target_commodity = overview.summary.commodity.as_ref();
-
-    let (total_budgeted, total_spent, total_remaining) = if let Some(tc) = target_commodity {
-        let budgeted = bc_ipc::Amount::new(overview.summary.total_effective_target, tc.as_str());
-        let actuals_in_target = overview
-            .summary
-            .total_actuals
-            .iter()
-            .find(|a| a.commodity() == tc)
-            .map_or(bc_models::Decimal::ZERO, bc_models::Amount::value);
-        let spent = bc_ipc::Amount::new(actuals_in_target, tc.as_str());
-        let remaining_val = overview
-            .summary
-            .total_effective_target
-            .checked_sub(actuals_in_target)
-            .unwrap_or(bc_models::Decimal::ZERO);
-        let remaining = bc_ipc::Amount::new(remaining_val, tc.as_str());
-        (Some(budgeted), Some(spent), Some(remaining))
-    } else {
-        let spent = match overview.summary.total_actuals.as_slice() {
-            [single] => Some(single.into_ipc()),
-            _ => None,
-        };
-        (None, spent, None)
-    };
-
-    let has_mixed = overview.summary.total_actuals.len() > 1;
-    let summary = bc_ipc::BudgetSummary::new(
-        total_budgeted,
-        total_spent,
-        total_remaining,
-        has_mixed,
-        overview.summary.overspent_count,
-    );
+    let summary = bc_ipc::BudgetSummary::from(&overview.summary);
 
     Ok((summary, nodes))
 }
@@ -150,17 +116,7 @@ pub async fn get_native_periods(
         .iter()
         .map(|n| {
             let label = format_native_period_label(n);
-            let effective_target = n
-                .effective_target
-                .map(|t| bc_ipc::Amount::new(t, commodity.as_str()));
-            let spent = bc_ipc::Amount::new(n.actuals, commodity.as_str());
-            bc_ipc::NativePeriodRow::new(
-                label,
-                n.overlap.native_start,
-                n.overlap.native_end,
-                effective_target,
-                spent,
-            )
+            bc_ipc::NativePeriodRow::from_native(n, label, commodity.as_str())
         })
         .collect())
 }
@@ -252,7 +208,7 @@ pub async fn get_budget_transactions(
 
     Ok(txns
         .iter()
-        .map(|t| crate::ipc::transaction_into_ipc_with_accounts(t, &account_map, &forest))
+        .map(|t| bc_ipc::Transaction::from_model_with_accounts(t, &account_map, &forest))
         .collect())
 }
 
@@ -297,8 +253,8 @@ pub async fn list_budget_revisions(
             let reign_end = revs
                 .get(i.saturating_add(1))
                 .map(bc_models::BudgetRevision::effective_from);
-            let period_ipc = r.period().into_ipc();
-            let target = r.target().map(IntoIpc::into_ipc);
+            let period_ipc = bc_ipc::Period::from(r.period());
+            let target = r.target().map(bc_ipc::Amount::from);
             Ok(bc_ipc::BudgetRevisionView::builder()
                 .id(r.id().to_string())
                 .effective_from(r.effective_from())
@@ -307,7 +263,7 @@ pub async fn list_budget_revisions(
                 .maybe_target(target)
                 .period(period_ipc.clone())
                 .period_label(period_ipc.label())
-                .rollover(r.rollover().into_ipc())
+                .rollover(bc_ipc::RolloverPolicy::from(r.rollover()))
                 .maybe_tag_filter(r.tag_filter().map(ToString::to_string))
                 .maybe_window_overlap(crate::ipc::window_overlap(
                     r.effective_from(),
@@ -435,8 +391,8 @@ pub async fn revise_budget(
         .effective_from(effective_from)
         .maybe_name(name)
         .maybe_target(target_amount)
-        .period(period.into_model())
-        .rollover(rollover.into_model())
+        .period(bc_models::Period::from(period))
+        .rollover(bc_models::RolloverPolicy::from(rollover))
         .maybe_tag_filter(tag)
         .created_at(jiff::Timestamp::now())
         .build();
@@ -582,8 +538,8 @@ pub async fn create_budget(
         .effective_from(effective_from)
         .maybe_name(name)
         .maybe_target(target_amount)
-        .period(period.into_model())
-        .rollover(rollover.into_model())
+        .period(bc_models::Period::from(period))
+        .rollover(bc_models::RolloverPolicy::from(rollover))
         .maybe_tag_filter(tag)
         .call()
         .await
