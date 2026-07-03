@@ -78,9 +78,11 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::MarkerConflict`] if any marker collides, or [`BcError`]
-    /// on database failure.
+    /// Returns [`BcError::EmptyCommodityCode`] if the code is empty or blank,
+    /// [`BcError::MarkerConflict`] if any marker collides, or [`BcError`] on
+    /// database failure.
     pub async fn create(&self, c: &Commodity) -> BcResult<Commodity> {
+        check_code_not_blank(c.code())?;
         let existing = self.list_all().await?;
         check_ambiguity(&existing, c)?;
         let mut tx = self.pool.begin().await?;
@@ -97,10 +99,12 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::NotFound`] if the id is unknown, [`BcError::InvalidInput`]
-    /// if the code differs from the persisted row, [`BcError::MarkerConflict`] on a
-    /// marker collision, or [`BcError`] on database failure.
+    /// Returns [`BcError::NotFound`] if the id is unknown, [`BcError::EmptyCommodityCode`]
+    /// if the code is empty or blank, [`BcError::InvalidInput`] if the code differs
+    /// from the persisted row, [`BcError::MarkerConflict`] on a marker collision, or
+    /// [`BcError`] on database failure.
     pub async fn update(&self, c: &Commodity) -> BcResult<()> {
+        check_code_not_blank(c.code())?;
         let existing = self.list_all().await?;
         let current = existing
             .iter()
@@ -222,38 +226,44 @@ impl Service {
         let code = target.code();
         let id_str = id.to_string();
 
+        let mut tx = self.pool.begin().await?;
+
         let accounts: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM account_commodities WHERE commodity_id = ?")
                 .bind(&id_str)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *tx)
                 .await?;
         let postings: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM postings WHERE commodity = ? OR cost_total_commodity = ?",
         )
         .bind(code)
         .bind(code)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
         let depreciations: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM asset_depreciations WHERE commodity = ?")
                 .bind(code)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *tx)
                 .await?;
         let budgets: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM budget_revisions WHERE target_currency = ?")
                 .bind(code)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *tx)
                 .await?;
         let valuations: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM asset_valuations WHERE commodity = ?")
                 .bind(code)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *tx)
                 .await?;
         let loan_terms: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM loan_terms WHERE commodity = ?")
                 .bind(code)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *tx)
                 .await?;
+        let balances: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM balances WHERE commodity = ?")
+            .bind(code)
+            .fetch_one(&mut *tx)
+            .await?;
 
         if accounts > 0
             || postings > 0
@@ -261,13 +271,13 @@ impl Service {
             || budgets > 0
             || valuations > 0
             || loan_terms > 0
+            || balances > 0
         {
             return Err(BcError::CommodityInUse(format!(
-                "{code}: {accounts} account(s), {postings} posting(s), {depreciations} depreciation(s), {budgets} budget(s), {valuations} valuation(s), {loan_terms} loan term(s)"
+                "{code}: {accounts} account(s), {postings} posting(s), {depreciations} depreciation(s), {budgets} budget(s), {valuations} valuation(s), {loan_terms} loan term(s), {balances} balance(s)"
             )));
         }
 
-        let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM commodity_aliases WHERE commodity_id = ?")
             .bind(&id_str)
             .execute(&mut *tx)
@@ -354,6 +364,22 @@ async fn insert_with(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, c: &Commodity
         )
         .execute(&mut **tx)
         .await?;
+    }
+    Ok(())
+}
+
+/// Rejects a commodity code that is empty or trims to empty.
+///
+/// # Arguments
+///
+/// * `code` - The candidate commodity code.
+///
+/// # Errors
+///
+/// Returns [`BcError::EmptyCommodityCode`] if `code` is empty or blank.
+fn check_code_not_blank(code: &str) -> BcResult<()> {
+    if code.trim().is_empty() {
+        return Err(BcError::EmptyCommodityCode);
     }
     Ok(())
 }
@@ -696,6 +722,75 @@ mod tests {
             .delete(stored.id())
             .await
             .expect_err("referenced by valuation blocked");
+        assert!(matches!(err, BcError::CommodityInUse(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_and_update_reject_blank_code(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+
+        let blank = bc_models::Commodity::builder()
+            .code("   ")
+            .symbol("$")
+            .build();
+        let blank_err = svc
+            .create(&blank)
+            .await
+            .expect_err("blank code rejected on create");
+        assert!(matches!(blank_err, BcError::EmptyCommodityCode));
+
+        let empty = bc_models::Commodity::builder().code("").symbol("$").build();
+        let empty_err = svc
+            .create(&empty)
+            .await
+            .expect_err("empty code rejected on create");
+        assert!(matches!(empty_err, BcError::EmptyCommodityCode));
+
+        let aud = bc_models::Commodity::builder()
+            .code("AUD")
+            .symbol("A$")
+            .build();
+        let stored = svc.create(&aud).await.expect("create");
+
+        let renamed_blank = bc_models::Commodity::builder()
+            .id(stored.id().clone())
+            .code(" ")
+            .build();
+        let update_err = svc
+            .update(&renamed_blank)
+            .await
+            .expect_err("blank code rejected on update");
+        assert!(matches!(update_err, BcError::EmptyCommodityCode));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn delete_blocked_by_balance(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let jpy = bc_models::Commodity::builder()
+            .code("JPY")
+            .symbol("Y")
+            .build();
+        let stored = svc.create(&jpy).await.expect("create");
+
+        sqlx::query(
+            "INSERT INTO accounts (id, name, account_type, created_at) \
+             VALUES ('a1', 'Test Account', 'asset', '2024-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed account");
+        sqlx::query(
+            "INSERT INTO balances (account_id, commodity, amount, updated_at) \
+             VALUES ('a1', 'JPY', '100', '2024-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed balance");
+
+        let err = svc
+            .delete(stored.id())
+            .await
+            .expect_err("referenced by balance blocked");
         assert!(matches!(err, BcError::CommodityInUse(_)));
     }
 
