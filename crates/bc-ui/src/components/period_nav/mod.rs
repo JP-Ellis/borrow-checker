@@ -242,7 +242,7 @@ pub fn window_containing(period: &Period, date: jiff::civil::Date) -> jiff::civi
 #[must_use]
 #[inline]
 #[cfg_attr(
-    not(test),
+    not(any(test, target_arch = "wasm32")),
     expect(dead_code, reason = "used by out-of-period toast notifications")
 )]
 pub fn is_outside_window(
