@@ -72,11 +72,16 @@ pub fn AccountDashboard(
 
     let sparkline_resource = LocalResource::new(move || {
         let id = sparkline_account_id.clone();
-        let (bucket, n) = period_window.get().sparkline_bucketing();
+        let period = period_window.get();
+        let (bucket, n) = period.sparkline_bucketing();
+        // Anchor the trend to the end of the displayed window so navigating the
+        // page period shifts the sparkline with it.
+        let window_end = crate::components::period_nav::period_end(&period, window_start.get());
+        let as_of = window_end.saturating_sub(jiff::Span::new().days(1_i32));
         if let Some(v) = data_version {
             v.get();
         }
-        async move { bc_ipc::client::get_account_sparkline(&id, bucket, n).await }
+        async move { bc_ipc::client::get_account_sparkline(&id, bucket, n, as_of).await }
     });
 
     let sparkline_currency_code = node
