@@ -49,6 +49,7 @@ pub use budget_tree::NativePeriodStatus;
 pub use commodity::Service as CommodityService;
 pub use db::open_db;
 pub use db::open_db_at;
+pub use db::open_db_with_backup;
 pub use error::BcError;
 pub use error::BcResult;
 pub use events::Event;
