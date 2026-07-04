@@ -30,10 +30,6 @@ pub struct AppContext {
     /// Tag service.
     pub tags: bc_core::TagService,
     /// Backup service (snapshot + restore + rotation).
-    #[expect(
-        dead_code,
-        reason = "consumed by backup/restore CLI commands added in a later task"
-    )]
     pub backup: bc_core::BackupService,
     /// Resolved database file path (used by restore to swap the file).
     #[expect(
