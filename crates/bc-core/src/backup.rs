@@ -18,8 +18,10 @@ use crate::BcResult;
 pub enum BackupKind {
     /// Created explicitly by the user (`.manual`).
     Manual,
-    /// Created automatically (pre-migration or pre-restore) (`.automatic`).
-    Automatic,
+    /// Created automatically before running database migrations (`.pre-migration`).
+    PreMigration,
+    /// Created automatically as a safety snapshot just before a restore swap (`.pre-restore`).
+    PreRestore,
 }
 
 impl BackupKind {
@@ -29,7 +31,8 @@ impl BackupKind {
     pub fn suffix(self) -> &'static str {
         match self {
             Self::Manual => "manual",
-            Self::Automatic => "automatic",
+            Self::PreMigration => "pre-migration",
+            Self::PreRestore => "pre-restore",
         }
     }
 
@@ -39,7 +42,8 @@ impl BackupKind {
     pub fn from_suffix(s: &str) -> Option<Self> {
         match s {
             "manual" => Some(Self::Manual),
-            "automatic" => Some(Self::Automatic),
+            "pre-migration" => Some(Self::PreMigration),
+            "pre-restore" => Some(Self::PreRestore),
             _ => None,
         }
     }
@@ -299,7 +303,7 @@ impl Service {
     ///
     /// # Arguments
     ///
-    /// * `kind` - Manual or automatic (controls the filename suffix).
+    /// * `kind` - Manual, pre-migration, or pre-restore (controls the filename suffix).
     /// * `dest` - Explicit output path, or `None` for the managed directory.
     ///
     /// # Returns
@@ -356,8 +360,8 @@ impl Service {
 
     /// Lists the managed backups, newest-first.
     ///
-    /// Only files matching `{YYYYMMDD-HHMMSS}.{manual|automatic}.sqlite` in the
-    /// policy directory are returned; anything else is ignored.
+    /// Only files matching `{YYYYMMDD-HHMMSS}.{manual|pre-migration|pre-restore}.sqlite`
+    /// in the policy directory are returned; anything else is ignored.
     ///
     /// # Errors
     ///
@@ -524,7 +528,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (svc, _db) = service_in(dir.path()).await;
         // Two backups with distinct filenames (inject timestamps directly).
-        svc.write_snapshot_for_test(BackupKind::Automatic, "20260101-000000")
+        svc.write_snapshot_for_test(BackupKind::PreMigration, "20260101-000000")
             .await
             .expect("snap1");
         svc.write_snapshot_for_test(BackupKind::Manual, "20260601-000000")
@@ -540,7 +544,7 @@ mod tests {
         );
         assert_eq!(
             list.get(1).expect("second backup").kind,
-            BackupKind::Automatic
+            BackupKind::PreMigration
         );
     }
 
@@ -610,7 +614,7 @@ mod tests {
         let policy = BackupPolicy::new(dir.path().join("backups"), Some(2), None, true);
         let svc = super::Service::new(pool, db_path, policy);
         for stamp in ["20260101-000000", "20260201-000000", "20260301-000000"] {
-            svc.write_snapshot_for_test(BackupKind::Automatic, stamp)
+            svc.write_snapshot_for_test(BackupKind::PreMigration, stamp)
                 .await
                 .expect("snap");
         }
@@ -635,7 +639,7 @@ mod tests {
         let policy = BackupPolicy::new(dir.path().join("backups"), Some(1), None, true);
         let svc = super::Service::new(pool, db_path, policy);
 
-        svc.write_snapshot_for_test(BackupKind::Automatic, "20260101-000000")
+        svc.write_snapshot_for_test(BackupKind::PreMigration, "20260101-000000")
             .await
             .expect("snap1");
         svc.backup(BackupKind::Manual, None).await.expect("backup2");
