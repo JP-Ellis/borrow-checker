@@ -152,7 +152,12 @@ pub fn prune_indices(
 }
 
 /// Timestamp format used in backup filenames.
-const TS_FMT: &str = "%Y%m%d-%H%M%S";
+///
+/// Millisecond precision (`%3f`, three digits, no separator) gives filenames
+/// sub-second uniqueness so two snapshots taken within the same second do not
+/// collide, while the same format string round-trips through `strptime` to
+/// recover `created_at`.
+const TS_FMT: &str = "%Y%m%d-%H%M%S%3f";
 
 /// Maps an I/O error into a [`BcError`].
 fn io_err(e: &std::io::Error) -> BcError {
@@ -250,15 +255,20 @@ impl Service {
         self.pool.close().await;
     }
 
-    /// Swaps a validated backup file in as the live database, clearing stale
-    /// WAL sidecars first.
+    /// Atomically swaps a validated backup file in as the live database,
+    /// clearing stale WAL sidecars first.
     ///
     /// The database is opened in WAL mode everywhere, so a `{db_path}-wal` /
     /// `{db_path}-shm` pair left over from the database being replaced would be
     /// replayed by SQLite's recovery on the next open, silently corrupting the
-    /// freshly restored file. This removes those sidecars before overwriting
-    /// the main file with `candidate` (itself a standalone `VACUUM INTO`
-    /// snapshot with no sidecars of its own).
+    /// freshly restored file. This removes those sidecars before installing
+    /// `candidate` (itself a standalone `VACUUM INTO` snapshot with no sidecars
+    /// of its own).
+    ///
+    /// The candidate is copied to a sibling temp file on the same filesystem and
+    /// then atomically renamed over `db_path`. If the copy fails part-way,
+    /// `db_path` is left untouched (the original database), never half-written,
+    /// so an interrupted restore cannot corrupt the live database.
     ///
     /// The caller MUST ensure no live connection holds the database (see
     /// [`close_pool`](Self::close_pool)); the GUI performs the swap before any
@@ -276,7 +286,7 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError`] if a sidecar cannot be removed (other than being
-    /// absent) or the copy fails.
+    /// absent) or the copy or rename fails.
     #[inline]
     pub fn swap_in(candidate: &Path, db_path: &Path) -> BcResult<()> {
         for suffix in ["-wal", "-shm"] {
@@ -289,7 +299,14 @@ impl Service {
                 Err(e) => return Err(io_err(&e)),
             }
         }
-        std::fs::copy(candidate, db_path).map_err(|e| io_err(&e))?;
+        let tmp = {
+            let mut name = db_path.as_os_str().to_os_string();
+            name.push(".restore-tmp");
+            PathBuf::from(name)
+        };
+        drop(std::fs::remove_file(&tmp));
+        std::fs::copy(candidate, &tmp).map_err(|e| io_err(&e))?;
+        std::fs::rename(&tmp, db_path).map_err(|e| io_err(&e))?;
         Ok(())
     }
 
@@ -316,30 +333,50 @@ impl Service {
     /// fails, or the rename fails.
     #[inline]
     pub async fn backup(&self, kind: BackupKind, dest: Option<&Path>) -> BcResult<BackupRecord> {
-        let now = jiff::Zoned::now();
-        let stamp = now.strftime(TS_FMT).to_string();
-        let policy = self.current_policy();
-        let target = if let Some(p) = dest {
-            p.to_path_buf()
-        } else {
-            std::fs::create_dir_all(&policy.dir).map_err(|e| io_err(&e))?;
-            policy.dir.join(format!("{stamp}.{}.sqlite", kind.suffix()))
-        };
-
-        self.vacuum_into(&target).await?;
-        if dest.is_none() {
-            self.rotate()?;
+        if let Some(target) = dest {
+            let stamp = jiff::Zoned::now().strftime(TS_FMT).to_string();
+            self.vacuum_into(target).await?;
+            return record_from(target.to_path_buf(), kind, &stamp);
         }
+        let record = self.write_managed_snapshot(kind).await?;
+        self.rotate()?;
+        Ok(record)
+    }
 
-        let size_bytes = std::fs::metadata(&target).map_err(|e| io_err(&e))?.len();
-        let created_at = jiff::civil::DateTime::strptime(TS_FMT, &stamp)
-            .map_err(|e| BcError::BadData(format!("bad timestamp: {e}")))?;
-        Ok(BackupRecord {
-            path: target,
-            kind,
-            created_at,
-            size_bytes,
-        })
+    /// Writes a pre-restore safety snapshot into the managed backup directory
+    /// WITHOUT applying rotation.
+    ///
+    /// Rotation is deliberately skipped: a restore's candidate is itself a file
+    /// in the managed directory, and rotating while inserting this snapshot could
+    /// prune the very backup being restored. If the directory sits at
+    /// `retain_count` and the user restores the oldest managed backup, a rotating
+    /// snapshot would push the count over the limit and delete that oldest file —
+    /// the candidate — before the swap ever runs. Skipping rotation keeps the
+    /// candidate intact; any resulting over-count is reconciled by the next
+    /// ordinary [`backup`](Self::backup) call.
+    ///
+    /// # Returns
+    ///
+    /// A [`BackupRecord`] describing the written safety snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] if the directory cannot be created, `VACUUM INTO`
+    /// fails, or the rename fails.
+    #[inline]
+    pub async fn pre_restore_snapshot(&self) -> BcResult<BackupRecord> {
+        self.write_managed_snapshot(BackupKind::PreRestore).await
+    }
+
+    /// Writes a timestamped snapshot into the managed backup directory and
+    /// returns its record, WITHOUT applying rotation.
+    async fn write_managed_snapshot(&self, kind: BackupKind) -> BcResult<BackupRecord> {
+        let stamp = jiff::Zoned::now().strftime(TS_FMT).to_string();
+        let policy = self.current_policy();
+        std::fs::create_dir_all(&policy.dir).map_err(|e| io_err(&e))?;
+        let target = policy.dir.join(format!("{stamp}.{}.sqlite", kind.suffix()));
+        self.vacuum_into(&target).await?;
+        record_from(target, kind, &stamp)
     }
 
     /// Runs `VACUUM INTO` to `target` via a temp file + atomic rename.
@@ -415,9 +452,10 @@ impl Service {
     /// missing the expected schema.
     #[inline]
     pub async fn validate(candidate: &Path) -> BcResult<()> {
-        let tmp = tempfile::NamedTempFile::new().map_err(|e| io_err(&e))?;
-        std::fs::copy(candidate, tmp.path()).map_err(|e| io_err(&e))?;
-        let pool = crate::open_db_at(tmp.path()).await?;
+        let dir = tempfile::TempDir::new().map_err(|e| io_err(&e))?;
+        let tmp = dir.path().join("candidate.sqlite");
+        std::fs::copy(candidate, &tmp).map_err(|e| io_err(&e))?;
+        let pool = crate::open_db_at(&tmp).await?;
         // Sentinel: the events table must exist in any real BorrowChecker DB.
         sqlx::query("SELECT count(*) FROM events")
             .fetch_one(&pool)
@@ -454,8 +492,17 @@ impl Service {
 }
 
 /// Whole-days age of `created_at` (local civil time) relative to `now`.
+///
+/// If `created_at` cannot be resolved to a zoned instant (e.g. it falls in a DST
+/// gap) this returns `0` — treating the backup as newest so the age rule never
+/// prunes it. This is a deliberate keep-on-uncertainty policy: an undatable
+/// backup is never a prune candidate. The failure is logged at `warn`.
 fn age_days(now: &jiff::Zoned, created_at: jiff::civil::DateTime) -> i64 {
     let Ok(created_zoned) = created_at.to_zoned(now.time_zone().clone()) else {
+        tracing::warn!(
+            %created_at,
+            "could not resolve backup timestamp to a zoned instant; treating as newest to avoid pruning an undatable backup"
+        );
         return 0;
     };
     let secs = now
@@ -469,6 +516,20 @@ fn age_days(now: &jiff::Zoned, created_at: jiff::civil::DateTime) -> i64 {
     )]
     let days = secs / 86_400;
     days
+}
+
+/// Builds a [`BackupRecord`] for a just-written file from its path, kind and the
+/// timestamp string used in its name.
+fn record_from(path: PathBuf, kind: BackupKind, stamp: &str) -> BcResult<BackupRecord> {
+    let size_bytes = std::fs::metadata(&path).map_err(|e| io_err(&e))?.len();
+    let created_at = jiff::civil::DateTime::strptime(TS_FMT, stamp)
+        .map_err(|e| BcError::BadData(format!("bad timestamp: {e}")))?;
+    Ok(BackupRecord {
+        path,
+        kind,
+        created_at,
+        size_bytes,
+    })
 }
 
 /// Parses a [`BackupRecord`] from a filename of the managed form.
@@ -491,6 +552,8 @@ mod tests {
     use std::path::PathBuf;
 
     use pretty_assertions::assert_eq;
+    use pretty_assertions::assert_ne;
+    use rstest::rstest;
 
     use super::prune_indices;
     use crate::BackupKind;
@@ -528,10 +591,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (svc, _db) = service_in(dir.path()).await;
         // Two backups with distinct filenames (inject timestamps directly).
-        svc.write_snapshot_for_test(BackupKind::PreMigration, "20260101-000000")
+        svc.write_snapshot_for_test(BackupKind::PreMigration, "20260101-000000000")
             .await
             .expect("snap1");
-        svc.write_snapshot_for_test(BackupKind::Manual, "20260601-000000")
+        svc.write_snapshot_for_test(BackupKind::Manual, "20260601-000000000")
             .await
             .expect("snap2");
 
@@ -548,44 +611,31 @@ mod tests {
         );
     }
 
-    #[test]
-    fn prune_disabled_when_both_limits_unset() {
-        // 4 backups aged 0,10,100,400 days; no limits ⇒ keep all.
+    /// Retention policy cases for [`prune_indices`], covering both limits unset,
+    /// count-only, age-only, and the two union scenarios (delete only when a
+    /// backup is beyond both limits, and the age rule rescuing an old backup that
+    /// is beyond the count limit).
+    #[rstest]
+    // both limits unset ⇒ keep all.
+    #[case(&[0, 10, 100, 400], None, None, vec![])]
+    // keep 2 newest ⇒ delete indices 2 and 3 (ages ignored).
+    #[case(&[0, 1, 500, 9000], Some(2), None, vec![2, 3])]
+    // keep < 90 days ⇒ delete the 100- and 400-day-old ones.
+    #[case(&[0, 10, 100, 400], None, Some(90), vec![2, 3])]
+    // count=2, days=90: only backups beyond BOTH limits are deleted.
+    #[case(&[0, 10, 100, 400], Some(2), Some(90), vec![2, 3])]
+    // count=1, days=90: index 1 (10d) is beyond count but within age ⇒ kept.
+    #[case(&[0, 10, 100], Some(1), Some(90), vec![2])]
+    fn prune_indices_cases(
+        #[case] ages_days: &[i64],
+        #[case] retain_count: Option<u32>,
+        #[case] retain_days: Option<u32>,
+        #[case] expected: Vec<usize>,
+    ) {
         assert_eq!(
-            prune_indices(&[0, 10, 100, 400], None, None),
-            Vec::<usize>::new()
+            prune_indices(ages_days, retain_count, retain_days),
+            expected
         );
-    }
-
-    #[test]
-    fn prune_count_only_keeps_newest_n() {
-        // Keep 2 newest ⇒ delete indices 2 and 3 (ages ignored).
-        assert_eq!(prune_indices(&[0, 1, 500, 9000], Some(2), None), vec![2, 3]);
-    }
-
-    #[test]
-    fn prune_age_only_keeps_recent() {
-        // Keep < 90 days ⇒ delete the 100- and 400-day-old ones.
-        assert_eq!(
-            prune_indices(&[0, 10, 100, 400], None, Some(90)),
-            vec![2, 3]
-        );
-    }
-
-    #[test]
-    fn prune_union_deletes_only_when_beyond_both() {
-        // count=2, days=90. Index 2 (100d) is beyond count AND age ⇒ delete.
-        // Index 1 (10d) beyond count? no (i<2). Kept. Index 3 (400d) delete.
-        assert_eq!(
-            prune_indices(&[0, 10, 100, 400], Some(2), Some(90)),
-            vec![2, 3]
-        );
-    }
-
-    #[test]
-    fn prune_union_age_rescues_old_beyond_count() {
-        // count=1, days=90: index1 (10d) is beyond count but within age ⇒ kept.
-        assert_eq!(prune_indices(&[0, 10, 100], Some(1), Some(90)), vec![2]);
     }
 
     #[tokio::test]
@@ -613,7 +663,11 @@ mod tests {
         // retain_count = 2, no age limit.
         let policy = BackupPolicy::new(dir.path().join("backups"), Some(2), None, true);
         let svc = super::Service::new(pool, db_path, policy);
-        for stamp in ["20260101-000000", "20260201-000000", "20260301-000000"] {
+        for stamp in [
+            "20260101-000000000",
+            "20260201-000000000",
+            "20260301-000000000",
+        ] {
             svc.write_snapshot_for_test(BackupKind::PreMigration, stamp)
                 .await
                 .expect("snap");
@@ -639,7 +693,7 @@ mod tests {
         let policy = BackupPolicy::new(dir.path().join("backups"), Some(1), None, true);
         let svc = super::Service::new(pool, db_path, policy);
 
-        svc.write_snapshot_for_test(BackupKind::PreMigration, "20260101-000000")
+        svc.write_snapshot_for_test(BackupKind::PreMigration, "20260101-000000000")
             .await
             .expect("snap1");
         svc.backup(BackupKind::Manual, None).await.expect("backup2");
@@ -654,6 +708,66 @@ mod tests {
             list.first().expect("first backup").kind,
             BackupKind::Manual,
             "newest backup survives"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_restore_snapshot_does_not_rotate_out_candidate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("db.sqlite");
+        let pool = crate::open_db_at(&db_path).await.expect("open db");
+        // retain_count = 1: an ordinary managed backup() would rotate away the
+        // pre-existing file, but the safety snapshot must not.
+        let policy = BackupPolicy::new(dir.path().join("backups"), Some(1), None, true);
+        let svc = super::Service::new(pool, db_path, policy);
+
+        let b1 = svc
+            .write_managed_snapshot(BackupKind::Manual)
+            .await
+            .expect("b1");
+        svc.pre_restore_snapshot().await.expect("snapshot");
+
+        assert!(
+            b1.path.exists(),
+            "candidate B1 must survive: pre_restore_snapshot must not rotate"
+        );
+        let list = svc.list().expect("list");
+        assert_eq!(list.len(), 2, "both managed files present, no rotation");
+    }
+
+    #[test]
+    fn swap_in_leaves_db_intact_when_candidate_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("db.sqlite");
+        std::fs::write(&db_path, b"original database bytes").expect("seed db");
+        let missing = dir.path().join("does-not-exist.sqlite");
+
+        assert!(
+            super::Service::swap_in(&missing, &db_path).is_err(),
+            "swap_in must fail when the candidate does not exist"
+        );
+        let after = std::fs::read(&db_path).expect("db still readable");
+        assert_eq!(
+            after, b"original database bytes",
+            "failed swap must leave the original db untouched, never truncated"
+        );
+    }
+
+    #[tokio::test]
+    async fn back_to_back_managed_backups_get_distinct_filenames() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+
+        // No injected timestamps: rely on sub-second filename uniqueness.
+        svc.backup(BackupKind::Manual, None).await.expect("b1");
+        svc.backup(BackupKind::Manual, None).await.expect("b2");
+
+        let list = svc.list().expect("list");
+        assert_eq!(list.len(), 2, "two distinct managed backups must be listed");
+        assert_ne!(
+            list.first().expect("first").path,
+            list.get(1).expect("second").path,
+            "back-to-back backups must have distinct filenames"
         );
     }
 }

@@ -27,9 +27,7 @@ pub struct Args {
 /// filesystem/database operation fails.
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     bc_core::BackupService::validate(&args.path).await?;
-    ctx.backup
-        .backup(bc_core::BackupKind::PreRestore, None)
-        .await?;
+    ctx.backup.pre_restore_snapshot().await?;
     ctx.backup.close_pool().await;
     bc_core::BackupService::swap_in(&args.path, &ctx.db_path)?;
     #[expect(clippy::print_stdout, reason = "CLI output")]

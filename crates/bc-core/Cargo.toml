@@ -26,6 +26,7 @@ tracing      = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions   = { workspace = true }
+rstest              = { workspace = true }
 rust_decimal_macros = { workspace = true }
 tokio               = { workspace = true }
 

@@ -43,6 +43,54 @@ pub(crate) struct AppState {
     pub(crate) plugins: Vec<bc_ipc::PluginInfo>,
 }
 
+/// Applies a pending restore marker before any database connection is opened.
+///
+/// Any failure here must NOT abort startup: startup continues with the intact
+/// original database either way. The swap is atomic, so the marker is kept on
+/// swap failure and the next launch retries; it is removed only after a
+/// successful swap, or when it is unreadable (nothing usable can be done with
+/// it). The pre-restore safety snapshot remains for manual recovery.
+///
+/// # Arguments
+///
+/// * `db_path` - Path of the live database file to swap the candidate in over.
+fn apply_pending_restore(db_path: &std::path::Path) {
+    let marker = commands::backup::restore_marker_path(db_path);
+    if !marker.exists() {
+        return;
+    }
+    let candidate = match std::fs::read_to_string(&marker) {
+        Ok(candidate) => candidate,
+        Err(read_err) => {
+            tracing::warn!(
+                error = %read_err,
+                "failed to read restore marker; removing it and keeping existing database"
+            );
+            if let Err(rm_err) = std::fs::remove_file(&marker) {
+                tracing::warn!(error = %rm_err, "failed to remove unreadable restore marker");
+            }
+            return;
+        }
+    };
+    match bc_core::BackupService::swap_in(std::path::Path::new(candidate.trim()), db_path) {
+        Ok(()) => {
+            if let Err(rm_err) = std::fs::remove_file(&marker) {
+                tracing::warn!(
+                    error = %rm_err,
+                    "failed to remove restore marker after successful swap"
+                );
+            }
+        }
+        Err(swap_err) => {
+            tracing::warn!(
+                error = %swap_err,
+                "failed to swap in restore candidate; keeping existing \
+                 database and retaining marker to retry next launch"
+            );
+        }
+    }
+}
+
 /// Initialise and run the Tauri application.
 ///
 /// # Panics
@@ -102,36 +150,7 @@ pub fn run() {
             let db_path = std::env::var("BC_DB_PATH")
                 .map_or_else(|_| bc_config::default_db_path(), std::path::PathBuf::from);
 
-            // Apply a pending restore before opening any connection. Any failure
-            // here must NOT abort startup: a missing/unreadable candidate would
-            // otherwise brick the app on every launch. Log and drop the marker so
-            // the next launch proceeds with the existing database (the pre-restore
-            // safety snapshot remains for manual recovery).
-            let marker = commands::backup::restore_marker_path(&db_path);
-            if marker.exists() {
-                match std::fs::read_to_string(&marker) {
-                    Ok(candidate) => {
-                        if let Err(e) = bc_core::BackupService::swap_in(
-                            std::path::Path::new(candidate.trim()),
-                            &db_path,
-                        ) {
-                            tracing::warn!(
-                                error = %e,
-                                "failed to swap in restore candidate; keeping existing database"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "failed to read restore marker; keeping existing database"
-                        );
-                    }
-                }
-                if let Err(e) = std::fs::remove_file(&marker) {
-                    tracing::warn!(error = %e, "failed to remove restore marker");
-                }
-            }
+            apply_pending_restore(&db_path);
 
             let settings = bc_config::Settings::load().unwrap_or_default();
             let b = settings.backup();
