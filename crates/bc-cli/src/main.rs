@@ -60,6 +60,7 @@ async fn main() {
         Commands::Import(args) => commands::import::execute(args, &ctx).await,
         Commands::Export(args) => commands::export::execute(args, &ctx).await,
         Commands::Report(args) => commands::report::execute(args, &ctx).await,
+        Commands::Restore(args) => commands::restore::execute(args, &ctx).await,
         Commands::Budget(args) => commands::budget::execute(args, &ctx).await,
         Commands::Tag(args) => commands::tag::execute(args, &ctx).await,
         Commands::Plugin(args) => commands::plugin::execute(args, &ctx).await,

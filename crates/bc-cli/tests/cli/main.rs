@@ -14,6 +14,7 @@ mod budget;
 mod export;
 mod import;
 mod report;
+mod restore;
 mod transaction;
 
 /// Capture binary output as a formatted snapshot string.

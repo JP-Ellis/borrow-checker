@@ -11,6 +11,7 @@ use crate::commands::export;
 use crate::commands::import;
 use crate::commands::plugin;
 use crate::commands::report;
+use crate::commands::restore;
 use crate::commands::tag;
 use crate::commands::transaction;
 
@@ -77,6 +78,8 @@ pub enum Commands {
     Export(export::Args),
     /// Generate financial reports.
     Report(report::Args),
+    /// Restore the database from a backup file.
+    Restore(restore::Args),
     /// Manage budgets: create, list, archive, status.
     Budget(budget::Args),
     /// Manage tags: create, rename, delete, list.
