@@ -756,18 +756,23 @@ pub enum Period {
 }
 
 impl Period {
-    /// Returns the default number of buckets to display in a sparkline for this period.
+    /// Returns the sparkline bucketing for a page displayed at this period.
+    ///
+    /// The sparkline is a trend, so its buckets are a resolution finer than the
+    /// page period. Returns the `(bucket_period, count)` pair to fetch.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of the bucket granularity and the number of buckets to display.
     #[must_use]
     #[inline]
-    pub fn default_sparkline_count(&self) -> u32 {
+    pub fn sparkline_bucketing(&self) -> (Period, u32) {
         match self {
-            Self::Daily => 14,
-            Self::Weekly | Self::Fortnightly => 8,
-            Self::Monthly
-            | Self::Quarterly
-            | Self::CalendarYear
-            | Self::FinancialYear { .. }
-            | Self::FinancialQuarter { .. } => 6,
+            Self::Daily | Self::Weekly => (Self::Daily, 14),
+            Self::Fortnightly => (Self::Weekly, 8),
+            Self::Monthly => (Self::Weekly, 13),
+            Self::Quarterly | Self::FinancialQuarter { .. } => (Self::Monthly, 6),
+            Self::CalendarYear | Self::FinancialYear { .. } => (Self::Monthly, 12),
         }
     }
 
@@ -1062,20 +1067,37 @@ mod tests {
     }
 
     #[test]
-    fn period_default_sparkline_count() {
-        assert_eq!(Period::Daily.default_sparkline_count(), 14);
-        assert_eq!(Period::Weekly.default_sparkline_count(), 8);
-        assert_eq!(Period::Fortnightly.default_sparkline_count(), 8);
-        assert_eq!(Period::Monthly.default_sparkline_count(), 6);
-        assert_eq!(Period::Quarterly.default_sparkline_count(), 6);
-        assert_eq!(Period::CalendarYear.default_sparkline_count(), 6);
+    fn period_sparkline_bucketing() {
+        assert_eq!(Period::Daily.sparkline_bucketing(), (Period::Daily, 14));
+        assert_eq!(Period::Weekly.sparkline_bucketing(), (Period::Daily, 14));
+        assert_eq!(
+            Period::Fortnightly.sparkline_bucketing(),
+            (Period::Weekly, 8)
+        );
+        assert_eq!(Period::Monthly.sparkline_bucketing(), (Period::Weekly, 13));
+        assert_eq!(
+            Period::Quarterly.sparkline_bucketing(),
+            (Period::Monthly, 6)
+        );
+        assert_eq!(
+            Period::FinancialQuarter {
+                start_month: 7,
+                start_day: 1,
+            }
+            .sparkline_bucketing(),
+            (Period::Monthly, 6)
+        );
+        assert_eq!(
+            Period::CalendarYear.sparkline_bucketing(),
+            (Period::Monthly, 12)
+        );
         assert_eq!(
             Period::FinancialYear {
                 start_month: 7,
                 start_day: 1,
             }
-            .default_sparkline_count(),
-            6
+            .sparkline_bucketing(),
+            (Period::Monthly, 12)
         );
     }
 
