@@ -77,6 +77,14 @@ In dev mode, `stylance --watch` and `trunk serve` run concurrently (see `Tauri.t
 - Commands are registered in `crates/bc-app/src/lib.rs` via
   `tauri::generate_handler![]`
 
+## Settings → Backup Panel
+
+An editable settings surface (backup directory, retain-count, retain-days, auto-pre-migration
+toggle) with a dirty-gated save/discard bar shown only while the draft differs from the saved
+settings. A "Create backup now" action triggers a manual snapshot, and a list of existing backups
+each expose a confirm-gated Restore action — a second click is required, and its label warns that
+the app will relaunch to apply the swap.
+
 ## Feature Flag Matrix
 
 | Feature | Crate | Activates |

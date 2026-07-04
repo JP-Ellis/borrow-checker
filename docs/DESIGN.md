@@ -160,6 +160,22 @@ Fine-grained expense categories (`Expenses:Food:Restaurants`, `Expenses:Health:G
 
 Cross-cutting expense views are handled via tags on postings and accounts, enabling queries like "all food spend regardless of context" or "all spending tagged `person:me`" — without duplicating the account hierarchy.
 
+### 4.4 Backup & Restore (`bc-core`)
+
+Snapshots are taken via SQLite `VACUUM INTO` to a temp file, then atomically renamed into place — a backup is a standalone file with no `-wal`/`-shm` sidecars.
+
+**Kinds** (encoded in the filename suffix):
+
+| Kind | Trigger |
+| --------------- | -------------------------------------------------------------------------------------- |
+| `manual` | User-initiated, from the CLI or the GUI Settings panel |
+| `pre-migration` | Automatic, taken before applying schema migrations when `auto_pre_migration` is enabled and the database file already existed and was non-empty |
+| `pre-restore` | Automatic safety snapshot taken just before a restore swap; deliberately skips rotation so it can never prune the very backup being restored |
+
+**Retention** is a conservative union, configured in the `[backup]` section (`dir`, `retain_count` default 5, `retain_days` unset, `auto_pre_migration` default true): a backup is kept if it is among the `retain_count` newest **or** newer than `retain_days`; it is pruned only if it satisfies neither. When both limits are unset, nothing is pruned. On disk, `retain_count = 0` is the sentinel for "unlimited" (an absent key falls back to the default of 5).
+
+**Restore** validates the candidate first (copy to a temp directory, open it — which runs migrations — and run a sentinel query), then takes a `pre-restore` safety snapshot, then swaps the candidate in: the CLI closes the pool and swaps in-process; the GUI writes a restore-marker beside the database and relaunches, applying the swap at startup before any connection is opened. The swap itself clears stale `-wal`/`-shm` sidecars left by the replaced database and installs the candidate via a temp copy + atomic rename, so an interrupted restore leaves the live database untouched rather than corrupted.
+
 ______________________________________________________________________
 
 ## 5. Format Compatibility (`bc-format-*`)
@@ -376,6 +392,8 @@ borrow-checker completions <bash|elvish|fish|powershell|zsh>
 
 All commands support `--json` for structured output. Shell completions are generated on demand via `borrow-checker completions <bash|elvish|fish|powershell|zsh>`.
 
+Backup and restore (see §4.4) are exposed as CLI commands over the same `bc-core` service the GUI uses.
+
 ### 8.2 Tauri GUI (`bc-app`)
 
 Layout: **icon rail + context-sensitive content**.
@@ -384,6 +402,7 @@ Layout: **icon rail + context-sensitive content**.
 - **Dashboard** is the home screen: net worth, spend this month, budget remaining, recent transactions, budget health bars, quick-import button
 - Accounts view: account tree (left panel) + transaction list + detail (right panel)
 - Power users navigate directly via the account tree; new users land on the dashboard
+- Settings → Backup panel: edit backup settings, trigger a manual backup, and restore from an existing snapshot (see §4.4)
 
 ______________________________________________________________________
 
