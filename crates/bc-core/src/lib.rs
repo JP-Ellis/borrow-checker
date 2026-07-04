@@ -10,6 +10,7 @@
 
 pub(crate) mod account;
 pub(crate) mod asset;
+pub mod backup;
 pub(crate) mod balance;
 pub(crate) mod budget;
 pub(crate) mod budget_tree;
@@ -30,6 +31,9 @@ pub(crate) mod transaction;
 
 pub use account::Service as AccountService;
 pub use asset::Service as AssetService;
+pub use backup::BackupKind;
+pub use backup::BackupPolicy;
+pub use backup::BackupRecord;
 pub use balance::Engine as BalanceEngine;
 pub use balance::PostingBucket;
 pub use bc_models::BudgetWindow;
