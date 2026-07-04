@@ -234,6 +234,8 @@ struct GetAccountSparklineArgs<'a> {
     count: u32,
     /// Time-bucket granularity.
     period: crate::Period,
+    /// Reference date; the most recent bucket contains this date.
+    as_of: jiff::civil::Date,
 }
 
 /// Gets windowed income, expense, and balance stats for `account_id`.
@@ -289,6 +291,7 @@ pub async fn account_latest_activity(
 /// * `account_id` - Account ID to query.
 /// * `period` - Time-bucket granularity.
 /// * `count` - Number of buckets to return.
+/// * `as_of` - Reference date; the most recent bucket contains this date.
 ///
 /// # Errors
 ///
@@ -298,6 +301,7 @@ pub async fn get_account_sparkline(
     account_id: &str,
     period: crate::Period,
     count: u32,
+    as_of: jiff::civil::Date,
 ) -> Result<Vec<crate::SparkPoint>, BcError> {
     tauri_sys::core::invoke_result::<Vec<crate::SparkPoint>, BcError>(
         commands::GET_ACCOUNT_SPARKLINE,
@@ -306,6 +310,7 @@ pub async fn get_account_sparkline(
             commodity: None,
             count,
             period,
+            as_of,
         },
     )
     .await
