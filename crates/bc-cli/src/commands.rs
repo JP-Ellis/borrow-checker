@@ -12,6 +12,7 @@ pub mod export;
 pub mod import;
 pub mod plugin;
 pub mod report;
+pub mod restore;
 pub mod tag;
 pub mod transaction;
 

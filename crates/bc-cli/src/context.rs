@@ -32,10 +32,6 @@ pub struct AppContext {
     /// Backup service (snapshot + restore + rotation).
     pub backup: bc_core::BackupService,
     /// Resolved database file path (used by restore to swap the file).
-    #[expect(
-        dead_code,
-        reason = "consumed by backup/restore CLI commands added in a later task"
-    )]
     pub db_path: std::path::PathBuf,
 }
 
