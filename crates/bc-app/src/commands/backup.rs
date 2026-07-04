@@ -91,7 +91,7 @@ pub async fn restore_database(
         .map_err(|e| bc_ipc::BcError::Validation(e.to_string()))?;
     state
         .backup
-        .backup(bc_core::BackupKind::Automatic, None)
+        .backup(bc_core::BackupKind::PreRestore, None)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
     let marker = restore_marker_path(&state.db_path);
