@@ -1,8 +1,11 @@
 //! Settings page — read-only view of application configuration.
 
+/// Editable backup-settings panel — see [`backup::BackupPanel`].
+pub(crate) mod backup;
 /// Editable currency-registry panel — see [`currencies::CurrenciesPanel`].
 pub(crate) mod currencies;
 
+use backup::BackupPanel;
 use bc_ipc::SettingsInfo;
 use currencies::CurrenciesPanel;
 use leptos::prelude::*;
@@ -147,6 +150,8 @@ enum SettingsSection {
     General,
     /// The editable currency registry.
     Currencies,
+    /// The editable backup settings + actions.
+    Backup,
 }
 
 /// Settings page — sidebar shell with sections for read-only configuration
@@ -173,13 +178,17 @@ pub fn Settings() -> impl IntoView {
             }
         };
         let aria_current = move || section.get() == target;
+        let testid = match target {
+            SettingsSection::General => None,
+            SettingsSection::Currencies => Some("settings-nav-currencies"),
+            SettingsSection::Backup => Some("settings-nav-backup"),
+        };
         view! {
             <button
                 type="button"
                 class=cls
                 aria-current=move || aria_current().then_some("page")
-                data-testid=(target == SettingsSection::Currencies)
-                    .then_some("settings-nav-currencies")
+                data-testid=testid
                 on:click=move |_| section.set(target)
             >
                 {label}
@@ -193,6 +202,7 @@ pub fn Settings() -> impl IntoView {
                 <div class=style::side_label>"Settings"</div>
                 {nav_item("General", SettingsSection::General)}
                 {nav_item("Currencies", SettingsSection::Currencies)}
+                {nav_item("Backup", SettingsSection::Backup)}
             </aside>
             <main class=style::main>
                 {move || match section.get() {
@@ -219,6 +229,7 @@ pub fn Settings() -> impl IntoView {
                             .into_any()
                     }
                     SettingsSection::Currencies => view! { <CurrenciesPanel /> }.into_any(),
+                    SettingsSection::Backup => view! { <BackupPanel /> }.into_any(),
                 }}
             </main>
         </div>
