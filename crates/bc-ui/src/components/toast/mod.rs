@@ -10,14 +10,7 @@ use leptos::html::Div;
 use leptos::prelude::*;
 use stylance::import_style;
 
-import_style!(
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired up by shell/notify in later tasks")
-    )]
-    style,
-    "toast.module.scss"
-);
+import_style!(style, "toast.module.scss");
 
 /// Auto-dismiss delay for every toast, in milliseconds.
 const DEFAULT_TOAST_MS: u64 = 7_000;
@@ -26,10 +19,6 @@ const DEFAULT_TOAST_MS: u64 = 7_000;
 
 /// Semantic category of a toast, controlling colour token and styling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired up by shell/notify in later tasks")
-)]
 pub enum ToastKind {
     /// Neutral informational message.
     Info,
@@ -103,10 +92,6 @@ impl ToastStore {
     /// # Returns
     ///
     /// The id assigned to the new toast.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired up by shell/notify in later tasks")
-    )]
     pub fn push(
         &self,
         kind: ToastKind,
@@ -147,10 +132,6 @@ impl ToastStore {
 ///
 /// The provided [`ToastStore`] handle.
 #[must_use]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired up by shell/notify in later tasks")
-)]
 pub fn provide_toast_store() -> ToastStore {
     let store = ToastStore {
         items: RwSignal::new(Vec::new()),
@@ -167,10 +148,6 @@ pub fn provide_toast_store() -> ToastStore {
 /// The shared [`ToastStore`]; a fresh detached store if none was provided
 /// (keeps callers panic-free in isolated test/QA contexts).
 #[must_use]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired up by shell/notify in later tasks")
-)]
 pub fn use_toasts() -> ToastStore {
     use_context::<ToastStore>().unwrap_or_else(|| ToastStore {
         items: RwSignal::new(Vec::new()),
@@ -221,10 +198,6 @@ pub fn ToastHost() -> impl IntoView {
 ///
 /// * `toast` - The toast to render.
 /// * `store` - Store used to dismiss this toast on action/close.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired up by shell/notify in later tasks")
-)]
 fn toast_item(toast: Toast, store: ToastStore) -> impl IntoView {
     let id = toast.id;
     let action = toast.action.clone();
@@ -259,3 +232,6 @@ fn toast_item(toast: Toast, store: ToastStore) -> impl IntoView {
         </div>
     }
 }
+
+#[cfg(debug_assertions)]
+pub mod qa;
