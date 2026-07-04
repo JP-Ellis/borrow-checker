@@ -330,3 +330,28 @@ CREATE TABLE budget_revisions (
     UNIQUE (budget_id, effective_from)
 );
 CREATE INDEX idx_budget_revisions_budget ON budget_revisions (budget_id, effective_from);
+
+-- MARK: Transaction sources
+
+-- Import provenance: one row per statement row that produced a transaction.
+-- Scoped to the owning account; the UNIQUE constraint is the idempotency key.
+CREATE TABLE transaction_sources (
+    id             TEXT    NOT NULL PRIMARY KEY,
+    transaction_id TEXT    NOT NULL REFERENCES transactions(id),
+    account_id     TEXT    NOT NULL REFERENCES accounts(id),
+    date           TEXT    NOT NULL, -- YYYY-MM-DD
+    narration      TEXT    NOT NULL,
+    amount         TEXT    NOT NULL, -- decimal string
+    commodity      TEXT    NOT NULL, -- CommodityCode (e.g. "AUD")
+    reference      TEXT,             -- institution txid/reference; NULL if absent
+    occurrence     INTEGER NOT NULL, -- 0-based ordinal among identical fingerprints
+    fingerprint    TEXT    NOT NULL, -- canonical dedup key
+    created_at     TEXT    NOT NULL,
+    UNIQUE (account_id, fingerprint, occurrence)
+);
+
+CREATE INDEX idx_transaction_sources_account_fp
+    ON transaction_sources (account_id, fingerprint);
+
+CREATE INDEX idx_transaction_sources_tx
+    ON transaction_sources (transaction_id);
