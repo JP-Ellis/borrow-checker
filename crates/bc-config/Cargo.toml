@@ -18,10 +18,12 @@ directories = { workspace = true }
 jiff        = { workspace = true }
 serde       = { workspace = true }
 thiserror   = { workspace = true }
+toml_edit   = { workspace = true }
 tracing     = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+tempfile          = { workspace = true }
 
 [features]
 # Conversion from bc-config::Settings into bc-ipc::SettingsInfo (native/Tauri side only).
