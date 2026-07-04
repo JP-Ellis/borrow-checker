@@ -25,6 +25,7 @@ use crate::shell::palette::CommandPalette;
 #[component]
 pub fn ConsoleShell() -> impl IntoView {
     let _currency_store = crate::currency_ctx::provide_currency_store();
+    let _toast_store = crate::components::toast::provide_toast_store();
     let palette_open = RwSignal::new(false);
 
     /* Global ⌘K / Ctrl+K shortcut — toggles the command palette from anywhere. */
@@ -46,6 +47,7 @@ pub fn ConsoleShell() -> impl IntoView {
                 open=palette_open.read_only()
                 on_close=Callback::new(move |()| palette_open.set(false))
             />
+            <crate::components::toast::ToastHost />
         </div>
     }
 }
