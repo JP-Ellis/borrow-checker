@@ -1,6 +1,12 @@
 //! Line-oriented parser for the Ledger plain-text format.
 
 use rust_decimal::Decimal;
+use winnow::ModalResult;
+use winnow::Parser;
+use winnow::combinator::alt;
+use winnow::error::ErrMode;
+use winnow::error::ParserError;
+use winnow::token::take_while;
 
 use crate::ast::ClearedStatus;
 use crate::ast::Entry;
@@ -8,7 +14,33 @@ use crate::ast::Posting;
 use crate::ast::PostingAmount;
 use crate::ast::Transaction;
 
-// TODO: consider migrating to nom parser combinators
+/// Parses `YYYY-MM-DD` or `YYYY/MM/DD` into a [`bc_sdk::Date`].
+///
+/// # Arguments
+///
+/// * `input` - The remaining input; the date prefix is consumed on success.
+///
+/// # Returns
+///
+/// The parsed [`bc_sdk::Date`].
+///
+/// # Errors
+///
+/// Backtracks if the input is not a valid date.
+fn date(input: &mut &str) -> ModalResult<bc_sdk::Date> {
+    let year: i32 = take_while(4, |c: char| c.is_ascii_digit())
+        .try_map(str::parse)
+        .parse_next(input)?;
+    let _ = alt(('-', '/')).parse_next(input)?;
+    let month: u8 = take_while(2, |c: char| c.is_ascii_digit())
+        .try_map(str::parse)
+        .parse_next(input)?;
+    let _ = alt(('-', '/')).parse_next(input)?;
+    let day: u8 = take_while(2, |c: char| c.is_ascii_digit())
+        .try_map(str::parse)
+        .parse_next(input)?;
+    bc_sdk::Date::try_new(year, month, day).map_err(|_| ErrMode::from_input(input))
+}
 
 /// Parses a complete Ledger file and returns its entries.
 ///
@@ -66,12 +98,9 @@ fn parse_transaction_header<'a>(
     header: &str,
     lines: &mut core::iter::Peekable<impl Iterator<Item = &'a str>>,
 ) -> Result<Transaction, String> {
-    if header.len() < 10 {
-        return Err(format!("transaction header too short: '{header}'"));
-    }
-    let (date_str, after_date) = header.split_at(10);
-    let date = parse_date(date_str)?;
-    let header_rest = after_date.trim_start();
+    let mut header_input = header;
+    let date = date(&mut header_input).map_err(|_| format!("bad date in header: '{header}'"))?;
+    let header_rest = header_input.trim_start();
 
     let (cleared, payee_part) = if let Some(r) = header_rest.strip_prefix("* ") {
         (ClearedStatus::Cleared, r.trim_start())
@@ -117,8 +146,11 @@ fn parse_posting(line: &str) -> Result<Posting, String> {
     let s = account_and_amount.trim();
 
     let amount = if let Some(pos) = find_double_space(s) {
-        let amount_str = s.get(pos..).unwrap_or_default().trim();
-        Some(parse_posting_amount(amount_str)?)
+        let mut amount_str = s.get(pos..).unwrap_or_default().trim();
+        Some(
+            posting_amount(&mut amount_str)
+                .map_err(|_| format!("cannot parse amount in posting: '{s}'"))?,
+        )
     } else {
         None
     };
@@ -133,60 +165,57 @@ fn parse_posting(line: &str) -> Result<Posting, String> {
     })
 }
 
-/// Parses a Ledger posting amount string.
+/// Parses a Ledger posting amount.
 ///
-/// Accepts two styles:
-/// - `50.00 AUD` (value then commodity)
-/// - `$50.00` / `-$50.00` (symbol-prefixed)
+/// Accepts `<value> <commodity>` (e.g. `50.00 AUD`) and `<symbol><value>`
+/// (e.g. `$50.00`, `-$50.00`).
+///
+/// # Arguments
+///
+/// * `input` - The trimmed amount text (consumed to end on success).
+///
+/// # Returns
+///
+/// The parsed [`PostingAmount`].
+///
+/// # Errors
+///
+/// Backtracks if neither amount style matches.
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "negation of a parsed Decimal cannot overflow in practice"
 )]
-fn parse_posting_amount(raw: &str) -> Result<PostingAmount, String> {
-    let s = raw.trim();
+fn posting_amount(input: &mut &str) -> ModalResult<PostingAmount> {
+    let s = input.trim();
 
-    // Try `<value> <commodity>` style first (most common).
-    if let Some((value_part, commodity_part)) = s.rsplit_once(' ') {
-        let maybe_value = value_part.trim();
-        let maybe_commodity = commodity_part.trim();
-        if let Ok(value) = maybe_value.parse::<Decimal>() {
-            return Ok(PostingAmount {
-                value,
-                commodity: maybe_commodity.to_owned(),
-            });
-        }
+    // `<value> <commodity>` style (most common): split on the last space.
+    if let Some((value_part, commodity_part)) = s.rsplit_once(' ')
+        && let Ok(value) = value_part.trim().parse::<Decimal>()
+    {
+        *input = "";
+        return Ok(PostingAmount {
+            value,
+            commodity: commodity_part.trim().to_owned(),
+        });
     }
 
-    // Try `<symbol><value>` style (e.g. `$50.00`, `-$50.00`).
-    let (negative, magnitude) = if let Some(m) = s.strip_prefix('-') {
-        (true, m)
-    } else {
-        (false, s)
+    // `<symbol><value>` style (e.g. `$50.00`, `-$50.00`).
+    let (negative, magnitude) = match s.strip_prefix('-') {
+        Some(m) => (true, m),
+        None => (false, s),
     };
-    let digit_start = magnitude
-        .find(|c: char| c.is_ascii_digit())
-        .ok_or_else(|| format!("cannot parse amount: '{s}'"))?;
+    let Some(digit_start) = magnitude.find(|c: char| c.is_ascii_digit()) else {
+        return Err(ErrMode::from_input(input));
+    };
     let (symbol, num_str) = magnitude.split_at(digit_start);
-    let commodity = symbol.trim().to_owned();
-    let abs_value: Decimal = num_str
-        .parse()
-        .map_err(|e| format!("cannot parse decimal '{num_str}': {e}"))?;
-    let value = if negative { -abs_value } else { abs_value };
-    Ok(PostingAmount { value, commodity })
-}
-
-/// Parses `YYYY-MM-DD` or `YYYY/MM/DD` into a [`bc_sdk::Date`].
-fn parse_date(s: &str) -> Result<bc_sdk::Date, String> {
-    let s = s.replace('/', "-");
-    let bytes = s.as_bytes();
-    if bytes.len() < 10 {
-        return Err(format!("date too short: '{s}'"));
-    }
-    let year: i32 = s[0..4].parse().map_err(|_| format!("bad year in '{s}'"))?;
-    let month: u8 = s[5..7].parse().map_err(|_| format!("bad month in '{s}'"))?;
-    let day: u8 = s[8..10].parse().map_err(|_| format!("bad day in '{s}'"))?;
-    bc_sdk::Date::try_new(year, month, day)
-        .map_err(|e| format!("invalid date in '{s}': {e}"))
+    let Ok(abs_value) = num_str.parse::<Decimal>() else {
+        return Err(ErrMode::from_input(input));
+    };
+    *input = "";
+    Ok(PostingAmount {
+        value: if negative { -abs_value } else { abs_value },
+        commodity: symbol.trim().to_owned(),
+    })
 }
 
 /// Splits a line at the first `;`, returning `(before, comment_text)`.
@@ -215,6 +244,37 @@ mod tests {
     use super::*;
     use crate::ast::ClearedStatus;
     use crate::ast::Entry;
+
+    #[test]
+    fn date_parses_hyphenated() {
+        let mut input = "2025-01-15 rest";
+        let d = date(&mut input).expect("date");
+        assert_eq!(d, bc_sdk::Date::new(2025, 1, 15));
+        assert_eq!(input, " rest");
+    }
+
+    #[test]
+    fn date_parses_slashed() {
+        let mut input = "2025/01/15";
+        let d = date(&mut input).expect("date");
+        assert_eq!(d, bc_sdk::Date::new(2025, 1, 15));
+    }
+
+    #[test]
+    fn posting_amount_value_then_commodity() {
+        let mut input = "50.00 AUD";
+        let a = posting_amount(&mut input).expect("amount");
+        assert_eq!(a.value, dec!(50.00));
+        assert_eq!(a.commodity, "AUD");
+    }
+
+    #[test]
+    fn posting_amount_symbol_prefixed() {
+        let mut input = "-$50.00";
+        let a = posting_amount(&mut input).expect("amount");
+        assert_eq!(a.value, dec!(-50.00));
+        assert_eq!(a.commodity, "$");
+    }
 
     #[test]
     #[expect(
