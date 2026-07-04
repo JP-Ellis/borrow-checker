@@ -75,3 +75,17 @@ pub use period_overlap::PeriodOverlap;
 pub use settings::Store as SettingsStore;
 pub use tag::Service as TagService;
 pub use transaction::Service as TransactionService;
+
+#[cfg(test)]
+mod migration_smoke {
+    #[sqlx::test(migrations = "./migrations")]
+    async fn transaction_sources_table_exists(pool: sqlx::SqlitePool) {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='transaction_sources'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("query sqlite_master");
+        pretty_assertions::assert_eq!(count, 1, "transaction_sources table must exist");
+    }
+}
