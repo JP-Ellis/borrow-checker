@@ -224,6 +224,35 @@ pub fn window_containing(period: &Period, date: jiff::civil::Date) -> jiff::civi
     period_start(period, date)
 }
 
+/// Returns `true` when `date` falls outside the window that starts at
+/// `window_start` for the given `period`.
+///
+/// A date is inside the window when its enclosing window start (per
+/// [`window_containing`]) equals `window_start`; otherwise it is outside.
+///
+/// # Arguments
+///
+/// * `period` - The period granularity defining window boundaries.
+/// * `window_start` - The first day of the currently-displayed window.
+/// * `date` - The date to test.
+///
+/// # Returns
+///
+/// `true` if `date` is not within the window beginning at `window_start`.
+#[must_use]
+#[inline]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used by out-of-period toast notifications")
+)]
+pub fn is_outside_window(
+    period: &Period,
+    window_start: jiff::civil::Date,
+    date: jiff::civil::Date,
+) -> bool {
+    window_containing(period, date) != window_start
+}
+
 /// Returns a human-readable label for the period window that begins at `start`.
 ///
 /// # Arguments
@@ -954,5 +983,41 @@ mod tests {
         #[case] expected: Date,
     ) {
         assert_eq!(window_containing(&period, input), expected);
+    }
+
+    // MARK: is_outside_window
+
+    #[rstest]
+    // Monthly window starting 2026-06-01.
+    #[case(Date::constant(2026, 6, 1), Date::constant(2026, 6, 15), false)] /* inside */
+    #[case(Date::constant(2026, 6, 1), Date::constant(2026, 6, 1), false)] /* first day inside */
+    #[case(Date::constant(2026, 6, 1), Date::constant(2026, 6, 30), false)] /* last day inside */
+    #[case(Date::constant(2026, 6, 1), Date::constant(2026, 5, 31), true)] /* day before */
+    #[case(Date::constant(2026, 6, 1), Date::constant(2026, 7, 1), true)] /* day after (exclusive end) */
+    fn is_outside_window_monthly(
+        #[case] window_start: Date,
+        #[case] date: Date,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(
+            is_outside_window(&Period::Monthly, window_start, date),
+            expected
+        );
+    }
+
+    #[rstest]
+    // Calendar-year window starting 2025-01-01.
+    #[case(Date::constant(2025, 1, 1), Date::constant(2025, 12, 31), false)] /* inside */
+    #[case(Date::constant(2025, 1, 1), Date::constant(2026, 1, 1), true)] /* next year */
+    #[case(Date::constant(2025, 1, 1), Date::constant(2024, 12, 31), true)] /* prev year */
+    fn is_outside_window_calendar_year(
+        #[case] window_start: Date,
+        #[case] date: Date,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(
+            is_outside_window(&Period::CalendarYear, window_start, date),
+            expected
+        );
     }
 }
