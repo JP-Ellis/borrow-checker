@@ -15,4 +15,6 @@ pub mod stat_card;
 pub mod status_pill;
 pub mod tag_picker;
 pub mod tag_token;
+#[cfg(target_arch = "wasm32")]
+pub mod toast;
 pub mod transaction_row;
