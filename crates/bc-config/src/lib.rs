@@ -47,6 +47,20 @@ pub fn default_db_path() -> std::path::PathBuf {
     )
 }
 
+/// Returns the platform-appropriate default backup directory.
+///
+/// This is a `backups/` subdirectory of the platform data directory, a sibling
+/// of the default database file (see [`default_db_path`]). Falls back to
+/// `./borrow-checker-backups` when no platform directory can be determined.
+#[must_use]
+#[inline]
+pub fn default_backup_dir() -> std::path::PathBuf {
+    directories::ProjectDirs::from("", "", "borrow-checker").map_or_else(
+        || std::path::PathBuf::from("borrow-checker-backups"),
+        |dirs| dirs.data_dir().join("backups"),
+    )
+}
+
 /// Error returned when loading or validating configuration.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -110,6 +124,96 @@ impl Default for CliSection {
     }
 }
 
+/// Raw deserialized `[backup]` settings.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RawBackupSection {
+    /// Optional override for the backup directory.
+    dir: Option<String>,
+    /// Keep the N newest backups (union with `retain_days`).
+    retain_count: Option<u32>,
+    /// Keep backups newer than N days (union with `retain_count`).
+    retain_days: Option<u32>,
+    /// Take an automatic snapshot before applying schema migrations.
+    auto_pre_migration: bool,
+}
+
+/// Returns the default raw `[backup]` section used by `RawSettings`'s serde default.
+fn default_raw_backup() -> RawBackupSection {
+    RawBackupSection {
+        dir: None,
+        retain_count: Some(5),
+        retain_days: None,
+        auto_pre_migration: true,
+    }
+}
+
+/// Backup and rotation settings from the `[backup]` section.
+///
+/// Retention is a conservative union: a backup is kept if it is among the
+/// `retain_count` newest **or** newer than `retain_days`; it is deleted only if
+/// it satisfies neither. When both are `None`, retention is disabled.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct BackupSection {
+    /// Directory backups are written to; `None` ⇒ [`default_backup_dir`].
+    dir: Option<std::path::PathBuf>,
+    /// Keep the N newest backups.
+    retain_count: Option<u32>,
+    /// Keep backups newer than N days.
+    retain_days: Option<u32>,
+    /// Take an automatic snapshot before applying schema migrations.
+    auto_pre_migration: bool,
+}
+
+impl BackupSection {
+    /// Returns the resolved backup directory (configured value or default).
+    #[inline]
+    #[must_use]
+    pub fn resolved_dir(&self) -> std::path::PathBuf {
+        self.dir.clone().unwrap_or_else(default_backup_dir)
+    }
+
+    /// Returns the configured backup directory override, if any.
+    #[inline]
+    #[must_use]
+    pub fn dir(&self) -> Option<&std::path::Path> {
+        self.dir.as_deref()
+    }
+
+    /// Returns the "keep N newest" retention limit, if set.
+    #[inline]
+    #[must_use]
+    pub fn retain_count(&self) -> Option<u32> {
+        self.retain_count
+    }
+
+    /// Returns the "keep newer than N days" retention limit, if set.
+    #[inline]
+    #[must_use]
+    pub fn retain_days(&self) -> Option<u32> {
+        self.retain_days
+    }
+
+    /// Returns whether automatic pre-migration snapshots are enabled.
+    #[inline]
+    #[must_use]
+    pub fn auto_pre_migration(&self) -> bool {
+        self.auto_pre_migration
+    }
+}
+
+impl Default for BackupSection {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            dir: None,
+            retain_count: Some(5),
+            retain_days: None,
+            auto_pre_migration: true,
+        }
+    }
+}
+
 /// Raw deserialized settings before validation.
 #[derive(Debug, Clone, serde::Deserialize)]
 struct RawSettings {
@@ -132,6 +236,9 @@ struct RawSettings {
     plugin_dirs: Vec<String>,
     /// CLI-specific settings from the `[cli]` section.
     cli: RawCliSection,
+    /// Backup settings from the `[backup]` section.
+    #[serde(default = "default_raw_backup")]
+    backup: RawBackupSection,
 }
 
 /// Validated application-wide settings.
@@ -170,6 +277,9 @@ pub struct Settings {
     /// CLI-specific settings from the `[cli]` section.
     #[serde(default)]
     cli: CliSection,
+    /// Backup and rotation settings from the `[backup]` section.
+    #[serde(default)]
+    backup: BackupSection,
 }
 
 impl Settings {
@@ -201,7 +311,11 @@ impl Settings {
             .set_default("db_path", Option::<String>::None)?
             .set_default("plugin_dirs", Vec::<String>::new())?
             .set_default("cli.json", false)?
-            .set_default("cli.log", Option::<String>::None)?;
+            .set_default("cli.log", Option::<String>::None)?
+            .set_default("backup.dir", Option::<String>::None)?
+            .set_default("backup.retain_count", 5_i64)?
+            .set_default("backup.retain_days", Option::<i64>::None)?
+            .set_default("backup.auto_pre_migration", true)?;
 
         for path in config_file_paths() {
             tracing::debug!(path = %path.display(), "config: adding source");
@@ -297,6 +411,20 @@ impl Settings {
         };
         tracing::debug!(cli.json = cli.json, cli.log = ?cli.log, "config: cli section");
 
+        let backup = BackupSection {
+            dir: raw.backup.dir.map(std::path::PathBuf::from),
+            retain_count: raw.backup.retain_count,
+            retain_days: raw.backup.retain_days,
+            auto_pre_migration: raw.backup.auto_pre_migration,
+        };
+        tracing::debug!(
+            backup.dir = ?backup.dir,
+            backup.retain_count = ?backup.retain_count,
+            backup.retain_days = ?backup.retain_days,
+            backup.auto_pre_migration = backup.auto_pre_migration,
+            "config: backup section"
+        );
+
         Ok(Self {
             financial_year_start_month: raw.financial_year_start_month,
             financial_year_start_day: raw.financial_year_start_day,
@@ -305,6 +433,7 @@ impl Settings {
             db_path,
             plugin_dirs,
             cli,
+            backup,
         })
     }
 
@@ -374,6 +503,13 @@ impl Settings {
     pub fn cli(&self) -> &CliSection {
         &self.cli
     }
+
+    /// Returns the backup settings from the `[backup]` config section.
+    #[inline]
+    #[must_use]
+    pub fn backup(&self) -> &BackupSection {
+        &self.backup
+    }
 }
 
 impl Default for Settings {
@@ -387,6 +523,7 @@ impl Default for Settings {
             db_path: None,
             plugin_dirs: Vec::new(),
             cli: CliSection::default(),
+            backup: BackupSection::default(),
         }
     }
 }
@@ -450,6 +587,7 @@ mod tests {
                 json: false,
                 log: None,
             },
+            backup: default_raw_backup(),
         }
     }
 
@@ -583,5 +721,25 @@ mod tests {
             Settings::validate(raw).is_err(),
             "empty display_commodity should fail validation"
         );
+    }
+
+    #[test]
+    fn default_backup_retain_count_is_five() {
+        let s = Settings::default();
+        assert_eq!(s.backup().retain_count(), Some(5));
+        assert_eq!(s.backup().retain_days(), None);
+        assert!(s.backup().auto_pre_migration());
+    }
+
+    #[test]
+    fn default_backup_dir_ends_with_backups() {
+        let dir = default_backup_dir();
+        assert_eq!(dir.file_name().and_then(|n| n.to_str()), Some("backups"));
+    }
+
+    #[test]
+    fn backup_section_resolves_default_dir_when_unset() {
+        let s = Settings::default();
+        assert_eq!(s.backup().resolved_dir(), default_backup_dir());
     }
 }
