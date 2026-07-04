@@ -120,14 +120,22 @@ pub async fn get_backup_settings() -> Result<bc_ipc::BackupSettings, bc_ipc::BcE
     ))
 }
 
-/// Persists updated backup settings to the config file.
+/// Persists updated backup settings to the config file and hot-reloads the
+/// in-memory backup policy so rotation/backup calls use the new values
+/// immediately (no restart required).
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Internal`] if the config cannot be written.
+/// Returns [`bc_ipc::BcError::Internal`] if the config cannot be written or
+/// reloaded.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
 #[tauri::command(rename_all = "snake_case")]
 pub async fn update_backup_settings(
     settings: bc_ipc::BackupSettings,
+    state: State<'_, AppState>,
 ) -> Result<(), bc_ipc::BcError> {
     bc_config::persist_backup_section(
         settings.dir.as_deref(),
@@ -136,6 +144,20 @@ pub async fn update_backup_settings(
         settings.auto_pre_migration,
     )
     .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
+    // Rebuild the runtime policy from the just-saved settings and swap it into
+    // the live service, so `backup_database`/rotation stop using the stale
+    // startup policy.
+    let reloaded =
+        bc_config::Settings::load().map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let b = reloaded.backup();
+    let policy = bc_core::BackupPolicy::new(
+        b.resolved_dir(),
+        b.retain_count(),
+        b.retain_days(),
+        b.auto_pre_migration(),
+    );
+    state.backup.set_policy(policy);
     Ok(())
 }
 
