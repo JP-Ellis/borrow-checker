@@ -167,7 +167,12 @@ pub struct Service {
     /// Path of the live database file (used by callers doing restore swaps).
     db_path: PathBuf,
     /// Backup directory and retention policy.
-    policy: BackupPolicy,
+    ///
+    /// Behind a [`std::sync::Mutex`] so the policy can be hot-reloaded (e.g.
+    /// after the user saves new backup settings) without rebuilding the
+    /// service. The lock is only ever held long enough to clone the policy out
+    /// or replace it — never across an `.await`.
+    policy: std::sync::Mutex<BackupPolicy>,
 }
 
 impl Service {
@@ -184,7 +189,7 @@ impl Service {
         Self {
             pool,
             db_path,
-            policy,
+            policy: std::sync::Mutex::new(policy),
         }
     }
 
@@ -193,6 +198,95 @@ impl Service {
     #[must_use]
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    /// Returns a clone of the current backup policy.
+    ///
+    /// Recovers transparently from a poisoned lock (a panic while the policy
+    /// was held would only ever have occurred mid-clone/replace, so the inner
+    /// value is always consistent).
+    ///
+    /// # Returns
+    ///
+    /// The currently active [`BackupPolicy`].
+    #[inline]
+    #[must_use]
+    pub fn current_policy(&self) -> BackupPolicy {
+        self.policy
+            .lock()
+            .map_or_else(|e| e.into_inner().clone(), |g| g.clone())
+    }
+
+    /// Replaces the in-memory backup policy.
+    ///
+    /// Used to hot-reload retention/directory settings after the user saves new
+    /// backup configuration, so subsequent [`backup`](Self::backup),
+    /// [`list`](Self::list) and [`rotate`](Self::rotate) calls observe the new
+    /// policy without restarting.
+    ///
+    /// # Arguments
+    ///
+    /// * `policy` - The new policy to apply from now on.
+    #[inline]
+    pub fn set_policy(&self, policy: BackupPolicy) {
+        match self.policy.lock() {
+            Ok(mut guard) => *guard = policy,
+            Err(poisoned) => *poisoned.into_inner() = policy,
+        }
+    }
+
+    /// Closes the underlying connection pool.
+    ///
+    /// `SqlitePool` clones share the same underlying state, so closing this
+    /// service's clone closes the pool for the whole process. Callers use this
+    /// before an in-place restore swap so that no WAL connection remains that
+    /// could checkpoint stale frames onto the restored file.
+    #[inline]
+    pub async fn close_pool(&self) {
+        self.pool.close().await;
+    }
+
+    /// Swaps a validated backup file in as the live database, clearing stale
+    /// WAL sidecars first.
+    ///
+    /// The database is opened in WAL mode everywhere, so a `{db_path}-wal` /
+    /// `{db_path}-shm` pair left over from the database being replaced would be
+    /// replayed by SQLite's recovery on the next open, silently corrupting the
+    /// freshly restored file. This removes those sidecars before overwriting
+    /// the main file with `candidate` (itself a standalone `VACUUM INTO`
+    /// snapshot with no sidecars of its own).
+    ///
+    /// The caller MUST ensure no live connection holds the database (see
+    /// [`close_pool`](Self::close_pool)); the GUI performs the swap before any
+    /// pool is opened.
+    ///
+    /// # Arguments
+    ///
+    /// * `candidate` - Path to the validated standalone backup to swap in.
+    /// * `db_path` - Path of the live database file to overwrite.
+    ///
+    /// # Returns
+    ///
+    /// `()` on a successful swap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] if a sidecar cannot be removed (other than being
+    /// absent) or the copy fails.
+    #[inline]
+    pub fn swap_in(candidate: &Path, db_path: &Path) -> BcResult<()> {
+        for suffix in ["-wal", "-shm"] {
+            let mut name = db_path.as_os_str().to_os_string();
+            name.push(suffix);
+            let sidecar = PathBuf::from(name);
+            match std::fs::remove_file(&sidecar) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io_err(&e)),
+            }
+        }
+        std::fs::copy(candidate, db_path).map_err(|e| io_err(&e))?;
+        Ok(())
     }
 
     /// Creates a consistent snapshot of the database.
@@ -220,13 +314,12 @@ impl Service {
     pub async fn backup(&self, kind: BackupKind, dest: Option<&Path>) -> BcResult<BackupRecord> {
         let now = jiff::Zoned::now();
         let stamp = now.strftime(TS_FMT).to_string();
+        let policy = self.current_policy();
         let target = if let Some(p) = dest {
             p.to_path_buf()
         } else {
-            std::fs::create_dir_all(&self.policy.dir).map_err(|e| io_err(&e))?;
-            self.policy
-                .dir
-                .join(format!("{stamp}.{}.sqlite", kind.suffix()))
+            std::fs::create_dir_all(&policy.dir).map_err(|e| io_err(&e))?;
+            policy.dir.join(format!("{stamp}.{}.sqlite", kind.suffix()))
         };
 
         self.vacuum_into(&target).await?;
@@ -272,7 +365,8 @@ impl Service {
     #[inline]
     pub fn list(&self) -> BcResult<Vec<BackupRecord>> {
         let mut out = Vec::new();
-        let entries = match std::fs::read_dir(&self.policy.dir) {
+        let dir = self.current_policy().dir;
+        let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
             // A not-yet-created backup dir simply has no backups.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
@@ -295,11 +389,9 @@ impl Service {
     /// Test-only helper: write a snapshot with an explicit timestamp string.
     #[cfg(test)]
     async fn write_snapshot_for_test(&self, kind: BackupKind, stamp: &str) -> BcResult<()> {
-        std::fs::create_dir_all(&self.policy.dir).map_err(|e| io_err(&e))?;
-        let target = self
-            .policy
-            .dir
-            .join(format!("{stamp}.{}.sqlite", kind.suffix()));
+        let dir = self.current_policy().dir;
+        std::fs::create_dir_all(&dir).map_err(|e| io_err(&e))?;
+        let target = dir.join(format!("{stamp}.{}.sqlite", kind.suffix()));
         self.vacuum_into(&target).await
     }
 
@@ -341,12 +433,13 @@ impl Service {
     #[inline]
     pub fn rotate(&self) -> BcResult<()> {
         let records = self.list()?;
+        let policy = self.current_policy();
         let now = jiff::Zoned::now();
         let ages: Vec<i64> = records
             .iter()
             .map(|r| age_days(&now, r.created_at))
             .collect();
-        for i in prune_indices(&ages, self.policy.retain_count, self.policy.retain_days) {
+        for i in prune_indices(&ages, policy.retain_count, policy.retain_days) {
             let Some(record) = records.get(i) else {
                 continue;
             };
