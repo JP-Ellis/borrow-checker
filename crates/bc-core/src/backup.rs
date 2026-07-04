@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[non_exhaustive]
 #[expect(
     clippy::module_name_repetitions,
-    reason = "BackupKind is the clearest public name for this type; the module is private to the crate root re-export"
+    reason = "BackupKind is the clearest public name for this type; re-exported at the crate root"
 )]
 pub enum BackupKind {
     /// Created explicitly by the user (`.manual`).
