@@ -1,13 +1,13 @@
 //! Auto-detecting OFX parser: handles v1 (SGML) and v2 (XML).
 
+use quick_xml::Reader;
+use quick_xml::events::Event;
 use rust_decimal::Decimal;
 
 use crate::ast::OfxStatement;
 use crate::ast::OfxTransaction;
 use crate::sgml::SgmlToken;
 use crate::sgml::tokenise;
-
-// TODO: consider migrating to nom parser combinators
 
 /// Parses an OFX or QFX file (auto-detects v1 SGML vs v2 XML).
 ///
@@ -50,8 +50,109 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<OfxStatement, String> {
 fn parse_v1(bytes: &[u8]) -> Result<OfxStatement, String> {
     let text =
         core::str::from_utf8(bytes).map_err(|e| format!("OFX file is not valid UTF-8: {e}"))?;
+    build_statement(tokenise(text), "v1")
+}
 
-    let tokens = tokenise(text);
+// ── OFX v2 (XML) ─────────────────────────────────────────────────────────────
+
+/// Parses OFX v2 (XML) bytes into an [`OfxStatement`].
+///
+/// # Arguments
+///
+/// * `bytes` - Raw OFX v2 file bytes.
+///
+/// # Errors
+///
+/// Returns a string error if the XML is malformed or required elements are
+/// missing.
+fn parse_v2(bytes: &[u8]) -> Result<OfxStatement, String> {
+    build_statement(tokenise_xml(bytes)?, "v2")
+}
+
+/// Drives quick-xml over OFX v2 (XML) bytes, yielding the same [`SgmlToken`]
+/// stream the v1 SGML lexer produces (tag names upper-cased; text folded into
+/// a `Leaf` under the enclosing tag).
+///
+/// # Arguments
+///
+/// * `bytes` - Raw OFX v2 file bytes.
+///
+/// # Returns
+///
+/// The ordered token stream.
+///
+/// # Errors
+///
+/// Returns a string error if the XML is malformed.
+fn tokenise_xml(bytes: &[u8]) -> Result<Vec<SgmlToken>, String> {
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(true);
+
+    let mut tokens = Vec::new();
+    let mut current_tag = String::new();
+    let mut buf = Vec::new();
+    loop {
+        match reader
+            .read_event_into(&mut buf)
+            .map_err(|xml_err| xml_err.to_string())?
+        {
+            Event::Start(ref e) => {
+                current_tag = String::from_utf8_lossy(e.name().as_ref()).to_ascii_uppercase();
+                tokens.push(SgmlToken::Open(current_tag.clone()));
+            }
+            Event::End(ref e) => {
+                let tag = String::from_utf8_lossy(e.name().as_ref()).to_ascii_uppercase();
+                tokens.push(SgmlToken::Close(tag));
+            }
+            Event::Text(ref e) => {
+                let decoded = e.decode().map_err(|xml_err| xml_err.to_string())?;
+                let text = quick_xml::escape::unescape(&decoded)
+                    .map_err(|xml_err| xml_err.to_string())?
+                    .trim()
+                    .to_owned();
+                if !text.is_empty() {
+                    tokens.push(SgmlToken::Leaf {
+                        tag: current_tag.clone(),
+                        value: text,
+                    });
+                }
+            }
+            Event::Eof => break,
+            Event::Empty(_)
+            | Event::Comment(_)
+            | Event::CData(_)
+            | Event::Decl(_)
+            | Event::PI(_)
+            | Event::DocType(_)
+            | Event::GeneralRef(_) => {}
+        }
+        buf.clear();
+    }
+    Ok(tokens)
+}
+
+// ── Shared walker ────────────────────────────────────────────────────────────
+
+/// Walks an ordered [`SgmlToken`] stream into an [`OfxStatement`].
+///
+/// # Arguments
+///
+/// * `tokens` - Ordered tokens (from the v1 winnow lexer or the v2 quick-xml
+///   adapter).
+/// * `version_label` - Label used in error messages (e.g. `"v1"`, `"v2"`).
+///
+/// # Returns
+///
+/// The assembled [`OfxStatement`].
+///
+/// # Errors
+///
+/// Returns a string error if `CURDEF` or `ACCTID` is absent, or if a
+/// transaction fails validation.
+fn build_statement(
+    tokens: impl IntoIterator<Item = SgmlToken>,
+    version_label: &str,
+) -> Result<OfxStatement, String> {
     let mut currency = String::new();
     let mut account_id = String::new();
     let mut transactions = Vec::new();
@@ -95,112 +196,14 @@ fn parse_v1(bytes: &[u8]) -> Result<OfxStatement, String> {
     }
 
     if currency.is_empty() {
-        return Err("OFX v1: missing CURDEF (currency) element".into());
+        return Err(format!(
+            "OFX {version_label}: missing CURDEF (currency) element"
+        ));
     }
     if account_id.is_empty() {
-        return Err("OFX v1: missing ACCTID (account ID) element".into());
-    }
-
-    Ok(OfxStatement {
-        currency,
-        account_id,
-        transactions,
-    })
-}
-
-// ── OFX v2 (XML) ─────────────────────────────────────────────────────────────
-
-/// Parses OFX v2 (XML) bytes into an [`OfxStatement`].
-///
-/// # Arguments
-///
-/// * `bytes` - Raw OFX v2 file bytes.
-///
-/// # Errors
-///
-/// Returns a string error if the XML is malformed or required elements are
-/// missing.
-fn parse_v2(bytes: &[u8]) -> Result<OfxStatement, String> {
-    use quick_xml::Reader;
-    use quick_xml::events::Event;
-
-    let mut reader = Reader::from_reader(bytes);
-    reader.config_mut().trim_text(true);
-
-    let mut currency = String::new();
-    let mut account_id = String::new();
-    let mut transactions = Vec::new();
-    let mut in_stmttrn = false;
-    let mut current: Option<OfxTransactionBuilder> = None;
-    let mut current_tag = String::new();
-    let mut buf = Vec::new();
-
-    loop {
-        match reader
-            .read_event_into(&mut buf)
-            .map_err(|xml_err| xml_err.to_string())?
-        {
-            Event::Start(ref e) => {
-                current_tag = String::from_utf8_lossy(e.name().as_ref()).to_ascii_uppercase();
-                if current_tag == "STMTTRN" {
-                    in_stmttrn = true;
-                    current = Some(OfxTransactionBuilder::default());
-                }
-            }
-            Event::End(ref e) => {
-                let tag = String::from_utf8_lossy(e.name().as_ref()).to_ascii_uppercase();
-                if tag == "STMTTRN" {
-                    in_stmttrn = false;
-                    if let Some(builder) = current.take() {
-                        transactions.push(builder.build()?);
-                    }
-                }
-            }
-            Event::Text(ref e) => {
-                let decoded = e.decode().map_err(|xml_err| xml_err.to_string())?;
-                let text = quick_xml::escape::unescape(&decoded)
-                    .map_err(|xml_err| xml_err.to_string())?
-                    .trim()
-                    .to_owned();
-                if text.is_empty() {
-                    continue;
-                }
-                if in_stmttrn {
-                    let builder = current.get_or_insert_with(OfxTransactionBuilder::default);
-                    match current_tag.as_str() {
-                        "TRNTYPE" => builder.trntype = text,
-                        "DTPOSTED" => builder.dtposted = text,
-                        "TRNAMT" => builder.trnamt = text,
-                        "FITID" => builder.fitid = text,
-                        "NAME" => builder.name = Some(text),
-                        "MEMO" => builder.memo = Some(text),
-                        _ => {}
-                    }
-                } else {
-                    match current_tag.as_str() {
-                        "CURDEF" => currency = text,
-                        "ACCTID" => account_id = text,
-                        _ => {}
-                    }
-                }
-            }
-            Event::Eof => break,
-            Event::Empty(_)
-            | Event::Comment(_)
-            | Event::CData(_)
-            | Event::Decl(_)
-            | Event::PI(_)
-            | Event::DocType(_)
-            | Event::GeneralRef(_) => {}
-        }
-        buf.clear();
-    }
-
-    if currency.is_empty() {
-        return Err("OFX v2: missing CURDEF (currency) element".into());
-    }
-    if account_id.is_empty() {
-        return Err("OFX v2: missing ACCTID (account ID) element".into());
+        return Err(format!(
+            "OFX {version_label}: missing ACCTID (account ID) element"
+        ));
     }
 
     Ok(OfxStatement {
@@ -281,10 +284,6 @@ impl OfxTransactionBuilder {
 ///
 /// Returns a string error if the date string is shorter than 8 characters or
 /// if year, month, or day cannot be parsed as integers.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "ymd is always 8 ASCII bytes after the .get(..8) guard above"
-)]
 fn parse_ofx_date(s: &str) -> Result<bc_sdk::Date, String> {
     let ymd = s
         .get(..8)
@@ -298,8 +297,7 @@ fn parse_ofx_date(s: &str) -> Result<bc_sdk::Date, String> {
     let day: u8 = ymd[6..8]
         .parse()
         .map_err(|_| format!("bad day in OFX date '{s}'"))?;
-    bc_sdk::Date::try_new(year, month, day)
-        .map_err(|e| format!("invalid OFX date '{s}': {e}"))
+    bc_sdk::Date::try_new(year, month, day).map_err(|e| format!("invalid OFX date '{s}': {e}"))
 }
 
 #[cfg(test)]
@@ -340,6 +338,65 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\nVERSION:102\r\n\r\n\
     </STMTTRNRS>
   </BANKMSGSRSV1>
 </OFX>"#;
+
+    #[test]
+    fn build_statement_walks_token_stream() {
+        let tokens = vec![
+            SgmlToken::Leaf {
+                tag: "CURDEF".into(),
+                value: "AUD".into(),
+            },
+            SgmlToken::Leaf {
+                tag: "ACCTID".into(),
+                value: "123".into(),
+            },
+            SgmlToken::Open("STMTTRN".into()),
+            SgmlToken::Leaf {
+                tag: "DTPOSTED".into(),
+                value: "20250115".into(),
+            },
+            SgmlToken::Leaf {
+                tag: "TRNAMT".into(),
+                value: "-50.00".into(),
+            },
+            SgmlToken::Leaf {
+                tag: "FITID".into(),
+                value: "X1".into(),
+            },
+            SgmlToken::Close("STMTTRN".into()),
+        ];
+        let stmt = build_statement(tokens, "test").expect("walk");
+        assert_eq!(stmt.currency, "AUD");
+        assert_eq!(stmt.account_id, "123");
+        assert_eq!(stmt.transactions.len(), 1);
+    }
+
+    #[test]
+    fn tokenise_xml_matches_sgml_token_shape() {
+        let xml = "<OFX><CURDEF>AUD</CURDEF><STMTTRN><TRNAMT>-1.00</TRNAMT></STMTTRN></OFX>";
+        let tokens = tokenise_xml(xml.as_bytes()).expect("tokenise xml");
+        assert_eq!(
+            tokens,
+            vec![
+                SgmlToken::Open("OFX".into()),
+                SgmlToken::Open("CURDEF".into()),
+                SgmlToken::Leaf {
+                    tag: "CURDEF".into(),
+                    value: "AUD".into()
+                },
+                SgmlToken::Close("CURDEF".into()),
+                SgmlToken::Open("STMTTRN".into()),
+                SgmlToken::Open("TRNAMT".into()),
+                SgmlToken::Leaf {
+                    tag: "TRNAMT".into(),
+                    value: "-1.00".into()
+                },
+                SgmlToken::Close("TRNAMT".into()),
+                SgmlToken::Close("STMTTRN".into()),
+                SgmlToken::Close("OFX".into()),
+            ]
+        );
+    }
 
     #[test]
     #[expect(
