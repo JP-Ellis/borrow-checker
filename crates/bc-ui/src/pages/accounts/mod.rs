@@ -11,6 +11,8 @@
 pub(crate) mod components;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod dashboard;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod period_notify;
 
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::NewTransaction;
@@ -155,6 +157,9 @@ pub fn Accounts() -> impl IntoView {
         async move { bc_ipc::client::create_transaction(&tx).await }
     });
 
+    let toasts = crate::components::toast::use_toasts();
+    let pending_new_date = RwSignal::new(None::<jiff::civil::Date>);
+
     // Controls whether the add-transaction form is shown.
     let show_add_tx = RwSignal::new(false);
 
@@ -177,6 +182,15 @@ pub fn Accounts() -> impl IntoView {
         if create_tx.value().with(|v| matches!(v, Some(Ok(_)))) {
             data_version.update(|v| *v = v.wrapping_add(1));
             close_add_tx();
+            if let Some(date) = pending_new_date.get_untracked() {
+                pending_new_date.set(None);
+                period_notify::notify_if_out_of_period(
+                    toasts,
+                    display_period.get_untracked(),
+                    window_start,
+                    date,
+                );
+            }
         }
     });
 
@@ -306,6 +320,7 @@ pub fn Accounts() -> impl IntoView {
                                             currency_code=currency_code
                                             scale=scale
                                             on_submit=Callback::new(move |tx: NewTransaction| {
+                                                pending_new_date.set(Some(tx.date));
                                                 create_tx.dispatch(tx);
                                             })
                                             on_cancel=Callback::new(move |()| close_add_tx())
