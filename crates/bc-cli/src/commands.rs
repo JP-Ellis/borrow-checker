@@ -5,6 +5,7 @@
 
 pub mod account;
 pub mod asset;
+pub mod backup;
 pub mod budget;
 pub mod completions;
 pub mod export;
