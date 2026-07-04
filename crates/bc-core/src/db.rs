@@ -113,7 +113,7 @@ pub async fn open_db_with_backup(path: &Path, policy: &BackupPolicy) -> BcResult
 
     if policy.auto_pre_migration && pre_existing && has_pending_migrations(&pool).await? {
         let svc = BackupService::new(pool.clone(), path.to_path_buf(), policy.clone());
-        svc.backup(BackupKind::Automatic, None).await?;
+        svc.backup(BackupKind::PreMigration, None).await?;
         tracing::info!("pre-migration backup written");
     }
 

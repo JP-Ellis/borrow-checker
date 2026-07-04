@@ -9,7 +9,7 @@ use serde::Serialize;
 pub struct BackupInfo {
     /// Absolute path to the backup file.
     pub path: String,
-    /// `"manual"` or `"automatic"`.
+    /// `"manual"`, `"pre-migration"`, or `"pre-restore"`.
     pub kind: String,
     /// Creation timestamp, `"YYYY-MM-DDTHH:MM:SS"`.
     pub created_at: String,
