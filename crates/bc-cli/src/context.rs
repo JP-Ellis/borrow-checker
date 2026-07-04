@@ -29,6 +29,18 @@ pub struct AppContext {
     pub budget_status: bc_core::BudgetStatusEngine,
     /// Tag service.
     pub tags: bc_core::TagService,
+    /// Backup service (snapshot + restore + rotation).
+    #[expect(
+        dead_code,
+        reason = "consumed by backup/restore CLI commands added in a later task"
+    )]
+    pub backup: bc_core::BackupService,
+    /// Resolved database file path (used by restore to swap the file).
+    #[expect(
+        dead_code,
+        reason = "consumed by backup/restore CLI commands added in a later task"
+    )]
+    pub db_path: std::path::PathBuf,
 }
 
 impl AppContext {
@@ -57,7 +69,14 @@ impl AppContext {
                 .map_err(|e| bc_core::BcError::InvalidInput(e.to_string()))?;
         }
 
-        let pool = bc_core::open_db_at(&db_path).await?;
+        let backup_section = settings.backup();
+        let policy = bc_core::BackupPolicy::new(
+            backup_section.resolved_dir(),
+            backup_section.retain_count(),
+            backup_section.retain_days(),
+            backup_section.auto_pre_migration(),
+        );
+        let pool = bc_core::open_db_with_backup(&db_path, &policy).await?;
 
         let plugin_registry = bc_plugins::PluginRegistry::load(settings.plugin_paths())
             .map_err(|e| bc_core::BcError::InvalidInput(e.to_string()))?;
@@ -76,6 +95,8 @@ impl AppContext {
             loans: bc_core::LoanService::new(pool.clone()),
             budgets: bc_core::BudgetService::new(pool.clone()),
             tags: bc_core::TagService::new(pool.clone()),
+            backup: bc_core::BackupService::new(pool.clone(), db_path.clone(), policy),
+            db_path,
             budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
         })
     }
