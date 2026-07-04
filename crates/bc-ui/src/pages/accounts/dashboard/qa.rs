@@ -52,13 +52,11 @@ fn no_mask_node() -> AccountNode {
 
 /// Renders [`AccountDashboard`] in three account configurations.
 ///
-/// # Period and count control coverage
+/// # Period coverage
 ///
-/// All three sections start with Monthly / 6 buckets. Use the period and count
-/// dropdowns in any section to exercise different combinations interactively.
-/// Changing period resets count to the period's default (8 for Weekly, 6 for
-/// others). CalendarYear and FinancialYear title labels are covered by the
-/// wildcard arm in `mod.rs`.
+/// The sparkline granularity now follows the page `period_window` prop (there
+/// are no per-sparkline controls). The first two sections render Monthly; the
+/// third renders Calendar year to exercise the "Last 12 Months" title path.
 ///
 /// Note: `stats_resource` always resolves to an error in this QA harness
 /// because there is no real IPC connection. The stat cards and balance headline
@@ -67,7 +65,8 @@ fn no_mask_node() -> AccountNode {
 /// warn/neutral tone), use the stat card QA page directly.
 #[component]
 pub fn AccountDashboardQa() -> impl IntoView {
-    let period_window = Signal::derive(|| bc_ipc::Period::Monthly);
+    let monthly = Signal::derive(|| bc_ipc::Period::Monthly);
+    let yearly = Signal::derive(|| bc_ipc::Period::CalendarYear);
     let window_start = Signal::derive(|| jiff::Zoned::now().date());
 
     view! {
@@ -79,7 +78,7 @@ pub fn AccountDashboardQa() -> impl IntoView {
                 </p>
                 <AccountDashboard
                     node=asset_node()
-                    period_window=period_window
+                    period_window=monthly
                     window_start=window_start
                 />
             </section>
@@ -90,18 +89,18 @@ pub fn AccountDashboardQa() -> impl IntoView {
                 </p>
                 <AccountDashboard
                     node=liability_node()
-                    period_window=period_window
+                    period_window=monthly
                     window_start=window_start
                 />
             </section>
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
-                    "no mask, no tags, no parent (default: monthly)"
+                    "no mask, no tags, no parent (calendar year)"
                 </p>
                 <AccountDashboard
                     node=no_mask_node()
-                    period_window=period_window
+                    period_window=yearly
                     window_start=window_start
                 />
             </section>
