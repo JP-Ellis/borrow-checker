@@ -567,6 +567,9 @@ pub fn TransactionRow(
     /// Called when the transaction is mutated; consumed by the expanded detail view.
     #[prop(optional)]
     on_change: Option<Callback<()>>,
+    /// Called with the saved date after a successful edit; forwarded to the detail.
+    #[prop(optional)]
+    on_saved: Option<Callback<jiff::civil::Date>>,
     /// All selectable accounts for the recategorise picker in the detail view.
     #[prop(optional)]
     accounts: Vec<AccountRef>,
@@ -729,6 +732,7 @@ pub fn TransactionRow(
         {
             let tx_detail = tx.clone();
             let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
+            let on_saved_cb = on_saved.unwrap_or_else(|| Callback::new(|_| {}));
             let accounts = StoredValue::new(accounts);
             let all_tags = StoredValue::new(all_tags);
             move || {
@@ -739,6 +743,7 @@ pub fn TransactionRow(
                             <TransactionDetail
                                 tx=tx_detail.clone()
                                 on_change=on_change_cb
+                                on_saved=on_saved_cb
                                 accounts=accounts.get_value()
                                 all_tags=all_tags.get_value()
                             />
@@ -774,6 +779,9 @@ fn TransactionDetail(
     /// Called after a successful mutation; defaults to a no-op when `None`.
     #[prop(optional)]
     on_change: Option<Callback<()>>,
+    /// Called with the saved date after a successful edit; defaults to a no-op.
+    #[prop(optional)]
+    on_saved: Option<Callback<jiff::civil::Date>>,
     /// All selectable accounts for the recategorise picker.
     #[prop(optional)]
     accounts: Vec<AccountRef>,
@@ -782,6 +790,7 @@ fn TransactionDetail(
     all_tags: Vec<bc_ipc::TagInfo>,
 ) -> impl IntoView {
     let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
+    let on_saved_cb = on_saved.unwrap_or_else(|| Callback::new(|_| {}));
     let editable = EditableTransaction::from(&tx);
     let ctx = TxEditCtx::new(editable, accounts);
     provide_context(ctx.clone());
@@ -888,6 +897,7 @@ fn TransactionDetail(
             return;
         }
         let working_now = working.get_untracked();
+        let saved_date = working_now.date.parse::<jiff::civil::Date>().ok();
         let edit = match working_now.to_edit_transaction(&currencies.get_untracked()) {
             Ok(d) => d,
             Err(e) => {
@@ -903,6 +913,9 @@ fn TransactionDetail(
         leptos::task::spawn_local(async move {
             match bc_ipc::client::edit_transaction(&edit).await {
                 Ok(()) => {
+                    if let Some(date) = saved_date {
+                        on_saved_cb.run(date);
+                    }
                     if recon_changed
                         && let Err(e) = bc_ipc::client::set_reconciliation(&id, recon).await
                     {
