@@ -39,7 +39,7 @@ static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 )]
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "Period is #[non_exhaustive]; wildcard covers CalendarYear and FinancialYear in the title — TODO: dedicate title strings once the settings screen exposes financial-year configuration"
+    reason = "sparkline bucket is only ever Daily/Weekly/Monthly; the wildcard title arm handles Monthly"
 )]
 pub fn AccountDashboard(
     /// Account to display.
@@ -70,19 +70,13 @@ pub fn AccountDashboard(
         async move { bc_ipc::client::get_account_stats(&id, start, until).await }
     });
 
-    // Sparkline granularity/count are independent of the page-level
-    // `period_window` (see #255); named distinctly to avoid confusion.
-    let sparkline_period = RwSignal::new(bc_ipc::Period::Monthly);
-    let count = RwSignal::new(bc_ipc::Period::Monthly.default_sparkline_count());
-
     let sparkline_resource = LocalResource::new(move || {
         let id = sparkline_account_id.clone();
-        let p = sparkline_period.get();
-        let n = count.get();
+        let (bucket, n) = period_window.get().sparkline_bucketing();
         if let Some(v) = data_version {
             v.get();
         }
-        async move { bc_ipc::client::get_account_sparkline(&id, p, n).await }
+        async move { bc_ipc::client::get_account_sparkline(&id, bucket, n).await }
     });
 
     let sparkline_currency_code = node
@@ -296,113 +290,8 @@ pub fn AccountDashboard(
                 </StatCards>
             </div>
 
-            <div class=style::sparkline_controls>
-                <select
-                    class=style::sparkline_select
-                    on:change=move |ev| {
-                        let new_period = match leptos::prelude::event_target_value(&ev).as_str() {
-                            "daily" => bc_ipc::Period::Daily,
-                            "weekly" => bc_ipc::Period::Weekly,
-                            "fortnightly" => bc_ipc::Period::Fortnightly,
-                            "quarterly" => bc_ipc::Period::Quarterly,
-                            "calendar_year" => bc_ipc::Period::CalendarYear,
-                            "financial_year" => {
-                                bc_ipc::Period::FinancialYear {
-                                    start_month: 7,
-                                    start_day: 1,
-                                }
-                            }
-                            "financial_quarter" => {
-                                bc_ipc::Period::FinancialQuarter {
-                                    start_month: 7,
-                                    start_day: 1,
-                                }
-                            }
-                            _ => bc_ipc::Period::Monthly,
-                        };
-                        count.set(new_period.default_sparkline_count());
-                        sparkline_period.set(new_period);
-                    }
-                >
-                    <option
-                        value="daily"
-                        selected=move || sparkline_period.get() == bc_ipc::Period::Daily
-                    >
-                        "daily"
-                    </option>
-                    <option
-                        value="weekly"
-                        selected=move || sparkline_period.get() == bc_ipc::Period::Weekly
-                    >
-                        "weekly"
-                    </option>
-                    <option
-                        value="fortnightly"
-                        selected=move || sparkline_period.get() == bc_ipc::Period::Fortnightly
-                    >
-                        "fortnightly"
-                    </option>
-                    <option
-                        value="monthly"
-                        selected=move || sparkline_period.get() == bc_ipc::Period::Monthly
-                    >
-                        "monthly"
-                    </option>
-                    <option
-                        value="quarterly"
-                        selected=move || sparkline_period.get() == bc_ipc::Period::Quarterly
-                    >
-                        "quarterly"
-                    </option>
-                    <option
-                        value="calendar_year"
-                        selected=move || sparkline_period.get() == bc_ipc::Period::CalendarYear
-                    >
-                        "calendar year"
-                    </option>
-                    <option
-                        value="financial_year"
-                        selected=move || {
-                            matches!(sparkline_period.get(), bc_ipc::Period::FinancialYear { .. })
-                        }
-                    >
-                        "financial year"
-                    </option>
-                    <option
-                        value="financial_quarter"
-                        selected=move || {
-                            matches!(
-                                sparkline_period.get(),
-                                bc_ipc::Period::FinancialQuarter { .. }
-                            )
-                        }
-                    >
-                        "financial quarter"
-                    </option>
-                </select>
-
-                <select
-                    class=style::sparkline_select
-                    on:change=move |ev| {
-                        if let Ok(n) = leptos::prelude::event_target_value(&ev).parse::<u32>() {
-                            count.set(n);
-                        }
-                    }
-                >
-                    {[4_u32, 6, 8, 12, 24]
-                        .map(|n| {
-                            view! {
-                                <option value=n.to_string() selected=move || count.get() == n>
-                                    {n.to_string()}
-                                </option>
-                            }
-                        })}
-                </select>
-            </div>
-
             {move || {
-                let p = sparkline_period.get();
-                let n = count.get();
+                let (bucket, n) = period_window.get().sparkline_bucketing();
                 let points = match sparkline_resource.get() {
                     Some(Ok(pts)) => pts,
                     Some(Err(ref e)) => {
@@ -411,16 +300,9 @@ pub fn AccountDashboard(
                     }
                     None => vec![],
                 };
-                let title = match p {
+                let title = match bucket {
                     bc_ipc::Period::Daily => format!("Cash Flow (Last {n} Days)"),
                     bc_ipc::Period::Weekly => format!("Cash Flow (Last {n} Weeks)"),
-                    bc_ipc::Period::Fortnightly => format!("Cash Flow (Last {n} Fortnights)"),
-                    bc_ipc::Period::Quarterly | bc_ipc::Period::FinancialQuarter { .. } => {
-                        format!("Cash Flow (Last {n} Quarters)")
-                    }
-                    bc_ipc::Period::CalendarYear | bc_ipc::Period::FinancialYear { .. } => {
-                        format!("Cash Flow (Last {n} Years)")
-                    }
                     _ => format!("Cash Flow (Last {n} Months)"),
                 };
                 view! {
