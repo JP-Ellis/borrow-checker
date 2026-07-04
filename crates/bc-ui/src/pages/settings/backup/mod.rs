@@ -31,10 +31,52 @@ pub fn settings_dirty(a: &bc_ipc::BackupSettings, b: &bc_ipc::BackupSettings) ->
     a != b
 }
 
+/// Formats a byte count as a human-readable size string.
+///
+/// Uses binary (1024-based) units: `B`, `KB`, `MB`, `GB`, ... Values below
+/// 1 KB are shown as a whole number of bytes; larger values are shown with
+/// one decimal place.
+///
+/// # Arguments
+///
+/// * `bytes` - The size in bytes.
+///
+/// # Returns
+///
+/// A human-readable string such as `"512 B"` or `"1.2 MB"`.
+#[must_use]
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::float_arithmetic,
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    reason = "display-only unit-scaling math on a bounded byte count; precision loss is \
+              irrelevant at these magnitudes and cannot overflow or panic"
+)]
+pub fn format_size(bytes: u64) -> String {
+    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
+    const STEP: f64 = 1024.0;
+
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+
+    let mut value = bytes as f64;
+    let mut unit_index = 0_usize;
+    while value >= STEP && unit_index + 1 < UNITS.len() {
+        value /= STEP;
+        unit_index += 1;
+    }
+
+    let unit = UNITS.get(unit_index).unwrap_or(&"PB");
+    format!("{value:.1} {unit}")
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
 
+    use super::format_size;
     use super::settings_dirty;
 
     fn base() -> bc_ipc::BackupSettings {
@@ -51,6 +93,30 @@ mod tests {
         let mut b = base();
         b.retain_count = Some(3);
         assert_eq!(settings_dirty(&base(), &b), true);
+    }
+
+    #[test]
+    fn format_size_bytes() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_size_kilobytes() {
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_size_megabytes() {
+        assert_eq!(format_size(1_258_291), "1.2 MB");
+        assert_eq!(format_size(1024 * 1024), "1.0 MB");
+    }
+
+    #[test]
+    fn format_size_gigabytes() {
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
     }
 }
 
@@ -265,7 +331,7 @@ pub fn BackupPanel() -> impl IntoView {
                 <h2 class=style::subtitle>"Existing backups"</h2>
                 <ul class=style::list data-testid="backup-list">
                     <For each=move || backups.get() key=|b| b.path.clone() let:b>
-                        {backup_row(b)}
+                        {backup_row(b, banner)}
                     </For>
                 </ul>
             </div>
@@ -273,28 +339,67 @@ pub fn BackupPanel() -> impl IntoView {
     }
 }
 
-/// Renders one backup row with a restore button.
+/// Renders one backup row with a two-step restore confirm gate.
+///
+/// # Arguments
+///
+/// * `b` - The backup metadata to render.
+/// * `banner` - Shared banner signal used to surface restore failures.
 #[cfg(target_arch = "wasm32")]
-fn backup_row(b: bc_ipc::BackupInfo) -> impl IntoView {
+fn backup_row(b: bc_ipc::BackupInfo, banner: RwSignal<Option<String>>) -> impl IntoView {
     let path = b.path.clone();
-    let restore = move |_| {
-        let path = path.clone();
-        leptos::task::spawn_local(async move {
-            // On success the backend relaunches the app; only the error arm
-            // is actionable here.
-            if let Err(e) = bc_ipc::client::restore_database(&path).await {
-                leptos::logging::error!("restore_database failed: {e}");
-            }
-        });
-    };
+    let armed = RwSignal::new(false);
+
+    let arm = move |_| armed.set(true);
+    let disarm = move |_| armed.set(false);
+
     view! {
         <li class=style::list_row>
             <span class=style::list_kind>{b.kind}</span>
             <span class=style::list_when>{b.created_at}</span>
+            <span class=style::list_size>{format_size(b.size_bytes)}</span>
             <span class=style::spacer />
-            <button class=style::abtn data-testid="backup-restore" on:click=restore>
-                "restore"
-            </button>
+            {move || {
+                if armed.get() {
+                    let path = path.clone();
+                    let confirm_restore = move |_| {
+                        let path = path.clone();
+                        armed.set(false);
+                        leptos::task::spawn_local(async move {
+                            if let Err(e) = bc_ipc::client::restore_database(&path).await {
+                                leptos::logging::error!("restore_database failed: {e}");
+                                banner.set(Some(e.to_string()));
+                            }
+                        });
+                    };
+                    // On success the backend relaunches the app; only
+                    // the error arm is actionable here.
+                    view! {
+                        <button
+                            class=style::abtn
+                            data-testid="backup-restore-confirm"
+                            on:click=confirm_restore
+                        >
+                            "confirm — app will relaunch"
+                        </button>
+                        <button
+                            class=style::abtn
+                            data-testid="backup-restore-cancel"
+                            on:click=disarm
+                        >
+                            "cancel"
+                        </button>
+                    }
+                        .into_any()
+                } else {
+                    view! {
+                        <button class=style::abtn data-testid="backup-restore" on:click=arm>
+                            "restore"
+                        </button>
+                    }
+                        .into_any()
+                }
+            }}
         </li>
     }
 }
