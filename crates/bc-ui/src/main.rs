@@ -108,6 +108,9 @@ mod components_tests {
 #[cfg(test)]
 mod pages_tests {
     pub mod settings {
+        pub mod backup {
+            include!("pages/settings/backup/mod.rs");
+        }
         pub mod currencies {
             include!("pages/settings/currencies/mod.rs");
         }
