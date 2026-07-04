@@ -17,6 +17,7 @@ use leptos_router::path;
 
 use crate::pages::__test::index::QaCard;
 use crate::pages::settings::SettingsPanel;
+use crate::pages::settings::backup::qa::BackupPanelQa;
 use crate::pages::settings::currencies::qa::CurrenciesPanelQa;
 
 /// Display name shown in the QA index.
@@ -36,6 +37,7 @@ pub fn SettingsRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
             <Route path=path!("/minimal") view=SettingsMinimalQa />
             <Route path=path!("/no-config-path") view=SettingsNoConfigPathQa />
             <Route path=path!("/currencies") view=CurrenciesPanelQa />
+            <Route path=path!("/backup") view=BackupPanelQa />
         </ParentRoute>
     }
     .into_inner()
@@ -70,6 +72,11 @@ pub fn SettingsIndex() -> impl IntoView {
                     title="Currencies"
                     path="/__test/page/settings/currencies"
                     description="Editable currency registry with mock USD/AUD/EUR/BTC data."
+                />
+                <QaCard
+                    title="Backup"
+                    path="/__test/page/settings/backup"
+                    description="Editable backup settings + backup/restore actions."
                 />
             </div>
         </div>
