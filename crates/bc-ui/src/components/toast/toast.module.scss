@@ -1,0 +1,89 @@
+/* MARK: Host — top-layer stack */
+
+.host {
+  /* Reset UA popover styles */
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+
+  /* Bottom-right stack; newest toast nearest the corner */
+  position: fixed;
+  inset: auto var(--bc-space-4) var(--bc-space-4) auto;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: var(--bc-space-2);
+  width: min(360px, calc(100vw - var(--bc-space-6)));
+
+  /* Empty container must not swallow clicks; cards re-enable pointer events */
+  pointer-events: none;
+}
+
+/* MARK: Toast card */
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  padding: var(--bc-space-3) var(--bc-space-4);
+  background: var(--bc-surface);
+  color: var(--bc-ink);
+  border: 1px solid var(--bc-border);
+  border-inline-start: 3px solid var(--bc-accent);
+  border-radius: var(--bc-radius-card);
+  box-shadow: var(--bc-shadow-card);
+  font-size: var(--bc-text-body);
+
+  /* Entry animation — fade + rise */
+  opacity: 1;
+  translate: 0 0;
+  transition:
+    opacity var(--bc-duration) var(--bc-ease-out),
+    translate var(--bc-duration) var(--bc-ease-out);
+
+  @starting-style {
+    opacity: 0;
+    translate: 0 var(--bc-space-2);
+  }
+
+  &[data-kind="warn"] { border-inline-start-color: var(--bc-warn); }
+  &[data-kind="success"] { border-inline-start-color: var(--bc-good); }
+  &[data-kind="error"] { border-inline-start-color: var(--bc-bad); }
+  &[data-kind="info"] { border-inline-start-color: var(--bc-accent); }
+}
+
+.message {
+  flex: 1 1 auto;
+  line-height: 1.4;
+}
+
+.action {
+  flex: 0 0 auto;
+  padding: var(--bc-space-1) var(--bc-space-3);
+  background: transparent;
+  color: var(--bc-accent);
+  border: 1px solid var(--bc-border-strong);
+  border-radius: var(--bc-radius-control);
+  font-family: var(--bc-font-sans);
+  font-size: var(--bc-text-caption);
+  cursor: pointer;
+
+  &:hover { background: var(--bc-surface-alt); }
+}
+
+.dismiss {
+  flex: 0 0 auto;
+  padding: 0;
+  width: var(--bc-space-5);
+  height: var(--bc-space-5);
+  background: transparent;
+  color: var(--bc-ink-mute);
+  border: none;
+  border-radius: var(--bc-radius-control);
+  font-size: var(--bc-text-body);
+  line-height: 1;
+  cursor: pointer;
+
+  &:hover { color: var(--bc-ink); }
+}
