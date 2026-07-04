@@ -16,8 +16,10 @@ pub struct Args {
 /// Executes the `restore` subcommand.
 ///
 /// Validates the candidate, snapshots the current database as a safety backup,
-/// then overwrites the live database file with the candidate. The CLI process
-/// holds no long-lived writers, so the swap is safe to do in place.
+/// closes the live connection pool, then swaps the candidate in as the live
+/// database (clearing any stale WAL sidecars first). The pool is closed before
+/// the swap so no WAL connection can checkpoint stale frames onto the restored
+/// file; `restore` is terminal, so closing the shared pool is safe.
 ///
 /// # Errors
 ///
@@ -28,7 +30,8 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     ctx.backup
         .backup(bc_core::BackupKind::Automatic, None)
         .await?;
-    std::fs::copy(&args.path, &ctx.db_path)?;
+    ctx.backup.close_pool().await;
+    bc_core::BackupService::swap_in(&args.path, &ctx.db_path)?;
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         println!("Restored database from {}", args.path.display());
