@@ -199,8 +199,9 @@ impl Service {
     ///
     /// Writes via `VACUUM INTO` to a temporary file, then atomically renames it
     /// into place. When `dest` is `None` the snapshot lands in the managed backup
-    /// directory with a timestamped name; when `dest` is `Some`, it is written
-    /// exactly there.
+    /// directory with a timestamped name and rotation is applied afterwards;
+    /// when `dest` is `Some`, it is written exactly there and rotation is
+    /// skipped.
     ///
     /// # Arguments
     ///
@@ -229,6 +230,9 @@ impl Service {
         };
 
         self.vacuum_into(&target).await?;
+        if dest.is_none() {
+            self.rotate()?;
+        }
 
         let size_bytes = std::fs::metadata(&target).map_err(|e| io_err(&e))?.len();
         let created_at = jiff::civil::DateTime::strptime(TS_FMT, &stamp)
@@ -298,6 +302,76 @@ impl Service {
             .join(format!("{stamp}.{}.sqlite", kind.suffix()));
         self.vacuum_into(&target).await
     }
+
+    /// Validates that `candidate` is a real, migratable BorrowChecker database.
+    ///
+    /// Copies the file to a temporary location and opens it (which runs
+    /// migrations) so the caller's file is never mutated by validation. A
+    /// sentinel query confirms the schema is present.
+    ///
+    /// # Arguments
+    ///
+    /// * `candidate` - Path to the backup file to validate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] if the file cannot be copied, opened, migrated, or is
+    /// missing the expected schema.
+    #[inline]
+    pub async fn validate(candidate: &Path) -> BcResult<()> {
+        let tmp = tempfile::NamedTempFile::new().map_err(|e| io_err(&e))?;
+        std::fs::copy(candidate, tmp.path()).map_err(|e| io_err(&e))?;
+        let pool = crate::open_db_at(tmp.path()).await?;
+        // Sentinel: the events table must exist in any real BorrowChecker DB.
+        sqlx::query("SELECT count(*) FROM events")
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| BcError::BadData(format!("not a BorrowChecker database: {e}")))?;
+        pool.close().await;
+        Ok(())
+    }
+
+    /// Applies the retention policy, deleting backups that satisfy neither the
+    /// count nor the age limit (see [`prune_indices`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] if the directory cannot be read or a file cannot be
+    /// deleted.
+    #[inline]
+    pub fn rotate(&self) -> BcResult<()> {
+        let records = self.list()?;
+        let now = jiff::Zoned::now();
+        let ages: Vec<i64> = records
+            .iter()
+            .map(|r| age_days(&now, r.created_at))
+            .collect();
+        for i in prune_indices(&ages, self.policy.retain_count, self.policy.retain_days) {
+            let Some(record) = records.get(i) else {
+                continue;
+            };
+            std::fs::remove_file(&record.path).map_err(|e| io_err(&e))?;
+        }
+        Ok(())
+    }
+}
+
+/// Whole-days age of `created_at` (local civil time) relative to `now`.
+fn age_days(now: &jiff::Zoned, created_at: jiff::civil::DateTime) -> i64 {
+    let Ok(created_zoned) = created_at.to_zoned(now.time_zone().clone()) else {
+        return 0;
+    };
+    let secs = now
+        .timestamp()
+        .duration_since(created_zoned.timestamp())
+        .as_secs();
+    #[expect(
+        clippy::integer_division,
+        clippy::integer_division_remainder_used,
+        reason = "converting whole seconds to whole days is an intentional floor division"
+    )]
+    let days = secs / 86_400;
+    days
 }
 
 /// Parses a [`BackupRecord`] from a filename of the managed form.
@@ -415,5 +489,74 @@ mod tests {
     fn prune_union_age_rescues_old_beyond_count() {
         // count=1, days=90: index1 (10d) is beyond count but within age ⇒ kept.
         assert_eq!(prune_indices(&[0, 10, 100], Some(1), Some(90)), vec![2]);
+    }
+
+    #[tokio::test]
+    async fn validate_accepts_real_backup_rejects_garbage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+        let rec = svc.backup(BackupKind::Manual, None).await.expect("backup");
+        super::Service::validate(&rec.path)
+            .await
+            .expect("valid backup ok");
+
+        let junk = dir.path().join("junk.sqlite");
+        std::fs::write(&junk, b"not a database").expect("write junk");
+        assert!(
+            super::Service::validate(&junk).await.is_err(),
+            "garbage file must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_keeps_newest_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("db.sqlite");
+        let pool = crate::open_db_at(&db_path).await.expect("open");
+        // retain_count = 2, no age limit.
+        let policy = BackupPolicy::new(dir.path().join("backups"), Some(2), None, true);
+        let svc = super::Service::new(pool, db_path, policy);
+        for stamp in ["20260101-000000", "20260201-000000", "20260301-000000"] {
+            svc.write_snapshot_for_test(BackupKind::Automatic, stamp)
+                .await
+                .expect("snap");
+        }
+        svc.rotate().expect("rotate");
+        let list = svc.list().expect("list");
+        assert_eq!(list.len(), 2, "only the 2 newest survive");
+        assert_eq!(
+            list.first().expect("first backup").created_at.to_string(),
+            "2026-03-01T00:00:00"
+        );
+        assert_eq!(
+            list.get(1).expect("second backup").created_at.to_string(),
+            "2026-02-01T00:00:00"
+        );
+    }
+
+    #[tokio::test]
+    async fn backup_rotates_when_over_managed_count_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("db.sqlite");
+        let pool = crate::open_db_at(&db_path).await.expect("open db");
+        let policy = BackupPolicy::new(dir.path().join("backups"), Some(1), None, true);
+        let svc = super::Service::new(pool, db_path, policy);
+
+        svc.write_snapshot_for_test(BackupKind::Automatic, "20260101-000000")
+            .await
+            .expect("snap1");
+        svc.backup(BackupKind::Manual, None).await.expect("backup2");
+
+        let list = svc.list().expect("list");
+        assert_eq!(
+            list.len(),
+            1,
+            "managed backup() call should trigger rotation"
+        );
+        assert_eq!(
+            list.first().expect("first backup").kind,
+            BackupKind::Manual,
+            "newest backup survives"
+        );
     }
 }
