@@ -411,9 +411,14 @@ impl Settings {
         };
         tracing::debug!(cli.json = cli.json, cli.log = ?cli.log, "config: cli section");
 
+        // `retain_count = 0` (from any source: config file, env var, or the
+        // 0-sentinel written by `write_backup_table` for a cleared value) is
+        // treated as "no count limit", matching the on-disk convention that
+        // disambiguates "user cleared it" (0) from "user never set it"
+        // (absent key, defaulted to 5 by `Settings::load`).
         let backup = BackupSection {
             dir: raw.backup.dir.map(std::path::PathBuf::from),
-            retain_count: raw.backup.retain_count,
+            retain_count: raw.backup.retain_count.filter(|&n| n != 0),
             retain_days: raw.backup.retain_days,
             auto_pre_migration: raw.backup.auto_pre_migration,
         };
@@ -567,6 +572,12 @@ pub fn config_file_paths() -> impl Iterator<Item = PathBuf> {
 /// Writes the `[backup]` table into the TOML document at `path`, preserving all
 /// other content (comments, formatting, unrelated sections). Creates the file
 /// and any parent directories if they do not exist.
+///
+/// `retain_count: None` is written as the sentinel `retain_count = 0` rather
+/// than removing the key, so the "unlimited" choice survives the next
+/// `Settings::load`, which would otherwise re-apply its `set_default` of `5`
+/// to an absent key. `dir` and `retain_days` have no such default, so `None`
+/// removes those keys as expected.
 fn write_backup_table(
     path: &std::path::Path,
     dir: Option<&str>,
@@ -601,7 +612,7 @@ fn write_backup_table(
             backup_table.insert("retain_count", toml_edit::value(i64::from(n)));
         }
         None => {
-            backup_table.remove("retain_count");
+            backup_table.insert("retain_count", toml_edit::value(0_i64));
         }
     }
     match retain_days {
@@ -626,13 +637,20 @@ fn write_backup_table(
 /// Persists the `[backup]` section to the user config file.
 ///
 /// Writes to the first existing config file among [`config_file_paths`], or the
-/// first candidate path if none exist yet. Only the `[backup]` table is touched;
-/// all other configuration is left byte-for-byte intact.
+/// first candidate path if none exist yet. Only the `[backup]` table is
+/// modified; all other sections — including comments and their ordering — are
+/// preserved by `toml_edit`, though exact whitespace is not guaranteed
+/// byte-for-byte.
+///
+/// A value written here is not guaranteed to be what a subsequent
+/// [`Settings::load`] returns: config layering means a higher-priority config
+/// file or a matching `BC_*` environment variable can still shadow it.
 ///
 /// # Arguments
 ///
 /// * `dir` - Backup directory override, or `None` to clear it (use the default).
-/// * `retain_count` - "Keep N newest" limit, or `None` to clear it.
+/// * `retain_count` - "Keep N newest" limit, or `None` to clear it (persisted
+///   as the on-disk sentinel `retain_count = 0`).
 /// * `retain_days` - "Keep newer than N days" limit, or `None` to clear it.
 /// * `auto_pre_migration` - Whether automatic pre-migration snapshots are on.
 ///
@@ -879,5 +897,55 @@ mod tests {
         assert!(text.contains("auto_pre_migration = true"));
         // Untouched sections survive.
         assert!(text.contains("display_commodity = \"USD\""));
+    }
+
+    #[test]
+    fn fresh_config_defaults_retain_count_to_five() {
+        let raw = valid_raw();
+        let s = Settings::validate(raw).expect("valid_raw should validate");
+        assert_eq!(s.backup().retain_count(), Some(5));
+    }
+
+    #[test]
+    fn cleared_retain_count_round_trips_as_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(
+            &cfg,
+            "display_commodity = \"USD\"\n\n[backup]\nretain_count = 3\n",
+        )
+        .expect("seed config");
+
+        write_backup_table(&cfg, None, None, None, true).expect("write backup table");
+
+        let text = std::fs::read_to_string(&cfg).expect("read back");
+        assert!(text.contains("retain_count = 0"));
+
+        let raw = RawSettings {
+            backup: RawBackupSection {
+                dir: None,
+                retain_count: Some(0),
+                retain_days: None,
+                auto_pre_migration: true,
+            },
+            ..valid_raw()
+        };
+        let s = Settings::validate(raw).expect("validate should succeed");
+        assert_eq!(s.backup().retain_count(), None);
+    }
+
+    #[test]
+    fn zero_retain_count_is_treated_as_unlimited() {
+        let raw = RawSettings {
+            backup: RawBackupSection {
+                dir: None,
+                retain_count: Some(0),
+                retain_days: None,
+                auto_pre_migration: true,
+            },
+            ..valid_raw()
+        };
+        let s = Settings::validate(raw).expect("validate should succeed");
+        assert_eq!(s.backup().retain_count(), None);
     }
 }
