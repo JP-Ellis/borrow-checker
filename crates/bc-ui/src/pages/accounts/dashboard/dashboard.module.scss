@@ -198,26 +198,3 @@
 .stat_row {
   margin-bottom: var(--bc-space-6);
 }
-
-/* MARK: Sparkline controls */
-
-.sparkline_controls {
-  display: flex;
-  gap: var(--bc-space-2);
-  margin-bottom: var(--bc-space-4);
-  justify-content: flex-end;
-}
-
-.sparkline_select {
-  font-family: var(--bc-font-mono);
-  font-size: var(--bc-text-caption);
-  padding: var(--bc-space-1) var(--bc-space-3);
-  border: 1px solid var(--bc-border-strong);
-  border-radius: var(--bc-radius-control);
-  background: var(--bc-surface-accent);
-  color: var(--bc-ink-soft);
-  cursor: pointer;
-
-  &:hover { color: var(--bc-ink); }
-  &:focus-visible { @include focus.focus-ring(2px); }
-}
