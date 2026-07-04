@@ -859,4 +859,25 @@ mod tests {
         assert!(text.contains("display_commodity = \"USD\""));
         assert!(text.contains("json = true"));
     }
+
+    #[test]
+    fn write_backup_table_removes_absent_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(
+            &cfg,
+            "display_commodity = \"USD\"\n\n[backup]\ndir = \"/old\"\nretain_count = 3\nretain_days = 5\n",
+        )
+        .expect("seed config");
+
+        write_backup_table(&cfg, None, Some(7), None, true).expect("write backup table");
+
+        let text = std::fs::read_to_string(&cfg).expect("read back");
+        assert!(!text.contains("retain_days"));
+        assert!(!text.contains("dir ="));
+        assert!(text.contains("retain_count = 7"));
+        assert!(text.contains("auto_pre_migration = true"));
+        // Untouched sections survive.
+        assert!(text.contains("display_commodity = \"USD\""));
+    }
 }
