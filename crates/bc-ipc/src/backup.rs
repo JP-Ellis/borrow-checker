@@ -17,6 +17,24 @@ pub struct BackupInfo {
     pub size_bytes: u64,
 }
 
+impl BackupInfo {
+    /// Constructs a new [`BackupInfo`].
+    ///
+    /// A constructor is required because the struct is `#[non_exhaustive]`,
+    /// which blocks struct-literal construction from other crates (e.g.
+    /// `bc-app`, the only crate that builds these from `bc_core` records).
+    #[inline]
+    #[must_use]
+    pub fn new(path: String, kind: String, created_at: String, size_bytes: u64) -> Self {
+        Self {
+            path,
+            kind,
+            created_at,
+            size_bytes,
+        }
+    }
+}
+
 /// Editable backup/rotation settings surface.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -29,6 +47,28 @@ pub struct BackupSettings {
     pub retain_days: Option<u32>,
     /// Whether automatic pre-migration snapshots are enabled.
     pub auto_pre_migration: bool,
+}
+
+impl BackupSettings {
+    /// Constructs a new [`BackupSettings`].
+    ///
+    /// A constructor is required because the struct is `#[non_exhaustive]`,
+    /// which blocks struct-literal construction from other crates.
+    #[inline]
+    #[must_use]
+    pub fn new(
+        dir: Option<String>,
+        retain_count: Option<u32>,
+        retain_days: Option<u32>,
+        auto_pre_migration: bool,
+    ) -> Self {
+        Self {
+            dir,
+            retain_count,
+            retain_days,
+            auto_pre_migration,
+        }
+    }
 }
 
 #[cfg(test)]

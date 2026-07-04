@@ -31,6 +31,10 @@ pub(crate) struct AppState {
     pub(crate) tags: bc_core::TagService,
     /// Commodity/currency registry service.
     pub(crate) commodities: bc_core::CommodityService,
+    /// Backup service (snapshot + rotation).
+    pub(crate) backup: bc_core::BackupService,
+    /// Resolved database file path (used by restore).
+    pub(crate) db_path: std::path::PathBuf,
     /// Snapshot of installed plugin metadata, collected at startup.
     ///
     /// `PluginRegistry` is not `Clone` (Wasmtime components are not `Clone`),
@@ -77,6 +81,11 @@ pub fn run() {
             commands::commodities::delete_currency,
             commands::plugins::list_plugins,
             commands::settings::get_settings,
+            commands::backup::backup_database,
+            commands::backup::list_backups,
+            commands::backup::restore_database,
+            commands::backup::get_backup_settings,
+            commands::backup::update_backup_settings,
             commands::budget::get_budget_overview,
             commands::budget::get_native_periods,
             commands::budget::get_budget_transactions,
@@ -93,7 +102,25 @@ pub fn run() {
             let db_path = std::env::var("BC_DB_PATH")
                 .map_or_else(|_| bc_config::default_db_path(), std::path::PathBuf::from);
 
-            let pool = tauri::async_runtime::block_on(bc_core::open_db_at(&db_path))?;
+            // Apply a pending restore before opening any connection.
+            let marker = commands::backup::restore_marker_path(&db_path);
+            if marker.exists() {
+                let candidate = std::fs::read_to_string(&marker)?;
+                std::fs::copy(candidate.trim(), &db_path)?;
+                std::fs::remove_file(&marker)?;
+            }
+
+            let settings = bc_config::Settings::load().unwrap_or_default();
+            let b = settings.backup();
+            let policy = bc_core::BackupPolicy::new(
+                b.resolved_dir(),
+                b.retain_count(),
+                b.retain_days(),
+                b.auto_pre_migration(),
+            );
+
+            let pool =
+                tauri::async_runtime::block_on(bc_core::open_db_with_backup(&db_path, &policy))?;
 
             let plugins = commands::plugins::collect_plugin_info();
             let fx = bc_core::noop_fx();
@@ -108,7 +135,9 @@ pub fn run() {
                 budgets: bc_core::BudgetService::new(pool.clone()),
                 tags: bc_core::TagService::new(pool.clone()),
                 commodities,
-                budget_tree: bc_core::BudgetTreeService::new(pool, fx),
+                budget_tree: bc_core::BudgetTreeService::new(pool.clone(), fx),
+                backup: bc_core::BackupService::new(pool, db_path.clone(), policy),
+                db_path,
                 plugins,
             });
             Ok(())
