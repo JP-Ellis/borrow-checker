@@ -13,6 +13,7 @@ use bc_models::Period;
 use bc_models::PostingId;
 use bc_models::Reconciliation;
 use bc_models::RolloverPolicy;
+use bc_models::SourceRefId;
 use bc_models::TagId;
 use bc_models::TransactionId;
 use bc_models::ValuationId;
@@ -327,6 +328,32 @@ pub enum Event {
         /// When the budget was archived.
         archived_at: jiff::Timestamp,
     },
+    /// A source reference (import provenance) was attached to a transaction.
+    TransactionSourceAttached {
+        /// The new source reference's ID.
+        id: SourceRefId,
+        /// The transaction this row produced.
+        transaction_id: TransactionId,
+        /// The account whose statement produced this row.
+        account_id: AccountId,
+        /// Value date of the row.
+        date: jiff::civil::Date,
+        /// Raw imported narration.
+        narration: String,
+        /// Statement amount.
+        amount: Amount,
+        /// Institution reference, if any.
+        reference: Option<String>,
+        /// Occurrence ordinal among identical fingerprints.
+        occurrence: u32,
+    },
+    /// A source reference was detached from a transaction.
+    TransactionSourceDetached {
+        /// The detached source reference's ID.
+        id: SourceRefId,
+        /// The transaction it belonged to.
+        transaction_id: TransactionId,
+    },
 }
 
 impl Event {
@@ -362,6 +389,8 @@ impl Event {
             Self::BudgetRevisionSet { .. } => "BudgetRevisionSet",
             Self::BudgetRevisionRemoved { .. } => "BudgetRevisionRemoved",
             Self::BudgetArchived { .. } => "BudgetArchived",
+            Self::TransactionSourceAttached { .. } => "TransactionSourceAttached",
+            Self::TransactionSourceDetached { .. } => "TransactionSourceDetached",
         }
     }
 
@@ -401,6 +430,8 @@ impl Event {
             | Self::BudgetRevisionSet { budget_id, .. }
             | Self::BudgetRevisionRemoved { budget_id, .. }
             | Self::BudgetArchived { budget_id, .. } => budget_id.to_string(),
+            Self::TransactionSourceAttached { transaction_id, .. }
+            | Self::TransactionSourceDetached { transaction_id, .. } => transaction_id.to_string(),
         }
     }
 }
@@ -521,7 +552,11 @@ pub(crate) async fn insert_event(event: &Event, conn: &mut sqlx::SqliteConnectio
 #[cfg(test)]
 mod tests {
     use bc_models::AccountId;
+    use bc_models::CommodityCode;
+    use bc_models::SourceRefId;
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
 
     use super::*;
 
@@ -971,5 +1006,22 @@ mod tests {
         };
         assert_eq!(event.aggregate_id(), tx.to_string());
         assert_eq!(event.kind(), "TransactionPayeeChanged");
+    }
+
+    #[test]
+    fn source_attached_aggregates_on_transaction_id() {
+        let tx = TransactionId::new();
+        let event = Event::TransactionSourceAttached {
+            id: SourceRefId::new(),
+            transaction_id: tx.clone(),
+            account_id: AccountId::new(),
+            date: date(2025, 6, 27),
+            narration: "ACME".to_owned(),
+            amount: Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
+            reference: None,
+            occurrence: 0,
+        };
+        assert_eq!(event.kind(), "TransactionSourceAttached");
+        assert_eq!(event.aggregate_id(), tx.to_string());
     }
 }
