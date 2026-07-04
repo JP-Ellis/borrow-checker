@@ -13,6 +13,7 @@
 //!   `Debug`
 
 mod accounts;
+mod backup;
 mod balances;
 mod budget;
 #[cfg(target_arch = "wasm32")]
@@ -40,6 +41,8 @@ pub use accounts::Posting;
 pub use accounts::Reconciliation;
 pub use accounts::SparkPoint;
 pub use accounts::Transaction;
+pub use backup::BackupInfo;
+pub use backup::BackupSettings;
 pub use balances::Balances;
 pub use budget::BudgetRevisionView;
 pub use budget::BudgetSummary;
