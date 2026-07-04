@@ -102,12 +102,35 @@ pub fn run() {
             let db_path = std::env::var("BC_DB_PATH")
                 .map_or_else(|_| bc_config::default_db_path(), std::path::PathBuf::from);
 
-            // Apply a pending restore before opening any connection.
+            // Apply a pending restore before opening any connection. Any failure
+            // here must NOT abort startup: a missing/unreadable candidate would
+            // otherwise brick the app on every launch. Log and drop the marker so
+            // the next launch proceeds with the existing database (the pre-restore
+            // safety snapshot remains for manual recovery).
             let marker = commands::backup::restore_marker_path(&db_path);
             if marker.exists() {
-                let candidate = std::fs::read_to_string(&marker)?;
-                std::fs::copy(candidate.trim(), &db_path)?;
-                std::fs::remove_file(&marker)?;
+                match std::fs::read_to_string(&marker) {
+                    Ok(candidate) => {
+                        if let Err(e) = bc_core::BackupService::swap_in(
+                            std::path::Path::new(candidate.trim()),
+                            &db_path,
+                        ) {
+                            tracing::warn!(
+                                error = %e,
+                                "failed to swap in restore candidate; keeping existing database"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "failed to read restore marker; keeping existing database"
+                        );
+                    }
+                }
+                if let Err(e) = std::fs::remove_file(&marker) {
+                    tracing::warn!(error = %e, "failed to remove restore marker");
+                }
             }
 
             let settings = bc_config::Settings::load().unwrap_or_default();
