@@ -3,6 +3,11 @@
 //! OFX v1 is not valid XML: leaf-value elements have no closing tag.
 //! This tokenizer emits [`SgmlToken`] values from a raw byte slice.
 
+use winnow::ModalResult;
+use winnow::Parser;
+use winnow::token::take_until;
+use winnow::token::take_while;
+
 /// A token from an OFX v1 SGML stream.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SgmlToken {
@@ -28,50 +33,64 @@ pub(crate) enum SgmlToken {
 pub(crate) fn tokenise(input: &str) -> Vec<SgmlToken> {
     let mut tokens = Vec::new();
     let mut remaining = input;
+    while let Some(token) = next_token(&mut remaining) {
+        tokens.push(token);
+    }
+    tokens
+}
 
-    while let Some(lt_pos) = remaining.find('<') {
-        // Advance to the `<`.
-        remaining = remaining.get(lt_pos..).unwrap_or_default();
+/// Consumes the next SGML token from `input`, or returns `None` at end.
+fn next_token(input: &mut &str) -> Option<SgmlToken> {
+    // Skip everything up to the next `<` (header lines, whitespace, values).
+    skip_to_lt.parse_next(input).ok()?;
 
-        // Find the matching `>`.
-        let Some(gt_pos) = remaining.find('>') else {
-            // Malformed — no closing `>`, skip rest of input.
-            break;
-        };
+    // Consume the tag body between `<` and `>`.
+    let tag_raw: &str = tag_body.parse_next(input).ok()?;
 
-        // The tag raw text sits between `<` and `>`.
-        let tag_raw = remaining.get(1..gt_pos).unwrap_or_default();
-
-        if let Some(close_tag) = tag_raw.strip_prefix('/') {
-            // Close tag: `</TAGNAME>`
-            let tag = close_tag.trim().to_ascii_uppercase();
-            tokens.push(SgmlToken::Close(tag));
-            remaining = remaining
-                .get(gt_pos.saturating_add(1)..)
-                .unwrap_or_default();
-        } else {
-            let tag = tag_raw.trim().to_ascii_uppercase();
-            // Advance past `>` and read the value (up to next `<` or newline).
-            remaining = remaining
-                .get(gt_pos.saturating_add(1)..)
-                .unwrap_or_default();
-            let value_end = remaining.find(['<', '\n', '\r']).unwrap_or(remaining.len());
-            let value = remaining.get(..value_end).unwrap_or_default().trim();
-            if value.is_empty() {
-                // `<TAG>` with nothing after — aggregate open tag.
-                tokens.push(SgmlToken::Open(tag));
-            } else {
-                // `<TAG>value` — leaf element.
-                tokens.push(SgmlToken::Leaf {
-                    tag,
-                    value: value.to_owned(),
-                });
-            }
-            remaining = remaining.get(value_end..).unwrap_or_default();
-        }
+    if let Some(close) = tag_raw.strip_prefix('/') {
+        return Some(SgmlToken::Close(close.trim().to_ascii_uppercase()));
     }
 
-    tokens
+    let tag = tag_raw.trim().to_ascii_uppercase();
+    // Value runs to the next `<`, `\n`, or `\r`.
+    let value = leaf_value.parse_next(input).unwrap_or_default().trim();
+    let token = if value.is_empty() {
+        SgmlToken::Open(tag)
+    } else {
+        SgmlToken::Leaf {
+            tag,
+            value: value.to_owned(),
+        }
+    };
+    Some(token)
+}
+
+/// Discards input up to (but not including) the next `<`.
+///
+/// # Errors
+///
+/// Returns an error if no `<` remains in the input.
+fn skip_to_lt(input: &mut &str) -> ModalResult<()> {
+    take_until(0.., "<").void().parse_next(input)
+}
+
+/// Consumes `<...>` and returns the raw text between the angle brackets.
+///
+/// # Errors
+///
+/// Returns an error if no closing `>` is found.
+fn tag_body<'i>(input: &mut &'i str) -> ModalResult<&'i str> {
+    '<'.parse_next(input)?;
+    let body = take_until(0.., ">").parse_next(input)?;
+    '>'.parse_next(input)?;
+    Ok(body)
+}
+
+/// Consumes a leaf value: everything up to the next `<`, `\n`, or `\r`.
+///
+/// This parser is infallible; it never returns an error.
+fn leaf_value<'i>(input: &mut &'i str) -> ModalResult<&'i str> {
+    take_while(0.., |c| c != '<' && c != '\n' && c != '\r').parse_next(input)
 }
 
 #[cfg(test)]

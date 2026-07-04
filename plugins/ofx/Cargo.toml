@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 bc-sdk       = { path = "../../crates/bc-sdk" }
 quick-xml    = "0.41"
 rust_decimal = "1"
+winnow       = "1"
 
 [dev-dependencies]
 pretty_assertions   = "=1.4.1"
