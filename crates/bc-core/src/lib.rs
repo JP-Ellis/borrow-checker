@@ -34,6 +34,7 @@ pub use asset::Service as AssetService;
 pub use backup::BackupKind;
 pub use backup::BackupPolicy;
 pub use backup::BackupRecord;
+pub use backup::Service as BackupService;
 pub use balance::Engine as BalanceEngine;
 pub use balance::PostingBucket;
 pub use bc_models::BudgetWindow;
