@@ -30,6 +30,13 @@ fn restore_rejects_garbage_file() {
         ])
         .assert()
         .failure();
+
+    // Live database must remain intact and queryable.
+    Command::cargo_bin("borrow-checker")
+        .expect("bin")
+        .args(["--db-path", db.to_str().expect("utf8"), "account", "list"])
+        .assert()
+        .success();
 }
 
 #[test]
