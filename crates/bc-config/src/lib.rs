@@ -564,6 +564,104 @@ pub fn config_file_paths() -> impl Iterator<Item = PathBuf> {
         .filter(move |p| seen.insert(p.clone()))
 }
 
+/// Writes the `[backup]` table into the TOML document at `path`, preserving all
+/// other content (comments, formatting, unrelated sections). Creates the file
+/// and any parent directories if they do not exist.
+fn write_backup_table(
+    path: &std::path::Path,
+    dir: Option<&str>,
+    retain_count: Option<u32>,
+    retain_days: Option<u32>,
+    auto_pre_migration: bool,
+) -> Result<(), ConfigError> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut doc = existing
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| ConfigError::Validation(format!("config is not valid TOML: {e}")))?;
+
+    let backup_item = doc
+        .entry("backup")
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    let Some(backup_table) = backup_item.as_table_mut() else {
+        return Err(ConfigError::Validation(
+            "config `backup` key is not a table".to_owned(),
+        ));
+    };
+
+    match dir {
+        Some(d) => {
+            backup_table.insert("dir", toml_edit::value(d));
+        }
+        None => {
+            backup_table.remove("dir");
+        }
+    }
+    match retain_count {
+        Some(n) => {
+            backup_table.insert("retain_count", toml_edit::value(i64::from(n)));
+        }
+        None => {
+            backup_table.remove("retain_count");
+        }
+    }
+    match retain_days {
+        Some(n) => {
+            backup_table.insert("retain_days", toml_edit::value(i64::from(n)));
+        }
+        None => {
+            backup_table.remove("retain_days");
+        }
+    }
+    backup_table.insert("auto_pre_migration", toml_edit::value(auto_pre_migration));
+
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ConfigError::Validation(format!("cannot create config dir: {e}")))?;
+    }
+    std::fs::write(path, doc.to_string())
+        .map_err(|e| ConfigError::Validation(format!("cannot write config: {e}")))?;
+    Ok(())
+}
+
+/// Persists the `[backup]` section to the user config file.
+///
+/// Writes to the first existing config file among [`config_file_paths`], or the
+/// first candidate path if none exist yet. Only the `[backup]` table is touched;
+/// all other configuration is left byte-for-byte intact.
+///
+/// # Arguments
+///
+/// * `dir` - Backup directory override, or `None` to clear it (use the default).
+/// * `retain_count` - "Keep N newest" limit, or `None` to clear it.
+/// * `retain_days` - "Keep newer than N days" limit, or `None` to clear it.
+/// * `auto_pre_migration` - Whether automatic pre-migration snapshots are on.
+///
+/// # Returns
+///
+/// The path of the config file written.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Validation`] if no config path can be resolved, the
+/// existing file is not valid TOML, or the file cannot be written.
+#[inline]
+pub fn persist_backup_section(
+    dir: Option<&str>,
+    retain_count: Option<u32>,
+    retain_days: Option<u32>,
+    auto_pre_migration: bool,
+) -> Result<std::path::PathBuf, ConfigError> {
+    let candidates: Vec<std::path::PathBuf> = config_file_paths().collect();
+    let target = candidates
+        .iter()
+        .find(|p| p.exists())
+        .or_else(|| candidates.first())
+        .cloned()
+        .ok_or_else(|| ConfigError::Validation("no config file path available".to_owned()))?;
+    write_backup_table(&target, dir, retain_count, retain_days, auto_pre_migration)?;
+    Ok(target)
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(not(windows))]
@@ -741,5 +839,24 @@ mod tests {
     fn backup_section_resolves_default_dir_when_unset() {
         let s = Settings::default();
         assert_eq!(s.backup().resolved_dir(), default_backup_dir());
+    }
+
+    #[test]
+    fn persist_backup_section_writes_and_preserves_other_sections() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(&cfg, "display_commodity = \"USD\"\n\n[cli]\njson = true\n")
+            .expect("seed config");
+
+        write_backup_table(&cfg, Some("/tmp/bk"), Some(3), None, false)
+            .expect("write backup table");
+
+        let text = std::fs::read_to_string(&cfg).expect("read back");
+        assert!(text.contains("[backup]"));
+        assert!(text.contains("retain_count = 3"));
+        assert!(text.contains("dir = \"/tmp/bk\""));
+        // Untouched sections survive.
+        assert!(text.contains("display_commodity = \"USD\""));
+        assert!(text.contains("json = true"));
     }
 }
