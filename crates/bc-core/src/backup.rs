@@ -1,6 +1,12 @@
 //! Database backup: `VACUUM INTO` snapshots with conservative rotation.
 
+use std::path::Path;
 use std::path::PathBuf;
+
+use sqlx::SqlitePool;
+
+use crate::BcError;
+use crate::BcResult;
 
 /// The origin of a backup, encoded in its filename suffix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -141,11 +147,235 @@ pub fn prune_indices(
         .collect()
 }
 
+/// Timestamp format used in backup filenames.
+const TS_FMT: &str = "%Y%m%d-%H%M%S";
+
+/// Maps an I/O error into a [`BcError`].
+fn io_err(e: &std::io::Error) -> BcError {
+    BcError::InvalidInput(e.to_string())
+}
+
+/// Backup service: snapshots the SQLite database and rotates old snapshots.
+///
+/// Unlike the projection services this owns the database **file path** (not just
+/// the pool) because `VACUUM INTO` writes a sibling file and rotation manages the
+/// backup directory.
+#[non_exhaustive]
+pub struct Service {
+    /// Live pool used to run `VACUUM INTO`.
+    pool: SqlitePool,
+    /// Path of the live database file (used by callers doing restore swaps).
+    db_path: PathBuf,
+    /// Backup directory and retention policy.
+    policy: BackupPolicy,
+}
+
+impl Service {
+    /// Creates a new backup service.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - Live connection pool to the database being backed up.
+    /// * `db_path` - Filesystem path of the live database file.
+    /// * `policy` - Backup directory and retention policy.
+    #[inline]
+    #[must_use]
+    pub fn new(pool: SqlitePool, db_path: PathBuf, policy: BackupPolicy) -> Self {
+        Self {
+            pool,
+            db_path,
+            policy,
+        }
+    }
+
+    /// Returns the live database file path.
+    #[inline]
+    #[must_use]
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
+
+    /// Creates a consistent snapshot of the database.
+    ///
+    /// Writes via `VACUUM INTO` to a temporary file, then atomically renames it
+    /// into place. When `dest` is `None` the snapshot lands in the managed backup
+    /// directory with a timestamped name; when `dest` is `Some`, it is written
+    /// exactly there.
+    ///
+    /// # Arguments
+    ///
+    /// * `kind` - Manual or automatic (controls the filename suffix).
+    /// * `dest` - Explicit output path, or `None` for the managed directory.
+    ///
+    /// # Returns
+    ///
+    /// A [`BackupRecord`] describing the written file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] if the directory cannot be created, `VACUUM INTO`
+    /// fails, or the rename fails.
+    #[inline]
+    pub async fn backup(&self, kind: BackupKind, dest: Option<&Path>) -> BcResult<BackupRecord> {
+        let now = jiff::Zoned::now();
+        let stamp = now.strftime(TS_FMT).to_string();
+        let target = if let Some(p) = dest {
+            p.to_path_buf()
+        } else {
+            std::fs::create_dir_all(&self.policy.dir).map_err(|e| io_err(&e))?;
+            self.policy
+                .dir
+                .join(format!("{stamp}.{}.sqlite", kind.suffix()))
+        };
+
+        self.vacuum_into(&target).await?;
+
+        let size_bytes = std::fs::metadata(&target).map_err(|e| io_err(&e))?.len();
+        let created_at = jiff::civil::DateTime::strptime(TS_FMT, &stamp)
+            .map_err(|e| BcError::BadData(format!("bad timestamp: {e}")))?;
+        Ok(BackupRecord {
+            path: target,
+            kind,
+            created_at,
+            size_bytes,
+        })
+    }
+
+    /// Runs `VACUUM INTO` to `target` via a temp file + atomic rename.
+    async fn vacuum_into(&self, target: &Path) -> BcResult<()> {
+        let tmp = target.with_extension("tmp");
+        // A stale temp from an interrupted run would make VACUUM INTO fail.
+        drop(std::fs::remove_file(&tmp));
+        // VACUUM INTO takes a string literal; single-quote-escape the path.
+        let escaped = tmp.to_string_lossy().replace('\'', "''");
+        // The escaped path is the only interpolated value; it is not user-controlled
+        // SQL, so asserting safety here is sound.
+        sqlx::query(sqlx::AssertSqlSafe(format!("VACUUM INTO '{escaped}'")))
+            .execute(&self.pool)
+            .await?;
+        std::fs::rename(&tmp, target).map_err(|e| io_err(&e))?;
+        Ok(())
+    }
+
+    /// Lists the managed backups, newest-first.
+    ///
+    /// Only files matching `{YYYYMMDD-HHMMSS}.{manual|automatic}.sqlite` in the
+    /// policy directory are returned; anything else is ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] if the directory cannot be read.
+    #[inline]
+    pub fn list(&self) -> BcResult<Vec<BackupRecord>> {
+        let mut out = Vec::new();
+        let entries = match std::fs::read_dir(&self.policy.dir) {
+            Ok(e) => e,
+            // A not-yet-created backup dir simply has no backups.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(io_err(&e)),
+        };
+        for entry_result in entries {
+            let dir_entry = entry_result.map_err(|e| io_err(&e))?;
+            let path = dir_entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if let Some(rec) = parse_record(&path, name) {
+                out.push(rec);
+            }
+        }
+        out.sort_by_key(|rec| core::cmp::Reverse(rec.created_at));
+        Ok(out)
+    }
+
+    /// Test-only helper: write a snapshot with an explicit timestamp string.
+    #[cfg(test)]
+    async fn write_snapshot_for_test(&self, kind: BackupKind, stamp: &str) -> BcResult<()> {
+        std::fs::create_dir_all(&self.policy.dir).map_err(|e| io_err(&e))?;
+        let target = self
+            .policy
+            .dir
+            .join(format!("{stamp}.{}.sqlite", kind.suffix()));
+        self.vacuum_into(&target).await
+    }
+}
+
+/// Parses a [`BackupRecord`] from a filename of the managed form.
+fn parse_record(path: &Path, name: &str) -> Option<BackupRecord> {
+    let rest = name.strip_suffix(".sqlite")?;
+    let (stamp, suffix) = rest.rsplit_once('.')?;
+    let kind = BackupKind::from_suffix(suffix)?;
+    let created_at = jiff::civil::DateTime::strptime(TS_FMT, stamp).ok()?;
+    let size_bytes = std::fs::metadata(path).ok()?.len();
+    Some(BackupRecord {
+        path: path.to_path_buf(),
+        kind,
+        created_at,
+        size_bytes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use pretty_assertions::assert_eq;
 
     use super::prune_indices;
+    use crate::BackupKind;
+    use crate::BackupPolicy;
+
+    /// Builds a Service over a fresh on-disk DB in `dir`, returning (service, `db_path`).
+    async fn service_in(dir: &std::path::Path) -> (super::Service, PathBuf) {
+        let db_path = dir.join("db.sqlite");
+        let pool = crate::open_db_at(&db_path).await.expect("open db");
+        let policy = BackupPolicy::new(dir.join("backups"), Some(5), None, true);
+        (super::Service::new(pool, db_path.clone(), policy), db_path)
+    }
+
+    #[tokio::test]
+    async fn backup_produces_openable_copy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+
+        let rec = svc.backup(BackupKind::Manual, None).await.expect("backup");
+        assert!(rec.path.exists(), "backup file should exist");
+        assert_eq!(rec.kind, BackupKind::Manual);
+        assert!(rec.size_bytes > 0);
+
+        // The copy opens and has the schema (events table exists).
+        let pool2 = crate::open_db_at(&rec.path).await.expect("reopen backup");
+        let n: (i64,) = sqlx::query_as("SELECT count(*) FROM events")
+            .fetch_one(&pool2)
+            .await
+            .expect("events table present in backup");
+        assert_eq!(n.0, 0);
+    }
+
+    #[tokio::test]
+    async fn list_returns_backups_newest_first() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+        // Two backups with distinct filenames (inject timestamps directly).
+        svc.write_snapshot_for_test(BackupKind::Automatic, "20260101-000000")
+            .await
+            .expect("snap1");
+        svc.write_snapshot_for_test(BackupKind::Manual, "20260601-000000")
+            .await
+            .expect("snap2");
+
+        let list = svc.list().expect("list");
+        assert_eq!(list.len(), 2);
+        assert_eq!(
+            list.first().expect("first backup").kind,
+            BackupKind::Manual,
+            "June backup is newest"
+        );
+        assert_eq!(
+            list.get(1).expect("second backup").kind,
+            BackupKind::Automatic
+        );
+    }
 
     #[test]
     fn prune_disabled_when_both_limits_unset() {
