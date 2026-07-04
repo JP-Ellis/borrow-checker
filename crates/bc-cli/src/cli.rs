@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::commands::account;
 use crate::commands::asset;
+use crate::commands::backup;
 use crate::commands::budget;
 use crate::commands::completions;
 use crate::commands::export;
@@ -66,6 +67,8 @@ pub enum Commands {
     Account(account::Args),
     /// Manage assets (record-valuation, book-value, depreciate, set-loan-terms, amortization).
     Asset(asset::Args),
+    /// Snapshot the database to a backup file.
+    Backup(backup::Args),
     /// Manage transactions (list, add, amend, reverse).
     Transaction(transaction::Args),
     /// Import transactions from a file using a named import profile.
