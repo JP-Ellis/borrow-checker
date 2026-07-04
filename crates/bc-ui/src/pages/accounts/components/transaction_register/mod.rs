@@ -151,6 +151,16 @@ pub fn TransactionRegister(
     let vid = viewing_account_id.clone();
     let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
 
+    let toasts = crate::components::toast::use_toasts();
+    let on_saved_cb = Callback::new(move |date: jiff::civil::Date| {
+        crate::pages::accounts::period_notify::notify_if_out_of_period(
+            toasts,
+            period.get_untracked(),
+            window_start,
+            date,
+        );
+    });
+
     view! {
         <div
             class=style::register
@@ -267,6 +277,7 @@ pub fn TransactionRegister(
                                     selected_idx.set(Some(i));
                                 })
                                 on_change=on_change_cb
+                                on_saved=on_saved_cb
                                 accounts=accounts.get_value()
                             />
                         }
