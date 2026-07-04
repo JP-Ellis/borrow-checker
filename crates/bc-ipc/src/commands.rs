@@ -89,6 +89,21 @@ pub const DELETE_CURRENCY: &str = "delete_currency";
 /// Command: create the full colon-path tag hierarchy, returning the leaf ID.
 pub const CREATE_TAG: &str = "create_tag";
 
+/// Command: snapshot the database to the managed backup directory.
+pub const BACKUP_DATABASE: &str = "backup_database";
+
+/// Command: restore the database from a backup file (relaunches the app).
+pub const RESTORE_DATABASE: &str = "restore_database";
+
+/// Command: list existing backups.
+pub const LIST_BACKUPS: &str = "list_backups";
+
+/// Command: read the current backup settings.
+pub const GET_BACKUP_SETTINGS: &str = "get_backup_settings";
+
+/// Command: persist updated backup settings.
+pub const UPDATE_BACKUP_SETTINGS: &str = "update_backup_settings";
+
 /// Argument struct for the `reverse_transaction` command.
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(serde::Serialize)]

@@ -14,6 +14,8 @@ use serde::Serialize;
 
 use crate::AccountNode;
 use crate::AuditEntry;
+use crate::BackupInfo;
+use crate::BackupSettings;
 use crate::BcError;
 use crate::BudgetRevisionView;
 use crate::BudgetSummary;
@@ -802,6 +804,82 @@ pub async fn get_transaction_audit(id: &str) -> Result<Vec<AuditEntry>, BcError>
     tauri_sys::core::invoke_result(
         commands::GET_TRANSACTION_AUDIT,
         GetTransactionAuditArgs { id },
+    )
+    .await
+}
+
+/// Snapshots the database to the managed backup directory.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn backup_database() -> Result<BackupInfo, BcError> {
+    tauri_sys::core::invoke_result::<BackupInfo, BcError>(commands::BACKUP_DATABASE, NoArgs {})
+        .await
+}
+
+/// Lists existing backups, newest-first.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn list_backups() -> Result<Vec<BackupInfo>, BcError> {
+    tauri_sys::core::invoke_result::<Vec<BackupInfo>, BcError>(commands::LIST_BACKUPS, NoArgs {})
+        .await
+}
+
+/// Argument struct for [`restore_database`].
+#[derive(Serialize)]
+struct RestoreArgs<'a> {
+    /// Path to the backup to restore.
+    path: &'a str,
+}
+
+/// Restores the database from `path`; the backend relaunches the app on success.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] if the file is not a valid backup, or
+/// [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn restore_database(path: &str) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result::<(), BcError>(commands::RESTORE_DATABASE, RestoreArgs { path })
+        .await
+}
+
+/// Reads the current backup settings.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn get_backup_settings() -> Result<BackupSettings, BcError> {
+    tauri_sys::core::invoke_result::<BackupSettings, BcError>(
+        commands::GET_BACKUP_SETTINGS,
+        NoArgs {},
+    )
+    .await
+}
+
+/// Argument struct for [`update_backup_settings`].
+#[derive(Serialize)]
+struct UpdateBackupSettingsArgs<'a> {
+    /// The settings to persist.
+    settings: &'a BackupSettings,
+}
+
+/// Persists updated backup settings to the config file.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn update_backup_settings(settings: &BackupSettings) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result::<(), BcError>(
+        commands::UPDATE_BACKUP_SETTINGS,
+        UpdateBackupSettingsArgs { settings },
     )
     .await
 }
