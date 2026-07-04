@@ -557,6 +557,8 @@ pub async fn get_transaction_audit(
 /// * `commodity`  - Optional commodity code. Defaults to the account's first commodity.
 /// * `count`      - Optional bucket count (default 6).
 /// * `period`     - Optional bucket period (default Monthly).
+/// * `as_of`      - Optional reference date; the most recent bucket contains this
+///   date. Defaults to today.
 /// * `state`      - Tauri managed application state.
 ///
 /// # Panics
@@ -577,6 +579,7 @@ pub async fn get_account_sparkline(
     commodity: Option<String>,
     count: Option<u32>,
     period: Option<bc_ipc::Period>,
+    as_of: Option<jiff::civil::Date>,
     state: State<'_, AppState>,
 ) -> Result<Vec<bc_ipc::SparkPoint>, bc_ipc::BcError> {
     use core::num::NonZeroUsize;
@@ -607,11 +610,11 @@ pub async fn get_account_sparkline(
 
     let model_period = period.map_or(bc_models::Period::Monthly, bc_models::Period::from);
 
-    let as_of = jiff::Zoned::now().date();
+    let anchor = as_of.unwrap_or_else(|| jiff::Zoned::now().date());
 
     let buckets = state
         .balance_engine
-        .posting_buckets(&id, &commodity_code, &model_period, bucket_count, as_of)
+        .posting_buckets(&id, &commodity_code, &model_period, bucket_count, anchor)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
