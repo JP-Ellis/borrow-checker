@@ -86,6 +86,7 @@ members  = [
   thiserror             = "2"
   tokio                 = { version = "1", features = ["full"] }
   toml                  = "1.0"
+  toml_edit             = "0.22"
   tracing               = "0.1"
   tracing-opentelemetry = { version = "0.33" }
   tracing-subscriber    = { version = "0.3", features = [
