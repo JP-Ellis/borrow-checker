@@ -1,10 +1,15 @@
 //! SQLite connection pool setup and shared database utilities.
 
+use std::path::Path;
+
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::sqlite::SqliteJournalMode;
 use sqlx::sqlite::SqliteSynchronous;
 
+use crate::BackupKind;
+use crate::BackupPolicy;
+use crate::BackupService;
 use crate::BcError;
 use crate::BcResult;
 
@@ -73,6 +78,67 @@ pub async fn open_db_at(path: &std::path::Path) -> BcResult<SqlitePool> {
     Ok(pool)
 }
 
+/// Opens the database, taking an automatic snapshot before applying pending
+/// migrations, then runs migrations.
+///
+/// The snapshot is taken only when all of the following hold: the policy has
+/// `auto_pre_migration` enabled, the database file already existed and was
+/// non-empty before this call, and there are migrations not yet applied. A fresh
+/// or up-to-date database is never backed up here.
+///
+/// # Arguments
+///
+/// * `path` - Filesystem path to the SQLite database file.
+/// * `policy` - Backup directory and retention policy.
+///
+/// # Returns
+///
+/// A connected and migrated [`SqlitePool`].
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`](crate::BcError::Database) if the pool cannot be
+/// created, the snapshot fails, or migrations fail.
+#[inline]
+pub async fn open_db_with_backup(path: &Path, policy: &BackupPolicy) -> BcResult<SqlitePool> {
+    let pre_existing = std::fs::metadata(path).is_ok_and(|m| m.len() > 0);
+
+    let opts = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .pragma("foreign_keys", "ON")
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
+    let pool = SqlitePool::connect_with(opts).await?;
+
+    if policy.auto_pre_migration && pre_existing && has_pending_migrations(&pool).await? {
+        let svc = BackupService::new(pool.clone(), path.to_path_buf(), policy.clone());
+        svc.backup(BackupKind::Automatic, None).await?;
+        tracing::info!("pre-migration backup written");
+    }
+
+    sqlx::migrate!("./migrations").run(&pool).await?;
+    tracing::info!("database opened and migrations applied");
+    Ok(pool)
+}
+
+/// Returns `true` if the bundled migrator has versions beyond those recorded in
+/// `_sqlx_migrations` (or that table does not yet exist).
+async fn has_pending_migrations(pool: &SqlitePool) -> BcResult<bool> {
+    // Missing table (fresh DB) ⇒ everything is pending; treat query error as such.
+    let applied: Option<i64> = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+        .flatten();
+    let latest = sqlx::migrate!("./migrations")
+        .migrations
+        .iter()
+        .map(|m| m.version)
+        .max();
+    Ok(latest > applied)
+}
+
 // Schema tables (managed by migrations in ./migrations/):
 //   events, accounts, commodities, account_commodities, tags, account_tags,
 //   transactions, postings, transaction_tags, posting_tags,
@@ -139,6 +205,63 @@ pub(crate) fn from_db_str<T: serde::de::DeserializeOwned>(s: &str) -> BcResult<T
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
+
+    use crate::BackupPolicy;
+
+    #[tokio::test]
+    async fn pre_migration_backup_taken_when_migrations_pending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("db.sqlite");
+        let backups = dir.path().join("backups");
+
+        // Seed a pre-existing, non-empty DB WITHOUT running BC migrations, so
+        // "pending migrations" is a genuine migratable state (no _sqlx_migrations
+        // table yet) rather than a re-run of already-applied, non-idempotent DDL.
+        {
+            let opts = sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = sqlx::SqlitePool::connect_with(opts)
+                .await
+                .expect("seed raw db");
+            sqlx::query("CREATE TABLE seed_marker (x INTEGER)")
+                .execute(&pool)
+                .await
+                .expect("create seed table");
+            pool.close().await;
+        }
+
+        let policy = BackupPolicy::new(backups.clone(), Some(5), None, true);
+        let pool = crate::open_db_with_backup(&db_path, &policy)
+            .await
+            .expect("open with backup");
+        pool.close().await;
+
+        let count = std::fs::read_dir(&backups).map_or(0, core::iter::Iterator::count);
+        assert!(
+            count >= 1,
+            "a pre-migration backup should have been written"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_backup_for_fresh_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("db.sqlite");
+        let backups = dir.path().join("backups");
+        let policy = BackupPolicy::new(backups.clone(), Some(5), None, true);
+
+        let pool = crate::open_db_with_backup(&db_path, &policy)
+            .await
+            .expect("open fresh");
+        pool.close().await;
+
+        assert!(
+            !backups.exists()
+                || std::fs::read_dir(&backups).map_or(0, core::iter::Iterator::count) == 0,
+            "a brand-new database has nothing to back up"
+        );
+    }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn open_db_runs_migrations(pool: sqlx::SqlitePool) {
