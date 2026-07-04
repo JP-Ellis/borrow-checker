@@ -1,13 +1,18 @@
 //! Line-oriented parser for the Beancount format.
 
 use rust_decimal::Decimal;
+use winnow::ModalResult;
+use winnow::Parser;
+use winnow::combinator::preceded;
+use winnow::combinator::repeat;
+use winnow::error::ParserError;
+use winnow::token::take_till;
+use winnow::token::take_while;
 
 use crate::ast::Directive;
 use crate::ast::Posting;
 use crate::ast::Transaction;
 use crate::ast::TxFlag;
-
-// TODO: consider migrating to nom parser combinators
 
 /// Parses a complete Beancount file and returns its directives.
 ///
@@ -41,13 +46,15 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
             continue;
         }
 
-        // All Beancount date strings are ASCII so byte-boundary slicing is safe.
-        // We need at least "YYYY-MM-DD " (11 bytes) for a valid directive.
+        // A Beancount directive needs at least "YYYY-MM-DD" (10 bytes); a
+        // shorter digit-leading line is not a directive. A full-length prefix
+        // that fails to parse as a date is a hard error, as before.
         let Some(date_str) = trimmed.get(..10) else {
             directives.push(Directive::Other);
             continue;
         };
-        let date = parse_date(date_str)?;
+        let mut date_input = date_str;
+        let date = date(&mut date_input).map_err(|_| format!("invalid date in '{date_str}'"))?;
         let rest = trimmed.get(10..).unwrap_or_default().trim_start();
 
         if let Some((flag, r)) = rest
@@ -123,7 +130,13 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
 ///
 /// Returns an error if the number of quoted strings is not 1 or 2.
 fn parse_payee_narration(s: &str) -> Result<(Option<String>, String), String> {
-    let strings = extract_quoted_strings(s)?;
+    let mut input = s;
+    let strings: Vec<String> = repeat(0.., preceded(take_till(0.., '"'), quoted_string))
+        .parse_next(&mut input)
+        .unwrap_or_default();
+    if input.contains('"') {
+        return Err(format!("unterminated string in: '{s}'"));
+    }
     match strings.as_slice() {
         [only] => Ok((None, only.clone())),
         [payee, narration] => Ok((Some(payee.clone()), narration.clone())),
@@ -132,43 +145,6 @@ fn parse_payee_narration(s: &str) -> Result<(Option<String>, String), String> {
             strings.len()
         )),
     }
-}
-
-/// Extracts all double-quoted strings from a line.
-///
-/// # Arguments
-///
-/// * `s` - The string slice to scan.
-///
-/// # Returns
-///
-/// A list of unescaped string contents.
-///
-/// # Errors
-///
-/// Returns an error if a quoted string is unterminated.
-fn extract_quoted_strings(s: &str) -> Result<Vec<String>, String> {
-    let mut strings = Vec::new();
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '"' {
-            let mut buf = String::new();
-            loop {
-                match chars.next() {
-                    Some('"') => break,
-                    Some('\\') => {
-                        if let Some(escaped) = chars.next() {
-                            buf.push(escaped);
-                        }
-                    }
-                    Some(ch) => buf.push(ch),
-                    None => return Err(format!("unterminated string in: '{s}'")),
-                }
-            }
-            strings.push(buf);
-        }
-    }
-    Ok(strings)
 }
 
 /// Collects indented posting lines following a transaction header.
@@ -259,11 +235,11 @@ fn parse_posting(line: &str) -> Result<Posting, String> {
     })
 }
 
-/// Parses a `YYYY-MM-DD` date string.
+/// Parses a strict `YYYY-MM-DD` date into a [`bc_sdk::Date`].
 ///
 /// # Arguments
 ///
-/// * `s` - A 10-character date string.
+/// * `input` - The remaining input; the date prefix is consumed on success.
 ///
 /// # Returns
 ///
@@ -271,20 +247,60 @@ fn parse_posting(line: &str) -> Result<Posting, String> {
 ///
 /// # Errors
 ///
-/// Returns an error if the date cannot be parsed.
-fn parse_date(s: &str) -> Result<bc_sdk::Date, String> {
-    if s.len() < 10 {
-        return Err(format!("date too short: '{s}'"));
+/// Backtracks if the input is not a `YYYY-MM-DD` date.
+fn date(input: &mut &str) -> ModalResult<bc_sdk::Date> {
+    let year: i32 = take_while(4, |c: char| c.is_ascii_digit())
+        .try_map(str::parse)
+        .parse_next(input)?;
+    let _ = '-'.parse_next(input)?;
+    let month: u8 = take_while(2, |c: char| c.is_ascii_digit())
+        .try_map(str::parse)
+        .parse_next(input)?;
+    let _ = '-'.parse_next(input)?;
+    let day: u8 = take_while(2, |c: char| c.is_ascii_digit())
+        .try_map(str::parse)
+        .parse_next(input)?;
+    bc_sdk::Date::try_new(year, month, day).map_err(|_| winnow::error::ErrMode::from_input(input))
+}
+
+/// Parses a single `"`-delimited string, unescaping `\`-prefixed characters.
+///
+/// # Arguments
+///
+/// * `input` - The remaining input, expected to start at a `"`.
+///
+/// # Returns
+///
+/// The unescaped string contents.
+///
+/// # Errors
+///
+/// Backtracks if the input does not start with `"` or the string is
+/// unterminated.
+fn quoted_string(input: &mut &str) -> ModalResult<String> {
+    let _ = '"'.parse_next(input)?;
+    let mut buf = String::new();
+    loop {
+        let mut chars = input.chars();
+        match chars.next() {
+            Some('"') => {
+                *input = chars.as_str();
+                return Ok(buf);
+            }
+            Some('\\') => {
+                let escaped = chars.next();
+                *input = chars.as_str();
+                if let Some(c) = escaped {
+                    buf.push(c);
+                }
+            }
+            Some(c) => {
+                *input = chars.as_str();
+                buf.push(c);
+            }
+            None => return Err(winnow::error::ErrMode::from_input(input)),
+        }
     }
-    let b = s.as_bytes();
-    if b.get(4).copied() != Some(b'-') || b.get(7).copied() != Some(b'-') {
-        return Err(format!("invalid date format '{s}': expected YYYY-MM-DD"));
-    }
-    let year: i32 = s[0..4].parse().map_err(|_| format!("bad year in '{s}'"))?;
-    let month: u8 = s[5..7].parse().map_err(|_| format!("bad month in '{s}'"))?;
-    let day: u8 = s[8..10].parse().map_err(|_| format!("bad day in '{s}'"))?;
-    bc_sdk::Date::try_new(year, month, day)
-        .map_err(|e| format!("invalid date in '{s}': {e}"))
 }
 
 #[cfg(test)]
@@ -328,6 +344,20 @@ mod tests {
         };
         assert_eq!(tx.payee, None);
         assert_eq!(tx.narration, "Just a narration");
+    }
+
+    #[test]
+    fn parses_payee_narration_with_non_whitespace_separator() {
+        let input = "2025-01-15 * \"Payee\"X\"Narration\"\n  X:Y    1.00 AUD\n  X:Z   -1.00 AUD\n";
+        let directives = parse(input).expect("parse");
+        let first = directives
+            .first()
+            .expect("should have at least one directive");
+        let Directive::Transaction(tx) = first else {
+            panic!("expected Transaction directive")
+        };
+        assert_eq!(tx.payee.as_deref(), Some("Payee"));
+        assert_eq!(tx.narration, "Narration");
     }
 
     #[test]
@@ -377,7 +407,56 @@ mod tests {
 
     #[test]
     fn parse_date_rejects_invalid_separators() {
-        assert!(parse_date("2025X01Y15").is_err(), "non-hyphen separators should fail");
-        assert!(parse_date("2025-01-15").is_ok(), "valid date should parse");
+        let mut bad = "2025X01Y15";
+        assert!(date(&mut bad).is_err(), "non-hyphen separators should fail");
+        let mut good = "2025-01-15";
+        assert!(date(&mut good).is_ok(), "valid date should parse");
+    }
+
+    #[test]
+    fn date_parses_hyphenated() {
+        let mut input = "2025-01-15 rest";
+        let d = date(&mut input).expect("date");
+        assert_eq!(d, bc_sdk::Date::new(2025, 1, 15));
+        assert_eq!(input, " rest");
+    }
+
+    #[test]
+    fn date_rejects_non_hyphen_separator() {
+        let mut input = "2025X01Y15";
+        assert!(date(&mut input).is_err());
+    }
+
+    #[test]
+    fn quoted_string_reads_escapes() {
+        let mut input = r#""a\"b" tail"#;
+        let s = quoted_string(&mut input).expect("string");
+        assert_eq!(s, "a\"b");
+        assert_eq!(input, " tail");
+    }
+
+    #[test]
+    fn quoted_string_unterminated_errors() {
+        let mut input = r#""oops"#;
+        assert!(quoted_string(&mut input).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_invalid_full_length_date() {
+        let input = "2025-13-45 * \"Groceries\"\n";
+        assert!(parse(input).is_err());
+    }
+
+    #[test]
+    fn parse_treats_short_digit_leading_line_as_other() {
+        let input = "2025\n";
+        let directives = parse(input).expect("parse");
+        assert_eq!(directives, vec![Directive::Other]);
+    }
+
+    #[test]
+    fn parse_rejects_unterminated_quoted_string() {
+        let input = "2025-01-15 * \"Payee\" \"Unterminated\n";
+        assert!(parse(input).is_err());
     }
 }
