@@ -15,6 +15,7 @@ pub mod report;
 pub mod restore;
 pub mod tag;
 pub mod transaction;
+pub mod transfer;
 
 /// Parses a `YYYY-MM-DD` date string, or returns today's date when `None`.
 ///
