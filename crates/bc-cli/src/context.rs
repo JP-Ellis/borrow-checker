@@ -33,6 +33,8 @@ pub struct AppContext {
     pub backup: bc_core::BackupService,
     /// Resolved database file path (used by restore to swap the file).
     pub db_path: std::path::PathBuf,
+    /// Source-reference service (import provenance / dedup).
+    pub sources: bc_core::SourceService,
 }
 
 impl AppContext {
@@ -89,6 +91,7 @@ impl AppContext {
             tags: bc_core::TagService::new(pool.clone()),
             backup: bc_core::BackupService::new(pool.clone(), db_path.clone(), policy),
             db_path,
+            sources: bc_core::SourceService::new(pool.clone()),
             budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
         })
     }

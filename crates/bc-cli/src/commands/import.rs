@@ -73,42 +73,14 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         .map_err(|e| crate::error::CliError::Arg(format!("import parse error: {e}")))?;
 
     let account_id = profile.account_id.clone();
-    // NOTE: Import does not yet deduplicate — running the same file twice will create
-    // duplicate transactions. Deduplication (ContentHash / FitId strategies) is
-    // deferred to a later milestone once the full import pipeline matures.
-    for raw in &raw_txs {
-        let posting_account = bc_models::Posting::builder()
-            .id(bc_models::PostingId::new())
-            .account_id(account_id.clone())
-            .amount(raw.amount.clone())
-            .build();
-
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "financial negation: Decimal arithmetic is bounded by the type"
-        )]
-        let negated = -raw.amount.value();
-        let counterpart_amount = bc_models::Amount::new(negated, raw.amount.commodity().clone());
-        let posting_counterpart = bc_models::Posting::builder()
-            .id(bc_models::PostingId::new())
-            .account_id(counterpart_id.clone())
-            .amount(counterpart_amount)
-            .build();
-
-        let tx = bc_models::Transaction::builder()
-            .id(bc_models::TransactionId::new())
-            .date(raw.date)
-            .maybe_payee(raw.payee.clone())
-            .description(raw.description.clone())
-            .postings(vec![posting_account, posting_counterpart])
-            .reconciliation(bc_models::Reconciliation::Reconciled)
-            .created_at(jiff::Timestamp::now())
-            .build();
-
-        ctx.transactions.create(tx).await?;
-    }
-
-    let count = raw_txs.len();
+    let count = bc_core::execute_import(
+        &ctx.transactions,
+        &ctx.sources,
+        &account_id,
+        &counterpart_id,
+        &raw_txs,
+    )
+    .await?;
     if ctx.json {
         return crate::output::print_json(&serde_json::json!({ "imported": count }));
     }
