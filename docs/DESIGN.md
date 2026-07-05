@@ -115,7 +115,7 @@ LoanTermsSet
 - Undo/redo — walk the log backward/forward
 - Full audit trail — every change is timestamped and sourced
 - Time-travel queries — "what was my balance on 1 Jan?"
-- Import idempotency — deduplication by content hash
+- Import idempotency — per-account source-reference deduplication
 - Future sync — replicate events to a server or mobile device
 
 **Double-entry accounting** is enforced at the core level: every transaction must balance to zero across accounts, consistent with ledger/beancount semantics.
@@ -227,7 +227,13 @@ struct ImportProfile {
 
 Multiple profiles can reference the same importer with different account bindings. All CLI/TUI/GUI import operations work on profiles, not raw importers.
 
-> **Deduplication deferred:** A `dedup_strategy` field (planned values: `None / ContentHash / FitId`) was initially scoped for v1 but has been deferred. Import idempotency via content-hash deduplication will be added in a later milestone once the full import pipeline matures. Until then, importing the same file twice will create duplicate transactions.
+> **Deduplication:** Import idempotency is provided by per-account source
+> references (`transaction_sources`). Each imported statement row records a
+> `SourceRef` scoped to the owning account, fingerprinted on
+> `(date, narration, amount, reference)` with an occurrence ordinal to
+> disambiguate legitimately-identical rows; the `UNIQUE(account_id, fingerprint, occurrence)` key makes re-importing the same document hierarchy
+> a no-op. Per-profile loosened fingerprints and transfer-leg merging remain
+> deferred (see #266).
 
 ______________________________________________________________________
 
