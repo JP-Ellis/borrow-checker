@@ -33,7 +33,8 @@ use crate::budget_tree::BudgetTreeSummary;
 /// Maps a [`crate::BcError`] to its IPC [`bc_ipc::BcError`] counterpart.
 ///
 /// User-facing validation failures (`InvalidInput`, `BadData`, the account/tag
-/// rule violations, marker conflicts, and commodity-in-use errors) surface as
+/// rule violations, marker conflicts, commodity-in-use errors, and merge
+/// precondition failures) surface as
 /// [`bc_ipc::BcError::Validation`] so the UI can render a friendly message;
 /// `NotFound` maps to [`bc_ipc::BcError::NotFound`]; everything genuinely
 /// internal (database, IO, serialisation) becomes [`bc_ipc::BcError::Internal`].
@@ -57,7 +58,9 @@ impl From<crate::BcError> for bc_ipc::BcError {
             | Core::InvalidAccountKind { .. }
             | Core::TagInUse(_)
             | Core::MarkerConflict { .. }
-            | Core::CommodityInUse(_) => bc_ipc::BcError::Validation(e.to_string()),
+            | Core::CommodityInUse(_)
+            | Core::NotMergeable { .. }
+            | Core::NotMerged(_) => bc_ipc::BcError::Validation(e.to_string()),
             _ => bc_ipc::BcError::Internal(e.to_string()),
         }
     }
@@ -610,6 +613,29 @@ mod tests {
             bc_ipc::BcError::from(err),
             bc_ipc::BcError::Validation(_)
         ));
+    }
+
+    #[test]
+    fn core_merge_errors_map_to_validation() {
+        let not_mergeable = crate::BcError::NotMergeable {
+            reason: "commodities differ".to_owned(),
+        };
+        let not_merged = crate::BcError::NotMerged(bc_models::TransactionId::new());
+
+        assert!(
+            matches!(
+                bc_ipc::BcError::from(not_mergeable),
+                bc_ipc::BcError::Validation(_)
+            ),
+            "NotMergeable must surface as Validation"
+        );
+        assert!(
+            matches!(
+                bc_ipc::BcError::from(not_merged),
+                bc_ipc::BcError::Validation(_)
+            ),
+            "NotMerged must surface as Validation"
+        );
     }
 
     #[test]
