@@ -30,6 +30,7 @@ use crate::RolloverPolicy;
 use crate::SettingsInfo;
 use crate::TagInfo;
 use crate::Transaction;
+use crate::TransferSuggestion;
 use crate::commands;
 use crate::commands::ReverseTransactionArgs;
 
@@ -880,6 +881,68 @@ pub async fn update_backup_settings(settings: &BackupSettings) -> Result<(), BcE
     tauri_sys::core::invoke_result::<(), BcError>(
         commands::UPDATE_BACKUP_SETTINGS,
         UpdateBackupSettingsArgs { settings },
+    )
+    .await
+}
+
+/// Proposes candidate transfer pairs for review.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend query fails.
+#[inline]
+pub async fn suggest_transfers() -> Result<Vec<TransferSuggestion>, BcError> {
+    tauri_sys::core::invoke_result::<Vec<TransferSuggestion>, BcError>(
+        commands::SUGGEST_TRANSFERS,
+        NoArgs {},
+    )
+    .await
+}
+
+/// Argument struct for [`merge_transactions`]. Field names must match the
+/// `merge_transactions` Tauri command parameters.
+#[derive(Serialize)]
+struct MergeArgs<'a> {
+    /// The surviving (debit) transaction id.
+    survivor: &'a str,
+    /// The absorbed (credit) transaction id.
+    absorbed: &'a str,
+}
+
+/// Merges `absorbed` into `survivor` (survivor is the debit leg).
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] if an id is invalid or the pair is not
+/// mergeable, or [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn merge_transactions(survivor: &str, absorbed: &str) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result::<(), BcError>(
+        commands::MERGE_TRANSACTIONS,
+        MergeArgs { survivor, absorbed },
+    )
+    .await
+}
+
+/// Argument struct for [`unmerge_transaction`]. Field name must match the
+/// `unmerge_transaction` Tauri command parameter.
+#[derive(Serialize)]
+struct UnmergeArgs<'a> {
+    /// The transaction whose most recent merge is reversed.
+    transaction: &'a str,
+}
+
+/// Reverses the most recent merge on `transaction`, returning the restored id.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] if the id is invalid or there is no merge to
+/// reverse, or [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn unmerge_transaction(transaction: &str) -> Result<String, BcError> {
+    tauri_sys::core::invoke_result::<String, BcError>(
+        commands::UNMERGE_TRANSACTION,
+        UnmergeArgs { transaction },
     )
     .await
 }
