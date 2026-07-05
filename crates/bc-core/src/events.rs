@@ -366,6 +366,8 @@ pub enum Event {
         survivor_tags_before: Vec<TagId>,
         /// Survivor's labeled extra dates before the merge (restored on unmerge).
         survivor_extra_dates_before: Vec<(String, Date)>,
+        /// Survivor's reconciliation state before the merge (restored on unmerge).
+        survivor_reconciliation_before: Reconciliation,
     },
     /// A previous merge on `survivor_id` was reversed, restoring `absorbed_id`.
     TransactionUnmerged {
@@ -1085,6 +1087,7 @@ mod tests {
             survivor_date_before: date(2025, 6, 26),
             survivor_tags_before: Vec::new(),
             survivor_extra_dates_before: Vec::new(),
+            survivor_reconciliation_before: bc_models::Reconciliation::Unreconciled,
         };
 
         assert_eq!(event.kind(), "TransactionsMerged");
