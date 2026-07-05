@@ -410,6 +410,14 @@ impl Service {
         Self { pool }
     }
 
+    /// Returns the underlying connection pool.
+    ///
+    /// Lets sibling services (e.g. import execution) begin a database
+    /// transaction that spans a transaction create and its source-ref attach.
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     /// Persists a transaction after validating double-entry balance.
     ///
     /// The event append and all projection inserts are wrapped in a single
@@ -422,6 +430,40 @@ impl Service {
     /// Returns [`BcError`] on event append or database insert failure.
     #[inline]
     pub async fn create(&self, tx: Transaction) -> BcResult<TransactionId> {
+        let mut db_tx = self.pool.begin().await?;
+        let tx_id = self.create_in_tx(&mut db_tx, tx).await?;
+        db_tx.commit().await?;
+        tracing::info!(transaction_id = %tx_id, "transaction created");
+        Ok(tx_id)
+    }
+
+    /// Persists a transaction within an already-open database transaction.
+    ///
+    /// Validates double-entry structure, appends the creation event, and writes
+    /// every projection row using `db_tx`, letting a caller bundle the write with
+    /// adjacent work (e.g. attaching an import source reference) into one atomic
+    /// unit. The caller owns `db_tx` and must commit it; nothing is durable until
+    /// then.
+    ///
+    /// # Arguments
+    ///
+    /// * `db_tx` - An open SQLite transaction to write within.
+    /// * `tx` - The transaction to persist.
+    ///
+    /// # Returns
+    ///
+    /// The ID of the persisted transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if the posting list is empty, contains two
+    /// or more elided amounts, or is a single lone elided posting.
+    /// Returns [`BcError`] on event append or database insert failure.
+    pub(crate) async fn create_in_tx(
+        &self,
+        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: Transaction,
+    ) -> BcResult<TransactionId> {
         validate_postings(tx.postings())?;
 
         let tx_id = tx.id().clone();
@@ -430,9 +472,7 @@ impl Service {
         let date_str = tx.date().to_string();
         let created_at_str = tx.created_at().to_string();
 
-        let mut db_tx = self.pool.begin().await?;
-
-        insert_event(&event, &mut db_tx).await?;
+        insert_event(&event, db_tx).await?;
 
         sqlx::query(
             "INSERT INTO transactions (id, date, payee, description, note, reconciliation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -444,10 +484,10 @@ impl Service {
         .bind(tx.note())
         .bind(to_db_str(tx.reconciliation())?)
         .bind(&created_at_str)
-        .execute(&mut *db_tx)
+        .execute(&mut **db_tx)
         .await?;
 
-        crate::tag::insert_transaction_tags(&mut db_tx, &tx_id, tx.tag_ids()).await?;
+        crate::tag::insert_transaction_tags(&mut *db_tx, &tx_id, tx.tag_ids()).await?;
 
         for (label, date) in tx.extra_dates() {
             sqlx::query(
@@ -456,7 +496,7 @@ impl Service {
             .bind(tx_id.to_string())
             .bind(label)
             .bind(date.to_string())
-            .execute(&mut *db_tx)
+            .execute(&mut **db_tx)
             .await?;
         }
 
@@ -496,14 +536,12 @@ impl Service {
             .bind(cost_label) // 11. cost_label
             .bind(posting.spread_from().map(|d| d.to_string())) // 12. spread_from
             .bind(posting.spread_until().map(|d| d.to_string())) // 13. spread_until
-            .execute(&mut *db_tx)
+            .execute(&mut **db_tx)
             .await?;
 
-            crate::tag::insert_posting_tags(&mut db_tx, posting.id(), posting.tag_ids()).await?;
+            crate::tag::insert_posting_tags(&mut *db_tx, posting.id(), posting.tag_ids()).await?;
         }
 
-        db_tx.commit().await?;
-        tracing::info!(transaction_id = %tx_id, "transaction created");
         Ok(tx_id)
     }
 

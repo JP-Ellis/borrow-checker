@@ -1,6 +1,7 @@
 //! Source reference (import provenance) persistence service and import planner.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use bc_models::AccountId;
 use bc_models::Amount;
@@ -51,8 +52,8 @@ impl Service {
 
     /// Attaches a source reference to its transaction.
     ///
-    /// Appends a [`crate::Event::TransactionSourceAttached`] and inserts the
-    /// projection row in one database transaction.
+    /// Convenience wrapper around [`Service::attach_in_tx`] that owns a
+    /// single-purpose database transaction.
     ///
     /// # Arguments
     ///
@@ -60,10 +61,60 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::BcError`] on event or row insert failure (including a
-    /// `UNIQUE` violation if this `(account, fingerprint, occurrence)` already exists).
+    /// Returns [`crate::BcError::InvalidInput`] if `source.account_id()` is not a
+    /// posting account of the target transaction. Returns [`crate::BcError`] on
+    /// event or row insert failure (including a `UNIQUE` violation if this
+    /// `(account, fingerprint, occurrence)` already exists).
     #[inline]
     pub async fn attach(&self, source: &SourceRef) -> BcResult<()> {
+        let mut db_tx = self.pool.begin().await?;
+        self.attach_in_tx(&mut db_tx, source).await?;
+        db_tx.commit().await?;
+        Ok(())
+    }
+
+    /// Attaches a source reference within an already-open database transaction.
+    ///
+    /// Validates that the reference's account is one of the target transaction's
+    /// posting accounts, appends a [`crate::Event::TransactionSourceAttached`],
+    /// and inserts the projection row — all using `db_tx`, so an importer can
+    /// bundle the source attach with the transaction create into one atomic
+    /// unit. The caller owns `db_tx` and must commit it; nothing is durable until
+    /// then.
+    ///
+    /// # Arguments
+    ///
+    /// * `db_tx` - An open SQLite transaction to write within.
+    /// * `source` - The fully-built [`SourceRef`] to persist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::InvalidInput`] if `source.account_id()` is not a
+    /// posting account of the target transaction. Returns [`crate::BcError`] on
+    /// event or row insert failure (including a `UNIQUE` violation if this
+    /// `(account, fingerprint, occurrence)` already exists).
+    pub(crate) async fn attach_in_tx(
+        &self,
+        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        source: &SourceRef,
+    ) -> BcResult<()> {
+        // Provenance must point at an account the transaction actually posts to,
+        // or dedup would later be scoped to the wrong account.
+        let is_posting_account: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM postings WHERE transaction_id = ? AND account_id = ?)",
+        )
+        .bind(source.transaction_id().to_string())
+        .bind(source.account_id().to_string())
+        .fetch_one(&mut **db_tx)
+        .await?;
+        if is_posting_account == 0 {
+            return Err(crate::BcError::InvalidInput(format!(
+                "source account {} is not a posting account of transaction {}",
+                source.account_id(),
+                source.transaction_id()
+            )));
+        }
+
         let fingerprint = source.fingerprint();
         let event = crate::Event::TransactionSourceAttached {
             id: source.id().clone(),
@@ -76,8 +127,7 @@ impl Service {
             occurrence: source.occurrence(),
         };
 
-        let mut db_tx = self.pool.begin().await?;
-        insert_event(&event, &mut db_tx).await?;
+        insert_event(&event, db_tx).await?;
 
         sqlx::query(
             "INSERT INTO transaction_sources \
@@ -96,42 +146,52 @@ impl Service {
         .bind(i64::from(source.occurrence()))
         .bind(&fingerprint)
         .bind(source.created_at().to_string())
-        .execute(&mut *db_tx)
+        .execute(&mut **db_tx)
         .await?;
 
-        db_tx.commit().await?;
         Ok(())
     }
 
-    /// Returns, per fingerprint, how many source references already exist for an account.
+    /// Returns, per fingerprint, the set of occurrence ordinals already stored
+    /// for an account.
+    ///
+    /// The import planner consumes this as an existence check: a row is skipped
+    /// only when its exact `(fingerprint, occurrence)` slot is already present.
+    /// Keying on the stored occurrence rather than a dense count means detaching
+    /// an arbitrary reference can never desynchronise a later re-import.
     ///
     /// # Arguments
     ///
-    /// * `account_id` - The account to count references for.
+    /// * `account_id` - The account to load occurrences for.
     ///
     /// # Errors
     ///
-    /// Returns [`crate::BcError`] on query failure.
+    /// Returns [`crate::BcError`] on query failure or a malformed stored occurrence.
     #[inline]
-    pub async fn existing_counts(&self, account_id: &AccountId) -> BcResult<HashMap<String, u32>> {
+    pub async fn existing_occurrences(
+        &self,
+        account_id: &AccountId,
+    ) -> BcResult<HashMap<String, HashSet<u32>>> {
         let rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT fingerprint, COUNT(*) FROM transaction_sources \
-             WHERE account_id = ? GROUP BY fingerprint",
+            "SELECT fingerprint, occurrence FROM transaction_sources WHERE account_id = ?",
         )
         .bind(account_id.to_string())
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|(fp, raw_count)| {
-                let count = u32::try_from(raw_count)
-                    .map_err(|_err| crate::BcError::BadData("source count exceeds u32".into()))?;
-                Ok((fp, count))
-            })
-            .collect()
+        let mut map: HashMap<String, HashSet<u32>> = HashMap::new();
+        for (fingerprint, raw_occurrence) in rows {
+            let occurrence = u32::try_from(raw_occurrence)
+                .map_err(|_err| crate::BcError::BadData("occurrence exceeds u32".into()))?;
+            map.entry(fingerprint).or_default().insert(occurrence);
+        }
+        Ok(map)
     }
 
-    /// Lists all source references attached to a transaction, oldest first.
+    /// Lists all source references attached to a transaction, in occurrence order.
+    ///
+    /// Ordered by `occurrence` (stable across imports) rather than `created_at`,
+    /// whose sub-second ties within a single import batch would be unstable.
     ///
     /// # Arguments
     ///
@@ -148,7 +208,7 @@ impl Service {
         let rows: Vec<SourceRow> = sqlx::query_as(
             "SELECT id, transaction_id, account_id, date, narration, amount, commodity, \
                         reference, occurrence, created_at \
-                 FROM transaction_sources WHERE transaction_id = ? ORDER BY created_at ASC",
+                 FROM transaction_sources WHERE transaction_id = ? ORDER BY occurrence ASC",
         )
         .bind(transaction_id.to_string())
         .fetch_all(&self.pool)
@@ -271,13 +331,15 @@ pub struct ImportDecision {
 ///
 /// Walks `fingerprints` in file order, counting occurrences of each fingerprint.
 /// A row's `occurrence` is the number of identical fingerprints seen before it in
-/// this batch; it is `already_imported` when that occurrence is already covered by
-/// the stored count in `existing`. This makes whole-hierarchy re-imports a no-op
-/// while still importing genuinely new (or genuinely duplicated) rows.
+/// this batch; it is `already_imported` when that exact `(fingerprint, occurrence)`
+/// slot is already stored in `existing`. This makes whole-hierarchy re-imports a
+/// no-op while still importing genuinely new (or genuinely duplicated) rows, and —
+/// because the check is per-slot rather than against a dense count — a re-import
+/// correctly re-creates a reference that was previously detached.
 ///
 /// # Arguments
 ///
-/// * `existing` - Stored source-reference counts per fingerprint for the target account.
+/// * `existing` - Stored occurrence ordinals per fingerprint for the target account.
 /// * `fingerprints` - Row fingerprints in file order.
 ///
 /// # Returns
@@ -289,7 +351,7 @@ pub struct ImportDecision {
     reason = "callers always use the default std HashMap hasher"
 )]
 pub fn plan_import(
-    existing: &HashMap<String, u32>,
+    existing: &HashMap<String, HashSet<u32>>,
     fingerprints: &[String],
 ) -> Vec<ImportDecision> {
     let mut seen: HashMap<String, u32> = HashMap::new();
@@ -299,7 +361,9 @@ pub fn plan_import(
         .map(|(index, fingerprint)| {
             let occurrence = seen.get(fingerprint).copied().unwrap_or(0);
             seen.insert(fingerprint.clone(), occurrence.saturating_add(1));
-            let already_imported = occurrence < existing.get(fingerprint).copied().unwrap_or(0);
+            let already_imported = existing
+                .get(fingerprint)
+                .is_some_and(|occurrences| occurrences.contains(&occurrence));
             ImportDecision {
                 index,
                 fingerprint: fingerprint.clone(),
@@ -397,14 +461,17 @@ mod tests {
 
         svc.attach(&source(&tx, &account, 0)).await.expect("attach");
 
-        let counts = svc.existing_counts(&account).await.expect("counts");
+        let occurrences = svc
+            .existing_occurrences(&account)
+            .await
+            .expect("occurrences");
         let fp = SourceRef::compute_fingerprint(
             jiff::civil::date(2025, 6, 27),
             "ACME",
             &Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
             None,
         );
-        assert_eq!(counts.get(&fp).copied(), Some(1));
+        assert_eq!(occurrences.get(&fp), Some(&HashSet::from([0])));
 
         let listed = svc.list_for_transaction(&tx).await.expect("list");
         assert_eq!(listed.len(), 1);
@@ -433,11 +500,72 @@ mod tests {
         );
     }
 
+    #[sqlx::test(migrations = "./migrations")]
+    async fn attach_rejects_non_posting_account(pool: SqlitePool) {
+        let account = make_account(&pool).await;
+        let tx = make_tx(&pool, &account).await;
+        // A third account that is NOT a posting account of `tx`.
+        let stranger = crate::AccountService::new(pool.clone())
+            .create()
+            .name("Stranger")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create stranger");
+        let svc = Service::new(pool.clone());
+
+        let result = svc.attach(&source(&tx, &stranger, 0)).await;
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidInput(_))),
+            "attaching to a non-posting account must be rejected, got {result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn detach_then_reattach_same_occurrence_succeeds(pool: SqlitePool) {
+        let account = make_account(&pool).await;
+        let tx = make_tx(&pool, &account).await;
+        let svc = Service::new(pool.clone());
+
+        // Three identical references at occurrences 0, 1, 2.
+        let occ1 = source(&tx, &account, 1);
+        let occ1_id = occ1.id().clone();
+        svc.attach(&source(&tx, &account, 0))
+            .await
+            .expect("attach 0");
+        svc.attach(&occ1).await.expect("attach 1");
+        svc.attach(&source(&tx, &account, 2))
+            .await
+            .expect("attach 2");
+
+        // Detach the middle one, leaving a gap in the stored slots.
+        svc.detach(&occ1_id).await.expect("detach 1");
+
+        let fp = SourceRef::compute_fingerprint(
+            date(2025, 6, 27),
+            "ACME",
+            &Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
+            None,
+        );
+        let occurrences = svc
+            .existing_occurrences(&account)
+            .await
+            .expect("occurrences");
+        assert_eq!(occurrences.get(&fp), Some(&HashSet::from([0, 2])));
+
+        // Re-attaching occurrence 1 (fresh id) must succeed — its slot is free,
+        // so the UNIQUE (account, fingerprint, occurrence) key is not violated.
+        svc.attach(&source(&tx, &account, 1))
+            .await
+            .expect("re-attach occurrence 1 after detach");
+    }
+
     #[test]
     #[expect(clippy::indexing_slicing, reason = "test code with known length")]
     fn plan_import_marks_new_rows_and_skips_seen() {
         let mut existing = HashMap::new();
-        existing.insert("A".to_owned(), 1_u32);
+        existing.insert("A".to_owned(), HashSet::from([0_u32]));
 
         let fps = vec!["A".to_owned(), "A".to_owned(), "B".to_owned()];
         let decisions = plan_import(&existing, &fps);
@@ -451,14 +579,32 @@ mod tests {
     }
 
     #[test]
-    fn plan_import_is_idempotent_when_counts_match() {
+    fn plan_import_is_idempotent_when_slots_filled() {
         let mut existing = HashMap::new();
-        existing.insert("A".to_owned(), 2_u32);
+        existing.insert("A".to_owned(), HashSet::from([0_u32, 1]));
         let fps = vec!["A".to_owned(), "A".to_owned()];
         let decisions = plan_import(&existing, &fps);
         assert!(
             decisions.iter().all(|d| d.already_imported),
             "re-import is a no-op"
         );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn plan_import_reimports_detached_occurrence() {
+        // Occurrence 1 was detached, leaving a gap: stored slots are {0, 2}.
+        let mut existing = HashMap::new();
+        existing.insert("A".to_owned(), HashSet::from([0_u32, 2]));
+
+        let fps = vec!["A".to_owned(), "A".to_owned(), "A".to_owned()];
+        let decisions = plan_import(&existing, &fps);
+
+        assert!(decisions[0].already_imported, "occ 0 still stored");
+        assert!(
+            !decisions[1].already_imported,
+            "occ 1 was detached, so re-import re-creates it"
+        );
+        assert!(decisions[2].already_imported, "occ 2 still stored");
     }
 }
