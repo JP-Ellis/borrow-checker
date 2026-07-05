@@ -51,7 +51,7 @@ pub async fn execute_import(
             )
         })
         .collect();
-    let existing = sources.existing_counts(account_id).await?;
+    let existing = sources.existing_occurrences(account_id).await?;
     let decisions = crate::plan_import(&existing, &fingerprints);
 
     let mut imported = 0_usize;
@@ -60,6 +60,10 @@ pub async fn execute_import(
             continue;
         }
         let Some(raw) = raws.get(decision.index) else {
+            tracing::warn!(
+                index = decision.index,
+                "import plan referenced an out-of-range row; skipping"
+            );
             continue;
         };
 
@@ -91,9 +95,8 @@ pub async fn execute_import(
             .reconciliation(bc_models::Reconciliation::Reconciled)
             .created_at(Timestamp::now())
             .build();
-        transactions.create(tx).await?;
 
-        let builder = SourceRef::builder()
+        let source = SourceRef::builder()
             .id(SourceRefId::new())
             .transaction_id(tx_id)
             .account_id(account_id.clone())
@@ -102,8 +105,16 @@ pub async fn execute_import(
             .amount(raw.amount.clone())
             .occurrence(decision.occurrence)
             .created_at(Timestamp::now())
-            .reference(raw.reference.clone());
-        sources.attach(&builder.build()).await?;
+            .reference(raw.reference.clone())
+            .build();
+
+        // Create the transaction and attach its source reference atomically, so a
+        // failure can never leave a transaction without provenance (which a later
+        // re-import would then duplicate).
+        let mut db_tx = transactions.pool().begin().await?;
+        transactions.create_in_tx(&mut db_tx, tx).await?;
+        sources.attach_in_tx(&mut db_tx, &source).await?;
+        db_tx.commit().await?;
 
         imported = imported.saturating_add(1);
     }
