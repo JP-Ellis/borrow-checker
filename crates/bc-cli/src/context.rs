@@ -35,6 +35,8 @@ pub struct AppContext {
     pub db_path: std::path::PathBuf,
     /// Source-reference service (import provenance / dedup).
     pub sources: bc_core::SourceService,
+    /// Transfer resolution service (merge / unmerge / suggest).
+    pub transfers: bc_core::TransferService,
 }
 
 impl AppContext {
@@ -92,6 +94,7 @@ impl AppContext {
             backup: bc_core::BackupService::new(pool.clone(), db_path.clone(), policy),
             db_path,
             sources: bc_core::SourceService::new(pool.clone()),
+            transfers: bc_core::TransferService::new(pool.clone()),
             budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
         })
     }

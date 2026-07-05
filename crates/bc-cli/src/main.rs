@@ -65,6 +65,9 @@ async fn main() {
         Commands::Tag(args) => commands::tag::execute(args, &ctx).await,
         Commands::Plugin(args) => commands::plugin::execute(args, &ctx).await,
         Commands::Completions(args) => commands::completions::execute(args),
+        Commands::Merge(args) => commands::transfer::merge(args, &ctx).await,
+        Commands::Unmerge(args) => commands::transfer::unmerge(args, &ctx).await,
+        Commands::SuggestTransfers(args) => commands::transfer::suggest(args, &ctx).await,
     };
 
     if let Err(e) = result {
