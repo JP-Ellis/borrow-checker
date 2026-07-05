@@ -17,6 +17,17 @@ pub struct Service {
     pool: SqlitePool,
 }
 
+/// The survivor's pre-merge state, captured by a [`crate::Event::TransactionsMerged`]
+/// and restored by [`Service::unmerge`].
+struct SurvivorSnapshot {
+    /// Survivor's value date before the merge.
+    date: jiff::civil::Date,
+    /// Survivor's transaction-level tags before the merge.
+    tags: Vec<bc_models::TagId>,
+    /// Survivor's labeled extra dates before the merge.
+    extra_dates: Vec<(String, jiff::civil::Date)>,
+}
+
 impl Service {
     /// Creates a new transfer service.
     ///
@@ -35,7 +46,7 @@ impl Service {
     /// onto the survivor, unions tags/dates, sets the survivor date to the
     /// earlier of the two, then deletes the absorbed transaction. Records a
     /// self-contained [`crate::Event::TransactionsMerged`] so the merge can be
-    /// reversed by `Service::unmerge`. All writes share one DB transaction.
+    /// reversed by [`Service::unmerge`]. All writes share one DB transaction.
     ///
     /// # Arguments
     ///
@@ -181,6 +192,170 @@ impl Service {
 
         db_tx.commit().await?;
         Ok(())
+    }
+
+    /// Reverses the most recent un-reversed merge on `survivor_id`.
+    ///
+    /// Recreates the absorbed transaction with its original ID, moves its posting
+    /// and source references back, restores the survivor's pre-merge date and
+    /// tag/date sets, and records a [`crate::Event::TransactionUnmerged`].
+    ///
+    /// # Arguments
+    ///
+    /// * `survivor_id` - The transaction a prior merge fused into.
+    ///
+    /// # Returns
+    ///
+    /// The ID of the restored (absorbed) transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotMerged`] if `survivor_id` has no un-reversed merge,
+    /// or [`BcError`] on a database failure.
+    #[inline]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one cohesive atomic unmerge: replay history, recreate the absorbed row, and restore five projection tables"
+    )]
+    pub async fn unmerge(&self, survivor_id: &TransactionId) -> BcResult<TransactionId> {
+        let store = crate::SqliteEventStore::new(self.pool.clone());
+        let records = store.replay_for(&survivor_id.to_string()).await?;
+
+        // Pair merges with unmerges LIFO; the top of the stack is the merge to reverse.
+        let mut stack: Vec<crate::events::AbsorbedTransaction> = Vec::new();
+        let mut snapshots: Vec<SurvivorSnapshot> = Vec::new();
+        for record in &records {
+            match record.kind.as_str() {
+                "TransactionsMerged" => {
+                    let event: crate::Event = serde_json::from_str(&record.payload)?;
+                    if let crate::Event::TransactionsMerged {
+                        absorbed,
+                        survivor_date_before,
+                        survivor_tags_before,
+                        survivor_extra_dates_before,
+                        ..
+                    } = event
+                    {
+                        stack.push(absorbed);
+                        snapshots.push(SurvivorSnapshot {
+                            date: survivor_date_before,
+                            tags: survivor_tags_before,
+                            extra_dates: survivor_extra_dates_before,
+                        });
+                    }
+                }
+                "TransactionUnmerged" => {
+                    stack.pop();
+                    snapshots.pop();
+                }
+                _ => {}
+            }
+        }
+        let (Some(absorbed), Some(snapshot)) = (stack.pop(), snapshots.pop()) else {
+            return Err(BcError::NotMerged(survivor_id.clone()));
+        };
+
+        let survivor_str = survivor_id.to_string();
+        let absorbed_str = absorbed.id.to_string();
+        let posting_position = i64::from(absorbed.posting_position);
+
+        let unmerged = crate::Event::TransactionUnmerged {
+            survivor_id: survivor_id.clone(),
+            absorbed_id: absorbed.id.clone(),
+        };
+
+        let mut db_tx = self.pool.begin().await?;
+        crate::events::insert_event(&unmerged, &mut db_tx).await?;
+
+        // Recreate the absorbed transaction header with its original id.
+        sqlx::query(
+            "INSERT INTO transactions (id, date, payee, description, note, reconciliation, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&absorbed_str)
+        .bind(absorbed.date.to_string())
+        .bind(absorbed.payee.as_deref())
+        .bind(&absorbed.description)
+        .bind(absorbed.note.as_deref())
+        .bind(crate::db::to_db_str(absorbed.reconciliation)?)
+        .bind(absorbed.created_at.to_string())
+        .execute(&mut *db_tx)
+        .await?;
+
+        // Restore the absorbed transaction's own tags and dates. The recreated
+        // absorbed row's child tables are empty (plain `INSERT` above), and
+        // `absorbed.tag_ids` came from a real `transaction_tags` snapshot
+        // (composite PK `(transaction_id, tag_id)`), so it cannot contain
+        // duplicates — a plain `INSERT` here can never collide.
+        for tag_id in &absorbed.tag_ids {
+            sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
+                .bind(&absorbed_str)
+                .bind(tag_id.to_string())
+                .execute(&mut *db_tx)
+                .await?;
+        }
+        for (label, when) in &absorbed.extra_dates {
+            sqlx::query(
+                "INSERT INTO transaction_dates (transaction_id, label, date) VALUES (?, ?, ?)",
+            )
+            .bind(&absorbed_str)
+            .bind(label)
+            .bind(when.to_string())
+            .execute(&mut *db_tx)
+            .await?;
+        }
+
+        // Restore the survivor's pre-merge tag/date sets (replace-to-snapshot).
+        sqlx::query("DELETE FROM transaction_tags WHERE transaction_id = ?")
+            .bind(&survivor_str)
+            .execute(&mut *db_tx)
+            .await?;
+        for tag_id in &snapshot.tags {
+            sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
+                .bind(&survivor_str)
+                .bind(tag_id.to_string())
+                .execute(&mut *db_tx)
+                .await?;
+        }
+        sqlx::query("DELETE FROM transaction_dates WHERE transaction_id = ?")
+            .bind(&survivor_str)
+            .execute(&mut *db_tx)
+            .await?;
+        for (label, when) in &snapshot.extra_dates {
+            sqlx::query(
+                "INSERT INTO transaction_dates (transaction_id, label, date) VALUES (?, ?, ?)",
+            )
+            .bind(&survivor_str)
+            .bind(label)
+            .bind(when.to_string())
+            .execute(&mut *db_tx)
+            .await?;
+        }
+
+        // Move the posting and source refs back to the absorbed transaction.
+        sqlx::query("UPDATE postings SET transaction_id = ?, position = ? WHERE id = ?")
+            .bind(&absorbed_str)
+            .bind(posting_position)
+            .bind(absorbed.posting_id.to_string())
+            .execute(&mut *db_tx)
+            .await?;
+        for ref_id in &absorbed.source_ref_ids {
+            sqlx::query("UPDATE transaction_sources SET transaction_id = ? WHERE id = ?")
+                .bind(&absorbed_str)
+                .bind(ref_id.to_string())
+                .execute(&mut *db_tx)
+                .await?;
+        }
+
+        // Restore the survivor's pre-merge date.
+        sqlx::query("UPDATE transactions SET date = ? WHERE id = ?")
+            .bind(snapshot.date.to_string())
+            .bind(&survivor_str)
+            .execute(&mut *db_tx)
+            .await?;
+
+        db_tx.commit().await?;
+        Ok(absorbed.id)
     }
 }
 
@@ -634,5 +809,154 @@ mod db_tests {
             vec![("value_date".to_owned(), "2025-06-20".to_owned())],
             "survivor keeps its own value_date on a label collision; absorbed's duplicate is dropped"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn merge_then_unmerge_restores_state(pool: SqlitePool) {
+        let savings = account(&pool, "Savings").await;
+        let mortgage = account(&pool, "Mortgage").await;
+        let debit = leg(&pool, &savings, -100, date(2025, 6, 26)).await;
+        let credit = leg(&pool, &mortgage, 100, date(2025, 6, 27)).await;
+
+        let svc = Service::new(pool.clone());
+        svc.merge(&debit, &credit).await.expect("merge");
+        let restored = svc.unmerge(&debit).await.expect("unmerge");
+        assert_eq!(restored, credit, "the original absorbed id is restored");
+
+        // Both transactions are back to a single posting each.
+        assert_eq!(posting_count(&pool, &debit).await, 1);
+        assert_eq!(posting_count(&pool, &credit).await, 1);
+        assert!(tx_exists(&pool, &credit).await, "absorbed tx recreated");
+
+        // The survivor's date is restored to its pre-merge value.
+        let survivor_date: String =
+            sqlx::query_scalar("SELECT date FROM transactions WHERE id = ?")
+                .bind(debit.to_string())
+                .fetch_one(&pool)
+                .await
+                .expect("date");
+        assert_eq!(survivor_date, "2025-06-26");
+
+        // Each transaction owns exactly its own source ref again.
+        let srcs = crate::SourceService::new(pool.clone());
+        assert_eq!(srcs.list_for_transaction(&debit).await.expect("d").len(), 1);
+        assert_eq!(
+            srcs.list_for_transaction(&credit).await.expect("c").len(),
+            1
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unmerge_restores_exact_pre_merge_tags_and_dates(pool: SqlitePool) {
+        let savings = account(&pool, "Savings").await;
+        let mortgage = account(&pool, "Mortgage").await;
+
+        let tag_svc = crate::TagService::new(pool.clone());
+        let shared_tag = tag_svc
+            .create_path(&"shared".parse().expect("valid tag path"))
+            .await
+            .expect("create shared tag");
+        let debit_only_tag = tag_svc
+            .create_path(&"debit-only".parse().expect("valid tag path"))
+            .await
+            .expect("create debit-only tag");
+        let credit_only_tag = tag_svc
+            .create_path(&"credit-only".parse().expect("valid tag path"))
+            .await
+            .expect("create credit-only tag");
+
+        // Each leg carries a distinct tag, a shared tag, and an extra date
+        // under the SAME label but a DIFFERENT value, so the round-trip can
+        // distinguish "restored correctly" from "coincidentally overlapped".
+        let debit = leg_with(
+            &pool,
+            &savings,
+            -100,
+            date(2025, 6, 26),
+            Reconciliation::Reconciled,
+            vec![shared_tag.clone(), debit_only_tag.clone()],
+            vec![("value_date".to_owned(), date(2025, 6, 20))],
+        )
+        .await;
+        let credit = leg_with(
+            &pool,
+            &mortgage,
+            100,
+            date(2025, 6, 27),
+            Reconciliation::Reconciled,
+            vec![shared_tag.clone(), credit_only_tag.clone()],
+            vec![("value_date".to_owned(), date(2025, 6, 21))],
+        )
+        .await;
+
+        let svc = Service::new(pool.clone());
+        svc.merge(&debit, &credit).await.expect("merge");
+        let restored = svc.unmerge(&debit).await.expect("unmerge");
+        assert_eq!(restored, credit, "the original absorbed id is restored");
+
+        let mut survivor_tags: Vec<String> =
+            sqlx::query_scalar("SELECT tag_id FROM transaction_tags WHERE transaction_id = ?")
+                .bind(debit.to_string())
+                .fetch_all(&pool)
+                .await
+                .expect("survivor tags");
+        survivor_tags.sort();
+        let mut expected_survivor_tags = vec![shared_tag.to_string(), debit_only_tag.to_string()];
+        expected_survivor_tags.sort();
+        assert_eq!(
+            survivor_tags, expected_survivor_tags,
+            "survivor's tags are restored to exactly its pre-merge set"
+        );
+
+        let mut survivor_dates: Vec<(String, String)> =
+            sqlx::query_as("SELECT label, date FROM transaction_dates WHERE transaction_id = ?")
+                .bind(debit.to_string())
+                .fetch_all(&pool)
+                .await
+                .expect("survivor dates");
+        survivor_dates.sort();
+        assert_eq!(
+            survivor_dates,
+            vec![("value_date".to_owned(), "2025-06-20".to_owned())],
+            "survivor's extra dates are restored to exactly its pre-merge set, \
+             not the absorbed's overlapping-label value"
+        );
+
+        let mut absorbed_tags: Vec<String> =
+            sqlx::query_scalar("SELECT tag_id FROM transaction_tags WHERE transaction_id = ?")
+                .bind(credit.to_string())
+                .fetch_all(&pool)
+                .await
+                .expect("absorbed tags");
+        absorbed_tags.sort();
+        let mut expected_absorbed_tags = vec![shared_tag.to_string(), credit_only_tag.to_string()];
+        expected_absorbed_tags.sort();
+        assert_eq!(
+            absorbed_tags, expected_absorbed_tags,
+            "absorbed's tags are restored to exactly its pre-merge set"
+        );
+
+        let mut absorbed_dates: Vec<(String, String)> =
+            sqlx::query_as("SELECT label, date FROM transaction_dates WHERE transaction_id = ?")
+                .bind(credit.to_string())
+                .fetch_all(&pool)
+                .await
+                .expect("absorbed dates");
+        absorbed_dates.sort();
+        assert_eq!(
+            absorbed_dates,
+            vec![("value_date".to_owned(), "2025-06-21".to_owned())],
+            "absorbed's extra dates are restored to exactly its pre-merge set"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unmerge_without_history_errors(pool: SqlitePool) {
+        let savings = account(&pool, "Savings").await;
+        let lone = leg(&pool, &savings, -100, date(2025, 6, 26)).await;
+        assert!(matches!(
+            Service::new(pool.clone()).unmerge(&lone).await,
+            Err(crate::BcError::NotMerged(_))
+        ));
     }
 }
