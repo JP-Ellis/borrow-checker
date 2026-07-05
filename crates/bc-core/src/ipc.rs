@@ -73,13 +73,21 @@ pub trait AuditEntryExt {
     ///
     /// * `ts` - When the event was recorded.
     /// * `event` - The core event to describe.
+    /// * `account_names` - Resolved account names keyed by account ID, used to
+    ///   render human-readable account references (e.g. for
+    ///   [`Event::TransactionSourceAttached`]) instead of raw internal IDs.
+    ///   Account IDs absent from this map render as `"unknown account"`.
     ///
     /// # Returns
     ///
     /// A [`bc_ipc::AuditEntry`] with a short kind tag and a human-readable
     /// message.
     #[must_use]
-    fn from_event(ts: jiff::Timestamp, event: &Event) -> Self;
+    fn from_event(
+        ts: jiff::Timestamp,
+        event: &Event,
+        account_names: &std::collections::HashMap<bc_models::AccountId, String>,
+    ) -> Self;
 }
 
 impl AuditEntryExt for bc_ipc::AuditEntry {
@@ -88,7 +96,11 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
         clippy::wildcard_enum_match_arm,
         reason = "Event is #[non_exhaustive]; catch-all arm required for exhaustiveness against future variants"
     )]
-    fn from_event(ts: jiff::Timestamp, event: &Event) -> Self {
+    fn from_event(
+        ts: jiff::Timestamp,
+        event: &Event,
+        account_names: &std::collections::HashMap<bc_models::AccountId, String>,
+    ) -> Self {
         let (kind, message): (&str, String) = match event {
             Event::TransactionCreated { .. } => ("create", "transaction created".to_owned()),
             Event::TransactionAmended { .. } => ("amend", "transaction amended".to_owned()),
@@ -136,7 +148,12 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                 account_id,
                 narration,
                 ..
-            } => ("import", format!("imported from {account_id}: {narration}")),
+            } => {
+                let name = account_names
+                    .get(account_id)
+                    .map_or("unknown account", String::as_str);
+                ("import", format!("imported from {name}: {narration}"))
+            }
             Event::TransactionSourceDetached { .. } => ("import", "source removed".to_owned()),
             other => {
                 let k = other.kind();
@@ -505,7 +522,7 @@ mod tests {
             from_account: bc_models::AccountId::new(),
             to_account: bc_models::AccountId::new(),
         };
-        let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event);
+        let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &HashMap::new());
         assert_eq!(entry.kind, "recat");
         assert!(!entry.message.is_empty());
     }
@@ -523,11 +540,22 @@ mod tests {
             reference: None,
             occurrence: 0,
         };
-        let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event);
+        let mut account_names = HashMap::new();
+        account_names.insert(account.clone(), "Everyday Transaction".to_owned());
+        let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &account_names);
         assert_eq!(entry.kind, "import");
+        assert!(
+            entry.message.contains("Everyday Transaction"),
+            "message names the account, got: {}",
+            entry.message
+        );
         assert!(
             entry.message.contains("ACME"),
             "message names the narration"
+        );
+        assert!(
+            !entry.message.contains(&account.to_string()),
+            "message must not leak the raw account id"
         );
     }
 
