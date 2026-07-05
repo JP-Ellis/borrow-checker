@@ -14,6 +14,7 @@ use crate::commands::report;
 use crate::commands::restore;
 use crate::commands::tag;
 use crate::commands::transaction;
+use crate::commands::transfer;
 
 /// BorrowChecker — personal finance with ledger/beancount compatibility.
 #[non_exhaustive]
@@ -88,4 +89,10 @@ pub enum Commands {
     Plugin(plugin::Args),
     /// Generate shell completion scripts.
     Completions(completions::Args),
+    /// Merge two transactions (e.g. the two legs of a transfer) into one.
+    Merge(transfer::MergeArgs),
+    /// Reverse a previous merge, splitting a transaction back into two.
+    Unmerge(transfer::UnmergeArgs),
+    /// Suggest candidate transfer pairs to merge.
+    SuggestTransfers(transfer::SuggestArgs),
 }
