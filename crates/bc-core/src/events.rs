@@ -354,6 +354,56 @@ pub enum Event {
         /// The transaction it belonged to.
         transaction_id: TransactionId,
     },
+    /// Two transactions were merged: `absorbed` was fused into `survivor_id`.
+    TransactionsMerged {
+        /// The surviving transaction that gained the absorbed posting and refs.
+        survivor_id: TransactionId,
+        /// Snapshot of the absorbed transaction, for reversal.
+        absorbed: AbsorbedTransaction,
+        /// Survivor's value date before the merge (restored on unmerge).
+        survivor_date_before: Date,
+        /// Survivor's transaction-level tags before the merge (restored on unmerge).
+        survivor_tags_before: Vec<TagId>,
+        /// Survivor's labeled extra dates before the merge (restored on unmerge).
+        survivor_extra_dates_before: Vec<(String, Date)>,
+    },
+    /// A previous merge on `survivor_id` was reversed, restoring `absorbed_id`.
+    TransactionUnmerged {
+        /// The transaction the merge had fused into.
+        survivor_id: TransactionId,
+        /// The transaction restored by the unmerge.
+        absorbed_id: TransactionId,
+    },
+}
+
+/// Snapshot of the transaction absorbed by a merge, sufficient to recreate it on unmerge.
+#[non_exhaustive]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AbsorbedTransaction {
+    /// The absorbed transaction's ID (recreated verbatim on unmerge).
+    pub id: TransactionId,
+    /// Value date.
+    pub date: Date,
+    /// Optional payee.
+    pub payee: Option<String>,
+    /// Description (bank narration captured at import).
+    pub description: String,
+    /// Optional user note.
+    pub note: Option<String>,
+    /// Reconciliation state.
+    pub reconciliation: Reconciliation,
+    /// Creation timestamp, preserved for stable identity across a merge/unmerge cycle.
+    pub created_at: Timestamp,
+    /// Transaction-level tag IDs.
+    pub tag_ids: Vec<TagId>,
+    /// Labeled extra dates.
+    pub extra_dates: Vec<(String, Date)>,
+    /// The single posting moved onto the survivor.
+    pub posting_id: PostingId,
+    /// The posting's original position within the absorbed transaction.
+    pub posting_position: u32,
+    /// Source references moved onto the survivor.
+    pub source_ref_ids: Vec<SourceRefId>,
 }
 
 impl Event {
@@ -391,6 +441,8 @@ impl Event {
             Self::BudgetArchived { .. } => "BudgetArchived",
             Self::TransactionSourceAttached { .. } => "TransactionSourceAttached",
             Self::TransactionSourceDetached { .. } => "TransactionSourceDetached",
+            Self::TransactionsMerged { .. } => "TransactionsMerged",
+            Self::TransactionUnmerged { .. } => "TransactionUnmerged",
         }
     }
 
@@ -432,6 +484,8 @@ impl Event {
             | Self::BudgetArchived { budget_id, .. } => budget_id.to_string(),
             Self::TransactionSourceAttached { transaction_id, .. }
             | Self::TransactionSourceDetached { transaction_id, .. } => transaction_id.to_string(),
+            Self::TransactionsMerged { survivor_id, .. }
+            | Self::TransactionUnmerged { survivor_id, .. } => survivor_id.to_string(),
         }
     }
 }
@@ -1006,6 +1060,39 @@ mod tests {
         };
         assert_eq!(event.aggregate_id(), tx.to_string());
         assert_eq!(event.kind(), "TransactionPayeeChanged");
+    }
+
+    #[test]
+    fn merged_event_serde_round_trip() {
+        let absorbed = super::AbsorbedTransaction {
+            id: TransactionId::new(),
+            date: date(2025, 6, 27),
+            payee: Some("ACME".to_owned()),
+            description: "TRANSFER".to_owned(),
+            note: None,
+            reconciliation: bc_models::Reconciliation::Reconciled,
+            created_at: Timestamp::now(),
+            tag_ids: Vec::new(),
+            extra_dates: Vec::new(),
+            posting_id: PostingId::new(),
+            posting_position: 0,
+            source_ref_ids: vec![SourceRefId::new()],
+        };
+        let survivor_id = TransactionId::new();
+        let event = Event::TransactionsMerged {
+            survivor_id: survivor_id.clone(),
+            absorbed,
+            survivor_date_before: date(2025, 6, 26),
+            survivor_tags_before: Vec::new(),
+            survivor_extra_dates_before: Vec::new(),
+        };
+
+        assert_eq!(event.kind(), "TransactionsMerged");
+        assert_eq!(event.aggregate_id(), survivor_id.to_string());
+
+        let json = serde_json::to_string(&event).expect("serialise");
+        let back: Event = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.kind(), "TransactionsMerged");
     }
 
     #[test]
