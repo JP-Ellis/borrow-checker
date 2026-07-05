@@ -430,10 +430,11 @@ impl Service {
     /// Returns [`BcError`] on a database or data-parse failure.
     #[inline]
     pub async fn suggest_transfers(&self) -> BcResult<Vec<TransferSuggestion>> {
-        let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
-            "SELECT t.id, p.account_id, p.amount, p.commodity, t.date \
+        let rows: Vec<(String, String, String, String, String, String, String)> = sqlx::query_as(
+            "SELECT t.id, p.account_id, a.name, t.description, p.amount, p.commodity, t.date \
              FROM transactions t \
              JOIN postings p ON p.transaction_id = t.id \
+             JOIN accounts a ON a.id = p.account_id \
              WHERE t.id IN (SELECT transaction_id FROM postings GROUP BY transaction_id HAVING COUNT(*) = 1) \
                AND p.amount IS NOT NULL AND p.commodity IS NOT NULL \
              ORDER BY t.date, t.id",
@@ -442,7 +443,8 @@ impl Service {
         .await?;
 
         let mut candidates = Vec::with_capacity(rows.len());
-        for (raw_id, raw_account, raw_amount, commodity, raw_date) in rows {
+        for (raw_id, raw_account, account_name, narration, raw_amount, commodity, raw_date) in rows
+        {
             let id = raw_id
                 .parse::<TransactionId>()
                 .map_err(|e: bc_models::IdParseError| BcError::BadData(e.to_string()))?;
@@ -458,8 +460,10 @@ impl Service {
             candidates.push(Candidate {
                 id,
                 account,
+                account_name,
                 amount: Amount::new(value, bc_models::CommodityCode::new(commodity)),
                 date,
+                narration,
             });
         }
         Ok(match_transfers(&candidates))
@@ -542,6 +546,14 @@ pub struct TransferSuggestion {
     pub date_debit: Date,
     /// The credit leg's value date.
     pub date_credit: Date,
+    /// Display name of the debit leg's account.
+    pub debit_account: String,
+    /// Display name of the credit leg's account.
+    pub credit_account: String,
+    /// The debit leg's bank narration (its transaction description).
+    pub debit_narration: String,
+    /// The credit leg's bank narration (its transaction description).
+    pub credit_narration: String,
 }
 
 impl TransferSuggestion {
@@ -567,10 +579,14 @@ struct Candidate {
     id: TransactionId,
     /// The account the lone posting debits or credits.
     account: bc_models::AccountId,
+    /// The display name of that account.
+    account_name: String,
     /// The lone posting's signed amount.
     amount: Amount,
     /// The transaction's value date.
     date: Date,
+    /// The transaction's bank narration (its description column).
+    narration: String,
 }
 
 /// Pairs candidates that look like the two legs of one transfer.
@@ -643,6 +659,10 @@ fn match_transfers(candidates: &[Candidate]) -> Vec<TransferSuggestion> {
                 amount: credit.amount.clone(),
                 date_debit: debit.date,
                 date_credit: credit.date,
+                debit_account: debit.account_name.clone(),
+                credit_account: credit.account_name.clone(),
+                debit_narration: debit.narration.clone(),
+                credit_narration: credit.narration.clone(),
             });
             paired.insert(&a.id);
             paired.insert(&b.id);
@@ -1343,8 +1363,13 @@ mod db_tests {
             .await
             .expect("suggest");
         assert_eq!(suggestions.len(), 1);
-        assert_eq!(suggestions.first().expect("one").debit(), debit);
-        assert_eq!(suggestions.first().expect("one").credit(), credit);
+        let s = suggestions.first().expect("one");
+        assert_eq!(s.debit(), debit);
+        assert_eq!(s.credit(), credit);
+        assert_eq!(s.debit_account, "Savings");
+        assert_eq!(s.credit_account, "Mortgage");
+        assert_eq!(s.debit_narration, "TRANSFER");
+        assert_eq!(s.credit_narration, "TRANSFER");
     }
 }
 
@@ -1370,8 +1395,10 @@ mod suggest_tests {
         Candidate {
             id: TransactionId::new(),
             account,
+            account_name: "Account".to_owned(),
             amount: Amount::new(Decimal::from(amount), CommodityCode::new("AUD")),
             date: date(when.0, when.1, when.2),
+            narration: "TRANSFER".to_owned(),
         }
     }
 
