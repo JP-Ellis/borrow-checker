@@ -83,6 +83,7 @@ pub use source::plan_import;
 pub use tag::Service as TagService;
 pub use transaction::Service as TransactionService;
 pub use transfer::Service as TransferService;
+pub use transfer::TransferSuggestion;
 
 #[cfg(test)]
 mod migration_smoke {

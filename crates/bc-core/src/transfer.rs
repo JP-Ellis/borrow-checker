@@ -1,9 +1,12 @@
 //! Transfer resolution: merge/unmerge two single-posting transactions and
 //! suggest candidate transfer pairs.
 
+use bc_models::Amount;
 use bc_models::SourceRefId;
 use bc_models::Transaction;
 use bc_models::TransactionId;
+use jiff::Unit;
+use jiff::civil::Date;
 use sqlx::SqlitePool;
 
 use crate::BcError;
@@ -357,6 +360,51 @@ impl Service {
         db_tx.commit().await?;
         Ok(absorbed.id)
     }
+
+    /// Suggests candidate transfer pairs among single-posting transactions.
+    ///
+    /// Loads every transaction with exactly one concrete posting and pairs them
+    /// via [`match_transfers`]. Already-merged transactions (two or more
+    /// postings) are naturally excluded.
+    ///
+    /// # Returns
+    ///
+    /// Proposed transfer pairs for user confirmation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on a database or data-parse failure.
+    #[inline]
+    pub async fn suggest_transfers(&self) -> BcResult<Vec<TransferSuggestion>> {
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+            "SELECT t.id, p.amount, p.commodity, t.date \
+             FROM transactions t \
+             JOIN postings p ON p.transaction_id = t.id \
+             WHERE t.id IN (SELECT transaction_id FROM postings GROUP BY transaction_id HAVING COUNT(*) = 1) \
+               AND p.amount IS NOT NULL AND p.commodity IS NOT NULL",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut candidates = Vec::with_capacity(rows.len());
+        for (raw_id, raw_amount, commodity, raw_date) in rows {
+            let id = raw_id
+                .parse::<TransactionId>()
+                .map_err(|e: bc_models::IdParseError| BcError::BadData(e.to_string()))?;
+            let value = raw_amount
+                .parse::<rust_decimal::Decimal>()
+                .map_err(|e| BcError::BadData(e.to_string()))?;
+            let date = raw_date
+                .parse::<Date>()
+                .map_err(|e| BcError::BadData(e.to_string()))?;
+            candidates.push(Candidate {
+                id,
+                amount: Amount::new(value, bc_models::CommodityCode::new(commodity)),
+                date,
+            });
+        }
+        Ok(match_transfers(&candidates))
+    }
 }
 
 /// Validates that two transactions may be merged.
@@ -419,6 +467,106 @@ fn reconciliation_rank(state: bc_models::Reconciliation) -> u8 {
         // known, more-settled state.
         bc_models::Reconciliation::Unreconciled | _ => 0,
     }
+}
+
+/// A proposed transfer pair: two opposite legs likely to be the same movement.
+#[non_exhaustive]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TransferSuggestion {
+    /// The outgoing (debit) leg.
+    pub debit: TransactionId,
+    /// The incoming (credit) leg.
+    pub credit: TransactionId,
+    /// The transfer magnitude (absolute value, credit side).
+    pub amount: Amount,
+    /// The debit leg's value date.
+    pub date_debit: Date,
+    /// The credit leg's value date.
+    pub date_credit: Date,
+}
+
+impl TransferSuggestion {
+    /// Returns the debit (outgoing) leg's transaction ID.
+    #[must_use]
+    #[inline]
+    pub fn debit(&self) -> TransactionId {
+        self.debit.clone()
+    }
+
+    /// Returns the credit (incoming) leg's transaction ID.
+    #[must_use]
+    #[inline]
+    pub fn credit(&self) -> TransactionId {
+        self.credit.clone()
+    }
+}
+
+/// A single-posting transaction considered as a merge candidate.
+#[derive(Debug, Clone)]
+struct Candidate {
+    /// The transaction ID.
+    id: TransactionId,
+    /// The lone posting's signed amount.
+    amount: Amount,
+    /// The transaction's value date.
+    date: Date,
+}
+
+/// Pairs candidates that look like the two legs of one transfer.
+///
+/// Two candidates pair when their amounts are equal in magnitude, opposite in
+/// sign, and share a commodity; the debit (negative) leg is dated on-or-before
+/// the credit (positive) leg; and the two dates are within seven days.
+///
+/// # Arguments
+///
+/// * `candidates` - Single-posting transactions to consider.
+///
+/// # Returns
+///
+/// One [`TransferSuggestion`] per qualifying pair.
+#[must_use]
+fn match_transfers(candidates: &[Candidate]) -> Vec<TransferSuggestion> {
+    let mut out = Vec::new();
+    for (i, a) in candidates.iter().enumerate() {
+        for b in candidates.iter().skip(i.saturating_add(1)) {
+            if a.amount.commodity() != b.amount.commodity() {
+                continue;
+            }
+            if a.amount.value().is_zero() {
+                continue;
+            }
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "financial negation: Decimal is bounded by the type"
+            )]
+            let opposite = a.amount.value() == -b.amount.value();
+            if !opposite {
+                continue;
+            }
+            let (debit, credit) = if a.amount.value().is_sign_negative() {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            // Debit on-or-before credit, within 7 days.
+            let days = debit
+                .date
+                .until((Unit::Day, credit.date))
+                .map_or(i64::MIN, |span| i64::from(span.get_days()));
+            if !(0..=7).contains(&days) {
+                continue;
+            }
+            out.push(TransferSuggestion {
+                debit: debit.id.clone(),
+                credit: credit.id.clone(),
+                amount: credit.amount.clone(),
+                date_debit: debit.date,
+                date_credit: credit.date,
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -958,5 +1106,74 @@ mod db_tests {
             Service::new(pool.clone()).unmerge(&lone).await,
             Err(crate::BcError::NotMerged(_))
         ));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn suggest_finds_the_pair(pool: SqlitePool) {
+        let savings = account(&pool, "Savings").await;
+        let mortgage = account(&pool, "Mortgage").await;
+        let debit = leg(&pool, &savings, -100, date(2025, 6, 26)).await;
+        let credit = leg(&pool, &mortgage, 100, date(2025, 6, 27)).await;
+
+        let suggestions = Service::new(pool.clone())
+            .suggest_transfers()
+            .await
+            .expect("suggest");
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions.first().expect("one").debit(), debit);
+        assert_eq!(suggestions.first().expect("one").credit(), credit);
+    }
+}
+
+#[cfg(test)]
+mod suggest_tests {
+    use bc_models::Amount;
+    use bc_models::CommodityCode;
+    use bc_models::TransactionId;
+    use jiff::civil::date;
+    use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
+
+    use super::Candidate;
+    use super::match_transfers;
+
+    fn cand(amount: i64, when: (i16, i8, i8)) -> Candidate {
+        Candidate {
+            id: TransactionId::new(),
+            amount: Amount::new(Decimal::from(amount), CommodityCode::new("AUD")),
+            date: date(when.0, when.1, when.2),
+        }
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    fn pairs_equal_opposite_within_window() {
+        let debit = cand(-100, (2025, 6, 26));
+        let credit = cand(100, (2025, 6, 27));
+        let out = match_transfers(&[debit.clone(), credit.clone()]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].debit(), debit.id);
+        assert_eq!(out[0].credit(), credit.id);
+    }
+
+    #[test]
+    fn skips_when_debit_after_credit() {
+        // Negative (debit) dated AFTER the positive (credit) — violates ordering.
+        let out = match_transfers(&[cand(-100, (2025, 6, 28)), cand(100, (2025, 6, 27))]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn skips_beyond_seven_days() {
+        let out = match_transfers(&[cand(-100, (2025, 6, 1)), cand(100, (2025, 6, 20))]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn skips_same_sign_or_unequal() {
+        assert!(
+            match_transfers(&[cand(-100, (2025, 6, 26)), cand(-100, (2025, 6, 27))]).is_empty()
+        );
+        assert!(match_transfers(&[cand(-100, (2025, 6, 26)), cand(90, (2025, 6, 27))]).is_empty());
     }
 }
