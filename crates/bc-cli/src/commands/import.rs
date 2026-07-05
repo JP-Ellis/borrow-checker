@@ -1,6 +1,5 @@
 //! Import sub-command.
 
-use core::str::FromStr as _;
 use std::path::PathBuf;
 
 use crate::context::AppContext;
@@ -14,13 +13,6 @@ pub struct Args {
     #[arg(long, value_name = "NAME")]
     pub profile: String,
 
-    /// Account ID for the offsetting (counterpart) posting.
-    ///
-    /// CSV and OFX imports produce single-account raw transactions.
-    /// This account receives the balancing entry for each imported line.
-    #[arg(long, value_name = "ACCOUNT_ID")]
-    pub counterpart: String,
-
     /// File to import.
     pub file: PathBuf,
 }
@@ -33,14 +25,6 @@ pub struct Args {
 /// file cannot be read, or the importer fails to parse it.
 #[inline]
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
-    // Resolve counterpart account ID.
-    let counterpart_id = bc_models::AccountId::from_str(&args.counterpart).map_err(|e| {
-        crate::error::CliError::Arg(format!(
-            "invalid counterpart account ID '{}': {e}",
-            args.counterpart
-        ))
-    })?;
-
     // Find the import profile by name.
     let profiles = ctx.profiles.list_all().await?;
     let profile = profiles
@@ -73,14 +57,8 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         .map_err(|e| crate::error::CliError::Arg(format!("import parse error: {e}")))?;
 
     let account_id = profile.account_id.clone();
-    let count = bc_core::execute_import(
-        &ctx.transactions,
-        &ctx.sources,
-        &account_id,
-        &counterpart_id,
-        &raw_txs,
-    )
-    .await?;
+    let count =
+        bc_core::execute_import(&ctx.transactions, &ctx.sources, &account_id, &raw_txs).await?;
     if ctx.json {
         return crate::output::print_json(&serde_json::json!({ "imported": count }));
     }
