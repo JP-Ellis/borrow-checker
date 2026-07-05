@@ -541,9 +541,34 @@ pub async fn get_transaction_audit(
         .audit_trail(&tx_id)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "bc_core::Event is #[non_exhaustive]; catch-all arm required for exhaustiveness against future variants"
+    )]
+    let source_account_ids: std::collections::HashSet<_> = trail
+        .iter()
+        .filter_map(|(_, event)| match event {
+            bc_core::Event::TransactionSourceAttached { account_id, .. } => {
+                Some(account_id.clone())
+            }
+            _ => None,
+        })
+        .collect();
+
+    let mut account_names = std::collections::HashMap::new();
+    for account_id in source_account_ids.into_iter().collect::<Vec<_>>() {
+        let account = state
+            .accounts
+            .find_by_id(&account_id)
+            .await
+            .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+        account_names.insert(account_id, account.name().to_owned());
+    }
+
     Ok(trail
         .iter()
-        .map(|(ts, event)| bc_ipc::AuditEntry::from_event(*ts, event))
+        .map(|(ts, event)| bc_ipc::AuditEntry::from_event(*ts, event, &account_names))
         .collect())
 }
 
