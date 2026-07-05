@@ -2,7 +2,6 @@
 //! source references for the rows that are new.
 
 use bc_models::AccountId;
-use bc_models::Amount;
 use bc_models::SourceRef;
 use bc_models::SourceRefId;
 use bc_models::TransactionId;
@@ -14,16 +13,16 @@ use crate::RawTransaction;
 /// Deduplicates `raws` against stored source references for `account_id`, then
 /// creates a transaction and attaches a [`SourceRef`] for each new row.
 ///
-/// Single-account raw rows receive a balancing leg on `counterpart_id`. Rows whose
-/// `(account, fingerprint, occurrence)` already exist are skipped, making repeated
-/// imports of the same document hierarchy idempotent.
+/// Single-account raw rows each become a single-posting (interim, unbalanced)
+/// transaction. Rows whose `(account, fingerprint, occurrence)` already exist
+/// are skipped, making repeated imports of the same document hierarchy
+/// idempotent.
 ///
 /// # Arguments
 ///
 /// * `transactions` - Transaction persistence service.
 /// * `sources` - Source-reference persistence service.
 /// * `account_id` - The account whose statement is being imported (source scope).
-/// * `counterpart_id` - Account receiving the balancing leg for each new row.
 /// * `raws` - Parsed rows in file order.
 ///
 /// # Returns
@@ -37,7 +36,6 @@ pub async fn execute_import(
     transactions: &crate::TransactionService,
     sources: &crate::SourceService,
     account_id: &AccountId,
-    counterpart_id: &AccountId,
     raws: &[RawTransaction],
 ) -> BcResult<usize> {
     let fingerprints: Vec<String> = raws
@@ -73,25 +71,13 @@ pub async fn execute_import(
             .amount(raw.amount.clone())
             .build();
 
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "financial negation: Decimal arithmetic is bounded by the type"
-        )]
-        let negated = -raw.amount.value();
-        let counterpart_amount = Amount::new(negated, raw.amount.commodity().clone());
-        let posting_counterpart = bc_models::Posting::builder()
-            .id(bc_models::PostingId::new())
-            .account_id(counterpart_id.clone())
-            .amount(counterpart_amount)
-            .build();
-
         let tx_id = TransactionId::new();
         let tx = bc_models::Transaction::builder()
             .id(tx_id.clone())
             .date(raw.date)
             .maybe_payee(raw.payee.clone())
             .description(raw.description.clone())
-            .postings(vec![posting_account, posting_counterpart])
+            .postings(vec![posting_account])
             .reconciliation(bc_models::Reconciliation::Reconciled)
             .created_at(Timestamp::now())
             .build();
@@ -126,6 +112,7 @@ pub async fn execute_import(
 mod tests {
     use bc_models::AccountKind;
     use bc_models::AccountType;
+    use bc_models::Amount;
     use bc_models::CommodityCode;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
@@ -168,6 +155,13 @@ mod tests {
             .expect("count transactions")
     }
 
+    async fn posting_count(pool: &SqlitePool) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM postings")
+            .fetch_one(pool)
+            .await
+            .expect("count postings")
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn import_is_idempotent_and_incremental(pool: SqlitePool) {
         let bank = account(
@@ -177,26 +171,24 @@ mod tests {
             AccountKind::DepositAccount,
         )
         .await;
-        let counter = account(
-            &pool,
-            "Counter",
-            AccountType::Asset,
-            AccountKind::DepositAccount,
-        )
-        .await;
         let txs = crate::TransactionService::new(pool.clone());
         let srcs = crate::SourceService::new(pool.clone());
 
         let batch = vec![raw("COFFEE", -5), raw("LUNCH", -20)];
 
-        let first = execute_import(&txs, &srcs, &bank, &counter, &batch)
+        let first = execute_import(&txs, &srcs, &bank, &batch)
             .await
             .expect("import 1");
         assert_eq!(first, 2);
         assert_eq!(tx_count(&pool).await, 2);
+        assert_eq!(
+            posting_count(&pool).await,
+            2,
+            "each imported transaction has exactly one posting"
+        );
 
         // Re-import the identical batch: nothing new.
-        let second = execute_import(&txs, &srcs, &bank, &counter, &batch)
+        let second = execute_import(&txs, &srcs, &bank, &batch)
             .await
             .expect("import 2");
         assert_eq!(second, 0);
@@ -204,7 +196,7 @@ mod tests {
 
         // Append a genuinely new row: only it imports.
         let grown = vec![raw("COFFEE", -5), raw("LUNCH", -20), raw("DINNER", -40)];
-        let third = execute_import(&txs, &srcs, &bank, &counter, &grown)
+        let third = execute_import(&txs, &srcs, &bank, &grown)
             .await
             .expect("import 3");
         assert_eq!(third, 1);
@@ -220,19 +212,12 @@ mod tests {
             AccountKind::DepositAccount,
         )
         .await;
-        let counter = account(
-            &pool,
-            "Counter",
-            AccountType::Asset,
-            AccountKind::DepositAccount,
-        )
-        .await;
         let txs = crate::TransactionService::new(pool.clone());
         let srcs = crate::SourceService::new(pool.clone());
 
         // Two legitimately identical rows (same day, narration, amount, no reference).
         let batch = vec![raw("COFFEE", -5), raw("COFFEE", -5)];
-        let imported = execute_import(&txs, &srcs, &bank, &counter, &batch)
+        let imported = execute_import(&txs, &srcs, &bank, &batch)
             .await
             .expect("import");
         assert_eq!(
@@ -241,7 +226,7 @@ mod tests {
         );
         assert_eq!(tx_count(&pool).await, 2);
 
-        let again = execute_import(&txs, &srcs, &bank, &counter, &batch)
+        let again = execute_import(&txs, &srcs, &bank, &batch)
             .await
             .expect("reimport");
         assert_eq!(again, 0, "re-import of both is a no-op");
