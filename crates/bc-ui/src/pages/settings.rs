@@ -4,12 +4,15 @@
 pub(crate) mod backup;
 /// Editable currency-registry panel — see [`currencies::CurrenciesPanel`].
 pub(crate) mod currencies;
+/// Transfer-suggestion review panel — see [`transfers::TransfersPanel`].
+pub(crate) mod transfers;
 
 use backup::BackupPanel;
 use bc_ipc::SettingsInfo;
 use currencies::CurrenciesPanel;
 use leptos::prelude::*;
 use stylance::import_style;
+use transfers::TransfersPanel;
 
 use crate::components::error_banner::ErrorBanner;
 use crate::format::month_name;
@@ -152,6 +155,8 @@ enum SettingsSection {
     Currencies,
     /// The editable backup settings + actions.
     Backup,
+    /// The transfer-suggestion review panel.
+    Transfers,
 }
 
 /// Settings page — sidebar shell with sections for read-only configuration
@@ -182,6 +187,7 @@ pub fn Settings() -> impl IntoView {
             SettingsSection::General => None,
             SettingsSection::Currencies => Some("settings-nav-currencies"),
             SettingsSection::Backup => Some("settings-nav-backup"),
+            SettingsSection::Transfers => Some("settings-nav-transfers"),
         };
         view! {
             <button
@@ -203,6 +209,7 @@ pub fn Settings() -> impl IntoView {
                 {nav_item("General", SettingsSection::General)}
                 {nav_item("Currencies", SettingsSection::Currencies)}
                 {nav_item("Backup", SettingsSection::Backup)}
+                {nav_item("Transfers", SettingsSection::Transfers)}
             </aside>
             <main class=style::main>
                 {move || match section.get() {
@@ -230,6 +237,7 @@ pub fn Settings() -> impl IntoView {
                     }
                     SettingsSection::Currencies => view! { <CurrenciesPanel /> }.into_any(),
                     SettingsSection::Backup => view! { <BackupPanel /> }.into_any(),
+                    SettingsSection::Transfers => view! { <TransfersPanel /> }.into_any(),
                 }}
             </main>
         </div>
