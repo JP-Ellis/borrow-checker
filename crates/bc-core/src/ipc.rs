@@ -534,6 +534,26 @@ mod tests {
     use crate::ipc::AuditEntryExt as _;
 
     #[test]
+    fn transfer_suggestion_converts_to_ipc_dto() {
+        let debit = bc_models::TransactionId::new();
+        let credit = bc_models::TransactionId::new();
+        let suggestion = crate::TransferSuggestion {
+            debit: debit.clone(),
+            credit: credit.clone(),
+            amount: bc_models::Amount::new(rust_decimal::Decimal::new(10000, 2), "AUD"),
+            date_debit: jiff::civil::date(2025, 6, 26),
+            date_credit: jiff::civil::date(2025, 6, 27),
+        };
+        let dto = bc_ipc::TransferSuggestion::from(&suggestion);
+        assert_eq!(dto.debit, debit.to_string());
+        assert_eq!(dto.credit, credit.to_string());
+        assert_eq!(dto.amount.value(), rust_decimal::Decimal::new(10000, 2));
+        assert_eq!(dto.amount.currency_code, "AUD");
+        assert_eq!(dto.date_debit, "2025-06-26");
+        assert_eq!(dto.date_credit, "2025-06-27");
+    }
+
+    #[test]
     fn audit_entry_from_recategorise_uses_recat_kind() {
         let event = crate::Event::PostingRecategorised {
             id: bc_models::TransactionId::new(),

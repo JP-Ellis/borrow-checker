@@ -16,6 +16,7 @@ mod import;
 mod report;
 mod restore;
 mod transaction;
+mod transfer;
 
 /// Capture binary output as a formatted snapshot string.
 macro_rules! cmd_snapshot {
