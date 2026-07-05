@@ -23,8 +23,6 @@ fn import_missing_profile_returns_error() {
         "import",
         "--profile",
         "nonexistent",
-        "--counterpart",
-        "account_00000000000000000000000000",
         file.path().to_str().expect("utf8 path"),
     ]);
     cmd_snapshot!(ctx, &mut cmd);
