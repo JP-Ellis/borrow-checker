@@ -321,10 +321,12 @@ CREATE INDEX idx_budget_revisions_budget ON budget_revisions (budget_id, effecti
 
 -- Import provenance: one row per statement row that produced a transaction.
 -- Scoped to the owning account; the UNIQUE constraint is the idempotency key.
+-- Both foreign keys cascade on delete: removing a transaction or an account
+-- takes its source references with it, so no provenance row can dangle.
 CREATE TABLE transaction_sources (
     id             TEXT    NOT NULL PRIMARY KEY,
-    transaction_id TEXT    NOT NULL REFERENCES transactions(id),
-    account_id     TEXT    NOT NULL REFERENCES accounts(id),
+    transaction_id TEXT    NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    account_id     TEXT    NOT NULL REFERENCES accounts(id)     ON DELETE CASCADE,
     date           TEXT    NOT NULL, -- YYYY-MM-DD
     narration      TEXT    NOT NULL,
     amount         TEXT    NOT NULL, -- decimal string
