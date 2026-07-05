@@ -104,6 +104,15 @@ pub const GET_BACKUP_SETTINGS: &str = "get_backup_settings";
 /// Command: persist updated backup settings.
 pub const UPDATE_BACKUP_SETTINGS: &str = "update_backup_settings";
 
+/// Merge two single-posting transactions into one.
+pub const MERGE_TRANSACTIONS: &str = "merge_transactions";
+
+/// Reverse the most recent merge on a transaction.
+pub const UNMERGE_TRANSACTION: &str = "unmerge_transaction";
+
+/// Propose candidate transfer pairs for review.
+pub const SUGGEST_TRANSFERS: &str = "suggest_transfers";
+
 /// Argument struct for the `reverse_transaction` command.
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(serde::Serialize)]
