@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/transfer.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+No transfer suggestions.
+----- stderr -----
