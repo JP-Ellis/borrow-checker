@@ -101,7 +101,7 @@ pub async fn suggest(_args: SuggestArgs, ctx: &AppContext) -> CliResult<()> {
             vec![
                 s.debit().to_string(),
                 s.credit().to_string(),
-                s.amount.value().to_string(),
+                format!("{} {}", s.amount.value(), s.amount.commodity()),
                 s.date_debit.to_string(),
                 s.date_credit.to_string(),
             ]
