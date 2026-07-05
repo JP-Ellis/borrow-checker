@@ -72,13 +72,17 @@ pub async fn execute_import(
             .build();
 
         let tx_id = TransactionId::new();
+        // A freshly imported leg holds a single posting and is therefore
+        // unbalanced (an accepted interim state). It stays `Unreconciled` until a
+        // merge supplies the counter-leg, since an unbalanced transaction cannot
+        // legitimately be reconciled.
         let tx = bc_models::Transaction::builder()
             .id(tx_id.clone())
             .date(raw.date)
             .maybe_payee(raw.payee.clone())
             .description(raw.description.clone())
             .postings(vec![posting_account])
-            .reconciliation(bc_models::Reconciliation::Reconciled)
+            .reconciliation(bc_models::Reconciliation::Unreconciled)
             .created_at(Timestamp::now())
             .build();
 
