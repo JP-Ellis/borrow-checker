@@ -519,6 +519,10 @@ impl From<&crate::TransferSuggestion> for bc_ipc::TransferSuggestion {
             bc_ipc::Amount::from(&s.amount),
             s.date_debit.to_string(),
             s.date_credit.to_string(),
+            s.debit_account.clone(),
+            s.credit_account.clone(),
+            s.debit_narration.clone(),
+            s.credit_narration.clone(),
         )
     }
 }
@@ -543,6 +547,10 @@ mod tests {
             amount: bc_models::Amount::new(rust_decimal::Decimal::new(10000, 2), "AUD"),
             date_debit: jiff::civil::date(2025, 6, 26),
             date_credit: jiff::civil::date(2025, 6, 27),
+            debit_account: "Savings".to_owned(),
+            credit_account: "Mortgage".to_owned(),
+            debit_narration: "TFR OUT".to_owned(),
+            credit_narration: "TFR IN".to_owned(),
         };
         let dto = bc_ipc::TransferSuggestion::from(&suggestion);
         assert_eq!(dto.debit, debit.to_string());
@@ -551,6 +559,10 @@ mod tests {
         assert_eq!(dto.amount.currency_code, "AUD");
         assert_eq!(dto.date_debit, "2025-06-26");
         assert_eq!(dto.date_credit, "2025-06-27");
+        assert_eq!(dto.debit_account, "Savings");
+        assert_eq!(dto.credit_account, "Mortgage");
+        assert_eq!(dto.debit_narration, "TFR OUT");
+        assert_eq!(dto.credit_narration, "TFR IN");
     }
 
     #[test]
