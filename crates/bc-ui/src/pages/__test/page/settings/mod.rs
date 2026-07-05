@@ -19,6 +19,7 @@ use crate::pages::__test::index::QaCard;
 use crate::pages::settings::SettingsPanel;
 use crate::pages::settings::backup::qa::BackupPanelQa;
 use crate::pages::settings::currencies::qa::CurrenciesPanelQa;
+use crate::pages::settings::transfers::qa::TransfersPanelQa;
 
 /// Display name shown in the QA index.
 pub const TITLE: &str = "settings";
@@ -38,6 +39,7 @@ pub fn SettingsRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
             <Route path=path!("/no-config-path") view=SettingsNoConfigPathQa />
             <Route path=path!("/currencies") view=CurrenciesPanelQa />
             <Route path=path!("/backup") view=BackupPanelQa />
+            <Route path=path!("/transfers") view=TransfersPanelQa />
         </ParentRoute>
     }
     .into_inner()
@@ -77,6 +79,11 @@ pub fn SettingsIndex() -> impl IntoView {
                     title="Backup"
                     path="/__test/page/settings/backup"
                     description="Editable backup settings + backup/restore actions."
+                />
+                <QaCard
+                    title="Transfers"
+                    path="/__test/page/settings/transfers"
+                    description="Transfer-suggestion review card with mock debit/credit legs."
                 />
             </div>
         </div>

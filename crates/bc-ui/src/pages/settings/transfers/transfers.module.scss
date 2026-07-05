@@ -1,0 +1,135 @@
+/* Transfer-suggestion review panel. */
+.panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--bc-space-4);
+    padding: var(--bc-space-5);
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.title {
+    font-size: var(--bc-text-body);
+    font-weight: 600;
+    color: var(--bc-ink);
+}
+
+.list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--bc-space-3);
+}
+
+.card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--bc-space-3);
+    padding: var(--bc-space-4);
+    background: var(--bc-surface);
+    border: 1px solid var(--bc-border);
+    border-radius: var(--bc-radius-card);
+}
+
+.card_top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--bc-space-3);
+}
+
+.amount {
+    font-size: var(--bc-text-body);
+    font-weight: 600;
+}
+
+.date {
+    font-family: var(--bc-font-mono);
+    color: var(--bc-ink-mute);
+    font-size: var(--bc-text-caption);
+}
+
+.leg {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    gap: var(--bc-space-3);
+    align-items: baseline;
+}
+
+.leg_dir {
+    font-family: var(--bc-font-mono);
+    color: var(--bc-ink-mute);
+    font-size: var(--bc-text-caption);
+}
+
+.leg_account {
+    color: var(--bc-ink);
+}
+
+.leg_narration {
+    color: var(--bc-ink-dim);
+    font-size: var(--bc-text-caption);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--bc-space-2);
+}
+
+/* Buttons — module-scoped, token-styled (the crate has no global btn class). */
+.btn {
+    padding: var(--bc-space-1) var(--bc-space-3);
+    border: 1px solid var(--bc-border);
+    border-radius: var(--bc-radius-control);
+    background: var(--bc-surface);
+    color: var(--bc-ink);
+    font-family: var(--bc-font-sans);
+    font-size: var(--bc-text-caption);
+    cursor: pointer;
+    transition: background var(--bc-duration-fast) var(--bc-ease-out);
+}
+
+.btn:hover {
+    background: var(--bc-surface-alt);
+}
+
+.btn_primary {
+    border-color: var(--bc-accent);
+    background: var(--bc-accent);
+    color: var(--bc-bg);
+}
+
+.btn_primary:hover {
+    background: color-mix(in oklch, var(--bc-accent) 88%, black);
+}
+
+.empty,
+.error {
+    color: var(--bc-ink-mute);
+    padding: var(--bc-space-4);
+}
+
+.skeleton_card {
+    height: 6rem;
+    border-radius: var(--bc-radius-card);
+    background: var(--bc-surface-alt);
+    animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.5;
+    }
+}
