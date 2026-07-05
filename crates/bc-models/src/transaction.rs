@@ -1,4 +1,4 @@
-//! Transaction, posting, cost and link domain types.
+//! Transaction, posting and cost domain types.
 
 use jiff::Timestamp;
 use jiff::civil::Date;
@@ -8,7 +8,6 @@ use crate::money::Amount;
 
 crate::define_id!(TransactionId, "transaction");
 crate::define_id!(PostingId, "posting");
-crate::define_id!(TransactionLinkId, "transaction_link");
 
 /// Reconciliation state of a transaction: whether it has been confirmed
 /// against an authoritative external source (bank/credit-card statement).
@@ -24,94 +23,6 @@ pub enum Reconciliation {
     Flagged,
     /// Confirmed against the bank/credit-card statement.
     Reconciled,
-}
-
-/// The kind of relationship between linked transactions.
-///
-/// Re-exported from the crate root as [`crate::TransactionLinkType`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[non_exhaustive]
-#[serde(rename_all = "snake_case")]
-pub enum LinkType {
-    /// Two transactions representing the same inter-account movement.
-    Transfer,
-    /// One transaction cancels a prior one.
-    Reversal,
-}
-
-/// A link grouping related transactions (e.g. a transfer pair or reversal).
-///
-/// Re-exported from the crate root as [`crate::TransactionLink`].
-///
-/// # Example
-///
-/// ```
-/// use bc_models::{TransactionLink, TransactionLinkId, TransactionLinkType};
-/// use jiff::Timestamp;
-///
-/// let link = TransactionLink::builder()
-///     .id(TransactionLinkId::new())
-///     .link_type(TransactionLinkType::Transfer)
-///     .created_at(Timestamp::now())
-///     .build();
-///
-/// assert!(link.member_transaction_ids().is_empty());
-/// ```
-// NOTE: the field docstrings propagate to the setter methods on the builder, so
-// keep them accurate and self-contained.
-#[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[non_exhaustive]
-#[expect(
-    clippy::struct_field_names,
-    reason = "`link_type` is the idiomatic name for this domain field"
-)]
-pub struct Link {
-    /// Stable identifier for this link. Assigned by `bc-core` on creation; do not
-    /// generate ad hoc outside of the persistence layer.
-    id: TransactionLinkId,
-
-    /// The nature of the relationship between linked transactions.
-    /// [`crate::TransactionLinkType::Transfer`] matches two legs of the same inter-account movement;
-    /// [`crate::TransactionLinkType::Reversal`] marks one transaction as cancelling a prior one.
-    link_type: LinkType,
-
-    /// IDs of all transactions that belong to this link. Defaults to empty;
-    /// `bc-core` appends each member transaction's ID after persisting it.
-    #[builder(default)]
-    member_transaction_ids: Vec<TransactionId>,
-
-    /// Timestamp recorded when this link was first persisted.
-    created_at: Timestamp,
-}
-
-impl Link {
-    /// Returns the link ID.
-    #[inline]
-    #[must_use]
-    pub fn id(&self) -> &TransactionLinkId {
-        &self.id
-    }
-
-    /// Returns the link type.
-    #[inline]
-    #[must_use]
-    pub fn link_type(&self) -> LinkType {
-        self.link_type
-    }
-
-    /// Returns the member transaction IDs.
-    #[inline]
-    #[must_use]
-    pub fn member_transaction_ids(&self) -> &[TransactionId] {
-        &self.member_transaction_ids
-    }
-
-    /// Returns the creation timestamp.
-    #[inline]
-    #[must_use]
-    pub fn created_at(&self) -> &Timestamp {
-        &self.created_at
-    }
 }
 
 /// Cost basis for a commodity conversion posting.
@@ -303,7 +214,7 @@ impl Posting {
 /// # Builder design — `id` and `created_at` are required
 ///
 /// Unlike [`crate::Tag`], [`crate::Account`], and [`crate::Commodity`],
-/// `Transaction`, [`Posting`], and [`Link`] do **not** use `#[builder(default)]`
+/// `Transaction` and [`Posting`] do **not** use `#[builder(default)]`
 /// on `id` or `created_at`. The reason is stability: transaction IDs must survive
 /// event-sourcing replay (re-processing the same import batch must produce the
 /// same IDs), so callers are required to supply a deterministic or pre-allocated
@@ -376,11 +287,6 @@ pub struct Transaction {
     #[builder(default)]
     extra_dates: Vec<(String, Date)>,
 
-    /// IDs of [`crate::TransactionLink`]s this transaction participates in (e.g.
-    /// a transfer pair or a reversal). Defaults to empty; managed by `bc-core`.
-    #[builder(default)]
-    link_ids: Vec<TransactionLinkId>,
-
     /// Timestamp recorded when this transaction was first persisted. Callers
     /// constructing a new transaction should pass [`jiff::Timestamp::now()`].
     created_at: Timestamp,
@@ -441,13 +347,6 @@ impl Transaction {
     #[must_use]
     pub fn tag_ids(&self) -> &[TagId] {
         &self.tag_ids
-    }
-
-    /// Returns the link IDs this transaction participates in.
-    #[inline]
-    #[must_use]
-    pub fn link_ids(&self) -> &[TransactionLinkId] {
-        &self.link_ids
     }
 
     /// Returns additional user-labeled dates (e.g. `("cleared", …)`).
@@ -582,30 +481,6 @@ mod tests {
         assert!(!json.contains('{'));
     }
 
-    // --- TransactionLinkId ---
-
-    #[test]
-    fn transaction_link_id_has_correct_prefix() {
-        let id = TransactionLinkId::new();
-        assert!(id.to_string().starts_with("transaction_link_"));
-    }
-
-    #[test]
-    fn transaction_link_id_round_trips_through_string() {
-        let id = TransactionLinkId::new();
-        let s = id.to_string();
-        let parsed: TransactionLinkId = s.parse().expect("parse should succeed");
-        assert_eq!(id, parsed);
-    }
-
-    #[test]
-    fn transaction_link_id_serializes_to_bare_string() {
-        let id = TransactionLinkId::new();
-        let json = serde_json::to_string(&id).expect("serialize should succeed");
-        assert!(json.starts_with('"'));
-        assert!(!json.contains('{'));
-    }
-
     #[test]
     fn reconciliation_variants_exist() {
         _ = (
@@ -666,20 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn transaction_link_members_stored() {
-        use jiff::Timestamp;
-
-        let link = Link::builder()
-            .id(TransactionLinkId::new())
-            .link_type(LinkType::Transfer)
-            .member_transaction_ids(vec![TransactionId::new()])
-            .created_at(Timestamp::now())
-            .build();
-        assert_eq!(link.member_transaction_ids().len(), 1);
-    }
-
-    #[test]
-    fn transaction_has_link_ids_and_tag_ids() {
+    fn transaction_has_tag_ids() {
         use jiff::Timestamp;
 
         let tx = Transaction::builder()
@@ -689,7 +551,6 @@ mod tests {
             .reconciliation(Reconciliation::Reconciled)
             .created_at(Timestamp::now())
             .build();
-        assert!(tx.link_ids().is_empty());
         assert!(tx.tag_ids().is_empty());
     }
 
