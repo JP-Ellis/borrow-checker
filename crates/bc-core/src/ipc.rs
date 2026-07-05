@@ -132,6 +132,12 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
             ),
             Event::PostingAdded { account, .. } => ("split", format!("+leg {account}")),
             Event::PostingRemoved { .. } => ("split", "removed leg".to_owned()),
+            Event::TransactionSourceAttached {
+                account_id,
+                narration,
+                ..
+            } => ("import", format!("imported from {account_id}: {narration}")),
+            Event::TransactionSourceDetached { .. } => ("import", "source removed".to_owned()),
             other => {
                 let k = other.kind();
                 (k, k.to_owned())
@@ -502,6 +508,27 @@ mod tests {
         let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event);
         assert_eq!(entry.kind, "recat");
         assert!(!entry.message.is_empty());
+    }
+
+    #[test]
+    fn source_attached_renders_import_audit_entry() {
+        let account = bc_models::AccountId::new();
+        let event = crate::Event::TransactionSourceAttached {
+            id: bc_models::SourceRefId::new(),
+            transaction_id: bc_models::TransactionId::new(),
+            account_id: account.clone(),
+            date: jiff::civil::date(2025, 6, 27),
+            narration: "SMARTBEAR".to_owned(),
+            amount: bc_models::Amount::new(rust_decimal::Decimal::from(100_i32), "AUD"),
+            reference: None,
+            occurrence: 0,
+        };
+        let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event);
+        assert_eq!(entry.kind, "import");
+        assert!(
+            entry.message.contains("SMARTBEAR"),
+            "message names the narration"
+        );
     }
 
     #[test]
