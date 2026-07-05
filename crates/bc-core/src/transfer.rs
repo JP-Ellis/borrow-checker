@@ -119,6 +119,9 @@ impl Service {
             tag_ids: absorbed.tag_ids().to_vec(),
             extra_dates: absorbed.extra_dates().to_vec(),
             posting_id: absorbed_posting.id().clone(),
+            // `check_mergeable` guarantees the absorbed transaction has exactly one
+            // posting, and postings are positioned by enumeration index, so the
+            // lone posting is always at position 0.
             posting_position: 0,
             source_ref_ids,
         };
@@ -134,6 +137,26 @@ impl Service {
         let survivor_str = survivor_id.to_string();
         let absorbed_str = absorbed_id.to_string();
         let mut db_tx = self.pool.begin().await?;
+
+        // The mergeability checks above ran on separate connections before this
+        // transaction began. Re-assert inside it that both legs still hold exactly
+        // one posting, so two concurrent merges into the same survivor cannot both
+        // proceed and leave it with a duplicated posting.
+        let survivor_now: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM postings WHERE transaction_id = ?")
+                .bind(&survivor_str)
+                .fetch_one(&mut *db_tx)
+                .await?;
+        let absorbed_now: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM postings WHERE transaction_id = ?")
+                .bind(&absorbed_str)
+                .fetch_one(&mut *db_tx)
+                .await?;
+        if survivor_now != survivor_posting_count || absorbed_now != 1 {
+            return Err(BcError::NotMergeable {
+                reason: "a concurrent change altered the postings; retry the merge".to_owned(),
+            });
+        }
 
         crate::events::insert_event(&event, &mut db_tx).await?;
 
@@ -154,7 +177,11 @@ impl Service {
         .execute(&mut *db_tx)
         .await?;
 
-        // Union the absorbed transaction's tags and dates onto the survivor.
+        // Union the absorbed transaction's tags and dates onto the survivor. The
+        // `transaction_dates` primary key is `(transaction_id, label)`, so a label
+        // present on both legs cannot hold two dates: `INSERT OR IGNORE` keeps the
+        // survivor's existing date and drops the absorbed leg's value for that
+        // label (the union is over labels, not `(label, date)` pairs).
         sqlx::query(
             "INSERT OR IGNORE INTO transaction_tags (transaction_id, tag_id) \
              SELECT ?, tag_id FROM transaction_tags WHERE transaction_id = ?",
@@ -202,9 +229,12 @@ impl Service {
 
     /// Reverses the most recent un-reversed merge on `survivor_id`.
     ///
-    /// Recreates the absorbed transaction with its original ID, moves its posting
-    /// and source references back, restores the survivor's pre-merge date and
-    /// tag/date sets, and records a [`crate::Event::TransactionUnmerged`].
+    /// Recreates the absorbed transaction with its original ID and moves its
+    /// posting and source references back. The survivor is reverted only where the
+    /// merge changed it: the tags and dates the merge added are removed (edits made
+    /// while merged are preserved), and its date/reconciliation are restored only
+    /// if they still hold the values the merge wrote. Records a
+    /// [`crate::Event::TransactionUnmerged`].
     ///
     /// # Arguments
     ///
@@ -313,31 +343,30 @@ impl Service {
             .await?;
         }
 
-        // Restore the survivor's pre-merge tag/date sets (replace-to-snapshot).
-        sqlx::query("DELETE FROM transaction_tags WHERE transaction_id = ?")
-            .bind(&survivor_str)
-            .execute(&mut *db_tx)
-            .await?;
-        for tag_id in &snapshot.tags {
-            sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
+        // Reverse only what the merge added to the survivor, so edits made while
+        // merged survive. The merge unioned the absorbed leg's tags/dates onto the
+        // survivor (`INSERT OR IGNORE`), so the rows it introduced are exactly the
+        // absorbed keys that were absent from the survivor's pre-merge snapshot;
+        // remove those and leave everything else (original + intervening edits).
+        for tag_id in &absorbed.tag_ids {
+            if snapshot.tags.contains(tag_id) {
+                continue;
+            }
+            sqlx::query("DELETE FROM transaction_tags WHERE transaction_id = ? AND tag_id = ?")
                 .bind(&survivor_str)
                 .bind(tag_id.to_string())
                 .execute(&mut *db_tx)
                 .await?;
         }
-        sqlx::query("DELETE FROM transaction_dates WHERE transaction_id = ?")
-            .bind(&survivor_str)
-            .execute(&mut *db_tx)
-            .await?;
-        for (label, when) in &snapshot.extra_dates {
-            sqlx::query(
-                "INSERT INTO transaction_dates (transaction_id, label, date) VALUES (?, ?, ?)",
-            )
-            .bind(&survivor_str)
-            .bind(label)
-            .bind(when.to_string())
-            .execute(&mut *db_tx)
-            .await?;
+        for (label, _) in &absorbed.extra_dates {
+            if snapshot.extra_dates.iter().any(|(l, _)| l == label) {
+                continue;
+            }
+            sqlx::query("DELETE FROM transaction_dates WHERE transaction_id = ? AND label = ?")
+                .bind(&survivor_str)
+                .bind(label)
+                .execute(&mut *db_tx)
+                .await?;
         }
 
         // Move the posting and source refs back to the absorbed transaction.
@@ -355,13 +384,32 @@ impl Service {
                 .await?;
         }
 
-        // Restore the survivor's pre-merge date and reconciliation state.
-        sqlx::query("UPDATE transactions SET date = ?, reconciliation = ? WHERE id = ?")
+        // Restore the survivor's pre-merge date and reconciliation, but only if the
+        // field still holds the value the merge wrote — otherwise the user changed
+        // it while merged and that edit must be preserved. The guarded `WHERE`
+        // makes each restore a no-op when the current value has moved on.
+        let merged_date = snapshot.date.min(absorbed.date);
+        sqlx::query("UPDATE transactions SET date = ? WHERE id = ? AND date = ?")
             .bind(snapshot.date.to_string())
-            .bind(crate::db::to_db_str(snapshot.reconciliation)?)
             .bind(&survivor_str)
+            .bind(merged_date.to_string())
             .execute(&mut *db_tx)
             .await?;
+        let merged_reconciliation = if reconciliation_rank(absorbed.reconciliation)
+            > reconciliation_rank(snapshot.reconciliation)
+        {
+            absorbed.reconciliation
+        } else {
+            snapshot.reconciliation
+        };
+        sqlx::query(
+            "UPDATE transactions SET reconciliation = ? WHERE id = ? AND reconciliation = ?",
+        )
+        .bind(crate::db::to_db_str(snapshot.reconciliation)?)
+        .bind(&survivor_str)
+        .bind(crate::db::to_db_str(merged_reconciliation)?)
+        .execute(&mut *db_tx)
+        .await?;
 
         db_tx.commit().await?;
         Ok(absorbed.id)
@@ -382,20 +430,24 @@ impl Service {
     /// Returns [`BcError`] on a database or data-parse failure.
     #[inline]
     pub async fn suggest_transfers(&self) -> BcResult<Vec<TransferSuggestion>> {
-        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-            "SELECT t.id, p.amount, p.commodity, t.date \
+        let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
+            "SELECT t.id, p.account_id, p.amount, p.commodity, t.date \
              FROM transactions t \
              JOIN postings p ON p.transaction_id = t.id \
              WHERE t.id IN (SELECT transaction_id FROM postings GROUP BY transaction_id HAVING COUNT(*) = 1) \
-               AND p.amount IS NOT NULL AND p.commodity IS NOT NULL",
+               AND p.amount IS NOT NULL AND p.commodity IS NOT NULL \
+             ORDER BY t.date, t.id",
         )
         .fetch_all(&self.pool)
         .await?;
 
         let mut candidates = Vec::with_capacity(rows.len());
-        for (raw_id, raw_amount, commodity, raw_date) in rows {
+        for (raw_id, raw_account, raw_amount, commodity, raw_date) in rows {
             let id = raw_id
                 .parse::<TransactionId>()
+                .map_err(|e: bc_models::IdParseError| BcError::BadData(e.to_string()))?;
+            let account = raw_account
+                .parse::<bc_models::AccountId>()
                 .map_err(|e: bc_models::IdParseError| BcError::BadData(e.to_string()))?;
             let value = raw_amount
                 .parse::<rust_decimal::Decimal>()
@@ -405,6 +457,7 @@ impl Service {
                 .map_err(|e| BcError::BadData(e.to_string()))?;
             candidates.push(Candidate {
                 id,
+                account,
                 amount: Amount::new(value, bc_models::CommodityCode::new(commodity)),
                 date,
             });
@@ -512,6 +565,8 @@ impl TransferSuggestion {
 struct Candidate {
     /// The transaction ID.
     id: TransactionId,
+    /// The account the lone posting debits or credits.
+    account: bc_models::AccountId,
     /// The lone posting's signed amount.
     amount: Amount,
     /// The transaction's value date.
@@ -520,13 +575,19 @@ struct Candidate {
 
 /// Pairs candidates that look like the two legs of one transfer.
 ///
-/// Two candidates pair when their amounts are equal in magnitude, opposite in
-/// sign, and share a commodity; the debit (negative) leg is dated on-or-before
-/// the credit (positive) leg; and the two dates are within seven days.
+/// Two candidates pair when they debit and credit **different** accounts; their
+/// amounts are equal in magnitude, opposite in sign, and share a commodity; the
+/// debit (negative) leg is dated on-or-before the credit (positive) leg; and the
+/// two dates are within seven days.
+///
+/// Matching is greedy and one-to-one: candidates are visited in the caller's
+/// order and each is paired at most once, so a leg never appears in more than one
+/// suggestion (avoiding a combinatorial blow-up when several equal transfers
+/// share a window).
 ///
 /// # Arguments
 ///
-/// * `candidates` - Single-posting transactions to consider.
+/// * `candidates` - Single-posting transactions to consider, in a stable order.
 ///
 /// # Returns
 ///
@@ -534,8 +595,21 @@ struct Candidate {
 #[must_use]
 fn match_transfers(candidates: &[Candidate]) -> Vec<TransferSuggestion> {
     let mut out = Vec::new();
+    let mut paired: std::collections::HashSet<&TransactionId> = std::collections::HashSet::new();
     for (i, a) in candidates.iter().enumerate() {
+        if paired.contains(&a.id) {
+            continue;
+        }
         for b in candidates.iter().skip(i.saturating_add(1)) {
+            if paired.contains(&b.id) {
+                continue;
+            }
+            // A transfer moves money between two different accounts; an
+            // opposite-sign pair within one account (e.g. a charge and its
+            // refund) is not a transfer.
+            if a.account == b.account {
+                continue;
+            }
             if a.amount.commodity() != b.amount.commodity() {
                 continue;
             }
@@ -570,6 +644,9 @@ fn match_transfers(candidates: &[Candidate]) -> Vec<TransferSuggestion> {
                 date_debit: debit.date,
                 date_credit: credit.date,
             });
+            paired.insert(&a.id);
+            paired.insert(&b.id);
+            break;
         }
     }
     out
@@ -1158,6 +1235,93 @@ mod db_tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn unmerge_preserves_edits_made_while_merged(pool: SqlitePool) {
+        let savings = account(&pool, "Savings").await;
+        let mortgage = account(&pool, "Mortgage").await;
+
+        let tag_svc = crate::TagService::new(pool.clone());
+        let debit_tag = tag_svc
+            .create_path(&"debit-only".parse().expect("valid tag path"))
+            .await
+            .expect("create debit tag");
+        let credit_tag = tag_svc
+            .create_path(&"credit-only".parse().expect("valid tag path"))
+            .await
+            .expect("create credit tag");
+        let reviewed_tag = tag_svc
+            .create_path(&"reviewed".parse().expect("valid tag path"))
+            .await
+            .expect("create reviewed tag");
+
+        let debit = leg_with(
+            &pool,
+            &savings,
+            -100,
+            date(2025, 6, 26),
+            Reconciliation::Unreconciled,
+            vec![debit_tag.clone()],
+            vec![],
+        )
+        .await;
+        let credit = leg_with(
+            &pool,
+            &mortgage,
+            100,
+            date(2025, 6, 27),
+            Reconciliation::Unreconciled,
+            vec![credit_tag.clone()],
+            vec![],
+        )
+        .await;
+
+        let svc = Service::new(pool.clone());
+        svc.merge(&debit, &credit).await.expect("merge");
+
+        // Simulate the user editing the survivor while it is merged: add a new tag
+        // and re-date it (the merge had set the date to the 6-26 debit date).
+        sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
+            .bind(debit.to_string())
+            .bind(reviewed_tag.to_string())
+            .execute(&pool)
+            .await
+            .expect("add intervening tag");
+        sqlx::query("UPDATE transactions SET date = ? WHERE id = ?")
+            .bind("2025-07-01")
+            .bind(debit.to_string())
+            .execute(&pool)
+            .await
+            .expect("re-date survivor");
+
+        svc.unmerge(&debit).await.expect("unmerge");
+
+        let mut survivor_tags: Vec<String> =
+            sqlx::query_scalar("SELECT tag_id FROM transaction_tags WHERE transaction_id = ?")
+                .bind(debit.to_string())
+                .fetch_all(&pool)
+                .await
+                .expect("survivor tags");
+        survivor_tags.sort();
+        let mut expected = vec![debit_tag.to_string(), reviewed_tag.to_string()];
+        expected.sort();
+        assert_eq!(
+            survivor_tags, expected,
+            "unmerge removes the merge-added tag but keeps the survivor's own tag \
+             and the tag added while merged"
+        );
+
+        let survivor_date: String =
+            sqlx::query_scalar("SELECT date FROM transactions WHERE id = ?")
+                .bind(debit.to_string())
+                .fetch_one(&pool)
+                .await
+                .expect("survivor date");
+        assert_eq!(
+            survivor_date, "2025-07-01",
+            "unmerge preserves a date the user changed while merged"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn unmerge_without_history_errors(pool: SqlitePool) {
         let savings = account(&pool, "Savings").await;
         let lone = leg(&pool, &savings, -100, date(2025, 6, 26)).await;
@@ -1197,8 +1361,15 @@ mod suggest_tests {
     use super::match_transfers;
 
     fn cand(amount: i64, when: (i16, i8, i8)) -> Candidate {
+        // Each candidate lands in its own account so opposite-sign pairs are
+        // treated as cross-account transfers unless a test shares an account.
+        cand_in(amount, when, bc_models::AccountId::new())
+    }
+
+    fn cand_in(amount: i64, when: (i16, i8, i8), account: bc_models::AccountId) -> Candidate {
         Candidate {
             id: TransactionId::new(),
+            account,
             amount: Amount::new(Decimal::from(amount), CommodityCode::new("AUD")),
             date: date(when.0, when.1, when.2),
         }
@@ -1234,5 +1405,37 @@ mod suggest_tests {
             match_transfers(&[cand(-100, (2025, 6, 26)), cand(-100, (2025, 6, 27))]).is_empty()
         );
         assert!(match_transfers(&[cand(-100, (2025, 6, 26)), cand(90, (2025, 6, 27))]).is_empty());
+    }
+
+    #[test]
+    fn skips_opposite_legs_in_the_same_account() {
+        // A charge and its refund within one account are equal-and-opposite but
+        // are not a transfer between accounts.
+        let account = bc_models::AccountId::new();
+        let out = match_transfers(&[
+            cand_in(-100, (2025, 6, 26), account.clone()),
+            cand_in(100, (2025, 6, 27), account),
+        ]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn pairs_each_leg_at_most_once() {
+        // Two identical debits and two identical credits, all in-window: greedy
+        // one-to-one matching yields two suggestions, not the four an all-pairs
+        // matcher would emit.
+        let out = match_transfers(&[
+            cand(-100, (2025, 6, 26)),
+            cand(-100, (2025, 6, 26)),
+            cand(100, (2025, 6, 27)),
+            cand(100, (2025, 6, 27)),
+        ]);
+        assert_eq!(out.len(), 2);
+        let debits: std::collections::HashSet<_> =
+            out.iter().map(super::TransferSuggestion::debit).collect();
+        let credits: std::collections::HashSet<_> =
+            out.iter().map(super::TransferSuggestion::credit).collect();
+        assert_eq!(debits.len(), 2, "each debit used once");
+        assert_eq!(credits.len(), 2, "each credit used once");
     }
 }
