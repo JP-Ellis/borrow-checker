@@ -74,7 +74,9 @@ pub use import::registry::Registry as ImporterRegistry;
 pub use loan::Service as LoanService;
 pub use period_overlap::PeriodOverlap;
 pub use settings::Store as SettingsStore;
+pub use source::ImportDecision;
 pub use source::Service as SourceService;
+pub use source::plan_import;
 pub use tag::Service as TagService;
 pub use transaction::Service as TransactionService;
 

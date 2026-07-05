@@ -253,6 +253,63 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
     Ok(with_reference.build())
 }
 
+/// A per-row decision produced by [`plan_import`].
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportDecision {
+    /// Index of this row in the input `fingerprints` slice (file order).
+    pub index: usize,
+    /// The row's dedup fingerprint.
+    pub fingerprint: String,
+    /// The row's occurrence ordinal among identical fingerprints in this batch.
+    pub occurrence: u32,
+    /// `true` if a stored source reference already covers this occurrence.
+    pub already_imported: bool,
+}
+
+/// Plans an import: decides, per row, whether it is already imported.
+///
+/// Walks `fingerprints` in file order, counting occurrences of each fingerprint.
+/// A row's `occurrence` is the number of identical fingerprints seen before it in
+/// this batch; it is `already_imported` when that occurrence is already covered by
+/// the stored count in `existing`. This makes whole-hierarchy re-imports a no-op
+/// while still importing genuinely new (or genuinely duplicated) rows.
+///
+/// # Arguments
+///
+/// * `existing` - Stored source-reference counts per fingerprint for the target account.
+/// * `fingerprints` - Row fingerprints in file order.
+///
+/// # Returns
+///
+/// One [`ImportDecision`] per input fingerprint, in the same order.
+#[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default std HashMap hasher"
+)]
+pub fn plan_import(
+    existing: &HashMap<String, u32>,
+    fingerprints: &[String],
+) -> Vec<ImportDecision> {
+    let mut seen: HashMap<String, u32> = HashMap::new();
+    fingerprints
+        .iter()
+        .enumerate()
+        .map(|(index, fingerprint)| {
+            let occurrence = seen.get(fingerprint).copied().unwrap_or(0);
+            seen.insert(fingerprint.clone(), occurrence.saturating_add(1));
+            let already_imported = occurrence < existing.get(fingerprint).copied().unwrap_or(0);
+            ImportDecision {
+                index,
+                fingerprint: fingerprint.clone(),
+                occurrence,
+                already_imported,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use bc_models::AccountKind;
@@ -373,6 +430,35 @@ mod tests {
                 .await
                 .expect("list")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn plan_import_marks_new_rows_and_skips_seen() {
+        let mut existing = HashMap::new();
+        existing.insert("A".to_owned(), 1_u32);
+
+        let fps = vec!["A".to_owned(), "A".to_owned(), "B".to_owned()];
+        let decisions = plan_import(&existing, &fps);
+
+        assert_eq!(decisions[0].occurrence, 0);
+        assert!(decisions[0].already_imported);
+        assert_eq!(decisions[1].occurrence, 1);
+        assert!(!decisions[1].already_imported);
+        assert_eq!(decisions[2].occurrence, 0);
+        assert!(!decisions[2].already_imported);
+    }
+
+    #[test]
+    fn plan_import_is_idempotent_when_counts_match() {
+        let mut existing = HashMap::new();
+        existing.insert("A".to_owned(), 2_u32);
+        let fps = vec!["A".to_owned(), "A".to_owned()];
+        let decisions = plan_import(&existing, &fps);
+        assert!(
+            decisions.iter().all(|d| d.already_imported),
+            "re-import is a no-op"
         );
     }
 }
