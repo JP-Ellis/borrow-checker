@@ -43,7 +43,6 @@ exit_code: 0
   "reconciliation": "reconciled",
   "tag_ids": [],
   "extra_dates": [],
-  "link_ids": [],
   "created_at": "[TIMESTAMP]"
 }
 ----- stderr -----
