@@ -26,6 +26,7 @@ mod plugins;
 mod settings;
 /// Tag IPC types.
 mod tags;
+mod transfers;
 
 pub use accounts::AccountNode;
 pub use accounts::AccountRef;
@@ -57,3 +58,4 @@ pub use money::AmountError;
 pub use plugins::PluginInfo;
 pub use settings::SettingsInfo;
 pub use tags::TagInfo;
+pub use transfers::TransferSuggestion;
