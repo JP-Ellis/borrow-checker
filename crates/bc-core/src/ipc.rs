@@ -504,6 +504,22 @@ impl TransactionExt for bc_ipc::Transaction {
     }
 }
 
+// MARK: Transfer suggestions
+
+impl From<&crate::TransferSuggestion> for bc_ipc::TransferSuggestion {
+    /// Converts a core transfer suggestion into its IPC DTO.
+    #[inline]
+    fn from(s: &crate::TransferSuggestion) -> Self {
+        Self::new(
+            s.debit().to_string(),
+            s.credit().to_string(),
+            bc_ipc::Amount::from(&s.amount),
+            s.date_debit.to_string(),
+            s.date_credit.to_string(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
