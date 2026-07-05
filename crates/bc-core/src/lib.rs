@@ -21,6 +21,7 @@ pub(crate) mod events;
 pub(crate) mod export;
 pub(crate) mod fx;
 pub(crate) mod import;
+pub(crate) mod import_exec;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 pub(crate) mod loan;
@@ -71,6 +72,7 @@ pub use import::profile::ImportProfile;
 pub use import::profile::Service as ImportProfileService;
 pub use import::registry::Factory as ImporterFactory;
 pub use import::registry::Registry as ImporterRegistry;
+pub use import_exec::execute_import;
 pub use loan::Service as LoanService;
 pub use period_overlap::PeriodOverlap;
 pub use settings::Store as SettingsStore;
