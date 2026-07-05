@@ -194,20 +194,6 @@ CREATE TABLE transaction_dates (
 );
 CREATE INDEX idx_transaction_dates_tx ON transaction_dates (transaction_id);
 
--- Transaction link registry.
-CREATE TABLE transaction_links (
-    id         TEXT NOT NULL PRIMARY KEY,
-    link_type  TEXT NOT NULL, -- 'transfer' | 'reversal'
-    created_at TEXT NOT NULL
-);
-
--- Link <-> transaction membership.
-CREATE TABLE transaction_link_members (
-    link_id        TEXT NOT NULL REFERENCES transaction_links(id),
-    transaction_id TEXT NOT NULL REFERENCES transactions(id),
-    PRIMARY KEY (link_id, transaction_id)
-);
-
 -- MARK: Balances
 
 -- Running balance cache per (account, commodity). Retained as a future
