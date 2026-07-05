@@ -31,6 +31,8 @@ pub(crate) struct AppState {
     pub(crate) tags: bc_core::TagService,
     /// Commodity/currency registry service.
     pub(crate) commodities: bc_core::CommodityService,
+    /// Transfer resolution service — merge/unmerge and suggestion matching.
+    pub(crate) transfers: bc_core::TransferService,
     /// Backup service (snapshot + rotation).
     pub(crate) backup: bc_core::BackupService,
     /// Resolved database file path (used by restore).
@@ -145,6 +147,9 @@ pub fn run() {
             commands::budget::create_budget,
             commands::budget::set_posting_spread,
             commands::budget::clear_posting_spread,
+            commands::transfers::merge_transactions,
+            commands::transfers::unmerge_transaction,
+            commands::transfers::suggest_transfers,
         ])
         .setup(|app| {
             let db_path = std::env::var("BC_DB_PATH")
@@ -178,6 +183,7 @@ pub fn run() {
                 tags: bc_core::TagService::new(pool.clone()),
                 commodities,
                 budget_tree: bc_core::BudgetTreeService::new(pool.clone(), fx),
+                transfers: bc_core::TransferService::new(pool.clone()),
                 backup: bc_core::BackupService::new(pool, db_path.clone(), policy),
                 db_path,
                 plugins,
