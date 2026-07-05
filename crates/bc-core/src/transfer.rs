@@ -29,6 +29,8 @@ struct SurvivorSnapshot {
     tags: Vec<bc_models::TagId>,
     /// Survivor's labeled extra dates before the merge.
     extra_dates: Vec<(String, jiff::civil::Date)>,
+    /// Survivor's reconciliation state before the merge.
+    reconciliation: bc_models::Reconciliation,
 }
 
 impl Service {
@@ -126,6 +128,7 @@ impl Service {
             survivor_date_before: survivor.date(),
             survivor_tags_before: survivor.tag_ids().to_vec(),
             survivor_extra_dates_before: survivor.extra_dates().to_vec(),
+            survivor_reconciliation_before: survivor.reconciliation(),
         };
 
         let survivor_str = survivor_id.to_string();
@@ -236,6 +239,7 @@ impl Service {
                         survivor_date_before,
                         survivor_tags_before,
                         survivor_extra_dates_before,
+                        survivor_reconciliation_before,
                         ..
                     } = event
                     {
@@ -244,6 +248,7 @@ impl Service {
                             date: survivor_date_before,
                             tags: survivor_tags_before,
                             extra_dates: survivor_extra_dates_before,
+                            reconciliation: survivor_reconciliation_before,
                         });
                     }
                 }
@@ -350,9 +355,10 @@ impl Service {
                 .await?;
         }
 
-        // Restore the survivor's pre-merge date.
-        sqlx::query("UPDATE transactions SET date = ? WHERE id = ?")
+        // Restore the survivor's pre-merge date and reconciliation state.
+        sqlx::query("UPDATE transactions SET date = ?, reconciliation = ? WHERE id = ?")
             .bind(snapshot.date.to_string())
+            .bind(crate::db::to_db_str(snapshot.reconciliation)?)
             .bind(&survivor_str)
             .execute(&mut *db_tx)
             .await?;
@@ -876,6 +882,59 @@ mod db_tests {
         assert_eq!(
             survivor_reconciliation, "reconciled",
             "survivor keeps the most-settled reconciliation state"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unmerge_restores_survivor_reconciliation(pool: SqlitePool) {
+        let savings = account(&pool, "Savings").await;
+        let mortgage = account(&pool, "Mortgage").await;
+        let debit = leg_with(
+            &pool,
+            &savings,
+            -100,
+            date(2025, 6, 26),
+            Reconciliation::Unreconciled,
+            vec![],
+            vec![],
+        )
+        .await;
+        let credit = leg_with(
+            &pool,
+            &mortgage,
+            100,
+            date(2025, 6, 27),
+            Reconciliation::Reconciled,
+            vec![],
+            vec![],
+        )
+        .await;
+
+        let svc = Service::new(pool.clone());
+        svc.merge(&debit, &credit).await.expect("merge");
+
+        let merged_reconciliation: String =
+            sqlx::query_scalar("SELECT reconciliation FROM transactions WHERE id = ?")
+                .bind(debit.to_string())
+                .fetch_one(&pool)
+                .await
+                .expect("reconciliation after merge");
+        assert_eq!(
+            merged_reconciliation, "reconciled",
+            "merge keeps the most-settled reconciliation state"
+        );
+
+        svc.unmerge(&debit).await.expect("unmerge");
+
+        let restored_reconciliation: String =
+            sqlx::query_scalar("SELECT reconciliation FROM transactions WHERE id = ?")
+                .bind(debit.to_string())
+                .fetch_one(&pool)
+                .await
+                .expect("reconciliation after unmerge");
+        assert_eq!(
+            restored_reconciliation, "unreconciled",
+            "unmerge restores the survivor's exact pre-merge reconciliation state"
         );
     }
 
