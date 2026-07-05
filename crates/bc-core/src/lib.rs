@@ -30,6 +30,7 @@ pub(crate) mod settings;
 pub(crate) mod source;
 pub(crate) mod tag;
 pub(crate) mod transaction;
+pub(crate) mod transfer;
 
 pub use account::Service as AccountService;
 pub use asset::Service as AssetService;
@@ -81,6 +82,7 @@ pub use source::Service as SourceService;
 pub use source::plan_import;
 pub use tag::Service as TagService;
 pub use transaction::Service as TransactionService;
+pub use transfer::Service as TransferService;
 
 #[cfg(test)]
 mod migration_smoke {

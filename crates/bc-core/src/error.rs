@@ -1,6 +1,7 @@
 //! Core error types.
 
 use bc_models::AccountId;
+use bc_models::TransactionId;
 
 /// The result type used throughout `bc-core`.
 pub type BcResult<T> = Result<T, BcError>;
@@ -48,6 +49,15 @@ pub enum BcError {
     /// A commodity code was empty or contained only whitespace.
     #[error("commodity code must not be empty or blank")]
     EmptyCommodityCode,
+    /// Two transactions cannot be merged (bad sign, magnitude, commodity, or posting count).
+    #[error("not mergeable: {reason}")]
+    NotMergeable {
+        /// Human-readable reason the merge was rejected.
+        reason: String,
+    },
+    /// A transaction has no merge history to reverse.
+    #[error("not merged: {0}")]
+    NotMerged(TransactionId),
     /// A database error.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
