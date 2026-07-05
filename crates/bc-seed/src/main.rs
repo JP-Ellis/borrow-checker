@@ -543,6 +543,23 @@ async fn main() -> anyhow::Result<()> {
         };
     }
 
+    macro_rules! leg {
+        ($date:expr, $desc:expr, $acct:expr, $amt:expr) => {
+            transactions
+                .create(
+                    Transaction::builder()
+                        .id(TransactionId::new())
+                        .date($date)
+                        .description($desc)
+                        .reconciliation(Reconciliation::Unreconciled)
+                        .created_at(Timestamp::now())
+                        .postings(vec![posting($acct, aud($amt))])
+                        .build(),
+                )
+                .await?
+        };
+    }
+
     // -------------------------------------------------------------------------
     // Opening balances (6 months ago, day 1)
     // -------------------------------------------------------------------------
@@ -1786,6 +1803,39 @@ async fn main() -> anyhow::Result<()> {
     println!("Revisions:     9 (7 initial + 2 mid-year bumps for groceries and electricity)");
     println!(
         "Transactions: ~79 (cleared, pending, voided across 6 historical months + current month)"
+    );
+
+    // -------------------------------------------------------------------------
+    // Unmerged transfer legs (interim single-posting imports) — three pairs the
+    // review UI can suggest. Distinct magnitudes prevent cross-pairing.
+    // -------------------------------------------------------------------------
+    leg!(
+        month_day(0, 5),
+        "TFR TO CAR LOAN",
+        &savings_id,
+        dec!(-500.00)
+    );
+    leg!(
+        month_day(0, 6),
+        "LOAN REPAYMENT",
+        &car_loan_id,
+        dec!(500.00)
+    );
+
+    leg!(
+        month_day(0, 7),
+        "TFR TO SAVINGS",
+        &checking_id,
+        dec!(-250.00)
+    );
+    leg!(month_day(0, 8), "DEPOSIT", &savings_id, dec!(250.00));
+
+    leg!(month_day(0, 9), "CARD PAYMENT", &savings_id, dec!(-1000.00));
+    leg!(
+        month_day(0, 10),
+        "PAYMENT RECEIVED",
+        &credit_card_id,
+        dec!(1000.00)
     );
 
     Ok(())
