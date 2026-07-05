@@ -15,3 +15,4 @@ pub mod commodities;
 pub mod plugins;
 pub mod settings;
 pub mod tags;
+pub mod transfers;
