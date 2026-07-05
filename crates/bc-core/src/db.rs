@@ -142,7 +142,6 @@ async fn has_pending_migrations(pool: &SqlitePool) -> BcResult<bool> {
 // Schema tables (managed by migrations in ./migrations/):
 //   events, accounts, commodities, account_commodities, tags, account_tags,
 //   transactions, postings, transaction_tags, posting_tags,
-//   transaction_links, transaction_link_members,
 //   balances (read-cache, deferred — computed live, not yet used),
 //   meta (key-value settings store).
 //

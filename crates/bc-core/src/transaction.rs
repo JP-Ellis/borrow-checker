@@ -12,7 +12,6 @@ use bc_models::Reconciliation;
 use bc_models::TagId;
 use bc_models::Transaction;
 use bc_models::TransactionId;
-use bc_models::TransactionLinkId;
 use jiff::Timestamp;
 use jiff::civil::Date;
 use rust_decimal::Decimal;
@@ -683,10 +682,9 @@ impl Service {
     /// Creates a reversal transaction for the given transaction.
     ///
     /// A reversal inserts a new transaction with the same postings negated, a
-    /// description of `"Reversal of {id}"`, and `Reconciliation::Unreconciled`.  One
-    /// `transaction_links` row (`link_type = 'reversal'`) and two
-    /// `transaction_link_members` rows (original + reversal) are inserted in the
-    /// same database transaction to tie them together atomically.
+    /// description of `"Reversal of {id}"`, and `Reconciliation::Unreconciled`.
+    /// The reversal relationship is recorded solely by the
+    /// [`crate::Event::TransactionReversed`] event; no projection table stores it.
     ///
     /// # Errors
     ///
@@ -697,7 +695,6 @@ impl Service {
         let original = self.find_by_id(id).await?;
 
         let reversal_id = TransactionId::new();
-        let link_id = TransactionLinkId::new();
         let created_at_str = Timestamp::now().to_string();
         let unreconciled_str = to_db_str(Reconciliation::Unreconciled)?;
         let description = format!("Reversal of {id}");
@@ -777,26 +774,6 @@ impl Service {
             .execute(&mut *db_tx)
             .await?;
         }
-
-        // Insert the link registry row.
-        sqlx::query(
-            "INSERT INTO transaction_links (id, link_type, created_at) VALUES (?, 'reversal', ?)",
-        )
-        .bind(link_id.to_string())
-        .bind(&created_at_str)
-        .execute(&mut *db_tx)
-        .await?;
-
-        // Insert both members: original and reversal.
-        sqlx::query(
-            "INSERT INTO transaction_link_members (link_id, transaction_id) VALUES (?, ?), (?, ?)",
-        )
-        .bind(link_id.to_string())
-        .bind(id.to_string())
-        .bind(link_id.to_string())
-        .bind(reversal_id.to_string())
-        .execute(&mut *db_tx)
-        .await?;
 
         db_tx.commit().await?;
         tracing::info!(original_id = %id, reversal_id = %reversal_id, "transaction reversed");
@@ -2466,21 +2443,13 @@ mod tests {
             );
         }
 
-        // A reversal link ties them together.
-        let link_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM transaction_links WHERE link_type = 'reversal'",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("count links");
-        pretty_assertions::assert_eq!(link_count, 1);
-
-        // Both transactions are members of the link.
-        let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transaction_link_members")
-            .fetch_one(&pool)
-            .await
-            .expect("count members");
-        pretty_assertions::assert_eq!(member_count, 2);
+        // The reversal relationship lives in the event log, not a projection table.
+        let reversed_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'TransactionReversed'")
+                .fetch_one(&pool)
+                .await
+                .expect("count reversed events");
+        pretty_assertions::assert_eq!(reversed_events, 1, "one reversal event recorded");
 
         // Description follows the expected pattern.
         pretty_assertions::assert_eq!(
