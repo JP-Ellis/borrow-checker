@@ -678,6 +678,19 @@ pub struct Filter {
     pub reconciliation: Option<Reconciliation>,
 }
 
+/// A matched transaction plus the ids of the legs that satisfied the
+/// posting-scoped filter predicates (all legs when the match was
+/// transaction-scoped). Consumers decide whether to grey out or hide the
+/// non-matching legs (strictness).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct FilteredTransaction {
+    /// The whole matched transaction (never pruned server-side).
+    pub transaction: Transaction,
+    /// Posting ids of the legs that matched the posting-scoped predicates.
+    pub matched_postings: Vec<String>,
+}
+
 /// Windowed account statistics for the dashboard.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -1253,6 +1266,29 @@ mod tests {
         let json = serde_json::to_string(&dto).expect("ser");
         let back: EditTransaction = serde_json::from_str(&json).expect("de");
         assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn filtered_transaction_round_trips() {
+        let tx = Transaction::new(
+            "tx-1",
+            jiff::civil::Date::constant(2026, 6, 1),
+            "Test Payee",
+            "raw narration",
+            None::<&str>,
+            vec![],
+            Reconciliation::Unreconciled,
+            vec![],
+            vec![],
+            vec![],
+        );
+        let ft = FilteredTransaction {
+            transaction: tx,
+            matched_postings: vec!["p-1".to_owned(), "p-2".to_owned()],
+        };
+        let json = serde_json::to_string(&ft).expect("serialize");
+        let back: FilteredTransaction = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, ft);
     }
 
     #[test]
