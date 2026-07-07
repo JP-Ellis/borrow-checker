@@ -204,28 +204,31 @@ pub trait Importer {
 }
 ```
 
-The importer is a **pure parsing concern** — it converts bytes to `RawTransaction` values with no opinion about which account they belong to.
+The importer is a **pure parsing concern** — it converts bytes to `RawTransaction` values. Accounts live **on the postings**: each `RawTransaction` carries one or more `RawPosting` legs, and every leg names its own account **path** (e.g. `Assets:Bank:Checking`). Multi-account formats (Ledger, Beancount) name each leg's account directly; single-account formats (CSV, OFX) emit exactly one leg whose account path comes from the importer's own config blob. A leg's `amount` is optional — `None` marks an elided residual that balances the transaction. Account **path → id** resolution happens later, in `bc-core` at persistence time.
 
 > **Option C factory pattern** — foundations implemented in Milestone 2, full plugin registry deferred to Milestone 6. `ImporterFactory` (in `bc-core`) holds two fn pointers: `fn(&[u8]) -> bool` for stateless format-level detection and `fn() -> Box<dyn Importer>` for instance creation. `ImporterRegistry` stores a list of factories and provides `detect_format`, `create_for_name`, and `create_for_bytes`. Each format crate exposes a free `importer_factory()` function. The `Importer::detect(&self, ...)` method is retained for profile-aware detection after an instance is configured with a specific account's import profile.
 
 ### 5.3 Import Profiles
 
-Account binding lives in `bc-core` as an `ImportProfile`:
+Import profiles live in `bc-core` and name a reusable importer plus its config:
 
 ```rust
 struct ImportProfile {
     id: ProfileId,                   // newtype wrapper around TypeId (see ID convention below)
     name: String,                    // e.g. "CommBank Savings"
     importer: String,                // e.g. "commbank-au"
-    account_id: AccountId,           // where transactions land
-    config: ImportConfig,            // column mappings, date formats, etc.
+    config: ImportConfig,            // column mappings, date formats, target account, etc.
     created_at: Timestamp,
 }
 ```
 
+Account binding is **not** a profile concern: it lives on each `RawPosting`
+(see §5.2). A single-account profile's target account is carried inside its
+opaque `config` blob and stamped onto the emitted leg.
+
 **ID convention:** All ID types (`ProfileId`, `AccountId`, `TransactionId`, etc.) are newtype wrappers around a typed prefixed ID from the [`mti`](https://crates.io/crates/mti) crate. This produces human-readable, type-safe IDs like `profile_01h455vb4pex5vsknk084sn02q` — the prefix makes the type visible in logs and debug output, and the Rust newtype ensures IDs are never confused with each other at compile time. All ID types are defined in `bc-models`.
 
-Multiple profiles can reference the same importer with different account bindings. All CLI/TUI/GUI import operations work on profiles, not raw importers.
+Multiple profiles can reference the same importer with different configuration. All CLI/TUI/GUI import operations work on profiles, not raw importers.
 
 > **Deduplication:** Import idempotency is provided by per-account source
 > references (`transaction_sources`). Each imported statement row records a
@@ -384,7 +387,7 @@ Thin binary over `bc-core`. Commands:
 borrow-checker account [list|create|archive]
 borrow-checker transaction [list|add|amend|void]
 borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|book-value]
-borrow-checker import --profile <name> --counterpart <account-id> <file>
+borrow-checker import --account <account-id> <file>
 borrow-checker export --format <ledger|beancount> --output <file>
 borrow-checker report [net-worth|summary|budget]
 borrow-checker budget [status|allocate|list]
@@ -392,7 +395,7 @@ borrow-checker plugin [install|list|remove]
 borrow-checker completions <bash|elvish|fish|powershell|zsh>
 ```
 
-`--counterpart` provides the offsetting account for the balancing posting on each imported line. CSV and OFX importers produce single-account `RawTransaction` values; the counterpart account is required to satisfy double-entry balance constraints.
+`--account` names the account whose statement is being imported; on the interim single-posting path each imported row is booked against it. This flag is a temporary dev affordance — the standalone `import <file>` command is superseded by the profile-driven sync engine in a later phase, at which point the target account comes from the profile config rather than the command line.
 
 `csv` and `json` native export are post-v1 additions (see §5.1 format compatibility table) and will extend the `--format` option when implemented.
 
