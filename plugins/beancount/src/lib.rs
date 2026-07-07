@@ -15,7 +15,7 @@ use bc_sdk::RawTransaction;
 use rust_decimal::Decimal;
 
 use crate::ast::Directive;
-use crate::ast::Posting;
+use crate::ast::PostingAmount;
 use crate::parser::parse;
 
 /// Implements [`bc_sdk::Importer`] for the Beancount plain-text accounting format.
@@ -65,10 +65,10 @@ impl bc_sdk::Importer for BeancountImporter {
     /// # Returns
     ///
     /// A list of [`RawTransaction`] values parsed from transaction directives,
-    /// each carrying one [`RawPosting`] per source posting leg. When a
-    /// transaction's legs share a single commodity and sum to zero, the final
-    /// leg's amount is elided (`None`) since it is fully derivable from the
-    /// others; otherwise every leg's amount is kept.
+    /// each carrying one [`RawPosting`] per source posting leg. A leg keeps
+    /// its explicit amount when the source specifies one; a leg the source
+    /// leaves elided (Beancount lets the tool derive it so the transaction
+    /// balances) maps to a `None` amount.
     ///
     /// # Errors
     ///
@@ -96,17 +96,16 @@ impl bc_sdk::Importer for BeancountImporter {
                 return Err(ImportError::Parse("transaction has no postings".into()));
             }
 
-            let elide_last = legs_balance_to_zero(&tx.postings);
-            let last_index = tx.postings.len().saturating_sub(1);
-
             let mut postings = Vec::with_capacity(tx.postings.len());
-            for (index, posting) in tx.postings.iter().enumerate() {
-                let amount = decimal_to_amount(posting.amount, &posting.currency)?;
-                let elided = elide_last && index == last_index;
+            for posting in tx.postings {
+                let amount = posting
+                    .amount
+                    .map(|PostingAmount { value, currency }| decimal_to_amount(value, currency))
+                    .transpose()?;
                 postings.push(
                     RawPosting::builder()
-                        .account(posting.account.clone())
-                        .maybe_amount(if elided { None } else { Some(amount) })
+                        .account(posting.account)
+                        .maybe_amount(amount)
                         .build(),
                 );
             }
@@ -116,6 +115,7 @@ impl bc_sdk::Importer for BeancountImporter {
                     .date(tx.date)
                     .maybe_payee(tx.payee)
                     .description(tx.narration)
+                    .tags(tx.tags)
                     .postings(postings)
                     .build(),
             );
@@ -123,28 +123,6 @@ impl bc_sdk::Importer for BeancountImporter {
 
         Ok(raw_txs)
     }
-}
-
-/// Returns `true` if `postings` all share one commodity and their amounts sum
-/// to zero, meaning the final leg's amount is fully derivable from the rest.
-///
-/// # Arguments
-///
-/// * `postings` - The source posting legs of a transaction.
-///
-/// # Returns
-///
-/// `true` when there are at least two postings, all in the same currency,
-/// whose amounts balance to zero.
-#[inline]
-fn legs_balance_to_zero(postings: &[Posting]) -> bool {
-    let Some(first) = postings.first() else {
-        return false;
-    };
-    if postings.len() < 2 || postings.iter().any(|p| p.currency != first.currency) {
-        return false;
-    }
-    postings.iter().map(|p| p.amount).sum::<Decimal>() == Decimal::ZERO
 }
 
 /// Converts a [`Decimal`] value and currency string into a [`bc_sdk::Amount`].
@@ -201,7 +179,7 @@ mod tests {
         assert_eq!(tx.postings[0].account, "Assets:Bank:Checking");
         assert_eq!(tx.postings[0].amount, Some(Amount::new(432_100, "AUD", 2)));
         assert_eq!(tx.postings[1].account, "Income:Salary:Acme");
-        assert_eq!(tx.postings[1].amount, None);
+        assert_eq!(tx.postings[1].amount, Some(Amount::new(-432_100, "AUD", 2)));
     }
 
     #[test]
@@ -217,7 +195,7 @@ mod tests {
         assert_eq!(tx.postings[0].account, "A:B");
         assert_eq!(tx.postings[0].amount, Some(Amount::new(100, "AUD", 2)));
         assert_eq!(tx.postings[1].account, "A:C");
-        assert_eq!(tx.postings[1].amount, None);
+        assert_eq!(tx.postings[1].amount, Some(Amount::new(-100, "AUD", 2)));
     }
 
     #[test]
@@ -255,6 +233,31 @@ mod tests {
         assert_eq!(tx.postings[0].amount, Some(Amount::new(10000, "USD", 2)));
         assert_eq!(tx.postings[1].account, "Assets:AUD");
         assert_eq!(tx.postings[1].amount, Some(Amount::new(-15000, "AUD", 2)));
+    }
+
+    #[test]
+    fn import_elided_posting_maps_to_none_amount() {
+        let input =
+            "2025-01-15 * \"Payee\" \"Elided leg\"\n  Expenses:Food   50.00 AUD\n  Assets:Bank\n";
+        let txs = BeancountImporter
+            .import(input.as_bytes(), ImportConfig::default())
+            .expect("import");
+        let tx = txs.first().expect("should have one transaction");
+        assert_eq!(tx.postings.len(), 2);
+        assert_eq!(tx.postings[0].account, "Expenses:Food");
+        assert_eq!(tx.postings[0].amount, Some(Amount::new(5000, "AUD", 2)));
+        assert_eq!(tx.postings[1].account, "Assets:Bank");
+        assert_eq!(tx.postings[1].amount, None);
+    }
+
+    #[test]
+    fn import_transaction_header_tags_carry_into_raw_transaction() {
+        let input = "2025-06-27 * \"Payee\" \"Narration\" #josh #groceries\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
+        let txs = BeancountImporter
+            .import(input.as_bytes(), ImportConfig::default())
+            .expect("import");
+        let tx = txs.first().expect("should have one transaction");
+        assert_eq!(tx.tags, vec!["josh".to_owned(), "groceries".to_owned()]);
     }
 
     #[test]

@@ -11,6 +11,7 @@ use winnow::token::take_while;
 
 use crate::ast::Directive;
 use crate::ast::Posting;
+use crate::ast::PostingAmount;
 use crate::ast::Transaction;
 use crate::ast::TxFlag;
 
@@ -62,13 +63,14 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
             .map(|r| (TxFlag::Complete, r))
             .or_else(|| rest.strip_prefix("! ").map(|r| (TxFlag::Incomplete, r)))
         {
-            let (payee, narration) = parse_payee_narration(r.trim_start())?;
+            let (payee, narration, tags) = parse_payee_narration(r.trim_start())?;
             let postings = collect_postings(&mut lines)?;
             directives.push(Directive::Transaction(Transaction {
                 date,
                 flag,
                 payee,
                 narration,
+                tags,
                 postings,
             }));
         } else if let Some(r) = rest.strip_prefix("open ") {
@@ -116,7 +118,7 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
     Ok(directives)
 }
 
-/// Parses the payee/narration portion of a transaction header.
+/// Parses the payee/narration/tags portion of a transaction header.
 ///
 /// # Arguments
 ///
@@ -124,12 +126,14 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
 ///
 /// # Returns
 ///
-/// A tuple of `(Option<payee>, narration)`.
+/// A tuple of `(Option<payee>, narration, tags)`. Tags are `#`-prefixed
+/// tokens following the quoted strings, in source order with the `#`
+/// stripped; `^`-prefixed link tokens are recognised and ignored.
 ///
 /// # Errors
 ///
 /// Returns an error if the number of quoted strings is not 1 or 2.
-fn parse_payee_narration(s: &str) -> Result<(Option<String>, String), String> {
+fn parse_payee_narration(s: &str) -> Result<(Option<String>, String, Vec<String>), String> {
     let mut input = s;
     let strings: Vec<String> = repeat(0.., preceded(take_till(0.., '"'), quoted_string))
         .parse_next(&mut input)
@@ -137,9 +141,14 @@ fn parse_payee_narration(s: &str) -> Result<(Option<String>, String), String> {
     if input.contains('"') {
         return Err(format!("unterminated string in: '{s}'"));
     }
+    let tags: Vec<String> = input
+        .split_whitespace()
+        .filter_map(|token| token.strip_prefix('#'))
+        .map(str::to_owned)
+        .collect();
     match strings.as_slice() {
-        [only] => Ok((None, only.clone())),
-        [payee, narration] => Ok((Some(payee.clone()), narration.clone())),
+        [only] => Ok((None, only.clone(), tags)),
+        [payee, narration] => Ok((Some(payee.clone()), narration.clone(), tags)),
         _ => Err(format!(
             "expected 1 or 2 quoted strings, got {}: '{s}'",
             strings.len()
@@ -182,26 +191,39 @@ fn collect_postings<'a>(
 
 /// Parses a single posting line.
 ///
+/// The amount and currency are optional: Beancount lets a posting omit them
+/// entirely (e.g. `  Assets:Bank`), leaving the tool to derive the elided
+/// amount so the transaction balances. A line with an account but no
+/// double-space-separated amount parses to a `None` amount; a line that has
+/// an amount section but a malformed number or missing currency still
+/// errors.
+///
 /// # Arguments
 ///
 /// * `line` - A trimmed posting line (without leading whitespace).
 ///
 /// # Returns
 ///
-/// A [`Posting`] with account, amount, and currency.
+/// A [`Posting`] with an account and an optional amount/currency.
 ///
 /// # Errors
 ///
-/// Returns an error if the posting cannot be parsed.
+/// Returns an error if the posting has a malformed amount or currency.
 fn parse_posting(line: &str) -> Result<Posting, String> {
     let line_no_comment = line.split(';').next().unwrap_or(line).trim_end();
 
-    // Find a double-space separator between the account and amount.
-    let split_pos = line_no_comment
+    // Find a double-space separator between the account and amount. Its
+    // absence means the amount is elided, not an error.
+    let Some(split_pos) = line_no_comment
         .as_bytes()
         .windows(2)
         .position(|w| w.first().copied() == Some(b' ') && w.get(1).copied() == Some(b' '))
-        .ok_or_else(|| format!("posting missing amount: '{line_no_comment}'"))?;
+    else {
+        return Ok(Posting {
+            account: line_no_comment.trim().to_owned(),
+            amount: None,
+        });
+    };
 
     let account = line_no_comment
         .get(..split_pos)
@@ -224,14 +246,13 @@ fn parse_posting(line: &str) -> Result<Posting, String> {
         .unwrap_or_default()
         .trim()
         .to_owned();
-    let amount: Decimal = amount_str
+    let value: Decimal = amount_str
         .parse()
         .map_err(|e| format!("bad posting amount '{amount_str}' in: '{line_no_comment}': {e}"))?;
 
     Ok(Posting {
         account,
-        amount,
-        currency,
+        amount: Some(PostingAmount { value, currency }),
     })
 }
 
@@ -328,8 +349,9 @@ mod tests {
         assert_eq!(tx.narration, "Weekly groceries");
         assert_eq!(tx.postings.len(), 2);
         let first_posting = tx.postings.first().expect("should have postings");
-        assert_eq!(first_posting.amount, dec!(50.00));
-        assert_eq!(first_posting.currency, "AUD");
+        let amount = first_posting.amount.as_ref().expect("explicit amount");
+        assert_eq!(amount.value, dec!(50.00));
+        assert_eq!(amount.currency, "AUD");
     }
 
     #[test]
@@ -458,5 +480,61 @@ mod tests {
     fn parse_rejects_unterminated_quoted_string() {
         let input = "2025-01-15 * \"Payee\" \"Unterminated\n";
         assert!(parse(input).is_err());
+    }
+
+    #[test]
+    fn parse_posting_without_amount_is_elided() {
+        let input =
+            "2025-01-15 * \"Payee\" \"Elided leg\"\n  Expenses:Food   50.00 AUD\n  Assets:Bank\n";
+        let directives = parse(input).expect("parse");
+        let Directive::Transaction(tx) = directives.first().expect("directive") else {
+            panic!("expected Transaction directive")
+        };
+        assert_eq!(tx.postings.len(), 2);
+        let explicit = tx.postings.first().expect("first posting");
+        let amount = explicit.amount.as_ref().expect("explicit amount");
+        assert_eq!(amount.value, dec!(50.00));
+        assert_eq!(amount.currency, "AUD");
+        let elided = tx.postings.get(1).expect("second posting");
+        assert_eq!(elided.account, "Assets:Bank");
+        assert_eq!(elided.amount, None);
+    }
+
+    #[test]
+    fn parse_posting_with_malformed_amount_still_errors() {
+        let input =
+            "2025-01-15 * \"Payee\" \"Bad amount\"\n  Expenses:Food   fifty AUD\n  Assets:Bank\n";
+        assert!(parse(input).is_err());
+    }
+
+    #[test]
+    fn parse_transaction_header_collects_tags_in_order() {
+        let input =
+            "2025-06-27 * \"Payee\" \"Narration\" #josh #groceries\n  A:B   1.00 AUD\n  A:C\n";
+        let directives = parse(input).expect("parse");
+        let Directive::Transaction(tx) = directives.first().expect("directive") else {
+            panic!("expected Transaction directive")
+        };
+        assert_eq!(tx.tags, vec!["josh".to_owned(), "groceries".to_owned()]);
+    }
+
+    #[test]
+    fn parse_transaction_header_without_tags_is_empty() {
+        let input = "2025-01-15 * \"Payee\" \"Narration\"\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
+        let directives = parse(input).expect("parse");
+        let Directive::Transaction(tx) = directives.first().expect("directive") else {
+            panic!("expected Transaction directive")
+        };
+        assert!(tx.tags.is_empty());
+    }
+
+    #[test]
+    fn parse_transaction_header_ignores_link_tokens() {
+        let input = "2025-01-15 * \"Payee\" \"Narration\" ^some-link #josh\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
+        let directives = parse(input).expect("parse");
+        let Directive::Transaction(tx) = directives.first().expect("directive") else {
+            panic!("expected Transaction directive")
+        };
+        assert_eq!(tx.tags, vec!["josh".to_owned()]);
     }
 }
