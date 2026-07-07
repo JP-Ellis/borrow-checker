@@ -768,6 +768,7 @@ mod db_tests {
     use sqlx::SqlitePool;
 
     use super::*;
+    use crate::RawPosting;
     use crate::RawTransaction;
 
     async fn account(pool: &SqlitePool, name: &str) -> AccountId {
@@ -926,14 +927,19 @@ mod db_tests {
         // Re-importing the Mortgage statement row finds its (moved) source ref and skips.
         let txs = crate::TransactionService::new(pool.clone());
         let srcs = crate::SourceService::new(pool.clone());
-        let raw = RawTransaction::new(
-            date(2025, 6, 27),
-            Amount::new(Decimal::from(100_i64), CommodityCode::new("AUD")),
-            None,
-            None,
-            "TRANSFER".to_owned(),
-            None,
-        );
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("TRANSFER")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Mortgage")
+                    .maybe_amount(Some(Amount::new(
+                        Decimal::from(100_i64),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .build(),
+            ])
+            .build();
         let imported = crate::execute_import(&txs, &srcs, &mortgage, &[raw])
             .await
             .expect("reimport");

@@ -41,10 +41,16 @@ pub async fn execute_import(
     let fingerprints: Vec<String> = raws
         .iter()
         .map(|raw| {
+            let Some(amount) = raw.postings.first().and_then(|p| p.amount.clone()) else {
+                // No concrete amount to fingerprint; the per-row loop below skips
+                // this index consistently, so the exact placeholder value here is
+                // never used to persist a `SourceRef`.
+                return String::new();
+            };
             SourceRef::compute_fingerprint(
                 raw.date,
                 &raw.description,
-                &raw.amount,
+                &amount,
                 raw.reference.as_deref(),
             )
         })
@@ -65,10 +71,18 @@ pub async fn execute_import(
             continue;
         };
 
+        let Some(amount) = raw.postings.first().and_then(|p| p.amount.clone()) else {
+            tracing::warn!(
+                index = decision.index,
+                "raw row has no concrete posting amount; skipping"
+            );
+            continue;
+        };
+
         let posting_account = bc_models::Posting::builder()
             .id(bc_models::PostingId::new())
             .account_id(account_id.clone())
-            .amount(raw.amount.clone())
+            .amount(amount.clone())
             .build();
 
         let tx_id = TransactionId::new();
@@ -92,7 +106,7 @@ pub async fn execute_import(
             .account_id(account_id.clone())
             .date(raw.date)
             .narration(raw.description.clone())
-            .amount(raw.amount.clone())
+            .amount(amount)
             .occurrence(decision.occurrence)
             .created_at(Timestamp::now())
             .reference(raw.reference.clone())
@@ -124,6 +138,7 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::*;
+    use crate::RawPosting;
 
     async fn account(
         pool: &SqlitePool,
@@ -142,14 +157,19 @@ mod tests {
     }
 
     fn raw(desc: &str, amount: i64) -> RawTransaction {
-        RawTransaction::new(
-            date(2025, 6, 27),
-            Amount::new(Decimal::from(amount), CommodityCode::new("AUD")),
-            None,
-            None,
-            desc.to_owned(),
-            None,
-        )
+        RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description(desc)
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .maybe_amount(Some(Amount::new(
+                        Decimal::from(amount),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .build(),
+            ])
+            .build()
     }
 
     async fn tx_count(pool: &SqlitePool) -> i64 {

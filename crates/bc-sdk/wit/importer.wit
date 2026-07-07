@@ -21,14 +21,30 @@ interface types {
         scale: u8,
     }
 
-    /// A parsed transaction prior to account binding.
+    /// A single posting leg of a raw transaction, prior to account-id resolution.
+    record raw-posting {
+        /// Account path, e.g. "Assets:Bank:Checking". Resolved to an id at persist time.
+        account: string,
+        /// Leg amount. none = elided (the residual that balances the transaction).
+        amount: option<amount>,
+        /// Per-account running balance after this posting, if reported.
+        balance: option<amount>,
+        /// Optional free-text note for this leg.
+        note: option<string>,
+        /// Tag names for this leg, resolved to ids at persist time.
+        tags: list<string>,
+    }
+
+    /// A parsed transaction prior to account binding. One or more postings.
     record raw-transaction {
         date: date,
-        amount: amount,
-        balance: option<amount>,
         payee: option<string>,
         description: string,
+        note: option<string>,
         reference: option<string>,
+        tags: list<string>,
+        extra-dates: list<tuple<string, date>>,
+        postings: list<raw-posting>,
     }
 
     /// Opaque JSON blob passed through from the ImportProfile config field.
