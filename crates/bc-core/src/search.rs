@@ -277,6 +277,76 @@ mod match_tests {
     }
 
     #[test]
+    fn elided_amount_never_matches() {
+        // Direct unit coverage of the `None` short-circuit in `AmountQuery::matches`.
+        let q = AmountQuery {
+            min: Some(dec!(1)),
+            max: None,
+            commodity: None,
+        };
+        assert!(!q.matches(None));
+
+        // A transaction whose only leg is elided has nothing to match against an
+        // active amount query, so the whole transaction is excluded.
+        let a = AccountId::new();
+        let elided = Posting::builder()
+            .id(PostingId::new())
+            .account_id(a)
+            .tag_ids(vec![])
+            .build();
+        let t = tx(vec![elided], vec![]);
+        let matched = compute_matched_postings(&t, None, Some(&q), None);
+        assert!(matched.is_empty());
+    }
+
+    #[test]
+    fn commodity_mismatch_excludes_leg() {
+        let a = AccountId::new();
+        let b = AccountId::new();
+        let t = tx(
+            vec![
+                posting(&a, dec!(100), vec![]),
+                posting(&b, dec!(-100), vec![]),
+            ],
+            vec![],
+        );
+        let q = AmountQuery {
+            min: None,
+            max: None,
+            commodity: Some(CommodityCode::new("USD")),
+        };
+        let matched = compute_matched_postings(&t, None, Some(&q), None);
+        assert!(matched.is_empty());
+    }
+
+    #[test]
+    fn magnitude_window_excludes_and_is_inclusive() {
+        let a = AccountId::new();
+        let b = AccountId::new();
+        let big = posting(&a, dec!(100), vec![]);
+        let want = big.id().clone();
+        let small = posting(&b, dec!(10), vec![]);
+        let t = tx(vec![big, small], vec![]);
+
+        let window = AmountQuery {
+            min: Some(dec!(50)),
+            max: Some(dec!(150)),
+            commodity: None,
+        };
+        let matched = compute_matched_postings(&t, None, Some(&window), None);
+        assert_eq!(matched.into_iter().collect::<Vec<_>>(), vec![want.clone()]);
+
+        // Boundary equal to both min and max is inclusive, not exclusive.
+        let boundary = AmountQuery {
+            min: Some(dec!(100)),
+            max: Some(dec!(100)),
+            commodity: None,
+        };
+        let boundary_matched = compute_matched_postings(&t, None, Some(&boundary), None);
+        assert_eq!(boundary_matched.into_iter().collect::<Vec<_>>(), vec![want]);
+    }
+
+    #[test]
     fn conjunction_excludes_when_no_leg_satisfies_all() {
         // Tag hits at tx level (all legs) but the account dim matches no leg → empty.
         let a = AccountId::new();
