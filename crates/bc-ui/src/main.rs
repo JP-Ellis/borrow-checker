@@ -47,6 +47,8 @@ mod components;
 #[cfg(target_arch = "wasm32")]
 mod currency_ctx;
 #[cfg(any(target_arch = "wasm32", test))]
+mod filter_ctx;
+#[cfg(any(target_arch = "wasm32", test))]
 mod pages;
 #[cfg(any(target_arch = "wasm32", test))]
 mod shell;
