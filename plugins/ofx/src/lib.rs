@@ -3,12 +3,14 @@
 //! Implements [`bc_sdk::Importer`] for OFX v1 (SGML) and OFX v2 (XML) files.
 
 mod ast;
+mod config;
 mod parser;
 mod sgml;
 
-use bc_sdk::{Amount, ImportConfig, ImportError, RawTransaction};
+use bc_sdk::{Amount, ImportConfig, ImportError, RawPosting, RawTransaction};
 use rust_decimal::Decimal;
 
+use crate::config::Config;
 use crate::parser::parse;
 
 /// Implements [`bc_sdk::Importer`] for OFX v1 (SGML) and OFX v2 (XML) bank statement files.
@@ -62,7 +64,7 @@ impl bc_sdk::Importer for OfxImporter {
     /// # Arguments
     ///
     /// * `bytes` - Raw OFX/QFX file bytes.
-    /// * `_config` - Unused; reserved for future configuration options.
+    /// * `config` - Importer configuration; must supply `account`.
     ///
     /// # Returns
     ///
@@ -73,7 +75,8 @@ impl bc_sdk::Importer for OfxImporter {
     /// Returns [`ImportError::Parse`] if the file cannot be parsed or if an
     /// amount value cannot be represented as an `i64` minor-unit integer.
     #[inline]
-    fn import(&self, bytes: &[u8], _config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+    fn import(&self, bytes: &[u8], config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+        let cfg: Config = config.as_typed()?;
         let stmt = parse(bytes).map_err(ImportError::Parse)?;
 
         stmt.transactions
@@ -87,14 +90,17 @@ impl bc_sdk::Importer for OfxImporter {
                     .or(tx.name.as_deref())
                     .unwrap_or("")
                     .to_owned();
-                Ok(RawTransaction::new(
-                    tx.date,
-                    amount,
-                    None,
-                    tx.name,
-                    description,
-                    Some(tx.fitid).filter(|s| !s.is_empty()),
-                ))
+                let reference = Some(tx.fitid).filter(|s| !s.is_empty());
+                Ok(RawTransaction::builder()
+                    .date(tx.date)
+                    .maybe_payee(tx.name)
+                    .description(description)
+                    .maybe_reference(reference)
+                    .postings(vec![RawPosting::builder()
+                        .account(cfg.account.clone())
+                        .amount(amount)
+                        .build()])
+                    .build())
             })
             .collect()
     }
@@ -146,6 +152,11 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
 <STMTTRN><TRNTYPE>CREDIT<DTPOSTED>20250116<TRNAMT>3000.00<FITID>REF002<NAME>Employer</STMTTRN>\
 </BANKTRANLIST></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>";
 
+    /// Returns a test [`ImportConfig`] with `account` set to `"Assets:NAB:Josh"`.
+    fn test_config() -> ImportConfig {
+        ImportConfig::from_json_string(r#"{"account": "Assets:NAB:Josh"}"#.to_owned())
+    }
+
     #[test]
     #[expect(
         clippy::indexing_slicing,
@@ -153,14 +164,26 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
     )]
     fn imports_v1_two_transactions() {
         let txs = OfxImporter::new()
-            .import(OFX_V1, ImportConfig::default())
+            .import(OFX_V1, test_config())
             .expect("import");
         assert_eq!(txs.len(), 2);
         assert_eq!(txs[0].date, Date::new(2025, 1, 15));
         assert_eq!(txs[0].reference.as_deref(), Some("REF001"));
         assert_eq!(txs[0].payee.as_deref(), Some("Woolworths"));
         assert_eq!(txs[0].description, "Groceries");
+        assert_eq!(txs[0].postings.len(), 1);
+        assert_eq!(txs[0].postings[0].account, "Assets:NAB:Josh");
+        assert_eq!(
+            txs[0].postings[0].amount,
+            Some(Amount::new(-5000, "AUD", 2))
+        );
         assert_eq!(txs[1].description, "Employer");
+        assert_eq!(txs[1].postings.len(), 1);
+        assert_eq!(txs[1].postings[0].account, "Assets:NAB:Josh");
+        assert_eq!(
+            txs[1].postings[0].amount,
+            Some(Amount::new(300_000, "AUD", 2))
+        );
     }
 
     #[test]
@@ -170,7 +193,7 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
     )]
     fn payee_falls_back_to_name_when_no_memo() {
         let txs = OfxImporter::new()
-            .import(OFX_V1, ImportConfig::default())
+            .import(OFX_V1, test_config())
             .expect("import");
         // Second transaction has no MEMO, so description = NAME.
         assert_eq!(txs[1].description, "Employer");
@@ -201,10 +224,12 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
 <STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20250115<TRNAMT>-50.00<NAME>Test</STMTTRN>\
 </BANKTRANLIST></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>";
         let txs = OfxImporter::new()
-            .import(input, ImportConfig::default())
+            .import(input, test_config())
             .expect("import");
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(tx.reference, None);
+        assert_eq!(tx.postings.len(), 1);
+        assert_eq!(tx.postings[0].account, "Assets:NAB:Josh");
     }
 
     #[test]
