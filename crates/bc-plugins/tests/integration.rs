@@ -52,6 +52,7 @@ mod tests {
         assert!(importer.detect(csv_content));
 
         let config_json = r#"{
+            "account": "Assets:Test",
             "commodity": "AUD",
             "date_column": "Date",
             "date_format": "%Y-%m-%d",
@@ -72,6 +73,8 @@ mod tests {
         )]
         let first = &txns[0];
         assert_eq!(first.description, "Test");
+        let posting = first.postings.first().expect("one posting emitted");
+        assert_eq!(posting.account, "Assets:Test");
     }
 
     #[test]
