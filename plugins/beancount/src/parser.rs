@@ -128,7 +128,9 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
 ///
 /// A tuple of `(Option<payee>, narration, tags)`. Tags are `#`-prefixed
 /// tokens following the quoted strings, in source order with the `#`
-/// stripped; `^`-prefixed link tokens are recognised and ignored.
+/// stripped; `^`-prefixed link tokens are recognised and ignored. A trailing
+/// `;` comment is stripped before tags are collected, and empty `#` tokens are
+/// dropped.
 ///
 /// # Errors
 ///
@@ -141,9 +143,13 @@ fn parse_payee_narration(s: &str) -> Result<(Option<String>, String, Vec<String>
     if input.contains('"') {
         return Err(format!("unterminated string in: '{s}'"));
     }
-    let tags: Vec<String> = input
+    // A trailing `;` comment must not contribute tags; strip it first (mirrors
+    // `parse_posting`). Empty `#` tokens are dropped.
+    let tag_region = input.split(';').next().unwrap_or(input);
+    let tags: Vec<String> = tag_region
         .split_whitespace()
         .filter_map(|token| token.strip_prefix('#'))
+        .filter(|tag| !tag.is_empty())
         .map(str::to_owned)
         .collect();
     match strings.as_slice() {
@@ -526,6 +532,21 @@ mod tests {
             panic!("expected Transaction directive")
         };
         assert!(tx.tags.is_empty());
+    }
+
+    #[test]
+    fn parse_transaction_header_ignores_tags_in_comment() {
+        let input =
+            "2025-06-27 * \"Payee\" \"Narration\" #real ; note #fake\n  A:B   1.00 AUD\n  A:C\n";
+        let directives = parse(input).expect("parse");
+        let Directive::Transaction(tx) = directives.first().expect("directive") else {
+            panic!("expected Transaction directive")
+        };
+        assert_eq!(
+            tx.tags,
+            vec!["real".to_owned()],
+            "a #token inside a trailing ; comment must not be collected as a tag"
+        );
     }
 
     #[test]
