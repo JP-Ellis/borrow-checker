@@ -176,7 +176,9 @@ pub struct RawTransaction {
     #[builder(default)]
     pub extra_dates: Vec<(String, Date)>,
     /// One or more posting legs. Single-account importers emit exactly one.
-    #[builder(default)]
+    ///
+    /// Required: a transaction with no legs is meaningless, so plugin authors
+    /// must supply at least one posting.
     pub postings: Vec<RawPosting>,
 }
 
