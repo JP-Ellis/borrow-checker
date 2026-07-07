@@ -22,6 +22,8 @@ use crate::BudgetSummary;
 use crate::BudgetTreeNode;
 use crate::CommodityInfo;
 use crate::EditTransaction;
+use crate::Filter;
+use crate::FilteredTransaction;
 use crate::NativePeriodRow;
 use crate::NewTransaction;
 use crate::PluginInfo;
@@ -33,6 +35,7 @@ use crate::Transaction;
 use crate::TransferSuggestion;
 use crate::commands;
 use crate::commands::ReverseTransactionArgs;
+use crate::commands::SearchTransactionsArgs;
 
 /// Empty args struct for commands that take no parameters.
 ///
@@ -943,6 +946,20 @@ pub async fn unmerge_transaction(transaction: &str) -> Result<String, BcError> {
     tauri_sys::core::invoke_result::<String, BcError>(
         commands::UNMERGE_TRANSACTION,
         UnmergeArgs { transaction },
+    )
+    .await
+}
+
+/// Runs a structured transaction search on the backend.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the Tauri invoke fails.
+#[inline]
+pub async fn search_transactions(filter: &Filter) -> Result<Vec<FilteredTransaction>, BcError> {
+    tauri_sys::core::invoke_result::<Vec<FilteredTransaction>, BcError>(
+        commands::SEARCH_TRANSACTIONS,
+        SearchTransactionsArgs { filter },
     )
     .await
 }
