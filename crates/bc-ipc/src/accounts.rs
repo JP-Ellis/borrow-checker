@@ -1,5 +1,7 @@
 //! Account and transaction types shared between Tauri backend and Leptos frontend.
 
+use jiff::civil::Date;
+use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -635,6 +637,47 @@ impl EditTransaction {
     }
 }
 
+/// Magnitude predicate for the amount filter dimension.
+///
+/// Compares the absolute value of a posting's amount against an inclusive
+/// `[min, max]` range. Either bound may be omitted. When `commodity` is set,
+/// only postings in that currency are considered.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AmountFilter {
+    /// Inclusive lower bound on the magnitude, if any.
+    pub min: Option<Decimal>,
+    /// Inclusive upper bound on the magnitude, if any.
+    pub max: Option<Decimal>,
+    /// Restrict to a single currency code when set.
+    pub commodity: Option<String>,
+}
+
+/// A global, structured transaction filter built in the UI and applied server-side.
+///
+/// All fields are optional/empty by default; an empty filter matches everything.
+/// Dimensions combine with AND; the repeatable dimensions (`accounts`, `tags`)
+/// OR within themselves. `text` matches a case-insensitive substring against
+/// either the payee or the narration (description).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct Filter {
+    /// Inclusive lower bound on the transaction date.
+    pub date_from: Option<Date>,
+    /// Exclusive upper bound on the transaction date.
+    pub date_until: Option<Date>,
+    /// Account ids; each matches its subtree; multiple entries union (OR).
+    pub accounts: Vec<String>,
+    /// Tag ids; multiple entries union (OR).
+    pub tags: Vec<String>,
+    /// Case-insensitive substring over payee OR narration.
+    pub text: Option<String>,
+    /// Magnitude predicate; a transaction matches if any posting qualifies.
+    pub amount: Option<AmountFilter>,
+    /// Exact reconciliation status.
+    pub reconciliation: Option<Reconciliation>,
+}
+
 /// Windowed account statistics for the dashboard.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -889,6 +932,7 @@ impl From<Period> for bc_models::Period {
 
 #[cfg(test)]
 mod tests {
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use rust_decimal::Decimal;
@@ -1209,6 +1253,40 @@ mod tests {
         let json = serde_json::to_string(&dto).expect("ser");
         let back: EditTransaction = serde_json::from_str(&json).expect("de");
         assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn filter_default_is_empty_and_round_trips() {
+        let f = Filter::default();
+        assert_eq!(f.accounts, Vec::<String>::new());
+        assert_eq!(f.tags, Vec::<String>::new());
+        assert_eq!(f.text, None);
+        assert_eq!(f.amount, None);
+        assert_eq!(f.reconciliation, None);
+
+        let json = serde_json::to_string(&f).expect("serialize");
+        let back: Filter = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, f);
+    }
+
+    #[test]
+    fn filter_with_amount_round_trips() {
+        let f = Filter {
+            date_from: Some(date(2026, 1, 1)),
+            date_until: Some(date(2026, 2, 1)),
+            accounts: vec!["acc-1".to_owned()],
+            tags: vec!["tag-1".to_owned(), "tag-2".to_owned()],
+            text: Some("amazon".to_owned()),
+            amount: Some(AmountFilter {
+                min: Some(Decimal::new(100, 0)),
+                max: Some(Decimal::new(200, 0)),
+                commodity: Some("AUD".to_owned()),
+            }),
+            reconciliation: Some(Reconciliation::Reconciled),
+        };
+        let json = serde_json::to_string(&f).expect("serialize");
+        let back: Filter = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, f);
     }
 
     #[test]
