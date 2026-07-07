@@ -1,6 +1,7 @@
 //! Route entries for shared component QA pages (`/__test/component/*`).
 
 pub mod account_picker;
+pub mod filter_chips;
 pub mod num;
 pub mod period_nav;
 pub mod sparkline;
@@ -28,6 +29,7 @@ pub fn ComponentRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
         <ParentRoute path=path!("/component") view=|| view! { <Outlet /> }>
             <Route path=path!("") view=ComponentIndex />
             <Route path=path!("/account-picker") view=account_picker::AccountPickerQa />
+            <Route path=path!("/filter-chips") view=filter_chips::FilterChipsQa />
             <Route path=path!("/sparkline") view=sparkline::SparklineQa />
             <Route path=path!("/stat-card") view=stat_card::StatCardQa />
             <Route path=path!("/num") view=num::NumQa />
@@ -56,6 +58,11 @@ pub fn ComponentIndex() -> impl IntoView {
                     title=account_picker::TITLE
                     path=account_picker::PATH
                     description=account_picker::DESCRIPTION
+                />
+                <QaCard
+                    title=filter_chips::TITLE
+                    path=filter_chips::PATH
+                    description=filter_chips::DESCRIPTION
                 />
                 <QaCard
                     title=sparkline::TITLE

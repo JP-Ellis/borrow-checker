@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::use_location;
 
+use crate::components::filter_chips::FilterChips;
 use crate::components::status_pill::StatusPill;
 use crate::components::status_pill::Tone;
 
@@ -76,6 +77,8 @@ pub fn TopBar(
                     })
                     .collect::<Vec<_>>()}
             </nav>
+
+            <FilterChips />
 
             <button
                 class="top-bar__search"
