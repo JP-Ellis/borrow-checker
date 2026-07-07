@@ -1,0 +1,31 @@
+.chips {
+  display: flex;
+  gap: var(--bc-space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  background: var(--bc-surface-alt);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-tag);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink);
+}
+
+.chip_label {
+  /* Keeps multi-word dimension labels ("account: 3 selected") from wrapping mid-chip. */
+  white-space: nowrap;
+}
+
+.chip_remove {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--bc-ink-mute);
+  line-height: 1;
+}

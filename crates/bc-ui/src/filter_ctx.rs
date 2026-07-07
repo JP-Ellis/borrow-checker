@@ -48,10 +48,6 @@ pub struct Chip {
 
 /// Derives the removable chips for the active dimensions of `filter`.
 #[must_use]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "wired into the chip-rendering UI in a later task")
-)]
 pub fn chips_from_filter(filter: &bc_ipc::Filter) -> Vec<Chip> {
     let mut chips = Vec::new();
     if filter.date_from.is_some() || filter.date_until.is_some() {
@@ -125,7 +121,6 @@ mod wasm {
         /// # Arguments
         ///
         /// * `key` - The chip key identifying which filter dimension to clear.
-        #[expect(dead_code, reason = "wired into the chip-rendering UI in a later task")]
         pub fn clear_dimension(&self, key: &str) {
             self.filter.update(|f| match key {
                 "date" => {
@@ -163,10 +158,6 @@ mod wasm {
     ///
     /// The [`FilterStore`] handle from context, or a fresh detached one.
     #[must_use]
-    #[expect(
-        dead_code,
-        reason = "consumed by per-view filter chips in a later task"
-    )]
     pub fn use_filter_store() -> FilterStore {
         use_context::<FilterStore>().unwrap_or_else(|| FilterStore {
             filter: RwSignal::new(bc_ipc::Filter::default()),
@@ -184,10 +175,6 @@ pub use wasm::FilterStore;
 #[cfg(target_arch = "wasm32")]
 pub use wasm::provide_filter_store;
 #[cfg(target_arch = "wasm32")]
-#[expect(
-    unused_imports,
-    reason = "FilterStore/use_filter_store are consumed by per-view filter chips in a later task"
-)]
 pub use wasm::use_filter_store;
 
 #[cfg(test)]
