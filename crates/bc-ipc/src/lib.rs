@@ -37,6 +37,7 @@ pub use accounts::AuditEntry;
 pub use accounts::EditPosting;
 pub use accounts::EditTransaction;
 pub use accounts::Filter;
+pub use accounts::FilteredTransaction;
 pub use accounts::NewPosting;
 pub use accounts::NewTransaction;
 pub use accounts::Period;

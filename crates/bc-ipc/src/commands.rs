@@ -113,6 +113,9 @@ pub const UNMERGE_TRANSACTION: &str = "unmerge_transaction";
 /// Propose candidate transfer pairs for review.
 pub const SUGGEST_TRANSFERS: &str = "suggest_transfers";
 
+/// Command: run a structured transaction search.
+pub const SEARCH_TRANSACTIONS: &str = "search_transactions";
+
 /// Argument struct for the `reverse_transaction` command.
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(serde::Serialize)]
@@ -121,16 +124,33 @@ pub(crate) struct ReverseTransactionArgs<'a> {
     pub id: &'a str,
 }
 
+/// Argument struct for the `search_transactions` command.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(serde::Serialize)]
+pub(crate) struct SearchTransactionsArgs<'a> {
+    /// The structured filter to apply.
+    pub filter: &'a crate::Filter,
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
 
     use super::ReverseTransactionArgs;
+    use super::SearchTransactionsArgs;
 
     #[test]
     fn reverse_transaction_args_serialize() {
         let args = ReverseTransactionArgs { id: "tx-123" };
         let json = serde_json::to_value(&args).expect("serialize");
         assert_eq!(json, serde_json::json!({ "id": "tx-123" }));
+    }
+
+    #[test]
+    fn search_transactions_args_serialize() {
+        let filter = crate::Filter::default();
+        let args = SearchTransactionsArgs { filter: &filter };
+        let json = serde_json::to_value(&args).expect("serialize");
+        assert!(json.get("filter").is_some());
     }
 }
