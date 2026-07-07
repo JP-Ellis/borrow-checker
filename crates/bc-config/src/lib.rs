@@ -234,6 +234,9 @@ struct RawSettings {
     /// Ordered list of additional plugin directories (from config file).
     #[serde(default)]
     plugin_dirs: Vec<String>,
+    /// Optional root directory for importer source documents.
+    #[serde(default)]
+    documents_root: Option<String>,
     /// CLI-specific settings from the `[cli]` section.
     cli: RawCliSection,
     /// Backup settings from the `[backup]` section.
@@ -274,6 +277,11 @@ pub struct Settings {
     /// takes precedence over the same-named plugin in a later one.
     #[serde(default)]
     plugin_dirs: Vec<std::path::PathBuf>,
+    /// Root directory under which importer source documents live. Per-profile
+    /// import-source locations are resolved relative to this root. `None` when
+    /// unset.
+    #[serde(default)]
+    documents_root: Option<std::path::PathBuf>,
     /// CLI-specific settings from the `[cli]` section.
     #[serde(default)]
     cli: CliSection,
@@ -310,6 +318,7 @@ impl Settings {
             .set_default("display_commodity", "AUD")?
             .set_default("db_path", Option::<String>::None)?
             .set_default("plugin_dirs", Vec::<String>::new())?
+            .set_default("documents_root", Option::<String>::None)?
             .set_default("cli.json", false)?
             .set_default("cli.log", Option::<String>::None)?
             .set_default("backup.dir", Option::<String>::None)?
@@ -371,6 +380,9 @@ impl Settings {
 
         let db_path = raw.db_path.map(std::path::PathBuf::from);
         tracing::debug!(db_path = ?db_path, "config: db_path");
+
+        let documents_root = raw.documents_root.map(std::path::PathBuf::from);
+        tracing::debug!(documents_root = ?documents_root, "config: documents_root");
 
         // Plugin dirs: BORROW_CHECKER_PLUGIN_DIR env var → user config dirs → XDG data home
         let mut plugin_dirs: Vec<std::path::PathBuf> = Vec::new();
@@ -437,6 +449,7 @@ impl Settings {
             display_commodity: CommodityCode::new(raw.display_commodity),
             db_path,
             plugin_dirs,
+            documents_root,
             cli,
             backup,
         })
@@ -490,6 +503,13 @@ impl Settings {
         &self.plugin_dirs
     }
 
+    /// Returns the configured import-sources root, or `None` when unset.
+    #[inline]
+    #[must_use]
+    pub fn documents_root(&self) -> Option<&std::path::Path> {
+        self.documents_root.as_deref()
+    }
+
     /// Overrides the database path at runtime (e.g. from a CLI flag).
     ///
     /// This takes precedence over any value loaded from the config file.
@@ -527,6 +547,7 @@ impl Default for Settings {
             display_commodity: CommodityCode::new("AUD"),
             db_path: None,
             plugin_dirs: Vec::new(),
+            documents_root: None,
             cli: CliSection::default(),
             backup: BackupSection::default(),
         }
@@ -699,6 +720,7 @@ mod tests {
             display_commodity: "AUD".to_owned(),
             db_path: None,
             plugin_dirs: Vec::new(),
+            documents_root: None,
             cli: RawCliSection {
                 json: false,
                 log: None,
@@ -712,6 +734,12 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.financial_year_start_month(), 7);
         assert_eq!(s.financial_year_start_day(), 1);
+    }
+
+    #[test]
+    fn documents_root_defaults_to_none() {
+        let settings = Settings::default();
+        assert_eq!(settings.documents_root(), None);
     }
 
     #[test]
