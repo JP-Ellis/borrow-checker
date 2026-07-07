@@ -159,6 +159,18 @@ pub struct MatchedTransaction {
     pub matched_postings: HashSet<PostingId>,
 }
 
+/// Escapes SQL `LIKE` metacharacters (`\`, `%`, `_`) in `input` so it can be
+/// embedded in a `LIKE ... ESCAPE '\'` pattern and matched literally.
+///
+/// The backslash is escaped first so that the escapes subsequently inserted
+/// for `%` and `_` are not themselves re-escaped.
+fn escape_like(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 impl Service {
     /// Runs a structured transaction query, returning whole matched transactions
     /// with per-leg match attribution (see [`compute_matched_postings`]).
@@ -207,7 +219,10 @@ impl Service {
             clauses.push("t.date < ?".to_owned());
         }
         if query.text.is_some() {
-            clauses.push("(lower(t.payee) LIKE ? OR lower(t.description) LIKE ?)".to_owned());
+            clauses.push(
+                "(lower(t.payee) LIKE ? ESCAPE '\\' OR lower(t.description) LIKE ? ESCAPE '\\')"
+                    .to_owned(),
+            );
         }
         if query.reconciliation.is_some() {
             clauses.push("t.reconciliation = ?".to_owned());
@@ -255,7 +270,7 @@ impl Service {
             stmt = stmt.bind(until.to_string());
         }
         if let Some(text) = &query.text {
-            let needle = format!("%{}%", text.to_lowercase());
+            let needle = format!("%{}%", escape_like(&text.to_lowercase()));
             stmt = stmt.bind(needle.clone()).bind(needle);
         }
         if let Some(rec) = query.reconciliation {
@@ -677,6 +692,45 @@ mod search_tests {
         assert_eq!(
             out.first().expect("one result").transaction.payee(),
             Some("Amazon")
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn text_percent_is_literal_not_wildcard(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "50% off", dec!(100)))
+            .await
+            .expect("t1");
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "50 dollars", dec!(20)))
+            .await
+            .expect("t2");
+
+        let query = TransactionQuery {
+            text: Some("50%".to_owned()),
+            ..Default::default()
+        };
+        let out = svc.search(&query).await.expect("search");
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out.first().expect("one result").transaction.payee(),
+            Some("50% off")
         );
     }
 
