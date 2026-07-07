@@ -16,7 +16,8 @@ use crate::RawTransaction;
 /// Single-account raw rows each become a single-posting (interim, unbalanced)
 /// transaction. Rows whose `(account, fingerprint, occurrence)` already exist
 /// are skipped, making repeated imports of the same document hierarchy
-/// idempotent.
+/// idempotent. Rows whose first posting has no concrete amount are also
+/// skipped (logged at `warn`), not imported.
 ///
 /// # Arguments
 ///
@@ -254,5 +255,34 @@ mod tests {
             .await
             .expect("reimport");
         assert_eq!(again, 0, "re-import of both is a no-op");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rows_without_a_concrete_amount_are_skipped(pool: SqlitePool) {
+        let bank = account(
+            &pool,
+            "Bank",
+            AccountType::Asset,
+            AccountKind::DepositAccount,
+        )
+        .await;
+        let txs = crate::TransactionService::new(pool.clone());
+        let srcs = crate::SourceService::new(pool.clone());
+
+        let amountless = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("PENDING")
+            .postings(vec![RawPosting::builder().account("Assets:Bank").build()])
+            .build();
+        let batch = vec![raw("COFFEE", -5), amountless];
+
+        let imported = execute_import(&txs, &srcs, &bank, &batch)
+            .await
+            .expect("import");
+        assert_eq!(
+            imported, 1,
+            "only the row with a concrete posting amount is imported"
+        );
+        assert_eq!(tx_count(&pool).await, 1);
     }
 }
