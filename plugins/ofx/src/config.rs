@@ -9,19 +9,19 @@
 pub struct Config {
     /// Account path this statement's transactions post to, e.g. `"Assets:NAB:Josh"`.
     /// Stamped onto every emitted posting.
-    #[serde(default)]
     pub account: String,
 }
 
 #[cfg(test)]
 mod tests {
-    use pretty_assertions::assert_eq;
+    use bc_sdk::ImportConfig;
 
     use super::*;
 
     #[test]
-    fn default_config_has_empty_account() {
-        let cfg = Config::default();
-        assert_eq!(cfg.account, "");
+    fn missing_account_fails_to_deserialize() {
+        let cfg = ImportConfig::from_json_string("{}".to_owned());
+        let result: Result<Config, _> = cfg.as_typed();
+        assert!(result.is_err());
     }
 }
