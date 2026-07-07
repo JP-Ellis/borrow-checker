@@ -7,6 +7,8 @@ pub mod account_picker;
 #[cfg(target_arch = "wasm32")]
 pub mod error_banner;
 #[cfg(target_arch = "wasm32")]
+pub mod filter_chips;
+#[cfg(target_arch = "wasm32")]
 pub mod num;
 pub mod period_nav;
 pub mod sparkline;
