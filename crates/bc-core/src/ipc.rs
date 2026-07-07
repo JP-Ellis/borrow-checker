@@ -27,6 +27,8 @@ use crate::BudgetTreeItem;
 use crate::Event;
 use crate::NativePeriodStatus;
 use crate::budget_tree::BudgetTreeSummary;
+use crate::search::AmountQuery;
+use crate::search::TransactionQuery;
 
 // MARK: Error mapping
 
@@ -524,6 +526,52 @@ impl From<&crate::TransferSuggestion> for bc_ipc::TransferSuggestion {
             s.debit_narration.clone(),
             s.credit_narration.clone(),
         )
+    }
+}
+
+// MARK: Transaction query
+
+/// Parses an IPC [`bc_ipc::Filter`] into a domain-typed [`TransactionQuery`].
+///
+/// Account and tag id strings are parsed into their typed ids; a malformed id
+/// fails the whole conversion with [`crate::BcError::BadData`].
+impl TryFrom<bc_ipc::Filter> for TransactionQuery {
+    type Error = crate::BcError;
+
+    fn try_from(f: bc_ipc::Filter) -> Result<Self, Self::Error> {
+        let accounts = f
+            .accounts
+            .iter()
+            .map(|s| {
+                s.parse::<bc_models::AccountId>()
+                    .map_err(|e| crate::BcError::BadData(format!("invalid account id '{s}': {e}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let tags = f
+            .tags
+            .iter()
+            .map(|s| {
+                s.parse::<bc_models::TagId>()
+                    .map_err(|e| crate::BcError::BadData(format!("invalid tag id '{s}': {e}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let amount = f.amount.map(|a| AmountQuery {
+            min: a.min,
+            max: a.max,
+            commodity: a.commodity.map(bc_models::CommodityCode::new),
+        });
+
+        Ok(TransactionQuery {
+            date_from: f.date_from,
+            date_until: f.date_until,
+            accounts,
+            tags,
+            text: f.text,
+            amount,
+            reconciliation: f.reconciliation.map(Into::into),
+        })
     }
 }
 

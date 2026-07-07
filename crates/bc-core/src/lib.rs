@@ -26,6 +26,7 @@ pub(crate) mod import_exec;
 pub mod ipc;
 pub(crate) mod loan;
 pub(crate) mod period_overlap;
+pub mod search;
 pub(crate) mod settings;
 pub(crate) mod source;
 pub(crate) mod tag;
