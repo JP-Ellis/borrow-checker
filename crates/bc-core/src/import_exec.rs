@@ -2,6 +2,7 @@
 //! source references for the rows that are new.
 
 use bc_models::AccountId;
+use bc_models::Amount;
 use bc_models::SourceRef;
 use bc_models::SourceRefId;
 use bc_models::TransactionId;
@@ -13,11 +14,25 @@ use crate::RawTransaction;
 /// Deduplicates `raws` against stored source references for `account_id`, then
 /// creates a transaction and attaches a [`SourceRef`] for each new row.
 ///
-/// Single-account raw rows each become a single-posting (interim, unbalanced)
-/// transaction. Rows whose `(account, fingerprint, occurrence)` already exist
+/// This is the **interim single-posting** import path. Only a raw transaction
+/// carrying exactly one posting with a concrete amount is persisted; it becomes
+/// a single-posting (unbalanced, `Unreconciled`) transaction booked against
+/// `account_id`. Rows whose `(account, fingerprint, occurrence)` already exist
 /// are skipped, making repeated imports of the same document hierarchy
-/// idempotent. Rows whose first posting has no concrete amount are also
-/// skipped (logged at `warn`), not imported.
+/// idempotent.
+///
+/// Rows that are not persistable on this path are skipped (logged at `warn`),
+/// never imported:
+///
+/// - **Multi-posting** transactions (e.g. Beancount/Ledger files naming several
+///   accounts). Persisting these requires account **path → id** resolution and
+///   balanced multi-posting handling, both **deferred to the persistence
+///   phase**. The parser and the WIT→core boundary carry every leg faithfully,
+///   but this interim path does not yet write multi-posting transactions — it
+///   skips them rather than silently collapsing them to their first leg.
+/// - Rows whose single posting has no concrete amount (an elided residual).
+/// - Rows with no postings at all (defensive; the WIT→core boundary already
+///   rejects these).
 ///
 /// # Arguments
 ///
@@ -42,10 +57,10 @@ pub async fn execute_import(
     let fingerprints: Vec<String> = raws
         .iter()
         .map(|raw| {
-            let Some(amount) = raw.postings.first().and_then(|p| p.amount.clone()) else {
-                // No concrete amount to fingerprint; the per-row loop below skips
-                // this index consistently, so the exact placeholder value here is
-                // never used to persist a `SourceRef`.
+            let Some(amount) = interim_amount(raw) else {
+                // Not persistable on the interim path; the per-row loop below
+                // skips this index consistently, so the exact placeholder value
+                // here is never used to persist a `SourceRef`.
                 return String::new();
             };
             SourceRef::compute_fingerprint(
@@ -72,11 +87,20 @@ pub async fn execute_import(
             continue;
         };
 
-        let Some(amount) = raw.postings.first().and_then(|p| p.amount.clone()) else {
-            tracing::warn!(
-                index = decision.index,
-                "raw row has no concrete posting amount; skipping"
-            );
+        let Some(amount) = interim_amount(raw) else {
+            match raw.postings.as_slice() {
+                [] => tracing::warn!(index = decision.index, "raw row has no postings; skipping"),
+                [_single] => tracing::warn!(
+                    index = decision.index,
+                    "raw row has no concrete posting amount; skipping"
+                ),
+                multi => tracing::warn!(
+                    index = decision.index,
+                    postings = multi.len(),
+                    "multi-posting transactions are not yet persisted (deferred \
+                     to the persistence phase); skipping"
+                ),
+            }
             continue;
         };
 
@@ -125,6 +149,30 @@ pub async fn execute_import(
     }
 
     Ok(imported)
+}
+
+/// Returns the amount to fingerprint and persist for an interim single-posting
+/// import, or `None` when the row is not persistable on this path.
+///
+/// Only a raw transaction with exactly one posting that carries a concrete
+/// amount is persistable here; multi-posting transactions (deferred to the
+/// persistence phase) and amount-less legs both yield `None`. Both the
+/// fingerprint pass and the persist pass consult this, so the set of skipped
+/// rows is identical between the two.
+///
+/// # Arguments
+///
+/// * `raw` - The parsed row to evaluate.
+///
+/// # Returns
+///
+/// `Some(amount)` if the row is a single posting with a concrete amount,
+/// otherwise `None`.
+fn interim_amount(raw: &RawTransaction) -> Option<Amount> {
+    match raw.postings.as_slice() {
+        [posting] => posting.amount.clone(),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -282,6 +330,47 @@ mod tests {
         assert_eq!(
             imported, 1,
             "only the row with a concrete posting amount is imported"
+        );
+        assert_eq!(tx_count(&pool).await, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn multi_posting_rows_are_deferred_not_collapsed(pool: SqlitePool) {
+        let bank = account(
+            &pool,
+            "Bank",
+            AccountType::Asset,
+            AccountKind::DepositAccount,
+        )
+        .await;
+        let txs = crate::TransactionService::new(pool.clone());
+        let srcs = crate::SourceService::new(pool.clone());
+
+        // A two-leg transaction: the interim path must skip it wholesale rather
+        // than silently persisting only its first posting. Full multi-posting
+        // persistence is deferred to the persistence phase.
+        let multi = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("SPLIT")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Expenses:Food")
+                    .maybe_amount(Some(Amount::new(
+                        Decimal::from(50_i64),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .build(),
+                RawPosting::builder().account("Assets:Bank").build(),
+            ])
+            .build();
+        let batch = vec![raw("COFFEE", -5), multi];
+
+        let imported = execute_import(&txs, &srcs, &bank, &batch)
+            .await
+            .expect("import");
+        assert_eq!(
+            imported, 1,
+            "only the single-posting row imports; the multi-posting row is deferred"
         );
         assert_eq!(tx_count(&pool).await, 1);
     }
