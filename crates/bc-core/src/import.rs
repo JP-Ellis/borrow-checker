@@ -63,7 +63,9 @@ pub struct RawTransaction {
     #[builder(default)]
     pub extra_dates: Vec<(String, Date)>,
     /// One or more posting legs. Single-account importers emit exactly one.
-    #[builder(default)]
+    ///
+    /// Required: the WIT→core boundary rejects a transaction with no legs, and
+    /// every constructed [`RawTransaction`] must carry at least one posting.
     pub postings: Vec<RawPosting>,
 }
 

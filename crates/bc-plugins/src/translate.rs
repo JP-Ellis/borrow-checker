@@ -50,6 +50,11 @@ impl TryFrom<wt::RawTransaction> for bc_core::RawTransaction {
 
     fn try_from(t: wt::RawTransaction) -> Result<Self, Self::Error> {
         let date = wit_date(t.date)?;
+        if t.postings.is_empty() {
+            return Err(bc_core::ImportError::Parse(
+                "plugin returned a raw transaction with no postings".to_owned(),
+            ));
+        }
         let extra_dates = t
             .extra_dates
             .into_iter()
@@ -174,6 +179,31 @@ mod tests {
         assert_eq!(
             core.postings.first().expect("one posting").account,
             "Assets:Bank:Checking"
+        );
+    }
+
+    #[test]
+    fn wit_to_raw_transaction_rejects_empty_postings() {
+        let t = wt::RawTransaction {
+            date: wt::Date {
+                year: 2025_i32,
+                month: 6_u8,
+                day: 27_u8,
+            },
+            payee: None,
+            description: "Coffee".to_owned(),
+            note: None,
+            reference: None,
+            tags: vec![],
+            extra_dates: vec![],
+            postings: vec![],
+        };
+        assert!(
+            matches!(
+                bc_core::RawTransaction::try_from(t),
+                Err(bc_core::ImportError::Parse(_))
+            ),
+            "a transaction with no postings should be rejected at the WIT→core boundary"
         );
     }
 
