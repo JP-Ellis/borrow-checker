@@ -691,6 +691,23 @@ pub struct FilteredTransaction {
     pub matched_postings: Vec<String>,
 }
 
+impl FilteredTransaction {
+    /// Creates a new [`FilteredTransaction`].
+    ///
+    /// # Arguments
+    ///
+    /// * `transaction` - The whole matched transaction (never pruned server-side).
+    /// * `matched_postings` - Posting ids of the legs that matched the posting-scoped predicates.
+    #[must_use]
+    #[inline]
+    pub fn new(transaction: Transaction, matched_postings: Vec<String>) -> Self {
+        Self {
+            transaction,
+            matched_postings,
+        }
+    }
+}
+
 /// Windowed account statistics for the dashboard.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
