@@ -57,6 +57,8 @@ pub(crate) struct Transaction {
     pub payee: Option<String>,
     /// Narration (second quoted string, or the only one if there is just one).
     pub narration: String,
+    /// The `#`-prefixed tags on the transaction header, in source order.
+    pub tags: Vec<String>,
     /// The posting legs for this transaction.
     pub postings: Vec<Posting>,
 }
@@ -75,8 +77,16 @@ pub(crate) enum TxFlag {
 pub(crate) struct Posting {
     /// The account path (e.g. `"Assets:Bank"`).
     pub account: String,
-    /// The numeric amount.
-    pub amount: Decimal,
+    /// The explicit amount, or `None` if the posting elides it (Beancount
+    /// derives the elided amount so the transaction balances).
+    pub amount: Option<PostingAmount>,
+}
+
+/// An explicit numeric amount and commodity on a posting leg.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PostingAmount {
+    /// The numeric value.
+    pub value: Decimal,
     /// The commodity code (e.g. `"AUD"`).
     pub currency: String,
 }
