@@ -69,6 +69,7 @@ pub use types::Amount;
 pub use types::Date;
 pub use types::ImportConfig;
 pub use types::ImportError;
+pub use types::RawPosting;
 pub use types::RawTransaction;
 
 /// The trait that every importer plugin must implement.
