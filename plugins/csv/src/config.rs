@@ -71,6 +71,9 @@ impl Default for AmountColumns {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Config {
+    /// Account path this statement's rows post to, e.g. `"Assets:Bank:Checking"`.
+    /// Stamped onto every emitted posting.
+    pub account: String,
     /// How to skip over metadata lines before the header row.
     #[serde(default)]
     pub preamble: Preamble,
@@ -131,6 +134,7 @@ impl Default for Config {
     #[inline]
     fn default() -> Self {
         Self {
+            account: String::new(),
             preamble: Preamble::default(),
             delimiter: default_delimiter(),
             date_column: default_date_column(),
