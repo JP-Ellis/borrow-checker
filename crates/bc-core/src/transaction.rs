@@ -58,7 +58,7 @@ struct ListPostingRow {
 /// Row type for a transaction fetched from the `transactions` table.
 ///
 /// Fields: `(id, date, payee, description, note, reconciliation, created_at)`.
-type TxRow = (
+pub(crate) type TxRow = (
     String,
     String,
     Option<String>,
@@ -72,7 +72,7 @@ type TxRow = (
 ///
 /// Used to bind a variable-length set of IDs into an `IN (…)` clause, since
 /// SQLite has no native array binding.
-fn sql_placeholders(n: usize) -> String {
+pub(crate) fn sql_placeholders(n: usize) -> String {
     let mut out = String::with_capacity(n.saturating_mul(2));
     for i in 0..n {
         if i > 0 {
@@ -1090,7 +1090,7 @@ impl Service {
         clippy::too_many_lines,
         reason = "loading transactions with postings, cost, and tags for a specific account inherently requires several queries and field mappings"
     )]
-    async fn assemble_transactions(
+    pub(crate) async fn assemble_transactions(
         &self,
         tx_rows: Vec<TxRow>,
     ) -> BcResult<impl Iterator<Item = Transaction> + use<>> {
