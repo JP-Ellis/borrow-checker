@@ -9,7 +9,7 @@ mod preamble;
 
 use std::collections::HashMap;
 
-use bc_sdk::{Amount, Date, ImportConfig, ImportError, RawTransaction};
+use bc_sdk::{Amount, Date, ImportConfig, ImportError, RawPosting, RawTransaction};
 use rust_decimal::Decimal;
 
 use crate::config::{AmountColumns, Config};
@@ -217,14 +217,19 @@ impl bc_sdk::Importer for CsvImporter {
                     .map(str::to_owned)
             });
 
-            transactions.push(RawTransaction::new(
-                date,
-                amount,
-                balance,
-                payee,
-                description,
-                reference,
-            ));
+            transactions.push(
+                RawTransaction::builder()
+                    .date(date)
+                    .maybe_payee(payee)
+                    .description(description)
+                    .maybe_reference(reference)
+                    .postings(vec![RawPosting::builder()
+                        .account(cfg.account.clone())
+                        .amount(amount)
+                        .maybe_balance(balance)
+                        .build()])
+                    .build(),
+            );
         }
 
         Ok(transactions)
@@ -552,6 +557,7 @@ mod tests {
 
         let config_json = r#"{
             "commodity": "AUD",
+            "account": "Assets:NAB:Josh",
             "date_column": "Date",
             "date_format": "%Y-%m-%d",
             "amount_columns": {"style": "single", "column": "Amount"},
@@ -566,16 +572,20 @@ mod tests {
 
         let t0 = &txns[0];
         assert_eq!(t0.date, Date::new(2025, 3, 15));
+        assert_eq!(t0.postings.len(), 1);
+        assert_eq!(t0.postings[0].account, "Assets:NAB:Josh");
         // 50.00 AUD → minor_units=5000, scale=2
-        assert_eq!(t0.amount, Amount::new(5000, "AUD", 2));
+        assert_eq!(t0.postings[0].amount, Some(Amount::new(5000, "AUD", 2)));
+        assert_eq!(t0.postings[0].balance, None);
         assert_eq!(t0.description, "Coffee shop");
         assert_eq!(t0.payee.as_deref(), Some("Java Hut"));
-        assert_eq!(t0.balance, None);
 
         let t1 = &txns[1];
         assert_eq!(t1.date, Date::new(2025, 3, 16));
+        assert_eq!(t1.postings.len(), 1);
+        assert_eq!(t1.postings[0].account, "Assets:NAB:Josh");
         // -120.00 AUD → minor_units=-12000, scale=2
-        assert_eq!(t1.amount, Amount::new(-12000, "AUD", 2));
+        assert_eq!(t1.postings[0].amount, Some(Amount::new(-12000, "AUD", 2)));
         assert_eq!(t1.description, "Groceries");
         assert_eq!(t1.payee, None);
     }
