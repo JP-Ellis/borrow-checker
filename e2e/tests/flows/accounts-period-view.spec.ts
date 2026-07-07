@@ -10,7 +10,7 @@
  * Seed data (see crates/bc-seed/src/main.rs) is generated relative to
  * "today" — Checking has transactions in every one of the last 6 months
  * plus the current month, so stepping the window always crosses a
- * transaction boundary. Savings, however, has transactions in every
+ * transaction boundary. Transport, however, has transactions in every
  * historical month but NONE in the current month — a real seeded account
  * with no current-period activity — which is used to verify the
  * auto-jump-to-latest-activity behaviour on first load.
@@ -227,11 +227,11 @@ describe('Accounts — period view', () => {
     });
 
     it('auto-jumps to the most recent active period on first load for an account with no current-period activity', async () => {
-        // Savings has transactions in every historical seeded month but NONE
+        // Transport has transactions in every historical seeded month but NONE
         // in the current month (see crates/bc-seed/src/main.rs) — the
         // default "today" window would show an empty register were it not
         // for the account_latest_activity auto-jump on first selection.
-        await openAccount('Savings');
+        await openAccount('Transport');
 
         await waitForRegisterRows();
         const rows = await registerRowCount();
