@@ -3,11 +3,10 @@
 //! This crate implements [`bc_sdk::Importer`] for Ledger files and is compiled
 //! to a WASM component for use with the BorrowChecker plugin host.
 
-use std::collections::BTreeMap;
-
 use bc_sdk::Amount;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
+use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
 use rust_decimal::Decimal;
 
@@ -15,7 +14,6 @@ mod ast;
 mod parser;
 
 use ast::Entry;
-use ast::PostingAmount;
 use parser::parse;
 
 /// Implements [`bc_sdk::Importer`] for the Ledger plain-text accounting format.
@@ -102,28 +100,41 @@ impl bc_sdk::Importer for LedgerImporter {
                 continue;
             };
 
-            // Resolve elided amounts so every posting has an explicit value.
-            let postings = resolve_elided(&tx.postings).map_err(ImportError::Parse)?;
-
-            // Emit one RawTransaction per Ledger transaction using the first posting's amount.
-            if let Some(first) = postings.first() {
-                let amount = decimal_to_amount(first.value, first.commodity.as_str())?;
-                let payee = if tx.payee.is_empty() {
-                    None
-                } else {
-                    Some(tx.payee.clone())
-                };
-                let description = tx.comment.clone().unwrap_or_else(|| tx.payee.clone());
-
-                raw_txs.push(RawTransaction::new(
-                    tx.date,
-                    amount,
-                    None,
-                    payee,
-                    description,
-                    None,
-                ));
+            if tx.postings.is_empty() {
+                return Err(ImportError::Parse("transaction has no postings".into()));
             }
+
+            let mut postings = Vec::with_capacity(tx.postings.len());
+            for posting in tx.postings {
+                let amount = posting
+                    .amount
+                    .map(|ast::PostingAmount { value, commodity }| {
+                        decimal_to_amount(value, commodity)
+                    })
+                    .transpose()?;
+                postings.push(
+                    RawPosting::builder()
+                        .account(posting.account)
+                        .maybe_amount(amount)
+                        .build(),
+                );
+            }
+
+            let payee = if tx.payee.is_empty() {
+                None
+            } else {
+                Some(tx.payee.clone())
+            };
+            let description = tx.comment.unwrap_or(tx.payee);
+
+            raw_txs.push(
+                RawTransaction::builder()
+                    .date(tx.date)
+                    .maybe_payee(payee)
+                    .description(description)
+                    .postings(postings)
+                    .build(),
+            );
         }
 
         Ok(raw_txs)
@@ -171,72 +182,6 @@ fn decimal_to_amount(
     Ok(Amount::new(minor_units, currency, scale))
 }
 
-/// Resolves elided posting amounts.
-///
-/// Ledger allows the last posting to omit its amount.  The missing amount is
-/// computed as the negated sum of all other postings for the same commodity.
-///
-/// # Errors
-///
-/// Returns a string error if more than one posting has an elided amount, or if
-/// the transaction mixes commodities making resolution ambiguous.
-#[inline]
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "decimal amounts cannot realistically overflow in financial ledger files"
-)]
-#[expect(
-    clippy::expect_used,
-    reason = "the elided_count == 0 branch already verified that all amounts are Some"
-)]
-fn resolve_elided(postings: &[crate::ast::Posting]) -> Result<Vec<PostingAmount>, String> {
-    let elided_count = postings.iter().filter(|p| p.amount.is_none()).count();
-
-    if elided_count > 1 {
-        return Err(format!(
-            "transaction has {elided_count} postings with elided amounts; at most 1 is allowed"
-        ));
-    }
-
-    if elided_count == 0 {
-        return Ok(postings
-            .iter()
-            .map(|p| {
-                p.amount
-                    .clone()
-                    .expect("already verified all amounts are present")
-            })
-            .collect());
-    }
-
-    // Sum explicit postings per commodity.
-    let mut sums: BTreeMap<String, Decimal> = BTreeMap::new();
-    for p in postings {
-        if let Some(amt) = &p.amount {
-            *sums.entry(amt.commodity.clone()).or_default() += amt.value;
-        }
-    }
-
-    if sums.len() > 1 {
-        return Err("cannot resolve elided amount in a multi-commodity transaction".into());
-    }
-
-    let (commodity, total) = sums
-        .into_iter()
-        .next()
-        .ok_or_else(|| "transaction has only elided postings".to_owned())?;
-
-    Ok(postings
-        .iter()
-        .map(|p| {
-            p.amount.clone().unwrap_or(PostingAmount {
-                value: -total,
-                commodity: commodity.clone(),
-            })
-        })
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use bc_sdk::Importer as _;
@@ -261,15 +206,35 @@ mod tests {
         assert_eq!(txs.len(), 1);
         assert_eq!(txs[0].payee.as_deref(), Some("Woolworths"));
         assert_eq!(txs[0].date, bc_sdk::Date::new(2025_i32, 1_u8, 15_u8));
+        assert_eq!(txs[0].postings.len(), 2);
+        assert_eq!(txs[0].postings[0].account, "Expenses:Food");
+        assert_eq!(txs[0].postings[0].amount, Some(Amount::new(5000, "AUD", 2)));
+        assert_eq!(txs[0].postings[1].account, "Assets:Bank");
+        assert_eq!(
+            txs[0].postings[1].amount,
+            Some(Amount::new(-5000, "AUD", 2))
+        );
     }
 
     #[test]
-    fn elided_amount_inferred_for_balance() {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test indices are known to be valid"
+    )]
+    fn elided_posting_maps_to_none_amount() {
         let input = "2025-01-17 Rent\n    Expenses:Rent    1500.00 AUD\n    Assets:Bank\n";
         let txs = LedgerImporter
             .import(input.as_bytes(), empty_config())
             .expect("import");
-        assert!(!txs.is_empty());
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0].postings.len(), 2);
+        assert_eq!(txs[0].postings[0].account, "Expenses:Rent");
+        assert_eq!(
+            txs[0].postings[0].amount,
+            Some(Amount::new(150_000, "AUD", 2))
+        );
+        assert_eq!(txs[0].postings[1].account, "Assets:Bank");
+        assert_eq!(txs[0].postings[1].amount, None);
     }
 
     #[test]
