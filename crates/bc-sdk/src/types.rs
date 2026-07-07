@@ -132,58 +132,52 @@ impl Amount {
     }
 }
 
-/// A parsed transaction prior to account binding.
+/// A single posting leg of a raw transaction, prior to account-id resolution.
+#[derive(bon::Builder, Debug, Clone, PartialEq)]
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq)]
+pub struct RawPosting {
+    /// Account path this leg credits/debits, e.g. `"Assets:Bank:Checking"`.
+    #[builder(into)]
+    pub account: String,
+    /// Leg amount. `None` means elided — the residual that balances the transaction.
+    pub amount: Option<Amount>,
+    /// Per-account running balance after this leg, if the source reports it.
+    pub balance: Option<Amount>,
+    /// Optional free-text note for this leg.
+    #[builder(into)]
+    pub note: Option<String>,
+    /// Tag names applied to this leg.
+    #[builder(default)]
+    pub tags: Vec<String>,
+}
+
+/// A parsed transaction prior to account binding. Carries one or more postings.
+#[derive(bon::Builder, Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct RawTransaction {
     /// The transaction date.
     pub date: Date,
-    /// The transaction amount.
-    pub amount: Amount,
-    /// The running balance after this transaction, if available.
-    pub balance: Option<Amount>,
     /// The payee or merchant name, if available.
+    #[builder(into)]
     pub payee: Option<String>,
     /// A free-text description or memo.
+    #[builder(into)]
     pub description: String,
-    /// An institution-provided reference, if available.
+    /// Optional user annotation, distinct from `description`.
+    #[builder(into)]
+    pub note: Option<String>,
+    /// An institution-provided reference, if available (a dedup input).
+    #[builder(into)]
     pub reference: Option<String>,
-}
-
-impl RawTransaction {
-    /// Creates a new [`RawTransaction`].
-    ///
-    /// # Arguments
-    ///
-    /// * `date` - The transaction date.
-    /// * `amount` - The transaction amount.
-    /// * `balance` - The running balance after this transaction, if available.
-    /// * `payee` - The payee or merchant name, if available.
-    /// * `description` - A free-text description or memo.
-    /// * `reference` - An institution-provided reference, if available.
-    ///
-    /// # Returns
-    ///
-    /// A new [`RawTransaction`] with the given fields.
-    #[inline]
-    #[must_use]
-    pub fn new(
-        date: Date,
-        amount: Amount,
-        balance: Option<Amount>,
-        payee: Option<String>,
-        description: String,
-        reference: Option<String>,
-    ) -> Self {
-        Self {
-            date,
-            amount,
-            balance,
-            payee,
-            description,
-            reference,
-        }
-    }
+    /// Transaction-level tag names (e.g. Beancount `#josh`).
+    #[builder(default)]
+    pub tags: Vec<String>,
+    /// Free-form labelled dates (e.g. `("cleared", …)`).
+    #[builder(default)]
+    pub extra_dates: Vec<(String, Date)>,
+    /// One or more posting legs. Single-account importers emit exactly one.
+    #[builder(default)]
+    pub postings: Vec<RawPosting>,
 }
 
 /// Opaque JSON configuration blob passed to an importer from the import profile.
@@ -291,8 +285,23 @@ impl From<serde_json::Error> for ImportError {
 // Bring generated types into scope to avoid absolute paths (clippy::absolute_paths).
 use crate::__bindings::borrow_checker::sdk::types::Amount as WitAmount;
 use crate::__bindings::borrow_checker::sdk::types::Date as WitDate;
+use crate::__bindings::borrow_checker::sdk::types::RawPosting as WitRawPosting;
 use crate::__bindings::exports::borrow_checker::sdk::importer::ImportError as WitImportError;
 use crate::__bindings::exports::borrow_checker::sdk::importer::RawTransaction as WitRawTransaction;
+
+#[doc(hidden)]
+impl From<RawPosting> for WitRawPosting {
+    #[inline]
+    fn from(p: RawPosting) -> Self {
+        Self {
+            account: p.account,
+            amount: p.amount.map(Into::into),
+            balance: p.balance.map(Into::into),
+            note: p.note,
+            tags: p.tags,
+        }
+    }
+}
 
 #[doc(hidden)]
 impl From<RawTransaction> for WitRawTransaction {
@@ -304,11 +313,26 @@ impl From<RawTransaction> for WitRawTransaction {
                 month: t.date.month,
                 day: t.date.day,
             },
-            amount: t.amount.into(),
-            balance: t.balance.map(::core::convert::Into::into),
             payee: t.payee,
             description: t.description,
+            note: t.note,
             reference: t.reference,
+            tags: t.tags,
+            extra_dates: t
+                .extra_dates
+                .into_iter()
+                .map(|(k, d)| {
+                    (
+                        k,
+                        WitDate {
+                            year: d.year,
+                            month: d.month,
+                            day: d.day,
+                        },
+                    )
+                })
+                .collect(),
+            postings: t.postings.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -405,22 +429,22 @@ mod tests {
     }
 
     #[test]
-    fn raw_transaction_new_stores_fields() {
-        let date = Date::new(2025_i32, 1_u8, 15_u8);
-        let amount = Amount::new(1050_i64, "AUD", 2_u8);
-        let tx = RawTransaction::new(
-            date.clone(),
-            amount.clone(),
-            None,
-            Some("Payee".to_owned()),
-            "Description".to_owned(),
-            None,
-        );
-        assert_eq!(tx.date, date);
-        assert_eq!(tx.amount, amount);
-        assert_eq!(tx.balance, None);
-        assert_eq!(tx.payee.as_deref(), Some("Payee"));
-        assert_eq!(tx.description, "Description");
-        assert_eq!(tx.reference, None);
+    fn raw_transaction_builder_stores_fields() {
+        let tx = RawTransaction::builder()
+            .date(Date::new(2025, 6, 27))
+            .description("Coffee")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank:Checking")
+                    .maybe_amount(Some(Amount::new(-500, "AUD", 2)))
+                    .build(),
+            ])
+            .build();
+        assert_eq!(tx.date, Date::new(2025, 6, 27));
+        assert_eq!(tx.description, "Coffee");
+        assert_eq!(tx.postings.len(), 1);
+        let posting = tx.postings.first().expect("one posting");
+        assert_eq!(posting.account, "Assets:Bank:Checking");
+        assert_eq!(posting.amount, Some(Amount::new(-500, "AUD", 2)));
     }
 }
