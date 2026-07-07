@@ -18,11 +18,14 @@ fn import_missing_profile_returns_error() {
     file.write_str("date,amount,description\n2026-01-01,-50.00,Test\n")
         .expect("write fixture");
 
+    let account_id = bc_models::AccountId::new().to_string();
     let mut cmd = ctx.command();
     cmd.args([
         "import",
         "--profile",
         "nonexistent",
+        "--account",
+        &account_id,
         file.path().to_str().expect("utf8 path"),
     ]);
     cmd_snapshot!(ctx, &mut cmd);

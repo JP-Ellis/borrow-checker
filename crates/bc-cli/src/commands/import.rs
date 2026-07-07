@@ -1,5 +1,6 @@
 //! Import sub-command.
 
+use core::str::FromStr as _;
 use std::path::PathBuf;
 
 use crate::context::AppContext;
@@ -13,6 +14,10 @@ pub struct Args {
     #[arg(long, value_name = "NAME")]
     pub profile: String,
 
+    /// Account to import transactions into.
+    #[arg(long, value_name = "ACCOUNT")]
+    pub account: String,
+
     /// File to import.
     pub file: PathBuf,
 }
@@ -25,6 +30,10 @@ pub struct Args {
 /// file cannot be read, or the importer fails to parse it.
 #[inline]
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
+    let account_id = bc_models::AccountId::from_str(&args.account).map_err(|e| {
+        crate::error::CliError::Arg(format!("invalid account ID '{}': {e}", args.account))
+    })?;
+
     // Find the import profile by name.
     let profiles = ctx.profiles.list_all().await?;
     let profile = profiles
@@ -56,7 +65,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         .import(&bytes, &profile.config)
         .map_err(|e| crate::error::CliError::Arg(format!("import parse error: {e}")))?;
 
-    let account_id = profile.account_id.clone();
     let count =
         bc_core::execute_import(&ctx.transactions, &ctx.sources, &account_id, &raw_txs).await?;
     if ctx.json {

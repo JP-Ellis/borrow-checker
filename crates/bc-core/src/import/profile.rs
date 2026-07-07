@@ -1,11 +1,10 @@
 //! Import profile storage service.
 //!
-//! An [`ImportProfile`] captures the association between a financial account,
-//! a named importer (e.g. `"csv"`, `"ofx"`), and the opaque JSON configuration
-//! blob that drives that importer.  The [`Service`] provides CRUD operations
-//! backed by the `import_profiles` SQLite table.
+//! An [`ImportProfile`] captures the association between a named importer
+//! (e.g. `"csv"`, `"ofx"`) and the opaque JSON configuration blob that drives
+//! that importer.  The [`Service`] provides CRUD operations backed by the
+//! `import_profiles` SQLite table.
 
-use bc_models::AccountId;
 use bc_models::ProfileId;
 use jiff::Timestamp;
 use sqlx::SqlitePool;
@@ -14,7 +13,7 @@ use super::Config;
 use crate::BcError;
 use crate::BcResult;
 
-/// A persisted import profile linking an account to an importer and its config.
+/// A persisted import profile linking an importer to its config.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImportProfile {
@@ -24,8 +23,6 @@ pub struct ImportProfile {
     pub name: String,
     /// Stable identifier of the importer plugin (e.g. `"csv"`, `"ofx"`).
     pub importer: String,
-    /// The account this profile feeds transactions into.
-    pub account_id: AccountId,
     /// Opaque JSON configuration passed to the importer.
     pub config: Config,
     /// The timestamp when this profile was created.
@@ -58,7 +55,6 @@ impl Service {
     ///
     /// * `name` - Human-readable name for the profile.
     /// * `importer` - Stable identifier of the importer plugin.
-    /// * `account_id` - The account this profile will feed transactions into.
     /// * `config` - Opaque JSON configuration for the importer.
     ///
     /// # Returns
@@ -70,32 +66,7 @@ impl Service {
     /// Returns [`BcError::Serialisation`] if the config cannot be serialised.
     /// Returns [`BcError::Database`] on database insert failure.
     #[inline]
-    pub async fn create(
-        &self,
-        name: &str,
-        importer: &str,
-        account_id: &AccountId,
-        config: Config,
-    ) -> BcResult<ProfileId> {
-        // Verify the target account is a DepositAccount — only they may have import profiles.
-        let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM accounts WHERE id = ?")
-            .bind(account_id.to_string())
-            .fetch_optional(&self.pool)
-            .await?;
-
-        match kind.as_deref() {
-            None => return Err(BcError::NotFound(format!("account {account_id}"))),
-            Some(k) if k != "deposit_account" => {
-                let parsed = crate::db::from_db_str::<bc_models::AccountKind>(k)?;
-                return Err(BcError::InvalidAccountKind {
-                    operation: "create import profile",
-                    account_id: account_id.clone(),
-                    kind: parsed,
-                });
-            }
-            Some(_) => {} // deposit_account — allowed
-        }
-
+    pub async fn create(&self, name: &str, importer: &str, config: Config) -> BcResult<ProfileId> {
         let id = ProfileId::new();
         let created_at = Timestamp::now();
         let config_json =
@@ -103,13 +74,12 @@ impl Service {
 
         sqlx::query(
             "INSERT INTO import_profiles \
-             (id, name, importer, account_id, config, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+             (id, name, importer, config, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(id.to_string())
         .bind(name)
         .bind(importer)
-        .bind(account_id.to_string())
         .bind(&config_json)
         .bind(created_at.to_string())
         .execute(&self.pool)
@@ -121,7 +91,7 @@ impl Service {
 
     /// Updates an existing import profile's mutable fields.
     ///
-    /// The `account_id` and `created_at` fields are immutable after creation.
+    /// The `created_at` field is immutable after creation.
     ///
     /// # Arguments
     ///
@@ -183,8 +153,8 @@ impl Service {
     /// Returns [`BcError::Database`] on database query failure.
     #[inline]
     pub async fn find_by_id(&self, id: &ProfileId) -> BcResult<ImportProfile> {
-        let row: (String, String, String, String, String, String) = sqlx::query_as(
-            "SELECT id, name, importer, account_id, config, created_at \
+        let row: (String, String, String, String, String) = sqlx::query_as(
+            "SELECT id, name, importer, config, created_at \
              FROM import_profiles WHERE id = ?",
         )
         .bind(id.to_string())
@@ -192,47 +162,7 @@ impl Service {
         .await?
         .ok_or_else(|| BcError::NotFound(format!("import profile {id}")))?;
 
-        parse_row(&row.0, row.1, row.2, &row.3, &row.4, &row.5)
-    }
-
-    /// Lists all import profiles for a given account, ordered by creation time.
-    ///
-    /// # Arguments
-    ///
-    /// * `account_id` - The account whose profiles to list.
-    ///
-    /// # Returns
-    ///
-    /// A [`Vec`] of [`ImportProfile`] values ordered by `created_at` ascending.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BcError::BadData`] if any stored value cannot be parsed.
-    /// Returns [`BcError::Database`] on database query failure.
-    #[inline]
-    pub async fn list_for_account(&self, account_id: &AccountId) -> BcResult<Vec<ImportProfile>> {
-        let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
-            "SELECT id, name, importer, account_id, config, created_at \
-             FROM import_profiles WHERE account_id = ? ORDER BY created_at ASC",
-        )
-        .bind(account_id.to_string())
-        .fetch_all(&self.pool)
-        .await?;
-
-        rows.into_iter()
-            .map(
-                |(raw_id, name, importer, raw_account_id, raw_config, raw_created_at)| {
-                    parse_row(
-                        &raw_id,
-                        name,
-                        importer,
-                        &raw_account_id,
-                        &raw_config,
-                        &raw_created_at,
-                    )
-                },
-            )
-            .collect()
+        parse_row(&row.0, row.1, row.2, &row.3, &row.4)
     }
 
     /// Lists all import profiles in the database, ordered by creation time.
@@ -247,26 +177,17 @@ impl Service {
     /// Returns [`BcError::Database`] on database query failure.
     #[inline]
     pub async fn list_all(&self) -> BcResult<Vec<ImportProfile>> {
-        let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
-            "SELECT id, name, importer, account_id, config, created_at \
+        let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
+            "SELECT id, name, importer, config, created_at \
              FROM import_profiles ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
         .await?;
 
         rows.into_iter()
-            .map(
-                |(raw_id, name, importer, raw_account_id, raw_config, raw_created_at)| {
-                    parse_row(
-                        &raw_id,
-                        name,
-                        importer,
-                        &raw_account_id,
-                        &raw_config,
-                        &raw_created_at,
-                    )
-                },
-            )
+            .map(|(raw_id, name, importer, raw_config, raw_created_at)| {
+                parse_row(&raw_id, name, importer, &raw_config, &raw_created_at)
+            })
             .collect()
     }
 
@@ -296,7 +217,7 @@ impl Service {
     }
 }
 
-/// Parses six raw database column strings into an [`ImportProfile`].
+/// Parses five raw database column strings into an [`ImportProfile`].
 ///
 /// # Errors
 ///
@@ -307,16 +228,11 @@ fn parse_row(
     raw_id: &str,
     name: String,
     importer: String,
-    raw_account_id: &str,
     raw_config: &str,
     raw_created_at: &str,
 ) -> BcResult<ImportProfile> {
     let id = raw_id
         .parse::<ProfileId>()
-        .map_err(|e: bc_models::IdParseError| BcError::BadData(e.to_string()))?;
-
-    let account_id = raw_account_id
-        .parse::<AccountId>()
         .map_err(|e: bc_models::IdParseError| BcError::BadData(e.to_string()))?;
 
     let created_at = raw_created_at
@@ -331,7 +247,6 @@ fn parse_row(
         id,
         name,
         importer,
-        account_id,
         config,
         created_at,
     })
@@ -339,34 +254,18 @@ fn parse_row(
 
 #[cfg(test)]
 mod tests {
-    use bc_models::AccountId;
-    use bc_models::AccountKind;
-    use bc_models::AccountType;
     use pretty_assertions::assert_eq;
     use sqlx::SqlitePool;
 
     use super::*;
 
-    /// Creates a minimal account and returns its ID, for use in profile tests.
-    async fn make_account(pool: &SqlitePool) -> AccountId {
-        crate::AccountService::new(pool.clone())
-            .create()
-            .name("Savings")
-            .account_type(AccountType::Asset)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account")
-    }
-
     #[sqlx::test(migrations = "./migrations")]
     async fn create_and_find_by_id_returns_matching_data(pool: SqlitePool) {
-        let account_id = make_account(&pool).await;
         let svc = Service::new(pool.clone());
 
         let config = Config::default();
         let id = svc
-            .create("My Profile", "csv", &account_id, config)
+            .create("My Profile", "csv", config)
             .await
             .expect("create should succeed");
 
@@ -374,16 +273,14 @@ mod tests {
         assert_eq!(found.id, id);
         assert_eq!(found.name, "My Profile");
         assert_eq!(found.importer, "csv");
-        assert_eq!(found.account_id, account_id);
     }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn update_changes_mutable_fields(pool: SqlitePool) {
-        let account_id = make_account(&pool).await;
         let svc = Service::new(pool.clone());
 
         let id = svc
-            .create("Old Name", "csv", &account_id, Config::default())
+            .create("Old Name", "csv", Config::default())
             .await
             .expect("create should succeed");
 
@@ -394,8 +291,6 @@ mod tests {
         let found = svc.find_by_id(&id).await.expect("find should succeed");
         assert_eq!(found.name, "New Name");
         assert_eq!(found.importer, "ofx");
-        // account_id must not change
-        assert_eq!(found.account_id, account_id);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -407,31 +302,11 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn list_for_account_returns_correct_count(pool: SqlitePool) {
-        let account_id = make_account(&pool).await;
-        let svc = Service::new(pool.clone());
-
-        svc.create("Profile A", "csv", &account_id, Config::default())
-            .await
-            .expect("create first should succeed");
-        svc.create("Profile B", "ofx", &account_id, Config::default())
-            .await
-            .expect("create second should succeed");
-
-        let profiles = svc
-            .list_for_account(&account_id)
-            .await
-            .expect("list should succeed");
-        assert_eq!(profiles.len(), 2);
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
     async fn delete_removes_the_profile(pool: SqlitePool) {
-        let account_id = make_account(&pool).await;
         let svc = Service::new(pool.clone());
 
         let id = svc
-            .create("To Delete", "csv", &account_id, Config::default())
+            .create("To Delete", "csv", Config::default())
             .await
             .expect("create should succeed");
 
@@ -450,43 +325,13 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn create_profile_for_manual_asset_account_fails(pool: SqlitePool) {
-        let account_id = crate::AccountService::new(pool.clone())
-            .create()
-            .name("House")
-            .account_type(bc_models::AccountType::Asset)
-            .kind(bc_models::AccountKind::ManualAsset)
-            .call()
-            .await
-            .expect("create ManualAsset account");
-        let svc = Service::new(pool.clone());
-        let result = svc
-            .create("Bad Profile", "csv", &account_id, Config::default())
-            .await;
-        assert!(
-            matches!(result, Err(BcError::InvalidAccountKind { .. })),
-            "expected InvalidAccountKind, got {result:?}"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn list_all_returns_profiles_from_all_accounts(pool: SqlitePool) {
+    async fn list_all_returns_all_profiles(pool: SqlitePool) {
         let svc = Service::new(pool.clone());
 
-        let account1 = make_account(&pool).await;
-        let account2 = crate::AccountService::new(pool.clone())
-            .create()
-            .name("Checking")
-            .account_type(bc_models::AccountType::Asset)
-            .kind(bc_models::AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("create account2");
-
-        svc.create("Profile A", "csv", &account1, Config::default())
+        svc.create("Profile A", "csv", Config::default())
             .await
             .expect("create A");
-        svc.create("Profile B", "ofx", &account2, Config::default())
+        svc.create("Profile B", "ofx", Config::default())
             .await
             .expect("create B");
 
