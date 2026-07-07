@@ -1,5 +1,6 @@
 ---
 source: crates/bc-cli/tests/cli/help.rs
+assertion_line: 34
 expression: output
 ---
 success: true
@@ -7,7 +8,7 @@ exit_code: 0
 ----- stdout -----
 Import transactions from a file using a named import profile
 
-Usage: borrow-checker import [OPTIONS] --profile <NAME> <FILE>
+Usage: borrow-checker import [OPTIONS] --profile <NAME> --account <ACCOUNT> <FILE>
 
 Arguments:
   <FILE>
@@ -21,6 +22,9 @@ Options:
 
       --profile <NAME>
           Name of the import profile to use
+
+      --account <ACCOUNT>
+          Account to import transactions into
 
       --db-path <DB_PATH>
           Path to the SQLite database file.
