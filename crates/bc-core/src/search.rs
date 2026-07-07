@@ -271,8 +271,26 @@ impl Service {
         if let Some(amount) = &query.amount {
             // Bind as REAL magnitudes; this is only a coarse candidate filter —
             // `compute_matched_postings` (Decimal-exact) is the source of truth.
-            let min = amount.min.and_then(|d| d.to_f64()).unwrap_or(f64::MIN);
-            let max = amount.max.and_then(|d| d.to_f64()).unwrap_or(f64::MAX);
+            // Widen by a small epsilon so Decimal->f64 rounding can never make
+            // the SQL bound narrower than the exact Decimal comparison: the
+            // coarse filter must only ever over-match, never drop a real match.
+            const AMOUNT_EPSILON: f64 = 0.0001;
+            #[expect(
+                clippy::float_arithmetic,
+                reason = "widening a coarse SQL bound by a fixed epsilon; exactness lives in compute_matched_postings"
+            )]
+            let min = amount
+                .min
+                .and_then(|d| d.to_f64())
+                .map_or(f64::MIN, |v| v - AMOUNT_EPSILON);
+            #[expect(
+                clippy::float_arithmetic,
+                reason = "widening a coarse SQL bound by a fixed epsilon; exactness lives in compute_matched_postings"
+            )]
+            let max = amount
+                .max
+                .and_then(|d| d.to_f64())
+                .map_or(f64::MAX, |v| v + AMOUNT_EPSILON);
             let commodity = amount.commodity.as_ref().map(|c| c.as_str().to_owned());
             stmt = stmt
                 .bind(min)
@@ -782,6 +800,48 @@ mod search_tests {
         assert_eq!(
             out.first().expect("one result").transaction.payee(),
             Some("big")
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amount_boundary_value_is_not_dropped(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "boundary", dec!(100.10)))
+            .await
+            .expect("t1");
+
+        let query = TransactionQuery {
+            amount: Some(AmountQuery {
+                min: Some(dec!(100.10)),
+                max: Some(dec!(100.10)),
+                commodity: None,
+            }),
+            ..Default::default()
+        };
+        let out = svc.search(&query).await.expect("search");
+        // A leg whose exact magnitude equals both min and max must not be
+        // dropped by the coarse SQL filter's f64 rounding.
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out.first().expect("one result").transaction.payee(),
+            Some("boundary")
         );
     }
 }
