@@ -12,61 +12,59 @@ pub(crate) mod registry;
 use bc_models::Amount;
 use jiff::civil::Date;
 
+/// A single posting leg of a raw transaction, prior to account-id resolution.
+///
+/// Format-specific parser crates construct these directly from raw input.
+/// The core engine then resolves the account path to an [`bc_models::AccountId`]
+/// and persists the result.
+#[non_exhaustive]
+#[derive(bon::Builder, Debug, Clone, PartialEq)]
+pub struct RawPosting {
+    /// Account path this leg credits/debits, e.g. `"Assets:NAB:Josh"`.
+    #[builder(into)]
+    pub account: String,
+    /// Leg amount. `None` means elided — the residual that balances the transaction.
+    pub amount: Option<Amount>,
+    /// Per-account running balance after this leg, if the source reports it.
+    pub balance: Option<Amount>,
+    /// Optional free-text note for this leg.
+    #[builder(into)]
+    pub note: Option<String>,
+    /// Tag names applied to this leg.
+    #[builder(default)]
+    pub tags: Vec<String>,
+}
+
 /// A parsed transaction prior to account binding.
 ///
 /// Format-specific parser crates construct these directly from raw input.
 /// The core engine then resolves accounts and persists the results.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(bon::Builder, Debug, Clone, PartialEq)]
 pub struct RawTransaction {
     /// The transaction date.
     pub date: Date,
-    /// The transaction amount (quantity + commodity).
-    pub amount: Amount,
-    /// The running balance after this transaction, if available.
-    pub balance: Option<Amount>,
     /// The payee or merchant name, if available.
+    #[builder(into)]
     pub payee: Option<String>,
     /// A free-text description or memo for the transaction.
+    #[builder(into)]
     pub description: String,
+    /// Optional user annotation, distinct from `description`.
+    #[builder(into)]
+    pub note: Option<String>,
     /// An institution-provided reference or check number, if available.
+    #[builder(into)]
     pub reference: Option<String>,
-}
-
-impl RawTransaction {
-    /// Constructs a new [`RawTransaction`].
-    ///
-    /// # Arguments
-    ///
-    /// * `date` - The transaction date.
-    /// * `amount` - The transaction amount (quantity + commodity).
-    /// * `balance` - The running balance after this transaction, if available.
-    /// * `payee` - The payee or merchant name, if available.
-    /// * `description` - A free-text description or memo for the transaction.
-    /// * `reference` - An institution-provided reference or check number, if available.
-    ///
-    /// # Returns
-    ///
-    /// A new [`RawTransaction`] with the provided fields.
-    #[inline]
-    #[must_use]
-    pub fn new(
-        date: jiff::civil::Date,
-        amount: Amount,
-        balance: Option<Amount>,
-        payee: Option<String>,
-        description: String,
-        reference: Option<String>,
-    ) -> Self {
-        Self {
-            date,
-            amount,
-            balance,
-            payee,
-            description,
-            reference,
-        }
-    }
+    /// Transaction-level tag names (e.g. Beancount `#josh`).
+    #[builder(default)]
+    pub tags: Vec<String>,
+    /// Free-form labelled dates (e.g. `("cleared", …)`).
+    #[builder(default)]
+    pub extra_dates: Vec<(String, Date)>,
+    /// One or more posting legs. Single-account importers emit exactly one.
+    #[builder(default)]
+    pub postings: Vec<RawPosting>,
 }
 
 /// Opaque JSON configuration blob passed to an [`Importer`].
@@ -319,16 +317,21 @@ mod tests {
 
     use super::*;
 
-    /// Helper that constructs a minimal [`RawTransaction`].
+    /// Helper that constructs a minimal [`RawTransaction`] with a single posting.
     fn make_raw_transaction() -> RawTransaction {
-        RawTransaction {
-            date: date(2024, 3, 15),
-            amount: Amount::new(dec!(42.50), CommodityCode::new("USD")),
-            balance: Some(Amount::new(dec!(1_000.00), CommodityCode::new("USD"))),
-            payee: Some("Coffee Shop".to_owned()),
-            description: "Morning coffee".to_owned(),
-            reference: Some("REF001".to_owned()),
-        }
+        RawTransaction::builder()
+            .date(date(2024, 3, 15))
+            .payee("Coffee Shop")
+            .description("Morning coffee")
+            .reference("REF001")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .maybe_amount(Some(Amount::new(dec!(42.50), CommodityCode::new("USD"))))
+                    .maybe_balance(Some(Amount::new(dec!(1_000.00), CommodityCode::new("USD"))))
+                    .build(),
+            ])
+            .build()
     }
 
     #[test]
@@ -336,12 +339,14 @@ mod tests {
         let tx = make_raw_transaction();
 
         assert_eq!(tx.date, date(2024, 3, 15));
+        assert_eq!(tx.postings.len(), 1);
+        let posting = tx.postings.first().expect("one posting");
         assert_eq!(
-            tx.amount,
-            Amount::new(dec!(42.50), CommodityCode::new("USD"))
+            posting.amount,
+            Some(Amount::new(dec!(42.50), CommodityCode::new("USD")))
         );
         assert_eq!(
-            tx.balance,
+            posting.balance,
             Some(Amount::new(dec!(1_000.00), CommodityCode::new("USD")))
         );
         assert_eq!(tx.payee.as_deref(), Some("Coffee Shop"));
@@ -351,18 +356,20 @@ mod tests {
 
     #[test]
     fn raw_transaction_optional_fields_can_be_none() {
-        let tx = RawTransaction {
-            date: date(2024, 1, 1),
-            amount: Amount::new(dec!(10.00), CommodityCode::new("EUR")),
-            balance: None,
-            payee: None,
-            description: "Unknown".to_owned(),
-            reference: None,
-        };
+        let tx = RawTransaction::builder()
+            .date(date(2024, 1, 1))
+            .description("Unknown")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .maybe_amount(Some(Amount::new(dec!(10.00), CommodityCode::new("EUR"))))
+                    .build(),
+            ])
+            .build();
 
-        assert!(tx.balance.is_none());
         assert!(tx.payee.is_none());
         assert!(tx.reference.is_none());
+        assert!(tx.postings.first().expect("one posting").balance.is_none());
     }
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
