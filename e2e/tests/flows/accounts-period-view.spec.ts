@@ -160,6 +160,12 @@ describe('Accounts — period view', () => {
             async () => (await statValue('transactions')) !== initialTxCount,
             { timeoutMsg: 'Dashboard tx-count did not change after stepping to the previous period' },
         );
+        // The register and dashboard re-fetch independently; wait for them to
+        // agree so a stale register row mid-re-render can't race the reads.
+        await browser.waitUntil(
+            async () => (await registerRowCount()).toString() === (await statValue('transactions')),
+            { timeoutMsg: 'Register row count did not settle to match the dashboard after stepping' },
+        );
 
         const steppedRows = await registerRowCount();
         const steppedTxCount = await statValue('transactions');
@@ -182,6 +188,13 @@ describe('Accounts — period view', () => {
         await browser.waitUntil(
             async () => (await statValue('transactions')) === initialTxCount,
             { timeoutMsg: 'Dashboard tx-count did not return to its original value' },
+        );
+        // The register re-fetches independently of the dashboard stat, so wait
+        // for its row count to settle back too before asserting — otherwise a
+        // stale row lingering mid-re-render races the read below.
+        await browser.waitUntil(
+            async () => (await registerRowCount()).toString() === initialTxCount,
+            { timeoutMsg: 'Register row count did not return to its original value' },
         );
 
         expect((await registerRowCount()).toString()).toBe(initialTxCount);
