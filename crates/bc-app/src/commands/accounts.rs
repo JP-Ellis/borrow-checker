@@ -400,6 +400,62 @@ pub async fn account_latest_activity(
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
 }
 
+/// Runs a structured transaction search.
+///
+/// # Arguments
+///
+/// * `filter` - The structured filter to apply.
+/// * `state` - Tauri managed application state.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] if the filter contains malformed
+/// ids, or [`bc_ipc::BcError::Internal`] if a service call fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn search_transactions(
+    filter: bc_ipc::Filter,
+    state: State<'_, AppState>,
+) -> Result<Vec<bc_ipc::FilteredTransaction>, bc_ipc::BcError> {
+    let query = bc_core::search::TransactionQuery::try_from(filter)?;
+
+    let accounts = state
+        .accounts
+        .list_active()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
+    let account_map = accounts
+        .iter()
+        .map(|a| (a.id().to_string(), a))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let forest = state
+        .tags
+        .forest()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
+    let matched = state.transactions.search(&query).await?;
+
+    Ok(matched
+        .into_iter()
+        .map(|m| {
+            bc_ipc::FilteredTransaction::new(
+                bc_ipc::Transaction::from_model_with_accounts(
+                    &m.transaction,
+                    &account_map,
+                    &forest,
+                ),
+                m.matched_postings.iter().map(ToString::to_string).collect(),
+            )
+        })
+        .collect())
+}
+
 // MARK: Tag helpers
 
 /// Resolves a list of tag path strings to existing tag IDs.
