@@ -7,10 +7,15 @@
 mod ast;
 mod parser;
 
-use bc_sdk::{Amount, ImportConfig, ImportError, RawTransaction};
+use bc_sdk::Amount;
+use bc_sdk::ImportConfig;
+use bc_sdk::ImportError;
+use bc_sdk::RawPosting;
+use bc_sdk::RawTransaction;
 use rust_decimal::Decimal;
 
 use crate::ast::Directive;
+use crate::ast::Posting;
 use crate::parser::parse;
 
 /// Implements [`bc_sdk::Importer`] for the Beancount plain-text accounting format.
@@ -59,14 +64,17 @@ impl bc_sdk::Importer for BeancountImporter {
     ///
     /// # Returns
     ///
-    /// A list of [`RawTransaction`] values parsed from transaction directives.
-    /// For multi-commodity transactions, only the first posting's commodity and
-    /// amount are used; additional postings are ignored.
+    /// A list of [`RawTransaction`] values parsed from transaction directives,
+    /// each carrying one [`RawPosting`] per source posting leg. When a
+    /// transaction's legs share a single commodity and sum to zero, the final
+    /// leg's amount is elided (`None`) since it is fully derivable from the
+    /// others; otherwise every leg's amount is kept.
     ///
     /// # Errors
     ///
-    /// Returns [`ImportError::Parse`] if the file is not valid UTF-8 or if a
-    /// parse error is encountered.
+    /// Returns [`ImportError::Parse`] if the file is not valid UTF-8, if a
+    /// parse error is encountered, or if a transaction directive has no
+    /// postings.
     #[inline]
     fn import(
         &self,
@@ -84,45 +92,59 @@ impl bc_sdk::Importer for BeancountImporter {
                 continue;
             };
 
-            let first = tx
-                .postings
-                .first()
-                .ok_or_else(|| ImportError::Parse("transaction has no postings".into()))?;
+            if tx.postings.is_empty() {
+                return Err(ImportError::Parse("transaction has no postings".into()));
+            }
 
-            // When multiple commodities are present, only the first posting's
-            // commodity is used for `RawTransaction::amount`; the rest are dropped.
-            // This is a known limitation of the single-commodity `RawTransaction` model.
+            let elide_last = legs_balance_to_zero(&tx.postings);
+            let last_index = tx.postings.len().saturating_sub(1);
 
-            // Warn when the transaction has postings in multiple commodities.
-            // Only the first posting's commodity is used for `RawTransaction::amount`;
-            // additional postings are dropped — a known limitation of the single-commodity model.
-            let has_multiple_commodities = tx.postings.iter().any(|p| p.currency != first.currency);
-            if has_multiple_commodities {
-                let dropped: Vec<&str> = tx.postings[1..]
-                    .iter()
-                    .map(|p| p.currency.as_str())
-                    .collect();
-                bc_sdk::warn!(
-                    "transaction has multiple commodities; only first is used";
-                    kept = first.currency,
-                    dropped = format!("{dropped:?}")
+            let mut postings = Vec::with_capacity(tx.postings.len());
+            for (index, posting) in tx.postings.iter().enumerate() {
+                let amount = decimal_to_amount(posting.amount, &posting.currency)?;
+                let elided = elide_last && index == last_index;
+                postings.push(
+                    RawPosting::builder()
+                        .account(posting.account.clone())
+                        .maybe_amount(if elided { None } else { Some(amount) })
+                        .build(),
                 );
             }
 
-            let amount = decimal_to_amount(first.amount, &first.currency)?;
-
-            raw_txs.push(RawTransaction::new(
-                tx.date,
-                amount,
-                None,
-                tx.payee,
-                tx.narration,
-                None,
-            ));
+            raw_txs.push(
+                RawTransaction::builder()
+                    .date(tx.date)
+                    .maybe_payee(tx.payee)
+                    .description(tx.narration)
+                    .postings(postings)
+                    .build(),
+            );
         }
 
         Ok(raw_txs)
     }
+}
+
+/// Returns `true` if `postings` all share one commodity and their amounts sum
+/// to zero, meaning the final leg's amount is fully derivable from the rest.
+///
+/// # Arguments
+///
+/// * `postings` - The source posting legs of a transaction.
+///
+/// # Returns
+///
+/// `true` when there are at least two postings, all in the same currency,
+/// whose amounts balance to zero.
+#[inline]
+fn legs_balance_to_zero(postings: &[Posting]) -> bool {
+    let Some(first) = postings.first() else {
+        return false;
+    };
+    if postings.len() < 2 || postings.iter().any(|p| p.currency != first.currency) {
+        return false;
+    }
+    postings.iter().map(|p| p.amount).sum::<Decimal>() == Decimal::ZERO
 }
 
 /// Converts a [`Decimal`] value and currency string into a [`bc_sdk::Amount`].
@@ -156,23 +178,30 @@ fn decimal_to_amount(value: Decimal, currency: impl Into<String>) -> Result<Amou
 
 #[cfg(test)]
 mod tests {
+    use bc_sdk::Amount;
+    use bc_sdk::Date;
+    use bc_sdk::ImportConfig;
     use bc_sdk::Importer as _;
-    use bc_sdk::{Amount, Date, ImportConfig};
     use pretty_assertions::assert_eq;
 
     use super::*;
 
     #[test]
     fn imports_transaction_payee_and_narration() {
-        let input = "2025-01-15 * \"Woolworths\" \"Weekly groceries\"\n  Expenses:Food   50.00 AUD\n  Assets:Bank    -50.00 AUD\n";
+        let input = "2025-01-15 * \"Acme\" \"Salary\"\n  Assets:Bank:Checking   4321.00 AUD\n  Income:Salary:Acme  -4321.00 AUD\n";
         let txs = BeancountImporter
             .import(input.as_bytes(), ImportConfig::default())
             .expect("import");
         assert_eq!(txs.len(), 1);
         let tx = txs.first().expect("should have one transaction");
-        assert_eq!(tx.payee.as_deref(), Some("Woolworths"));
-        assert_eq!(tx.description, "Weekly groceries");
+        assert_eq!(tx.payee.as_deref(), Some("Acme"));
+        assert_eq!(tx.description, "Salary");
         assert_eq!(tx.date, Date::new(2025, 1, 15));
+        assert_eq!(tx.postings.len(), 2);
+        assert_eq!(tx.postings[0].account, "Assets:Bank:Checking");
+        assert_eq!(tx.postings[0].amount, Some(Amount::new(895_233, "AUD", 2)));
+        assert_eq!(tx.postings[1].account, "Income:Salary:Acme");
+        assert_eq!(tx.postings[1].amount, None);
     }
 
     #[test]
@@ -184,6 +213,11 @@ mod tests {
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(tx.payee, None);
         assert_eq!(tx.description, "Transfer");
+        assert_eq!(tx.postings.len(), 2);
+        assert_eq!(tx.postings[0].account, "A:B");
+        assert_eq!(tx.postings[0].amount, Some(Amount::new(100, "AUD", 2)));
+        assert_eq!(tx.postings[1].account, "A:C");
+        assert_eq!(tx.postings[1].amount, None);
     }
 
     #[test]
@@ -208,18 +242,19 @@ mod tests {
     }
 
     #[test]
-    fn import_multi_currency_transaction_uses_first_posting() {
-        // A transaction with mixed currencies: the importer should succeed
-        // and use the first posting's amount.
+    fn import_multi_currency_transaction_emits_all_postings() {
         let input =
             "2025-01-15 * \"FX Purchase\"\n  Assets:USD   100.00 USD\n  Assets:AUD  -150.00 AUD\n";
         let txs = BeancountImporter
             .import(input.as_bytes(), ImportConfig::default())
             .expect("import should succeed even for multi-currency");
         let tx = txs.first().expect("should have one transaction");
-        // First posting determines the amount
         assert_eq!(tx.description, "FX Purchase");
-        assert_eq!(tx.amount, Amount::new(10000, "USD", 2));
+        assert_eq!(tx.postings.len(), 2);
+        assert_eq!(tx.postings[0].account, "Assets:USD");
+        assert_eq!(tx.postings[0].amount, Some(Amount::new(10000, "USD", 2)));
+        assert_eq!(tx.postings[1].account, "Assets:AUD");
+        assert_eq!(tx.postings[1].amount, Some(Amount::new(-15000, "AUD", 2)));
     }
 
     #[test]
@@ -237,13 +272,22 @@ mod tests {
     #[test]
     fn decimal_to_amount_round_trips_typical_bank_values() {
         use rust_decimal_macros::dec;
-        assert_eq!(decimal_to_amount(dec!(50.00), "AUD").expect("no overflow"), Amount::new(5000, "AUD", 2));
+        assert_eq!(
+            decimal_to_amount(dec!(50.00), "AUD").expect("no overflow"),
+            Amount::new(5000, "AUD", 2)
+        );
         assert_eq!(
             decimal_to_amount(dec!(-1234.56), "AUD").expect("no overflow"),
             Amount::new(-123_456, "AUD", 2)
         );
-        assert_eq!(decimal_to_amount(dec!(0.00), "AUD").expect("no overflow"), Amount::new(0, "AUD", 2));
-        assert_eq!(decimal_to_amount(dec!(1.0), "AUD").expect("no overflow"), Amount::new(10, "AUD", 1));
+        assert_eq!(
+            decimal_to_amount(dec!(0.00), "AUD").expect("no overflow"),
+            Amount::new(0, "AUD", 2)
+        );
+        assert_eq!(
+            decimal_to_amount(dec!(1.0), "AUD").expect("no overflow"),
+            Amount::new(10, "AUD", 1)
+        );
     }
 
     #[test]
