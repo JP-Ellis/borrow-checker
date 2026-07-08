@@ -87,3 +87,27 @@ fn csv_plugin_reads_files_from_preopened_root() {
 
     drop(fs::remove_dir_all(&root));
 }
+
+#[test]
+fn import_errors_when_documents_root_unset() {
+    let plugin_dir = get_plugin_dir();
+    assert!(
+        plugin_dir.exists(),
+        "Plugin directory does not exist: {}. Please run `mise run build-plugins` first.",
+        plugin_dir.display()
+    );
+    let registry =
+        PluginRegistry::load(&[plugin_dir], None).expect("Failed to load plugin registry");
+    let importers = registry.into_importer_registry();
+    let importer = importers
+        .create_for_name("csv")
+        .expect("CSV plugin not found in registry");
+
+    let config = ImportConfig::from_value(serde_json::json!({}));
+    let err = importer.import(&config).expect_err("import should fail");
+
+    assert!(
+        matches!(err, bc_core::ImportError::MissingField(ref msg) if msg == "documents_root not configured"),
+        "unexpected error: {err:?}"
+    );
+}
