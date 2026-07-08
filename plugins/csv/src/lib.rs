@@ -602,9 +602,10 @@ mod tests {
     #[test]
     fn imports_all_csvs_and_skips_a_bad_file() {
         // One good file and one that matches the glob but is not parseable for
-        // this config. `import` logs the bad file via `bc_sdk::error!` (which
-        // routes to stderr off-wasm) and skips it, still returning the good
-        // file's rows.
+        // this config. `import` logs the bad file via `bc_sdk::error!` (whose
+        // native, off-wasm `__emit` is a no-op that drops the entry, so the
+        // skip is silent here) and skips it, still returning the good file's
+        // rows.
         let dir = std::env::temp_dir().join("bc-csv-import-skip-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");

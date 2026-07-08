@@ -22,6 +22,12 @@ pub fn matching_files(dir: &str, pattern: &str) -> Result<Vec<PathBuf>, ImportEr
     let mut matched: Vec<PathBuf> = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| ImportError::Parse(format!("directory entry error: {e}")))?;
+        // Skip entries that are not regular files (e.g. subdirectories); on a
+        // file-type read error, skip the entry rather than fail the whole scan.
+        if !entry.file_type().is_ok_and(|ft| ft.is_file()) {
+            continue;
+        }
+        // Filenames that are not valid UTF-8 are skipped (`to_str` yields `None`).
         if entry
             .file_name()
             .to_str()
@@ -83,6 +89,7 @@ mod tests {
             let mut f = std::fs::File::create(dir.join(name)).expect("create");
             f.write_all(b"x").expect("write");
         }
+        std::fs::create_dir_all(dir.join("archive.csv")).expect("mkdir subdir");
 
         let got = super::matching_files(dir.to_str().expect("utf8"), "*.csv").expect("glob");
         let names: Vec<String> = got
