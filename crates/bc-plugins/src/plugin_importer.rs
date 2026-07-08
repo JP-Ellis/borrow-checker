@@ -161,6 +161,12 @@ impl bc_core::Importer for PluginImporter {
         &self,
         config: &bc_core::ImportConfig,
     ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
+        if self.documents_root.is_none() {
+            return Err(bc_core::ImportError::MissingField(
+                "documents_root not configured".to_owned(),
+            ));
+        }
+
         let config_json = serde_json::to_string(config.as_value())
             .map_err(|e| bc_core::ImportError::Parse(format!("config serialisation: {e}")))?;
 
