@@ -10,6 +10,8 @@ pub struct Config {
     /// Account path this statement's transactions post to, e.g. `"Assets:Bank:Checking"`.
     /// Stamped onto every emitted posting.
     pub account: String,
+    /// Statement file to import, relative to the host-preopened documents root.
+    pub source_file: String,
 }
 
 #[cfg(test)]
