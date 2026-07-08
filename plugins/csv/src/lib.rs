@@ -5,14 +5,21 @@
 //! to generate the required WASM export glue.
 
 mod config;
+mod glob;
 mod preamble;
 
 use std::collections::HashMap;
 
-use bc_sdk::{Amount, Date, ImportConfig, ImportError, RawPosting, RawTransaction};
+use bc_sdk::Amount;
+use bc_sdk::Date;
+use bc_sdk::ImportConfig;
+use bc_sdk::ImportError;
+use bc_sdk::RawPosting;
+use bc_sdk::RawTransaction;
 use rust_decimal::Decimal;
 
-use crate::config::{AmountColumns, Config};
+use crate::config::AmountColumns;
+use crate::config::Config;
 use crate::preamble::find_csv_start;
 
 /// Imports transactions from delimited text (CSV) files.
@@ -30,68 +37,51 @@ impl bc_sdk::Importer for CsvImporter {
     }
 
     #[inline]
-    fn detect(&self, bytes: &[u8]) -> bool {
-        // NOTE: detect() has no access to the configured delimiter, so we
-        // probe all common delimiter characters heuristically.
-        const DELIMITERS: [char; 4] = [',', '\t', ';', '|'];
-        // Number of non-empty lines to inspect before giving up.
-        const SCAN_LINES: usize = 20;
-        // Consecutive lines with the same non-trivial column count needed to
-        // confidently identify a CSV section.  Preamble rows from bank exports
-        // typically have irregular column counts, so a stable run of 3+
-        // strongly suggests we have reached the header and data lines.
-        const MIN_RUN: usize = 3;
+    fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+        let cfg: Config = config.as_typed()?;
 
-        // Must be valid UTF-8.
-        let Ok(text) = core::str::from_utf8(bytes) else {
-            return false;
-        };
-
-        // Collect up to SCAN_LINES non-empty lines.
-        let lines: Vec<&str> = text
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .take(SCAN_LINES)
-            .collect();
-
-        if lines.is_empty() {
-            return false;
+        let files = crate::glob::matching_files(&cfg.source_dir, &cfg.source_glob)?;
+        if files.is_empty() {
+            return Err(ImportError::BadValue {
+                field: "source_glob".to_owned(),
+                detail: format!(
+                    "no files under {:?} match {:?}",
+                    cfg.source_dir, cfg.source_glob
+                ),
+            });
         }
 
-        // For each candidate delimiter, scan for MIN_RUN+ consecutive lines
-        // sharing the same column count > 1.  A count of 1 means the
-        // delimiter was absent on that line; those lines break a run.
-        for &delim in &DELIMITERS {
-            let mut run = 0_usize;
-            let mut prev = 0_usize;
-            for line in &lines {
-                let count = line.split(delim).count();
-                if count > 1 && count == prev {
-                    run = run.saturating_add(1);
-                    if run >= MIN_RUN {
-                        return true;
-                    }
-                } else {
-                    run = 1;
-                    prev = count;
+        let mut all = Vec::new();
+        for path in files {
+            let display = path.display().to_string();
+            let bytes = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    bc_sdk::error!("failed to read import file"; path = display, reason = e.to_string());
+                    continue;
+                }
+            };
+            match self.parse_bytes(&bytes, &cfg) {
+                Ok(mut txs) => all.append(&mut txs),
+                Err(e) => {
+                    bc_sdk::error!("failed to parse import file"; path = display, reason = e.to_string());
                 }
             }
         }
-
-        // Fallback for files too short to produce a stable run (e.g. a single
-        // header line with no data rows yet): accept if the first non-empty
-        // line contains any recognised delimiter character.
-        lines.first().is_some_and(|l| l.contains(DELIMITERS))
+        Ok(all)
     }
+}
 
-    #[inline]
-    fn import(
-        &self,
-        bytes: &[u8],
-        config: ImportConfig,
-    ) -> Result<Vec<RawTransaction>, ImportError> {
-        let cfg: Config = config.as_typed()?;
-
+impl CsvImporter {
+    /// Parses one file's `bytes` into raw transactions using `cfg`.
+    ///
+    /// Contains the delimiter validation, preamble skipping, header mapping,
+    /// and row loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImportError`] on delimiter, header, or row parse failures.
+    fn parse_bytes(&self, bytes: &[u8], cfg: &Config) -> Result<Vec<RawTransaction>, ImportError> {
         if !cfg.delimiter.is_ascii() {
             return Err(ImportError::BadValue {
                 field: "delimiter".to_owned(),
@@ -107,7 +97,10 @@ impl bc_sdk::Importer for CsvImporter {
 
         // SAFETY: non-ASCII delimiters are rejected above, so this truncation
         // is always lossless for printable ASCII characters.
-        #[expect(clippy::as_conversions, reason = "delimiter is guaranteed ASCII by the is_ascii() guard above")]
+        #[expect(
+            clippy::as_conversions,
+            reason = "delimiter is guaranteed ASCII by the is_ascii() guard above"
+        )]
         let delimiter_byte = cfg.delimiter as u8;
 
         let mut reader = csv::ReaderBuilder::new()
@@ -150,13 +143,12 @@ impl bc_sdk::Importer for CsvImporter {
             let record = result.map_err(|e| ImportError::Parse(e.to_string()))?;
 
             let date_str = record_field(&record, date_idx, &cfg.date_column)?;
-            let parsed =
-                jiff::civil::Date::strptime(&cfg.date_format, &date_str).map_err(|e| {
-                    ImportError::BadValue {
-                        field: cfg.date_column.clone(),
-                        detail: e.to_string(),
-                    }
-                })?;
+            let parsed = jiff::civil::Date::strptime(&cfg.date_format, &date_str).map_err(|e| {
+                ImportError::BadValue {
+                    field: cfg.date_column.clone(),
+                    detail: e.to_string(),
+                }
+            })?;
             let date = Date::new(
                 parsed.year() as i32,
                 parsed.month() as u8,
@@ -223,11 +215,13 @@ impl bc_sdk::Importer for CsvImporter {
                     .maybe_payee(payee)
                     .description(description)
                     .maybe_reference(reference)
-                    .postings(vec![RawPosting::builder()
-                        .account(cfg.account.clone())
-                        .amount(amount)
-                        .maybe_balance(balance)
-                        .build()])
+                    .postings(vec![
+                        RawPosting::builder()
+                            .account(cfg.account.clone())
+                            .amount(amount)
+                            .maybe_balance(balance)
+                            .build(),
+                    ])
                     .build(),
             );
         }
@@ -268,7 +262,10 @@ fn decimal_to_amount(
     })?;
     // scale is the number of decimal digits; monetary values have at most
     // 28 digits of scale so saturating to u8::MAX is safe in practice.
-    #[expect(clippy::cast_possible_truncation, reason = "scale.min(255) clamps to u8 range before the cast; monetary decimals have at most 28 digits")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "scale.min(255) clamps to u8 range before the cast; monetary decimals have at most 28 digits"
+    )]
     let scale_u8 = scale.min(255) as u8;
     Ok(Amount::new(minor_units, currency, scale_u8))
 }
@@ -363,14 +360,11 @@ fn parse_amount(
                     // Negate: a positive debit figure means money going out.
                     Ok(-val)
                 }
-                (None, Some(c)) => {
-                    parse_number(c, cfg.decimal_separator, cfg.thousands_separator).map_err(|e| {
-                        ImportError::BadValue {
-                            field: credit_column.clone(),
-                            detail: e,
-                        }
-                    })
-                }
+                (None, Some(c)) => parse_number(c, cfg.decimal_separator, cfg.thousands_separator)
+                    .map_err(|e| ImportError::BadValue {
+                        field: credit_column.clone(),
+                        detail: e,
+                    }),
                 (Some(_), Some(_)) => Err(ImportError::Parse(format!(
                     "both '{debit_column}' and '{credit_column}' are populated in the same row"
                 ))),
@@ -455,45 +449,13 @@ fn parse_number(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
     use bc_sdk::Importer as _;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
     use super::*;
-
-    #[test]
-    fn detect_returns_true_for_csv_bytes() {
-        let importer = CsvImporter;
-        assert!(importer.detect(b"Date,Amount,Description\n"));
-    }
-
-    #[test]
-    fn detect_returns_false_for_non_csv() {
-        let importer = CsvImporter;
-        assert!(!importer.detect(b"\x89PNG\r\n"));
-    }
-
-    #[test]
-    fn detect_returns_true_for_csv_with_preamble() {
-        // Simulate a bank export with two metadata rows before the real CSV.
-        let importer = CsvImporter;
-        let input = b"Bank of Somewhere\n\
-                      Export date: 2025-01-01\n\
-                      Date,Amount,Description\n\
-                      2025-01-01,50.00,Coffee\n\
-                      2025-01-02,12.00,Lunch\n";
-        assert!(importer.detect(input));
-    }
-
-    #[test]
-    fn detect_returns_false_for_preamble_only() {
-        // Lines with no consistent delimiter pattern should not be detected.
-        let importer = CsvImporter;
-        let input = b"Bank of Somewhere\n\
-                      Export date: 2025-01-01\n\
-                      Account: 123456789\n";
-        assert!(!importer.detect(input));
-    }
 
     #[test]
     fn parse_number_strips_currency_symbols() {
@@ -550,23 +512,31 @@ mod tests {
 
     #[test]
     fn import_simple_csv() {
-        let importer = CsvImporter;
+        let dir = std::env::temp_dir().join("bc-csv-import-simple-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
         let csv = b"Date,Amount,Description,Payee\n\
                     2025-03-15,50.00,Coffee shop,Java Hut\n\
                     2025-03-16,-120.00,Groceries,\n";
+        let mut f = std::fs::File::create(dir.join("statement.csv")).expect("create");
+        f.write_all(csv).expect("write");
 
-        let config_json = r#"{
+        let config_json = serde_json::json!({
             "commodity": "AUD",
             "account": "Assets:NAB:Josh",
+            "source_dir": dir.to_str().expect("utf8"),
+            "source_glob": "*.csv",
             "date_column": "Date",
             "date_format": "%Y-%m-%d",
             "amount_columns": {"style": "single", "column": "Amount"},
             "description_column": "Description",
             "payee_column": "Payee"
-        }"#;
-        let config = ImportConfig::from_json_string(config_json.to_owned());
+        });
+        let config = ImportConfig::from_json_string(config_json.to_string());
 
-        let txns = importer.import(csv, config).expect("import should succeed");
+        let importer = CsvImporter;
+        let txns = importer.import(config).expect("import should succeed");
 
         assert_eq!(txns.len(), 2);
 
@@ -588,5 +558,84 @@ mod tests {
         assert_eq!(t1.postings[0].amount, Some(Amount::new(-12000, "AUD", 2)));
         assert_eq!(t1.description, "Groceries");
         assert_eq!(t1.payee, None);
+    }
+
+    #[test]
+    fn imports_all_matching_files_in_sorted_order() {
+        // Exercises the multi-file loop in `import`: two files match the glob
+        // and both parse, so their rows are unioned across files.
+        let dir = std::env::temp_dir().join("bc-csv-import-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let header = "Date,Amount,Account Number,,Transaction Type,Transaction Details,Balance,Category,Merchant Name\n";
+        let june = format!(
+            "{header}27 Jun 25,-4321.00,123456789, ,TRANSFER DEBIT,SMARTBEAR,0.00,Transfers out,\n"
+        );
+        let july =
+            format!("{header}05 Jul 25,120.00,123456789, ,TRANSFER CREDIT,SALARY,120.00,Income,\n");
+        let mut f = std::fs::File::create(dir.join("2025-06.csv")).expect("create june");
+        f.write_all(june.as_bytes()).expect("write june");
+        let mut g = std::fs::File::create(dir.join("2025-07.csv")).expect("create july");
+        g.write_all(july.as_bytes()).expect("write july");
+
+        let cfg = serde_json::json!({
+            "account": "Assets:NAB:Josh",
+            "source_dir": dir.to_str().expect("utf8"),
+            "source_glob": "*.csv",
+            "date_column": "Date",
+            "date_format": "%d %b %y",
+            "amount_columns": { "style": "single", "column": "Amount" },
+            "description_column": "Transaction Details",
+            "balance_column": "Balance",
+            "commodity": "AUD"
+        });
+        let importer = CsvImporter;
+        let txs = importer
+            .import(ImportConfig::from_json_string(cfg.to_string()))
+            .expect("import");
+        assert_eq!(txs.len(), 2, "one row from each matching file");
+        assert_eq!(txs[0].date, Date::new(2025, 6, 27));
+        assert_eq!(txs[1].date, Date::new(2025, 7, 5));
+    }
+
+    #[test]
+    fn parse_bytes_errors_on_unparsable_content() {
+        // The `import` skip-and-continue behaviour (see the constant field of
+        // the SDK-provided `bc_sdk::error!` macro) relies on `parse_bytes`
+        // returning `Err` for a file that matches the glob but is not valid
+        // CSV for the configured columns. `bc_sdk::error!` itself routes
+        // through a WASM component-model host import that only resolves
+        // under a real WASI host (e.g. wasmtime); calling it from a native
+        // `cargo test` binary aborts the process, so the skip path as a
+        // whole is exercised by the `wasm32-wasip2` build/host integration
+        // rather than here. This test instead verifies the underlying
+        // failure this path depends on.
+        let importer = CsvImporter;
+        let cfg = Config {
+            account: "Assets:NAB:Josh".to_owned(),
+            date_column: "Date".to_owned(),
+            commodity: Some("AUD".to_owned()),
+            ..Config::default()
+        };
+        let result = importer.parse_bytes(b"\x00\x00 not csv", &cfg);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn import_errors_when_no_files_match_glob() {
+        let dir = std::env::temp_dir().join("bc-csv-import-empty-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let cfg = serde_json::json!({
+            "account": "Assets:NAB:Josh",
+            "source_dir": dir.to_str().expect("utf8"),
+            "source_glob": "*.csv",
+            "commodity": "AUD"
+        });
+        let importer = CsvImporter;
+        let result = importer.import(ImportConfig::from_json_string(cfg.to_string()));
+        assert!(result.is_err());
     }
 }
