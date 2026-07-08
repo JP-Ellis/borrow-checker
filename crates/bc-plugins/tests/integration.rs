@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod tests {
     use std::env;
+    use std::fs;
+    use std::path::Path;
     use std::path::PathBuf;
 
     use bc_core::ImportConfig;
@@ -29,26 +31,34 @@ mod tests {
     }
 
     fn load_registry() -> ImporterRegistry {
+        load_registry_with_root(None)
+    }
+
+    fn load_registry_with_root(documents_root: Option<&Path>) -> ImporterRegistry {
         let plugin_dir = get_plugin_dir();
         assert!(
             plugin_dir.exists(),
             "Plugin directory does not exist: {}. Please run `mise run build-plugins` first.",
             plugin_dir.display()
         );
-        let registry =
-            PluginRegistry::load(&[plugin_dir], None).expect("Failed to load plugin registry");
+        let registry = PluginRegistry::load(&[plugin_dir], documents_root)
+            .expect("Failed to load plugin registry");
         registry.into_importer_registry()
     }
 
-    // NOTE: these tests exercise real on-disk plugin `.wasm` files built by
-    // `mise run build-plugins`. Until those plugins are rebuilt against the
-    // `parse(config)` ABI (Tasks 3-5), the registry loads empty and every
-    // `create_for_name` lookup below returns `None`. This is expected
-    // transient breakage, not a regression — see the task-2 brief.
-
     #[test]
     fn csv_plugin_import() {
-        let registry = load_registry();
+        let root = env::temp_dir().join("bc-plugins-csv-import-test");
+        let dir = root.join("import");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(
+            dir.join("transactions.csv"),
+            "Date,Amount,Description\n2024-01-15,-42.50,Test\n",
+        )
+        .expect("write csv");
+
+        let registry = load_registry_with_root(Some(root.as_path()));
         let importer = registry
             .create_for_name("csv")
             .expect("CSV plugin not found in registry");
@@ -58,6 +68,8 @@ mod tests {
         let config_json = r#"{
             "account": "Assets:Test",
             "commodity": "AUD",
+            "source_dir": "import",
+            "source_glob": "*.csv",
             "date_column": "Date",
             "date_format": "%Y-%m-%d",
             "amount_columns": {"style": "single", "column": "Amount"},
@@ -77,6 +89,8 @@ mod tests {
         assert_eq!(first.description, "Test");
         let posting = first.postings.first().expect("one posting emitted");
         assert_eq!(posting.account, "Assets:Test");
+
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
