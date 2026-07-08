@@ -73,7 +73,7 @@ pub enum Commands {
     Backup(backup::Args),
     /// Manage transactions (list, add, amend, reverse).
     Transaction(transaction::Args),
-    /// Import transactions from a file using a named import profile.
+    /// Import transactions using a named import profile.
     Import(import::Args),
     /// Export all accounts and transactions to a file or stdout.
     Export(export::Args),
