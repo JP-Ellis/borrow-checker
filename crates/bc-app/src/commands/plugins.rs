@@ -59,7 +59,7 @@ pub(crate) fn collect_plugin_info() -> Vec<bc_ipc::PluginInfo> {
     });
     let paths = settings.plugin_paths().to_owned();
 
-    bc_plugins::PluginRegistry::load(&paths).map_or_else(
+    bc_plugins::PluginRegistry::load(&paths, settings.documents_root()).map_or_else(
         |e| {
             tracing::warn!(
                 error = %e,

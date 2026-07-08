@@ -25,10 +25,7 @@ use syn::parse_macro_input;
 /// #[bc_sdk::importer]
 /// impl Importer for CsvImporter {
 ///     fn name(&self) -> &str { "csv" }
-///     fn detect(&self, bytes: &[u8]) -> bool { /* ... */ true }
-///     fn import(
-///         &self, bytes: &[u8], config: ImportConfig,
-///     ) -> Result<Vec<RawTransaction>, ImportError> {
+///     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
 ///         Ok(vec![])
 ///     }
 /// }
@@ -78,15 +75,7 @@ fn generate_importer_export(item_impl: &ItemImpl) -> syn::Result<TokenStream2> {
                 ).to_owned()
             }
 
-            fn detect(bytes: ::std::vec::Vec<u8>) -> bool {
-                <#self_ty as ::bc_sdk::Importer>::detect(
-                    &<#self_ty as ::std::default::Default>::default(),
-                    &bytes,
-                )
-            }
-
             fn parse(
-                bytes: ::std::vec::Vec<u8>,
                 config: ::std::string::String,
             ) -> ::std::result::Result<
                 ::std::vec::Vec<
@@ -97,7 +86,6 @@ fn generate_importer_export(item_impl: &ItemImpl) -> syn::Result<TokenStream2> {
                 let config = ::bc_sdk::ImportConfig::from_json_string(config);
                 <#self_ty as ::bc_sdk::Importer>::import(
                     &<#self_ty as ::std::default::Default>::default(),
-                    &bytes,
                     config,
                 )
                 .map(|txs| txs.into_iter().map(::core::convert::Into::into).collect())
@@ -122,8 +110,7 @@ mod tests {
         let item: ItemImpl = parse_str(
             "impl Importer for MyPlugin {
                 fn name(&self) -> &str { \"my-plugin\" }
-                fn detect(&self, _: &[u8]) -> bool { false }
-                fn import(&self, _: &[u8], _: ImportConfig)
+                fn import(&self, _: ImportConfig)
                     -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
             }",
         )

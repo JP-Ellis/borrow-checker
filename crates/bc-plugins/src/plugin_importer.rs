@@ -1,8 +1,8 @@
 //! [`PluginImporter`]: a `bc_core::Importer` backed by a WASM component.
 //!
-//! Each call to [`bc_core::Importer::detect`] or [`bc_core::Importer::import`]
-//! creates a fresh wasmtime [`Store`] and instantiates the component. This is
-//! safe and correct; the component holds no persistent state between calls.
+//! Each call to [`bc_core::Importer::import`] creates a fresh wasmtime
+//! [`Store`] and instantiates the component. This is safe and correct; the
+//! component holds no persistent state between calls.
 
 use std::sync::Arc;
 
@@ -16,9 +16,9 @@ use crate::host::HostCtx;
 /// Wraps a loaded WASM importer component and implements [`bc_core::Importer`].
 ///
 /// The underlying wasmtime `Engine`, `Component`, and `Linker` are shared
-/// across all clones of this importer via `Arc`. Each call to `detect` or
-/// `import` creates a fresh `Store` and instantiates the component
-/// independently, so concurrent calls are safe.
+/// across all clones of this importer via `Arc`. Each call to `import`
+/// creates a fresh `Store` and instantiates the component independently, so
+/// concurrent calls are safe.
 #[non_exhaustive]
 pub struct PluginImporter {
     /// The stable plugin name queried from the WASM component.
@@ -33,6 +33,9 @@ pub struct PluginImporter {
     component: Arc<Component>,
     /// Pre-configured linker for instantiating the component.
     linker: Arc<Linker<HostCtx>>,
+    /// Host directory preopened read-only as the plugin's filesystem root,
+    /// or `None` for metadata-only contexts (probes).
+    documents_root: Option<std::path::PathBuf>,
 }
 
 impl core::fmt::Debug for PluginImporter {
@@ -56,6 +59,8 @@ impl PluginImporter {
     /// * `engine` - The shared wasmtime engine.
     /// * `component` - The compiled WASM component.
     /// * `linker` - The pre-configured component linker.
+    /// * `documents_root` - Host directory preopened read-only as the
+    ///   plugin's filesystem root, or `None` for metadata-only contexts.
     ///
     /// # Returns
     ///
@@ -69,6 +74,7 @@ impl PluginImporter {
         engine: wasmtime::Engine,
         component: Component,
         linker: Linker<HostCtx>,
+        documents_root: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             name,
@@ -77,6 +83,7 @@ impl PluginImporter {
             engine,
             component: Arc::new(component),
             linker: Arc::new(linker),
+            documents_root,
         }
     }
 
@@ -136,7 +143,8 @@ impl PluginImporter {
     /// Returns a wasmtime error if instantiation fails.
     #[inline]
     fn instantiate(&self) -> wasmtime::Result<(BcPlugin, Store<HostCtx>)> {
-        let mut store = Store::new(&self.engine, HostCtx::new(&self.name));
+        let ctx = HostCtx::new(&self.name, self.documents_root.as_deref())?;
+        let mut store = Store::new(&self.engine, ctx);
         let bindings = BcPlugin::instantiate(&mut store, &self.component, &self.linker)?;
         Ok((bindings, store))
     }
@@ -149,26 +157,8 @@ impl bc_core::Importer for PluginImporter {
     }
 
     #[inline]
-    fn detect(&self, bytes: &[u8]) -> bool {
-        match self.instantiate() {
-            Ok((bindings, mut store)) => bindings
-                .borrow_checker_sdk_importer()
-                .call_detect(&mut store, bytes)
-                .unwrap_or_else(|e| {
-                    tracing::warn!(plugin = %self.name, error = %e, "plugin detect() trapped");
-                    false
-                }),
-            Err(e) => {
-                tracing::warn!(plugin = %self.name, error = %e, "plugin detect() failed to instantiate");
-                false
-            }
-        }
-    }
-
-    #[inline]
     fn import(
         &self,
-        bytes: &[u8],
         config: &bc_core::ImportConfig,
     ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
         let config_json = serde_json::to_string(config.as_value())
@@ -180,7 +170,7 @@ impl bc_core::Importer for PluginImporter {
 
         let result = bindings
             .borrow_checker_sdk_importer()
-            .call_parse(&mut store, bytes, &config_json)
+            .call_parse(&mut store, &config_json)
             .map_err(|e| bc_core::ImportError::Parse(format!("plugin call failed: {e}")))?;
 
         let txs = result.map_err(bc_core::ImportError::from)?;
