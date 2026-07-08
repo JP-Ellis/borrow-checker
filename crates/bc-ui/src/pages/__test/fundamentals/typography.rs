@@ -529,7 +529,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
                             <div style="padding-left:16px">
                                 <span style="color:var(--bc-fn)">"institution"</span>
                                 <span style="color:var(--bc-ink-dim)">"    = "</span>
-                                <span style="color:var(--bc-string)">"\"Commonwealth Bank\""</span>
+                                <span style="color:var(--bc-string)">"\"Example Bank\""</span>
                             </div>
                             <div style="padding-left:16px">
                                 <span style="color:var(--bc-fn)">"currency"</span>

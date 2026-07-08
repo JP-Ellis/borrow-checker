@@ -128,8 +128,8 @@ Accounts are classified by `AccountType` (Asset, Liability, Equity, Income, Expe
 
 Accounts form an arbitrary-depth tree through an optional `parent_id: Option<AccountId>`. A root account (`parent_id = None`) is the authority for its `AccountType`; child accounts inherit their root's type (enforced in `bc-core` at creation time). The hierarchy supports:
 
-- Institution grouping: `Assets > CommBank > Savings, Checking`
-- Virtual sub-accounts: `Assets > CommBank > Offset > Mine, Partner, Shared`
+- Institution grouping: `Assets > Bank > Savings, Checking`
+- Virtual sub-accounts: `Assets > Bank > Offset > Mine, Partner, Shared`
 - Rollups: summing a subtree gives the parent balance; virtual sub-accounts of a joint account should always sum to the real account's bank-statement balance
 - Beancount/ledger export: the colon-separated path is derived by walking the ancestor chain
 
@@ -215,7 +215,7 @@ Import profiles live in `bc-core` and name a reusable importer plus its config:
 ```rust
 struct ImportProfile {
     id: ProfileId,                   // newtype wrapper around TypeId (see ID convention below)
-    name: String,                    // e.g. "CommBank Savings"
+    name: String,                    // e.g. "Bank Savings"
     importer: String,                // e.g. "commbank-au"
     config: ImportConfig,            // column mappings, date formats, target account, etc.
     created_at: Timestamp,

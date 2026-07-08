@@ -32,7 +32,7 @@ fn create_asset_account() {
         "account",
         "create",
         "--name",
-        "CommBank Savings",
+        "Bank Savings",
         "--type",
         "asset",
     ]);
@@ -48,7 +48,7 @@ fn create_account_json() {
         "account",
         "create",
         "--name",
-        "CommBank Savings",
+        "Bank Savings",
         "--type",
         "asset",
     ]);

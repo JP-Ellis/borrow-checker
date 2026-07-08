@@ -71,9 +71,9 @@ impl<'a> Data<'a> {
     /// Builds the full colon-separated path for an account by walking its
     /// `parent_id` chain up to the root.
     ///
-    /// For example, given the hierarchy `Assets → CommBank → Savings`,
+    /// For example, given the hierarchy `Assets → Bank → Savings`,
     /// calling this method on the `Savings` account returns
-    /// `"Assets:CommBank:Savings"`.
+    /// `"Assets:Bank:Savings"`.
     ///
     /// The method guards against cycles in the parent chain: if an ID is
     /// encountered a second time the walk stops immediately.
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn account_path_for_three_level_hierarchy_returns_colon_path() {
         let assets = make_root_account("Assets", AccountType::Asset);
-        let commbank = make_child_account("CommBank", AccountType::Asset, &assets);
+        let commbank = make_child_account("Bank", AccountType::Asset, &assets);
         let savings = make_child_account("Savings", AccountType::Asset, &commbank);
 
         let accounts = [assets, commbank, savings.clone()];
@@ -224,7 +224,7 @@ mod tests {
 
         let path = data.account_path(&savings);
 
-        pretty_assertions::assert_eq!(path, "Assets:CommBank:Savings");
+        pretty_assertions::assert_eq!(path, "Assets:Bank:Savings");
     }
 
     #[test]
