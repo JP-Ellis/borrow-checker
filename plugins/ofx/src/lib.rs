@@ -7,7 +7,11 @@ mod config;
 mod parser;
 mod sgml;
 
-use bc_sdk::{Amount, ImportConfig, ImportError, RawPosting, RawTransaction};
+use bc_sdk::Amount;
+use bc_sdk::ImportConfig;
+use bc_sdk::ImportError;
+use bc_sdk::RawPosting;
+use bc_sdk::RawTransaction;
 use rust_decimal::Decimal;
 
 use crate::config::Config;
@@ -39,32 +43,13 @@ impl bc_sdk::Importer for OfxImporter {
         "ofx"
     }
 
-    /// Returns `true` if `bytes` appear to be an OFX or QFX file.
-    ///
-    /// Detection heuristic: checks for OFX v1 (`OFXHEADER:1`) or OFX v2
-    /// (`OFXHEADER="200"` or `<?xml` prefix with `<OFX>` or `<OFX ` tag).
-    ///
-    /// # Arguments
-    ///
-    /// * `bytes` - Raw file bytes to inspect.
-    #[inline]
-    fn detect(&self, bytes: &[u8]) -> bool {
-        let is_v1 = bytes.windows(11).any(|w| w == b"OFXHEADER:1");
-        let is_v2 = bytes.windows(15).any(|w| w == b"OFXHEADER=\"200\"")
-            || (bytes.starts_with(b"<?xml")
-                && (bytes.windows(5).any(|w| w == b"<OFX>")
-                    || bytes.windows(5).any(|w| w == b"<OFX ")));
-        is_v1 || is_v2
-    }
-
-    /// Parses `bytes` as an OFX or QFX file and returns the transactions.
+    /// Parses `cfg.source_file` as an OFX or QFX file and returns the transactions.
     ///
     /// Auto-detects OFX v1 (SGML) vs OFX v2 (XML) based on the file header.
     ///
     /// # Arguments
     ///
-    /// * `bytes` - Raw OFX/QFX file bytes.
-    /// * `config` - Importer configuration; must supply `account`.
+    /// * `config` - Importer configuration; must supply `account` and `source_file`.
     ///
     /// # Returns
     ///
@@ -72,12 +57,17 @@ impl bc_sdk::Importer for OfxImporter {
     ///
     /// # Errors
     ///
-    /// Returns [`ImportError::Parse`] if the file cannot be parsed or if an
-    /// amount value cannot be represented as an `i64` minor-unit integer.
+    /// Returns [`ImportError::BadValue`] if `source_file` cannot be read, or
+    /// [`ImportError::Parse`] if the file cannot be parsed or if an amount
+    /// value cannot be represented as an `i64` minor-unit integer.
     #[inline]
-    fn import(&self, bytes: &[u8], config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+    fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
         let cfg: Config = config.as_typed()?;
-        let stmt = parse(bytes).map_err(ImportError::Parse)?;
+        let bytes = std::fs::read(&cfg.source_file).map_err(|e| ImportError::BadValue {
+            field: "source_file".to_owned(),
+            detail: format!("cannot read {:?}: {e}", cfg.source_file),
+        })?;
+        let stmt = parse(&bytes).map_err(ImportError::Parse)?;
 
         stmt.transactions
             .into_iter()
@@ -96,10 +86,12 @@ impl bc_sdk::Importer for OfxImporter {
                     .maybe_payee(tx.name)
                     .description(description)
                     .maybe_reference(reference)
-                    .postings(vec![RawPosting::builder()
-                        .account(cfg.account.clone())
-                        .amount(amount)
-                        .build()])
+                    .postings(vec![
+                        RawPosting::builder()
+                            .account(cfg.account.clone())
+                            .amount(amount)
+                            .build(),
+                    ])
                     .build())
             })
             .collect()
@@ -137,8 +129,12 @@ fn decimal_to_amount(value: Decimal, currency: impl Into<String>) -> Result<Amou
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
+    use bc_sdk::Amount;
+    use bc_sdk::Date;
+    use bc_sdk::ImportConfig;
     use bc_sdk::Importer as _;
-    use bc_sdk::{Amount, Date, ImportConfig};
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -152,9 +148,29 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
 <STMTTRN><TRNTYPE>CREDIT<DTPOSTED>20250116<TRNAMT>3000.00<FITID>REF002<NAME>Employer</STMTTRN>\
 </BANKTRANLIST></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>";
 
-    /// Returns a test [`ImportConfig`] with `account` set to `"Assets:Bank:Checking"`.
-    fn test_config() -> ImportConfig {
-        ImportConfig::from_json_string(r#"{"account": "Assets:Bank:Checking"}"#.to_owned())
+    /// Writes `bytes` to a fresh file named `name` inside a fresh temp
+    /// directory unique to `test_name`, returning its absolute path.
+    fn write_temp_file(test_name: &str, name: &str, bytes: &[u8]) -> String {
+        let dir = std::env::temp_dir().join(format!("bc-ofx-{test_name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(bytes).expect("write");
+        path.to_str().expect("utf8 path").to_owned()
+    }
+
+    /// Returns a test [`ImportConfig`] with `account` set to `"Assets:Bank:Checking"`
+    /// and `source_file` pointing at a temp file containing `bytes`.
+    fn test_config(test_name: &str, bytes: &[u8]) -> ImportConfig {
+        let source_file = write_temp_file(test_name, "statement.ofx", bytes);
+        ImportConfig::from_json_string(
+            serde_json::json!({
+                "account": "Assets:Bank:Checking",
+                "source_file": source_file,
+            })
+            .to_string(),
+        )
     }
 
     #[test]
@@ -164,7 +180,7 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
     )]
     fn imports_v1_two_transactions() {
         let txs = OfxImporter::new()
-            .import(OFX_V1, test_config())
+            .import(test_config("imports_v1_two_transactions", OFX_V1))
             .expect("import");
         assert_eq!(txs.len(), 2);
         assert_eq!(txs[0].date, Date::new(2025, 1, 15));
@@ -193,30 +209,15 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
     )]
     fn payee_falls_back_to_name_when_no_memo() {
         let txs = OfxImporter::new()
-            .import(OFX_V1, test_config())
+            .import(test_config("payee_falls_back_to_name_when_no_memo", OFX_V1))
             .expect("import");
         // Second transaction has no MEMO, so description = NAME.
         assert_eq!(txs[1].description, "Employer");
     }
 
     #[test]
-    fn detect_recognises_ofx_v1() {
-        assert!(OfxImporter::new().detect(b"OFXHEADER:100\nDATA:OFXSGML\n"));
-    }
-
-    #[test]
-    fn detect_recognises_ofx_v2() {
-        assert!(OfxImporter::new().detect(b"<?xml version=\"1.0\"?>\n<?OFX OFXHEADER=\"200\"?>"));
-    }
-
-    #[test]
-    fn detect_rejects_csv() {
-        assert!(!OfxImporter::new().detect(b"Date,Amount\n2025-01-15,-50.00\n"));
-    }
-
-    #[test]
     fn empty_fitid_becomes_none_reference() {
-        let input = b"\
+        let input: &[u8] = b"\
 OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
 <OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>\
 <CURDEF>AUD<BANKACCTFROM><ACCTID>999</BANKACCTFROM>\
@@ -224,7 +225,7 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
 <STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20250115<TRNAMT>-50.00<NAME>Test</STMTTRN>\
 </BANKTRANLIST></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>";
         let txs = OfxImporter::new()
-            .import(input, test_config())
+            .import(test_config("empty_fitid_becomes_none_reference", input))
             .expect("import");
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(tx.reference, None);
