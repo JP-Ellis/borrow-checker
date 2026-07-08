@@ -84,13 +84,13 @@ mod tests {
             args: super::Args,
         }
 
-        let ok = Wrap::try_parse_from(["x", "--profile", "nab", "--account", "acc-1"]);
+        let ok = Wrap::try_parse_from(["x", "--profile", "bank", "--account", "acc-1"]);
         assert!(ok.is_ok(), "profile + account parse with no positional");
 
         let rejected = Wrap::try_parse_from([
             "x",
             "--profile",
-            "nab",
+            "bank",
             "--account",
             "acc-1",
             "some/file.csv",

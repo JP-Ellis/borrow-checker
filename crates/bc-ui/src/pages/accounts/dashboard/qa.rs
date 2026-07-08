@@ -40,8 +40,8 @@ fn liability_node() -> AccountNode {
 /// Constructs an account node with no mask, no tags, no parent.
 fn no_mask_node() -> AccountNode {
     AccountNode::new(
-        "macquarie",
-        "Macquarie",
+        "examplebank",
+        "Examplebank",
         None::<&str>,
         Some(Amount::new(Decimal::new(14_210_000, 2), "AUD")),
         None::<&str>,

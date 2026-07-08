@@ -227,14 +227,11 @@ mod tests {
 
     #[test]
     fn fingerprint_is_stable_and_component_sensitive() {
-        let fp1 =
-            SourceRef::compute_fingerprint(date(2025, 6, 27), "ACME", &amount(100), None);
-        let fp2 =
-            SourceRef::compute_fingerprint(date(2025, 6, 27), "ACME", &amount(100), None);
+        let fp1 = SourceRef::compute_fingerprint(date(2025, 6, 27), "ACME", &amount(100), None);
+        let fp2 = SourceRef::compute_fingerprint(date(2025, 6, 27), "ACME", &amount(100), None);
         assert_eq!(fp1, fp2, "same components hash identically");
 
-        let fp3 =
-            SourceRef::compute_fingerprint(date(2025, 6, 27), "ACME", &amount(101), None);
+        let fp3 = SourceRef::compute_fingerprint(date(2025, 6, 27), "ACME", &amount(101), None);
         assert_ne!(fp1, fp3, "differing amount yields a different fingerprint");
     }
 

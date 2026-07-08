@@ -25,7 +25,7 @@ fn sample_accounts() -> Vec<AccountNode> {
         ),
         AccountNode::new(
             "commbank",
-            "CommBank",
+            "Bank",
             None::<&str>,
             Some(Amount::new(Decimal::new(6_421_000, 2), "AUD")),
             None::<&str>,

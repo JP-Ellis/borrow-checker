@@ -7,7 +7,7 @@ exit_code: 0
 ----- stdout -----
 {
   "id": "[ACCOUNT_ID]",
-  "name": "CommBank Savings",
+  "name": "Bank Savings",
   "account_type": "asset",
   "kind": "deposit_account",
   "commodities": [],
