@@ -74,6 +74,13 @@ pub struct Config {
     /// Account path this statement's rows post to, e.g. `"Assets:NAB:Josh"`.
     /// Stamped onto every emitted posting.
     pub account: String,
+    /// Directory holding this account's statement files, relative to the
+    /// host-preopened documents root (e.g. `"Assets/NAB/Josh"`).
+    pub source_dir: String,
+    /// Filename pattern selecting statement files in `source_dir`, supporting a
+    /// single `*` wildcard (e.g. `"*.csv"`). Defaults to `"*"` (all files).
+    #[serde(default = "default_source_glob")]
+    pub source_glob: String,
     /// How to skip over metadata lines before the header row.
     #[serde(default)]
     pub preamble: Preamble,
@@ -112,6 +119,12 @@ fn default_delimiter() -> char {
     ','
 }
 
+/// Default source glob: match every file in the source directory.
+#[inline]
+fn default_source_glob() -> String {
+    "*".to_owned()
+}
+
 /// Returns the default date column name.
 #[inline]
 fn default_date_column() -> String {
@@ -135,6 +148,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             account: String::new(),
+            source_dir: String::new(),
+            source_glob: default_source_glob(),
             preamble: Preamble::default(),
             delimiter: default_delimiter(),
             date_column: default_date_column(),
