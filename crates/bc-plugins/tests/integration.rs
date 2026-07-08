@@ -35,21 +35,25 @@ mod tests {
             "Plugin directory does not exist: {}. Please run `mise run build-plugins` first.",
             plugin_dir.display()
         );
-        let registry = PluginRegistry::load(&[plugin_dir]).expect("Failed to load plugin registry");
+        let registry =
+            PluginRegistry::load(&[plugin_dir], None).expect("Failed to load plugin registry");
         registry.into_importer_registry()
     }
 
+    // NOTE: these tests exercise real on-disk plugin `.wasm` files built by
+    // `mise run build-plugins`. Until those plugins are rebuilt against the
+    // `parse(config)` ABI (Tasks 3-5), the registry loads empty and every
+    // `create_for_name` lookup below returns `None`. This is expected
+    // transient breakage, not a regression — see the task-2 brief.
+
     #[test]
-    fn csv_plugin_detect_and_import() {
+    fn csv_plugin_import() {
         let registry = load_registry();
         let importer = registry
             .create_for_name("csv")
             .expect("CSV plugin not found in registry");
 
         assert_eq!(importer.name(), "csv");
-
-        let csv_content = b"Date,Amount,Description\n2025-01-01,10.0,Test";
-        assert!(importer.detect(csv_content));
 
         let config_json = r#"{
             "account": "Assets:Test",
@@ -63,9 +67,7 @@ mod tests {
             serde_json::from_str(config_json).expect("hardcoded JSON is valid");
         let config = ImportConfig::from_value(value);
 
-        let txns = importer
-            .import(csv_content, &config)
-            .expect("Import failed");
+        let txns = importer.import(&config).expect("Import failed");
         assert_eq!(txns.len(), 1);
         #[expect(
             clippy::indexing_slicing,
@@ -78,59 +80,45 @@ mod tests {
     }
 
     #[test]
-    fn ledger_plugin_detect() {
+    fn ledger_plugin_loads() {
         let registry = load_registry();
         let importer = registry
             .create_for_name("ledger")
             .expect("Ledger plugin not found in registry");
 
         assert_eq!(importer.name(), "ledger");
-
-        let ledger_content = b"2025-01-01 * Grocery\n  Expenses:Food  10.00 AUD\n  Assets:Cash";
-        assert!(importer.detect(ledger_content));
     }
 
     #[test]
-    fn beancount_plugin_detect() {
+    fn beancount_plugin_loads() {
         let registry = load_registry();
         let importer = registry
             .create_for_name("beancount")
             .expect("Beancount plugin not found in registry");
 
         assert_eq!(importer.name(), "beancount");
-
-        let beancount_content =
-            b"2025-01-01 * \"Grocery\"\n  Expenses:Food  10.00 AUD\n  Assets:Cash";
-        assert!(importer.detect(beancount_content));
     }
 
     #[test]
-    fn ofx_plugin_detect() {
+    fn ofx_plugin_loads() {
         let registry = load_registry();
         let importer = registry
             .create_for_name("ofx")
             .expect("OFX plugin not found in registry");
 
         assert_eq!(importer.name(), "ofx");
-
-        let ofx_content =
-            b"OFXHEADER:100\nDATA:OFXSGML\n\n<OFX>\n<BANKMSGSRSV1>\n</BANKMSGSRSV1>\n</OFX>";
-        assert!(importer.detect(ofx_content));
     }
 
     #[test]
-    fn malformed_input_is_handled_gracefully() {
+    fn malformed_config_is_handled_gracefully() {
         let registry = load_registry();
         let importer = registry
             .create_for_name("csv")
             .expect("CSV plugin not found");
 
-        let garbage = b"\x00\xFF\xFE\x00BinaryGarbage";
-        assert!(!importer.detect(garbage));
-
         let config = ImportConfig::default();
         importer
-            .import(garbage, &config)
-            .expect_err("import of binary garbage should return an error");
+            .import(&config)
+            .expect_err("import with an incomplete config should return an error");
     }
 }

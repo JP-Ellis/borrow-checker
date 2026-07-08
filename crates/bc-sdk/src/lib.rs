@@ -16,17 +16,7 @@
 //! impl Importer for MyImporter {
 //!     fn name(&self) -> &str { "my-format" }
 //!
-//!     fn detect(&self, bytes: &[u8]) -> bool {
-//!         bytes.starts_with(b"MY")
-//!     }
-//!
-//!     fn import(
-//!         &self,
-//!         bytes: &[u8],
-//!         config: ImportConfig,
-//!     ) -> Result<Vec<RawTransaction>, ImportError> {
-//!         Ok(vec![])
-//!     }
+//!     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
 //! }
 //! ```
 
@@ -93,25 +83,17 @@ pub trait Importer: Default {
     /// A short, stable identifier for this importer (e.g. `"csv"`, `"ofx"`).
     fn name(&self) -> &str;
 
-    /// Returns `true` if `bytes` look like input this importer can handle.
+    /// Read and parse this importer's configured sources into raw transactions.
     ///
-    /// Implementations must be fast and non-panicking.
-    #[must_use]
-    fn detect(&self, bytes: &[u8]) -> bool;
-
-    /// Parses `bytes` into a list of [`RawTransaction`] values.
+    /// The importer resolves its own file paths from `config` and reads them
+    /// from the host-preopened documents root (paths are relative to it).
     ///
     /// # Arguments
     ///
-    /// * `bytes` - Raw file bytes.
     /// * `config` - Opaque JSON configuration from the import profile.
     ///
     /// # Errors
     ///
-    /// Returns [`ImportError`] on configuration, parse, or field errors.
-    fn import(
-        &self,
-        bytes: &[u8],
-        config: ImportConfig,
-    ) -> Result<Vec<RawTransaction>, ImportError>;
+    /// Returns [`ImportError`] on configuration, I/O, parse, or field errors.
+    fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError>;
 }

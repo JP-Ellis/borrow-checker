@@ -69,16 +69,13 @@ interface importer {
     /// Returns the stable plugin name, e.g. "csv". Must be unique across plugins.
     name: func() -> string;
 
-    /// Stateless format sniffing — returns true if bytes look like this format.
-    detect: func(bytes: list<u8>) -> bool;
-
-    /// Parse bytes into raw transactions using the provided config JSON.
+    /// Read and parse this importer's configured sources into raw transactions.
+    ///
+    /// The importer resolves and reads its own files from the host-preopened
+    /// documents root; the host passes only the opaque config JSON.
     ///
     /// Note: `import` is a reserved WIT keyword, so this function is named `parse`.
-    parse: func(
-        bytes: list<u8>,
-        config: import-config,
-    ) -> result<list<raw-transaction>, import-error>;
+    parse: func(config: import-config) -> result<list<raw-transaction>, import-error>;
 }
 
 /// The exporter interface that exporter plugins will export.

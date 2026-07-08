@@ -1,7 +1,6 @@
 //! Import sub-command.
 
 use core::str::FromStr as _;
-use std::path::PathBuf;
 
 use crate::context::AppContext;
 use crate::error::CliResult;
@@ -17,9 +16,6 @@ pub struct Args {
     /// Account to import transactions into.
     #[arg(long, value_name = "ACCOUNT")]
     pub account: String,
-
-    /// File to import.
-    pub file: PathBuf,
 }
 
 /// Executes the `import` subcommand.
@@ -46,9 +42,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             )))
         })?;
 
-    // Read the file.
-    let bytes = std::fs::read(&args.file).map_err(crate::error::CliError::Io)?;
-
     // Create the importer.
     let importer = ctx
         .importers
@@ -60,9 +53,9 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             ))
         })?;
 
-    // Parse the file.
+    // Source and parse the profile's files (the importer reads them itself).
     let raw_txs = importer
-        .import(&bytes, &profile.config)
+        .import(&profile.config)
         .map_err(|e| crate::error::CliError::Arg(format!("import parse error: {e}")))?;
 
     let count =
@@ -76,4 +69,35 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         println!("Imported {count} transactions.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    #[test]
+    fn args_parse_without_a_file_positional() {
+        // Wrapper needed because `Args` is a subcommand arg group.
+        #[derive(clap::Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            args: super::Args,
+        }
+
+        let ok = Wrap::try_parse_from(["x", "--profile", "nab", "--account", "acc-1"]);
+        assert!(ok.is_ok(), "profile + account parse with no positional");
+
+        let rejected = Wrap::try_parse_from([
+            "x",
+            "--profile",
+            "nab",
+            "--account",
+            "acc-1",
+            "some/file.csv",
+        ]);
+        assert!(
+            rejected.is_err(),
+            "a trailing file path is no longer accepted"
+        );
+    }
 }
