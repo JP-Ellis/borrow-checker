@@ -11,9 +11,11 @@ use bc_sdk::RawTransaction;
 use rust_decimal::Decimal;
 
 mod ast;
+mod config;
 mod parser;
 
 use ast::Entry;
+use config::Config;
 use parser::parse;
 
 /// Implements [`bc_sdk::Importer`] for the Ledger plain-text accounting format.
@@ -43,52 +45,29 @@ impl bc_sdk::Importer for LedgerImporter {
         "ledger"
     }
 
+    /// Parses `cfg.source_file` as a Ledger file and returns the transactions.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Importer configuration; must supply `source_file`.
+    ///
+    /// # Returns
+    ///
+    /// A list of [`RawTransaction`] values parsed from the ledger entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImportError::BadValue`] if `source_file` cannot be read, or
+    /// [`ImportError::Parse`] if the file is not valid UTF-8, if a parse
+    /// error is encountered, or if a transaction entry has no postings.
     #[inline]
-    fn detect(&self, bytes: &[u8]) -> bool {
-        let Ok(text) = core::str::from_utf8(bytes) else {
-            return false;
-        };
-        // Heuristic: at least one line matches `YYYY[-/]MM[-/]DD ` and does NOT
-        // look like a Beancount transaction header.
-        //
-        // Beancount uses `YYYY-MM-DD * "Payee" "Narration"` — quoted strings
-        // immediately follow the `*` or `!` flag.  Ledger uses unquoted payees:
-        // `YYYY-MM-DD * Payee`.  We exclude lines where the first non-space
-        // character after the date+flag is a double-quote.
-        text.lines().any(|l| {
-            let b = l.as_bytes();
-            let is_date_line = b.get(..4).is_some_and(|s| s.iter().all(u8::is_ascii_digit))
-                && b.get(4).is_some_and(|&c| c == b'-' || c == b'/')
-                && b.get(5..7)
-                    .is_some_and(|s| s.iter().all(u8::is_ascii_digit))
-                && b.get(7).is_some_and(|&c| c == b'-' || c == b'/')
-                && b.get(8..10)
-                    .is_some_and(|s| s.iter().all(u8::is_ascii_digit))
-                && b.get(10).is_some_and(|&c| c == b' ');
-
-            if !is_date_line {
-                return false;
-            }
-
-            // Exclude Beancount: skip optional flag char + spaces, then reject
-            // if the payee/narration starts with a quote.
-            let rest = b.get(11..).unwrap_or(&[]);
-            let after_flag = if rest.first().is_some_and(|&c| c == b'*' || c == b'!') {
-                rest.get(1..).unwrap_or(&[]).trim_ascii_start()
-            } else {
-                rest.trim_ascii_start()
-            };
-            !after_flag.starts_with(b"\"")
-        })
-    }
-
-    #[inline]
-    fn import(
-        &self,
-        bytes: &[u8],
-        _config: ImportConfig,
-    ) -> Result<Vec<RawTransaction>, ImportError> {
-        let text = core::str::from_utf8(bytes)
+    fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+        let cfg: Config = config.as_typed()?;
+        let bytes = std::fs::read(&cfg.source_file).map_err(|e| ImportError::BadValue {
+            field: "source_file".to_owned(),
+            detail: format!("cannot read {:?}: {e}", cfg.source_file),
+        })?;
+        let text = core::str::from_utf8(&bytes)
             .map_err(|e| ImportError::Parse(format!("file is not valid UTF-8: {e}")))?;
 
         let entries = parse(text).map_err(ImportError::Parse)?;
@@ -159,10 +138,7 @@ impl bc_sdk::Importer for LedgerImporter {
 /// Returns [`ImportError::Parse`] if the decimal mantissa does not fit in an
 /// `i64` (i.e. the value is too large to represent as minor units).
 #[inline]
-fn decimal_to_amount(
-    value: Decimal,
-    currency: impl Into<String>,
-) -> Result<Amount, ImportError> {
+fn decimal_to_amount(value: Decimal, currency: impl Into<String>) -> Result<Amount, ImportError> {
     // Decimal::mantissa() is already the unscaled integer (minor units).
     // For 50.00: mantissa=5000, scale=2 → minor_units=5000 (correct: 50.00 AUD = 5000 cents)
     let minor_units = i64::try_from(value.mantissa()).map_err(|_| {
@@ -184,13 +160,26 @@ fn decimal_to_amount(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
     use bc_sdk::Importer as _;
     use pretty_assertions::assert_eq;
 
     use super::*;
 
-    fn empty_config() -> ImportConfig {
-        ImportConfig::default()
+    /// Writes `text` to a fresh ledger file inside a fresh temp directory
+    /// unique to `test_name` and returns an [`ImportConfig`] pointing at it.
+    fn test_config(test_name: &str, text: &str) -> ImportConfig {
+        let dir = std::env::temp_dir().join(format!("bc-ledger-{test_name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("ledger.dat");
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(text.as_bytes()).expect("write");
+        let source_file = path.to_str().expect("utf8 path").to_owned();
+        ImportConfig::from_json_string(
+            serde_json::json!({ "source_file": source_file }).to_string(),
+        )
     }
 
     #[test]
@@ -201,7 +190,7 @@ mod tests {
     fn imports_simple_transaction() {
         let input = "2025-01-15 * Woolworths\n    Expenses:Food    50.00 AUD\n    Assets:Bank   -50.00 AUD\n";
         let txs = LedgerImporter
-            .import(input.as_bytes(), empty_config())
+            .import(test_config("imports_simple_transaction", input))
             .expect("import");
         assert_eq!(txs.len(), 1);
         assert_eq!(txs[0].payee.as_deref(), Some("Woolworths"));
@@ -224,7 +213,7 @@ mod tests {
     fn elided_posting_maps_to_none_amount() {
         let input = "2025-01-17 Rent\n    Expenses:Rent    1500.00 AUD\n    Assets:Bank\n";
         let txs = LedgerImporter
-            .import(input.as_bytes(), empty_config())
+            .import(test_config("elided_posting_maps_to_none_amount", input))
             .expect("import");
         assert_eq!(txs.len(), 1);
         assert_eq!(txs[0].postings.len(), 2);
@@ -241,28 +230,8 @@ mod tests {
     fn comments_and_blank_lines_ignored() {
         let input = "; comment\n\n2025-01-15 * A\n    X    1.00 AUD\n    Y   -1.00 AUD\n";
         let txs = LedgerImporter
-            .import(input.as_bytes(), empty_config())
+            .import(test_config("comments_and_blank_lines_ignored", input))
             .expect("import");
         assert_eq!(txs.len(), 1);
-    }
-
-    #[test]
-    fn detect_recognises_ledger_syntax() {
-        let bytes = b"2025-01-15 * Payee\n    Assets:Bank    50.00 AUD\n";
-        assert!(LedgerImporter.detect(bytes));
-    }
-
-    #[test]
-    fn detect_rejects_csv() {
-        let bytes = b"Date,Amount\n2025-01-15,-50.00\n";
-        assert!(!LedgerImporter.detect(bytes));
-    }
-
-    #[test]
-    fn detect_rejects_beancount_syntax() {
-        // Beancount uses quoted payees/narrations; Ledger does not.
-        let bytes =
-            b"2025-01-15 * \"Woolworths\" \"Weekly groceries\"\n  Expenses:Food   50.00 AUD\n";
-        assert!(!LedgerImporter.detect(bytes));
     }
 }
