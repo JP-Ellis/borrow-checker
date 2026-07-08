@@ -18,6 +18,8 @@ pub(crate) mod bindings {
 
 /// Type alias for the wasmtime-generated `BorrowChecker` world bindings.
 pub(crate) type BcPlugin = bindings::BorrowChecker;
+use wasmtime_wasi::DirPerms;
+use wasmtime_wasi::FilePerms;
 use wasmtime_wasi::ResourceTable;
 use wasmtime_wasi::WasiCtx;
 use wasmtime_wasi::WasiCtxBuilder;
@@ -35,20 +37,32 @@ pub(crate) struct HostCtx {
 }
 
 impl HostCtx {
-    /// Creates a new `HostCtx` initialized with default WASI capabilities.
+    /// Creates a `HostCtx`, preopening `documents_root` read-only when supplied.
     ///
     /// # Arguments
     ///
-    /// * `plugin_name` - The name of the plugin, attached to all log entries
-    ///   emitted by the plugin via the `logger` WIT import.
+    /// * `plugin_name` - Name attached to the plugin's log entries.
+    /// * `documents_root` - Host directory exposed read-only to the plugin as
+    ///   its filesystem root, or `None` for metadata-only contexts (probes).
+    ///
+    /// # Errors
+    ///
+    /// Returns a wasmtime error if the preopen cannot be established (e.g. the
+    /// root does not exist).
     #[inline]
-    pub(crate) fn new(plugin_name: impl Into<String>) -> Self {
+    pub(crate) fn new(
+        plugin_name: impl Into<String>,
+        documents_root: Option<&std::path::Path>,
+    ) -> wasmtime::Result<Self> {
         let mut wasi = WasiCtxBuilder::new();
-        Self {
+        if let Some(root) = documents_root {
+            wasi.preopened_dir(root, ".", DirPerms::READ, FilePerms::READ)?;
+        }
+        Ok(Self {
             table: ResourceTable::new(),
             wasi: wasi.build(),
             plugin_name: plugin_name.into(),
-        }
+        })
     }
 }
 

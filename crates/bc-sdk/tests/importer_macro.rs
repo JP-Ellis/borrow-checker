@@ -30,15 +30,7 @@ impl Importer for NullImporter {
         "null"
     }
 
-    fn detect(&self, _bytes: &[u8]) -> bool {
-        false
-    }
-
-    fn import(
-        &self,
-        _bytes: &[u8],
-        _config: ImportConfig,
-    ) -> Result<Vec<RawTransaction>, ImportError> {
+    fn import(&self, _config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
         Ok(vec![])
     }
 }
@@ -49,14 +41,8 @@ fn name_forwarded() {
 }
 
 #[test]
-fn detect_always_false() {
-    assert!(!NullImporter.detect(b""));
-    assert!(!NullImporter.detect(b"anything"));
-}
-
-#[test]
 fn import_returns_empty_vec() {
-    let result = NullImporter.import(b"", ImportConfig::default());
+    let result = NullImporter.import(ImportConfig::default());
     let txns = result.expect("import of empty input should succeed");
     assert_eq!(txns, vec![]);
 }
