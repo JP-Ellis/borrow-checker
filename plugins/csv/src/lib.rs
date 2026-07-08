@@ -600,17 +600,49 @@ mod tests {
     }
 
     #[test]
+    fn imports_all_csvs_and_skips_a_bad_file() {
+        // One good file and one that matches the glob but is not parseable for
+        // this config. `import` logs the bad file via `bc_sdk::error!` (which
+        // routes to stderr off-wasm) and skips it, still returning the good
+        // file's rows.
+        let dir = std::env::temp_dir().join("bc-csv-import-skip-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let header = "Date,Amount,Account Number,,Transaction Type,Transaction Details,Balance,Category,Merchant Name\n";
+        let good = format!(
+            "{header}27 Jun 25,-4321.00,123456789, ,TRANSFER DEBIT,SMARTBEAR,0.00,Transfers out,\n"
+        );
+        let mut f = std::fs::File::create(dir.join("2025-06.csv")).expect("create good");
+        f.write_all(good.as_bytes()).expect("write good");
+        let mut b = std::fs::File::create(dir.join("2025-07.csv")).expect("create bad");
+        b.write_all(b"\x00\x00 not csv").expect("write bad");
+
+        let cfg = serde_json::json!({
+            "account": "Assets:NAB:Josh",
+            "source_dir": dir.to_str().expect("utf8"),
+            "source_glob": "*.csv",
+            "date_column": "Date",
+            "date_format": "%d %b %y",
+            "amount_columns": { "style": "single", "column": "Amount" },
+            "description_column": "Transaction Details",
+            "balance_column": "Balance",
+            "commodity": "AUD"
+        });
+        let importer = CsvImporter;
+        let txs = importer
+            .import(ImportConfig::from_json_string(cfg.to_string()))
+            .expect("import succeeds despite the bad file");
+        assert_eq!(txs.len(), 1, "one row from the good file; bad file skipped");
+        assert_eq!(txs[0].date, Date::new(2025, 6, 27));
+    }
+
+    #[test]
     fn parse_bytes_errors_on_unparsable_content() {
-        // The `import` skip-and-continue behaviour (see the constant field of
-        // the SDK-provided `bc_sdk::error!` macro) relies on `parse_bytes`
-        // returning `Err` for a file that matches the glob but is not valid
-        // CSV for the configured columns. `bc_sdk::error!` itself routes
-        // through a WASM component-model host import that only resolves
-        // under a real WASI host (e.g. wasmtime); calling it from a native
-        // `cargo test` binary aborts the process, so the skip path as a
-        // whole is exercised by the `wasm32-wasip2` build/host integration
-        // rather than here. This test instead verifies the underlying
-        // failure this path depends on.
+        // `import`'s skip-and-continue path depends on `parse_bytes` returning
+        // `Err` for a file that matches the glob but is not valid CSV for the
+        // configured columns. This checks that underlying failure directly;
+        // `imports_all_csvs_and_skips_a_bad_file` covers the end-to-end skip.
         let importer = CsvImporter;
         let cfg = Config {
             account: "Assets:NAB:Josh".to_owned(),
