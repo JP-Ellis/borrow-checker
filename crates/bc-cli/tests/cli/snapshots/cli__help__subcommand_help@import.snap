@@ -1,18 +1,13 @@
 ---
 source: crates/bc-cli/tests/cli/help.rs
-assertion_line: 34
 expression: output
 ---
 success: true
 exit_code: 0
 ----- stdout -----
-Import transactions from a file using a named import profile
+Import transactions using a named import profile
 
-Usage: borrow-checker import [OPTIONS] --profile <NAME> --account <ACCOUNT> <FILE>
-
-Arguments:
-  <FILE>
-          File to import
+Usage: borrow-checker import [OPTIONS] --profile <NAME> --account <ACCOUNT>
 
 Options:
       --json
