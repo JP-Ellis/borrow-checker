@@ -262,14 +262,8 @@ pub enum Error {
 /// impl bc_core::Importer for CsvImporter {
 ///     fn name(&self) -> &str { "csv" }
 ///
-///     fn detect(&self, bytes: &[u8]) -> bool {
-///         // heuristic: first non-whitespace byte is ASCII text
-///         bytes.iter().any(|b| b.is_ascii_graphic())
-///     }
-///
 ///     fn import(
 ///         &self,
-///         bytes: &[u8],
 ///         config: &bc_core::ImportConfig,
 ///     ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
 ///         todo!()
@@ -280,32 +274,23 @@ pub trait Importer: Send + Sync + 'static {
     /// A short, stable identifier for this importer (e.g. `"csv"`, `"ofx"`).
     fn name(&self) -> &str;
 
-    /// Returns `true` if `bytes` look like input this importer can handle.
+    /// Reads and parses this importer's configured sources.
     ///
-    /// Implementations should be fast and non-panicking; they receive the raw
-    /// file bytes and return a best-guess answer without consuming the data.
-    ///
-    /// # Arguments
-    ///
-    /// * `bytes` - Raw file bytes to inspect.
-    #[must_use]
-    fn detect(&self, bytes: &[u8]) -> bool;
-
-    /// Parses `bytes` into a list of [`RawTransaction`] values.
+    /// The importer resolves its own file paths from `config` and reads them
+    /// from the host-preopened documents root.
     ///
     /// # Arguments
     ///
-    /// * `bytes` - Raw file bytes to parse.
     /// * `config` - Format-specific configuration.
     ///
     /// # Returns
     ///
-    /// A list of parsed transactions in the order they appear in the input.
+    /// A list of parsed transactions in source order.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] on configuration, parse, or field errors.
-    fn import(&self, bytes: &[u8], config: &Config) -> Result<Vec<RawTransaction>, Error>;
+    /// Returns [`Error`] on configuration, I/O, parse, or field errors.
+    fn import(&self, config: &Config) -> Result<Vec<RawTransaction>, Error>;
 }
 
 #[cfg(test)]

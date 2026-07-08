@@ -74,8 +74,9 @@ impl AppContext {
         );
         let pool = bc_core::open_db_with_backup(&db_path, &policy).await?;
 
-        let plugin_registry = bc_plugins::PluginRegistry::load(settings.plugin_paths())
-            .map_err(|e| bc_core::BcError::InvalidInput(e.to_string()))?;
+        let plugin_registry =
+            bc_plugins::PluginRegistry::load(settings.plugin_paths(), settings.documents_root())
+                .map_err(|e| bc_core::BcError::InvalidInput(e.to_string()))?;
         let importers = plugin_registry.build_importer_registry();
 
         Ok(Self {

@@ -103,6 +103,8 @@ impl PluginRegistry {
     /// # Arguments
     ///
     /// * `paths` - Directories to scan for plugin files.
+    /// * `documents_root` - Host directory preopened read-only as each
+    ///   plugin's filesystem root, or `None` for metadata-only contexts.
     ///
     /// # Returns
     ///
@@ -112,7 +114,7 @@ impl PluginRegistry {
     ///
     /// Returns [`RegistryError`] if the wasmtime engine cannot be created.
     #[inline]
-    pub fn load(paths: &[PathBuf]) -> Result<Self, RegistryError> {
+    pub fn load(paths: &[PathBuf], documents_root: Option<&Path>) -> Result<Self, RegistryError> {
         let engine = wasmtime::Engine::new(&wasmtime::Config::default())
             .map_err(|e| RegistryError::Engine(e.to_string()))?;
         let linker = build_linker(&engine)?;
@@ -121,7 +123,14 @@ impl PluginRegistry {
         let mut seen_names: HashSet<String> = HashSet::new();
 
         for dir in paths {
-            load_from_dir(dir, &engine, &linker, &mut importers, &mut seen_names);
+            load_from_dir(
+                dir,
+                &engine,
+                &linker,
+                documents_root,
+                &mut importers,
+                &mut seen_names,
+            );
         }
 
         Ok(Self { importers })
@@ -177,13 +186,10 @@ impl PluginRegistry {
         let mut registry = bc_core::ImporterRegistry::new();
         for importer_arc in &self.importers {
             let name = importer_arc.name().to_owned();
-            let detect_imp = Arc::clone(importer_arc);
             let create_imp = Arc::clone(importer_arc);
-            registry.register(bc_core::ImporterFactory::new(
-                name,
-                move |bytes| detect_imp.detect(bytes),
-                move || Box::new(PluginImporterRef(Arc::clone(&create_imp))),
-            ));
+            registry.register(bc_core::ImporterFactory::new(name, move || {
+                Box::new(PluginImporterRef(Arc::clone(&create_imp)))
+            }));
         }
         registry
     }
@@ -268,17 +274,11 @@ impl bc_core::Importer for PluginImporterRef {
     }
 
     #[inline]
-    fn detect(&self, bytes: &[u8]) -> bool {
-        self.0.detect(bytes)
-    }
-
-    #[inline]
     fn import(
         &self,
-        bytes: &[u8],
         config: &bc_core::ImportConfig,
     ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
-        self.0.import(bytes, config)
+        self.0.import(config)
     }
 }
 
@@ -314,7 +314,7 @@ fn query_plugin_name(
     component: &wasmtime::component::Component,
     linker: &Linker<HostCtx>,
 ) -> wasmtime::Result<String> {
-    let mut store = Store::new(engine, HostCtx::new("__probe__"));
+    let mut store = Store::new(engine, HostCtx::new("__probe__", None)?);
     let bindings = BcPlugin::instantiate(&mut store, component, linker)?;
     bindings.borrow_checker_sdk_importer().call_name(&mut store)
 }
@@ -331,7 +331,7 @@ fn query_plugin_abi(
     component: &wasmtime::component::Component,
     linker: &Linker<HostCtx>,
 ) -> wasmtime::Result<u32> {
-    let mut store = Store::new(engine, HostCtx::new("__probe__"));
+    let mut store = Store::new(engine, HostCtx::new("__probe__", None)?);
     let bindings = BcPlugin::instantiate(&mut store, component, linker)?;
     bindings
         .borrow_checker_sdk_importer()
@@ -343,6 +343,7 @@ fn load_from_dir(
     dir: &Path,
     engine: &wasmtime::Engine,
     linker: &Linker<HostCtx>,
+    documents_root: Option<&Path>,
     importers: &mut Vec<Arc<PluginImporter>>,
     seen_names: &mut HashSet<String>,
 ) {
@@ -359,7 +360,7 @@ fn load_from_dir(
         if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
             continue;
         }
-        if let Some(imp) = try_load_plugin(&path, engine, linker, seen_names) {
+        if let Some(imp) = try_load_plugin(&path, engine, linker, documents_root, seen_names) {
             let name = imp.name().to_owned();
             let sdk_abi = imp.sdk_abi();
             seen_names.insert(name.clone());
@@ -406,6 +407,7 @@ fn try_load_plugin(
     path: &Path,
     engine: &wasmtime::Engine,
     linker: &Linker<HostCtx>,
+    documents_root: Option<&Path>,
     seen_names: &HashSet<String>,
 ) -> Option<PluginImporter> {
     let bytes = match std::fs::read(path) {
@@ -456,5 +458,6 @@ fn try_load_plugin(
         engine.clone(),
         component,
         linker.clone(),
+        documents_root.map(Path::to_owned),
     ))
 }
