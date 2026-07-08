@@ -5,6 +5,7 @@
 //! to generate the required WASM export glue.
 
 mod ast;
+mod config;
 mod parser;
 
 use bc_sdk::Amount;
@@ -16,6 +17,7 @@ use rust_decimal::Decimal;
 
 use crate::ast::Directive;
 use crate::ast::PostingAmount;
+use crate::config::Config;
 use crate::parser::parse;
 
 /// Implements [`bc_sdk::Importer`] for the Beancount plain-text accounting format.
@@ -34,33 +36,11 @@ impl bc_sdk::Importer for BeancountImporter {
         "beancount"
     }
 
-    /// Returns `true` if `bytes` appear to be a Beancount file.
-    ///
-    /// Detection heuristic: at least one line looks like a dated transaction
-    /// header (`YYYY-MM-DD * "..."` or `YYYY-MM-DD ! "..."`).
+    /// Parses `cfg.source_file` as a Beancount file and returns the transactions.
     ///
     /// # Arguments
     ///
-    /// * `bytes` - Raw file bytes to inspect.
-    #[inline]
-    fn detect(&self, bytes: &[u8]) -> bool {
-        let Ok(text) = core::str::from_utf8(bytes) else {
-            return false;
-        };
-        text.lines().any(|l| {
-            let t = l.trim_start();
-            t.len() > 12
-                && t.as_bytes().get(4).copied() == Some(b'-')
-                && (t.contains(" * \"") || t.contains(" ! \""))
-        })
-    }
-
-    /// Parses `bytes` as a Beancount file and returns the transactions.
-    ///
-    /// # Arguments
-    ///
-    /// * `bytes` - Raw Beancount file bytes.
-    /// * `_config` - Unused; reserved for future configuration options.
+    /// * `config` - Importer configuration; must supply `source_file`.
     ///
     /// # Returns
     ///
@@ -72,16 +52,17 @@ impl bc_sdk::Importer for BeancountImporter {
     ///
     /// # Errors
     ///
-    /// Returns [`ImportError::Parse`] if the file is not valid UTF-8, if a
-    /// parse error is encountered, or if a transaction directive has no
-    /// postings.
+    /// Returns [`ImportError::BadValue`] if `source_file` cannot be read, or
+    /// [`ImportError::Parse`] if the file is not valid UTF-8, if a parse
+    /// error is encountered, or if a transaction directive has no postings.
     #[inline]
-    fn import(
-        &self,
-        bytes: &[u8],
-        _config: ImportConfig,
-    ) -> Result<Vec<RawTransaction>, ImportError> {
-        let text = core::str::from_utf8(bytes)
+    fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+        let cfg: Config = config.as_typed()?;
+        let bytes = std::fs::read(&cfg.source_file).map_err(|e| ImportError::BadValue {
+            field: "source_file".to_owned(),
+            detail: format!("cannot read {:?}: {e}", cfg.source_file),
+        })?;
+        let text = core::str::from_utf8(&bytes)
             .map_err(|e| ImportError::Parse(format!("file is not valid UTF-8: {e}")))?;
 
         let directives = parse(text).map_err(ImportError::Parse)?;
@@ -156,6 +137,8 @@ fn decimal_to_amount(value: Decimal, currency: impl Into<String>) -> Result<Amou
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
     use bc_sdk::Amount;
     use bc_sdk::Date;
     use bc_sdk::ImportConfig;
@@ -164,11 +147,29 @@ mod tests {
 
     use super::*;
 
+    /// Writes `text` to a fresh `.bean` file inside a fresh temp directory
+    /// unique to `test_name` and returns an [`ImportConfig`] pointing at it.
+    fn test_config(test_name: &str, text: &str) -> ImportConfig {
+        let dir = std::env::temp_dir().join(format!("bc-beancount-{test_name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("ledger.bean");
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(text.as_bytes()).expect("write");
+        let source_file = path.to_str().expect("utf8 path").to_owned();
+        ImportConfig::from_json_string(
+            serde_json::json!({ "source_file": source_file }).to_string(),
+        )
+    }
+
     #[test]
     fn imports_transaction_payee_and_narration() {
         let input = "2025-01-15 * \"SmartBear\" \"Salary\"\n  Assets:NAB:Josh   8952.33 AUD\n  Income:Salary:SmartBear  -8952.33 AUD\n";
         let txs = BeancountImporter
-            .import(input.as_bytes(), ImportConfig::default())
+            .import(test_config(
+                "imports_transaction_payee_and_narration",
+                input,
+            ))
             .expect("import");
         assert_eq!(txs.len(), 1);
         let tx = txs.first().expect("should have one transaction");
@@ -186,7 +187,7 @@ mod tests {
     fn imports_narration_only() {
         let input = "2025-01-15 * \"Transfer\"\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
         let txs = BeancountImporter
-            .import(input.as_bytes(), ImportConfig::default())
+            .import(test_config("imports_narration_only", input))
             .expect("import");
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(tx.payee, None);
@@ -202,21 +203,9 @@ mod tests {
     fn skips_open_commodity_directives() {
         let input = "2025-01-01 open Assets:Bank AUD\n2025-01-01 commodity AUD\n2025-01-15 * \"X\"\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
         let txs = BeancountImporter
-            .import(input.as_bytes(), ImportConfig::default())
+            .import(test_config("skips_open_commodity_directives", input))
             .expect("import");
         assert_eq!(txs.len(), 1);
-    }
-
-    #[test]
-    fn detect_recognises_beancount() {
-        let bytes = b"2025-01-15 * \"Payee\" \"Narration\"\n  Assets:Bank   50.00 AUD\n";
-        assert!(BeancountImporter.detect(bytes));
-    }
-
-    #[test]
-    fn detect_rejects_ledger() {
-        let bytes = b"2025-01-15 * Payee without quotes\n    Assets:Bank    50.00 AUD\n";
-        assert!(!BeancountImporter.detect(bytes));
     }
 
     #[test]
@@ -224,7 +213,10 @@ mod tests {
         let input =
             "2025-01-15 * \"FX Purchase\"\n  Assets:USD   100.00 USD\n  Assets:AUD  -150.00 AUD\n";
         let txs = BeancountImporter
-            .import(input.as_bytes(), ImportConfig::default())
+            .import(test_config(
+                "import_multi_currency_transaction_emits_all_postings",
+                input,
+            ))
             .expect("import should succeed even for multi-currency");
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(tx.description, "FX Purchase");
@@ -240,7 +232,10 @@ mod tests {
         let input =
             "2025-01-15 * \"Payee\" \"Elided leg\"\n  Expenses:Food   50.00 AUD\n  Assets:Bank\n";
         let txs = BeancountImporter
-            .import(input.as_bytes(), ImportConfig::default())
+            .import(test_config(
+                "import_elided_posting_maps_to_none_amount",
+                input,
+            ))
             .expect("import");
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(tx.postings.len(), 2);
@@ -254,7 +249,10 @@ mod tests {
     fn import_transaction_header_tags_carry_into_raw_transaction() {
         let input = "2025-06-27 * \"Payee\" \"Narration\" #josh #groceries\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
         let txs = BeancountImporter
-            .import(input.as_bytes(), ImportConfig::default())
+            .import(test_config(
+                "import_transaction_header_tags_carry_into_raw_transaction",
+                input,
+            ))
             .expect("import");
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(tx.tags, vec!["josh".to_owned(), "groceries".to_owned()]);
@@ -265,7 +263,10 @@ mod tests {
         // A transaction directive with zero postings is invalid; the importer
         // must return an error rather than panic.
         let input = "2025-01-15 * \"Payee\" \"No postings\"\n";
-        let result = BeancountImporter.import(input.as_bytes(), ImportConfig::default());
+        let result = BeancountImporter.import(test_config(
+            "import_transaction_with_no_postings_returns_error",
+            input,
+        ));
         assert!(
             result.is_err(),
             "expected error for zero-posting transaction"
