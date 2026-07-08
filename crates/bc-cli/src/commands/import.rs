@@ -22,8 +22,8 @@ pub struct Args {
 ///
 /// # Errors
 ///
-/// Returns [`crate::error::CliError`] if the profile does not exist, the
-/// file cannot be read, or the importer fails to parse it.
+/// Returns [`crate::error::CliError`] if the profile does not exist, or the
+/// importer fails to source and parse its configured files.
 #[inline]
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     let account_id = bc_models::AccountId::from_str(&args.account).map_err(|e| {
@@ -56,7 +56,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     // Source and parse the profile's files (the importer reads them itself).
     let raw_txs = importer
         .import(&profile.config)
-        .map_err(|e| crate::error::CliError::Arg(format!("import parse error: {e}")))?;
+        .map_err(|e| crate::error::CliError::Arg(format!("import error: {e}")))?;
 
     let count =
         bc_core::execute_import(&ctx.transactions, &ctx.sources, &account_id, &raw_txs).await?;
