@@ -10,19 +10,23 @@
 //! bc_sdk::debug!("parsed transaction"; date = date, amount = amount);
 //! ```
 
+#[cfg(target_arch = "wasm32")]
 use crate::__bindings::borrow_checker::sdk::logger::LogField;
 use crate::__bindings::borrow_checker::sdk::logger::LogLevel;
+#[cfg(target_arch = "wasm32")]
 use crate::__bindings::borrow_checker::sdk::logger::log as wit_log;
 
 /// Emits a log entry at the given level through the host logger import.
 ///
-/// Internal helper called by the level-specific macros.
+/// Internal helper called by the level-specific macros. Calls through the
+/// host-provided `logger` WIT import.
 ///
 /// # Arguments
 ///
 /// * `level` - The log level to emit at.
 /// * `message` - The log message string.
 /// * `fields` - Structured key-value fields to attach to the log entry.
+#[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
 #[inline]
 pub fn __emit(level: LogLevel, message: &str, fields: &[(&str, &str)]) {
@@ -35,6 +39,23 @@ pub fn __emit(level: LogLevel, message: &str, fields: &[(&str, &str)]) {
         .collect();
     wit_log(level, message, &wit_fields);
 }
+
+/// Emits a log entry — off-wasm no-op fallback.
+///
+/// Native (non-`wasm32`) builds, such as a plugin's own `cargo test` binary,
+/// have no host `logger` import: `wit-bindgen` lowers it to `unreachable!()`,
+/// so actually calling it would abort the whole process. Dropping the entry
+/// lets plugin authors unit-test code paths that log without crashing.
+///
+/// # Arguments
+///
+/// * `_level` - The log level to emit at (ignored).
+/// * `_message` - The log message string (ignored).
+/// * `_fields` - Structured key-value fields (ignored).
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+#[inline]
+pub fn __emit(_level: LogLevel, _message: &str, _fields: &[(&str, &str)]) {}
 
 /// Emits a `TRACE`-level log entry.
 ///
