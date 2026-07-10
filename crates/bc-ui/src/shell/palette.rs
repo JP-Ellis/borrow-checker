@@ -225,7 +225,11 @@ pub fn CommandPalette(
         selected_idx.set(0);
     };
 
-    /* Autofocus the input and reset all state whenever the palette opens. */
+    /* Reset all state whenever the palette opens. Depends only on `open` — it must
+    not read `input_ref`, because it writes `screen`, and the focusable input lives
+    inside the `screen`-switched render block. Reading the ref here would form a
+    cycle: writing `screen` recreates the input, updating the ref, re-running this
+    effect, which writes `screen` again — an infinite loop that freezes the UI. */
     Effect::new(move |_| {
         if open.get() {
             screen.set(Screen::Root);
@@ -235,15 +239,22 @@ pub fn CommandPalette(
             amount_max.set(String::new());
             date_from.set(String::new());
             date_until.set(String::new());
-            if let Some(el) = input_ref.get() {
-                #[expect(
-                    clippy::let_underscore_must_use,
-                    clippy::let_underscore_untyped,
-                    let_underscore_drop,
-                    reason = "focus() returns Result<(), JsValue>; errors are benign"
-                )]
-                let _ = el.focus();
-            }
+        }
+    });
+
+    /* Autofocus the input whenever it (re)mounts while open. Reads `input_ref` but
+    writes nothing, so recreating the input cannot feed back into a write. */
+    Effect::new(move |_| {
+        if open.get()
+            && let Some(el) = input_ref.get()
+        {
+            #[expect(
+                clippy::let_underscore_must_use,
+                clippy::let_underscore_untyped,
+                let_underscore_drop,
+                reason = "focus() returns Result<(), JsValue>; errors are benign"
+            )]
+            let _ = el.focus();
         }
     });
 
