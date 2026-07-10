@@ -1,7 +1,7 @@
 import { browser, $, expect } from '@wdio/globals';
 
 describe('Command palette filter builder', () => {
-    it('typing tag: jumps to the tag picker and committing shows a chip', async () => {
+    it('searches a seeded tag and commits it as a filter chip', async () => {
         await browser.execute(() => {
             window.history.pushState({}, '', '/');
             window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
@@ -15,15 +15,32 @@ describe('Command palette filter builder', () => {
 
         const input = await dialog.$('input[role="combobox"]');
         await input.waitForDisplayed();
+
+        /* The `tag:` prefix jumps to the tag picker, which recreates the input, so
+         * re-select it before narrowing to a specific seeded tag. */
         await input.setValue('tag:');
+        const tagInput = await dialog.$('input[aria-label="Tag"]');
+        await tagInput.waitForDisplayed();
 
-        /* The prefix jump replaces the combobox's aria-label with the dimension name. */
-        await expect(await dialog.$('input[aria-label="Tag"]')).toBeDisplayed();
-
+        /* Unfiltered, the seeded tag taxonomy yields several options. */
         const listbox = await $('#palette-listbox');
-        const firstOption = await listbox.$('div[role="option"]');
-        await firstOption.waitForDisplayed();
-        await firstOption.click();
+        await browser.waitUntil(
+            async () => (await listbox.$$('div[role="option"]').length) > 1,
+            { timeoutMsg: 'expected multiple seeded tags in the picker' },
+        );
+
+        /* Narrowing to `recurring` (a seeded tag) leaves it as the sole match. */
+        await tagInput.setValue('recurring');
+        await browser.waitUntil(
+            async () => (await listbox.$$('div[role="option"]').length) === 1,
+            { timeoutMsg: 'expected the tag search to narrow to `recurring`' },
+        );
+
+        const only = await listbox.$('div[role="option"]');
+        /* getText() is unreliable for these option rows under WebKitWebDriver, so
+         * read the DOM text directly. */
+        expect(await only.getAttribute('textContent')).toContain('recurring');
+        await only.click();
 
         /* Committing a value returns to the root dimension menu, closing the tag list. */
         await expect(await dialog.$('input[aria-label="Search filters"]')).toBeDisplayed();

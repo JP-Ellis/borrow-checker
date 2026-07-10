@@ -18,6 +18,7 @@ use std::path::PathBuf;
 
 use bc_core::AccountService;
 use bc_core::BudgetService;
+use bc_core::TagService;
 use bc_core::TransactionService;
 use bc_models::AccountId;
 use bc_models::AccountKind;
@@ -33,6 +34,8 @@ use bc_models::Posting;
 use bc_models::PostingId;
 use bc_models::Reconciliation;
 use bc_models::RolloverPolicy;
+use bc_models::TagId;
+use bc_models::TagPath;
 use bc_models::Transaction;
 use bc_models::TransactionId;
 use clap::Parser;
@@ -93,6 +96,17 @@ fn posting(account_id: &AccountId, amount: Amount) -> Posting {
         .id(PostingId::new())
         .account_id(account_id.clone())
         .amount(amount)
+        .build()
+}
+
+/// Constructs a [`Posting`] carrying posting-level tags (e.g. a single
+/// reimbursable leg of an otherwise personal transaction).
+fn posting_tagged(account_id: &AccountId, amount: Amount, tag_ids: Vec<TagId>) -> Posting {
+    Posting::builder()
+        .id(PostingId::new())
+        .account_id(account_id.clone())
+        .amount(amount)
+        .tag_ids(tag_ids)
         .build()
 }
 
@@ -517,6 +531,40 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // =========================================================================
+    // TAGS (a realistic personal-finance taxonomy; some hierarchical)
+    // =========================================================================
+
+    let tags = TagService::new(pool.clone());
+
+    // Creates the tag path, returning its leaf id.
+    macro_rules! tag {
+        ($path:expr) => {
+            tags.create_path(&$path.parse::<TagPath>()?).await?
+        };
+    }
+
+    // Tags attached to transactions/postings below.
+    let tag_recurring = tag!("recurring");
+    let tag_subscription = tag!("subscription");
+    let tag_shared = tag!("shared");
+    let tag_commute = tag!("commute");
+    let tag_business = tag!("business");
+    let tag_reimbursable = tag!("reimbursable");
+
+    // Additional tags rounding out the taxonomy; unattached tags still surface in
+    // the tag picker (`list_tags` returns the whole `tags` table).
+    for path in [
+        "business:travel",
+        "business:equipment",
+        "tax-deductible",
+        "gift",
+        "holiday:flights",
+        "holiday:lodging",
+    ] {
+        tags.create_path(&path.parse::<TagPath>()?).await?;
+    }
+
+    // =========================================================================
     // TRANSACTIONS (~79 total across 6 historical months + current month)
     // =========================================================================
 
@@ -533,6 +581,31 @@ async fn main() -> anyhow::Result<()> {
                         .description($desc)
                         .reconciliation($reconciliation)
                         .created_at(Timestamp::now())
+                        .postings(vec![
+                            posting($debit_acct, aud($debit_amt)),
+                            posting($credit_acct, aud($credit_amt)),
+                        ])
+                        .build(),
+                )
+                .await?
+        };
+    }
+
+    // Like `txn!`, but attaches transaction-level tags.
+    macro_rules! txn_tags {
+        ($date:expr, $payee:expr, $desc:expr, $reconciliation:expr,
+         $debit_acct:expr, $debit_amt:expr,
+         $credit_acct:expr, $credit_amt:expr, $tags:expr) => {
+            transactions
+                .create(
+                    Transaction::builder()
+                        .id(TransactionId::new())
+                        .date($date)
+                        .payee($payee)
+                        .description($desc)
+                        .reconciliation($reconciliation)
+                        .created_at(Timestamp::now())
+                        .tag_ids($tags)
                         .postings(vec![
                             posting($debit_acct, aud($debit_amt)),
                             posting($credit_acct, aud($credit_amt)),
@@ -609,7 +682,7 @@ async fn main() -> anyhow::Result<()> {
     // 6 months ago
     // -------------------------------------------------------------------------
 
-    txn!(
+    txn_tags!(
         month_day(6, 5),
         "Client A",
         "November freelance payment",
@@ -617,7 +690,8 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(800.00),
         &freelance_id,
-        dec!(-800.00)
+        dec!(-800.00),
+        vec![tag_business.clone()]
     );
     txn!(
         month_day(6, 15),
@@ -699,16 +773,25 @@ async fn main() -> anyhow::Result<()> {
         &credit_card_id,
         dec!(-55.00)
     );
-    txn!(
-        month_day(6, 8),
-        "The Local Bistro",
-        "November dinner",
-        Reconciliation::Reconciled,
-        &dining_id,
-        dec!(85.00),
-        &credit_card_id,
-        dec!(-85.00)
-    );
+    // A shared meal (transaction-level `shared`) whose dining leg is also
+    // `reimbursable` (posting-level) — exercises both tag scopes.
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(month_day(6, 8))
+                .payee("The Local Bistro")
+                .description("November dinner")
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(Timestamp::now())
+                .tag_ids(vec![tag_shared.clone()])
+                .postings(vec![
+                    posting_tagged(&dining_id, aud(dec!(85.00)), vec![tag_reimbursable.clone()]),
+                    posting(&credit_card_id, aud(dec!(-85.00))),
+                ])
+                .build(),
+        )
+        .await?;
     txn!(
         month_day(6, 20),
         "The Coffee Club",
@@ -729,7 +812,7 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-210.00)
     );
-    txn!(
+    txn_tags!(
         month_day(6, 12),
         "Telstra",
         "November internet bill",
@@ -737,7 +820,8 @@ async fn main() -> anyhow::Result<()> {
         &telecommunications_id,
         dec!(89.00),
         &checking_id,
-        dec!(-89.00)
+        dec!(-89.00),
+        vec![tag_recurring.clone()]
     );
     txn!(
         month_day(6, 28),
@@ -749,7 +833,7 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-130.00)
     );
-    txn!(
+    txn_tags!(
         month_day(6, 18),
         "Opal Card",
         "November transit top-up",
@@ -757,9 +841,10 @@ async fn main() -> anyhow::Result<()> {
         &transport_id,
         dec!(50.00),
         &checking_id,
-        dec!(-50.00)
+        dec!(-50.00),
+        vec![tag_commute.clone()]
     );
-    txn!(
+    txn_tags!(
         month_day(6, 3),
         "Netflix",
         "November streaming subscription",
@@ -767,7 +852,8 @@ async fn main() -> anyhow::Result<()> {
         &subscriptions_id,
         dec!(22.99),
         &credit_card_id,
-        dec!(-22.99)
+        dec!(-22.99),
+        vec![tag_recurring.clone(), tag_subscription.clone()]
     );
     txn!(
         month_day(6, 3),
@@ -1800,6 +1886,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Created database at {}", args.db_path.display());
     println!("Accounts:     26 (5 root + 21 leaf)");
     println!("Budgets:       7 (one per expense leaf account)");
+    println!("Tags:         13 (9 roots + 4 children; recurring/business/shared/…)");
     println!("Revisions:     9 (7 initial + 2 mid-year bumps for groceries and electricity)");
     println!(
         "Transactions: ~79 (cleared, pending, voided across 6 historical months + current month)"
