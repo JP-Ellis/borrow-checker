@@ -267,7 +267,7 @@ impl Service {
         };
         let sql = format!(
             "SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
-             FROM transactions t {where_sql} ORDER BY t.date DESC"
+             FROM transactions t {where_sql} ORDER BY t.date DESC, t.id ASC"
         );
 
         // 3. Bind values in clause order.
@@ -669,6 +669,46 @@ mod search_tests {
         assert_eq!(out.len(), 2);
         // Empty filter => all legs matched.
         assert!(out.iter().all(|m| m.matched_postings.len() == 2));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn search_orders_same_date_by_id(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+        let t1 = svc
+            .create(tx_on(&a, &b, date(2026, 6, 1), "Amazon", dec!(100)))
+            .await
+            .expect("t1");
+        let t2 = svc
+            .create(tx_on(&a, &b, date(2026, 6, 1), "Coffee", dec!(20)))
+            .await
+            .expect("t2");
+
+        let out = svc
+            .search(&TransactionQuery::default())
+            .await
+            .expect("search");
+        let ids: Vec<_> = out.iter().map(|m| m.transaction.id().to_string()).collect();
+        let mut expected = vec![t1.to_string(), t2.to_string()];
+        expected.sort();
+
+        assert_eq!(ids, expected);
     }
 
     #[sqlx::test(migrations = "./migrations")]
