@@ -7,15 +7,6 @@
         reason = "mod.rs collocates the component source with its SCSS module file"
     )
 )]
-#![cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "Chip/ChipRow and ChipVariant::{Filled,Bare} are wired up by call \
-                  sites migrated in later tasks of issue #288"
-    )
-)]
-
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 use stylance::import_style;
@@ -129,6 +120,9 @@ pub fn ChipRow(
         </div>
     }
 }
+
+#[cfg(all(debug_assertions, target_arch = "wasm32"))]
+pub mod qa;
 
 #[cfg(test)]
 mod tests {
