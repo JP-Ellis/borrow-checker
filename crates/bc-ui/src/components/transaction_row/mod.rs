@@ -379,6 +379,31 @@ fn sum_focal<'a>(mut amounts: impl Iterator<Item = &'a Amount>) -> Amount {
     Amount::new(total, currency)
 }
 
+/// Returns the transaction as the collapsed row should summarise it under
+/// `strictness`. In `Strict` mode with a known matched-leg set, non-matching
+/// legs are dropped from a clone (so the counterpart cell, split pill, and
+/// headline reflect only matched legs). In `Lenient` mode, or when the matched
+/// set is unknown, the transaction is returned unchanged (cloned).
+///
+/// # Arguments
+///
+/// * `tx` - The full transaction.
+/// * `matched` - Ids of legs that matched the posting-scoped predicates, or
+///   `None` when unfiltered (all legs match).
+/// * `strictness` - The active presentation strictness.
+#[must_use]
+pub fn strict_render_tx(
+    tx: &Transaction,
+    matched: Option<&[String]>,
+    strictness: crate::filter_ctx::Strictness,
+) -> Transaction {
+    let mut out = tx.clone();
+    if let (crate::filter_ctx::Strictness::Strict, Some(ids)) = (strictness, matched) {
+        out.postings.retain(|p| ids.iter().any(|id| id == &p.id));
+    }
+    out
+}
+
 /// Returns the contribution of `p` to the period `[window_start, window_end]`.
 ///
 /// A posting with a `spread_from`/`spread_until` range contributes its value
@@ -577,6 +602,13 @@ pub fn TransactionRow(
     /// view; when empty the detail fetches them over IPC instead.
     #[prop(optional)]
     all_tags: Vec<bc_ipc::TagInfo>,
+    /// Ids of legs that matched the posting-scoped filter predicates; `None`
+    /// when the register is unfiltered. Drives strict-mode leg hiding.
+    #[prop(optional)]
+    matched_postings: Option<Vec<String>>,
+    /// Presentation strictness for the collapsed leg summary.
+    #[prop(optional)]
+    strictness: crate::filter_ctx::Strictness,
 ) -> impl IntoView {
     let local_expanded = RwSignal::new(false);
     let expanded: Signal<bool> = expanded.unwrap_or_else(|| local_expanded.into());
@@ -585,7 +617,8 @@ pub fn TransactionRow(
         None => local_expanded.update(|e| *e = !*e),
     };
 
-    let amount = headline_amount(&tx, &perspective);
+    let render_tx = strict_render_tx(&tx, matched_postings.as_deref(), strictness);
+    let amount = headline_amount(&render_tx, &perspective);
     let currencies = crate::currency_ctx::use_currency_store();
     let amount_str = {
         let amount = amount.clone();
@@ -633,7 +666,7 @@ pub fn TransactionRow(
         }
         RowPerspective::Global => None,
     };
-    let counterpart_names: Vec<&str> = tx
+    let counterpart_names: Vec<&str> = render_tx
         .postings
         .iter()
         .filter(|p| focal_id.as_deref() != Some(p.account.id.as_str()))
@@ -643,11 +676,11 @@ pub fn TransactionRow(
 
     let tags = tx.tags.clone();
     let tags_mobile = tags.clone();
-    let split = tx.postings.len() > 2;
-    let unbalanced = !is_balanced(&tx);
+    let split = render_tx.postings.len() > 2;
+    let unbalanced = !is_balanced(&render_tx);
     let flagged = tx.reconciliation == bc_ipc::Reconciliation::Flagged;
     let unrec = tx.reconciliation == bc_ipc::Reconciliation::Unreconciled;
-    let split_count = tx.postings.len();
+    let split_count = render_tx.postings.len();
 
     let toggle_click = toggle;
     let toggle_key = toggle;
@@ -1524,5 +1557,43 @@ mod tests {
             },
         );
         assert_eq!(amt.value, Decimal::new(-8_420, 2));
+    }
+
+    fn sample_split_tx() -> Transaction {
+        tx(vec![
+            posting("p0", "checking", Some(-8_420)),
+            posting("p1", "groceries", Some(4_210)),
+            posting("p2", "dining", Some(4_210)),
+        ])
+    }
+
+    #[test]
+    fn strict_render_keeps_all_legs_in_lenient() {
+        let tx = sample_split_tx();
+        let out = super::strict_render_tx(
+            &tx,
+            Some(&["p0".to_owned()]),
+            crate::filter_ctx::Strictness::Lenient,
+        );
+        assert_eq!(out.postings.len(), tx.postings.len());
+    }
+
+    #[test]
+    fn strict_render_hides_unmatched_legs_in_strict() {
+        let tx = sample_split_tx();
+        let out = super::strict_render_tx(
+            &tx,
+            Some(&["p0".to_owned(), "p1".to_owned()]),
+            crate::filter_ctx::Strictness::Strict,
+        );
+        let ids: Vec<_> = out.postings.iter().map(|p| p.id.clone()).collect();
+        assert_eq!(ids, vec!["p0".to_owned(), "p1".to_owned()]);
+    }
+
+    #[test]
+    fn strict_render_with_none_matched_is_identity() {
+        let tx = sample_split_tx();
+        let out = super::strict_render_tx(&tx, None, crate::filter_ctx::Strictness::Strict);
+        assert_eq!(out.postings.len(), tx.postings.len());
     }
 }
