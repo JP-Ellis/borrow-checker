@@ -109,7 +109,7 @@ fn salary_transaction() -> Transaction {
 }
 
 /// Returns a three-posting split transaction with one leg deliberately left
-/// out of `matched_postings`, to demonstrate strict-mode leg hiding.
+/// out of `matched_postings`, to demonstrate the non-matching leg dimming.
 fn partially_matched_transaction() -> FilteredTransaction {
     let tx = Transaction::new(
         "tx-dinner-split-2026-05-02",
@@ -152,7 +152,7 @@ fn partially_matched_transaction() -> FilteredTransaction {
         vec![],
     );
     /* Only the debit and dining legs matched the active filter — the
-    "owed by roommate" leg is hidden entirely in strict mode. */
+    "owed by roommate" leg renders dimmed in the expanded detail. */
     let matched = vec![
         "posting-dinner-debit".to_owned(),
         "posting-dinner-dining".to_owned(),
@@ -160,14 +160,11 @@ fn partially_matched_transaction() -> FilteredTransaction {
     FilteredTransaction::new(tx, matched)
 }
 
-/// Renders a [`TransactionRegister`] with a locally provided, strict filter
-/// store — demonstrating strict-mode leg hiding independent of the shell's
-/// filter context.
+/// Renders a [`TransactionRegister`] whose sole row is a partial-match
+/// transaction — expanding it demonstrates the non-matching leg rendering
+/// dimmed in the detail editor.
 #[component]
-fn StrictRegisterShowcase() -> impl IntoView {
-    let store = crate::filter_ctx::provide_filter_store();
-    store.strictness.set(crate::filter_ctx::Strictness::Strict);
-
+fn DimmedRegisterShowcase() -> impl IntoView {
     let period = RwSignal::new(bc_ipc::Period::Monthly);
     let window_start = RwSignal::new(jiff::Zoned::now().date());
 
@@ -216,9 +213,9 @@ pub fn TransactionRegisterQa() -> impl IntoView {
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
-                    "strict — non-matching leg hidden (dinner split, one leg unmatched)"
+                    "dimmed — expand to see the non-matching leg dimmed (dinner split, one leg unmatched)"
                 </p>
-                <StrictRegisterShowcase />
+                <DimmedRegisterShowcase />
             </section>
 
         </div>
