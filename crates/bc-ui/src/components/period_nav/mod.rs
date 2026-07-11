@@ -519,6 +519,7 @@ fn period_to_str(p: &Period) -> &'static str {
 /// * `period` - Selected granularity. Owned by the page; this control writes it.
 /// * `window_start` - Start of the display window. Owned by the page; written here.
 /// * `compact` - When `true`, trims the label width for tight contexts.
+/// * `disabled` - When `true`, dims the control and blocks interaction.
 #[cfg(target_arch = "wasm32")]
 #[component]
 pub fn PeriodNav(
@@ -529,12 +530,23 @@ pub fn PeriodNav(
     /// Trims chrome for tight contexts (e.g. a compact sticky bar).
     #[prop(optional)]
     compact: bool,
+    /// When `true`, dims the control and blocks interaction (e.g. the global
+    /// filter's date bounds have taken over the range).
+    #[prop(optional, into)]
+    disabled: Signal<bool>,
 ) -> impl IntoView {
     let label = move || window_label(&period.get(), window_start.get());
-    let row_class = if compact {
+    let base_row_class = if compact {
         format!("{} {}", style::nav_row, style::compact)
     } else {
         style::nav_row.to_owned()
+    };
+    let row_class = move || {
+        if disabled.get() {
+            format!("{base_row_class} {}", style::disabled)
+        } else {
+            base_row_class.clone()
+        }
     };
 
     view! {
@@ -542,6 +554,7 @@ pub fn PeriodNav(
             <button
                 class=style::nav_btn
                 aria-label="previous period"
+                disabled=move || disabled.get()
                 on:click=move |_| {
                     window_start.update(|ws| *ws = step_window(&period.get(), *ws, false));
                 }
@@ -552,6 +565,7 @@ pub fn PeriodNav(
             <button
                 class=style::nav_btn
                 aria-label="next period"
+                disabled=move || disabled.get()
                 on:click=move |_| {
                     window_start.update(|ws| *ws = step_window(&period.get(), *ws, true));
                 }
@@ -561,6 +575,7 @@ pub fn PeriodNav(
             <select
                 class=style::period_select
                 prop:value=move || period_to_str(&period.get())
+                disabled=move || disabled.get()
                 on:change=move |ev| {
                     let new_period = parse_period(&event_target_value(&ev));
                     window_start.update(|ws| *ws = window_containing(&new_period, *ws));
