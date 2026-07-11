@@ -38,3 +38,9 @@
 .compact {
     .nav_label { min-width: 96px; font-size: var(--bc-text-caption); }
 }
+
+/* MARK: Disabled */
+.disabled {
+    opacity: 0.4;
+    pointer-events: none;
+}
