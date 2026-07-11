@@ -1,6 +1,8 @@
 //! Global filter store: the active `Filter` plus a presentation-only strictness
 //! toggle, provided once at the shell root. Chip derivation is pure.
 
+use std::collections::HashMap;
+
 /// How much of a partially-matching transaction consumers render.
 #[cfg_attr(
     not(target_arch = "wasm32"),
@@ -37,57 +39,108 @@ impl Strictness {
     }
 }
 
-/// One active filter dimension rendered as a removable chip.
+/// Identifies the single filter value a chip removes when dismissed.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Chip {
-    /// Stable dimension key (used to remove the dimension).
-    pub key: &'static str,
-    /// Display text, e.g. `text: amazon`.
-    pub label: String,
+pub enum ChipRemove {
+    /// Clears the `after:` (inclusive lower) date bound.
+    DateFrom,
+    /// Clears the `before:` (exclusive upper) date bound.
+    DateUntil,
+    /// Clears the payee/narration text needle.
+    Text,
+    /// Clears the `over:` (minimum magnitude) amount bound.
+    AmountMin,
+    /// Clears the `under:` (maximum magnitude) amount bound.
+    AmountMax,
+    /// Clears the reconciliation status.
+    Status,
+    /// Removes one selected account by id.
+    Account(String),
+    /// Removes one selected tag by id.
+    Tag(String),
 }
 
-/// Derives the removable chips for the active dimensions of `filter`.
+/// One active filter value rendered as a removable chip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chip {
+    /// Stable key for the `<For>` list (unique per active value).
+    pub key: String,
+    /// Display text, e.g. `account: Checking` or `over: 100`.
+    pub label: String,
+    /// Which filter value this chip removes.
+    pub remove: ChipRemove,
+}
+
+/// Derives one removable chip per active filter value. Account and tag ids are
+/// resolved to display names via `names` (populated as the user picks them),
+/// falling back to the raw id when a name is not known.
+///
+/// # Arguments
+///
+/// * `filter` - The active filter.
+/// * `names` - Map of account/tag id to display label.
 #[must_use]
-pub fn chips_from_filter(filter: &bc_ipc::Filter) -> Vec<Chip> {
+pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String>) -> Vec<Chip> {
     let mut chips = Vec::new();
-    if filter.date_from.is_some() || filter.date_until.is_some() {
-        let from = filter.date_from.map(|d| d.to_string()).unwrap_or_default();
-        let until = filter.date_until.map(|d| d.to_string()).unwrap_or_default();
+
+    for id in &filter.accounts {
+        let name = names.get(id).cloned().unwrap_or_else(|| id.clone());
         chips.push(Chip {
-            key: "date",
-            label: format!("date: {from}…{until}"),
+            key: format!("account:{id}"),
+            label: format!("account: {name}"),
+            remove: ChipRemove::Account(id.clone()),
         });
     }
-    if !filter.accounts.is_empty() {
+    for id in &filter.tags {
+        let name = names.get(id).cloned().unwrap_or_else(|| id.clone());
         chips.push(Chip {
-            key: "accounts",
-            label: format!("account: {} selected", filter.accounts.len()),
-        });
-    }
-    if !filter.tags.is_empty() {
-        chips.push(Chip {
-            key: "tags",
-            label: format!("tag: {} selected", filter.tags.len()),
+            key: format!("tag:{id}"),
+            label: format!("tag: {name}"),
+            remove: ChipRemove::Tag(id.clone()),
         });
     }
     if let Some(text) = &filter.text {
         chips.push(Chip {
-            key: "text",
+            key: "text".to_owned(),
             label: format!("text: {text}"),
+            remove: ChipRemove::Text,
+        });
+    }
+    if let Some(after) = filter.date_from {
+        chips.push(Chip {
+            key: "after".to_owned(),
+            label: format!("after: {after}"),
+            remove: ChipRemove::DateFrom,
+        });
+    }
+    if let Some(before) = filter.date_until {
+        chips.push(Chip {
+            key: "before".to_owned(),
+            label: format!("before: {before}"),
+            remove: ChipRemove::DateUntil,
         });
     }
     if let Some(amount) = &filter.amount {
-        let min = amount.min.map(|d| d.to_string()).unwrap_or_default();
-        let max = amount.max.map(|d| d.to_string()).unwrap_or_default();
-        chips.push(Chip {
-            key: "amount",
-            label: format!("amount: {min}…{max}"),
-        });
+        if let Some(min) = amount.min {
+            chips.push(Chip {
+                key: "over".to_owned(),
+                label: format!("over: {min}"),
+                remove: ChipRemove::AmountMin,
+            });
+        }
+        if let Some(max) = amount.max {
+            chips.push(Chip {
+                key: "under".to_owned(),
+                label: format!("under: {max}"),
+                remove: ChipRemove::AmountMax,
+            });
+        }
     }
     if let Some(rec) = filter.reconciliation {
         chips.push(Chip {
-            key: "status",
+            key: "status".to_owned(),
             label: format!("status: {}", rec.label()),
+            remove: ChipRemove::Status,
         });
     }
     chips
@@ -98,8 +151,11 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter) -> Vec<Chip> {
 /// pure `Strictness`/`Chip`/`chips_from_filter` above stay natively testable.
 #[cfg(target_arch = "wasm32")]
 mod wasm {
+    use std::collections::HashMap;
+
     use leptos::prelude::*;
 
+    use super::ChipRemove;
     use super::Strictness;
 
     /// Reactive global filter state, provided once at the shell root.
@@ -107,6 +163,9 @@ mod wasm {
     pub struct FilterStore {
         /// The active filter.
         pub filter: RwSignal<bc_ipc::Filter>,
+        /// Display labels for the account/tag ids in `filter`, recorded as the
+        /// user picks them so chips resolve names without a round-trip.
+        pub labels: RwSignal<HashMap<String, String>>,
         /// Presentation-only strictness toggle.
         #[expect(
             dead_code,
@@ -116,24 +175,79 @@ mod wasm {
     }
 
     impl FilterStore {
-        /// Clears the dimension identified by a chip `key`.
+        /// Adds an account to the filter (no-op if already present), recording its
+        /// display name for chip rendering.
         ///
         /// # Arguments
         ///
-        /// * `key` - The chip key identifying which filter dimension to clear.
-        pub fn clear_dimension(&self, key: &str) {
-            self.filter.update(|f| match key {
-                "date" => {
-                    f.date_from = None;
-                    f.date_until = None;
-                }
-                "accounts" => f.accounts.clear(),
-                "tags" => f.tags.clear(),
-                "text" => f.text = None,
-                "amount" => f.amount = None,
-                "status" => f.reconciliation = None,
-                _ => {}
+        /// * `id` - The account id.
+        /// * `name` - The account display name.
+        pub fn add_account(&self, id: String, name: String) {
+            self.labels.update(|m| {
+                m.insert(id.clone(), name);
             });
+            self.filter.update(|f| {
+                if !f.accounts.contains(&id) {
+                    f.accounts.push(id);
+                }
+            });
+        }
+
+        /// Adds a tag to the filter (no-op if already present), recording its
+        /// display path for chip rendering.
+        ///
+        /// # Arguments
+        ///
+        /// * `id` - The tag id.
+        /// * `path` - The tag colon-path.
+        pub fn add_tag(&self, id: String, path: String) {
+            self.labels.update(|m| {
+                m.insert(id.clone(), path);
+            });
+            self.filter.update(|f| {
+                if !f.tags.contains(&id) {
+                    f.tags.push(id);
+                }
+            });
+        }
+
+        /// Removes the single filter value identified by `target`.
+        ///
+        /// # Arguments
+        ///
+        /// * `target` - Which filter value to clear.
+        pub fn remove_chip(&self, target: &ChipRemove) {
+            self.filter.update(|f| match target {
+                ChipRemove::DateFrom => f.date_from = None,
+                ChipRemove::DateUntil => f.date_until = None,
+                ChipRemove::Text => f.text = None,
+                ChipRemove::Status => f.reconciliation = None,
+                ChipRemove::Account(id) => f.accounts.retain(|a| a != id),
+                ChipRemove::Tag(id) => f.tags.retain(|t| t != id),
+                ChipRemove::AmountMin => {
+                    if let Some(a) = f.amount.as_mut() {
+                        a.min = None;
+                    }
+                    drop_empty_amount(f);
+                }
+                ChipRemove::AmountMax => {
+                    if let Some(a) = f.amount.as_mut() {
+                        a.max = None;
+                    }
+                    drop_empty_amount(f);
+                }
+            });
+        }
+    }
+
+    /// Drops the amount predicate entirely once none of its bounds remain set.
+    fn drop_empty_amount(f: &mut bc_ipc::Filter) {
+        if let Some(a) = f.amount.as_ref()
+            && a.min.is_none()
+            && a.max.is_none()
+            && a.commodity.is_none()
+        {
+            f.amount = None;
         }
     }
 
@@ -146,6 +260,7 @@ mod wasm {
     pub fn provide_filter_store() -> FilterStore {
         let store = FilterStore {
             filter: RwSignal::new(bc_ipc::Filter::default()),
+            labels: RwSignal::new(HashMap::new()),
             strictness: RwSignal::new(Strictness::default()),
         };
         provide_context(store);
@@ -161,6 +276,7 @@ mod wasm {
     pub fn use_filter_store() -> FilterStore {
         use_context::<FilterStore>().unwrap_or_else(|| FilterStore {
             filter: RwSignal::new(bc_ipc::Filter::default()),
+            labels: RwSignal::new(HashMap::new()),
             strictness: RwSignal::new(Strictness::default()),
         })
     }
@@ -169,7 +285,7 @@ mod wasm {
 #[cfg(target_arch = "wasm32")]
 #[expect(
     unused_imports,
-    reason = "FilterStore/use_filter_store are consumed by per-view filter chips in a later task"
+    reason = "FilterStore is consumed by per-view filter surfaces in a later task"
 )]
 pub use wasm::FilterStore;
 #[cfg(target_arch = "wasm32")]
@@ -179,30 +295,70 @@ pub use wasm::use_filter_store;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use pretty_assertions::assert_eq;
 
+    use super::ChipRemove;
     use super::chips_from_filter;
 
     #[test]
     fn empty_filter_has_no_chips() {
-        let chips = chips_from_filter(&bc_ipc::Filter::default());
+        let chips = chips_from_filter(&bc_ipc::Filter::default(), &HashMap::new());
         assert!(chips.is_empty());
     }
 
     #[test]
-    fn active_dimensions_become_chips() {
+    fn each_account_and_tag_becomes_its_own_named_chip() {
         // `bc_ipc::Filter` is `#[non_exhaustive]`, so it cannot be built with a
         // struct literal outside its crate (even with `..Default::default()`);
         // mutate a default instance instead.
         let mut filter = bc_ipc::Filter::default();
-        filter.text = Some("amazon".to_owned());
-        filter.tags = vec!["t1".to_owned(), "t2".to_owned()];
-        let keys: Vec<_> = chips_from_filter(&filter)
-            .into_iter()
-            .map(|c| c.key)
-            .collect();
-        assert!(keys.contains(&"text"));
-        assert!(keys.contains(&"tags"));
-        assert_eq!(keys.len(), 2);
+        filter.accounts = vec!["a1".to_owned(), "a2".to_owned()];
+        filter.tags = vec!["t1".to_owned()];
+
+        /* a2 intentionally unresolved — it should fall back to the raw id. */
+        let names = HashMap::from([
+            ("a1".to_owned(), "Checking".to_owned()),
+            ("t1".to_owned(), "groceries".to_owned()),
+        ]);
+
+        let chips = chips_from_filter(&filter, &names);
+        let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(
+            labels,
+            vec!["account: Checking", "account: a2", "tag: groceries"]
+        );
+        assert_eq!(
+            chips.first().map(|c| &c.remove),
+            Some(&ChipRemove::Account("a1".to_owned()))
+        );
+        assert_eq!(
+            chips.get(2).map(|c| &c.remove),
+            Some(&ChipRemove::Tag("t1".to_owned()))
+        );
+    }
+
+    #[test]
+    fn amount_bounds_become_separate_over_under_chips() {
+        let mut amount = bc_ipc::AmountFilter::default();
+        amount.min = Some("100".parse().expect("decimal"));
+        amount.max = Some("500".parse().expect("decimal"));
+        let mut filter = bc_ipc::Filter::default();
+        filter.amount = Some(amount);
+
+        let chips = chips_from_filter(&filter, &HashMap::new());
+        let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["over: 100", "under: 500"]);
+        assert_eq!(
+            chips.first().map(|c| &c.remove),
+            Some(&ChipRemove::AmountMin)
+        );
+        assert_eq!(
+            chips.get(1).map(|c| &c.remove),
+            Some(&ChipRemove::AmountMax)
+        );
     }
 }
