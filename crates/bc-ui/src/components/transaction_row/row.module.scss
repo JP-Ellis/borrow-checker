@@ -592,29 +592,7 @@
   letter-spacing: -0.012em;
 }
 
-/* MARK: Chip */
-
-.chip {
-  font-size: var(--bc-text-eyebrow);
-  padding: 1px var(--bc-space-2);
-  border-radius: var(--bc-radius-pill);
-  border: 1px solid var(--bc-border);
-  color: var(--bc-ink-mute);
-  background: var(--bc-surface);
-  white-space: nowrap;
-  display: inline-flex;
-  align-items: center;
-}
-
 /* MARK: Spread chip */
-
-.chip_spread {
-  color: var(--bc-accent);
-  border-color: color-mix(in oklch, var(--bc-accent) 30%, var(--bc-border));
-  background: var(--bc-accent-soft);
-  cursor: pointer;
-  gap: var(--bc-space-1);
-}
 
 .spread_edit {
   display: inline-flex;

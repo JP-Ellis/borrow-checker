@@ -6,7 +6,9 @@ use leptos::prelude::*;
 use rust_decimal::Decimal;
 
 use super::style;
+use crate::components::ChipVariant;
 use crate::components::account_picker::AccountPicker;
+use crate::components::chip::Chip;
 use crate::components::num::format_amount;
 use crate::components::tag_picker::TagPicker;
 use crate::components::transaction_row::edit_ctx::TxEditCtx;
@@ -308,11 +310,11 @@ pub fn PostingLine(
         editing_spread.set(true);
     };
 
-    let clear_spread = move |_| {
+    let clear_spread = Callback::new(move |()| {
         from_str.set(String::new());
         until_str.set(String::new());
         editing_spread.set(false);
-    };
+    });
 
     let collapse_spread = move |_| editing_spread.set(false);
     let collapse_spread_key = move |ev: leptos::ev::KeyboardEvent| {
@@ -426,23 +428,19 @@ pub fn PostingLine(
                             .then(|| {
                                 view! {
                                     <div class=style::posting_tools>{add_note_btn}</div>
-                                    <span
-                                        class=format!("{} {}", style::chip, style::chip_spread)
-                                        on:click=move |_| editing_spread.set(true)
-                                        role="button"
-                                        tabindex="0"
+                                    <Chip
+                                        variant=ChipVariant::Accent
+                                        on_remove=clear_spread
+                                        remove_label="clear spread"
                                     >
-                                        {spread_chip_text}
                                         <span
-                                            class=style::spread_edit_x
-                                            on:click=clear_spread
+                                            on:click=move |_| editing_spread.set(true)
                                             role="button"
                                             tabindex="0"
-                                            aria-label="clear spread"
                                         >
-                                            "\u{00D7}"
+                                            {spread_chip_text}
                                         </span>
-                                    </span>
+                                    </Chip>
                                 }
                             })
                     }}
@@ -475,7 +473,7 @@ pub fn PostingLine(
                                         />
                                         <button
                                             class=style::spread_edit_x
-                                            on:click=clear_spread
+                                            on:click=move |_| clear_spread.run(())
                                             type="button"
                                             aria-label="clear spread"
                                         >
