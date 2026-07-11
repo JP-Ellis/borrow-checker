@@ -4,32 +4,24 @@
 use std::collections::HashMap;
 
 /// How much of a partially-matching transaction consumers render.
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    expect(dead_code, reason = "only read by the wasm32-gated FilterStore")
-)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Strictness {
     /// Show the whole transaction, greying out non-matching legs.
     #[default]
     Lenient,
     /// Hide non-matching legs (may render an unbalanced transaction).
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            dead_code,
-            reason = "wired into the strictness toggle UI in a later task"
-        )
-    )]
     Strict,
 }
 
 impl Strictness {
     /// Human-readable label for the toggle.
     #[must_use]
-    #[expect(
-        dead_code,
-        reason = "wired into the strictness toggle UI in a later task"
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(
+            dead_code,
+            reason = "only called from the wasm32-gated StrictnessToggle in top_bar.rs"
+        )
     )]
     pub fn label(self) -> &'static str {
         match self {
@@ -162,13 +154,6 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
 /// # Arguments
 ///
 /// * `filter` - The filter to inspect.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "consumed by register filter wiring in a later task"
-    )
-)]
 #[must_use]
 pub fn filter_is_active(filter: &bc_ipc::Filter) -> bool {
     filter.date_from.is_some()
@@ -201,10 +186,6 @@ mod wasm {
         /// user picks them so chips resolve names without a round-trip.
         pub labels: RwSignal<HashMap<String, String>>,
         /// Presentation-only strictness toggle.
-        #[expect(
-            dead_code,
-            reason = "wired into the strictness toggle UI in a later task"
-        )]
         pub strictness: RwSignal<Strictness>,
     }
 
@@ -320,7 +301,8 @@ mod wasm {
 #[cfg(target_arch = "wasm32")]
 #[expect(
     unused_imports,
-    reason = "FilterStore is consumed by per-view filter surfaces in a later task"
+    reason = "re-exported for callers naming the FilterStore type explicitly; \
+              current call sites only use type inference via use_filter_store()/provide_filter_store()"
 )]
 pub use wasm::FilterStore;
 #[cfg(target_arch = "wasm32")]

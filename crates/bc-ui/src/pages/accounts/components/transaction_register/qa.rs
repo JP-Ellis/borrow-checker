@@ -13,10 +13,6 @@ use rust_decimal::Decimal;
 use super::TransactionRegister;
 
 /// Returns sample transactions for the Smart Access account QA showcase.
-#[expect(
-    clippy::expect_used,
-    reason = "QA fixture — timestamp literals are valid"
-)]
 fn sample_transactions() -> Vec<FilteredTransaction> {
     vec![
         {
