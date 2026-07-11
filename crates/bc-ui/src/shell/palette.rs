@@ -23,8 +23,6 @@ use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use leptos::web_sys;
 #[cfg(target_arch = "wasm32")]
-use rust_decimal::Decimal;
-#[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
@@ -88,6 +86,22 @@ pub fn parse_token(input: &str) -> Option<(Field, &str)> {
     let head = raw_head.trim().to_ascii_lowercase();
     let field = Field::all().into_iter().find(|f| f.keyword() == head)?;
     Some((field, rest.trim()))
+}
+
+/// Parses an `over:` / `under:` remainder into an optional commodity code and a
+/// magnitude: `USD300` / `usd 300` → (`Some("USD")`, 300) restricts to that
+/// commodity, `300` → (`None`, 300) is currency-naive. The commodity is the
+/// leading non-numeric run (upper-cased); the numeric tail must parse as a
+/// decimal, otherwise `None`.
+#[must_use]
+pub fn parse_amount(remainder: &str) -> Option<(Option<String>, rust_decimal::Decimal)> {
+    let s = remainder.trim();
+    let idx = s.find(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == '+')?;
+    let (head, num) = s.split_at(idx);
+    let code = head.trim();
+    let commodity = (!code.is_empty()).then(|| code.to_ascii_uppercase());
+    let value = num.trim().parse::<rust_decimal::Decimal>().ok()?;
+    Some((commodity, value))
 }
 
 /// Fixed list of reconciliation statuses offered on the `status:` token.
@@ -270,20 +284,26 @@ pub fn CommandPalette(
             }
         }
         Some((Field::Over, rest)) => {
-            if let Ok(min) = rest.parse::<Decimal>() {
+            if let Some((commodity, min)) = parse_amount(rest) {
                 store.filter.update(|f| {
                     let mut amount = f.amount.clone().unwrap_or_default();
                     amount.min = Some(min);
+                    if commodity.is_some() {
+                        amount.commodity = commodity;
+                    }
                     f.amount = Some(amount);
                 });
                 reset_query();
             }
         }
         Some((Field::Under, rest)) => {
-            if let Ok(max) = rest.parse::<Decimal>() {
+            if let Some((commodity, max)) = parse_amount(rest) {
                 store.filter.update(|f| {
                     let mut amount = f.amount.clone().unwrap_or_default();
                     amount.max = Some(max);
+                    if commodity.is_some() {
+                        amount.commodity = commodity;
+                    }
                     f.amount = Some(amount);
                 });
                 reset_query();
@@ -464,9 +484,14 @@ pub fn CommandPalette(
                                     view! { <div class=style::empty>{hint}</div> }.into_any()
                                 }
                                 Some((field @ (Field::Over | Field::Under), rest)) => {
-                                    let hint = match rest.parse::<Decimal>() {
-                                        Ok(value) => format!("↵ set {} {value}", field.keyword()),
-                                        Err(_) => "type an amount, e.g. 100".to_owned(),
+                                    let hint = match parse_amount(&rest) {
+                                        Some((Some(commodity), value)) => {
+                                            format!("↵ set {} {commodity} {value}", field.keyword())
+                                        }
+                                        Some((None, value)) => {
+                                            format!("↵ set {} {value}", field.keyword())
+                                        }
+                                        None => "type an amount, e.g. 100 or USD 100".to_owned(),
                                     };
                                     view! { <div class=style::empty>{hint}</div> }.into_any()
                                 }
@@ -505,7 +530,29 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::Field;
+    use super::parse_amount;
     use super::parse_token;
+
+    #[test]
+    fn parse_amount_reads_optional_commodity_prefix() {
+        let (qualified_commodity, qualified_value) = parse_amount("USD300").expect("qualified");
+        assert_eq!(qualified_commodity.as_deref(), Some("USD"));
+        assert_eq!(qualified_value, "300".parse().expect("decimal"));
+
+        let (naive_commodity, naive_value) = parse_amount("  300  ").expect("naive");
+        assert_eq!(naive_commodity, None);
+        assert_eq!(naive_value, "300".parse().expect("decimal"));
+
+        /* Lower-case code + space is upper-cased and trimmed. */
+        assert_eq!(
+            parse_amount("usd 12.50").expect("spaced").0.as_deref(),
+            Some("USD")
+        );
+
+        /* No numeric tail is not a valid amount. */
+        assert!(parse_amount("abc").is_none());
+        assert!(parse_amount("USD").is_none());
+    }
 
     #[test]
     fn parse_token_recognises_field_and_remainder() {
