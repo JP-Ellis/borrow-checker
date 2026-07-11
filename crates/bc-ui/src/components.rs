@@ -5,6 +5,11 @@
 
 pub mod account_picker;
 pub mod chip;
+#[expect(
+    unused_imports,
+    reason = "ChipVariant is consumed by call sites migrated in later tasks of issue #288"
+)]
+pub use chip::Variant as ChipVariant;
 #[cfg(target_arch = "wasm32")]
 pub mod error_banner;
 #[cfg(target_arch = "wasm32")]
