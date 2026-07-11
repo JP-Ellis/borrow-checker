@@ -159,11 +159,20 @@ pub struct MatchedTransaction {
     pub matched_postings: HashSet<PostingId>,
 }
 
-/// Escapes SQL `LIKE` metacharacters (`\`, `%`, `_`) in `input` so it can be
-/// embedded in a `LIKE ... ESCAPE '\'` pattern and matched literally.
+/// Escapes SQL `LIKE` *wildcard* metacharacters (`\`, `%`, `_`) in `input` so a
+/// user-typed needle is matched literally inside a `LIKE ... ESCAPE '\'` pattern.
 ///
-/// The backslash is escaped first so that the escapes subsequently inserted
-/// for `%` and `_` are not themselves re-escaped.
+/// This is **not** SQL-injection escaping — that is handled separately by binding
+/// the needle as a query parameter (`.bind(...)`), never by string interpolation.
+/// The two concerns are orthogonal: parameter binding stops the value from being
+/// parsed as SQL, but it does **not** neutralise `%` / `_`, which `LIKE` still
+/// interprets as wildcards *within* a bound value (a bound `"50%"` would match
+/// "50" followed by anything). Neither SQLite nor `sqlx` exposes a built-in
+/// LIKE-escape helper, so the standard idiom is an explicit `ESCAPE` clause plus
+/// this manual metacharacter escaping.
+///
+/// The backslash is escaped first so that the escapes subsequently inserted for
+/// `%` and `_` are not themselves re-escaped.
 fn escape_like(input: &str) -> String {
     input
         .replace('\\', "\\\\")
@@ -270,7 +279,13 @@ impl Service {
             stmt = stmt.bind(until.to_string());
         }
         if let Some(text) = &query.text {
-            let needle = format!("%{}%", escape_like(&text.to_lowercase()));
+            // Fold the needle with `to_ascii_lowercase` to match SQLite's `lower()`,
+            // which is ASCII-only. Using Rust's full-Unicode `to_lowercase` here
+            // would desync the two sides (needle `É`->`é` vs column `É`->`É`) and
+            // silently miss non-ASCII text. Consequence: non-ASCII letters are
+            // matched case-sensitively; proper Unicode folding would need an
+            // ICU-backed collation (deferred, see #242).
+            let needle = format!("%{}%", escape_like(&text.to_ascii_lowercase()));
             stmt = stmt.bind(needle.clone()).bind(needle);
         }
         if let Some(rec) = query.reconciliation {
@@ -897,6 +912,172 @@ mod search_tests {
             out.first().expect("one result").transaction.payee(),
             Some("boundary")
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn text_underscore_is_literal_not_wildcard(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "a_b", dec!(100)))
+            .await
+            .expect("t1");
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "axb", dec!(20)))
+            .await
+            .expect("t2");
+
+        // `_` is a single-char LIKE wildcard; escaping must keep it literal so
+        // "a_b" does not also match "axb".
+        let query = TransactionQuery {
+            text: Some("a_b".to_owned()),
+            ..Default::default()
+        };
+        let out = svc.search(&query).await.expect("search");
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out.first().expect("one result").transaction.payee(),
+            Some("a_b")
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reconciliation_dim_filters_by_status(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+        // `tx_on` builds a Reconciled transaction; add an Unreconciled one.
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "cleared", dec!(100)))
+            .await
+            .expect("reconciled");
+        let pending = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 6, 2))
+            .payee("pending".to_owned())
+            .description("desc")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(a.clone())
+                    .amount(Amount::new(dec!(20), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(b.clone())
+                    .amount(Amount::new(dec!(-20), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(pending).await.expect("unreconciled");
+
+        let query = TransactionQuery {
+            reconciliation: Some(Reconciliation::Unreconciled),
+            ..Default::default()
+        };
+        let out = svc.search(&query).await.expect("search");
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out.first().expect("one result").transaction.payee(),
+            Some("pending")
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tags_dim_matches_via_transaction_tags(pool: sqlx::SqlitePool) {
+        use bc_models::TagPath;
+
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let tags = crate::tag::Service::new(pool.clone());
+        let groceries = tags
+            .create_path(&"groceries".parse::<TagPath>().expect("path"))
+            .await
+            .expect("tag");
+
+        let svc = Service::new(pool.clone());
+        // A transaction-level tag matches the whole transaction (all legs).
+        let tagged = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 6, 1))
+            .payee("with tag".to_owned())
+            .description("desc")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(a.clone())
+                    .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(b.clone())
+                    .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Reconciled)
+            .tag_ids(vec![groceries.clone()])
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(tagged).await.expect("tagged");
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "untagged", dec!(20)))
+            .await
+            .expect("untagged");
+
+        let query = TransactionQuery {
+            tags: vec![groceries],
+            ..Default::default()
+        };
+        let out = svc.search(&query).await.expect("search");
+        assert_eq!(out.len(), 1);
+        let hit = out.first().expect("one result");
+        assert_eq!(hit.transaction.payee(), Some("with tag"));
+        // A tx-level tag attributes every leg as matched.
+        assert_eq!(hit.matched_postings.len(), 2);
     }
 }
 
