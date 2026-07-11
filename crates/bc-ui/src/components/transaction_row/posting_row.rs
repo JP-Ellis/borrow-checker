@@ -324,6 +324,16 @@ pub fn PostingLine(
         }
     };
 
+    // Enter/Space opens the editor when the collapsed spread chip's label is
+    // focused (the label carries role="button"/tabindex).
+    let open_spread_key = move |ev: leptos::ev::KeyboardEvent| {
+        let key = ev.key();
+        if key == "Enter" || key == " " {
+            ev.prevent_default();
+            editing_spread.set(true);
+        }
+    };
+
     // MARK: Note visibility.
     let note_visible = move || show_note.get() || !note_sig.with(|n: &String| n.trim().is_empty());
 
@@ -435,6 +445,7 @@ pub fn PostingLine(
                                     >
                                         <span
                                             on:click=move |_| editing_spread.set(true)
+                                            on:keydown=open_spread_key
                                             role="button"
                                             tabindex="0"
                                         >
