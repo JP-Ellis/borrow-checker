@@ -1,17 +1,19 @@
-//! Command palette (⌘K) — structured filter builder.
+//! Command palette (⌘K) — inline structured filter search.
 //!
-//! The palette is a small screen state machine: a [`Screen::Root`] menu of
-//! [`Dimension`]s (with a `dimension:value` prefix jump) and a
-//! [`Screen::Dimension`] value-entry screen per dimension. Committing a value
-//! writes into the app-wide [`crate::filter_ctx::FilterStore`] and returns to
-//! the root menu so several dimensions can be added in one session. Account
-//! navigation (the previous ⌘K behaviour) has been dropped — the palette only
-//! builds filters now.
+//! A single search box. Free text filters payee/narration; a recognised
+//! `field:value` token builds a structured filter dimension instead:
+//!
+//! - `account:` / `tag:` / `status:` — pick from live suggestions;
+//! - `after:` / `before:` — inclusive-lower / exclusive-upper date bounds;
+//! - `over:` / `under:` — minimum / maximum amount magnitude.
+//!
+//! Committing (Enter, or clicking a suggestion) writes into the app-wide
+//! [`crate::filter_ctx::FilterStore`] and clears the box so several tokens can be
+//! added in one session; the active values show as removable chips in the top
+//! bar. There is no dimension menu — every dimension is reachable by typing.
 
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::AccountNode;
-#[cfg(target_arch = "wasm32")]
-use bc_ipc::AmountFilter;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::Reconciliation;
 #[cfg(target_arch = "wasm32")]
@@ -28,92 +30,67 @@ use stylance::import_style;
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "palette.module.scss");
 
-/// A filter dimension selectable in the palette.
+/// A structured filter field addressable by a typed `field:` prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Dimension {
-    /// Account subtree.
+pub enum Field {
+    /// Account subtree (`account:`), pick from suggestions.
     Account,
-    /// Tag.
+    /// Tag (`tag:`), pick from suggestions.
     Tag,
-    /// Date range.
-    Date,
-    /// Payee/narration text.
-    Text,
-    /// Amount magnitude.
-    Amount,
-    /// Reconciliation status.
+    /// Reconciliation status (`status:`), pick from suggestions.
     Status,
+    /// Inclusive lower date bound (`after:`).
+    After,
+    /// Exclusive upper date bound (`before:`).
+    Before,
+    /// Minimum amount magnitude (`over:`).
+    Over,
+    /// Maximum amount magnitude (`under:`).
+    Under,
 }
 
-impl Dimension {
-    /// All dimensions, in menu order.
+impl Field {
+    /// All fields, used to match a typed prefix.
     #[must_use]
-    pub fn all() -> [Self; 6] {
+    fn all() -> [Self; 7] {
         [
             Self::Account,
             Self::Tag,
-            Self::Date,
-            Self::Text,
-            Self::Amount,
             Self::Status,
+            Self::After,
+            Self::Before,
+            Self::Over,
+            Self::Under,
         ]
     }
 
-    /// Menu label.
+    /// The typed keyword (without the colon).
     #[must_use]
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        expect(
-            dead_code,
-            reason = "only rendered by the wasm32-gated CommandPalette view"
-        )
-    )]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Account => "Account",
-            Self::Tag => "Tag",
-            Self::Date => "Date",
-            Self::Text => "Text",
-            Self::Amount => "Amount",
-            Self::Status => "Status",
-        }
-    }
-
-    /// Typed prefix (without the colon).
-    #[must_use]
-    pub fn prefix(self) -> &'static str {
+    pub fn keyword(self) -> &'static str {
         match self {
             Self::Account => "account",
             Self::Tag => "tag",
-            Self::Date => "date",
-            Self::Text => "text",
-            Self::Amount => "amount",
             Self::Status => "status",
+            Self::After => "after",
+            Self::Before => "before",
+            Self::Over => "over",
+            Self::Under => "under",
         }
     }
 }
 
-/// Parses a `dimension:remainder` prefix, returning the dimension and the
-/// trimmed remainder. Case-insensitive; returns `None` if unrecognised.
+/// Parses a `field:remainder` token, returning the field and the trimmed
+/// remainder. Case-insensitive on the keyword; returns `None` when the head is
+/// not a recognised field (the whole input is then free payee/narration text).
 #[must_use]
-pub fn parse_prefix(input: &str) -> Option<(Dimension, &str)> {
+pub fn parse_token(input: &str) -> Option<(Field, &str)> {
     let (raw_head, rest) = input.split_once(':')?;
     let head = raw_head.trim().to_ascii_lowercase();
-    let dim = Dimension::all().into_iter().find(|d| d.prefix() == head)?;
-    Some((dim, rest.trim()))
+    let field = Field::all().into_iter().find(|f| f.keyword() == head)?;
+    Some((field, rest.trim()))
 }
 
-/// Which screen of the palette is currently shown.
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Screen {
-    /// Dimension menu + prefix-jump search.
-    Root,
-    /// Value-entry screen for a single dimension.
-    Dimension(Dimension),
-}
-
-/// Fixed list of reconciliation statuses offered on the Status screen.
+/// Fixed list of reconciliation statuses offered on the `status:` token.
 #[cfg(target_arch = "wasm32")]
 const STATUSES: [Reconciliation; 3] = [
     Reconciliation::Unreconciled,
@@ -123,10 +100,9 @@ const STATUSES: [Reconciliation; 3] = [
 
 /// Command palette modal triggered by ⌘K.
 ///
-/// Renders a full-screen overlay that walks the user through picking a filter
-/// dimension (or jumping straight to one via a `dimension:value` prefix) and
-/// entering a value for it. Committing a value writes into the
-/// [`crate::filter_ctx::FilterStore`] and returns to the root menu. Keyboard
+/// Renders a full-screen overlay with a single search input that builds the
+/// app-wide filter inline. Recognised `field:value` tokens drive live
+/// suggestions or scalar entry; free text filters payee/narration. Keyboard
 /// navigation (Arrow keys, Enter, Escape) and click-to-select are supported.
 ///
 /// # Arguments
@@ -144,13 +120,8 @@ pub fn CommandPalette(
 ) -> impl IntoView {
     let store = crate::filter_ctx::use_filter_store();
 
-    let screen = RwSignal::new(Screen::Root);
     let query = RwSignal::new(String::new());
     let selected_idx = RwSignal::new(0_usize);
-    let amount_min = RwSignal::new(String::new());
-    let amount_max = RwSignal::new(String::new());
-    let date_from = RwSignal::new(String::new());
-    let date_until = RwSignal::new(String::new());
     let input_ref = NodeRef::<leptos::html::Input>::new();
 
     /* Increment only when opening so closing does not reset the cached lists. */
@@ -173,72 +144,80 @@ pub fn CommandPalette(
         bc_ipc::client::list_tags().await
     });
 
-    /* Root dimension menu, filtered by label substring. */
-    let root_items = Memo::new(move |_| {
-        let q_lower = query.get().to_lowercase();
-        Dimension::all()
-            .into_iter()
-            .filter(|d| q_lower.is_empty() || d.label().to_lowercase().contains(&q_lower))
-            .collect::<Vec<Dimension>>()
+    /* The recognised token (if any) for the current query, with an owned remainder. */
+    let parsed = Memo::new(move |_| {
+        let q = query.get();
+        parse_token(&q).map(|(field, rest)| (field, rest.to_owned()))
     });
+
+    /* Live suggestion lists, filtered by the token remainder. */
     let filtered_accounts = Memo::new(move |_| {
-        let q_lower = query.get().to_lowercase();
+        let Some((Field::Account, q)) = parsed.get() else {
+            return Vec::new();
+        };
+        let q = q.to_lowercase();
         accounts_resource
             .get()
             .and_then(Result::ok)
             .unwrap_or_default()
             .into_iter()
-            .filter(|a| q_lower.is_empty() || a.name.to_lowercase().contains(&q_lower))
+            .filter(|a| q.is_empty() || a.name.to_lowercase().contains(&q))
             .collect::<Vec<AccountNode>>()
     });
     let filtered_tags = Memo::new(move |_| {
-        let q_lower = query.get().to_lowercase();
+        let Some((Field::Tag, q)) = parsed.get() else {
+            return Vec::new();
+        };
+        let q = q.to_lowercase();
         tags_resource
             .get()
             .and_then(Result::ok)
             .unwrap_or_default()
             .into_iter()
-            .filter(|t| q_lower.is_empty() || t.path.to_lowercase().contains(&q_lower))
+            .filter(|t| q.is_empty() || t.path.to_lowercase().contains(&q))
             .collect::<Vec<TagInfo>>()
     });
     let filtered_statuses = Memo::new(move |_| {
-        let q_lower = query.get().to_lowercase();
+        let Some((Field::Status, q)) = parsed.get() else {
+            return Vec::new();
+        };
+        let q = q.to_lowercase();
         STATUSES
             .into_iter()
-            .filter(|r| q_lower.is_empty() || r.label().contains(&q_lower))
+            .filter(|r| q.is_empty() || r.label().to_lowercase().contains(&q))
             .collect::<Vec<Reconciliation>>()
     });
 
-    /* Number of navigable rows for the screen currently shown. */
-    let list_len = Memo::new(move |_| match screen.get() {
-        Screen::Root => root_items.get().len(),
-        Screen::Dimension(Dimension::Account) => filtered_accounts.get().len(),
-        Screen::Dimension(Dimension::Tag) => filtered_tags.get().len(),
-        Screen::Dimension(Dimension::Status) => filtered_statuses.get().len(),
-        Screen::Dimension(Dimension::Text | Dimension::Amount | Dimension::Date) => 0,
+    /* Number of navigable suggestion rows for the current token. */
+    let list_len = Memo::new(move |_| match parsed.get() {
+        Some((Field::Account, _)) => filtered_accounts.get().len(),
+        Some((Field::Tag, _)) => filtered_tags.get().len(),
+        Some((Field::Status, _)) => filtered_statuses.get().len(),
+        _ => 0,
     });
 
-    /* Resets the search state and returns to the dimension menu. */
-    let back_to_root = move || {
-        screen.set(Screen::Root);
+    /* Clears the box after committing a token, keeping the palette open and the
+    input focused so the next token can be typed (and Escape still routes here,
+    even when the value was committed by clicking a suggestion). */
+    let reset_query = move || {
         query.set(String::new());
         selected_idx.set(0);
+        if let Some(el) = input_ref.get_untracked() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                clippy::let_underscore_untyped,
+                let_underscore_drop,
+                reason = "focus() returns Result<(), JsValue>; errors are benign"
+            )]
+            let _ = el.focus();
+        }
     };
 
-    /* Reset all state whenever the palette opens. Depends only on `open` — it must
-    not read `input_ref`, because it writes `screen`, and the focusable input lives
-    inside the `screen`-switched render block. Reading the ref here would form a
-    cycle: writing `screen` recreates the input, updating the ref, re-running this
-    effect, which writes `screen` again — an infinite loop that freezes the UI. */
+    /* Reset all state whenever the palette opens. Depends only on `open`. */
     Effect::new(move |_| {
         if open.get() {
-            screen.set(Screen::Root);
             query.set(String::new());
             selected_idx.set(0);
-            amount_min.set(String::new());
-            amount_max.set(String::new());
-            date_from.set(String::new());
-            date_until.set(String::new());
         }
     });
 
@@ -258,92 +237,70 @@ pub fn CommandPalette(
         }
     });
 
-    /* Commits whichever row is selected on the current list screen. */
-    let commit_selected = move || {
-        let idx = selected_idx.get();
-        match screen.get() {
-            Screen::Root => {
-                if let Some(dim) = root_items.get().get(idx).copied() {
-                    screen.set(Screen::Dimension(dim));
-                    query.set(String::new());
-                    selected_idx.set(0);
-                }
+    /* Commits the current query into the filter store. */
+    let commit = move || match parse_token(&query.get()) {
+        Some((Field::Account, _)) => {
+            if let Some(account) = filtered_accounts.get().get(selected_idx.get()).cloned() {
+                store.add_account(account.id, account.name);
+                reset_query();
             }
-            Screen::Dimension(Dimension::Account) => {
-                if let Some(account) = filtered_accounts.get().get(idx).cloned() {
-                    store.filter.update(|f| {
-                        if !f.accounts.contains(&account.id) {
-                            f.accounts.push(account.id);
-                        }
-                    });
-                    back_to_root();
-                }
+        }
+        Some((Field::Tag, _)) => {
+            if let Some(tag) = filtered_tags.get().get(selected_idx.get()).cloned() {
+                store.add_tag(tag.id, tag.path);
+                reset_query();
             }
-            Screen::Dimension(Dimension::Tag) => {
-                if let Some(tag) = filtered_tags.get().get(idx).cloned() {
-                    store.filter.update(|f| {
-                        if !f.tags.contains(&tag.id) {
-                            f.tags.push(tag.id);
-                        }
-                    });
-                    back_to_root();
-                }
+        }
+        Some((Field::Status, _)) => {
+            if let Some(rec) = filtered_statuses.get().get(selected_idx.get()).copied() {
+                store.filter.update(|f| f.reconciliation = Some(rec));
+                reset_query();
             }
-            Screen::Dimension(Dimension::Status) => {
-                if let Some(rec) = filtered_statuses.get().get(idx).copied() {
-                    store.filter.update(|f| f.reconciliation = Some(rec));
-                    back_to_root();
-                }
+        }
+        Some((Field::After, rest)) => {
+            if let Ok(date) = rest.parse::<jiff::civil::Date>() {
+                store.filter.update(|f| f.date_from = Some(date));
+                reset_query();
             }
-            Screen::Dimension(Dimension::Text) => {
-                let value = query.get().trim().to_owned();
+        }
+        Some((Field::Before, rest)) => {
+            if let Ok(date) = rest.parse::<jiff::civil::Date>() {
+                store.filter.update(|f| f.date_until = Some(date));
+                reset_query();
+            }
+        }
+        Some((Field::Over, rest)) => {
+            if let Ok(min) = rest.parse::<Decimal>() {
                 store.filter.update(|f| {
-                    f.text = if value.is_empty() { None } else { Some(value) };
+                    let mut amount = f.amount.clone().unwrap_or_default();
+                    amount.min = Some(min);
+                    f.amount = Some(amount);
                 });
-                back_to_root();
+                reset_query();
             }
-            Screen::Dimension(Dimension::Amount | Dimension::Date) => {
-                /* Handled by the dedicated form fields' own Enter handlers. */
+        }
+        Some((Field::Under, rest)) => {
+            if let Ok(max) = rest.parse::<Decimal>() {
+                store.filter.update(|f| {
+                    let mut amount = f.amount.clone().unwrap_or_default();
+                    amount.max = Some(max);
+                    f.amount = Some(amount);
+                });
+                reset_query();
+            }
+        }
+        None => {
+            let text = query.get().trim().to_owned();
+            if !text.is_empty() {
+                store.filter.update(|f| f.text = Some(text));
+                reset_query();
             }
         }
     };
 
-    /* Commits the min/max amount form. */
-    let commit_amount = move || {
-        let min = amount_min.get().trim().parse::<Decimal>().ok();
-        let max = amount_max.get().trim().parse::<Decimal>().ok();
-        store.filter.update(|f| {
-            f.amount = if min.is_none() && max.is_none() {
-                None
-            } else {
-                let mut filter = AmountFilter::default();
-                filter.min = min;
-                filter.max = max;
-                Some(filter)
-            };
-        });
-        back_to_root();
-    };
-
-    /* Commits the from/until date form. */
-    let commit_date = move || {
-        let from = date_from.get().trim().parse::<jiff::civil::Date>().ok();
-        let until = date_until.get().trim().parse::<jiff::civil::Date>().ok();
-        store.filter.update(|f| {
-            f.date_from = from;
-            f.date_until = until;
-        });
-        back_to_root();
-    };
-
-    /* Shared keydown handler for the single-line screens (Root, Account, Tag, Text, Status). */
-    let on_list_keydown = move |e: web_sys::KeyboardEvent| match e.key().as_str() {
+    let on_keydown = move |e: web_sys::KeyboardEvent| match e.key().as_str() {
         "Escape" => {
-            if matches!(screen.get(), Screen::Root) {
-                on_close.run(());
-            } else {
-                back_to_root();
-            }
+            on_close.run(());
             e.prevent_default();
         }
         "ArrowDown" => {
@@ -362,7 +319,7 @@ pub fn CommandPalette(
             e.prevent_default();
         }
         "Enter" => {
-            commit_selected();
+            commit();
             e.prevent_default();
         }
         _ => {}
@@ -378,335 +335,165 @@ pub fn CommandPalette(
                     aria-modal="true"
                     on:click=move |e| e.stop_propagation()
                 >
-                    {move || match screen.get() {
-                        Screen::Dimension(Dimension::Amount) => {
-                            view! {
-                                <div class=style::form>
-                                    <label class=style::form_label for="palette-amount-min">
-                                        "min"
-                                    </label>
-                                    <input
-                                        id="palette-amount-min"
-                                        class=style::input
-                                        type="text"
-                                        placeholder="min amount"
-                                        prop:value=move || amount_min.get()
-                                        on:input=move |e| amount_min.set(event_target_value(&e))
-                                        on:keydown=move |e: web_sys::KeyboardEvent| {
-                                            match e.key().as_str() {
-                                                "Enter" => {
-                                                    commit_amount();
-                                                    e.prevent_default();
-                                                }
-                                                "Escape" => {
-                                                    back_to_root();
-                                                    e.prevent_default();
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    />
-                                    <label class=style::form_label for="palette-amount-max">
-                                        "max"
-                                    </label>
-                                    <input
-                                        id="palette-amount-max"
-                                        class=style::input
-                                        type="text"
-                                        placeholder="max amount"
-                                        prop:value=move || amount_max.get()
-                                        on:input=move |e| amount_max.set(event_target_value(&e))
-                                        on:keydown=move |e: web_sys::KeyboardEvent| {
-                                            match e.key().as_str() {
-                                                "Enter" => {
-                                                    commit_amount();
-                                                    e.prevent_default();
-                                                }
-                                                "Escape" => {
-                                                    back_to_root();
-                                                    e.prevent_default();
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    />
-                                </div>
-                            }
-                                .into_any()
+                    <input
+                        node_ref=input_ref
+                        class=style::input
+                        type="text"
+                        role="combobox"
+                        placeholder="Search payee, or account: tag: status: after: before: over: under:"
+                        aria-label="Search filters"
+                        aria-expanded=move || open.get()
+                        aria-controls="palette-listbox"
+                        prop:value=move || query.get()
+                        on:input=move |e| {
+                            query.set(event_target_value(&e));
+                            selected_idx.set(0);
                         }
-                        Screen::Dimension(Dimension::Date) => {
-                            view! {
-                                <div class=style::form>
-                                    <label class=style::form_label for="palette-date-from">
-                                        "from"
-                                    </label>
-                                    <input
-                                        id="palette-date-from"
-                                        class=style::input
-                                        type="date"
-                                        prop:value=move || date_from.get()
-                                        on:input=move |e| date_from.set(event_target_value(&e))
-                                        on:keydown=move |e: web_sys::KeyboardEvent| {
-                                            match e.key().as_str() {
-                                                "Enter" => {
-                                                    commit_date();
-                                                    e.prevent_default();
-                                                }
-                                                "Escape" => {
-                                                    back_to_root();
-                                                    e.prevent_default();
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    />
-                                    <label class=style::form_label for="palette-date-until">
-                                        "until"
-                                    </label>
-                                    <input
-                                        id="palette-date-until"
-                                        class=style::input
-                                        type="date"
-                                        prop:value=move || date_until.get()
-                                        on:input=move |e| date_until.set(event_target_value(&e))
-                                        on:keydown=move |e: web_sys::KeyboardEvent| {
-                                            match e.key().as_str() {
-                                                "Enter" => {
-                                                    commit_date();
-                                                    e.prevent_default();
-                                                }
-                                                "Escape" => {
-                                                    back_to_root();
-                                                    e.prevent_default();
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    />
-                                </div>
-                            }
-                                .into_any()
-                        }
-                        current @ (Screen::Root
-                        | Screen::Dimension(
-                            Dimension::Account
-                            | Dimension::Tag
-                            | Dimension::Text
-                            | Dimension::Status,
-                        )) => {
-                            let placeholder = match current {
-                                Screen::Root => "Search filters, or type e.g. tag:groceries…",
-                                Screen::Dimension(Dimension::Account) => "Search accounts…",
-                                Screen::Dimension(Dimension::Tag) => "Search tags…",
-                                Screen::Dimension(Dimension::Text) => "Payee or narration text…",
-                                Screen::Dimension(Dimension::Status) => "Search status…",
-                                Screen::Dimension(Dimension::Amount | Dimension::Date) => {
-                                    unreachable!("handled by the earlier match arms")
-                                }
-                            };
-                            let aria_label = match current {
-                                Screen::Root => "Search filters",
-                                Screen::Dimension(dim) => dim.label(),
-                            };
-                            view! {
-                                <input
-                                    node_ref=input_ref
-                                    class=style::input
-                                    type="text"
-                                    role="combobox"
-                                    placeholder=placeholder
-                                    aria-label=aria_label
-                                    aria-expanded=move || open.get()
-                                    aria-controls="palette-listbox"
-                                    prop:value=move || query.get()
-                                    on:input=move |e| {
-                                        let val = event_target_value(&e);
-                                        if matches!(screen.get(), Screen::Root)
-                                            && let Some((dim, rest)) = parse_prefix(&val)
-                                        {
-                                            screen.set(Screen::Dimension(dim));
-                                            query.set(rest.to_owned());
-                                            selected_idx.set(0);
-                                            return;
-                                        }
-                                        query.set(val);
-                                        selected_idx.set(0);
-                                    }
-                                    on:keydown=on_list_keydown
-                                />
-                                <div
-                                    id="palette-listbox"
-                                    class=style::list
-                                    role="listbox"
-                                    aria-label=aria_label
-                                >
-                                    {move || {
-                                        let sel = selected_idx.get();
-                                        match screen.get() {
-                                            Screen::Root => {
-                                                let items = root_items.get();
-                                                items
-                                                    .into_iter()
-                                                    .enumerate()
-                                                    .map(|(idx, dim)| {
-                                                        let item_class = if idx == sel {
-                                                            format!("{} {}", style::item, style::item_selected)
-                                                        } else {
-                                                            style::item.to_owned()
-                                                        };
-                                                        view! {
-                                                            <div
-                                                                class=item_class
-                                                                role="option"
-                                                                aria-selected=idx == sel
-                                                                on:click=move |_| {
-                                                                    screen.set(Screen::Dimension(dim));
-                                                                    query.set(String::new());
-                                                                    selected_idx.set(0);
-                                                                }
-                                                                on:mouseenter=move |_| selected_idx.set(idx)
-                                                            >
-                                                                <span class=style::item_name>{dim.label()}</span>
-                                                                <span class=style::badge>
-                                                                    {format!("{}:", dim.prefix())}
-                                                                </span>
-                                                            </div>
-                                                        }
-                                                    })
-                                                    .collect::<Vec<_>>()
-                                                    .into_any()
-                                            }
-                                            Screen::Dimension(Dimension::Account) => {
-                                                let items = filtered_accounts.get();
-                                                if items.is_empty() {
-                                                    view! { <div class=style::empty>"no accounts found"</div> }
-                                                        .into_any()
+                        on:keydown=on_keydown
+                    />
+                    <div id="palette-listbox" class=style::list role="listbox" aria-label="Filter">
+                        {move || {
+                            let sel = selected_idx.get();
+                            match parsed.get() {
+                                Some((Field::Account, _)) => {
+                                    let items = filtered_accounts.get();
+                                    if items.is_empty() {
+                                        view! { <div class=style::empty>"no accounts found"</div> }
+                                            .into_any()
+                                    } else {
+                                        items
+                                            .into_iter()
+                                            .enumerate()
+                                            .map(|(idx, node)| {
+                                                let item_class = if idx == sel {
+                                                    format!("{} {}", style::item, style::item_selected)
                                                 } else {
-                                                    items
-                                                        .into_iter()
-                                                        .enumerate()
-                                                        .map(|(idx, node)| {
-                                                            let item_class = if idx == sel {
-                                                                format!("{} {}", style::item, style::item_selected)
-                                                            } else {
-                                                                style::item.to_owned()
-                                                            };
-                                                            let name = node.name.clone();
-                                                            let id = node.id.clone();
-                                                            view! {
-                                                                <div
-                                                                    class=item_class
-                                                                    role="option"
-                                                                    aria-selected=idx == sel
-                                                                    on:click=move |_| {
-                                                                        store
-                                                                            .filter
-                                                                            .update(|f| {
-                                                                                if !f.accounts.contains(&id) {
-                                                                                    f.accounts.push(id.clone());
-                                                                                }
-                                                                            });
-                                                                        back_to_root();
-                                                                    }
-                                                                    on:mouseenter=move |_| selected_idx.set(idx)
-                                                                >
-                                                                    <span class=style::item_name>{name}</span>
-                                                                </div>
-                                                            }
-                                                        })
-                                                        .collect::<Vec<_>>()
-                                                        .into_any()
-                                                }
-                                            }
-                                            Screen::Dimension(Dimension::Tag) => {
-                                                let items = filtered_tags.get();
-                                                if items.is_empty() {
-                                                    view! { <div class=style::empty>"no tags found"</div> }
-                                                        .into_any()
-                                                } else {
-                                                    items
-                                                        .into_iter()
-                                                        .enumerate()
-                                                        .map(|(idx, tag)| {
-                                                            let item_class = if idx == sel {
-                                                                format!("{} {}", style::item, style::item_selected)
-                                                            } else {
-                                                                style::item.to_owned()
-                                                            };
-                                                            let path = tag.path.clone();
-                                                            let id = tag.id.clone();
-                                                            view! {
-                                                                <div
-                                                                    class=item_class
-                                                                    role="option"
-                                                                    aria-selected=idx == sel
-                                                                    on:click=move |_| {
-                                                                        store
-                                                                            .filter
-                                                                            .update(|f| {
-                                                                                if !f.tags.contains(&id) {
-                                                                                    f.tags.push(id.clone());
-                                                                                }
-                                                                            });
-                                                                        back_to_root();
-                                                                    }
-                                                                    on:mouseenter=move |_| selected_idx.set(idx)
-                                                                >
-                                                                    <span class=style::item_name>{path}</span>
-                                                                </div>
-                                                            }
-                                                        })
-                                                        .collect::<Vec<_>>()
-                                                        .into_any()
-                                                }
-                                            }
-                                            Screen::Dimension(Dimension::Status) => {
-                                                let items = filtered_statuses.get();
-                                                items
-                                                    .into_iter()
-                                                    .enumerate()
-                                                    .map(|(idx, rec)| {
-                                                        let item_class = if idx == sel {
-                                                            format!("{} {}", style::item, style::item_selected)
-                                                        } else {
-                                                            style::item.to_owned()
-                                                        };
-                                                        view! {
-                                                            <div
-                                                                class=item_class
-                                                                role="option"
-                                                                aria-selected=idx == sel
-                                                                on:click=move |_| {
-                                                                    store.filter.update(|f| f.reconciliation = Some(rec));
-                                                                    back_to_root();
-                                                                }
-                                                                on:mouseenter=move |_| selected_idx.set(idx)
-                                                            >
-                                                                <span class=style::item_name>{rec.label()}</span>
-                                                            </div>
-                                                        }
-                                                    })
-                                                    .collect::<Vec<_>>()
-                                                    .into_any()
-                                            }
-                                            Screen::Dimension(Dimension::Text) => {
+                                                    style::item.to_owned()
+                                                };
+                                                let name = node.name.clone();
+                                                let id = node.id.clone();
                                                 view! {
-                                                    <div class=style::empty>
-                                                        "Press Enter to set the payee/narration filter."
+                                                    <div
+                                                        class=item_class
+                                                        role="option"
+                                                        aria-selected=idx == sel
+                                                        on:click=move |_| {
+                                                            store.add_account(id.clone(), name.clone());
+                                                            reset_query();
+                                                        }
+                                                        on:mouseenter=move |_| selected_idx.set(idx)
+                                                    >
+                                                        <span class=style::item_name>{name.clone()}</span>
                                                     </div>
                                                 }
-                                                    .into_any()
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .into_any()
+                                    }
+                                }
+                                Some((Field::Tag, _)) => {
+                                    let items = filtered_tags.get();
+                                    if items.is_empty() {
+                                        view! { <div class=style::empty>"no tags found"</div> }
+                                            .into_any()
+                                    } else {
+                                        items
+                                            .into_iter()
+                                            .enumerate()
+                                            .map(|(idx, tag)| {
+                                                let item_class = if idx == sel {
+                                                    format!("{} {}", style::item, style::item_selected)
+                                                } else {
+                                                    style::item.to_owned()
+                                                };
+                                                let path = tag.path.clone();
+                                                let id = tag.id.clone();
+                                                view! {
+                                                    <div
+                                                        class=item_class
+                                                        role="option"
+                                                        aria-selected=idx == sel
+                                                        on:click=move |_| {
+                                                            store.add_tag(id.clone(), path.clone());
+                                                            reset_query();
+                                                        }
+                                                        on:mouseenter=move |_| selected_idx.set(idx)
+                                                    >
+                                                        <span class=style::item_name>{path.clone()}</span>
+                                                    </div>
+                                                }
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .into_any()
+                                    }
+                                }
+                                Some((Field::Status, _)) => {
+                                    filtered_statuses
+                                        .get()
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(idx, rec)| {
+                                            let item_class = if idx == sel {
+                                                format!("{} {}", style::item, style::item_selected)
+                                            } else {
+                                                style::item.to_owned()
+                                            };
+                                            view! {
+                                                <div
+                                                    class=item_class
+                                                    role="option"
+                                                    aria-selected=idx == sel
+                                                    on:click=move |_| {
+                                                        store.filter.update(|f| f.reconciliation = Some(rec));
+                                                        reset_query();
+                                                    }
+                                                    on:mouseenter=move |_| selected_idx.set(idx)
+                                                >
+                                                    <span class=style::item_name>{rec.label()}</span>
+                                                </div>
                                             }
-                                            Screen::Dimension(Dimension::Amount | Dimension::Date) => {
-                                                unreachable!("handled by the earlier match arms")
-                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .into_any()
+                                }
+                                Some((field @ (Field::After | Field::Before), rest)) => {
+                                    let hint = match rest.parse::<jiff::civil::Date>() {
+                                        Ok(date) => format!("↵ set {} {date}", field.keyword()),
+                                        Err(_) => "type a date, e.g. 2026-01-31".to_owned(),
+                                    };
+                                    view! { <div class=style::empty>{hint}</div> }.into_any()
+                                }
+                                Some((field @ (Field::Over | Field::Under), rest)) => {
+                                    let hint = match rest.parse::<Decimal>() {
+                                        Ok(value) => format!("↵ set {} {value}", field.keyword()),
+                                        Err(_) => "type an amount, e.g. 100".to_owned(),
+                                    };
+                                    view! { <div class=style::empty>{hint}</div> }.into_any()
+                                }
+                                None => {
+                                    let q = query.get();
+                                    if q.trim().is_empty() {
+                                        view! {
+                                            <div class=style::empty>
+                                                "Type payee text, or account: tag: status: after: before: over: under:"
+                                            </div>
                                         }
-                                    }}
-                                </div>
+                                            .into_any()
+                                    } else {
+                                        view! {
+                                            <div class=style::empty>
+                                                {format!(
+                                                    "↵ search payee/narration for “{}”",
+                                                    q.trim(),
+                                                )}
+                                            </div>
+                                        }
+                                            .into_any()
+                                    }
+                                }
                             }
-                                .into_any()
-                        }
-                    }}
+                        }}
+                    </div>
                 </div>
             </div>
         </Show>
@@ -717,27 +504,38 @@ pub fn CommandPalette(
 mod tests {
     use pretty_assertions::assert_eq;
 
-    use super::Dimension;
-    use super::parse_prefix;
+    use super::Field;
+    use super::parse_token;
 
     #[test]
-    fn parse_prefix_recognises_dimension_and_remainder() {
-        let (dim, rest) = parse_prefix("tag:groc").expect("tag prefix");
-        assert_eq!(dim, Dimension::Tag);
+    fn parse_token_recognises_field_and_remainder() {
+        let (field, rest) = parse_token("tag:groc").expect("tag token");
+        assert_eq!(field, Field::Tag);
         assert_eq!(rest, "groc");
     }
 
     #[test]
-    fn parse_prefix_is_case_insensitive_and_trims() {
-        let (dim, rest) = parse_prefix("Date: 2026-01").expect("date prefix");
-        assert_eq!(dim, Dimension::Date);
-        assert_eq!(rest, "2026-01");
+    fn parse_token_is_case_insensitive_and_trims() {
+        let (field, rest) = parse_token("After: 2026-01-01").expect("after token");
+        assert_eq!(field, Field::After);
+        assert_eq!(rest, "2026-01-01");
     }
 
     #[test]
-    fn parse_prefix_returns_none_without_recognised_prefix() {
-        assert!(parse_prefix("amazon").is_none());
-        assert!(parse_prefix("nope:foo").is_none());
+    fn parse_token_covers_amount_and_status_keywords() {
+        assert_eq!(parse_token("over:100").expect("over").0, Field::Over);
+        assert_eq!(parse_token("under:500").expect("under").0, Field::Under);
+        assert_eq!(parse_token("before:2026").expect("before").0, Field::Before);
+        assert_eq!(
+            parse_token("status:flagged").expect("status").0,
+            Field::Status
+        );
+    }
+
+    #[test]
+    fn parse_token_returns_none_for_free_text() {
+        assert!(parse_token("amazon").is_none());
+        assert!(parse_token("nope:foo").is_none());
     }
 
     #[test]
@@ -750,14 +548,6 @@ mod tests {
     }
 
     #[test]
-    fn selected_idx_clamping_arrow_up_at_first() {
-        /* ArrowUp at the first item stays at 0. */
-        let i = 0_usize;
-        let prev = i.saturating_sub(1);
-        assert_eq!(prev, 0);
-    }
-
-    #[test]
     fn selected_idx_clamping_empty_list_arrow_down() {
         /* ArrowDown on an empty list — guarded by count > 0 check — is a no-op. */
         let count = 0_usize;
@@ -767,14 +557,5 @@ mod tests {
             panic!("should not reach here when count == 0");
         }
         assert_eq!(i, 0);
-    }
-
-    #[test]
-    fn selected_idx_clamping_single_item_arrow_down() {
-        /* ArrowDown with one item stays at 0. */
-        let i = 0_usize;
-        let count = 1_usize;
-        let next = i.saturating_add(1).min(count.saturating_sub(1));
-        assert_eq!(next, 0);
     }
 }

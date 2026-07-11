@@ -66,33 +66,9 @@
   white-space: nowrap;
 }
 
-.badge {
-  font-size: var(--bc-text-eyebrow);
-  padding: var(--bc-space-05) var(--bc-space-3);
-  border-radius: var(--bc-radius-pill);
-  background: var(--bc-surface-accent);
-  color: var(--bc-ink-mute);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
 .empty {
   padding: var(--bc-space-6) var(--bc-space-5);
   color: var(--bc-ink-dim);
   font-family: var(--bc-font-mono);
   font-size: var(--bc-text-body);
-}
-
-.form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--bc-space-2);
-  padding: var(--bc-space-5);
-}
-
-.form_label {
-  font-family: var(--bc-font-mono);
-  font-size: var(--bc-text-eyebrow);
-  color: var(--bc-ink-mute);
-  text-transform: uppercase;
 }

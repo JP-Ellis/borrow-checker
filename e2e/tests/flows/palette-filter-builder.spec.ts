@@ -1,7 +1,7 @@
 import { browser, $, expect } from '@wdio/globals';
 
 describe('Command palette filter builder', () => {
-    it('searches a seeded tag and commits it as a filter chip', async () => {
+    it('searches a seeded tag inline and commits it as a named chip', async () => {
         await browser.execute(() => {
             window.history.pushState({}, '', '/');
             window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
@@ -13,24 +13,15 @@ describe('Command palette filter builder', () => {
         const dialog = await $('div[role="dialog"][aria-label="Command palette"]');
         await expect(dialog).toBeDisplayed();
 
+        /* The palette is a single inline search box; the input is never recreated,
+         * so a whole `tag:recurring` token can be typed in one go. */
         const input = await dialog.$('input[role="combobox"]');
         await input.waitForDisplayed();
+        await input.setValue('tag:recurring');
 
-        /* The `tag:` prefix jumps to the tag picker, which recreates the input, so
-         * re-select it before narrowing to a specific seeded tag. */
-        await input.setValue('tag:');
-        const tagInput = await dialog.$('input[aria-label="Tag"]');
-        await tagInput.waitForDisplayed();
-
-        /* Unfiltered, the seeded tag taxonomy yields several options. */
+        /* `recurring` is a seeded tag (bc-seed tag taxonomy); the token narrows the
+         * live suggestions to it as the sole match. */
         const listbox = await $('#palette-listbox');
-        await browser.waitUntil(
-            async () => (await listbox.$$('div[role="option"]').length) > 1,
-            { timeoutMsg: 'expected multiple seeded tags in the picker' },
-        );
-
-        /* Narrowing to `recurring` (a seeded tag) leaves it as the sole match. */
-        await tagInput.setValue('recurring');
         await browser.waitUntil(
             async () => (await listbox.$$('div[role="option"]').length) === 1,
             { timeoutMsg: 'expected the tag search to narrow to `recurring`' },
@@ -42,15 +33,15 @@ describe('Command palette filter builder', () => {
         expect(await only.getAttribute('textContent')).toContain('recurring');
         await only.click();
 
-        /* Committing a value returns to the root dimension menu, closing the tag list. */
-        await expect(await dialog.$('input[aria-label="Search filters"]')).toBeDisplayed();
+        /* Committing clears the box (ready for the next token) and adds a named chip. */
+        expect(await input.getValue()).toBe('');
 
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();
         const chipsText = await chips.getText();
-        expect(chipsText).toContain('tag:');
+        expect(chipsText).toContain('tag: recurring');
 
-        /* Escape from the root screen closes the palette. */
+        /* Escape closes the palette. */
         await browser.keys('Escape');
         await expect(dialog).not.toBeDisplayed();
     });

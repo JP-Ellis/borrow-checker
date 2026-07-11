@@ -19,25 +19,30 @@ use stylance::import_style;
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "chips.module.scss");
 
-/// Renders the active filter dimensions as removable chips. Empty filter ⇒ nothing.
+/// Renders each active filter value as its own removable chip. Account and tag
+/// chips show the display name cached when the value was picked; an empty filter
+/// renders nothing.
 #[cfg(target_arch = "wasm32")]
 #[component]
 pub fn FilterChips() -> impl IntoView {
     let store = crate::filter_ctx::use_filter_store();
-    let chips = Signal::derive(move || crate::filter_ctx::chips_from_filter(&store.filter.get()));
+
+    let chips = Signal::derive(move || {
+        crate::filter_ctx::chips_from_filter(&store.filter.get(), &store.labels.get())
+    });
 
     view! {
         <div class=style::chips data-testid="filter-chips">
-            <For each=move || chips.get() key=|c| c.key let:chip>
+            <For each=move || chips.get() key=|c| c.key.clone() let:chip>
                 {
-                    let key = chip.key;
+                    let target = chip.remove.clone();
                     view! {
                         <span class=style::chip>
                             <span class=style::chip_label>{chip.label.clone()}</span>
                             <button
                                 class=style::chip_remove
-                                aria-label=format!("remove {} filter", chip.key)
-                                on:click=move |_| store.clear_dimension(key)
+                                aria-label=format!("remove {} filter", chip.label)
+                                on:click=move |_| store.remove_chip(&target)
                             >
                                 "✕"
                             </button>
