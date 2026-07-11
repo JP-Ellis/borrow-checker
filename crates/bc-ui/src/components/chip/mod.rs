@@ -35,6 +35,10 @@ pub enum Variant {
     /// No background/border/padding — structure only, for chips nested inside a
     /// container that already carries the pill skin (the tag picker input).
     Bare,
+    /// Accent-tinted pill: accent text on a soft accent fill with an
+    /// accent-mixed border. Interactive affordances such as the accrual-spread
+    /// chip on a posting row.
+    Accent,
 }
 
 impl Variant {
@@ -46,6 +50,7 @@ impl Variant {
             Self::Outlined => style::outlined,
             Self::Filled => style::filled,
             Self::Bare => style::bare,
+            Self::Accent => style::accent,
         }
     }
 }
@@ -134,6 +139,9 @@ mod tests {
     fn variants_have_distinct_skin_classes() {
         assert_ne!(Variant::Outlined.css_class(), Variant::Filled.css_class());
         assert_ne!(Variant::Outlined.css_class(), Variant::Bare.css_class());
+        assert_ne!(Variant::Outlined.css_class(), Variant::Accent.css_class());
         assert_ne!(Variant::Filled.css_class(), Variant::Bare.css_class());
+        assert_ne!(Variant::Filled.css_class(), Variant::Accent.css_class());
+        assert_ne!(Variant::Bare.css_class(), Variant::Accent.css_class());
     }
 }

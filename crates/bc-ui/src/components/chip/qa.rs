@@ -63,6 +63,18 @@ pub fn ChipQa() -> impl IntoView {
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
+                    "accent — removable / plain (accrual spread chip)"
+                </p>
+                <ChipRow>
+                    <Chip variant=ChipVariant::Accent on_remove=noop remove_label="clear spread">
+                        "\u{21b3} 30 Sep 2026"
+                    </Chip>
+                    <Chip variant=ChipVariant::Accent>"1 Jul 2026 \u{21b3} 30 Sep 2026"</Chip>
+                </ChipRow>
+            </section>
+
+            <section>
+                <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
                     "chip-row — mixed content (Outlined + Filled + Bare/TagToken)"
                 </p>
                 <ChipRow>

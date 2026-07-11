@@ -41,6 +41,19 @@
   /* Structure only — the parent container carries the pill skin. */
 }
 
+.accent {
+  padding: 1px var(--bc-space-2);
+  border: 1px solid color-mix(in oklch, var(--bc-accent) 30%, var(--bc-border));
+  border-radius: var(--bc-radius-pill);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-accent);
+  background: var(--bc-accent-soft);
+  white-space: nowrap;
+  /* The accent skin is only ever used for interactive affordances (the accrual
+     spread chip), so the whole pill signals clickability. */
+  cursor: pointer;
+}
+
 /* MARK: Remove button */
 .remove {
   border: none;
