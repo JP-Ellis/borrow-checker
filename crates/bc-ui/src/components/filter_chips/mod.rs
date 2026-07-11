@@ -4,7 +4,7 @@
     not(target_arch = "wasm32"),
     expect(
         clippy::mod_module_files,
-        reason = "mod.rs collocates the component source with its SCSS module file"
+        reason = "mod.rs collocates the component source with its QA route module"
     )
 )]
 
