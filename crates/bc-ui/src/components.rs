@@ -4,6 +4,7 @@
 //! atoms — resist inventing alternatives.
 
 pub mod account_picker;
+pub mod chip;
 #[cfg(target_arch = "wasm32")]
 pub mod error_banner;
 #[cfg(target_arch = "wasm32")]

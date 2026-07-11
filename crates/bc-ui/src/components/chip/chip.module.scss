@@ -1,0 +1,56 @@
+/* MARK: Row */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bc-space-2);
+}
+
+/* MARK: Chip base */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+}
+
+/* MARK: Variants */
+.outlined {
+  padding: var(--bc-space-1) var(--bc-space-2);
+  background: var(--bc-surface-alt);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-tag);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink);
+  /* Keeps multi-word labels ("account: 3 selected") from wrapping mid-chip. */
+  white-space: nowrap;
+}
+
+.filled {
+  /* 2px gap / 1px vertical padding: the spacing scale starts at 4px
+     (--bc-space-1), which is too large for a compact inline chip. */
+  gap: 2px;
+  padding: 1px var(--bc-space-1);
+  background: var(--bc-surface-accent);
+  border-radius: var(--bc-radius-tag);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink-soft);
+}
+
+.bare {
+  /* Structure only — the parent container carries the pill skin. */
+}
+
+/* MARK: Remove button */
+.remove {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--bc-ink-mute);
+  line-height: 1;
+  padding: 0 var(--bc-space-1);
+  font-size: var(--bc-text-caption);
+
+  &:hover { color: var(--bc-bad); }
+  &:focus-visible { @include focus.focus-ring(2px); }
+}
