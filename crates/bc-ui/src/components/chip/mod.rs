@@ -70,8 +70,8 @@ impl Variant {
 /// * `children` - The label content.
 /// * `variant` - Visual skin. Defaults to [`Variant::Outlined`].
 /// * `on_remove` - When `Some`, renders the trailing `×` remove button.
-/// * `remove_label` - `aria-label` for the remove button. Supply whenever
-///   `on_remove` is set.
+/// * `remove_label` - `aria-label` for the remove button. Required (non-empty)
+///   whenever `on_remove` is set; debug-asserted.
 #[cfg(target_arch = "wasm32")]
 #[component]
 pub fn Chip(
@@ -87,6 +87,10 @@ pub fn Chip(
     #[prop(optional, into)]
     remove_label: String,
 ) -> impl IntoView {
+    debug_assert!(
+        on_remove.is_none() || !remove_label.trim().is_empty(),
+        "Chip: `remove_label` must be non-empty when `on_remove` is set, so the × button is not an unlabelled control"
+    );
     let class = format!("{} {}", style::chip, variant.css_class());
     view! {
         <span class=class>
