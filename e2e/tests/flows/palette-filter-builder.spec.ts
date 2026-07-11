@@ -33,8 +33,12 @@ describe('Command palette filter builder', () => {
         expect(await only.getAttribute('textContent')).toContain('recurring');
         await only.click();
 
-        /* Committing clears the box (ready for the next token) and adds a named chip. */
-        expect(await input.getValue()).toBe('');
+        /* Committing clears the box (ready for the next token) and adds a named chip.
+         * The clear is driven by a reactive update, so wait for it rather than
+         * asserting immediately (which would race the render). */
+        await browser.waitUntil(async () => (await input.getValue()) === '', {
+            timeoutMsg: 'expected the input to clear after committing the token',
+        });
 
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();
