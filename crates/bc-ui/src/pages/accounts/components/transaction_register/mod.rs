@@ -1,11 +1,7 @@
-//! Transaction register — filter bar, column headers, keyboard-navigable row list.
-
-use core::sync::atomic::AtomicUsize;
-use core::sync::atomic::Ordering;
+//! Transaction register — column headers, keyboard-navigable row list.
 
 use bc_ipc::AccountRef;
-use bc_ipc::Reconciliation;
-use bc_ipc::Transaction;
+use bc_ipc::FilteredTransaction;
 use leptos::prelude::*;
 use leptos::web_sys;
 use stylance::import_style;
@@ -16,35 +12,7 @@ use crate::components::transaction_row::TransactionRow;
 
 import_style!(style, "register.module.scss");
 
-/// Monotonic counter for generating unique per-instance anchor names and popover IDs.
-static REGISTER_INSTANCE: AtomicUsize = AtomicUsize::new(0);
-
-/// Filter options for the register.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-enum Filter {
-    /// Show all transactions.
-    #[default]
-    All,
-    /// Only uncleared/pending.
-    Pending,
-    /// Only transactions without a category assignment.
-    Uncategorised,
-}
-
-impl Filter {
-    /// Returns the display label for this filter.
-    #[must_use]
-    #[inline]
-    fn label(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Pending => "pending",
-            Self::Uncategorised => "uncategorised",
-        }
-    }
-}
-
-/// The full transaction register: filter bar, column headers, and row list.
+/// The full transaction register: column headers and row list.
 ///
 /// Handles keyboard navigation (`j`/`k` to move, `Enter` to expand, `Esc` to
 /// collapse) via a `keydown` listener on the register container.
@@ -66,7 +34,7 @@ impl Filter {
 )]
 pub fn TransactionRegister(
     /// Reactive transaction list for this account.
-    transactions: Signal<Vec<Transaction>>,
+    transactions: Signal<Vec<FilteredTransaction>>,
     /// Account ID being viewed (determines headline amounts).
     #[prop(into)]
     viewing_account_id: String,
@@ -82,24 +50,16 @@ pub fn TransactionRegister(
     window_start: RwSignal<jiff::civil::Date>,
 ) -> impl IntoView {
     let accounts = StoredValue::new(accounts);
-    let instance = REGISTER_INSTANCE.fetch_add(1, Ordering::Relaxed);
-    let anchor_name = format!("--bc-reg-filter-{instance}");
-    let popover_id = format!("bc-register-filter-menu-{instance}");
 
-    let active_filter = RwSignal::new(Filter::All);
     let selected_idx = RwSignal::new(Option::<usize>::None);
     let expanded_idx = RwSignal::new(Option::<usize>::None);
 
-    let filtered = Memo::new(move |_| {
-        transactions
-            .get()
-            .into_iter()
-            .filter(|tx| match active_filter.get() {
-                Filter::Pending => tx.reconciliation == Reconciliation::Flagged,
-                // TODO: filter by missing category_id once the field is available on postings
-                Filter::All | Filter::Uncategorised => true,
-            })
-            .collect::<Vec<_>>()
+    let filter_store = crate::filter_ctx::use_filter_store();
+    let strictness = Signal::derive(move || filter_store.strictness.get());
+    let period_locked = Signal::derive(move || {
+        filter_store
+            .filter
+            .with(|f| f.date_from.is_some() || f.date_until.is_some())
     });
 
     let on_keydown = move |e: web_sys::KeyboardEvent| {
@@ -113,7 +73,7 @@ pub fn TransactionRegister(
             }
         }
 
-        let row_count = filtered.get().len();
+        let row_count = transactions.get().len();
         if row_count == 0 {
             return;
         }
@@ -173,77 +133,13 @@ pub fn TransactionRegister(
                     period=period
                     window_start=window_start
                     compact=true
+                    disabled=period_locked
                 />
                 <span class=style::reg_title>
                     "register" <span class=style::bracket>"["</span>
-                    <span class=style::count>{move || filtered.get().len().to_string()}</span>
+                    <span class=style::count>{move || transactions.get().len().to_string()}</span>
                     <span class=style::bracket>"]"</span>
                 </span>
-
-                <div class=style::filter_area>
-                    <button
-                        class=style::filter_toggle
-                        style=format!("anchor-name: {anchor_name}")
-                        popovertarget=popover_id.clone()
-                    >
-                        {move || format!("{} ▾", active_filter.get().label())}
-                    </button>
-                </div>
-                <div
-                    popover=""
-                    id=popover_id.clone()
-                    class=style::filter_menu
-                    style=format!("position-anchor: {anchor_name}")
-                >
-                    {[Filter::All, Filter::Pending, Filter::Uncategorised]
-                        .into_iter()
-                        .map(|f| {
-                            let popover_id = popover_id.clone();
-                            view! {
-                                <button
-                                    class=move || {
-                                        if active_filter.get() == f {
-                                            format!(
-                                                "{} {}",
-                                                style::filter_menu_btn,
-                                                style::filter_active,
-                                            )
-                                        } else {
-                                            style::filter_menu_btn.to_owned()
-                                        }
-                                    }
-                                    popovertarget=popover_id
-                                    popovertargetaction="hide"
-                                    on:click=move |_| active_filter.set(f)
-                                >
-                                    {f.label()}
-                                </button>
-                            }
-                        })
-                        .collect::<Vec<_>>()}
-                </div>
-
-                <div class=style::filters>
-                    {[Filter::All, Filter::Pending, Filter::Uncategorised]
-                        .into_iter()
-                        .map(|f| {
-                            view! {
-                                <button
-                                    class=move || {
-                                        if active_filter.get() == f {
-                                            format!("{} {}", style::filter_btn, style::filter_active)
-                                        } else {
-                                            style::filter_btn.to_owned()
-                                        }
-                                    }
-                                    on:click=move |_| active_filter.set(f)
-                                >
-                                    {f.label()}
-                                </button>
-                            }
-                        })
-                        .collect::<Vec<_>>()}
-                </div>
             </div>
 
             <div class=style::col_headers>
@@ -255,15 +151,19 @@ pub fn TransactionRegister(
             </div>
 
             {move || {
-                filtered
+                let strict = strictness.get();
+                transactions
                     .get()
                     .into_iter()
                     .enumerate()
-                    .map(|(i, tx)| {
+                    .map(|(i, ft)| {
                         let vid = vid.clone();
+                        let matched = ft.matched_postings.clone();
                         view! {
                             <TransactionRow
-                                tx=tx
+                                tx=ft.transaction
+                                matched_postings=matched
+                                strictness=strict
                                 perspective=RowPerspective::Account {
                                     account_id: vid,
                                 }
