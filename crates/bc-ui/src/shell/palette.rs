@@ -14,6 +14,7 @@
 
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::AccountNode;
+use bc_ipc::CommodityInfo;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::Reconciliation;
 #[cfg(target_arch = "wasm32")]
@@ -24,6 +25,9 @@ use leptos::prelude::*;
 use leptos::web_sys;
 #[cfg(target_arch = "wasm32")]
 use stylance::import_style;
+
+use crate::components::transaction_row::currency::MarkerError;
+use crate::components::transaction_row::currency::split_marked_amount;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "palette.module.scss");
@@ -89,18 +93,36 @@ pub fn parse_token(input: &str) -> Option<(Field, &str)> {
 }
 
 /// Parses an `over:` / `under:` remainder into an optional commodity code and a
-/// magnitude: `USD300` / `usd 300` → (`Some("USD")`, 300) restricts to that
-/// commodity, `300` → (`None`, 300) is currency-naive. The commodity is the
-/// leading non-numeric run (upper-cased); the numeric tail must parse as a
-/// decimal, otherwise `None`.
+/// non-negative magnitude.
+///
+/// A bare number (`300`) is currency-naive → `(None, 300)`. A marked amount
+/// (`USD300`, `$300`, `A$ 12.50`, `300 aud`) resolves against the served
+/// commodity set via [`split_marked_amount`] — symbols, aliases, and codes all
+/// map to the canonical code → `(Some("USD"), 300)`. A present-but-unresolvable
+/// or ambiguous marker, a non-numeric tail, or a negative magnitude all yield
+/// `None`: `over:`/`under:` are magnitude bounds, so a negative is rejected
+/// rather than silently matching everything.
+///
+/// # Arguments
+///
+/// * `currencies` - The served commodity set used to resolve a currency marker.
+/// * `remainder` - The `over:`/`under:` token remainder.
 #[must_use]
-pub fn parse_amount(remainder: &str) -> Option<(Option<String>, rust_decimal::Decimal)> {
+pub fn parse_amount(
+    currencies: &[CommodityInfo],
+    remainder: &str,
+) -> Option<(Option<String>, rust_decimal::Decimal)> {
     let s = remainder.trim();
-    let idx = s.find(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == '+')?;
-    let (head, num) = s.split_at(idx);
-    let code = head.trim();
-    let commodity = (!code.is_empty()).then(|| code.to_ascii_uppercase());
-    let value = num.trim().parse::<rust_decimal::Decimal>().ok()?;
+    let (num_text, commodity) = match split_marked_amount(currencies, s) {
+        Ok((num, code)) => (num, Some(code)),
+        Err(MarkerError::Missing) => (s.to_owned(), None),
+        // A marker was typed but matched zero or several commodities.
+        Err(MarkerError::Unknown(_) | MarkerError::Ambiguous(_)) => return None,
+    };
+    let value = num_text.trim().parse::<rust_decimal::Decimal>().ok()?;
+    if value.is_sign_negative() {
+        return None;
+    }
     Some((commodity, value))
 }
 
@@ -133,6 +155,7 @@ pub fn CommandPalette(
     on_close: Callback<()>,
 ) -> impl IntoView {
     let store = crate::filter_ctx::use_filter_store();
+    let currencies = crate::currency_ctx::use_currency_store();
 
     let query = RwSignal::new(String::new());
     let selected_idx = RwSignal::new(0_usize);
@@ -284,7 +307,7 @@ pub fn CommandPalette(
             }
         }
         Some((Field::Over, rest)) => {
-            if let Some((commodity, min)) = parse_amount(rest) {
+            if let Some((commodity, min)) = parse_amount(&currencies.get(), rest) {
                 store.filter.update(|f| {
                     let mut amount = f.amount.clone().unwrap_or_default();
                     amount.min = Some(min);
@@ -297,7 +320,7 @@ pub fn CommandPalette(
             }
         }
         Some((Field::Under, rest)) => {
-            if let Some((commodity, max)) = parse_amount(rest) {
+            if let Some((commodity, max)) = parse_amount(&currencies.get(), rest) {
                 store.filter.update(|f| {
                     let mut amount = f.amount.clone().unwrap_or_default();
                     amount.max = Some(max);
@@ -317,6 +340,14 @@ pub fn CommandPalette(
             }
         }
     };
+
+    /* Whether the current token has navigable suggestion rows. */
+    let has_options = move || list_len.get() > 0;
+
+    /* The id of the active suggestion row for `aria-activedescendant`; `None`
+    (attribute omitted) when the current token has no navigable options. */
+    let active_descendant =
+        move || has_options().then(|| format!("palette-opt-{}", selected_idx.get()));
 
     let on_keydown = move |e: web_sys::KeyboardEvent| match e.key().as_str() {
         "Escape" => {
@@ -362,8 +393,9 @@ pub fn CommandPalette(
                         role="combobox"
                         placeholder="Search payee, or account: tag: status: after: before: over: under:"
                         aria-label="Search filters"
-                        aria-expanded=move || open.get()
+                        aria-expanded=has_options
                         aria-controls="palette-listbox"
+                        aria-activedescendant=active_descendant
                         prop:value=move || query.get()
                         on:input=move |e| {
                             query.set(event_target_value(&e));
@@ -395,6 +427,7 @@ pub fn CommandPalette(
                                                 view! {
                                                     <div
                                                         class=item_class
+                                                        id=format!("palette-opt-{idx}")
                                                         role="option"
                                                         aria-selected=idx == sel
                                                         on:click=move |_| {
@@ -431,6 +464,7 @@ pub fn CommandPalette(
                                                 view! {
                                                     <div
                                                         class=item_class
+                                                        id=format!("palette-opt-{idx}")
                                                         role="option"
                                                         aria-selected=idx == sel
                                                         on:click=move |_| {
@@ -461,6 +495,7 @@ pub fn CommandPalette(
                                             view! {
                                                 <div
                                                     class=item_class
+                                                    id=format!("palette-opt-{idx}")
                                                     role="option"
                                                     aria-selected=idx == sel
                                                     on:click=move |_| {
@@ -484,7 +519,7 @@ pub fn CommandPalette(
                                     view! { <div class=style::empty>{hint}</div> }.into_any()
                                 }
                                 Some((field @ (Field::Over | Field::Under), rest)) => {
-                                    let hint = match parse_amount(&rest) {
+                                    let hint = match parse_amount(&currencies.get(), &rest) {
                                         Some((Some(commodity), value)) => {
                                             format!("↵ set {} {commodity} {value}", field.keyword())
                                         }
@@ -527,31 +562,69 @@ pub fn CommandPalette(
 
 #[cfg(test)]
 mod tests {
+    use bc_ipc::CommodityInfo;
     use pretty_assertions::assert_eq;
 
     use super::Field;
     use super::parse_amount;
     use super::parse_token;
 
+    fn registry() -> Vec<CommodityInfo> {
+        vec![CommodityInfo::new(
+            "c1",
+            "USD",
+            Some("$".to_owned()),
+            vec![],
+            2,
+            true,
+            false,
+        )]
+    }
+
     #[test]
-    fn parse_amount_reads_optional_commodity_prefix() {
-        let (qualified_commodity, qualified_value) = parse_amount("USD300").expect("qualified");
+    fn parse_amount_resolves_optional_commodity_marker() {
+        let reg = registry();
+
+        /* Glued code resolves to the canonical code. */
+        let (qualified_commodity, qualified_value) =
+            parse_amount(&reg, "USD300").expect("qualified");
         assert_eq!(qualified_commodity.as_deref(), Some("USD"));
         assert_eq!(qualified_value, "300".parse().expect("decimal"));
 
-        let (naive_commodity, naive_value) = parse_amount("  300  ").expect("naive");
+        /* A bare number is currency-naive. */
+        let (naive_commodity, naive_value) = parse_amount(&reg, "  300  ").expect("naive");
         assert_eq!(naive_commodity, None);
         assert_eq!(naive_value, "300".parse().expect("decimal"));
 
-        /* Lower-case code + space is upper-cased and trimmed. */
+        /* Lower-case code + space resolves case-insensitively to the canonical code. */
         assert_eq!(
-            parse_amount("usd 12.50").expect("spaced").0.as_deref(),
+            parse_amount(&reg, "usd 12.50")
+                .expect("spaced")
+                .0
+                .as_deref(),
             Some("USD")
         );
 
+        /* A symbol resolves to its commodity. */
+        let (symbol_commodity, symbol_value) = parse_amount(&reg, "$50").expect("symbol");
+        assert_eq!(symbol_commodity.as_deref(), Some("USD"));
+        assert_eq!(symbol_value, "50".parse().expect("decimal"));
+    }
+
+    #[test]
+    fn parse_amount_rejects_invalid_input() {
+        let reg = registry();
+
         /* No numeric tail is not a valid amount. */
-        assert!(parse_amount("abc").is_none());
-        assert!(parse_amount("USD").is_none());
+        assert!(parse_amount(&reg, "abc").is_none());
+        assert!(parse_amount(&reg, "USD").is_none());
+
+        /* A present-but-unknown marker is rejected, not treated as naive. */
+        assert!(parse_amount(&reg, "EUR 50").is_none());
+
+        /* Negative magnitudes are rejected (over/under are magnitude bounds). */
+        assert!(parse_amount(&reg, "-50").is_none());
+        assert!(parse_amount(&reg, "USD-50").is_none());
     }
 
     #[test]
