@@ -7,6 +7,7 @@ use bc_ipc::AccountRef;
 use bc_ipc::AccountType;
 use bc_ipc::Amount;
 use bc_ipc::AuditEntry;
+use bc_ipc::FilteredTransaction;
 use bc_ipc::Posting;
 use bc_ipc::Reconciliation;
 use bc_ipc::Transaction;
@@ -74,77 +75,99 @@ fn sample_accounts() -> Vec<AccountNode> {
     clippy::expect_used,
     reason = "QA fixture — timestamp literals are valid"
 )]
-fn sample_transactions() -> Vec<Transaction> {
+fn sample_transactions() -> Vec<FilteredTransaction> {
     vec![
-        Transaction::new(
-            "tx-coles-2026-04-30",
-            jiff::civil::Date::constant(2026, 4, 30),
-            "Coles Carlton",
-            "",
-            None::<&str>,
-            vec![],
-            Reconciliation::Reconciled,
-            vec!["shared".to_owned()],
-            vec![
-                Posting::new(
-                    "posting-coles-debit",
-                    AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                    Some(Amount::new(Decimal::new(-8_420, 2), "AUD")),
-                    None::<&str>,
-                    vec![],
-                    None,
-                    None,
-                ),
-                Posting::new(
-                    "posting-coles-groceries",
-                    AccountRef::new("groceries", "Expenses :: Groceries"),
-                    Some(Amount::new(Decimal::new(8_420, 2), "AUD")),
-                    None::<&str>,
-                    vec![],
-                    None,
-                    None,
-                ),
-            ],
-            vec![AuditEntry::new(
-                "2026-04-30T14:21:00Z"
-                    .parse::<jiff::Timestamp>()
-                    .expect("valid timestamp"),
-                "import",
-                "from commbank-au.wasm@1.4.2",
-            )],
-        ),
-        Transaction::new(
-            "tx-salary-2026-04-30",
-            jiff::civil::Date::constant(2026, 4, 30),
-            "Salary — Atlassian",
-            "",
-            None::<&str>,
-            vec![],
-            Reconciliation::Reconciled,
-            vec!["work".to_owned()],
-            vec![
-                Posting::new(
-                    "posting-salary-income",
-                    AccountRef::new("income-salary", "Income :: Salary"),
-                    Some(Amount::new(Decimal::new(-846_154, 2), "AUD")),
-                    Some("gross pay"),
-                    vec![],
-                    None,
-                    None,
-                ),
-                Posting::new(
-                    "posting-salary-takehome",
-                    AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                    Some(Amount::new(Decimal::new(428_055, 2), "AUD")),
-                    Some("take-home"),
-                    vec![],
-                    None,
-                    None,
-                ),
-            ],
-            vec![],
-        ),
+        {
+            let tx = coles_transaction();
+            let matched = tx.postings.iter().map(|p| p.id.clone()).collect();
+            FilteredTransaction::new(tx, matched)
+        },
+        {
+            let tx = salary_transaction();
+            let matched = tx.postings.iter().map(|p| p.id.clone()).collect();
+            FilteredTransaction::new(tx, matched)
+        },
     ]
+}
+
+/// Returns the sample Coles grocery transaction.
+#[expect(
+    clippy::expect_used,
+    reason = "QA fixture — timestamp literals are valid"
+)]
+fn coles_transaction() -> Transaction {
+    Transaction::new(
+        "tx-coles-2026-04-30",
+        jiff::civil::Date::constant(2026, 4, 30),
+        "Coles Carlton",
+        "",
+        None::<&str>,
+        vec![],
+        Reconciliation::Reconciled,
+        vec!["shared".to_owned()],
+        vec![
+            Posting::new(
+                "posting-coles-debit",
+                AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
+                Some(Amount::new(Decimal::new(-8_420, 2), "AUD")),
+                None::<&str>,
+                vec![],
+                None,
+                None,
+            ),
+            Posting::new(
+                "posting-coles-groceries",
+                AccountRef::new("groceries", "Expenses :: Groceries"),
+                Some(Amount::new(Decimal::new(8_420, 2), "AUD")),
+                None::<&str>,
+                vec![],
+                None,
+                None,
+            ),
+        ],
+        vec![AuditEntry::new(
+            "2026-04-30T14:21:00Z"
+                .parse::<jiff::Timestamp>()
+                .expect("valid timestamp"),
+            "import",
+            "from commbank-au.wasm@1.4.2",
+        )],
+    )
+}
+
+/// Returns the sample salary transaction.
+fn salary_transaction() -> Transaction {
+    Transaction::new(
+        "tx-salary-2026-04-30",
+        jiff::civil::Date::constant(2026, 4, 30),
+        "Salary — Atlassian",
+        "",
+        None::<&str>,
+        vec![],
+        Reconciliation::Reconciled,
+        vec!["work".to_owned()],
+        vec![
+            Posting::new(
+                "posting-salary-income",
+                AccountRef::new("income-salary", "Income :: Salary"),
+                Some(Amount::new(Decimal::new(-846_154, 2), "AUD")),
+                Some("gross pay"),
+                vec![],
+                None,
+                None,
+            ),
+            Posting::new(
+                "posting-salary-takehome",
+                AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
+                Some(Amount::new(Decimal::new(428_055, 2), "AUD")),
+                Some("take-home"),
+                vec![],
+                None,
+                None,
+            ),
+        ],
+        vec![],
+    )
 }
 
 /// Full accounts view QA: sidebar, dashboard hero, and transaction register.
