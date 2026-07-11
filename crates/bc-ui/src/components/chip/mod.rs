@@ -24,20 +24,25 @@ import_style!(
 );
 
 /// Visual skin for a [`Chip`].
+///
+/// All skinned variants share one silhouette — a 6px-radius, sans-serif token
+/// with uniform padding — and differ only in fill and colour, so the chip
+/// family stays visually distinct from the fully-round status pill and the
+/// near-square tag token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Variant {
-    /// Surface-alt background + border, sans caption. Standalone filter chips.
+    /// Surface-alt fill with a border. The default standalone chip
+    /// (active-filter chips).
     #[default]
     Outlined,
-    /// Surface-accent background, no border, mono caption, tight padding.
-    /// Dense inline chips (currency aliases).
+    /// Elevated surface-accent fill, no border. Dense inline chips such as
+    /// currency aliases.
     Filled,
-    /// No background/border/padding — structure only, for chips nested inside a
-    /// container that already carries the pill skin (the tag picker input).
+    /// No fill, border, or padding — structure only, for chips nested inside a
+    /// container that already carries the skin (the tag picker input).
     Bare,
-    /// Accent-tinted pill: accent text on a soft accent fill with an
-    /// accent-mixed border. Interactive affordances such as the accrual-spread
-    /// chip on a posting row.
+    /// Accent-tinted fill and border for interactive affordances such as the
+    /// accrual-spread chip on a posting row.
     Accent,
 }
 

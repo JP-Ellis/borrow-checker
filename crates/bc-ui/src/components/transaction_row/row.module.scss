@@ -592,18 +592,20 @@
   letter-spacing: -0.012em;
 }
 
-/* MARK: Spread chip */
+/* MARK: Spread editor */
 
+/* The expanded editor is the "opened" form of the accent Chip, so it shares
+   that variant's silhouette — 6px radius, caption size, uniform padding. */
 .spread_edit {
   display: inline-flex;
   align-items: baseline;
   gap: var(--bc-space-1);
-  font-size: var(--bc-text-eyebrow);
+  font-size: var(--bc-text-caption);
   color: var(--bc-accent);
   border: 1px solid color-mix(in oklch, var(--bc-accent) 30%, var(--bc-border));
   background: var(--bc-accent-soft);
-  border-radius: var(--bc-radius-pill);
-  padding: 1px var(--bc-space-2);
+  border-radius: var(--bc-radius-control);
+  padding: var(--bc-space-1) var(--bc-space-2);
 }
 
 .spread_edit_lbl {
