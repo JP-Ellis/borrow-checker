@@ -32,24 +32,26 @@ pub fn FilterChips() -> impl IntoView {
     });
 
     view! {
-        <div class=style::chips data-testid="filter-chips">
-            <For each=move || chips.get() key=|c| c.key.clone() let:chip>
-                {
-                    let target = chip.remove.clone();
-                    view! {
-                        <span class=style::chip>
-                            <span class=style::chip_label>{chip.label.clone()}</span>
-                            <button
-                                class=style::chip_remove
-                                aria-label=format!("remove {} filter", chip.label)
-                                on:click=move |_| store.remove_chip(&target)
-                            >
-                                "✕"
-                            </button>
-                        </span>
+        <Show when=move || !chips.get().is_empty()>
+            <div class=style::chips data-testid="filter-chips">
+                <For each=move || chips.get() key=|c| c.key.clone() let:chip>
+                    {
+                        let target = chip.remove.clone();
+                        view! {
+                            <span class=style::chip>
+                                <span class=style::chip_label>{chip.label.clone()}</span>
+                                <button
+                                    class=style::chip_remove
+                                    aria-label=format!("remove {} filter", chip.label)
+                                    on:click=move |_| store.remove_chip(&target)
+                                >
+                                    "✕"
+                                </button>
+                            </span>
+                        }
                     }
-                }
-            </For>
-        </div>
+                </For>
+            </div>
+        </Show>
     }
 }
