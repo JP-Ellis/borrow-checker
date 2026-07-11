@@ -17,26 +17,6 @@
   min-height: calc(var(--bc-space-4) + 2px);
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--bc-space-1);
-}
-
-.chip_remove {
-  font-size: var(--bc-text-caption);
-  color: var(--bc-ink-mute);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 0 var(--bc-space-1);
-  line-height: 1;
-}
-
-.chip_remove:hover {
-  color: var(--bc-bad);
-}
-
 .input {
   flex: 1;
   min-width: 8rem;

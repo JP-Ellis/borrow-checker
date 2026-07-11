@@ -27,6 +27,11 @@ pub use matching::filter_tags;
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
+use crate::components::ChipVariant;
+#[cfg(target_arch = "wasm32")]
+use crate::components::chip::Chip;
+
+#[cfg(target_arch = "wasm32")]
 import_style!(style, "tag_picker.module.scss");
 
 /// A multi-select tag input with autocomplete and inline tag creation.
@@ -92,17 +97,15 @@ pub fn TagPicker(
             .into_iter()
             .map(|path| {
                 let remove_path = path.clone();
+                let label = path.clone();
                 view! {
-                    <span class=style::chip>
+                    <Chip
+                        variant=ChipVariant::Bare
+                        on_remove=Callback::new(move |()| on_remove.run(remove_path.clone()))
+                        remove_label=format!("remove {label}")
+                    >
                         <crate::components::tag_token::TagToken label=path />
-                        <button
-                            class=style::chip_remove
-                            type="button"
-                            on:click=move |_| on_remove.run(remove_path.clone())
-                        >
-                            "×"
-                        </button>
-                    </span>
+                    </Chip>
                 }
             })
             .collect::<Vec<_>>()
