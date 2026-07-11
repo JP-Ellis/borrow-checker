@@ -14,43 +14,44 @@
 }
 
 /* MARK: Variants */
+/* The three skinned variants share one silhouette — a 6px-radius, sans-serif
+   token with uniform padding — and differ only in fill and colour. This keeps
+   the chip family visually distinct from the fully-round status pill and the
+   near-square tag token. `white-space: nowrap` keeps multi-word labels
+   ("account: 3 selected", "1 Jul 2026 ⤳ 30 Sep 2026") from wrapping mid-chip. */
 .outlined {
   padding: var(--bc-space-1) var(--bc-space-2);
+  border-radius: var(--bc-radius-control);
+  font-size: var(--bc-text-caption);
+  white-space: nowrap;
   background: var(--bc-surface-alt);
   border: 1px solid var(--bc-border);
-  border-radius: var(--bc-radius-tag);
-  font-size: var(--bc-text-caption);
   color: var(--bc-ink);
-  /* Keeps multi-word labels ("account: 3 selected") from wrapping mid-chip. */
-  white-space: nowrap;
 }
 
 .filled {
-  /* 2px gap / 1px vertical padding: the spacing scale starts at 4px
-     (--bc-space-1), which is too large for a compact inline chip. */
-  gap: 2px;
-  padding: 1px var(--bc-space-1);
-  background: var(--bc-surface-accent);
-  border-radius: var(--bc-radius-tag);
-  font-family: var(--bc-font-mono);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  border-radius: var(--bc-radius-control);
   font-size: var(--bc-text-caption);
+  white-space: nowrap;
+  background: var(--bc-surface-accent);
   color: var(--bc-ink-soft);
 }
 
 .bare {
-  /* Structure only — the parent container carries the pill skin. */
+  /* Structure only — the parent container carries the skin. */
 }
 
 .accent {
-  padding: 1px var(--bc-space-2);
-  border: 1px solid color-mix(in oklch, var(--bc-accent) 30%, var(--bc-border));
-  border-radius: var(--bc-radius-pill);
-  font-size: var(--bc-text-eyebrow);
-  color: var(--bc-accent);
-  background: var(--bc-accent-soft);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  border-radius: var(--bc-radius-control);
+  font-size: var(--bc-text-caption);
   white-space: nowrap;
+  background: var(--bc-accent-soft);
+  border: 1px solid color-mix(in oklch, var(--bc-accent) 30%, var(--bc-border));
+  color: var(--bc-accent);
   /* The accent skin is only ever used for interactive affordances (the accrual
-     spread chip), so the whole pill signals clickability. */
+     spread chip), so the whole chip signals clickability. */
   cursor: pointer;
 }
 
