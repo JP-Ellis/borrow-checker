@@ -46,16 +46,6 @@ pub enum Variant {
     Bare,
 }
 
-/// Visual skin for a [`Chip`].
-///
-/// Re-exported under this name (rather than bare [`Variant`]) so call sites
-/// spell it as `ChipVariant`, matching the `Chip` component it configures.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "ChipVariant is the public interface name; Variant avoids the repetition at the definition site"
-)]
-pub use Variant as ChipVariant;
-
 impl Variant {
     /// Returns the CSS class for this variant's skin.
     #[must_use]
@@ -77,7 +67,7 @@ impl Variant {
 /// # Arguments
 ///
 /// * `children` - The label content.
-/// * `variant` - Visual skin. Defaults to [`ChipVariant::Outlined`].
+/// * `variant` - Visual skin. Defaults to [`Variant::Outlined`].
 /// * `on_remove` - When `Some`, renders the trailing `×` remove button.
 /// * `remove_label` - `aria-label` for the remove button. Supply whenever
 ///   `on_remove` is set.
@@ -86,9 +76,9 @@ impl Variant {
 pub fn Chip(
     /// The label content (plain text or a nested component).
     children: Children,
-    /// Visual skin. Defaults to [`ChipVariant::Outlined`].
+    /// Visual skin. Defaults to [`Variant::Outlined`].
     #[prop(optional)]
-    variant: ChipVariant,
+    variant: Variant,
     /// When `Some`, renders the trailing `×` remove button.
     #[prop(optional)]
     on_remove: Option<Callback<()>>,
@@ -144,21 +134,12 @@ pub fn ChipRow(
 mod tests {
     use pretty_assertions::assert_ne;
 
-    use super::ChipVariant;
+    use super::Variant;
 
     #[test]
     fn variants_have_distinct_skin_classes() {
-        assert_ne!(
-            ChipVariant::Outlined.css_class(),
-            ChipVariant::Filled.css_class()
-        );
-        assert_ne!(
-            ChipVariant::Outlined.css_class(),
-            ChipVariant::Bare.css_class()
-        );
-        assert_ne!(
-            ChipVariant::Filled.css_class(),
-            ChipVariant::Bare.css_class()
-        );
+        assert_ne!(Variant::Outlined.css_class(), Variant::Filled.css_class());
+        assert_ne!(Variant::Outlined.css_class(), Variant::Bare.css_class());
+        assert_ne!(Variant::Filled.css_class(), Variant::Bare.css_class());
     }
 }
