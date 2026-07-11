@@ -27,10 +27,6 @@ use crate::components::period_nav::period_end;
 /// # Returns
 ///
 /// The effective filter to search with.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "consumed by the register view in a later task")
-)]
 #[must_use]
 pub fn effective_filter(user: &Filter, period: &Period, window_start: Date) -> Filter {
     let mut eff = user.clone();
@@ -48,7 +44,6 @@ pub fn effective_filter(user: &Filter, period: &Period, window_start: Date) -> F
 ///
 /// * `tx` - The transaction to test.
 /// * `account_id` - The viewed account id.
-#[expect(dead_code, reason = "consumed by the register view in a later task")]
 #[must_use]
 pub fn touches_account(tx: &Transaction, account_id: &str) -> bool {
     tx.postings.iter().any(|p| p.account.id == account_id)
@@ -56,11 +51,18 @@ pub fn touches_account(tx: &Transaction, account_id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use bc_ipc::AccountRef;
+    use bc_ipc::Amount;
     use bc_ipc::Period;
+    use bc_ipc::Posting;
+    use bc_ipc::Reconciliation;
+    use bc_ipc::Transaction;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
 
     use super::effective_filter;
+    use super::touches_account;
 
     #[test]
     fn strips_accounts_and_injects_window_when_no_date_bound() {
@@ -87,5 +89,55 @@ mod tests {
         /* Filter date present → window is NOT injected on either side. */
         assert_eq!(eff.date_from, Some(Date::constant(2026, 3, 10)));
         assert_eq!(eff.date_until, None);
+    }
+
+    /// Builds a two-posting transaction, one leg on `account_id`, one on
+    /// `"other-account"`.
+    fn transaction_with_posting_on(account_id: &str) -> Transaction {
+        Transaction::new(
+            "tx-1",
+            Date::constant(2026, 6, 1),
+            "Payee",
+            "",
+            None::<&str>,
+            vec![],
+            Reconciliation::Reconciled,
+            vec![],
+            vec![
+                Posting::new(
+                    "posting-1",
+                    AccountRef::new(account_id, "Account One"),
+                    Some(Amount::new(Decimal::new(-1_000, 2), "AUD")),
+                    None::<&str>,
+                    vec![],
+                    None,
+                    None,
+                ),
+                Posting::new(
+                    "posting-2",
+                    AccountRef::new("other-account", "Account Two"),
+                    Some(Amount::new(Decimal::new(1_000, 2), "AUD")),
+                    None::<&str>,
+                    vec![],
+                    None,
+                    None,
+                ),
+            ],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn touches_account_true_when_posting_matches() {
+        let tx = transaction_with_posting_on("cb-smart-access");
+
+        assert!(touches_account(&tx, "cb-smart-access"));
+    }
+
+    #[test]
+    fn touches_account_false_when_no_posting_matches() {
+        let tx = transaction_with_posting_on("cb-smart-access");
+
+        assert!(!touches_account(&tx, "groceries"));
     }
 }
