@@ -13,6 +13,12 @@ use leptos::prelude::*;
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
+use crate::components::ChipVariant;
+#[cfg(target_arch = "wasm32")]
+use crate::components::chip::Chip;
+#[cfg(target_arch = "wasm32")]
+use crate::components::chip::ChipRow;
+#[cfg(target_arch = "wasm32")]
 use crate::components::error_banner::ErrorBanner;
 
 #[cfg(target_arch = "wasm32")]
@@ -497,7 +503,7 @@ fn currency_row(rows: RwSignal<Vec<Row>>, row: Row) -> impl IntoView {
                 />
             </td>
             <td>
-                <div class=style::aliases>
+                <ChipRow>
                     // Chips derive from the shared `rows` signal so adding/removing
                     // an alias (or discarding) updates them immediately.
                     {move || {
@@ -506,22 +512,18 @@ fn currency_row(rows: RwSignal<Vec<Row>>, row: Row) -> impl IntoView {
                             .into_iter()
                             .map(|a| {
                                 let a2 = a.clone();
+                                let remove = Callback::new(move |()| {
+                                    let a3 = a2.clone();
+                                    update_field(Box::new(move |i| i.aliases.retain(|x| x != &a3)));
+                                });
                                 view! {
-                                    <span class=style::chip>
+                                    <Chip
+                                        variant=ChipVariant::Filled
+                                        on_remove=remove
+                                        remove_label=format!("Remove alias {a}")
+                                    >
                                         {a.clone()}
-                                        <button
-                                            class=style::chip_x
-                                            aria-label=format!("Remove alias {a}")
-                                            on:click=move |_| {
-                                                let a3 = a2.clone();
-                                                update_field(
-                                                    Box::new(move |i| i.aliases.retain(|x| x != &a3)),
-                                                );
-                                            }
-                                        >
-                                            "×"
-                                        </button>
-                                    </span>
+                                    </Chip>
                                 }
                             })
                             .collect::<Vec<_>>()
@@ -543,7 +545,7 @@ fn currency_row(rows: RwSignal<Vec<Row>>, row: Row) -> impl IntoView {
                             }
                         }
                     />
-                </div>
+                </ChipRow>
             </td>
             <td class=style::flag>
                 <input
