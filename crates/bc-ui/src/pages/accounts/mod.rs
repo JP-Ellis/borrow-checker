@@ -48,6 +48,7 @@ import_style!(style, "accounts.module.scss");
 )]
 pub fn Accounts() -> impl IntoView {
     let currencies = crate::currency_ctx::use_currency_store();
+    let filter_store = crate::filter_ctx::use_filter_store();
     let params = use_params_map();
     let selected_id = Signal::derive(move || params.with(|p| p.get("id")));
 
@@ -104,11 +105,19 @@ pub fn Accounts() -> impl IntoView {
         data_version.get();
         let period = display_period.get();
         let start = window_start.get();
-        let until = crate::components::period_nav::period_end(&period, start);
-        match selected_id.get() {
-            Some(ref id) => bc_ipc::client::list_transactions(id, start, until).await,
-            None => Ok(vec![]),
-        }
+        let Some(id) = selected_id.get() else {
+            return Ok::<_, bc_ipc::BcError>(Vec::new());
+        };
+        let eff = filter_store
+            .filter
+            .with_untracked(|f| crate::pages::accounts::query::effective_filter(f, &period, start));
+        // Re-subscribe to the filter signal so edits re-run the resource.
+        filter_store.filter.track();
+        let all = bc_ipc::client::search_transactions(&eff).await?;
+        Ok(all
+            .into_iter()
+            .filter(|ft| crate::pages::accounts::query::touches_account(&ft.transaction, &id))
+            .collect::<Vec<_>>())
     });
 
     // Seed the window once from the account's most recent activity, the
