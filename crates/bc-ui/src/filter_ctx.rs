@@ -155,6 +155,31 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
     chips
 }
 
+/// Returns `true` when any filter dimension is set. Mirrors the visibility of
+/// [`chips_from_filter`] (an empty filter yields no chips and is inactive), but
+/// avoids allocating the chip list.
+///
+/// # Arguments
+///
+/// * `filter` - The filter to inspect.
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        dead_code,
+        reason = "consumed by register filter wiring in a later task"
+    )
+)]
+#[must_use]
+pub fn filter_is_active(filter: &bc_ipc::Filter) -> bool {
+    filter.date_from.is_some()
+        || filter.date_until.is_some()
+        || !filter.accounts.is_empty()
+        || !filter.tags.is_empty()
+        || filter.text.is_some()
+        || filter.amount.is_some()
+        || filter.reconciliation.is_some()
+}
+
 /// Signal-backed pieces of the filter store; kept in a submodule so only its
 /// `RwSignal`/`provide_context` internals are gated on `wasm32`, while the
 /// pure `Strictness`/`Chip`/`chips_from_filter` above stay natively testable.
@@ -385,5 +410,25 @@ mod tests {
         let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["over: USD 100", "under: USD 500"]);
+    }
+
+    #[test]
+    fn empty_filter_is_inactive() {
+        assert!(!super::filter_is_active(&bc_ipc::Filter::default()));
+    }
+
+    #[test]
+    fn filter_with_any_dimension_is_active() {
+        let mut text = bc_ipc::Filter::default();
+        text.text = Some("coles".to_owned());
+        assert!(super::filter_is_active(&text));
+
+        let mut acct = bc_ipc::Filter::default();
+        acct.accounts = vec!["a1".to_owned()];
+        assert!(super::filter_is_active(&acct));
+
+        let mut date = bc_ipc::Filter::default();
+        date.date_from = Some(jiff::civil::Date::constant(2026, 1, 1));
+        assert!(super::filter_is_active(&date));
     }
 }
