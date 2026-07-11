@@ -33,7 +33,7 @@ pub fn ChipQa() -> impl IntoView {
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
-                    "filled — removable (currency alias style)"
+                    "filled — removable / plain"
                 </p>
                 <ChipRow>
                     <Chip
@@ -43,24 +43,47 @@ pub fn ChipQa() -> impl IntoView {
                     >
                         "US$"
                     </Chip>
-                    <Chip variant=ChipVariant::Filled on_remove=noop remove_label="Remove alias A$">
-                        "A$"
-                    </Chip>
+                    <Chip variant=ChipVariant::Filled>"A$"</Chip>
                 </ChipRow>
             </section>
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
-                    "bare — TagToken label, nested in a bordered container"
+                    "bare — removable / plain, TagToken label, nested in a bordered container"
                 </p>
                 <div style="display:inline-flex;gap:4px;padding:4px 8px;border:1px solid var(--bc-border);border-radius:var(--bc-radius-control);background:var(--bc-surface-alt);">
                     <Chip variant=ChipVariant::Bare on_remove=noop remove_label="remove groceries">
                         <TagToken label="groceries".to_owned() />
                     </Chip>
-                    <Chip variant=ChipVariant::Bare on_remove=noop remove_label="remove rent">
+                    <Chip variant=ChipVariant::Bare>
                         <TagToken label="rent".to_owned() />
                     </Chip>
                 </div>
+            </section>
+
+            <section>
+                <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
+                    "chip-row — mixed content (Outlined + Filled + Bare/TagToken)"
+                </p>
+                <ChipRow>
+                    <Chip
+                        variant=ChipVariant::Outlined
+                        on_remove=noop
+                        remove_label="remove text filter"
+                    >
+                        "text: amazon"
+                    </Chip>
+                    <Chip
+                        variant=ChipVariant::Filled
+                        on_remove=noop
+                        remove_label="Remove alias US$"
+                    >
+                        "US$"
+                    </Chip>
+                    <Chip variant=ChipVariant::Bare>
+                        <TagToken label="groceries".to_owned() />
+                    </Chip>
+                </ChipRow>
             </section>
         </div>
     }
