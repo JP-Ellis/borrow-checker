@@ -99,6 +99,22 @@
     text-overflow: ellipsis;
   }
 
+  .top-bar__strictness {
+    font: inherit;
+    font-size: var(--bc-text-caption);
+    color: var(--bc-ink-soft);
+    background: var(--bc-surface-alt);
+    border: 1px solid var(--bc-border);
+    border-radius: var(--bc-radius-pill);
+    padding: 0 var(--bc-space-2);
+    cursor: pointer;
+  }
+
+  .top-bar__strictness[aria-pressed="true"] {
+    color: var(--bc-ink);
+    border-color: var(--bc-accent);
+  }
+
   .top-bar__kbd {
     font-family: var(--bc-font-mono);
     font-size: var(--bc-text-eyebrow);
