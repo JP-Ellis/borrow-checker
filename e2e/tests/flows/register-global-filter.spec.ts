@@ -2,9 +2,9 @@
  * Flow test proving the accounts-page transaction register consumes the
  * app-wide global filter (rather than the removed local all/pending/
  * uncategorised bar): selecting an account shows its transactions
- * intersected with the active filter's non-account dimensions, and the
- * lenient/strict toggle changes how a partially-matching transaction's legs
- * render.
+ * intersected with the active filter's non-account dimensions, and a
+ * partially-matching transaction dims its non-matching legs in the expanded
+ * detail editor.
  *
  * Reuses the ⌘K palette harness (imports, dialog/listbox selectors, token
  * commit flow) from `palette-filter-builder.spec.ts` verbatim.
@@ -94,27 +94,34 @@ async function registerContainsPayee(payee: string): Promise<boolean> {
 }
 
 /**
- * Reads the Category column cell's `textContent` for the row whose text
- * contains `payee`. Row children are always [date, payee cell, tags cell,
- * category cell, amount, chevron] in DOM order regardless of Stylance's
- * hashed class names, so the category cell is reliably the 4th child.
+ * Expands the register row whose text contains `payee` by clicking it.
  *
- * Uses `getAttribute('textContent')` rather than `getText()` — WebKitWebDriver
- * returns `""` from `getText()` on these register rows (see the project note
- * in `palette-filter-builder.spec.ts`).
+ * Row lookup runs while all rows are collapsed, so `[role="button"]` inside the
+ * register matches only the transaction rows (the expanded detail's own
+ * `role="button"` controls would otherwise inflate the set).
  */
-async function categoryCellTextForPayee(payee: string): Promise<string> {
+async function expandRowByPayee(payee: string): Promise<void> {
     const rowIndex: number = await browser.execute((p: string) => {
         const rows = Array.from(
             document.querySelectorAll('[aria-label="transaction register"] [role="button"]'),
         );
         return rows.findIndex(r => r.textContent?.includes(p));
     }, payee);
-    if (rowIndex === -1) return '';
+    expect(rowIndex).not.toBe(-1);
 
     const rows = await $$('[aria-label="transaction register"] [role="button"]');
-    const categoryCell = await rows[rowIndex].$('*:nth-child(4)');
-    return (await categoryCell.getAttribute('textContent')) ?? '';
+    await rows[rowIndex].click();
+}
+
+/**
+ * Reads the `data-dimmed` attribute of every posting row currently rendered in
+ * an expanded transaction detail (`"true"` / `"false"`).
+ */
+async function expandedPostingDimStates(): Promise<string[]> {
+    return browser.execute(
+        () => Array.from(document.querySelectorAll('[data-testid="posting-row"]'))
+            .map(el => el.getAttribute('data-dimmed') ?? ''),
+    );
 }
 
 // ── Palette helpers (mirrors palette-filter-builder.spec.ts) ────────────────
@@ -133,8 +140,7 @@ async function openPalette() {
  * Types `tag:<tagName>` into the palette's single inline search box, narrows
  * to the sole matching option, and commits it as a chip. Closes the palette
  * afterwards — chips sit behind the z-900 palette overlay, so the overlay
- * must be dismissed before any other top-bar interaction (chip removal,
- * strictness toggle).
+ * must be dismissed before any other top-bar interaction (chip removal).
  */
 async function commitTagToken(tagName: string): Promise<void> {
     const dialog = await openPalette();
@@ -160,7 +166,7 @@ async function commitTagToken(tagName: string): Promise<void> {
     await expect(dialog).not.toBeDisplayed();
 }
 
-// ── Filter chip / strictness helpers ─────────────────────────────────────────
+// ── Filter chip helpers ──────────────────────────────────────────────────────
 
 /** Clicks a chip's ✕ by its exact label (e.g. `"tag: recurring"`). */
 async function removeChip(label: string): Promise<void> {
@@ -198,7 +204,7 @@ async function clearAllChips(): Promise<void> {
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 describe('Accounts register — global filter', () => {
-    it('intersects the register with the active filter and toggles strictness', async () => {
+    it('intersects the register with the active filter and dims non-matching legs', async () => {
         await browser.execute(() => {
             window.history.pushState({}, '', '/');
             window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
@@ -213,7 +219,8 @@ describe('Accounts register — global filter', () => {
 
         // 3. Commit `tag:recurring` (Netflix recurs across every seeded
         // month on CreditCard) — assert the chip renders and the row count
-        // drops below baseline.
+        // drops below baseline, proving the register intersects with the
+        // filter's non-account dimensions.
         await commitTagToken('recurring');
 
         const chips = await $('[data-testid="filter-chips"]');
@@ -227,45 +234,27 @@ describe('Accounts register — global filter', () => {
         const filteredCount = await registerRowCount();
         expect(filteredCount).toBeLessThan(baseline);
 
-        // 4. The strictness toggle is hidden with no active filter; it must
-        // now be visible, defaulting to lenient.
-        const toggle = await $('[data-testid="strictness-toggle"]');
-        await expect(toggle).toBeDisplayed();
-        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
-
-        // Round-trip: removing the chip returns the register to baseline and
-        // hides the toggle again.
+        // Round-trip: removing the chip returns the register to baseline.
         await removeChip('tag: recurring');
         await browser.waitUntil(
             async () => (await registerRowCount()) === baseline,
             { timeoutMsg: 'Register row count did not return to baseline after removing the chip' },
         );
-        await expect(toggle).not.toBeDisplayed();
 
-        // 5. Strict-mode leg rendering.
+        // 4. Non-matching-leg dimming.
         //
-        // The brief's `over:100` scenario requires a transaction with a
-        // genuine PARTIAL leg match — some postings meeting the amount bound,
-        // some not. Every seeded transaction is a plain two-posting
-        // debit/credit pair with equal-and-opposite magnitudes
-        // (`crates/bc-seed/src/main.rs`), and `over`/`under` match on
-        // `amount.abs()` per posting (`bc-core/src/search.rs`), so an
-        // amount bound always matches both legs or neither — never a partial
-        // match — for every seeded transaction. No `over:`/`under:` value
-        // can demonstrate strict-mode leg hiding with this seed.
-        //
-        // The seed's ONE genuine partial-match case instead comes from a
-        // posting-level tag. The seed creates a "The Local Bistro" dinner on
-        // the 8th of EVERY historical month, but only the earliest one
-        // (6 months ago — 2026-01-08 in this seed) carries the posting-level
-        // `reimbursable` tag on its Dining leg via
+        // The seed's one genuine partial-match case comes from a posting-level
+        // tag. The seed creates a "The Local Bistro" dinner on the 8th of EVERY
+        // historical month, but only the earliest one (6 months ago —
+        // 2026-01-08 in this seed) carries the posting-level `reimbursable` tag
+        // on its Dining leg via
         // `posting_tagged(&dining_id, aud(85.00), vec![tag_reimbursable])`
         // (`crates/bc-seed/src/main.rs`); its CreditCard leg is untagged, and
         // the later monthly bistros carry no posting tags at all. Filtering by
         // `tag:reimbursable` therefore isolates that single transaction and
         // matches the Dining posting but not the CreditCard posting — a real
-        // partial leg match — so this substitutes for `over:100` while keeping
-        // the strict-mode assertion real rather than dropping it.
+        // partial leg match. Expanding the row must render the matched Dining
+        // leg lit and the unmatched CreditCard leg dimmed.
         //
         // Apply the filter FIRST, then step back: with `reimbursable` active
         // only the one January transaction survives, so stepping the shared
@@ -279,10 +268,6 @@ describe('Accounts register — global filter', () => {
         await expect(chips2).toBeDisplayed();
         expect(await chips2.getText()).toContain('tag: reimbursable');
 
-        const toggle2 = await $('[data-testid="strictness-toggle"]');
-        await expect(toggle2).toBeDisplayed();
-        await expect(toggle2).toHaveAttribute('aria-pressed', 'false');
-
         // `reimbursable` sets no date bounds, so the register's PeriodNav stays
         // enabled — step back until the sole matching (January) bistro appears.
         for (let i = 0; i < 10 && !(await registerContainsPayee('The Local Bistro')); i += 1) {
@@ -293,29 +278,20 @@ describe('Accounts register — global filter', () => {
             { timeoutMsg: 'The reimbursable "The Local Bistro" row never came into view' },
         );
 
-        // Lenient: the CreditCard counterpart leg still renders even though
-        // it didn't match the tag filter itself.
-        const lenientCategory = await categoryCellTextForPayee('The Local Bistro');
-        expect(lenientCategory).toContain('CreditCard');
-
-        // Strict: the unmatched CreditCard leg is hidden, so the Dining row
-        // has no counterpart left and the category cell collapses to "—".
-        await toggle2.click();
-        await expect(toggle2).toHaveAttribute('aria-pressed', 'true');
-        // The row re-renders on the strictness change — wait for the collapsed
-        // "—" label (the CreditCard counterpart dropping out) before asserting.
+        // Expand the partial-match row: the detail lists all legs, with the
+        // unmatched CreditCard leg dimmed and the matched Dining leg lit.
+        await expandRowByPayee('The Local Bistro');
         await browser.waitUntil(
-            async () => (await categoryCellTextForPayee('The Local Bistro')).includes('—'),
-            { timeoutMsg: 'Category cell did not collapse to "—" after switching to strict' },
+            async () => (await expandedPostingDimStates()).length > 0,
+            { timeoutMsg: 'Expanded transaction detail rendered no posting rows' },
         );
-        const strictCategory = await categoryCellTextForPayee('The Local Bistro');
-        expect(strictCategory).not.toContain('CreditCard');
-        expect(strictCategory).toContain('—');
+        const dimStates = await expandedPostingDimStates();
+        expect(dimStates).toContain('true');
+        expect(dimStates).toContain('false');
 
-        // 6. Remove the remaining chip — the filter deactivates and the
-        // strictness toggle disappears again.
+        // 5. Remove the remaining chip — the filter deactivates and the chip
+        // strip disappears.
         await removeChip('tag: reimbursable');
         await expect($('[data-testid="filter-chips"]')).not.toBeDisplayed();
-        await expect($('[data-testid="strictness-toggle"]')).not.toBeDisplayed();
     });
 });

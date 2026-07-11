@@ -55,7 +55,6 @@ pub fn TransactionRegister(
     let expanded_idx = RwSignal::new(Option::<usize>::None);
 
     let filter_store = crate::filter_ctx::use_filter_store();
-    let strictness = Signal::derive(move || filter_store.strictness.get());
     let period_locked = Signal::derive(move || {
         filter_store
             .filter
@@ -151,7 +150,6 @@ pub fn TransactionRegister(
             </div>
 
             {move || {
-                let strict = strictness.get();
                 transactions
                     .get()
                     .into_iter()
@@ -163,7 +161,6 @@ pub fn TransactionRegister(
                             <TransactionRow
                                 tx=ft.transaction
                                 matched_postings=matched
-                                strictness=strict
                                 perspective=RowPerspective::Account {
                                     account_id: vid,
                                 }

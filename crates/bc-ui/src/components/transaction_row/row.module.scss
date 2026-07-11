@@ -290,6 +290,11 @@
 .p_row.p_out .p_flow { background: var(--bc-bad); }
 .p_row.p_in  .p_flow { background: var(--bc-good); }
 
+/* MARK: Filter-match dimming */
+/* A leg outside the active filter's matched set is dimmed as an open-time hint;
+   the row stays fully interactive so edits are unaffected. */
+.p_row[data-dimmed="true"] { opacity: 0.45; }
+
 .p_acct_wrap {
   grid-column: 2;
   min-width: 0;

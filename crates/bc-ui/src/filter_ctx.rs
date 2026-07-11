@@ -1,35 +1,7 @@
-//! Global filter store: the active `Filter` plus a presentation-only strictness
-//! toggle, provided once at the shell root. Chip derivation is pure.
+//! Global filter store: the active `Filter`, provided once at the shell root.
+//! Chip derivation is pure.
 
 use std::collections::HashMap;
-
-/// How much of a partially-matching transaction consumers render.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Strictness {
-    /// Show the whole transaction, greying out non-matching legs.
-    #[default]
-    Lenient,
-    /// Hide non-matching legs (may render an unbalanced transaction).
-    Strict,
-}
-
-impl Strictness {
-    /// Human-readable label for the toggle.
-    #[must_use]
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        expect(
-            dead_code,
-            reason = "only called from the wasm32-gated StrictnessToggle in top_bar.rs"
-        )
-    )]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Lenient => "lenient",
-            Self::Strict => "strict",
-        }
-    }
-}
 
 /// Identifies the single filter value a chip removes when dismissed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -147,27 +119,9 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
     chips
 }
 
-/// Returns `true` when any filter dimension is set. Mirrors the visibility of
-/// [`chips_from_filter`] (an empty filter yields no chips and is inactive), but
-/// avoids allocating the chip list.
-///
-/// # Arguments
-///
-/// * `filter` - The filter to inspect.
-#[must_use]
-pub fn filter_is_active(filter: &bc_ipc::Filter) -> bool {
-    filter.date_from.is_some()
-        || filter.date_until.is_some()
-        || !filter.accounts.is_empty()
-        || !filter.tags.is_empty()
-        || filter.text.is_some()
-        || filter.amount.is_some()
-        || filter.reconciliation.is_some()
-}
-
 /// Signal-backed pieces of the filter store; kept in a submodule so only its
 /// `RwSignal`/`provide_context` internals are gated on `wasm32`, while the
-/// pure `Strictness`/`Chip`/`chips_from_filter` above stay natively testable.
+/// pure `Chip`/`chips_from_filter` above stay natively testable.
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use std::collections::HashMap;
@@ -175,7 +129,6 @@ mod wasm {
     use leptos::prelude::*;
 
     use super::ChipRemove;
-    use super::Strictness;
 
     /// Reactive global filter state, provided once at the shell root.
     #[derive(Clone, Copy)]
@@ -185,8 +138,6 @@ mod wasm {
         /// Display labels for the account/tag ids in `filter`, recorded as the
         /// user picks them so chips resolve names without a round-trip.
         pub labels: RwSignal<HashMap<String, String>>,
-        /// Presentation-only strictness toggle.
-        pub strictness: RwSignal<Strictness>,
     }
 
     impl FilterStore {
@@ -277,7 +228,6 @@ mod wasm {
         let store = FilterStore {
             filter: RwSignal::new(bc_ipc::Filter::default()),
             labels: RwSignal::new(HashMap::new()),
-            strictness: RwSignal::new(Strictness::default()),
         };
         provide_context(store);
         store
@@ -293,7 +243,6 @@ mod wasm {
         use_context::<FilterStore>().unwrap_or_else(|| FilterStore {
             filter: RwSignal::new(bc_ipc::Filter::default()),
             labels: RwSignal::new(HashMap::new()),
-            strictness: RwSignal::new(Strictness::default()),
         })
     }
 }
@@ -392,25 +341,5 @@ mod tests {
         let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["over: USD 100", "under: USD 500"]);
-    }
-
-    #[test]
-    fn empty_filter_is_inactive() {
-        assert!(!super::filter_is_active(&bc_ipc::Filter::default()));
-    }
-
-    #[test]
-    fn filter_with_any_dimension_is_active() {
-        let mut text = bc_ipc::Filter::default();
-        text.text = Some("coles".to_owned());
-        assert!(super::filter_is_active(&text));
-
-        let mut acct = bc_ipc::Filter::default();
-        acct.accounts = vec!["a1".to_owned()];
-        assert!(super::filter_is_active(&acct));
-
-        let mut date = bc_ipc::Filter::default();
-        date.date_from = Some(jiff::civil::Date::constant(2026, 1, 1));
-        assert!(super::filter_is_active(&date));
     }
 }
