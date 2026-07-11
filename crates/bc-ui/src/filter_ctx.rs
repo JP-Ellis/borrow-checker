@@ -121,17 +121,26 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
         });
     }
     if let Some(amount) = &filter.amount {
+        /* A set commodity restricts the whole amount predicate, so it shows on
+        both bound chips (e.g. `over: USD 300`). */
+        let commodity = amount.commodity.as_deref();
         if let Some(min) = amount.min {
             chips.push(Chip {
                 key: "over".to_owned(),
-                label: format!("over: {min}"),
+                label: match commodity {
+                    Some(c) => format!("over: {c} {min}"),
+                    None => format!("over: {min}"),
+                },
                 remove: ChipRemove::AmountMin,
             });
         }
         if let Some(max) = amount.max {
             chips.push(Chip {
                 key: "under".to_owned(),
-                label: format!("under: {max}"),
+                label: match commodity {
+                    Some(c) => format!("under: {c} {max}"),
+                    None => format!("under: {max}"),
+                },
                 remove: ChipRemove::AmountMax,
             });
         }
@@ -240,12 +249,13 @@ mod wasm {
         }
     }
 
-    /// Drops the amount predicate entirely once none of its bounds remain set.
+    /// Drops the amount predicate entirely once neither bound remains set. A
+    /// commodity alone is not a magnitude filter, so it is dropped with the
+    /// bounds rather than lingering as an invisible active predicate.
     fn drop_empty_amount(f: &mut bc_ipc::Filter) {
         if let Some(a) = f.amount.as_ref()
             && a.min.is_none()
             && a.max.is_none()
-            && a.commodity.is_none()
         {
             f.amount = None;
         }
@@ -360,5 +370,20 @@ mod tests {
             chips.get(1).map(|c| &c.remove),
             Some(&ChipRemove::AmountMax)
         );
+    }
+
+    #[test]
+    fn amount_commodity_shows_on_both_bound_chips() {
+        let mut amount = bc_ipc::AmountFilter::default();
+        amount.min = Some("100".parse().expect("decimal"));
+        amount.max = Some("500".parse().expect("decimal"));
+        amount.commodity = Some("USD".to_owned());
+        let mut filter = bc_ipc::Filter::default();
+        filter.amount = Some(amount);
+
+        let chips = chips_from_filter(&filter, &HashMap::new());
+        let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["over: USD 100", "under: USD 500"]);
     }
 }
