@@ -79,7 +79,6 @@ pub fn TopBar(
             </nav>
 
             <FilterChips />
-            <StrictnessToggle />
 
             <button
                 class="top-bar__search"
@@ -98,40 +97,5 @@ pub fn TopBar(
                 "jp"
             </div>
         </header>
-    }
-}
-
-/// Lenient/strict presentation toggle for the global filter. Visible only while
-/// a filter is active (matching the chips' visibility). Writes
-/// `FilterStore.strictness`.
-#[component]
-fn StrictnessToggle() -> impl IntoView {
-    use crate::filter_ctx::Strictness;
-
-    let store = crate::filter_ctx::use_filter_store();
-    let active = Signal::derive(move || store.filter.with(crate::filter_ctx::filter_is_active));
-    let is_strict = Signal::derive(move || store.strictness.get() == Strictness::Strict);
-
-    view! {
-        <Show when=move || active.get()>
-            <button
-                class="top-bar__strictness"
-                data-testid="strictness-toggle"
-                aria-pressed=move || is_strict.get().to_string()
-                on:click=move |_| {
-                    store
-                        .strictness
-                        .update(|s| {
-                            *s = if *s == Strictness::Strict {
-                                Strictness::Lenient
-                            } else {
-                                Strictness::Strict
-                            };
-                        });
-                }
-            >
-                {move || store.strictness.get().label()}
-            </button>
-        </Show>
     }
 }

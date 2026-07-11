@@ -29,6 +29,11 @@ pub struct TxEditCtx {
     /// Per-posting inputs that mirror `working` into local signals watch this to
     /// re-seed themselves after a reset without coupling to every keystroke.
     pub reset_epoch: RwSignal<u32>,
+    /// Original ids of the legs that matched the active filter's posting-scoped
+    /// predicates, or `None` when the register is unfiltered. Drives the
+    /// open-time dimming hint on non-matching leg rows; a static snapshot that
+    /// is not updated as the buffer is edited.
+    pub matched: StoredValue<Option<Vec<String>>>,
 }
 
 impl TxEditCtx {
@@ -41,12 +46,18 @@ impl TxEditCtx {
     ///
     /// * `original` - The pristine working buffer.
     /// * `accounts` - All selectable accounts.
+    /// * `matched` - Original ids of filter-matched legs, or `None` when
+    ///   unfiltered; drives the open-time dimming hint.
     ///
     /// # Returns
     ///
     /// The new context.
     #[must_use]
-    pub fn new(original: EditableTransaction, accounts: Vec<AccountRef>) -> Self {
+    pub fn new(
+        original: EditableTransaction,
+        accounts: Vec<AccountRef>,
+        matched: Option<Vec<String>>,
+    ) -> Self {
         Self {
             working: RwSignal::new(original.clone()),
             original: StoredValue::new(original),
@@ -54,6 +65,7 @@ impl TxEditCtx {
             all_tags: RwSignal::new(Vec::new()),
             currencies: RwSignal::new(Vec::new()),
             reset_epoch: RwSignal::new(0),
+            matched: StoredValue::new(matched),
         }
     }
 

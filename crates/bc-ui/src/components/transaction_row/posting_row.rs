@@ -50,6 +50,7 @@ pub fn PostingLine(
     let all_tags = ctx.all_tags;
     let currencies = ctx.currencies;
     let reset_epoch = ctx.reset_epoch;
+    let matched = ctx.matched;
 
     // Resolve the live index from the stable uid on every access. Returns None
     // briefly if this row's posting was just removed.
@@ -213,6 +214,23 @@ pub fn PostingLine(
         cls
     };
 
+    // MARK: Filter-match dimming — a leg whose original id is absent from the
+    // active filter's matched set renders dimmed. A static open-time hint keyed
+    // on the original posting id; newly added legs (no id) are never dimmed.
+    let is_dimmed = move || {
+        matched.with_value(|m| {
+            m.as_ref().is_some_and(|ids| {
+                working.with(|w| {
+                    w.postings
+                        .iter()
+                        .find(|p| p.uid == uid)
+                        .and_then(|p| p.id.as_ref())
+                        .is_some_and(|pid| !ids.iter().any(|id| id == pid))
+                })
+            })
+        })
+    };
+
     // MARK: Ghost amount — detected when this posting is the sole inferred leg.
     let is_inferred = move || {
         let w = working.get();
@@ -337,7 +355,7 @@ pub fn PostingLine(
     };
 
     view! {
-        <div class=row_class>
+        <div class=row_class data-testid="posting-row" data-dimmed=move || is_dimmed().to_string()>
             <div class=style::p_lead>
                 <div class=style::p_flow></div>
             </div>
