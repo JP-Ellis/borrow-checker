@@ -11,6 +11,7 @@ use bc_models::PostingId;
 use bc_models::Reconciliation;
 use bc_models::TagId;
 use bc_models::Transaction;
+use bc_models::TransactionId;
 use jiff::civil::Date;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive as _;
@@ -360,6 +361,101 @@ impl Service {
             })
             .collect();
         Ok(out)
+    }
+
+    /// Computes filtered [`PeriodStats`](crate::balance::PeriodStats) for
+    /// `account_id` in `commodity` over the window `[from, until)`.
+    ///
+    /// The filter selects a transaction set via [`Self::search`]; this method
+    /// scopes that set to transactions touching `account_id` and sums the
+    /// account's own legs, bucketing by the window edge. The query's own date
+    /// bounds are ignored — `from`/`until` are the authority (the lower bound is
+    /// dropped from the search so pre-window legs feed the opening balance).
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account whose legs are aggregated.
+    /// * `commodity` - Commodity code; legs in other commodities are ignored in the sums.
+    /// * `query` - The active query; its non-date dimensions and accounts drive membership.
+    /// * `from` - Inclusive window start (use [`jiff::civil::Date::MIN`] for an open start).
+    /// * `until` - Exclusive window end (use [`jiff::civil::Date::MAX`] for an open end).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database or data-parse failure, or if a
+    /// running total overflows [`Decimal`]'s range.
+    pub async fn filtered_period_stats(
+        &self,
+        account_id: &AccountId,
+        commodity: &str,
+        query: &TransactionQuery,
+        from: Date,
+        until: Date,
+    ) -> BcResult<crate::balance::PeriodStats> {
+        let mut q = query.clone();
+        q.date_from = None;
+        q.date_until = Some(until);
+        let matched = self.search(&q).await?;
+
+        let mut opening = Decimal::ZERO;
+        let mut income = Decimal::ZERO;
+        let mut expenses = Decimal::ZERO;
+        let mut in_window_txns: HashSet<TransactionId> = HashSet::new();
+
+        for m in &matched {
+            let tx = &m.transaction;
+            let date = tx.date();
+            let mut touches_in_window = false;
+            for posting in tx.postings() {
+                if posting.account_id() != account_id {
+                    continue;
+                }
+                if date >= from && date < until {
+                    touches_in_window = true;
+                }
+                let Some(amount) = posting.amount() else {
+                    continue;
+                };
+                if amount.commodity().as_str() != commodity {
+                    continue;
+                }
+                let value = amount.value();
+                if date < from {
+                    opening = opening
+                        .checked_add(value)
+                        .ok_or_else(|| crate::BcError::BadData("opening overflow".into()))?;
+                } else if date < until {
+                    if value >= Decimal::ZERO {
+                        income = income
+                            .checked_add(value)
+                            .ok_or_else(|| crate::BcError::BadData("income overflow".into()))?;
+                    } else {
+                        expenses = expenses
+                            .checked_sub(value)
+                            .ok_or_else(|| crate::BcError::BadData("expenses overflow".into()))?;
+                    }
+                }
+            }
+            if touches_in_window {
+                in_window_txns.insert(tx.id().clone());
+            }
+        }
+
+        let net = income
+            .checked_sub(expenses)
+            .ok_or_else(|| crate::BcError::BadData("net overflow".into()))?;
+        let closing = opening
+            .checked_add(net)
+            .ok_or_else(|| crate::BcError::BadData("closing overflow".into()))?;
+
+        Ok(crate::balance::PeriodStats {
+            income: Amount::new(income, commodity),
+            expenses: Amount::new(expenses, commodity),
+            net: Amount::new(net, commodity),
+            opening: Amount::new(opening, commodity),
+            closing: Amount::new(closing, commodity),
+            tx_count: u32::try_from(in_window_txns.len()).unwrap_or(u32::MAX),
+        })
     }
 }
 
@@ -1156,6 +1252,159 @@ mod search_tests {
         assert_eq!(hit.transaction.payee(), Some("with tag"));
         // A tx-level tag attributes every leg as matched.
         assert_eq!(hit.matched_postings.len(), 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_stats_empty_query_matches_unfiltered(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+        // Opening leg before the window, two in-window legs.
+        svc.create(tx_on(&a, &b, date(2026, 5, 1), "pre", dec!(200)))
+            .await
+            .expect("t0");
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "in1", dec!(100)))
+            .await
+            .expect("t1");
+        svc.create(tx_on(&a, &b, date(2026, 6, 3), "in2", dec!(30)))
+            .await
+            .expect("t2");
+
+        let stats = svc
+            .filtered_period_stats(
+                &a,
+                "AUD",
+                &TransactionQuery::default(),
+                date(2026, 6, 1),
+                date(2026, 7, 1),
+            )
+            .await
+            .expect("stats");
+
+        // a's legs are all positive (money into A). opening = 200; income = 130; expenses = 0.
+        assert_eq!(stats.opening.value(), dec!(200));
+        assert_eq!(stats.income.value(), dec!(130));
+        assert_eq!(stats.expenses.value(), dec!(0));
+        assert_eq!(stats.net.value(), dec!(130));
+        assert_eq!(stats.closing.value(), dec!(330));
+        assert_eq!(stats.tx_count, 2);
+        // Reduces to the unfiltered engine.
+        let engine = crate::BalanceEngine::new(pool.clone());
+        let real = engine
+            .account_period_stats(&a, "AUD", date(2026, 6, 1), date(2026, 7, 1))
+            .await
+            .expect("real");
+        assert_eq!(stats.closing.value(), real.closing.value());
+        assert_eq!(stats.opening.value(), real.opening.value());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_stats_amount_dim_narrows_flows(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "big", dec!(500)))
+            .await
+            .expect("t1");
+        svc.create(tx_on(&a, &b, date(2026, 6, 3), "small", dec!(5)))
+            .await
+            .expect("t2");
+
+        let query = TransactionQuery {
+            amount: Some(AmountQuery {
+                min: Some(dec!(100)),
+                max: None,
+                commodity: None,
+            }),
+            ..Default::default()
+        };
+        let stats = svc
+            .filtered_period_stats(&a, "AUD", &query, date(2026, 6, 1), date(2026, 7, 1))
+            .await
+            .expect("stats");
+
+        // Only the 500 transaction is a member; a's leg there is +500.
+        assert_eq!(stats.income.value(), dec!(500));
+        assert_eq!(stats.tx_count, 1);
+        assert_eq!(stats.closing.value(), dec!(500));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_stats_foreign_account_is_zero(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let c = accts
+            .create()
+            .name("C")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("C");
+        let svc = Service::new(pool.clone());
+        // A<->B transaction only; filter targets C (which A never transacts with).
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "ab", dec!(100)))
+            .await
+            .expect("t1");
+
+        let query = TransactionQuery {
+            accounts: vec![c.clone()],
+            ..Default::default()
+        };
+        let stats = svc
+            .filtered_period_stats(&a, "AUD", &query, date(2026, 6, 1), date(2026, 7, 1))
+            .await
+            .expect("stats");
+
+        assert_eq!(stats.income.value(), dec!(0));
+        assert_eq!(stats.expenses.value(), dec!(0));
+        assert_eq!(stats.closing.value(), dec!(0));
+        assert_eq!(stats.tx_count, 0);
     }
 }
 
