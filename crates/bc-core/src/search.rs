@@ -1406,6 +1406,268 @@ mod search_tests {
         assert_eq!(stats.closing.value(), dec!(0));
         assert_eq!(stats.tx_count, 0);
     }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_stats_negative_flows_and_opening(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+        // Pre-window outflow from A (A receives the negative leg) -> negative opening.
+        svc.create(tx_on(&b, &a, date(2026, 5, 1), "pre-out", dec!(50)))
+            .await
+            .expect("t0");
+        // In-window inflow to A (+100) and a larger in-window outflow (-160).
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "in-inflow", dec!(100)))
+            .await
+            .expect("t1");
+        svc.create(tx_on(&b, &a, date(2026, 6, 3), "in-outflow", dec!(160)))
+            .await
+            .expect("t2");
+
+        let stats = svc
+            .filtered_period_stats(
+                &a,
+                "AUD",
+                &TransactionQuery::default(),
+                date(2026, 6, 1),
+                date(2026, 7, 1),
+            )
+            .await
+            .expect("stats");
+
+        // Exercises the expenses (`checked_sub`) branch, a negative opening, and a
+        // negative net; the `closing = opening + net` invariant must still hold.
+        assert_eq!(stats.opening.value(), dec!(-50));
+        assert_eq!(stats.income.value(), dec!(100));
+        assert_eq!(stats.expenses.value(), dec!(160));
+        assert_eq!(stats.net.value(), dec!(-60));
+        assert_eq!(stats.closing.value(), dec!(-110));
+        assert_eq!(stats.tx_count, 2);
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "asserting the closing = opening + net invariant on small fixture Decimals"
+        )]
+        let expected_closing = stats.opening.value() + stats.net.value();
+        assert_eq!(stats.closing.value(), expected_closing);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_stats_tag_dim_sums_only_tagged_legs(pool: sqlx::SqlitePool) {
+        use bc_models::TagPath;
+
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let tags = crate::tag::Service::new(pool.clone());
+        let recurring = tags
+            .create_path(&"recurring".parse::<TagPath>().expect("path"))
+            .await
+            .expect("tag");
+
+        // Builds a two-leg AUD transaction tagged at the transaction level, with
+        // `a_amount` on A and its negation on B.
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "negating a test fixture's Decimal magnitude to build the offsetting leg"
+        )]
+        let tagged = |d: Date, payee: &str, a_amount: rust_decimal::Decimal| {
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(d)
+                .payee(payee.to_owned())
+                .description("desc")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(a.clone())
+                        .amount(Amount::new(a_amount, CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(b.clone())
+                        .amount(Amount::new(-a_amount, CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Reconciled)
+                .tag_ids(vec![recurring.clone()])
+                .created_at(Timestamp::now())
+                .build()
+        };
+
+        let svc = Service::new(pool.clone());
+        // Tagged pre-window outflow -> negative opening from the tagged set only.
+        svc.create(tagged(date(2026, 5, 1), "pre-out", dec!(-22)))
+            .await
+            .expect("pre");
+        // Tagged in-window inflow (+100) and outflow (-40).
+        svc.create(tagged(date(2026, 6, 2), "in-inflow", dec!(100)))
+            .await
+            .expect("in1");
+        svc.create(tagged(date(2026, 6, 3), "in-outflow", dec!(-40)))
+            .await
+            .expect("in2");
+        // Untagged in-window leg must be excluded entirely.
+        svc.create(tx_on(&a, &b, date(2026, 6, 4), "untagged", dec!(999)))
+            .await
+            .expect("untagged");
+
+        let query = TransactionQuery {
+            tags: vec![recurring],
+            ..Default::default()
+        };
+        let stats = svc
+            .filtered_period_stats(&a, "AUD", &query, date(2026, 6, 1), date(2026, 7, 1))
+            .await
+            .expect("stats");
+
+        // Only tagged legs count: opening -22, income 100, expenses 40 -> net 60,
+        // closing 38; the untagged 999 is absent.
+        assert_eq!(stats.opening.value(), dec!(-22));
+        assert_eq!(stats.income.value(), dec!(100));
+        assert_eq!(stats.expenses.value(), dec!(40));
+        assert_eq!(stats.net.value(), dec!(60));
+        assert_eq!(stats.closing.value(), dec!(38));
+        assert_eq!(stats.tx_count, 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_stats_one_sided_date_bounds(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+        svc.create(tx_on(&a, &b, date(2026, 5, 1), "may", dec!(200)))
+            .await
+            .expect("t0");
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "jun", dec!(100)))
+            .await
+            .expect("t1");
+
+        // Open start (`from = Date::MIN`, as the client resolves a lone `before:`):
+        // nothing precedes the window, so opening is 0 and both legs are in-window.
+        let open_start = svc
+            .filtered_period_stats(
+                &a,
+                "AUD",
+                &TransactionQuery::default(),
+                Date::MIN,
+                date(2026, 7, 1),
+            )
+            .await
+            .expect("open start");
+        assert_eq!(open_start.opening.value(), dec!(0));
+        assert_eq!(open_start.income.value(), dec!(300));
+        assert_eq!(open_start.closing.value(), dec!(300));
+        assert_eq!(open_start.tx_count, 2);
+
+        // Open end (`until = Date::MAX`, as the client resolves a lone `after:`):
+        // the May leg is pre-window opening, June is the only in-window flow.
+        let open_end = svc
+            .filtered_period_stats(
+                &a,
+                "AUD",
+                &TransactionQuery::default(),
+                date(2026, 6, 1),
+                Date::MAX,
+            )
+            .await
+            .expect("open end");
+        assert_eq!(open_end.opening.value(), dec!(200));
+        assert_eq!(open_end.income.value(), dec!(100));
+        assert_eq!(open_end.closing.value(), dec!(300));
+        assert_eq!(open_end.tx_count, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_stats_amount_boundary_is_inclusive_and_exact(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+        // A leg exactly at the `min` bound must be summed (coarse SQL widens by an
+        // epsilon so the f64 cast can never drop it); a leg just below must not
+        // (exactness lives in `AmountQuery::matches`, not the SQL candidate filter).
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "at-bound", dec!(100.00)))
+            .await
+            .expect("t1");
+        svc.create(tx_on(&a, &b, date(2026, 6, 3), "just-below", dec!(99.99)))
+            .await
+            .expect("t2");
+
+        let query = TransactionQuery {
+            amount: Some(AmountQuery {
+                min: Some(dec!(100)),
+                max: None,
+                commodity: None,
+            }),
+            ..Default::default()
+        };
+        let stats = svc
+            .filtered_period_stats(&a, "AUD", &query, date(2026, 6, 1), date(2026, 7, 1))
+            .await
+            .expect("stats");
+
+        assert_eq!(stats.income.value(), dec!(100.00));
+        assert_eq!(stats.tx_count, 1);
+        assert_eq!(stats.closing.value(), dec!(100.00));
+    }
 }
 
 #[cfg(test)]
