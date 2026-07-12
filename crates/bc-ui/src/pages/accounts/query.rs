@@ -49,6 +49,25 @@ pub fn touches_account(tx: &Transaction, account_id: &str) -> bool {
     tx.postings.iter().any(|p| p.account.id == account_id)
 }
 
+/// Returns `true` when the filter carries any non-date dimension
+/// (`accounts` / `tags` / `text` / `amount` / `reconciliation`).
+///
+/// Date-only filters are excluded: dates already flow to the stats path through
+/// the explicit window arguments, so a date-only filter takes the unfiltered
+/// fast path.
+///
+/// # Arguments
+///
+/// * `filter` - The active global filter.
+#[must_use]
+pub fn filter_has_non_date_dim(filter: &Filter) -> bool {
+    !filter.accounts.is_empty()
+        || !filter.tags.is_empty()
+        || filter.text.is_some()
+        || filter.amount.is_some()
+        || filter.reconciliation.is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use bc_ipc::AccountRef;
@@ -140,5 +159,25 @@ mod tests {
         let tx = transaction_with_posting_on("cb-smart-access");
 
         assert!(!touches_account(&tx, "groceries"));
+    }
+
+    #[test]
+    fn non_date_dim_detection() {
+        use super::filter_has_non_date_dim;
+
+        let empty = bc_ipc::Filter::default();
+        assert!(!filter_has_non_date_dim(&empty));
+
+        let mut date_only = bc_ipc::Filter::default();
+        date_only.date_from = Some(Date::constant(2026, 1, 1));
+        assert!(!filter_has_non_date_dim(&date_only));
+
+        let mut tagged = bc_ipc::Filter::default();
+        tagged.tags = vec!["t1".to_owned()];
+        assert!(filter_has_non_date_dim(&tagged));
+
+        let mut texted = bc_ipc::Filter::default();
+        texted.text = Some("coles".to_owned());
+        assert!(filter_has_non_date_dim(&texted));
     }
 }
