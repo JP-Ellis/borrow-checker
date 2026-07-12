@@ -58,14 +58,30 @@ async function dashboardTxCount(): Promise<number> {
     const el = await $('[data-testid="dashboard-tx-count"]');
     const text = (await el.getAttribute('textContent')) ?? '';
     const match = text.match(/\d+/);
-    expect(match).not.toBeNull();
-    return Number(match?.[0]);
+    // During the async stats re-fetch the tile briefly renders an em-dash (no
+    // digits). Return a sentinel 0 so the caller's `waitUntil` keeps polling
+    // rather than throwing — the waiting logic lives in `waitForTxCount`.
+    return match ? Number(match[0]) : 0;
 }
 
 /** Whether the dashboard's muted real-balance span is currently rendered. */
 async function dashboardRealBalanceVisible(): Promise<boolean> {
     return browser.execute(
         () => document.querySelector('[data-testid="dashboard-real-balance"]') !== null,
+    );
+}
+
+/** Reads the dashboard's muted real (unfiltered) closing-balance text. */
+async function dashboardRealBalance(): Promise<string> {
+    const el = await $('[data-testid="dashboard-real-balance"]');
+    return (await el.getAttribute('textContent')) ?? '';
+}
+
+/** Reads a sticky-bar span's text by testid via the DOM (re-queried each call). */
+async function stickyText(testid: string): Promise<string> {
+    return browser.execute(
+        id => document.querySelector(`[data-testid="${id}"]`)?.textContent ?? '',
+        testid,
     );
 }
 
@@ -167,19 +183,20 @@ describe('Account dashboard — global filter', () => {
         });
         await clearAllChips();
 
-        // 1-2. Select CreditCard (a heavily-used account, per
-        // register-global-filter.spec.ts — Netflix's `recurring` tag recurs
-        // across every seeded month on it) and capture the unfiltered
-        // baseline closing balance + transaction count.
+        // 1-2. Select CreditCard and capture the unfiltered baseline closing
+        // balance + transaction count. The seed gives CreditCard current-month
+        // `recurring`-tagged activity (a membership charge and a refund) plus a
+        // pre-window tagged leg, so `tag:recurring` resolves to a smaller, live
+        // in-window set — not an empty one.
         await openAccount('CreditCard');
         await waitForTxCount(count => count > 0, 'Dashboard tx-count tile never populated');
         const baselineBalance = await dashboardBalance();
         const baselineCount = await dashboardTxCount();
         expect(await dashboardRealBalanceVisible()).toBe(false);
 
-        // 3-4. Commit `tag:recurring` — the tile count must drop below
-        // baseline and a muted real-balance span must appear alongside the
-        // (now-filtered) headline balance.
+        // 3-4. Commit `tag:recurring` — the tile count must drop to a positive
+        // (non-empty) in-window subset and a muted real-balance span must
+        // appear alongside the now-filtered headline.
         await commitTagToken('recurring');
 
         const chips = await $('[data-testid="filter-chips"]');
@@ -187,31 +204,26 @@ describe('Account dashboard — global filter', () => {
         expect(await chips.getText()).toContain('tag: recurring');
 
         await waitForTxCount(
-            count => count < baselineCount,
-            'Dashboard tx-count tile did not drop after applying tag:recurring',
+            count => count > 0 && count < baselineCount,
+            'Dashboard tx-count tile did not drop to a non-empty subset after tag:recurring',
         );
         await browser.waitUntil(
             async () => dashboardRealBalanceVisible(),
             { timeoutMsg: 'Muted real balance did not appear after applying the filter' },
         );
 
-        // 5. Clear the filter — the tile count returns to baseline and the
-        // muted real balance disappears.
-        await removeChip('tag: recurring');
-        await expect($('[data-testid="filter-chips"]')).not.toBeDisplayed();
+        // The filtered headline is a running total over the tagged set, so it
+        // must differ from the real (unfiltered) closing. The muted span
+        // restates that real closing, which equals the pre-filter baseline
+        // headline (same window, no filter).
+        const filteredBalance = await dashboardBalance();
+        const mutedReal = await dashboardRealBalance();
+        expect(filteredBalance).not.toBe(baselineBalance);
+        expect(mutedReal).toBe(baselineBalance);
 
-        await waitForTxCount(
-            count => count === baselineCount,
-            'Dashboard tx-count tile did not return to baseline after removing the chip',
-        );
-        await browser.waitUntil(
-            async () => !(await dashboardRealBalanceVisible()),
-            { timeoutMsg: 'Muted real balance did not disappear after removing the filter' },
-        );
-        expect(await dashboardBalance()).toBe(baselineBalance);
-
-        // 6. Scroll the main column past the dashboard so the sticky bar
-        // takes over; its balance must mirror the dashboard headline closing.
+        // 5. Scroll the main column past the dashboard so the sticky bar takes
+        // over; while still filtered, it must mirror the FILTERED headline and
+        // the muted real — not the all-time balance.
         //
         // The bar is toggled visible once the scroll container passes 180px
         // (see `on_scroll` in accounts/mod.rs). Scroll to the very bottom to
@@ -237,9 +249,27 @@ describe('Account dashboard — global filter', () => {
             { timeoutMsg: 'Sticky bar did not become visible after scrolling' },
         );
 
-        const stickyText = await browser.execute(
-            () => document.querySelector('[data-testid="sticky-balance"]')?.textContent ?? '',
+        expect(await stickyText('sticky-balance')).toBe(filteredBalance);
+        expect(await stickyText('sticky-real-balance')).toBe(mutedReal);
+
+        // 6. Clear the filter — the tile count returns to baseline, the muted
+        // real balance disappears, and both the headline and the (still-
+        // visible) sticky balance revert to the unfiltered baseline.
+        await removeChip('tag: recurring');
+        await expect($('[data-testid="filter-chips"]')).not.toBeDisplayed();
+
+        await waitForTxCount(
+            count => count === baselineCount,
+            'Dashboard tx-count tile did not return to baseline after removing the chip',
         );
-        expect(stickyText).toBe(baselineBalance);
+        await browser.waitUntil(
+            async () => !(await dashboardRealBalanceVisible()),
+            { timeoutMsg: 'Muted real balance did not disappear after removing the filter' },
+        );
+        expect(await dashboardBalance()).toBe(baselineBalance);
+        await browser.waitUntil(
+            async () => (await stickyText('sticky-balance')) === baselineBalance,
+            { timeoutMsg: 'Sticky balance did not revert to baseline after clearing the filter' },
+        );
     });
 });
