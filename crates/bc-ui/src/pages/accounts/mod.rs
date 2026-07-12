@@ -304,7 +304,12 @@ pub fn Accounts() -> impl IntoView {
             </div>
 
             // Main scrollable column
-            <div class=style::main node_ref=main_ref on:scroll=on_scroll>
+            <div
+                class=style::main
+                node_ref=main_ref
+                on:scroll=on_scroll
+                data-testid="accounts-main-scroll"
+            >
                 <StickyAccountBar
                     node=selected_node
                     stats=stats_signal
