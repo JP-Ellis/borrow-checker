@@ -876,7 +876,7 @@ mod tests {
             .expect("tracking budget");
 
         let txns = TransactionService::new(pool.clone());
-        for (usd_amt, btc_amt) in [(dec!(100), dec!(0.001))] {
+        for (usd_amt, btc_amt) in [(dec!(100), dec!(60))] {
             #[expect(
                 clippy::arithmetic_side_effects,
                 reason = "negation of a bounded test amount"
@@ -926,7 +926,8 @@ mod tests {
             .await
             .expect("overview");
         let node = overview.nodes.first().expect("one node");
-        // Only the USD 100 posting survives; BTC 0.001 is filtered out on commodity.
+        // Only the USD 100 posting survives; BTC 60 (>= min 50) is filtered out
+        // on commodity, not magnitude.
         assert_eq!(
             node.actuals,
             vec![Amount::new(dec!(100), CommodityCode::new("USD"))]
