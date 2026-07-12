@@ -93,7 +93,7 @@ pub async fn get_native_periods(
 
     let native = state
         .budget_tree
-        .native_periods(&budget, display_start, display_end)
+        .native_periods(&budget, display_start, display_end, None)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
@@ -189,7 +189,13 @@ pub async fn get_budget_transactions(
 
     let txns = state
         .transactions
-        .list_for_budget(budget.account_id(), tag_filter, period_start, period_end)
+        .list_for_budget(
+            budget.account_id(),
+            tag_filter,
+            period_start,
+            period_end,
+            None,
+        )
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
