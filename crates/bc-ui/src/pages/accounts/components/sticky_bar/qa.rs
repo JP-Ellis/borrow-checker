@@ -21,6 +21,26 @@ fn sample_node() -> AccountNode {
     )
 }
 
+/// Constructs sample account statistics (no active filter — no real balance).
+fn sample_stats() -> bc_ipc::AccountStats {
+    bc_ipc::AccountStats::new(
+        Amount::new(Decimal::new(120_000, 2), "AUD"),
+        Amount::new(Decimal::new(43_500, 2), "AUD"),
+        Amount::new(Decimal::new(76_500, 2), "AUD"),
+        Amount::new(Decimal::new(345_342, 2), "AUD"),
+        Amount::new(Decimal::new(421_842, 2), "AUD"),
+        12,
+    )
+}
+
+/// Constructs sample account statistics with a muted real closing (filter active).
+fn sample_stats_filtered() -> bc_ipc::AccountStats {
+    sample_stats().with_real_balances(
+        Amount::new(Decimal::new(345_342, 2), "AUD"),
+        Amount::new(Decimal::new(421_842, 2), "AUD"),
+    )
+}
+
 /// Renders [`StickyAccountBar`] in hidden and visible states.
 #[component]
 pub fn StickyAccountBarQa() -> impl IntoView {
@@ -36,6 +56,18 @@ pub fn StickyAccountBarQa() -> impl IntoView {
                 </p>
                 <StickyAccountBar
                     node=Signal::derive(|| Some(sample_node()))
+                    stats=Signal::derive(|| Some(sample_stats()))
+                    visible=visible_true
+                />
+            </section>
+
+            <section>
+                <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
+                    "visible — filtered, muted real balance"
+                </p>
+                <StickyAccountBar
+                    node=Signal::derive(|| Some(sample_node()))
+                    stats=Signal::derive(|| Some(sample_stats_filtered()))
                     visible=visible_true
                 />
             </section>
@@ -46,6 +78,7 @@ pub fn StickyAccountBarQa() -> impl IntoView {
                 </p>
                 <StickyAccountBar
                     node=Signal::derive(|| Some(sample_node()))
+                    stats=Signal::derive(|| Some(sample_stats()))
                     visible=visible_false
                 />
             </section>
@@ -54,7 +87,11 @@ pub fn StickyAccountBarQa() -> impl IntoView {
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
                     "visible — no account selected"
                 </p>
-                <StickyAccountBar node=Signal::derive(|| None) visible=visible_true />
+                <StickyAccountBar
+                    node=Signal::derive(|| None)
+                    stats=Signal::derive(|| None)
+                    visible=visible_true
+                />
             </section>
 
         </div>

@@ -31,6 +31,14 @@
 .meta    { color: var(--bc-comment); font-size: var(--bc-text-caption); }
 .spacer  { flex: 1; }
 
+/* MARK: FilteredRealBalance */
+.balance_real {
+  margin-left: var(--bc-space-2);
+  color: var(--bc-ink-mute);
+  font-size: var(--bc-text-caption);
+  font-variant-numeric: tabular-nums;
+}
+
 .actions {
   display: flex;
   gap: var(--bc-space-2);
