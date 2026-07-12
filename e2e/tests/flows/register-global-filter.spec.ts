@@ -72,6 +72,41 @@ async function periodNavLabel(): Promise<string> {
     });
 }
 
+/** Snapshot of the register's rendered content, used as a settle signal. */
+async function registerSignature(): Promise<string> {
+    return browser.execute(
+        () => document.querySelector('[aria-label="transaction register"]')?.textContent ?? '',
+    );
+}
+
+/**
+ * Waits until the register's rendered content stops changing.
+ *
+ * The register refetches asynchronously when the period window changes, so its
+ * rows lag the (synchronously-updated) `PeriodNav` label. Requiring the content
+ * to be identical across several consecutive polls ensures any in-flight
+ * refetch has landed before the caller inspects the rows — otherwise a lagging
+ * refetch reads as "this window has no matching row" and the step-back loop
+ * overshoots the target month.
+ */
+async function waitForRegisterSettled(): Promise<void> {
+    let previous = await registerSignature();
+    let stableReads = 0;
+    await browser.waitUntil(
+        async () => {
+            const current = await registerSignature();
+            stableReads = current === previous ? stableReads + 1 : 0;
+            previous = current;
+            return stableReads >= 2;
+        },
+        {
+            interval: 150,
+            timeout: 10000,
+            timeoutMsg: 'Register did not settle after the period change',
+        },
+    );
+}
+
 /** Steps the shared period window back one step and waits for it to settle. */
 async function stepToPreviousPeriod(): Promise<void> {
     const before = await periodNavLabel();
@@ -82,6 +117,10 @@ async function stepToPreviousPeriod(): Promise<void> {
         async () => (await periodNavLabel()) !== before,
         { timeoutMsg: 'Period label did not change after clicking "previous period"' },
     );
+    // The label updates synchronously but the register refetch does not — wait
+    // for the rows to settle before the caller decides whether this window
+    // holds the target row, so a lagging refetch can't cause an overshoot.
+    await waitForRegisterSettled();
 }
 
 /** True when a row containing `payee` is currently rendered in the register. */
