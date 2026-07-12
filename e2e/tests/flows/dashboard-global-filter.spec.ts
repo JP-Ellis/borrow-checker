@@ -219,7 +219,9 @@ describe('Account dashboard — global filter', () => {
         const filteredBalance = await dashboardBalance();
         const mutedReal = await dashboardRealBalance();
         expect(filteredBalance).not.toBe(baselineBalance);
-        expect(mutedReal).toBe(baselineBalance);
+        // The muted span reads `real <amount>`; the amount is the unfiltered
+        // closing, i.e. the pre-filter baseline headline.
+        expect(mutedReal).toContain(baselineBalance);
 
         // 5. Scroll the main column past the dashboard so the sticky bar takes
         // over; while still filtered, it must mirror the FILTERED headline and
