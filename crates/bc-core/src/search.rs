@@ -223,6 +223,43 @@ pub(crate) async fn resolve_account_subtrees(
     Ok(Some(set))
 }
 
+/// Resolves a tag root to its inclusive subtree (the tag plus all descendants).
+///
+/// # Arguments
+///
+/// * `pool` - The SQLite connection pool.
+/// * `root` - The tag whose subtree to resolve.
+///
+/// # Returns
+///
+/// The set containing `root` and every descendant tag id.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError`] on database failure.
+pub(crate) async fn resolve_tag_subtree(
+    pool: &sqlx::SqlitePool,
+    root: &TagId,
+) -> BcResult<HashSet<TagId>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "WITH RECURSIVE subtree(id) AS ( \
+             VALUES(?) \
+             UNION ALL \
+             SELECT tg.id FROM tags tg JOIN subtree s ON tg.parent_id = s.id \
+         ) SELECT id FROM subtree",
+    )
+    .bind(root.to_string())
+    .fetch_all(pool)
+    .await?;
+    let mut set = HashSet::new();
+    for (id,) in rows {
+        if let Ok(parsed) = id.parse::<TagId>() {
+            set.insert(parsed);
+        }
+    }
+    Ok(set)
+}
+
 impl Service {
     /// Runs a structured transaction query, returning whole matched transactions
     /// with per-leg match attribution (see [`compute_matched_postings`]).

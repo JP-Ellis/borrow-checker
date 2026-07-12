@@ -565,7 +565,9 @@ impl core::fmt::Debug for BudgetStatusEngine {
 ///
 /// # Arguments
 ///
-/// * `tag_filter` - Optional tag whose subtree postings must belong to.
+/// * `tag_filter` - Optional tag whose subtree a counted posting must carry,
+///   via either its own tags or its transaction's tags (transaction tags flow
+///   down to every posting).
 /// * `query` - Optional global transaction query supplying extra clauses.
 /// * `filter_accounts` - Pre-resolved account-subtree ids from `query`.
 ///
@@ -600,10 +602,17 @@ fn build_posting_amounts_sql(
             AND t.date >= ? AND t.date < ?",
     );
     if tag_filter.is_some() {
+        // A transaction-level tag flows down to every posting, so the budget's
+        // own tag filter is satisfied when either this posting or its
+        // transaction carries a tag in the filter's subtree. Both branches read
+        // the same `tag_subtree` CTE, so no extra bind is introduced.
         sql.push_str(
-            " AND EXISTS ( \
+            " AND (EXISTS ( \
                 SELECT 1 FROM posting_tags pt WHERE pt.posting_id = p.id \
-                AND pt.tag_id IN (SELECT id FROM tag_subtree))",
+                AND pt.tag_id IN (SELECT id FROM tag_subtree)) \
+              OR EXISTS ( \
+                SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = t.id \
+                AND tt.tag_id IN (SELECT id FROM tag_subtree)))",
         );
     }
 

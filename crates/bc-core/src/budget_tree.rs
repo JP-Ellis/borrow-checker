@@ -548,7 +548,9 @@ mod tests {
     use bc_models::PostingId;
     use bc_models::Reconciliation;
     use bc_models::RolloverPolicy;
+    use bc_models::TagId;
     use bc_models::Transaction;
+    use jiff::Timestamp;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
@@ -844,6 +846,151 @@ mod tests {
         assert_eq!(
             unfiltered_node.actuals,
             vec![Amount::new(dec!(100), CommodityCode::new("AUD"))]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn budget_tag_filter_flows_down_from_transaction(pool: sqlx::SqlitePool) {
+        // A budget's own tag filter counts a posting when the *transaction*
+        // carries the tag, even if that individual posting is untagged
+        // (transaction tags flow down to every posting), and a descendant tag on
+        // the posting counts via the tag subtree.
+        let accounts = AccountService::new(pool.clone());
+        let health = accounts
+            .create()
+            .name("Health")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("health");
+        let checking = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("checking");
+
+        let wellness = TagId::new();
+        sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, 'wellness', ?)")
+            .bind(wellness.to_string())
+            .bind(Timestamp::now().to_string())
+            .execute(&pool)
+            .await
+            .expect("insert wellness");
+        let gym_tag = TagId::new();
+        sqlx::query("INSERT INTO tags (id, name, parent_id, created_at) VALUES (?, 'gym', ?, ?)")
+            .bind(gym_tag.to_string())
+            .bind(wellness.to_string())
+            .bind(Timestamp::now().to_string())
+            .execute(&pool)
+            .await
+            .expect("insert gym");
+
+        let budgets = BudgetService::new(pool.clone());
+        budgets
+            .create()
+            .account_id(health.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .tag_filter(wellness.clone())
+            .target(Amount::new(dec!(300), CommodityCode::new("AUD")))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("budget");
+
+        let txns = TransactionService::new(pool.clone());
+
+        // (a) tag on the TRANSACTION, health posting untagged -> counts (40).
+        txns.create(
+            Transaction::builder()
+                .id(bc_models::TransactionId::new())
+                .date(Date::constant(2026, 6, 11))
+                .description("Checkup")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(health.clone())
+                        .amount(Amount::new(dec!(40), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking.clone())
+                        .amount(Amount::new(dec!(-40), CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .tag_ids(vec![wellness.clone()])
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("tx a");
+
+        // (b) descendant tag on the health POSTING -> counts via subtree (25).
+        txns.create(
+            Transaction::builder()
+                .id(bc_models::TransactionId::new())
+                .date(Date::constant(2026, 6, 12))
+                .description("Gym")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(health.clone())
+                        .amount(Amount::new(dec!(25), CommodityCode::new("AUD")))
+                        .tag_ids(vec![gym_tag.clone()])
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking.clone())
+                        .amount(Amount::new(dec!(-25), CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("tx b");
+
+        // (c) untagged transaction and untagged posting -> excluded (99).
+        txns.create(
+            Transaction::builder()
+                .id(bc_models::TransactionId::new())
+                .date(Date::constant(2026, 6, 13))
+                .description("Snacks")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(health.clone())
+                        .amount(Amount::new(dec!(99), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking.clone())
+                        .amount(Amount::new(dec!(-99), CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("tx c");
+
+        let svc = BudgetTreeService::new(pool.clone(), noop_fx());
+        let overview = svc
+            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), None)
+            .await
+            .expect("overview");
+        let node = overview.nodes.first().expect("one node");
+        // 40 (tx tag flows down) + 25 (subtree tag on posting) = 65; 99 excluded.
+        assert_eq!(
+            node.actuals,
+            vec![Amount::new(dec!(65), CommodityCode::new("AUD"))]
         );
     }
 
