@@ -554,6 +554,93 @@ impl core::fmt::Debug for BudgetStatusEngine {
     }
 }
 
+/// Builds the dynamic SELECT for [`BudgetStatusEngine::fetch_posting_amounts`].
+///
+/// Assembles the account-subtree (and optional tag-subtree) CTEs plus the date
+/// range and every active non-amount filter clause, in the exact order their
+/// binds are applied by the caller: account-tree root, optional tag-subtree
+/// root, period start/end, text (×2), reconciliation, sorted filter account
+/// ids, and tags (×2). The returned string must not be reordered independently
+/// of that bind chain.
+///
+/// # Arguments
+///
+/// * `tag_filter` - Optional tag whose subtree postings must belong to.
+/// * `query` - Optional global transaction query supplying extra clauses.
+/// * `filter_accounts` - Pre-resolved account-subtree ids from `query`.
+///
+/// # Returns
+///
+/// The finished SQL SELECT string.
+fn build_posting_amounts_sql(
+    tag_filter: Option<&bc_models::TagId>,
+    query: Option<&crate::search::TransactionQuery>,
+    filter_accounts: Option<&std::collections::HashSet<bc_models::AccountId>>,
+) -> String {
+    let mut sql = String::from(
+        "WITH RECURSIVE acct_tree(id) AS ( \
+           SELECT ? UNION ALL \
+           SELECT a.id FROM accounts a \
+           INNER JOIN acct_tree ON a.parent_id = acct_tree.id \
+         )",
+    );
+    if tag_filter.is_some() {
+        sql.push_str(
+            ", tag_subtree(id) AS ( \
+               SELECT ? UNION ALL \
+               SELECT tg.id FROM tags tg \
+               INNER JOIN tag_subtree ON tg.parent_id = tag_subtree.id \
+             )",
+        );
+    }
+    sql.push_str(
+        " SELECT p.amount, p.commodity FROM postings p \
+          JOIN transactions t ON t.id = p.transaction_id \
+          WHERE p.account_id IN (SELECT id FROM acct_tree) \
+            AND t.date >= ? AND t.date < ?",
+    );
+    if tag_filter.is_some() {
+        sql.push_str(
+            " AND EXISTS ( \
+                SELECT 1 FROM posting_tags pt WHERE pt.posting_id = p.id \
+                AND pt.tag_id IN (SELECT id FROM tag_subtree))",
+        );
+    }
+
+    if let Some(q) = query {
+        if q.text.is_some() {
+            sql.push_str(
+                " AND (lower(t.payee) LIKE ? ESCAPE '\\' OR lower(t.description) LIKE ? ESCAPE '\\')",
+            );
+        }
+        if q.reconciliation.is_some() {
+            sql.push_str(" AND t.reconciliation = ?");
+        }
+        if let Some(set) = filter_accounts {
+            let ph = crate::transaction::sql_placeholders(set.len());
+            sql.push_str(" AND p.account_id IN (");
+            sql.push_str(&ph);
+            sql.push(')');
+        }
+        if !q.tags.is_empty() {
+            let ph = crate::transaction::sql_placeholders(q.tags.len());
+            sql.push_str(
+                " AND (EXISTS (SELECT 1 FROM transaction_tags tt \
+                        WHERE tt.transaction_id = t.id AND tt.tag_id IN (",
+            );
+            sql.push_str(&ph);
+            sql.push_str(
+                ")) OR EXISTS (SELECT 1 FROM posting_tags pt \
+                        WHERE pt.posting_id = p.id AND pt.tag_id IN (",
+            );
+            sql.push_str(&ph);
+            sql.push_str(")))");
+        }
+    }
+
+    sql
+}
+
 impl BudgetStatusEngine {
     /// Creates a new [`BudgetStatusEngine`] with the given connection pool and FX service.
     #[must_use]
@@ -710,6 +797,9 @@ impl BudgetStatusEngine {
     /// Fetches raw `(amount, commodity)` pairs for postings to `account_id` or any
     /// descendant account in `[period_start, period_end)`, optionally filtered by tag.
     ///
+    /// The dynamic SELECT is assembled by [`build_posting_amounts_sql`], whose
+    /// clause order the bind chain below relies on exactly.
+    ///
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on database failure.
@@ -727,66 +817,7 @@ impl BudgetStatusEngine {
             None => None,
         };
 
-        let mut sql = String::from(
-            "WITH RECURSIVE acct_tree(id) AS ( \
-               SELECT ? UNION ALL \
-               SELECT a.id FROM accounts a \
-               INNER JOIN acct_tree ON a.parent_id = acct_tree.id \
-             )",
-        );
-        if tag_filter.is_some() {
-            sql.push_str(
-                ", tag_subtree(id) AS ( \
-                   SELECT ? UNION ALL \
-                   SELECT tg.id FROM tags tg \
-                   INNER JOIN tag_subtree ON tg.parent_id = tag_subtree.id \
-                 )",
-            );
-        }
-        sql.push_str(
-            " SELECT p.amount, p.commodity FROM postings p \
-              JOIN transactions t ON t.id = p.transaction_id \
-              WHERE p.account_id IN (SELECT id FROM acct_tree) \
-                AND t.date >= ? AND t.date < ?",
-        );
-        if tag_filter.is_some() {
-            sql.push_str(
-                " AND EXISTS ( \
-                    SELECT 1 FROM posting_tags pt WHERE pt.posting_id = p.id \
-                    AND pt.tag_id IN (SELECT id FROM tag_subtree))",
-            );
-        }
-
-        if let Some(q) = query {
-            if q.text.is_some() {
-                sql.push_str(
-                    " AND (lower(t.payee) LIKE ? ESCAPE '\\' OR lower(t.description) LIKE ? ESCAPE '\\')",
-                );
-            }
-            if q.reconciliation.is_some() {
-                sql.push_str(" AND t.reconciliation = ?");
-            }
-            if let Some(set) = &filter_accounts {
-                let ph = crate::transaction::sql_placeholders(set.len());
-                sql.push_str(" AND p.account_id IN (");
-                sql.push_str(&ph);
-                sql.push(')');
-            }
-            if !q.tags.is_empty() {
-                let ph = crate::transaction::sql_placeholders(q.tags.len());
-                sql.push_str(
-                    " AND (EXISTS (SELECT 1 FROM transaction_tags tt \
-                            WHERE tt.transaction_id = t.id AND tt.tag_id IN (",
-                );
-                sql.push_str(&ph);
-                sql.push_str(
-                    ")) OR EXISTS (SELECT 1 FROM posting_tags pt \
-                            WHERE pt.posting_id = p.id AND pt.tag_id IN (",
-                );
-                sql.push_str(&ph);
-                sql.push_str(")))");
-            }
-        }
+        let sql = build_posting_amounts_sql(tag_filter, query, filter_accounts.as_ref());
 
         let mut stmt = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql));
         stmt = stmt.bind(account_id.to_string());
