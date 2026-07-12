@@ -174,11 +174,53 @@ pub struct MatchedTransaction {
 ///
 /// The backslash is escaped first so that the escapes subsequently inserted for
 /// `%` and `_` are not themselves re-escaped.
-fn escape_like(input: &str) -> String {
+pub(crate) fn escape_like(input: &str) -> String {
     input
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
+}
+
+/// Resolves each account root to its inclusive subtree and unions the results.
+///
+/// # Arguments
+///
+/// * `pool` - The SQLite connection pool.
+/// * `roots` - Account roots; each expands to itself plus all descendants.
+///
+/// # Returns
+///
+/// `None` when `roots` is empty (dimension inactive), otherwise the unioned id set.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError`] on database failure.
+pub(crate) async fn resolve_account_subtrees(
+    pool: &sqlx::SqlitePool,
+    roots: &[AccountId],
+) -> BcResult<Option<HashSet<AccountId>>> {
+    if roots.is_empty() {
+        return Ok(None);
+    }
+    let mut set = HashSet::new();
+    for root in roots {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "WITH RECURSIVE subtree(id) AS ( \
+                 VALUES(?) \
+                 UNION ALL \
+                 SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
+             ) SELECT id FROM subtree",
+        )
+        .bind(root.to_string())
+        .fetch_all(pool)
+        .await?;
+        for (id,) in rows {
+            if let Ok(parsed) = id.parse::<AccountId>() {
+                set.insert(parsed);
+            }
+        }
+    }
+    Ok(Some(set))
 }
 
 impl Service {
@@ -196,29 +238,7 @@ impl Service {
     )]
     pub async fn search(&self, query: &TransactionQuery) -> BcResult<Vec<MatchedTransaction>> {
         // 1. Resolve account subtrees to a concrete id set.
-        let account_set: Option<HashSet<AccountId>> = if query.accounts.is_empty() {
-            None
-        } else {
-            let mut set = HashSet::new();
-            for root in &query.accounts {
-                let rows: Vec<(String,)> = sqlx::query_as(
-                    "WITH RECURSIVE subtree(id) AS ( \
-                         VALUES(?) \
-                         UNION ALL \
-                         SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
-                     ) SELECT id FROM subtree",
-                )
-                .bind(root.to_string())
-                .fetch_all(self.pool())
-                .await?;
-                for (id,) in rows {
-                    if let Ok(parsed) = id.parse::<AccountId>() {
-                        set.insert(parsed);
-                    }
-                }
-            }
-            Some(set)
-        };
+        let account_set = resolve_account_subtrees(self.pool(), &query.accounts).await?;
 
         // 2. Build candidate SQL with a WHERE clause per active dimension.
         let mut clauses: Vec<String> = Vec::new();
@@ -1667,6 +1687,41 @@ mod search_tests {
         assert_eq!(stats.income.value(), dec!(100.00));
         assert_eq!(stats.tx_count, 1);
         assert_eq!(stats.closing.value(), dec!(100.00));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn resolve_account_subtrees_unions_inclusive_subtrees(pool: sqlx::SqlitePool) {
+        use crate::account::Service as AccountService;
+        let accounts = AccountService::new(pool.clone());
+        let food = accounts
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("food");
+        let dining = accounts
+            .create()
+            .name("Dining")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&food)
+            .call()
+            .await
+            .expect("dining");
+
+        let set = super::resolve_account_subtrees(&pool, core::slice::from_ref(&food))
+            .await
+            .expect("resolve")
+            .expect("some");
+        assert!(set.contains(&food));
+        assert!(set.contains(&dining));
+
+        let empty = super::resolve_account_subtrees(&pool, &[])
+            .await
+            .expect("resolve");
+        assert_eq!(empty, None);
     }
 }
 
