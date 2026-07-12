@@ -32,6 +32,12 @@
     color: var(--bc-accent);
 }
 
+.date_hint {
+    font-size: var(--bc-text-caption);
+    color: var(--bc-ink-mute);
+    margin-left: auto;
+}
+
 .kpi_row {
     display: grid;
     grid-template-columns: repeat(4, 1fr);

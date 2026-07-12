@@ -10,6 +10,7 @@
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod components;
+pub mod query;
 
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::BcError;
@@ -95,6 +96,8 @@ pub fn Budget() -> impl IntoView {
     let ctx = BudgetPageCtx::new();
     provide_context(ctx);
 
+    let filter_store = crate::filter_ctx::use_filter_store();
+
     let show_new = RwSignal::new(false);
 
     let overview: LocalResource<Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError>> =
@@ -102,7 +105,11 @@ pub fn Budget() -> impl IntoView {
             ctx.data_version.get();
             let period = ctx.display_period.get();
             let start = ctx.window_start.get();
-            async move { bc_ipc::client::get_budget_overview(period, start).await }
+            let eff = filter_store.filter.with(query::budget_effective_filter);
+            async move {
+                let filter = (eff != bc_ipc::Filter::default()).then_some(eff);
+                bc_ipc::client::get_budget_overview(period, start, filter.as_ref()).await
+            }
         });
 
     let on_created = Callback::new(move |()| {
