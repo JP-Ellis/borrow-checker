@@ -40,6 +40,7 @@ pub fn BudgetDetail(
     let period = ctx.display_period;
     let window_start = ctx.window_start;
     let currencies = crate::currency_ctx::use_currency_store();
+    let filter_store = crate::filter_ctx::use_filter_store();
 
     /* --- revision timeline state --- */
     let budget_id_for_revs = StoredValue::new(node.id.clone());
@@ -110,7 +111,13 @@ pub fn BudgetDetail(
             let p = period.get();
             let ws = window_start.get();
             let end = period_nav::step_window(&p, ws, true);
-            async move { bc_ipc::client::get_budget_transactions(&bid, ws, end).await }
+            let eff = filter_store
+                .filter
+                .with(crate::pages::budget::query::budget_effective_filter);
+            async move {
+                let filter = (eff != bc_ipc::Filter::default()).then_some(eff);
+                bc_ipc::client::get_budget_transactions(&bid, ws, end, filter.as_ref()).await
+            }
         });
 
     let on_change: Callback<()> = Callback::new(move |()| {
