@@ -323,24 +323,37 @@ fn validate_postings(postings: &[Posting]) -> BcResult<()> {
     Ok(())
 }
 
-/// Whether `tx` satisfies every active dimension of a global transaction
-/// `query`, used to narrow [`Service::list_for_budget`]'s result to what the
-/// budget tree counted for the same filter.
+/// Whether `tx` should appear in [`Service::list_for_budget`]'s drill-down for
+/// the budget rooted at `budget_subtree`, under the global transaction `query`.
 ///
-/// Mirrors the semantics of [`crate::budget::BudgetStatusEngine`]'s SQL
-/// clauses and [`crate::search::AmountQuery::matches`]:
+/// A transaction is listed iff it satisfies the transaction-level dimensions
+/// AND contains **at least one posting `p` in the budget account's subtree**
+/// that simultaneously satisfies every active per-posting dimension — the exact
+/// counted-posting conjunction [`crate::budget::BudgetStatusEngine`] sums over
+/// (see `build_posting_amounts_sql`). Evaluating the per-posting dimensions on
+/// the *same* budget-subtree posting is what keeps the list in parity with the
+/// tree count: a non-budget leg that matches the filter never pulls in a
+/// transaction whose budget leg does not.
+///
+/// Transaction-level dimensions:
 /// * `text` — case-insensitive substring on payee OR description.
 /// * `reconciliation` — exact equality.
-/// * `tags` — the transaction or any posting carries a filter tag.
-/// * `accounts` — any posting's account falls in the resolved subtree.
-/// * `amount` — commodity-exact match on any posting.
+///
+/// Per-posting dimensions, all evaluated on the same budget-subtree posting `p`:
+/// * `p.account_id` falls in `budget_subtree`.
+/// * `tag_filter` (budget revision) — `p` carries that tag.
+/// * `query.accounts` — `p.account_id` falls in `global_accounts` (resolved subtree).
+/// * `query.amount` — commodity-exact match via [`crate::search::AmountQuery::matches`].
+/// * `query.tags` — the transaction carries a filter tag OR `p` carries one.
 ///
 /// `date_from`/`date_until` are intentionally not checked here — the caller
 /// already constrains the date range in SQL via `period_start`/`period_end`.
 fn transaction_matches_query(
     tx: &Transaction,
     query: &crate::search::TransactionQuery,
-    account_set: Option<&std::collections::HashSet<bc_models::AccountId>>,
+    budget_subtree: &std::collections::HashSet<bc_models::AccountId>,
+    tag_filter: Option<&TagId>,
+    global_accounts: Option<&std::collections::HashSet<bc_models::AccountId>>,
 ) -> bool {
     if let Some(text) = &query.text {
         let needle = text.to_ascii_lowercase();
@@ -359,31 +372,38 @@ fn transaction_matches_query(
         return false;
     }
 
-    if !query.tags.is_empty() {
-        let tag_set: std::collections::HashSet<&TagId> = query.tags.iter().collect();
-        let tx_hit = tx.tag_ids().iter().any(|t| tag_set.contains(t));
-        let posting_hit = tx
-            .postings()
-            .iter()
-            .any(|p| p.tag_ids().iter().any(|t| tag_set.contains(t)));
-        if !tx_hit && !posting_hit {
+    let tag_set: std::collections::HashSet<&TagId> = query.tags.iter().collect();
+    let tx_carries_global_tag = tx.tag_ids().iter().any(|t| tag_set.contains(t));
+
+    // The transaction is kept iff some budget-subtree posting satisfies the
+    // full per-posting conjunction the tree counts on that same posting.
+    tx.postings().iter().any(|p| {
+        if !budget_subtree.contains(p.account_id()) {
             return false;
         }
-    }
-
-    if let Some(set) = account_set
-        && !tx.postings().iter().any(|p| set.contains(p.account_id()))
-    {
-        return false;
-    }
-
-    if let Some(aq) = &query.amount
-        && !tx.postings().iter().any(|p| aq.matches(p.amount()))
-    {
-        return false;
-    }
-
-    true
+        if let Some(tag) = tag_filter
+            && !p.tag_ids().iter().any(|t| t == tag)
+        {
+            return false;
+        }
+        if let Some(set) = global_accounts
+            && !set.contains(p.account_id())
+        {
+            return false;
+        }
+        if let Some(aq) = &query.amount
+            && !aq.matches(p.amount())
+        {
+            return false;
+        }
+        if !query.tags.is_empty()
+            && !tx_carries_global_tag
+            && !p.tag_ids().iter().any(|t| tag_set.contains(t))
+        {
+            return false;
+        }
+        true
+    })
 }
 
 /// Parses a `Cost` from the four nullable cost columns on a posting row.
@@ -1868,20 +1888,13 @@ impl Service {
     /// # Filtering approach
     ///
     /// Date range and the budget's own account/tag filter stay in SQL (as
-    /// before, via [`Self::list_for_account_tree_in_range`]). `query`'s
-    /// dimensions are applied afterwards in Rust over the assembled
-    /// (small — one budget, one period) transaction list rather than by
-    /// growing the SQL, mirroring exactly the semantics
-    /// [`crate::budget::BudgetStatusEngine`] uses when it computes the same
-    /// totals:
-    ///
-    /// * `text` — case-insensitive substring match on payee OR description.
-    /// * `reconciliation` — exact equality.
-    /// * `tags` — the transaction or any posting carries a filter tag.
-    /// * `accounts` — any posting's account falls in the filter's resolved
-    ///   subtree.
-    /// * `amount` — commodity-exact match via [`crate::search::AmountQuery::matches`]
-    ///   on any posting (never a magnitude SQL compare).
+    /// before, via [`Self::list_for_account_tree_in_range`]). The global
+    /// `query`'s dimensions are then applied in Rust over the assembled
+    /// (small — one budget, one period) transaction list. A transaction is
+    /// kept iff it contains at least one posting in the budget account's
+    /// subtree that satisfies the *same* counted-posting conjunction the
+    /// budget tree sums over, so the drill-down list and the tree count never
+    /// disagree — see [`transaction_matches_query`] for the exact predicate.
     ///
     /// # Arguments
     ///
@@ -1910,28 +1923,48 @@ impl Service {
             .await?
             .collect();
 
-        let tag_matched: Vec<Transaction> = if let Some(tag) = tag_filter {
-            fetched
-                .into_iter()
-                .filter(|tx| {
-                    tx.postings()
-                        .iter()
-                        .any(|p| p.tag_ids().iter().any(|tid| tid == tag))
-                })
-                .collect()
-        } else {
-            fetched
-        };
-
         let Some(q) = query else {
-            return Ok(tag_matched);
+            // No global filter: keep the budget's own tag filter (a posting
+            // carrying the tag) and return.
+            let out = if let Some(tag) = tag_filter {
+                fetched
+                    .into_iter()
+                    .filter(|tx| {
+                        tx.postings()
+                            .iter()
+                            .any(|p| p.tag_ids().iter().any(|tid| tid == tag))
+                    })
+                    .collect()
+            } else {
+                fetched
+            };
+            return Ok(out);
         };
 
-        let account_set = crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?;
+        // Resolve the budget account's own subtree (the tree's `acct_tree`) and
+        // the global filter's account subtree, so the per-posting predicate can
+        // require the *same* budget-subtree posting to satisfy every active
+        // dimension — matching what the budget tree counts.
+        let global_accounts =
+            crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?;
+        let Some(budget_subtree) =
+            crate::search::resolve_account_subtrees(&self.pool, core::slice::from_ref(account_id))
+                .await?
+        else {
+            return Ok(Vec::new());
+        };
 
-        let result = tag_matched
+        let result = fetched
             .into_iter()
-            .filter(|tx| transaction_matches_query(tx, q, account_set.as_ref()))
+            .filter(|tx| {
+                transaction_matches_query(
+                    tx,
+                    q,
+                    &budget_subtree,
+                    tag_filter,
+                    global_accounts.as_ref(),
+                )
+            })
             .collect();
 
         Ok(result)
@@ -3990,5 +4023,111 @@ mod tests {
 
         assert_eq!(txns.len(), 1);
         assert_eq!(txns.first().expect("one tx").description(), "Membership");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn list_for_budget_amount_filter_uses_budget_leg(pool: sqlx::SqlitePool) {
+        // Parity regression: the budget tree counts actuals over postings on
+        // the budget account's subtree that themselves satisfy the global
+        // amount filter. For a split transaction whose *budget* leg does not
+        // match but a *non-budget* leg does, the tree counts zero, so the
+        // drill-down list must exclude it too (no "click a number, drill in,
+        // see a different set").
+        let accounts = crate::account::Service::new(pool.clone());
+        let gym = accounts
+            .create()
+            .name("Gym")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("gym");
+        let checking = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("checking");
+
+        let svc = Service::new(pool.clone());
+
+        // Split transaction: budget leg is USD 10 (below the filter), a
+        // non-budget leg is USD 500 (above it).
+        let split_id = bc_models::TransactionId::new();
+        svc.create(
+            Transaction::builder()
+                .id(split_id.clone())
+                .date(date(2026, 6, 3))
+                .description("Split")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(gym.clone())
+                        .amount(Amount::new(dec!(10), CommodityCode::new("USD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking.clone())
+                        .amount(Amount::new(dec!(500), CommodityCode::new("USD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Unreconciled)
+                .created_at(jiff::Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("split tx");
+
+        // Positive control: budget leg itself matches the filter.
+        let matching_id = bc_models::TransactionId::new();
+        svc.create(
+            Transaction::builder()
+                .id(matching_id.clone())
+                .date(date(2026, 6, 4))
+                .description("Big")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(gym.clone())
+                        .amount(Amount::new(dec!(200), CommodityCode::new("USD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking.clone())
+                        .amount(Amount::new(dec!(-200), CommodityCode::new("USD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Unreconciled)
+                .created_at(jiff::Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("matching tx");
+
+        let query = crate::search::TransactionQuery {
+            amount: Some(crate::search::AmountQuery {
+                min: Some(dec!(100)),
+                commodity: Some(CommodityCode::new("USD")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let txns = svc
+            .list_for_budget(&gym, None, date(2026, 6, 1), date(2026, 7, 1), Some(&query))
+            .await
+            .expect("list");
+
+        let ids: Vec<_> = txns.iter().map(|t| t.id().clone()).collect();
+        assert!(
+            !ids.contains(&split_id),
+            "split tx whose budget leg is below the amount filter must be excluded"
+        );
+        assert!(
+            ids.contains(&matching_id),
+            "tx whose budget leg matches the amount filter must be included"
+        );
+        assert_eq!(txns.len(), 1);
     }
 }
