@@ -136,6 +136,7 @@ pub fn NativePeriodList(
     let pct_mode = ctx.pct_mode;
     let data_version = ctx.data_version;
     let currencies = crate::currency_ctx::use_currency_store();
+    let filter_store = crate::filter_ctx::use_filter_store();
 
     let rows: LocalResource<Result<Vec<NativePeriodRow>, BcError>> =
         LocalResource::new(move || {
@@ -144,7 +145,13 @@ pub fn NativePeriodList(
             let p = period.get();
             let start = window_start.get();
             let end = period_nav::step_window(&p, start, true);
-            async move { bc_ipc::client::get_native_periods(&bid, start, end).await }
+            let eff = filter_store
+                .filter
+                .with(crate::pages::budget::query::budget_effective_filter);
+            async move {
+                let filter = (eff != bc_ipc::Filter::default()).then_some(eff);
+                bc_ipc::client::get_native_periods(&bid, start, end, filter.as_ref()).await
+            }
         });
 
     let indent_style = format!("--row-depth:{depth}");

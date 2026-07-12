@@ -108,6 +108,13 @@ pub fn BudgetHeader(
     let window_start = ctx.window_start;
     let pct_mode = ctx.pct_mode;
 
+    let filter_store = crate::filter_ctx::use_filter_store();
+    let date_hint_visible = Signal::derive(move || {
+        filter_store
+            .filter
+            .with(crate::pages::budget::query::date_filter_active)
+    });
+
     let agg_label = move || {
         if pct_mode.get() {
             "% target"
@@ -136,6 +143,11 @@ pub fn BudgetHeader(
                 >
                     {agg_label}
                 </button>
+                <Show when=move || date_hint_visible.get()>
+                    <span class=style::date_hint>
+                        "Date filter ignored — budgets use the period above"
+                    </span>
+                </Show>
             </div>
 
             <Suspense fallback=move || {
