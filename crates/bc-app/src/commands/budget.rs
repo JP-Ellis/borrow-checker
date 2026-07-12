@@ -22,6 +22,7 @@ use crate::AppState;
 ///
 /// * `period_type` - The display period type (monthly, weekly, etc.).
 /// * `period_start` - The display window start date.
+/// * `filter` - The global filter, with the date dimension ignored.
 /// * `state` - Tauri managed application state.
 ///
 /// # Errors
@@ -35,13 +36,15 @@ use crate::AppState;
 pub async fn get_budget_overview(
     period_type: bc_ipc::Period,
     period_start: jiff::civil::Date,
+    filter: Option<bc_ipc::Filter>,
     state: State<'_, AppState>,
 ) -> Result<(bc_ipc::BudgetSummary, Vec<bc_ipc::BudgetTreeNode>), bc_ipc::BcError> {
     let period = bc_models::Period::from(period_type);
+    let query = budget_query(filter)?;
 
     let overview = state
         .budget_tree
-        .get_overview(&period, period_start, None)
+        .get_overview(&period, period_start, query.as_ref())
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
@@ -65,6 +68,7 @@ pub async fn get_budget_overview(
 /// * `budget_id` - The budget to expand.
 /// * `display_start` - The display window start date (inclusive).
 /// * `display_end` - The display window end date (exclusive).
+/// * `filter` - The global filter, with the date dimension ignored.
 /// * `state` - Tauri managed application state.
 ///
 /// # Errors
@@ -79,11 +83,13 @@ pub async fn get_native_periods(
     budget_id: String,
     display_start: jiff::civil::Date,
     display_end: jiff::civil::Date,
+    filter: Option<bc_ipc::Filter>,
     state: State<'_, AppState>,
 ) -> Result<Vec<bc_ipc::NativePeriodRow>, bc_ipc::BcError> {
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
+    let query = budget_query(filter)?;
 
     let budget = state
         .budgets
@@ -93,7 +99,7 @@ pub async fn get_native_periods(
 
     let native = state
         .budget_tree
-        .native_periods(&budget, display_start, display_end, None)
+        .native_periods(&budget, display_start, display_end, query.as_ref())
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
@@ -153,6 +159,7 @@ fn format_native_period_label(n: &bc_core::NativePeriodStatus) -> String {
 /// * `budget_id` - The budget to query.
 /// * `period_start` - The period start date (inclusive).
 /// * `period_end` - The period end date (exclusive).
+/// * `filter` - The global filter, with the date dimension ignored.
 /// * `state` - Tauri managed application state.
 ///
 /// # Errors
@@ -167,11 +174,13 @@ pub async fn get_budget_transactions(
     budget_id: String,
     period_start: jiff::civil::Date,
     period_end: jiff::civil::Date,
+    filter: Option<bc_ipc::Filter>,
     state: State<'_, AppState>,
 ) -> Result<Vec<bc_ipc::Transaction>, bc_ipc::BcError> {
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
+    let query = budget_query(filter)?;
 
     let budget = state
         .budgets
@@ -194,7 +203,7 @@ pub async fn get_budget_transactions(
             tag_filter,
             period_start,
             period_end,
-            None,
+            query.as_ref(),
         )
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
@@ -627,4 +636,62 @@ pub async fn clear_posting_spread(
         .clear_posting_spread(&pid)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
+}
+
+// MARK: Filter conversion
+
+/// Converts an optional UI [`bc_ipc::Filter`] into a budget-path
+/// [`bc_core::search::TransactionQuery`], stripping the date dimension.
+///
+/// Budgets are period-gridded; the display window is driven solely by
+/// `PeriodNav`, so any `date_from`/`date_until` bounds are cleared before
+/// conversion. Returns `None` for an absent or fully-empty filter
+/// (reproducing the unfiltered path).
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] if an account/tag id fails to parse.
+fn budget_query(
+    filter: Option<bc_ipc::Filter>,
+) -> Result<Option<bc_core::search::TransactionQuery>, bc_ipc::BcError> {
+    let Some(mut stripped) = filter else {
+        return Ok(None);
+    };
+    if stripped == bc_ipc::Filter::default() {
+        return Ok(None);
+    }
+    stripped.date_from = None;
+    stripped.date_until = None;
+    let query = bc_core::search::TransactionQuery::try_from(stripped)
+        .map_err(|e| bc_ipc::BcError::Validation(e.to_string()))?;
+    Ok(Some(query))
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn budget_query_strips_date_bounds() {
+        let mut filter = bc_ipc::Filter::default();
+        filter.date_from = Some(jiff::civil::date(2026, 6, 10));
+        filter.date_until = Some(jiff::civil::date(2026, 6, 20));
+        filter.text = Some("coffee".to_owned());
+        let q = super::budget_query(Some(filter))
+            .expect("convert")
+            .expect("some");
+        assert_eq!(q.date_from, None);
+        assert_eq!(q.date_until, None);
+        assert_eq!(q.text.as_deref(), Some("coffee"));
+    }
+
+    #[test]
+    fn budget_query_none_for_empty() {
+        assert!(super::budget_query(None).expect("ok").is_none());
+        assert!(
+            super::budget_query(Some(bc_ipc::Filter::default()))
+                .expect("ok")
+                .is_none()
+        );
+    }
 }

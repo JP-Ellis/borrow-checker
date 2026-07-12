@@ -360,11 +360,13 @@ pub async fn get_settings() -> Result<SettingsInfo, BcError> {
 
 /// Arg struct for [`get_budget_overview`].
 #[derive(Serialize)]
-struct GetBudgetOverviewArgs {
+struct GetBudgetOverviewArgs<'a> {
     /// Display period granularity.
     period_type: crate::Period,
     /// Start of the display window.
     period_start: jiff::civil::Date,
+    /// Global filter, with the date dimension ignored server-side.
+    filter: Option<&'a Filter>,
 }
 
 /// Arg struct for [`get_native_periods`].
@@ -376,6 +378,8 @@ struct GetNativePeriodsArgs<'a> {
     display_start: jiff::civil::Date,
     /// End of the display window.
     display_end: jiff::civil::Date,
+    /// Global filter, with the date dimension ignored server-side.
+    filter: Option<&'a Filter>,
 }
 
 /// Arg struct for [`get_budget_transactions`].
@@ -387,6 +391,8 @@ struct GetBudgetTransactionsArgs<'a> {
     period_start: jiff::civil::Date,
     /// End of the period.
     period_end: jiff::civil::Date,
+    /// Global filter, with the date dimension ignored server-side.
+    filter: Option<&'a Filter>,
 }
 
 /// Arg struct for [`archive_budget`].
@@ -444,12 +450,14 @@ struct ClearPostingSpreadArgs<'a> {
 pub async fn get_budget_overview(
     period_type: crate::Period,
     period_start: jiff::civil::Date,
+    filter: Option<&Filter>,
 ) -> Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError> {
     tauri_sys::core::invoke_result(
         commands::GET_BUDGET_OVERVIEW,
         GetBudgetOverviewArgs {
             period_type,
             period_start,
+            filter,
         },
     )
     .await
@@ -465,6 +473,7 @@ pub async fn get_native_periods(
     budget_id: &str,
     display_start: jiff::civil::Date,
     display_end: jiff::civil::Date,
+    filter: Option<&Filter>,
 ) -> Result<Vec<NativePeriodRow>, BcError> {
     tauri_sys::core::invoke_result(
         commands::GET_NATIVE_PERIODS,
@@ -472,6 +481,7 @@ pub async fn get_native_periods(
             budget_id,
             display_start,
             display_end,
+            filter,
         },
     )
     .await
@@ -487,6 +497,7 @@ pub async fn get_budget_transactions(
     budget_id: &str,
     period_start: jiff::civil::Date,
     period_end: jiff::civil::Date,
+    filter: Option<&Filter>,
 ) -> Result<Vec<Transaction>, BcError> {
     tauri_sys::core::invoke_result(
         commands::GET_BUDGET_TRANSACTIONS,
@@ -494,6 +505,7 @@ pub async fn get_budget_transactions(
             budget_id,
             period_start,
             period_end,
+            filter,
         },
     )
     .await
