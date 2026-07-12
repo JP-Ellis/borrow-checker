@@ -323,6 +323,69 @@ fn validate_postings(postings: &[Posting]) -> BcResult<()> {
     Ok(())
 }
 
+/// Whether `tx` satisfies every active dimension of a global transaction
+/// `query`, used to narrow [`Service::list_for_budget`]'s result to what the
+/// budget tree counted for the same filter.
+///
+/// Mirrors the semantics of [`crate::budget::BudgetStatusEngine`]'s SQL
+/// clauses and [`crate::search::AmountQuery::matches`]:
+/// * `text` — case-insensitive substring on payee OR description.
+/// * `reconciliation` — exact equality.
+/// * `tags` — the transaction or any posting carries a filter tag.
+/// * `accounts` — any posting's account falls in the resolved subtree.
+/// * `amount` — commodity-exact match on any posting.
+///
+/// `date_from`/`date_until` are intentionally not checked here — the caller
+/// already constrains the date range in SQL via `period_start`/`period_end`.
+fn transaction_matches_query(
+    tx: &Transaction,
+    query: &crate::search::TransactionQuery,
+    account_set: Option<&std::collections::HashSet<bc_models::AccountId>>,
+) -> bool {
+    if let Some(text) = &query.text {
+        let needle = text.to_ascii_lowercase();
+        let payee_hit = tx
+            .payee()
+            .is_some_and(|p| p.to_ascii_lowercase().contains(&needle));
+        let desc_hit = tx.description().to_ascii_lowercase().contains(&needle);
+        if !payee_hit && !desc_hit {
+            return false;
+        }
+    }
+
+    if let Some(rec) = query.reconciliation
+        && tx.reconciliation() != rec
+    {
+        return false;
+    }
+
+    if !query.tags.is_empty() {
+        let tag_set: std::collections::HashSet<&TagId> = query.tags.iter().collect();
+        let tx_hit = tx.tag_ids().iter().any(|t| tag_set.contains(t));
+        let posting_hit = tx
+            .postings()
+            .iter()
+            .any(|p| p.tag_ids().iter().any(|t| tag_set.contains(t)));
+        if !tx_hit && !posting_hit {
+            return false;
+        }
+    }
+
+    if let Some(set) = account_set
+        && !tx.postings().iter().any(|p| set.contains(p.account_id()))
+    {
+        return false;
+    }
+
+    if let Some(aq) = &query.amount
+        && !tx.postings().iter().any(|p| aq.matches(p.amount()))
+    {
+        return false;
+    }
+
+    true
+}
+
 /// Parses a `Cost` from the four nullable cost columns on a posting row.
 ///
 /// Returns `None` if `total_value` is `None` (no cost basis recorded).
@@ -1794,11 +1857,31 @@ impl Service {
 
     /// Lists all transactions with a posting against `account_id`
     /// (optionally filtered to postings tagged with `tag_filter`) in
-    /// `[period_start, period_end)`.
+    /// `[period_start, period_end)`, additionally narrowed by the global
+    /// transaction filter `query` so the drill-down list matches what the
+    /// budget tree counted for the same filter.
     ///
     /// Because the tag filter is now time-varying (it lives on a
     /// [`bc_models::BudgetRevision`]), callers must resolve the governing
     /// revision themselves and pass the filter explicitly.
+    ///
+    /// # Filtering approach
+    ///
+    /// Date range and the budget's own account/tag filter stay in SQL (as
+    /// before, via [`Self::list_for_account_tree_in_range`]). `query`'s
+    /// dimensions are applied afterwards in Rust over the assembled
+    /// (small — one budget, one period) transaction list rather than by
+    /// growing the SQL, mirroring exactly the semantics
+    /// [`crate::budget::BudgetStatusEngine`] uses when it computes the same
+    /// totals:
+    ///
+    /// * `text` — case-insensitive substring match on payee OR description.
+    /// * `reconciliation` — exact equality.
+    /// * `tags` — the transaction or any posting carries a filter tag.
+    /// * `accounts` — any posting's account falls in the filter's resolved
+    ///   subtree.
+    /// * `amount` — commodity-exact match via [`crate::search::AmountQuery::matches`]
+    ///   on any posting (never a magnitude SQL compare).
     ///
     /// # Arguments
     ///
@@ -1807,6 +1890,8 @@ impl Service {
     ///   descendant) are included.  `None` = no filter (all postings match).
     /// * `period_start` - Inclusive start of the date range.
     /// * `period_end` - Exclusive end of the date range.
+    /// * `query` - Optional global transaction filter narrowing the result to
+    ///   what the budget tree counted. `None` = no additional filtering.
     ///
     /// # Errors
     ///
@@ -1818,14 +1903,16 @@ impl Service {
         tag_filter: Option<&bc_models::TagId>,
         period_start: jiff::civil::Date,
         period_end: jiff::civil::Date,
+        query: Option<&crate::search::TransactionQuery>,
     ) -> BcResult<Vec<Transaction>> {
-        let txns: Vec<Transaction> = self
+        let fetched: Vec<Transaction> = self
             .list_for_account_tree_in_range(account_id, Some(period_start), Some(period_end))
             .await?
             .collect();
 
-        let result = if let Some(tag) = tag_filter {
-            txns.into_iter()
+        let tag_matched: Vec<Transaction> = if let Some(tag) = tag_filter {
+            fetched
+                .into_iter()
                 .filter(|tx| {
                     tx.postings()
                         .iter()
@@ -1833,8 +1920,19 @@ impl Service {
                 })
                 .collect()
         } else {
-            txns
+            fetched
         };
+
+        let Some(q) = query else {
+            return Ok(tag_matched);
+        };
+
+        let account_set = crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?;
+
+        let result = tag_matched
+            .into_iter()
+            .filter(|tx| transaction_matches_query(tx, q, account_set.as_ref()))
+            .collect();
 
         Ok(result)
     }
@@ -3827,5 +3925,70 @@ mod tests {
                 .iter()
                 .any(|(_, e)| matches!(e, Event::PostingRecategorised { .. }))
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn list_for_budget_respects_query_filter(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let gym = accounts
+            .create()
+            .name("Gym")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("gym");
+        let checking = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("checking");
+
+        let svc = Service::new(pool.clone());
+        for (desc, amt) in [("Membership", dec!(30)), ("Locker fee", dec!(5))] {
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "negation of a bounded test amount"
+            )]
+            let neg_amt = -amt;
+            svc.create(
+                Transaction::builder()
+                    .id(bc_models::TransactionId::new())
+                    .date(date(2026, 6, 3))
+                    .description(desc)
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(gym.clone())
+                            .amount(Amount::new(amt, CommodityCode::new("AUD")))
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(checking.clone())
+                            .amount(Amount::new(neg_amt, CommodityCode::new("AUD")))
+                            .build(),
+                    ])
+                    .reconciliation(Reconciliation::Reconciled)
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("tx");
+        }
+
+        let query = crate::search::TransactionQuery {
+            text: Some("membership".to_owned()),
+            ..Default::default()
+        };
+        let txns = svc
+            .list_for_budget(&gym, None, date(2026, 6, 1), date(2026, 7, 1), Some(&query))
+            .await
+            .expect("list");
+
+        assert_eq!(txns.len(), 1);
+        assert_eq!(txns.first().expect("one tx").description(), "Membership");
     }
 }
