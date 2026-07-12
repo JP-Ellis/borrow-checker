@@ -145,7 +145,7 @@ pub fn BudgetHeader(
                 </button>
                 <Show when=move || date_hint_visible.get()>
                     <span class=style::date_hint>
-                        "Date filter ignored — budgets use the period above"
+                        "Date filter doesn\u{2019}t apply to budgets \u{2014} using the selected period."
                     </span>
                 </Show>
             </div>
