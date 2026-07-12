@@ -324,11 +324,15 @@ pub async fn reverse_transaction(
 /// * `commodity`  - Optional commodity code override. Defaults to the account's first commodity.
 /// * `date_from`  - The inclusive start of the date window.
 /// * `date_until` - The exclusive end of the date window.
+/// * `filter`     - Active global filter, or `None` for the unfiltered fast path. When
+///   `Some`, the stats are recomputed against it and the real (unfiltered)
+///   opening/closing are attached for reference.
 /// * `state`      - Tauri managed application state.
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError`] if the account ID is invalid or a service call fails.
+/// Returns [`bc_ipc::BcError::Validation`] if the account ID or filter is malformed, or
+/// [`bc_ipc::BcError::Internal`] if a service call fails.
 #[expect(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
@@ -339,6 +343,7 @@ pub async fn get_account_stats(
     commodity: Option<String>,
     date_from: jiff::civil::Date,
     date_until: jiff::civil::Date,
+    filter: Option<bc_ipc::Filter>,
     state: State<'_, AppState>,
 ) -> Result<bc_ipc::AccountStats, bc_ipc::BcError> {
     let id = account_id
@@ -355,19 +360,43 @@ pub async fn get_account_stats(
             .unwrap_or_default(),
     };
 
-    let s = state
+    // Real (unfiltered) window stats — cheap SQL, always computed so the
+    // filtered branch can attach them for reference.
+    let real = state
         .balance_engine
         .account_period_stats(&id, &commodity_code, date_from, date_until)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
+    let Some(active_filter) = filter else {
+        return Ok(bc_ipc::AccountStats::new(
+            bc_ipc::Amount::from(&real.income),
+            bc_ipc::Amount::from(&real.expenses),
+            bc_ipc::Amount::from(&real.net),
+            bc_ipc::Amount::from(&real.opening),
+            bc_ipc::Amount::from(&real.closing),
+            real.tx_count,
+        ));
+    };
+
+    let query = bc_core::search::TransactionQuery::try_from(active_filter)?;
+    let filtered = state
+        .transactions
+        .filtered_period_stats(&id, &commodity_code, &query, date_from, date_until)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
     Ok(bc_ipc::AccountStats::new(
-        bc_ipc::Amount::from(&s.income),
-        bc_ipc::Amount::from(&s.expenses),
-        bc_ipc::Amount::from(&s.net),
-        bc_ipc::Amount::from(&s.opening),
-        bc_ipc::Amount::from(&s.closing),
-        s.tx_count,
+        bc_ipc::Amount::from(&filtered.income),
+        bc_ipc::Amount::from(&filtered.expenses),
+        bc_ipc::Amount::from(&filtered.net),
+        bc_ipc::Amount::from(&filtered.opening),
+        bc_ipc::Amount::from(&filtered.closing),
+        filtered.tx_count,
+    )
+    .with_real_balances(
+        bc_ipc::Amount::from(&real.opening),
+        bc_ipc::Amount::from(&real.closing),
     ))
 }
 
