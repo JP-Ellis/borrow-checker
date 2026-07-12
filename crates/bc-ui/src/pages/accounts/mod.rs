@@ -147,6 +147,36 @@ pub fn Accounts() -> impl IntoView {
         });
     });
 
+    // Resolved account statistics for the selected account, recomputed against
+    // the effective filter (register-style: filter dates win, else the
+    // page-level display window). Shared by the sticky bar and the dashboard
+    // so both headlines stay in lockstep.
+    let stats_resource = LocalResource::new(move || async move {
+        data_version.get();
+        let period = display_period.get();
+        let start = window_start.get();
+        let Some(id) = selected_id.get() else {
+            return Ok(None);
+        };
+        let (from, until, filter) = filter_store.filter.with_untracked(|f| {
+            let eff = crate::pages::accounts::query::effective_filter(f, &period, start);
+            let active =
+                crate::pages::accounts::query::filter_has_non_date_dim(f).then(|| eff.clone());
+            (
+                eff.date_from.unwrap_or(jiff::civil::Date::MIN),
+                eff.date_until.unwrap_or(jiff::civil::Date::MAX),
+                active,
+            )
+        });
+        // Re-subscribe to the filter signal so edits re-run the resource.
+        filter_store.filter.track();
+        bc_ipc::client::get_account_stats(&id, from, until, filter.as_ref())
+            .await
+            .map(Some)
+    });
+
+    let stats_signal = Signal::derive(move || stats_resource.get().and_then(Result::ok).flatten());
+
     // Derive a flat signal from the resource for TransactionRegister.
     let transactions_signal = Signal::derive(move || {
         transactions_resource
@@ -275,7 +305,11 @@ pub fn Accounts() -> impl IntoView {
 
             // Main scrollable column
             <div class=style::main node_ref=main_ref on:scroll=on_scroll>
-                <StickyAccountBar node=selected_node visible=dashboard_scrolled.read_only() />
+                <StickyAccountBar
+                    node=selected_node
+                    stats=stats_signal
+                    visible=dashboard_scrolled.read_only()
+                />
 
                 {move || match selected_node.get() {
                     None => {
@@ -300,6 +334,7 @@ pub fn Accounts() -> impl IntoView {
                         view! {
                             <AccountDashboard
                                 node=node.clone()
+                                stats=stats_signal
                                 data_version=data_version.read_only()
                                 on_add_tx=Callback::new(move |()| open_add_tx())
                                 period_window=display_period.read_only().into()
