@@ -323,6 +323,22 @@ fn validate_postings(postings: &[Posting]) -> BcResult<()> {
     Ok(())
 }
 
+/// Returns `true` when some posting inside `budget_subtree` carries a tag in
+/// `tag_subtree`, counting the transaction's own tags as flowing down to each
+/// of its postings. Used for the unfiltered drill-down, where only the budget's
+/// own tag filter applies.
+fn budget_leg_carries_tag(
+    tx: &Transaction,
+    budget_subtree: &std::collections::HashSet<bc_models::AccountId>,
+    tag_subtree: &std::collections::HashSet<TagId>,
+) -> bool {
+    let tx_carries = tx.tag_ids().iter().any(|t| tag_subtree.contains(t));
+    tx.postings().iter().any(|p| {
+        budget_subtree.contains(p.account_id())
+            && (tx_carries || p.tag_ids().iter().any(|t| tag_subtree.contains(t)))
+    })
+}
+
 /// Whether `tx` should appear in [`Service::list_for_budget`]'s drill-down for
 /// the budget rooted at `budget_subtree`, under the global transaction `query`.
 ///
@@ -341,7 +357,8 @@ fn validate_postings(postings: &[Posting]) -> BcResult<()> {
 ///
 /// Per-posting dimensions, all evaluated on the same budget-subtree posting `p`:
 /// * `p.account_id` falls in `budget_subtree`.
-/// * `tag_filter` (budget revision) — `p` carries that tag.
+/// * `tag_filter` (budget revision) — `p` or its transaction carries that tag
+///   or a descendant of it (transaction tags flow down; matched over the subtree).
 /// * `query.accounts` — `p.account_id` falls in `global_accounts` (resolved subtree).
 /// * `query.amount` — commodity-exact match via [`crate::search::AmountQuery::matches`].
 /// * `query.tags` — the transaction carries a filter tag OR `p` carries one.
@@ -352,7 +369,7 @@ fn transaction_matches_query(
     tx: &Transaction,
     query: &crate::search::TransactionQuery,
     budget_subtree: &std::collections::HashSet<bc_models::AccountId>,
-    tag_filter: Option<&TagId>,
+    tag_subtree: Option<&std::collections::HashSet<TagId>>,
     global_accounts: Option<&std::collections::HashSet<bc_models::AccountId>>,
 ) -> bool {
     if let Some(text) = &query.text {
@@ -374,6 +391,10 @@ fn transaction_matches_query(
 
     let tag_set: std::collections::HashSet<&TagId> = query.tags.iter().collect();
     let tx_carries_global_tag = tx.tag_ids().iter().any(|t| tag_set.contains(t));
+    // Transaction tags flow down to every posting, so a transaction tag in the
+    // budget's own subtree satisfies the budget-tag dimension for all its legs.
+    let tx_carries_own_tag =
+        tag_subtree.is_some_and(|s| tx.tag_ids().iter().any(|t| s.contains(t)));
 
     // The transaction is kept iff some budget-subtree posting satisfies the
     // full per-posting conjunction the tree counts on that same posting.
@@ -381,8 +402,9 @@ fn transaction_matches_query(
         if !budget_subtree.contains(p.account_id()) {
             return false;
         }
-        if let Some(tag) = tag_filter
-            && !p.tag_ids().iter().any(|t| t == tag)
+        if let Some(subtree) = tag_subtree
+            && !tx_carries_own_tag
+            && !p.tag_ids().iter().any(|t| subtree.contains(t))
         {
             return false;
         }
@@ -1887,20 +1909,23 @@ impl Service {
     ///
     /// # Filtering approach
     ///
-    /// Date range and the budget's own account/tag filter stay in SQL (as
-    /// before, via [`Self::list_for_account_tree_in_range`]). The global
-    /// `query`'s dimensions are then applied in Rust over the assembled
-    /// (small — one budget, one period) transaction list. A transaction is
-    /// kept iff it contains at least one posting in the budget account's
-    /// subtree that satisfies the *same* counted-posting conjunction the
-    /// budget tree sums over, so the drill-down list and the tree count never
-    /// disagree — see [`transaction_matches_query`] for the exact predicate.
+    /// The candidate transactions (account tree ∩ date range) are fetched in
+    /// SQL via [`Self::list_for_account_tree_in_range`]; the budget's own tag
+    /// filter and the global `query`'s dimensions are then applied in Rust over
+    /// the assembled (small — one budget, one period) list. A transaction is
+    /// kept iff it contains at least one posting in the budget account's subtree
+    /// that satisfies the *same* counted-posting conjunction the budget tree
+    /// sums over, so the drill-down list and the tree count never disagree —
+    /// see [`transaction_matches_query`] for the exact predicate. Transaction
+    /// tags flow down to every posting, matching the tree's SQL.
     ///
     /// # Arguments
     ///
     /// * `account_id` - The account whose posting tree to search.
-    /// * `tag_filter` - Optional tag; only postings tagged with this tag (or a
-    ///   descendant) are included.  `None` = no filter (all postings match).
+    /// * `tag_filter` - Optional tag; a transaction is kept when a budget-subtree
+    ///   posting carries this tag or one of its descendants, counting the
+    ///   transaction's own tags as flowing down to every posting. `None` = no
+    ///   tag filter.
     /// * `period_start` - Inclusive start of the date range.
     /// * `period_end` - Exclusive end of the date range.
     /// * `query` - Optional global transaction filter narrowing the result to
@@ -1923,36 +1948,43 @@ impl Service {
             .await?
             .collect();
 
-        let Some(q) = query else {
-            // No global filter: keep the budget's own tag filter (a posting
-            // carrying the tag) and return.
-            let out = if let Some(tag) = tag_filter {
-                fetched
-                    .into_iter()
-                    .filter(|tx| {
-                        tx.postings()
-                            .iter()
-                            .any(|p| p.tag_ids().iter().any(|tid| tid == tag))
-                    })
-                    .collect()
-            } else {
-                fetched
-            };
-            return Ok(out);
-        };
-
-        // Resolve the budget account's own subtree (the tree's `acct_tree`) and
-        // the global filter's account subtree, so the per-posting predicate can
-        // require the *same* budget-subtree posting to satisfy every active
-        // dimension — matching what the budget tree counts.
-        let global_accounts =
-            crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?;
+        // Resolve the budget account's own subtree (the tree's `acct_tree`), so
+        // every parity check counts only a posting *inside the budget*, matching
+        // what the budget tree sums.
         let Some(budget_subtree) =
             crate::search::resolve_account_subtrees(&self.pool, core::slice::from_ref(account_id))
                 .await?
         else {
             return Ok(Vec::new());
         };
+
+        // Expand the budget's own tag filter to its inclusive subtree once, so a
+        // descendant tag counts the same as the parent — mirroring the tree's
+        // `tag_subtree` CTE.
+        let tag_subtree = match tag_filter {
+            Some(tag) => Some(crate::search::resolve_tag_subtree(&self.pool, tag).await?),
+            None => None,
+        };
+
+        let Some(q) = query else {
+            // No global filter: keep the budget's own tag filter, requiring a
+            // budget-subtree posting to carry the tag (its own or its
+            // transaction's), so the list agrees with the tree count.
+            let out = match &tag_subtree {
+                Some(subtree) => fetched
+                    .into_iter()
+                    .filter(|tx| budget_leg_carries_tag(tx, &budget_subtree, subtree))
+                    .collect(),
+                None => fetched,
+            };
+            return Ok(out);
+        };
+
+        // The global filter's account subtree, so the per-posting predicate can
+        // require the *same* budget-subtree posting to satisfy every active
+        // dimension — matching what the budget tree counts.
+        let global_accounts =
+            crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?;
 
         let result = fetched
             .into_iter()
@@ -1961,7 +1993,7 @@ impl Service {
                     tx,
                     q,
                     &budget_subtree,
-                    tag_filter,
+                    tag_subtree.as_ref(),
                     global_accounts.as_ref(),
                 )
             })
@@ -4129,5 +4161,158 @@ mod tests {
             "tx whose budget leg matches the amount filter must be included"
         );
         assert_eq!(txns.len(), 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn list_for_budget_tag_filter_flows_down_and_scopes_to_budget_leg(
+        pool: sqlx::SqlitePool,
+    ) {
+        // The unfiltered drill-down must agree with the budget tree's counted
+        // postings for the budget's own tag filter: a transaction tag flows down
+        // to the budget leg (included), a descendant tag matches via the subtree
+        // (included), but a tag on a *non-budget* leg does not leak the
+        // transaction in (excluded).
+        let accounts = crate::account::Service::new(pool.clone());
+        let health = accounts
+            .create()
+            .name("Health")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("health");
+        let checking = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("checking");
+
+        let wellness = TagId::new();
+        sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, 'wellness', ?)")
+            .bind(wellness.to_string())
+            .bind(Timestamp::now().to_string())
+            .execute(&pool)
+            .await
+            .expect("insert wellness");
+        let gym_tag = TagId::new();
+        sqlx::query("INSERT INTO tags (id, name, parent_id, created_at) VALUES (?, 'gym', ?, ?)")
+            .bind(gym_tag.to_string())
+            .bind(wellness.to_string())
+            .bind(Timestamp::now().to_string())
+            .execute(&pool)
+            .await
+            .expect("insert gym");
+
+        let svc = Service::new(pool.clone());
+
+        // (a) tag on the TRANSACTION, health leg untagged -> included.
+        let tx_level_id = bc_models::TransactionId::new();
+        svc.create(
+            Transaction::builder()
+                .id(tx_level_id.clone())
+                .date(date(2026, 6, 11))
+                .description("Checkup")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(health.clone())
+                        .amount(Amount::new(dec!(40), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking.clone())
+                        .amount(Amount::new(dec!(-40), CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .tag_ids(vec![wellness.clone()])
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(jiff::Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("tx a");
+
+        // (b) descendant tag on the health POSTING -> included via subtree.
+        let subtree_id = bc_models::TransactionId::new();
+        svc.create(
+            Transaction::builder()
+                .id(subtree_id.clone())
+                .date(date(2026, 6, 12))
+                .description("Gym")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(health.clone())
+                        .amount(Amount::new(dec!(25), CommodityCode::new("AUD")))
+                        .tag_ids(vec![gym_tag.clone()])
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking.clone())
+                        .amount(Amount::new(dec!(-25), CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(jiff::Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("tx b");
+
+        // (c) tag only on the NON-budget (checking) leg -> excluded.
+        let sibling_id = bc_models::TransactionId::new();
+        svc.create(
+            Transaction::builder()
+                .id(sibling_id.clone())
+                .date(date(2026, 6, 13))
+                .description("Sibling")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(health.clone())
+                        .amount(Amount::new(dec!(15), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking.clone())
+                        .amount(Amount::new(dec!(-15), CommodityCode::new("AUD")))
+                        .tag_ids(vec![wellness.clone()])
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(jiff::Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("tx c");
+
+        let txns = svc
+            .list_for_budget(
+                &health,
+                Some(&wellness),
+                date(2026, 6, 1),
+                date(2026, 7, 1),
+                None,
+            )
+            .await
+            .expect("list");
+        let ids: Vec<_> = txns.iter().map(|t| t.id().clone()).collect();
+
+        assert!(
+            ids.contains(&tx_level_id),
+            "transaction-level tag must flow down to the budget leg"
+        );
+        assert!(
+            ids.contains(&subtree_id),
+            "descendant tag on the budget leg must match via the subtree"
+        );
+        assert!(
+            !ids.contains(&sibling_id),
+            "a tag on a non-budget leg must not pull the transaction in"
+        );
+        assert_eq!(txns.len(), 2);
     }
 }
