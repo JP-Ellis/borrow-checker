@@ -680,8 +680,9 @@ pub struct Filter {
 
 /// A matched transaction plus the ids of the legs that satisfied the
 /// posting-scoped filter predicates (all legs when the match was
-/// transaction-scoped). Consumers decide whether to grey out or hide the
-/// non-matching legs (strictness).
+/// transaction-scoped). The whole transaction is always returned; consumers use
+/// the matched set to visually distinguish the non-matching legs (e.g. dimming
+/// them), never to prune legs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct FilteredTransaction {

@@ -216,10 +216,12 @@ pub fn PostingLine(
 
     // MARK: Filter-match dimming — a leg whose original id is absent from the
     // active filter's matched set renders dimmed. A static open-time hint keyed
-    // on the original posting id; newly added legs (no id) are never dimmed.
+    // on the original posting id; newly added legs (no id) are never dimmed. An
+    // empty matched set is treated as unfiltered (nothing dims) — the backend
+    // never emits one, so a `Some(vec![])` would otherwise dim every leg.
     let is_dimmed = move || {
         matched.with_value(|m| {
-            m.as_ref().is_some_and(|ids| {
+            m.as_ref().filter(|ids| !ids.is_empty()).is_some_and(|ids| {
                 working.with(|w| {
                     w.postings
                         .iter()
