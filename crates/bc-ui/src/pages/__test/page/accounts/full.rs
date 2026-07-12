@@ -184,6 +184,7 @@ pub fn AccountFullQa() -> impl IntoView {
             <div class=style::content>
                 <AccountDashboard
                     node=smart_access_node()
+                    stats=Signal::derive(|| None)
                     period_window=period.read_only().into()
                     window_start=window_start.read_only().into()
                 />
