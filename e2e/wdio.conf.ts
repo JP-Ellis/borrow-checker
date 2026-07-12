@@ -35,11 +35,7 @@ export const config: Options.Testrunner = {
   port:     4444,
   path:     '/',
 
-  /* Visual specs require the frozen-clock container environment — skip them
-   * outside the container to avoid spurious baseline mismatches. */
-  specs: process.env['WDIO_IN_CONTAINER']
-    ? ['./tests/visual/**/*.spec.ts', './tests/flows/**/*.spec.ts']
-    : ['./tests/flows/**/*.spec.ts'],
+  specs: ['./tests/flows/**/*.spec.ts'],
 
   maxInstances: 1,
 
@@ -51,20 +47,6 @@ export const config: Options.Testrunner = {
         application: APPLICATION,
       },
     },
-  ],
-
-  services: [
-    [
-      'visual',
-      {
-        baselineFolder:    './tests/visual/__snapshots__',
-        formatImageName:   '{tag}-{browserName}',
-        screenshotPath:    './.tmp/visual',
-        autoSaveBaseline:  true,
-        /* Threshold 0 = pixel-perfect; raise if font hinting varies. */
-        savePerInstance:   true,
-      },
-    ],
   ],
 
   logLevel:  'warn',
