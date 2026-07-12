@@ -181,6 +181,10 @@ impl BudgetTreeService {
 
     /// Returns native period breakdown for one budget within `[display_start, display_end)`.
     ///
+    /// `query` is the same global transaction filter applied to the tree overview
+    /// ([`Self::get_overview`]); passing it here keeps the native-period drill-down
+    /// consistent with whatever the tree counted.
+    ///
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on database or data parse failure.
@@ -190,6 +194,7 @@ impl BudgetTreeService {
         budget: &bc_models::Budget,
         display_start: Date,
         display_end: Date,
+        query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<Vec<NativePeriodStatus>> {
         let budget_svc = BudgetService::new(self.pool.clone());
         let status_engine = BudgetStatusEngine::new(self.pool.clone(), Arc::clone(&self.fx));
@@ -244,7 +249,7 @@ impl BudgetTreeService {
                 overlap.native_start.to_string(),
             );
             let status = status_engine
-                .status_for_window(budget, window, None)
+                .status_for_window(budget, window, query)
                 .await?;
 
             result.push(NativePeriodStatus {
@@ -932,5 +937,90 @@ mod tests {
             node.actuals,
             vec![Amount::new(dec!(100), CommodityCode::new("USD"))]
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn native_periods_respect_filter(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let gym = accounts
+            .create()
+            .name("Gym")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("gym");
+        let checking = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("checking");
+        let budgets = BudgetService::new(pool.clone());
+        budgets
+            .create()
+            .account_id(gym.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(dec!(30), CommodityCode::new("AUD")))
+            .period(Period::Weekly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("budget");
+        let budget = BudgetService::new(pool.clone())
+            .list()
+            .await
+            .expect("list")
+            .into_iter()
+            .next()
+            .expect("one");
+
+        let txns = TransactionService::new(pool.clone());
+        for (desc, amt) in [("Membership", dec!(30)), ("Locker fee", dec!(5))] {
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "negation of a bounded test amount"
+            )]
+            let neg_amt = -amt;
+            txns.create(
+                Transaction::builder()
+                    .id(bc_models::TransactionId::new())
+                    .date(Date::constant(2026, 6, 3))
+                    .description(desc)
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(gym.clone())
+                            .amount(Amount::new(amt, CommodityCode::new("AUD")))
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(checking.clone())
+                            .amount(Amount::new(neg_amt, CommodityCode::new("AUD")))
+                            .build(),
+                    ])
+                    .reconciliation(Reconciliation::Reconciled)
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("tx");
+        }
+
+        let svc = BudgetTreeService::new(pool.clone(), noop_fx());
+        let q = query_text("membership");
+        let rows = svc
+            .native_periods(
+                &budget,
+                Date::constant(2026, 6, 1),
+                Date::constant(2026, 7, 1),
+                Some(&q),
+            )
+            .await
+            .expect("native");
+        let total: bc_models::Decimal = rows.iter().map(|r| r.actuals).sum();
+        assert_eq!(total, dec!(30)); // "Locker fee" (5) excluded.
     }
 }
