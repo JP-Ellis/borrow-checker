@@ -50,6 +50,26 @@ fn no_mask_node() -> AccountNode {
     )
 }
 
+/// Constructs sample account statistics (no active filter — no real balance).
+fn sample_stats() -> bc_ipc::AccountStats {
+    bc_ipc::AccountStats::new(
+        Amount::new(Decimal::new(120_000, 2), "AUD"),
+        Amount::new(Decimal::new(43_500, 2), "AUD"),
+        Amount::new(Decimal::new(76_500, 2), "AUD"),
+        Amount::new(Decimal::new(345_342, 2), "AUD"),
+        Amount::new(Decimal::new(421_842, 2), "AUD"),
+        12,
+    )
+}
+
+/// Constructs sample account statistics with a muted real closing (filter active).
+fn sample_stats_filtered() -> bc_ipc::AccountStats {
+    sample_stats().with_real_balances(
+        Amount::new(Decimal::new(345_342, 2), "AUD"),
+        Amount::new(Decimal::new(421_842, 2), "AUD"),
+    )
+}
+
 /// Renders [`AccountDashboard`] in three account configurations.
 ///
 /// # Period coverage
@@ -58,11 +78,11 @@ fn no_mask_node() -> AccountNode {
 /// are no per-sparkline controls). The first two sections render Monthly; the
 /// third renders Calendar year to exercise the "Last 12 Months" title path.
 ///
-/// Note: `stats_resource` always resolves to an error in this QA harness
-/// because there is no real IPC connection. The stat cards and balance headline
-/// will show "—" (the fallback value for a failed or pending resource). To
-/// visually verify the non-error rendering (e.g. a numeric count with
-/// warn/neutral tone), use the stat card QA page directly.
+/// Note: the sparkline resource always resolves to an error in this QA harness
+/// because there is no real IPC connection, so the trend chart renders empty.
+/// `stats` is supplied directly (no resource) so the balance headline and stat
+/// cards render sample data; the second section also exercises the muted
+/// real-balance path.
 #[component]
 pub fn AccountDashboardQa() -> impl IntoView {
     let monthly = Signal::derive(|| bc_ipc::Period::Monthly);
@@ -78,6 +98,7 @@ pub fn AccountDashboardQa() -> impl IntoView {
                 </p>
                 <AccountDashboard
                     node=asset_node()
+                    stats=Signal::derive(|| Some(sample_stats()))
                     period_window=monthly
                     window_start=window_start
                 />
@@ -85,10 +106,11 @@ pub fn AccountDashboardQa() -> impl IntoView {
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
-                    "liability — negative balance (default: monthly)"
+                    "liability — negative balance, filtered (muted real balance)"
                 </p>
                 <AccountDashboard
                     node=liability_node()
+                    stats=Signal::derive(|| Some(sample_stats_filtered()))
                     period_window=monthly
                     window_start=window_start
                 />
@@ -100,6 +122,7 @@ pub fn AccountDashboardQa() -> impl IntoView {
                 </p>
                 <AccountDashboard
                     node=no_mask_node()
+                    stats=Signal::derive(|| None)
                     period_window=yearly
                     window_start=window_start
                 />

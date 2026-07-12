@@ -28,7 +28,9 @@ static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 /// # Arguments
 ///
 /// * `node` - The account to display.
-/// * `data_version` - Optional monotonic counter; when it changes, stats and sparkline re-fetch.
+/// * `stats` - Resolved account statistics (filtered when a filter is active; carries
+///   the real opening/closing for a muted reference).
+/// * `data_version` - Optional monotonic counter; when it changes, the sparkline re-fetches.
 /// * `on_add_tx` - Optional callback fired when the user clicks "+ transaction".
 /// * `period_window` - Page-level period granularity (read-only; the register's `PeriodNav` writes it).
 /// * `window_start` - Page-level display-window start (read-only).
@@ -44,8 +46,11 @@ static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 pub fn AccountDashboard(
     /// Account to display.
     node: AccountNode,
+    /// Resolved account statistics (filtered when a filter is active; carries
+    /// the real opening/closing for a muted reference).
+    stats: Signal<Option<bc_ipc::AccountStats>>,
     /// Monotonic counter bumped by the parent after any successful mutation.
-    /// Stats and sparkline LocalResources re-fetch whenever this changes.
+    /// The sparkline LocalResource re-fetches whenever this changes.
     #[prop(optional)]
     data_version: Option<ReadSignal<u32>>,
     /// Optional callback fired when the user clicks the "+ transaction" action button.
@@ -57,18 +62,7 @@ pub fn AccountDashboard(
     window_start: Signal<jiff::civil::Date>,
 ) -> impl IntoView {
     let currencies = crate::currency_ctx::use_currency_store();
-    let account_id = node.id.clone();
     let sparkline_account_id = node.id.clone();
-
-    let stats_resource = LocalResource::new(move || {
-        let id = account_id.clone();
-        let start = window_start.get();
-        let until = crate::components::period_nav::period_end(&period_window.get(), start);
-        if let Some(v) = data_version {
-            v.get();
-        }
-        async move { bc_ipc::client::get_account_stats(&id, start, until).await }
-    });
 
     let sparkline_resource = LocalResource::new(move || {
         let id = sparkline_account_id.clone();
@@ -89,11 +83,13 @@ pub fn AccountDashboard(
         .as_ref()
         .map_or_else(String::new, |b| b.currency_code.clone());
 
-    // Closing / opening / net (formatted) plus a net-is-negative flag, computed
-    // once per dependency change. A `Memo` avoids re-reading the resource and
-    // re-formatting three amounts in each of the four view closures below.
+    // Closing / opening / net (formatted) plus a net-is-negative flag and the
+    // muted real closing (only present when a filter is active), computed once
+    // per dependency change. A `Memo` avoids re-reading the resource and
+    // re-formatting the amounts in each of the view closures below.
+    // (closing, opening, net, net_is_negative, real_closing_or_none)
     let balance_line = Memo::new(move |_| {
-        let stats = stats_resource.get().and_then(Result::ok);
+        let stats = stats.get();
         let cur = currencies.get();
         let fmt = |a: &bc_ipc::Amount| {
             let meta = crate::components::num::meta::display_meta_for(&a.currency_code, &cur);
@@ -105,14 +101,17 @@ pub fn AccountDashboard(
                 "\u{2014}".to_owned(),
                 "\u{2014}".to_owned(),
                 false,
+                None,
             ),
             Some(s) => {
                 let net_neg = s.net.value < rust_decimal::Decimal::ZERO;
+                let real = s.real_closing.as_ref().map(&fmt);
                 (
                     fmt(&s.closing_balance),
                     fmt(&s.opening_balance),
                     fmt(&s.net),
                     net_neg,
+                    real,
                 )
             }
         }
@@ -224,8 +223,25 @@ pub fn AccountDashboard(
             </div>
 
             <div class=style::balance_row>
-                <span class=style::balance>{move || balance_line.with(|b| b.0.clone())}</span>
+                <span class=style::balance data-testid="dashboard-balance">
+                    {move || balance_line.with(|b| b.0.clone())}
+                </span>
                 <span class=style::balance_meta>"// closing"</span>
+                {move || {
+                    balance_line
+                        .with(|b| b.4.clone())
+                        .map(|real| {
+                            view! {
+                                <span
+                                    class=style::balance_real
+                                    data-testid="dashboard-real-balance"
+                                >
+                                    "real "
+                                    {real}
+                                </span>
+                            }
+                        })
+                }}
             </div>
             <div class=style::balance_sub>
                 <span class=style::opening>
@@ -239,7 +255,7 @@ pub fn AccountDashboard(
             <div class=style::stat_row>
                 <StatCards count=4>
                     {move || {
-                        let stats = stats_resource.get().and_then(Result::ok);
+                        let stats = stats.get();
                         let window_label = crate::components::period_nav::window_label(
                             &period_window.get(),
                             window_start.get(),
@@ -283,6 +299,7 @@ pub fn AccountDashboard(
                                 value=tx_count_str
                                 sub=window_label
                                 tone=StatTone::Neutral
+                                attr:data-testid="dashboard-tx-count"
                             />
                         }
                     }}

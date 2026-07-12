@@ -175,6 +175,14 @@
   color: var(--bc-comment);
 }
 
+/* MARK: FilteredRealBalance */
+.balance_real {
+  margin-left: var(--bc-space-2);
+  color: var(--bc-ink-mute);
+  font-size: var(--bc-text-caption);
+  font-variant-numeric: tabular-nums;
+}
+
 .balance_sub {
   display: flex;
   gap: var(--bc-space-4);
