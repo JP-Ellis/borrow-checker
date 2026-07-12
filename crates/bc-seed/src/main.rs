@@ -1881,6 +1881,31 @@ async fn main() -> anyhow::Result<()> {
         &checking_id,
         dec!(-120)
     );
+    // Current-month `recurring`-tagged CreditCard activity: a membership charge
+    // (outflow) and a refund (inflow) so a `tag:recurring` filter on CreditCard
+    // resolves to in-window flows on both sides, not just a pre-window opening.
+    txn_tags!(
+        month_day(0, 6),
+        "Gym Membership",
+        "Monthly membership",
+        Reconciliation::Reconciled,
+        &subscriptions_id,
+        dec!(80.00),
+        &credit_card_id,
+        dec!(-80.00),
+        vec![tag_recurring.clone()]
+    );
+    txn_tags!(
+        month_day(0, 8),
+        "Subscription Refund",
+        "Overcharge refund",
+        Reconciliation::Reconciled,
+        &credit_card_id,
+        dec!(15.00),
+        &subscriptions_id,
+        dec!(-15.00),
+        vec![tag_recurring.clone()]
+    );
 
     println!("Done.");
     println!("Created database at {}", args.db_path.display());
@@ -1889,7 +1914,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Tags:         13 (9 roots + 4 children; recurring/business/shared/…)");
     println!("Revisions:     9 (7 initial + 2 mid-year bumps for groceries and electricity)");
     println!(
-        "Transactions: ~79 (cleared, pending, voided across 6 historical months + current month)"
+        "Transactions: ~81 (cleared, pending, voided across 6 historical months + current month)"
     );
 
     // -------------------------------------------------------------------------
