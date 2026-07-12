@@ -726,6 +726,12 @@ pub struct AccountStats {
     /// Count of distinct in-window transactions involving the account
     /// (commodity-agnostic; matches the register's row count).
     pub tx_count: u32,
+    /// Real (unfiltered) running balance at the window start; `Some` only when a
+    /// filter was active, for a muted reference alongside the filtered figure.
+    pub real_opening: Option<Amount>,
+    /// Real (unfiltered) running balance at the window end; `Some` only when a
+    /// filter was active.
+    pub real_closing: Option<Amount>,
 }
 
 impl AccountStats {
@@ -756,7 +762,27 @@ impl AccountStats {
             opening_balance,
             closing_balance,
             tx_count,
+            real_opening: None,
+            real_closing: None,
         }
+    }
+
+    /// Attaches the real (unfiltered) opening and closing balances.
+    ///
+    /// # Arguments
+    ///
+    /// * `opening` - Real running balance at the window start.
+    /// * `closing` - Real running balance at the window end.
+    ///
+    /// # Returns
+    ///
+    /// `self` with `real_opening`/`real_closing` populated.
+    #[must_use]
+    #[inline]
+    pub fn with_real_balances(mut self, opening: Amount, closing: Amount) -> Self {
+        self.real_opening = Some(opening);
+        self.real_closing = Some(closing);
+        self
     }
 }
 
@@ -1373,6 +1399,19 @@ mod tests {
         assert_eq!(tx.payee, "Coles");
         assert_eq!(tx.note.as_deref(), Some("note"));
         assert_eq!(tx.postings, vec![p]);
+    }
+
+    #[test]
+    fn account_stats_real_balances_default_none_and_set() {
+        let z = Amount::new(rust_decimal::Decimal::ZERO, "AUD");
+        let stats = AccountStats::new(z.clone(), z.clone(), z.clone(), z.clone(), z.clone(), 0);
+        assert_eq!(stats.real_opening, None);
+        assert_eq!(stats.real_closing, None);
+
+        let real = Amount::new(rust_decimal::Decimal::new(4210, 0), "AUD");
+        let stats_with_real = stats.with_real_balances(real.clone(), real.clone());
+        assert_eq!(stats_with_real.real_opening, Some(real.clone()));
+        assert_eq!(stats_with_real.real_closing, Some(real));
     }
 }
 
