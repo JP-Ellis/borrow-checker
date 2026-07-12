@@ -645,8 +645,10 @@ pub async fn clear_posting_spread(
 ///
 /// Budgets are period-gridded; the display window is driven solely by
 /// `PeriodNav`, so any `date_from`/`date_until` bounds are cleared before
-/// conversion. Returns `None` for an absent or fully-empty filter
-/// (reproducing the unfiltered path).
+/// the emptiness check and before conversion. Returns `None` for an absent
+/// filter, or one that is empty once dates are stripped — including a
+/// date-only filter, which is inert on budgets (reproducing the unfiltered
+/// path).
 ///
 /// # Errors
 ///
@@ -657,13 +659,12 @@ fn budget_query(
     let Some(mut stripped) = filter else {
         return Ok(None);
     };
+    stripped.date_from = None;
+    stripped.date_until = None;
     if stripped == bc_ipc::Filter::default() {
         return Ok(None);
     }
-    stripped.date_from = None;
-    stripped.date_until = None;
-    let query = bc_core::search::TransactionQuery::try_from(stripped)
-        .map_err(|e| bc_ipc::BcError::Validation(e.to_string()))?;
+    let query = bc_core::search::TransactionQuery::try_from(stripped)?;
     Ok(Some(query))
 }
 
@@ -693,5 +694,15 @@ mod tests {
                 .expect("ok")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn budget_query_date_only_is_none() {
+        // A date-only filter is inert on budgets, so it must collapse to the
+        // unfiltered path (None) — dates are stripped before the empty check.
+        let mut filter = bc_ipc::Filter::default();
+        filter.date_from = Some(jiff::civil::date(2026, 6, 1));
+        filter.date_until = Some(jiff::civil::date(2026, 6, 30));
+        assert!(super::budget_query(Some(filter)).expect("ok").is_none());
     }
 }
