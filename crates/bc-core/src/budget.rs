@@ -577,6 +577,7 @@ impl BudgetStatusEngine {
         &self,
         budget: &bc_models::Budget,
         window: bc_models::BudgetWindow,
+        query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<BudgetStatus> {
         if window.days() < 0 {
             return Err(crate::BcError::InvalidInput(format!(
@@ -603,7 +604,7 @@ impl BudgetStatusEngine {
                 ))
                 .ok_or_else(|| crate::BcError::BadData("allocated overflow".into()))?;
             let (a, c) = self
-                .sum_actuals(&account_id, p.revision, seg_start, seg_end)
+                .sum_actuals(&account_id, p.revision, seg_start, seg_end, query)
                 .await?;
             actuals = actuals
                 .checked_add(a)
@@ -679,8 +680,12 @@ impl BudgetStatusEngine {
             }
         };
         let label = format!("{start} \u{2013} {end}");
-        self.status_for_window(budget, bc_models::BudgetWindow::custom(start, end, label))
-            .await
+        self.status_for_window(
+            budget,
+            bc_models::BudgetWindow::custom(start, end, label),
+            None,
+        )
+        .await
     }
 
     /// Computes budget status for multiple budgets as of `as_of`.
@@ -715,53 +720,111 @@ impl BudgetStatusEngine {
         period_start: jiff::civil::Date,
         period_end: jiff::civil::Date,
         tag_filter: Option<&bc_models::TagId>,
+        query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<Vec<(String, String)>> {
-        match tag_filter {
-            Some(tag) => sqlx::query_as(
-                "WITH RECURSIVE \
-                   acct_tree(id) AS ( \
-                     SELECT ? UNION ALL \
-                     SELECT a.id FROM accounts a \
-                     INNER JOIN acct_tree ON a.parent_id = acct_tree.id \
-                   ), \
-                   tag_subtree(id) AS ( \
-                     SELECT ? UNION ALL \
-                     SELECT tg.id FROM tags tg \
-                     INNER JOIN tag_subtree ON tg.parent_id = tag_subtree.id \
-                   ) \
-                 SELECT p.amount, p.commodity FROM postings p \
-                 JOIN transactions t ON t.id = p.transaction_id \
-                 WHERE p.account_id IN (SELECT id FROM acct_tree) \
-                   AND t.date >= ? AND t.date < ? \
-                   AND EXISTS ( \
-                     SELECT 1 FROM posting_tags pt WHERE pt.posting_id = p.id \
-                     AND pt.tag_id IN (SELECT id FROM tag_subtree))",
-            )
-            .bind(account_id.to_string())
-            .bind(tag.to_string())
-            .bind(period_start.to_string())
-            .bind(period_end.to_string())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Into::into),
-            None => sqlx::query_as(
-                "WITH RECURSIVE acct_tree(id) AS ( \
+        let filter_accounts = match query {
+            Some(q) => crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?,
+            None => None,
+        };
+
+        let mut sql = String::from(
+            "WITH RECURSIVE acct_tree(id) AS ( \
+               SELECT ? UNION ALL \
+               SELECT a.id FROM accounts a \
+               INNER JOIN acct_tree ON a.parent_id = acct_tree.id \
+             )",
+        );
+        if tag_filter.is_some() {
+            sql.push_str(
+                ", tag_subtree(id) AS ( \
                    SELECT ? UNION ALL \
-                   SELECT a.id FROM accounts a \
-                   INNER JOIN acct_tree ON a.parent_id = acct_tree.id \
-                 ) \
-                 SELECT p.amount, p.commodity FROM postings p \
-                 JOIN transactions t ON t.id = p.transaction_id \
-                 WHERE p.account_id IN (SELECT id FROM acct_tree) \
-                   AND t.date >= ? AND t.date < ?",
-            )
-            .bind(account_id.to_string())
-            .bind(period_start.to_string())
-            .bind(period_end.to_string())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Into::into),
+                   SELECT tg.id FROM tags tg \
+                   INNER JOIN tag_subtree ON tg.parent_id = tag_subtree.id \
+                 )",
+            );
         }
+        sql.push_str(
+            " SELECT p.amount, p.commodity FROM postings p \
+              JOIN transactions t ON t.id = p.transaction_id \
+              WHERE p.account_id IN (SELECT id FROM acct_tree) \
+                AND t.date >= ? AND t.date < ?",
+        );
+        if tag_filter.is_some() {
+            sql.push_str(
+                " AND EXISTS ( \
+                    SELECT 1 FROM posting_tags pt WHERE pt.posting_id = p.id \
+                    AND pt.tag_id IN (SELECT id FROM tag_subtree))",
+            );
+        }
+
+        if let Some(q) = query {
+            if q.text.is_some() {
+                sql.push_str(
+                    " AND (lower(t.payee) LIKE ? ESCAPE '\\' OR lower(t.description) LIKE ? ESCAPE '\\')",
+                );
+            }
+            if q.reconciliation.is_some() {
+                sql.push_str(" AND t.reconciliation = ?");
+            }
+            if let Some(set) = &filter_accounts {
+                let ph = crate::transaction::sql_placeholders(set.len());
+                sql.push_str(" AND p.account_id IN (");
+                sql.push_str(&ph);
+                sql.push(')');
+            }
+            if !q.tags.is_empty() {
+                let ph = crate::transaction::sql_placeholders(q.tags.len());
+                sql.push_str(
+                    " AND (EXISTS (SELECT 1 FROM transaction_tags tt \
+                            WHERE tt.transaction_id = t.id AND tt.tag_id IN (",
+                );
+                sql.push_str(&ph);
+                sql.push_str(
+                    ")) OR EXISTS (SELECT 1 FROM posting_tags pt \
+                            WHERE pt.posting_id = p.id AND pt.tag_id IN (",
+                );
+                sql.push_str(&ph);
+                sql.push_str(")))");
+            }
+        }
+
+        let mut stmt = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql));
+        stmt = stmt.bind(account_id.to_string());
+        if let Some(tag) = tag_filter {
+            stmt = stmt.bind(tag.to_string());
+        }
+        stmt = stmt
+            .bind(period_start.to_string())
+            .bind(period_end.to_string());
+        if let Some(q) = query {
+            if let Some(text) = &q.text {
+                let needle = format!(
+                    "%{}%",
+                    crate::search::escape_like(&text.to_ascii_lowercase())
+                );
+                stmt = stmt.bind(needle.clone()).bind(needle);
+            }
+            if let Some(rec) = q.reconciliation {
+                stmt = stmt.bind(crate::db::to_db_str(rec)?);
+            }
+            if let Some(set) = &filter_accounts {
+                let mut ids: Vec<&bc_models::AccountId> = set.iter().collect();
+                ids.sort_by_key(ToString::to_string);
+                for id in ids {
+                    stmt = stmt.bind(id.to_string());
+                }
+            }
+            if !q.tags.is_empty() {
+                for t in &q.tags {
+                    stmt = stmt.bind(t.to_string());
+                }
+                for t in &q.tags {
+                    stmt = stmt.bind(t.to_string());
+                }
+            }
+        }
+
+        stmt.fetch_all(&self.pool).await.map_err(Into::into)
     }
 
     /// Sums actuals for `account_id` governed by `rev` in `[period_start, period_end)`.
@@ -781,11 +844,19 @@ impl BudgetStatusEngine {
         rev: &bc_models::BudgetRevision,
         period_start: jiff::civil::Date,
         period_end: jiff::civil::Date,
+        query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<(bc_models::Decimal, Option<bc_models::CommodityCode>)> {
         let rows = self
-            .fetch_posting_amounts(account_id, period_start, period_end, rev.tag_filter())
+            .fetch_posting_amounts(
+                account_id,
+                period_start,
+                period_end,
+                rev.tag_filter(),
+                query,
+            )
             .await?;
 
+        let amount_q = query.and_then(|q| q.amount.as_ref());
         let target_commodity: Option<bc_models::CommodityCode> =
             rev.target().map(|t| t.commodity().clone());
 
@@ -798,6 +869,13 @@ impl BudgetStatusEngine {
                 })?;
                 let posting_commodity = bc_models::CommodityCode::new(&comm_str);
                 let posting_amount = bc_models::Amount::new(value, posting_commodity);
+                // AMOUNT dimension is matched EXACTLY in Rust (commodity-checked); never
+                // magnitude-compared in SQL.
+                if let Some(aq) = amount_q
+                    && !aq.matches(Some(&posting_amount))
+                {
+                    continue;
+                }
                 match self.fx.convert(&posting_amount, target) {
                     Ok(a) => {
                         total = total.checked_add(a.value()).ok_or_else(|| {
@@ -822,6 +900,13 @@ impl BudgetStatusEngine {
                 let value = amt_str.parse::<bc_models::Decimal>().map_err(|e| {
                     crate::BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
                 })?;
+                if let Some(aq) = amount_q {
+                    let posting_amount =
+                        bc_models::Amount::new(value, bc_models::CommodityCode::new(&comm_str));
+                    if !aq.matches(Some(&posting_amount)) {
+                        continue;
+                    }
+                }
                 let entry = groups.entry(comm_str).or_insert(bc_models::Decimal::ZERO);
                 *entry = entry
                     .checked_add(value)
@@ -953,7 +1038,7 @@ impl BudgetStatusEngine {
             let prev_allocated =
                 Self::period_target_prorated(prev.revision, prev.start, prev.start, prev.end);
             let (prev_actuals, _) = self
-                .sum_actuals(account_id, prev.revision, prev.start, prev.end)
+                .sum_actuals(account_id, prev.revision, prev.start, prev.end, None)
                 .await?;
             let prev_rollover = self
                 .rollover_into(account_id, revisions, prev.start)
@@ -1438,7 +1523,10 @@ mod budget_service_tests {
             Date::constant(2026, 5, 1),
             "FebApr",
         );
-        let s = engine.status_for_window(&budget, w).await.expect("status");
+        let s = engine
+            .status_for_window(&budget, w, None)
+            .await
+            .expect("status");
         assert_eq!(s.allocated, dec!(1200));
     }
 
@@ -1477,7 +1565,10 @@ mod budget_service_tests {
             Date::constant(2026, 2, 1),
             "tail",
         );
-        let s = engine.status_for_window(&budget, w).await.expect("status");
+        let s = engine
+            .status_for_window(&budget, w, None)
+            .await
+            .expect("status");
         assert_eq!(s.allocated, dec!(30));
     }
 
@@ -1567,7 +1658,7 @@ mod budget_service_tests {
             "zero",
         );
         let status = engine
-            .status_for_window(&budget, zero_window)
+            .status_for_window(&budget, zero_window, None)
             .await
             .expect("zero-day window should not error");
         assert_eq!(status.allocated, Decimal::ZERO);

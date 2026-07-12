@@ -41,7 +41,7 @@ pub async fn get_budget_overview(
 
     let overview = state
         .budget_tree
-        .get_overview(&period, period_start)
+        .get_overview(&period, period_start, None)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 

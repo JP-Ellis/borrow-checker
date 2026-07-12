@@ -107,6 +107,7 @@ impl BudgetTreeService {
         &self,
         display_period: &Period,
         display_start: Date,
+        query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<BudgetOverview> {
         let (window_start, window_end) = display_period.range_containing(display_start);
 
@@ -130,7 +131,9 @@ impl BudgetTreeService {
 
             let window =
                 bc_models::BudgetWindow::custom(window_start, window_end, "display".to_owned());
-            let status = status_engine.status_for_window(budget, window).await?;
+            let status = status_engine
+                .status_for_window(budget, window, query)
+                .await?;
 
             let account = account_map
                 .get(budget.account_id())
@@ -240,7 +243,9 @@ impl BudgetTreeService {
                 overlap.overlap_end,
                 overlap.native_start.to_string(),
             );
-            let status = status_engine.status_for_window(budget, window).await?;
+            let status = status_engine
+                .status_for_window(budget, window, None)
+                .await?;
 
             result.push(NativePeriodStatus {
                 overlap,
@@ -608,7 +613,7 @@ mod tests {
 
         let svc = BudgetTreeService::new(pool.clone(), noop_fx());
         let overview = svc
-            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1))
+            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), None)
             .await
             .expect("overview");
 
@@ -658,7 +663,7 @@ mod tests {
 
         let svc = BudgetTreeService::new(pool.clone(), noop_fx());
         let overview = svc
-            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1))
+            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), None)
             .await
             .expect("overview");
 
@@ -722,7 +727,7 @@ mod tests {
 
         let svc = BudgetTreeService::new(pool.clone(), noop_fx());
         let overview = svc
-            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1))
+            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), None)
             .await
             .expect("overview");
 
@@ -739,5 +744,192 @@ mod tests {
         assert_eq!(overview.summary.overspent_count, 0);
 
         drop(restaurants);
+    }
+
+    fn query_text(text: &str) -> crate::search::TransactionQuery {
+        crate::search::TransactionQuery {
+            text: Some(text.to_owned()),
+            ..Default::default()
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filter_text_narrows_actuals(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let restaurants = accounts
+            .create()
+            .name("Restaurants")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("account");
+        let checking = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("checking");
+
+        let budgets = BudgetService::new(pool.clone());
+        budgets
+            .create()
+            .account_id(restaurants.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(dec!(300), CommodityCode::new("AUD")))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("budget");
+
+        let txns = TransactionService::new(pool.clone());
+        for (desc, amt) in [("Dinner at Cafe", dec!(40)), ("Groceries", dec!(60))] {
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "negation of a bounded test amount"
+            )]
+            let neg_amt = -amt;
+            txns.create(
+                Transaction::builder()
+                    .id(bc_models::TransactionId::new())
+                    .date(Date::constant(2026, 6, 11))
+                    .description(desc)
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(restaurants.clone())
+                            .amount(Amount::new(amt, CommodityCode::new("AUD")))
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(checking.clone())
+                            .amount(Amount::new(neg_amt, CommodityCode::new("AUD")))
+                            .build(),
+                    ])
+                    .reconciliation(Reconciliation::Reconciled)
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("tx");
+        }
+
+        let svc = BudgetTreeService::new(pool.clone(), noop_fx());
+        let q = query_text("cafe");
+        let overview = svc
+            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), Some(&q))
+            .await
+            .expect("overview");
+        let node = overview.nodes.first().expect("one node");
+        // Only "Dinner at Cafe" (40) matches; "Groceries" (60) excluded.
+        assert_eq!(
+            node.actuals,
+            vec![Amount::new(dec!(40), CommodityCode::new("AUD"))]
+        );
+
+        // Empty query reproduces the unfiltered total (100).
+        let unfiltered = svc
+            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), None)
+            .await
+            .expect("overview");
+        let unfiltered_node = unfiltered.nodes.first().expect("one node");
+        assert_eq!(
+            unfiltered_node.actuals,
+            vec![Amount::new(dec!(100), CommodityCode::new("AUD"))]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filter_amount_is_commodity_exact(pool: sqlx::SqlitePool) {
+        // A tracking-only budget (no target) whose account has one USD and one BTC posting.
+        // `over:USD50` must count ONLY the USD posting; BTC is never magnitude-compared.
+        let accounts = AccountService::new(pool.clone());
+        let wallet = accounts
+            .create()
+            .name("Wallet")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("wallet");
+        let source = accounts
+            .create()
+            .name("Source")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("source");
+
+        let budgets = BudgetService::new(pool.clone());
+        budgets
+            .create()
+            .account_id(wallet.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("tracking budget");
+
+        let txns = TransactionService::new(pool.clone());
+        for (usd_amt, btc_amt) in [(dec!(100), dec!(0.001))] {
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "negation of a bounded test amount"
+            )]
+            let neg_usd = -usd_amt;
+            txns.create(
+                Transaction::builder()
+                    .id(bc_models::TransactionId::new())
+                    .date(Date::constant(2026, 6, 5))
+                    .description("Mixed")
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(wallet.clone())
+                            .amount(Amount::new(usd_amt, CommodityCode::new("USD")))
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(wallet.clone())
+                            .amount(Amount::new(btc_amt, CommodityCode::new("BTC")))
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(source.clone())
+                            .amount(Amount::new(neg_usd, CommodityCode::new("USD")))
+                            .build(),
+                    ])
+                    .reconciliation(Reconciliation::Reconciled)
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("tx");
+        }
+
+        let q = crate::search::TransactionQuery {
+            amount: Some(crate::search::AmountQuery {
+                min: Some(dec!(50)),
+                max: None,
+                commodity: Some(CommodityCode::new("USD")),
+            }),
+            ..Default::default()
+        };
+        let svc = BudgetTreeService::new(pool.clone(), noop_fx());
+        let overview = svc
+            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), Some(&q))
+            .await
+            .expect("overview");
+        let node = overview.nodes.first().expect("one node");
+        // Only the USD 100 posting survives; BTC 0.001 is filtered out on commodity.
+        assert_eq!(
+            node.actuals,
+            vec![Amount::new(dec!(100), CommodityCode::new("USD"))]
+        );
     }
 }
