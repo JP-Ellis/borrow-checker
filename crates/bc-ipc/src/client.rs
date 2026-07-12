@@ -227,6 +227,8 @@ struct GetAccountStatsArgs<'a> {
     date_from: jiff::civil::Date,
     /// End of the date range (exclusive).
     date_until: jiff::civil::Date,
+    /// Active global filter; `None` takes the unfiltered fast path.
+    filter: Option<&'a crate::Filter>,
 }
 
 /// Argument struct for [`get_account_sparkline`].
@@ -246,6 +248,16 @@ struct GetAccountSparklineArgs<'a> {
 
 /// Gets windowed income, expense, and balance stats for `account_id`.
 ///
+/// When `filter` is `Some`, the stats are recomputed against it and the real
+/// (unfiltered) opening/closing are attached for reference.
+///
+/// # Arguments
+///
+/// * `account_id` - Account to query.
+/// * `date_from` - Inclusive window start.
+/// * `date_until` - Exclusive window end.
+/// * `filter` - Active global filter, or `None` for the unfiltered fast path.
+///
 /// # Errors
 ///
 /// Returns [`BcError`] if the backend call fails.
@@ -254,6 +266,7 @@ pub async fn get_account_stats(
     account_id: &str,
     date_from: jiff::civil::Date,
     date_until: jiff::civil::Date,
+    filter: Option<&crate::Filter>,
 ) -> Result<crate::AccountStats, BcError> {
     tauri_sys::core::invoke_result::<crate::AccountStats, BcError>(
         commands::GET_ACCOUNT_STATS,
@@ -262,6 +275,7 @@ pub async fn get_account_stats(
             commodity: None,
             date_from,
             date_until,
+            filter,
         },
     )
     .await
