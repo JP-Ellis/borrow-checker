@@ -602,10 +602,6 @@ mod search_tests {
     use crate::transaction::Service;
 
     /// Builds a two-leg AUD transaction on the given date with payee text.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "negating a test fixture's Decimal magnitude to build the offsetting leg"
-    )]
     fn tx_on(
         acc_a: &bc_models::AccountId,
         acc_b: &bc_models::AccountId,
@@ -613,8 +609,25 @@ mod search_tests {
         payee: &str,
         value: rust_decimal::Decimal,
     ) -> Transaction {
+        tx_with_id(TransactionId::new(), acc_a, acc_b, d, payee, value)
+    }
+
+    /// Builds a two-leg AUD transaction with an explicit id, so tests can
+    /// control the relationship between insertion order and id order.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "negating a test fixture's Decimal magnitude to build the offsetting leg"
+    )]
+    fn tx_with_id(
+        id: TransactionId,
+        acc_a: &bc_models::AccountId,
+        acc_b: &bc_models::AccountId,
+        d: Date,
+        payee: &str,
+        value: rust_decimal::Decimal,
+    ) -> Transaction {
         Transaction::builder()
-            .id(TransactionId::new())
+            .id(id)
             .date(d)
             .payee(payee.to_owned())
             .description("desc")
@@ -691,24 +704,49 @@ mod search_tests {
             .await
             .expect("B");
         let svc = Service::new(pool.clone());
-        let t1 = svc
-            .create(tx_on(&a, &b, date(2026, 6, 1), "Amazon", dec!(100)))
-            .await
-            .expect("t1");
-        let t2 = svc
-            .create(tx_on(&a, &b, date(2026, 6, 1), "Coffee", dec!(20)))
-            .await
-            .expect("t2");
+
+        // Create the two same-date transactions out of id order (larger id
+        // first): `ORDER BY t.id ASC` must return them ascending by id, not by
+        // creation order. Without the secondary key SQLite leaves the same-date
+        // tie unspecified, so this asserts the deterministic contract the clause
+        // guarantees rather than relying on an incidental scan order.
+        let (lo, hi) = {
+            let x = TransactionId::new();
+            let y = TransactionId::new();
+            if x.to_string() < y.to_string() {
+                (x, y)
+            } else {
+                (y, x)
+            }
+        };
+        svc.create(tx_with_id(
+            hi.clone(),
+            &a,
+            &b,
+            date(2026, 6, 1),
+            "Higher id",
+            dec!(100),
+        ))
+        .await
+        .expect("hi");
+        svc.create(tx_with_id(
+            lo.clone(),
+            &a,
+            &b,
+            date(2026, 6, 1),
+            "Lower id",
+            dec!(20),
+        ))
+        .await
+        .expect("lo");
 
         let out = svc
             .search(&TransactionQuery::default())
             .await
             .expect("search");
         let ids: Vec<_> = out.iter().map(|m| m.transaction.id().to_string()).collect();
-        let mut expected = vec![t1.to_string(), t2.to_string()];
-        expected.sort();
 
-        assert_eq!(ids, expected);
+        assert_eq!(ids, vec![lo.to_string(), hi.to_string()]);
     }
 
     #[sqlx::test(migrations = "./migrations")]
