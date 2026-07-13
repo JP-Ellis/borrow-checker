@@ -891,7 +891,7 @@ impl Period {
 /// The `(bucket_period, count)` to fetch.
 #[must_use]
 #[inline]
-pub fn sparkline_bucketing_for(start: jiff::civil::Date, end: jiff::civil::Date) -> (Period, u32) {
+pub fn sparkline_bucketing_for(start: Date, end: Date) -> (Period, u32) {
     let span_days = start
         .until(end)
         .map_or(0, |span| u64::try_from(span.get_days()).unwrap_or(0));
