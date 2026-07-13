@@ -856,26 +856,6 @@ pub enum Period {
 }
 
 impl Period {
-    /// Returns the sparkline bucketing for a page displayed at this period.
-    ///
-    /// The sparkline is a trend, so its buckets are a resolution finer than the
-    /// page period. Returns the `(bucket_period, count)` pair to fetch.
-    ///
-    /// # Returns
-    ///
-    /// A tuple of the bucket granularity and the number of buckets to display.
-    #[must_use]
-    #[inline]
-    pub fn sparkline_bucketing(&self) -> (Period, u32) {
-        match self {
-            Self::Daily | Self::Weekly => (Self::Daily, 14),
-            Self::Fortnightly => (Self::Weekly, 8),
-            Self::Monthly => (Self::Weekly, 13),
-            Self::Quarterly | Self::FinancialQuarter { .. } => (Self::Monthly, 6),
-            Self::CalendarYear | Self::FinancialYear { .. } => (Self::Monthly, 12),
-        }
-    }
-
     /// Returns a compact human-readable label for this period.
     #[must_use]
     #[inline]
@@ -891,6 +871,41 @@ impl Period {
             Self::FinancialQuarter { .. } => "financial quarter",
         }
     }
+}
+
+/// Chooses a sparkline bucketing for the overarching span `[start, end)`.
+///
+/// Picks the finest bucket [`Period`] that yields a readable count for the
+/// span, then `count = ceil(span_days / nominal_bucket_days)` clamped to `>= 1`.
+/// Edge buckets may be partial. Nominal lengths: Daily = 1, Weekly = 7,
+/// Monthly = 31, Quarterly = 92 — chosen so the `PeriodNav` spans reproduce the
+/// established sparkline densities exactly.
+///
+/// # Arguments
+///
+/// * `start` - Inclusive span start.
+/// * `end` - Exclusive span end.
+///
+/// # Returns
+///
+/// The `(bucket_period, count)` to fetch.
+#[must_use]
+#[inline]
+pub fn sparkline_bucketing_for(start: jiff::civil::Date, end: jiff::civil::Date) -> (Period, u32) {
+    let span_days = start
+        .until(end)
+        .map_or(0, |span| u64::try_from(span.get_days()).unwrap_or(0));
+    let (bucket, nominal) = if span_days <= 21 {
+        (Period::Daily, 1_u64)
+    } else if span_days <= 120 {
+        (Period::Weekly, 7_u64)
+    } else if span_days <= 730 {
+        (Period::Monthly, 31_u64)
+    } else {
+        (Period::Quarterly, 92_u64)
+    };
+    let count = span_days.div_ceil(nominal).max(1);
+    (bucket, u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 // MARK: models conversions
@@ -1168,37 +1183,36 @@ mod tests {
     }
 
     #[test]
-    fn period_sparkline_bucketing() {
-        assert_eq!(Period::Daily.sparkline_bucketing(), (Period::Daily, 14));
-        assert_eq!(Period::Weekly.sparkline_bucketing(), (Period::Daily, 14));
+    fn sparkline_bucketing_for_spans() {
+        // ≤ 21 days → Daily; count = ceil(days / 1).
         assert_eq!(
-            Period::Fortnightly.sparkline_bucketing(),
-            (Period::Weekly, 8)
+            super::sparkline_bucketing_for(date(2025, 1, 1), date(2025, 1, 15)),
+            (Period::Daily, 14)
         );
-        assert_eq!(Period::Monthly.sparkline_bucketing(), (Period::Weekly, 13));
+        // ≤ 120 days → Weekly; 91-day span → ceil(91/7) = 13 (Monthly page density).
         assert_eq!(
-            Period::Quarterly.sparkline_bucketing(),
-            (Period::Monthly, 6)
+            super::sparkline_bucketing_for(date(2025, 1, 1), date(2025, 4, 2)),
+            (Period::Weekly, 13)
         );
+        // 45-day filter range → Weekly, ceil(45/7) = 7.
         assert_eq!(
-            Period::FinancialQuarter {
-                start_month: 7,
-                start_day: 1,
-            }
-            .sparkline_bucketing(),
-            (Period::Monthly, 6)
+            super::sparkline_bucketing_for(date(2025, 1, 1), date(2025, 2, 15)),
+            (Period::Weekly, 7)
         );
+        // Full calendar year (365 days) → Monthly, ceil(365/31) = 12.
         assert_eq!(
-            Period::CalendarYear.sparkline_bucketing(),
+            super::sparkline_bucketing_for(date(2025, 1, 1), date(2026, 1, 1)),
             (Period::Monthly, 12)
         );
+        // > 730 days → Quarterly.
         assert_eq!(
-            Period::FinancialYear {
-                start_month: 7,
-                start_day: 1,
-            }
-            .sparkline_bucketing(),
-            (Period::Monthly, 12)
+            super::sparkline_bucketing_for(date(2020, 1, 1), date(2025, 1, 1)).0,
+            Period::Quarterly
+        );
+        // Zero/negative span clamps count to ≥ 1.
+        assert_eq!(
+            super::sparkline_bucketing_for(date(2025, 1, 1), date(2025, 1, 1)),
+            (Period::Daily, 1)
         );
     }
 
