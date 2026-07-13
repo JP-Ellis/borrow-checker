@@ -71,12 +71,9 @@ pub fn AccountDashboard(
     let bucketing = Signal::derive(move || {
         let period = period_window.get();
         let start_win = window_start.get();
-        filter_store.filter.with(|f| {
-            let (span_start, span_end) =
-                crate::pages::accounts::query::sparkline_span(f, &period, start_win);
-            let (bucket, count) = bc_ipc::sparkline_bucketing_for(span_start, span_end);
-            (bucket, count, span_end)
-        })
+        filter_store
+            .filter
+            .with(|f| crate::pages::accounts::query::sparkline_bucketing(f, &period, start_win))
     });
 
     let sparkline_resource = LocalResource::new(move || {
