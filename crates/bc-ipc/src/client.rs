@@ -244,6 +244,8 @@ struct GetAccountSparklineArgs<'a> {
     period: crate::Period,
     /// Reference date; the most recent bucket contains this date.
     as_of: jiff::civil::Date,
+    /// Active global filter, or `None` for the unfiltered fast path.
+    filter: Option<&'a crate::Filter>,
 }
 
 /// Gets windowed income, expense, and balance stats for `account_id`.
@@ -312,6 +314,7 @@ pub async fn account_latest_activity(
 /// * `period` - Time-bucket granularity.
 /// * `count` - Number of buckets to return.
 /// * `as_of` - Reference date; the most recent bucket contains this date.
+/// * `filter` - Active global filter, or `None` for the unfiltered fast path.
 ///
 /// # Errors
 ///
@@ -322,6 +325,7 @@ pub async fn get_account_sparkline(
     period: crate::Period,
     count: u32,
     as_of: jiff::civil::Date,
+    filter: Option<&crate::Filter>,
 ) -> Result<Vec<crate::SparkPoint>, BcError> {
     tauri_sys::core::invoke_result::<Vec<crate::SparkPoint>, BcError>(
         commands::GET_ACCOUNT_SPARKLINE,
@@ -331,6 +335,7 @@ pub async fn get_account_sparkline(
             count,
             period,
             as_of,
+            filter,
         },
     )
     .await

@@ -669,6 +669,7 @@ pub async fn get_transaction_audit(
 /// * `period`     - Optional bucket period (default Monthly).
 /// * `as_of`      - Optional reference date; the most recent bucket contains this
 ///   date. Defaults to today.
+/// * `filter`     - Active global filter, or `None` for the unfiltered fast path.
 /// * `state`      - Tauri managed application state.
 ///
 /// # Panics
@@ -678,7 +679,8 @@ pub async fn get_transaction_audit(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError`] if the account ID is invalid or a service call fails.
+/// Returns [`bc_ipc::BcError`] if the account ID or filter is invalid, or a
+/// service call fails.
 #[expect(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
@@ -690,6 +692,7 @@ pub async fn get_account_sparkline(
     count: Option<u32>,
     period: Option<bc_ipc::Period>,
     as_of: Option<jiff::civil::Date>,
+    filter: Option<bc_ipc::Filter>,
     state: State<'_, AppState>,
 ) -> Result<Vec<bc_ipc::SparkPoint>, bc_ipc::BcError> {
     use core::num::NonZeroUsize;
@@ -722,11 +725,28 @@ pub async fn get_account_sparkline(
 
     let anchor = as_of.unwrap_or_else(|| jiff::Zoned::now().date());
 
-    let buckets = state
-        .balance_engine
-        .posting_buckets(&id, &commodity_code, &model_period, bucket_count, anchor)
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let buckets = match filter {
+        None => state
+            .balance_engine
+            .posting_buckets(&id, &commodity_code, &model_period, bucket_count, anchor)
+            .await
+            .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?,
+        Some(active_filter) => {
+            let query = bc_core::search::TransactionQuery::try_from(active_filter)?;
+            state
+                .transactions
+                .filtered_posting_buckets(
+                    &id,
+                    &commodity_code,
+                    &query,
+                    &model_period,
+                    bucket_count,
+                    anchor,
+                )
+                .await
+                .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?
+        }
+    };
 
     let points = buckets
         .into_iter()
