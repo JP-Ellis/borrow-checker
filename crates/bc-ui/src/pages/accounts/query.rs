@@ -68,6 +68,52 @@ pub fn filter_has_non_date_dim(filter: &Filter) -> bool {
         || filter.reconciliation.is_some()
 }
 
+/// The overarching sparkline span length for a `PeriodNav` view at `period`.
+///
+/// The trend shows the current period plus a few of context, scaled by
+/// granularity, so that the finer bucketing (see
+/// [`bc_ipc::sparkline_bucketing_for`]) yields a readable density.
+fn nav_span_len(period: &Period) -> jiff::Span {
+    match period {
+        Period::Fortnightly => jiff::Span::new().weeks(8_i64),
+        Period::Monthly => jiff::Span::new().weeks(13_i64),
+        Period::Quarterly | Period::FinancialQuarter { .. } => jiff::Span::new().months(6_i64),
+        Period::CalendarYear | Period::FinancialYear { .. } => jiff::Span::new().months(12_i64),
+        // Daily, Weekly, and future variants: a two-week window of context.
+        Period::Daily | Period::Weekly | &_ => jiff::Span::new().days(14_i64),
+    }
+}
+
+/// Resolves the overarching sparkline span `[start, end)` for the active filter.
+///
+/// Stage 1 of the span-driven sparkline bucketing. The source depends on whether
+/// the filter carries a date bound:
+///
+/// * both bounds → the exact filter range;
+/// * `after:` only → `[date_from, nav_end)`;
+/// * `before:` only → a nav-length span ending at `date_until`;
+/// * no date bound → the `PeriodNav` span ending at the page window end.
+///
+/// # Arguments
+///
+/// * `user` - The active global filter.
+/// * `period` - The page period granularity.
+/// * `window_start` - The page display-window start.
+///
+/// # Returns
+///
+/// The `[start, end)` span to bucket.
+#[must_use]
+pub fn sparkline_span(user: &Filter, period: &Period, window_start: Date) -> (Date, Date) {
+    let nav_end = period_end(period, window_start);
+    match (user.date_from, user.date_until) {
+        (Some(from), Some(until)) => (from, until),
+        (Some(from), None) => (from, nav_end),
+        (None, Some(until)) => (until.saturating_sub(nav_span_len(period)), until),
+        (None, None) => (nav_end.saturating_sub(nav_span_len(period)), nav_end),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use bc_ipc::AccountRef;
@@ -77,6 +123,7 @@ mod tests {
     use bc_ipc::Reconciliation;
     use bc_ipc::Transaction;
     use jiff::civil::Date;
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rust_decimal::Decimal;
 
@@ -179,5 +226,51 @@ mod tests {
         let mut texted = bc_ipc::Filter::default();
         texted.text = Some("coles".to_owned());
         assert!(filter_has_non_date_dim(&texted));
+    }
+
+    #[test]
+    fn sparkline_span_nav_source_reproduces_year_density() {
+        let user = bc_ipc::Filter::default();
+        /* CalendarYear window starting 2025-01-01. */
+        let (start, end) =
+            super::sparkline_span(&user, &bc_ipc::Period::CalendarYear, date(2025, 1, 1));
+        assert_eq!(end, date(2026, 1, 1));
+        /* 12-month span → Monthly × 12 via stage 2. */
+        assert_eq!(
+            bc_ipc::sparkline_bucketing_for(start, end),
+            (bc_ipc::Period::Monthly, 12)
+        );
+    }
+
+    #[test]
+    fn sparkline_span_both_bounds_is_exact_filter_range() {
+        let mut user = bc_ipc::Filter::default();
+        user.date_from = Some(date(2025, 3, 1));
+        user.date_until = Some(date(2025, 4, 15));
+        let (start, end) = super::sparkline_span(&user, &bc_ipc::Period::Monthly, date(2025, 1, 1));
+        assert_eq!((start, end), (date(2025, 3, 1), date(2025, 4, 15)));
+    }
+
+    #[test]
+    fn sparkline_span_after_only_ends_at_nav_end() {
+        let mut user = bc_ipc::Filter::default();
+        user.date_from = Some(date(2025, 2, 10));
+        let (start, end) = super::sparkline_span(&user, &bc_ipc::Period::Monthly, date(2025, 6, 1));
+        assert_eq!(start, date(2025, 2, 10));
+        assert_eq!(
+            end,
+            super::period_end(&bc_ipc::Period::Monthly, date(2025, 6, 1))
+        );
+    }
+
+    #[test]
+    fn sparkline_span_before_only_uses_nav_length_ending_at_until() {
+        let mut user = bc_ipc::Filter::default();
+        user.date_until = Some(date(2025, 6, 1));
+        let (start, end) =
+            super::sparkline_span(&user, &bc_ipc::Period::CalendarYear, date(2025, 1, 1));
+        assert_eq!(end, date(2025, 6, 1));
+        /* Year granularity → ~12-month lookback ending at `until`. */
+        assert_eq!(start, date(2024, 6, 1));
     }
 }
