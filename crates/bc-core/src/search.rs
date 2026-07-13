@@ -514,6 +514,109 @@ impl Service {
             tx_count: u32::try_from(in_window_txns.len()).unwrap_or(u32::MAX),
         })
     }
+
+    /// Computes filtered cash-flow [`PostingBucket`](crate::balance::PostingBucket)s
+    /// for `account_id` in `commodity`, `count` buckets of `period` trailing from
+    /// `as_of`.
+    ///
+    /// The filter selects a transaction set via [`Self::search`]; this method
+    /// scopes that set to transactions touching `account_id` and buckets the
+    /// account's own legs by date into inflow (positive) / outflow (`|negative|`).
+    /// `matched_postings` decides membership only, never which legs are summed.
+    /// The query's own date bounds are overridden with the bucket span, so the
+    /// bucket ranges are the single date authority.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account whose legs are bucketed.
+    /// * `commodity` - Commodity code; legs in other commodities are ignored.
+    /// * `query` - The active query; its non-date dimensions and accounts drive membership.
+    /// * `period` - Bucket width.
+    /// * `count` - Number of buckets.
+    /// * `as_of` - Reference date; the newest bucket contains it.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec` of [`PostingBucket`](crate::balance::PostingBucket), oldest-first,
+    /// of length `count`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database or data-parse failure, or if a
+    /// bucket total overflows [`Decimal`]'s range.
+    pub async fn filtered_posting_buckets(
+        &self,
+        account_id: &AccountId,
+        commodity: &str,
+        query: &TransactionQuery,
+        period: &bc_models::Period,
+        count: core::num::NonZeroUsize,
+        as_of: Date,
+    ) -> BcResult<Vec<crate::balance::PostingBucket>> {
+        let ranges = crate::balance::bucket_ranges(period, count, as_of);
+        let (Some(&(earliest_start, _)), Some(&(_, latest_end))) = (ranges.first(), ranges.last())
+        else {
+            return Ok(vec![]);
+        };
+
+        let mut q = query.clone();
+        q.date_from = Some(earliest_start);
+        q.date_until = Some(latest_end);
+        let matched = self.search(&q).await?;
+
+        // Per-bucket (inflow, outflow) accumulators aligned with `ranges`.
+        let mut acc: Vec<(Decimal, Decimal)> = vec![(Decimal::ZERO, Decimal::ZERO); ranges.len()];
+
+        for m in &matched {
+            let tx = &m.transaction;
+            let date = tx.date();
+            for posting in tx.postings() {
+                if posting.account_id() != account_id {
+                    continue;
+                }
+                let Some(amount) = posting.amount() else {
+                    continue;
+                };
+                if amount.commodity().as_str() != commodity {
+                    continue;
+                }
+                let Some(idx) = ranges
+                    .iter()
+                    .position(|(start, end)| date >= *start && date < *end)
+                else {
+                    continue;
+                };
+                let Some(slot) = acc.get_mut(idx) else {
+                    continue;
+                };
+                let value = amount.value();
+                if value >= Decimal::ZERO {
+                    slot.0 = slot
+                        .0
+                        .checked_add(value)
+                        .ok_or_else(|| crate::BcError::BadData("inflow overflow".into()))?;
+                } else {
+                    slot.1 = slot
+                        .1
+                        .checked_sub(value)
+                        .ok_or_else(|| crate::BcError::BadData("outflow overflow".into()))?;
+                }
+            }
+        }
+
+        Ok(ranges
+            .into_iter()
+            .zip(acc)
+            .map(
+                |((start, end), (inflow, outflow))| crate::balance::PostingBucket {
+                    start,
+                    end,
+                    inflow: Amount::new(inflow, commodity),
+                    outflow: Amount::new(outflow, commodity),
+                },
+            )
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -739,6 +842,7 @@ mod search_tests {
     use bc_models::AccountType;
     use bc_models::Amount;
     use bc_models::CommodityCode;
+    use bc_models::Period;
     use bc_models::Posting;
     use bc_models::PostingId;
     use bc_models::Reconciliation;
@@ -752,6 +856,7 @@ mod search_tests {
 
     use super::AmountQuery;
     use super::TransactionQuery;
+    use crate::balance::Engine;
     use crate::transaction::Service;
 
     /// Builds a two-leg AUD transaction on the given date with payee text.
@@ -1724,6 +1829,192 @@ mod search_tests {
         assert_eq!(stats.income.value(), dec!(100.00));
         assert_eq!(stats.tx_count, 1);
         assert_eq!(stats.closing.value(), dec!(100.00));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_buckets_match_unfiltered_for_empty_query(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+        // +100 on A in Jan 2025, -40 on A in Feb 2025.
+        svc.create(tx_on(&a, &b, date(2025, 1, 10), "jan-in", dec!(100)))
+            .await
+            .expect("jan");
+        svc.create(tx_on(&b, &a, date(2025, 2, 5), "feb-out", dec!(40)))
+            .await
+            .expect("feb");
+
+        let engine = Engine::new(pool.clone());
+        let count = core::num::NonZeroUsize::new(2).expect("2 > 0");
+        let as_of = date(2025, 2, 15);
+        let period = Period::Monthly;
+
+        let unfiltered = engine
+            .posting_buckets(&a, "AUD", &period, count, as_of)
+            .await
+            .expect("posting_buckets");
+        let filtered = svc
+            .filtered_posting_buckets(
+                &a,
+                "AUD",
+                &TransactionQuery::default(),
+                &period,
+                count,
+                as_of,
+            )
+            .await
+            .expect("filtered_posting_buckets");
+
+        assert_eq!(filtered.len(), unfiltered.len());
+        for (f, u) in filtered.iter().zip(&unfiltered) {
+            assert_eq!(f.inflow.value(), u.inflow.value());
+            assert_eq!(f.outflow.value(), u.outflow.value());
+            assert_eq!((f.start, f.end), (u.start, u.end));
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_buckets_scope_to_tag(pool: sqlx::SqlitePool) {
+        use bc_models::TagPath;
+
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let tags = crate::tag::Service::new(pool.clone());
+        let t = tags
+            .create_path(&"t".parse::<TagPath>().expect("path"))
+            .await
+            .expect("tag");
+
+        let svc = Service::new(pool.clone());
+        // Tagged +100 in Jan.
+        let tagged = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2025, 1, 10))
+            .payee("tagged".to_owned())
+            .description("desc")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(a.clone())
+                    .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(b.clone())
+                    .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Reconciled)
+            .tag_ids(vec![t.clone()])
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(tagged).await.expect("tagged");
+        // Untagged +50 in Jan; must be excluded since its transaction never
+        // matches the tag predicate.
+        svc.create(tx_on(&a, &b, date(2025, 1, 15), "untagged", dec!(50)))
+            .await
+            .expect("untagged");
+
+        let query = TransactionQuery {
+            tags: vec![t],
+            ..Default::default()
+        };
+        let count = core::num::NonZeroUsize::new(1).expect("1 > 0");
+        let as_of = date(2025, 1, 20);
+        let period = Period::Monthly;
+
+        let buckets = svc
+            .filtered_posting_buckets(&a, "AUD", &query, &period, count, as_of)
+            .await
+            .expect("filtered_posting_buckets");
+
+        assert_eq!(buckets.len(), 1);
+        let jan = buckets.first().expect("one bucket");
+        assert_eq!(jan.inflow.value(), dec!(100));
+        assert_eq!(jan.outflow.value(), dec!(0));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_buckets_foreign_account_empty_when_no_shared_txn(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let c = accts
+            .create()
+            .name("C")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("C");
+        let svc = Service::new(pool.clone());
+        // A<->B transaction only; filter targets C (which A never transacts with).
+        svc.create(tx_on(&a, &b, date(2025, 1, 10), "ab", dec!(100)))
+            .await
+            .expect("t1");
+
+        let query = TransactionQuery {
+            accounts: vec![c],
+            ..Default::default()
+        };
+        let count = core::num::NonZeroUsize::new(2).expect("2 > 0");
+        let as_of = date(2025, 2, 15);
+        let period = Period::Monthly;
+
+        let buckets = svc
+            .filtered_posting_buckets(&a, "AUD", &query, &period, count, as_of)
+            .await
+            .expect("filtered_posting_buckets");
+
+        assert_eq!(buckets.len(), 2);
+        for bucket in &buckets {
+            assert_eq!(bucket.inflow.value(), dec!(0));
+            assert_eq!(bucket.outflow.value(), dec!(0));
+        }
     }
 
     #[sqlx::test(migrations = "./migrations")]
