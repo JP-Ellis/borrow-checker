@@ -64,18 +64,36 @@ pub fn AccountDashboard(
     let currencies = crate::currency_ctx::use_currency_store();
     let sparkline_account_id = node.id.clone();
 
+    let filter_store = crate::filter_ctx::use_filter_store();
+
+    // Single source of truth for the sparkline's bucketing + anchor, derived
+    // from the active filter and the page period/window.
+    let bucketing = Signal::derive(move || {
+        let period = period_window.get();
+        let start_win = window_start.get();
+        filter_store.filter.with(|f| {
+            let (span_start, span_end) =
+                crate::pages::accounts::query::sparkline_span(f, &period, start_win);
+            let (bucket, count) = bc_ipc::sparkline_bucketing_for(span_start, span_end);
+            (bucket, count, span_end)
+        })
+    });
+
     let sparkline_resource = LocalResource::new(move || {
         let id = sparkline_account_id.clone();
-        let period = period_window.get();
-        let (bucket, n) = period.sparkline_bucketing();
-        // Anchor the trend to the end of the displayed window so navigating the
-        // page period shifts the sparkline with it.
-        let window_end = crate::components::period_nav::period_end(&period, window_start.get());
-        let as_of = window_end.saturating_sub(jiff::Span::new().days(1_i32));
+        let (bucket, count, span_end) = bucketing.get();
+        let as_of = span_end.saturating_sub(jiff::Span::new().days(1_i32));
+        // Membership: pass the filter only when it carries a non-date dimension.
+        let membership = filter_store.filter.with_untracked(|f| {
+            crate::pages::accounts::query::filter_has_non_date_dim(f).then(|| f.clone())
+        });
         if let Some(v) = data_version {
             v.get();
         }
-        async move { bc_ipc::client::get_account_sparkline(&id, bucket, n, as_of).await }
+        async move {
+            bc_ipc::client::get_account_sparkline(&id, bucket, count, as_of, membership.as_ref())
+                .await
+        }
     });
 
     let sparkline_currency_code = node
@@ -313,7 +331,7 @@ pub fn AccountDashboard(
             </div>
 
             {move || {
-                let (bucket, n) = period_window.get().sparkline_bucketing();
+                let (bucket, n, _) = bucketing.get();
                 let points = match sparkline_resource.get() {
                     Some(Ok(pts)) => pts,
                     Some(Err(ref e)) => {
@@ -328,9 +346,11 @@ pub fn AccountDashboard(
                     _ => format!("Cash Flow (Last {n} Months)"),
                 };
                 view! {
-                    <Sparkline points=points currency_code=sparkline_currency_code.clone()>
-                        <Title slot>{title}</Title>
-                    </Sparkline>
+                    <div data-testid="dashboard-sparkline">
+                        <Sparkline points=points currency_code=sparkline_currency_code.clone()>
+                            <Title slot>{title}</Title>
+                        </Sparkline>
+                    </div>
                 }
             }}
         </div>
