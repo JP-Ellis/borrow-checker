@@ -8,6 +8,7 @@ use bc_ipc::Transaction;
 use jiff::civil::Date;
 
 use crate::components::period_nav::period_end;
+use crate::components::period_nav::window_containing;
 
 /// Builds the filter actually sent to `search_transactions` for the register.
 ///
@@ -73,14 +74,19 @@ pub fn filter_has_non_date_dim(filter: &Filter) -> bool {
 /// The trend shows the current period plus a few of context, scaled by
 /// granularity, so that the finer bucketing (see
 /// [`bc_ipc::sparkline_bucketing_for`]) yields a readable density.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "bc_ipc::Period is #[non_exhaustive]; Daily/Weekly and any future variant share a two-week context window (mirrors the dashboard title's wildcard arm)"
+)]
 fn nav_span_len(period: &Period) -> jiff::Span {
     match period {
         Period::Fortnightly => jiff::Span::new().weeks(8_i64),
         Period::Monthly => jiff::Span::new().weeks(13_i64),
         Period::Quarterly | Period::FinancialQuarter { .. } => jiff::Span::new().months(6_i64),
         Period::CalendarYear | Period::FinancialYear { .. } => jiff::Span::new().months(12_i64),
-        // Daily, Weekly, and future variants: a two-week window of context.
-        Period::Daily | Period::Weekly | &_ => jiff::Span::new().days(14_i64),
+        // Daily, Weekly, and future #[non_exhaustive] variants: a two-week
+        // window of context.
+        _ => jiff::Span::new().days(14_i64),
     }
 }
 
@@ -114,6 +120,76 @@ pub fn sparkline_span(user: &Filter, period: &Period, window_start: Date) -> (Da
     }
 }
 
+/// Number of `bucket`-wide buckets needed for the oldest calendar-snapped bucket
+/// to reach back to (or before) `span_start`, with the newest bucket containing
+/// `as_of`.
+///
+/// Mirrors [`bc_core::balance::bucket_ranges`]: buckets are snapped to calendar
+/// boundaries and the newest one contains `as_of`, so the oldest may start
+/// before `span_start` (an accepted partial oldest bucket). Walks bucket
+/// boundaries backward from `as_of` until coverage reaches `span_start`, reusing
+/// [`window_containing`] for the DTO [`Period`] calendar math.
+///
+/// # Arguments
+///
+/// * `bucket` - The bucket granularity chosen by stage 2.
+/// * `span_start` - Inclusive start the oldest bucket must reach.
+/// * `as_of` - Reference date the newest bucket contains.
+///
+/// # Returns
+///
+/// The bucket count (always `>= 1`).
+fn coverage_count(bucket: &Period, span_start: Date, as_of: Date) -> u32 {
+    let mut count: u32 = 1;
+    let mut cur_start = window_containing(bucket, as_of);
+    while cur_start > span_start {
+        let prev_day = cur_start.saturating_sub(jiff::Span::new().days(1_i64));
+        cur_start = window_containing(bucket, prev_day);
+        count = count.saturating_add(1);
+    }
+    count
+}
+
+/// Resolves the sparkline `(bucket, count, span_end)` for the active filter.
+///
+/// Composes stage 1 ([`sparkline_span`]) and stage 2
+/// ([`bc_ipc::sparkline_bucketing_for`]). For an **explicit-filter** span (either
+/// date bound set) the nominal count is bumped via [`coverage_count`] so the
+/// oldest calendar-snapped bucket reaches `date_from`; otherwise the leading
+/// postings would fall outside every bucket and be dropped from the date-clamped
+/// fetch, desyncing the sparkline from the balance tiles. `PeriodNav` spans are
+/// calendar-aligned and keep the nominal stage-2 count unchanged.
+///
+/// The corrected count flows to both the dashboard title and the client fetch,
+/// keeping the rendered bar count and the title label in sync.
+///
+/// # Arguments
+///
+/// * `user` - The active global filter.
+/// * `period` - The page period granularity.
+/// * `window_start` - The page display-window start.
+///
+/// # Returns
+///
+/// The `(bucket, count, span_end)` triple to fetch and render.
+#[must_use]
+pub fn sparkline_bucketing(
+    user: &Filter,
+    period: &Period,
+    window_start: Date,
+) -> (Period, u32, Date) {
+    let (span_start, span_end) = sparkline_span(user, period, window_start);
+    let (bucket, nominal) = bc_ipc::sparkline_bucketing_for(span_start, span_end);
+    let explicit = user.date_from.is_some() || user.date_until.is_some();
+    let count = if explicit {
+        let as_of = span_end.saturating_sub(jiff::Span::new().days(1_i64));
+        nominal.max(coverage_count(&bucket, span_start, as_of))
+    } else {
+        nominal
+    };
+    (bucket, count, span_end)
+}
+
 #[cfg(test)]
 mod tests {
     use bc_ipc::AccountRef;
@@ -122,13 +198,27 @@ mod tests {
     use bc_ipc::Posting;
     use bc_ipc::Reconciliation;
     use bc_ipc::Transaction;
+    use jiff::Span;
     use jiff::civil::Date;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rust_decimal::Decimal;
 
     use super::effective_filter;
+    use super::sparkline_bucketing;
     use super::touches_account;
+    use crate::components::period_nav::window_containing;
+
+    /// Oldest calendar-snapped bucket start for `count` `bucket`-wide buckets whose
+    /// newest contains `as_of` — mirrors `bc_core::balance::bucket_ranges`.
+    fn oldest_bucket_start(bucket: &Period, count: u32, as_of: Date) -> Date {
+        let mut start = window_containing(bucket, as_of);
+        for _ in 1..count {
+            let prev_day = start.saturating_sub(Span::new().days(1_i64));
+            start = window_containing(bucket, prev_day);
+        }
+        start
+    }
 
     #[test]
     fn keeps_accounts_and_injects_window_when_no_date_bound() {
@@ -272,5 +362,55 @@ mod tests {
         assert_eq!(end, date(2025, 6, 1));
         /* Year granularity → ~12-month lookback ending at `until`. */
         assert_eq!(start, date(2024, 6, 1));
+    }
+
+    #[test]
+    fn explicit_filter_coverage_reaches_span_start() {
+        /* Weekly case from the bug report: [2025-01-01, 2025-02-11) is 41 days →
+         * stage 2 picks (Weekly, 6), but calendar snapping drops the oldest days.
+         * The corrected count bumps to 7 so the oldest bucket reaches Jan 1. */
+        let mut user = bc_ipc::Filter::default();
+        user.date_from = Some(date(2025, 1, 1));
+        user.date_until = Some(date(2025, 2, 11));
+
+        let (bucket, count, span_end) =
+            sparkline_bucketing(&user, &bc_ipc::Period::Monthly, date(2025, 1, 1));
+
+        assert_eq!(bucket, bc_ipc::Period::Weekly);
+        /* Nominal ceil(41/7) = 6 would undershoot; coverage bumps to 7. */
+        assert_eq!(count, 7);
+        let as_of = span_end.saturating_sub(Span::new().days(1_i64));
+        assert!(oldest_bucket_start(&bucket, count, as_of) <= date(2025, 1, 1));
+        /* Prove the nominal count really would have dropped the leading days. */
+        assert!(oldest_bucket_start(&bucket, 6, as_of) > date(2025, 1, 1));
+    }
+
+    #[test]
+    fn explicit_filter_coverage_reaches_span_start_monthly() {
+        /* Monthly analogue: [2025-01-15, 2025-08-20) is 217 days → (Monthly, 7),
+         * whose oldest bucket snaps to Feb 1 and drops the Jan 15–31 window. The
+         * corrected count bumps to 8 so the oldest bucket reaches Jan 1 ≤ Jan 15. */
+        let mut user = bc_ipc::Filter::default();
+        user.date_from = Some(date(2025, 1, 15));
+        user.date_until = Some(date(2025, 8, 20));
+
+        let (bucket, count, span_end) =
+            sparkline_bucketing(&user, &bc_ipc::Period::Monthly, date(2025, 1, 1));
+
+        assert_eq!(bucket, bc_ipc::Period::Monthly);
+        assert_eq!(count, 8);
+        let as_of = span_end.saturating_sub(Span::new().days(1_i64));
+        assert!(oldest_bucket_start(&bucket, count, as_of) <= date(2025, 1, 15));
+        assert!(oldest_bucket_start(&bucket, 7, as_of) > date(2025, 1, 15));
+    }
+
+    #[test]
+    fn nav_span_keeps_nominal_count() {
+        /* No explicit date bound → nav path keeps the stage-2 nominal count
+         * unchanged (calendar-aligned span already covers exactly). */
+        let user = bc_ipc::Filter::default();
+        let (bucket, count, _) =
+            sparkline_bucketing(&user, &bc_ipc::Period::CalendarYear, date(2025, 1, 1));
+        assert_eq!((bucket, count), (bc_ipc::Period::Monthly, 12));
     }
 }
