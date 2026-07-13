@@ -45,6 +45,7 @@ pub use accounts::Posting;
 pub use accounts::Reconciliation;
 pub use accounts::SparkPoint;
 pub use accounts::Transaction;
+pub use accounts::sparkline_bucketing_for;
 pub use backup::BackupInfo;
 pub use backup::BackupSettings;
 pub use balances::Balances;
