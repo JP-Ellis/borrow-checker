@@ -56,6 +56,38 @@ pub struct Engine {
     pool: SqlitePool,
 }
 
+/// Builds `count` contiguous period buckets ending with the period containing
+/// `as_of`, oldest-first. Each bucket is a half-open `[start, end)` range one
+/// `period` wide.
+///
+/// # Arguments
+///
+/// * `period` - Bucket width.
+/// * `count`  - Number of buckets.
+/// * `as_of`  - Reference date; the newest bucket contains it.
+///
+/// # Returns
+///
+/// A `Vec` of `(start, end)` ranges, oldest-first, of length `count`.
+pub(crate) fn bucket_ranges(
+    period: &bc_models::Period,
+    count: core::num::NonZeroUsize,
+    as_of: jiff::civil::Date,
+) -> Vec<(jiff::civil::Date, jiff::civil::Date)> {
+    let mut ranges: Vec<(jiff::civil::Date, jiff::civil::Date)> = Vec::with_capacity(count.get());
+    let current = period.range_containing(as_of);
+    ranges.push(current);
+    let mut prev_start = current.0;
+    for _ in 1..count.get() {
+        let prev =
+            period.range_containing(prev_start.saturating_sub(jiff::Span::new().days(1_i32)));
+        ranges.push(prev);
+        prev_start = prev.0;
+    }
+    ranges.reverse(); // oldest first
+    ranges
+}
+
 impl Engine {
     /// Creates a [`Engine`] with the given connection pool.
     #[must_use]
@@ -427,19 +459,7 @@ impl Engine {
         count: core::num::NonZeroUsize,
         as_of: jiff::civil::Date,
     ) -> BcResult<Vec<PostingBucket>> {
-        // Build bucket boundaries, going backward from as_of.
-        let mut ranges: Vec<(jiff::civil::Date, jiff::civil::Date)> =
-            Vec::with_capacity(count.get());
-        let current = period.range_containing(as_of);
-        ranges.push(current);
-        let mut prev_start = current.0;
-        for _ in 1..count.get() {
-            let prev =
-                period.range_containing(prev_start.saturating_sub(jiff::Span::new().days(1_i32)));
-            ranges.push(prev);
-            prev_start = prev.0;
-        }
-        ranges.reverse(); // oldest first
+        let ranges = bucket_ranges(period, count, as_of);
 
         // ranges is non-empty: count is NonZeroUsize so we always push at least one entry.
         let Some(&(earliest_start, _)) = ranges.first() else {
@@ -635,6 +655,8 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    use core::num::NonZeroUsize;
+
     use bc_models::AccountKind;
     use bc_models::AccountType;
     use bc_models::Amount;
@@ -1413,5 +1435,27 @@ mod tests {
         assert_eq!(s.tx_count, 1);
         // Flows still aggregate every posting: 60 + 40 in.
         assert_eq!(s.income.value(), dec!(100));
+    }
+
+    #[test]
+    fn bucket_ranges_are_contiguous_oldest_first() {
+        let ranges = super::bucket_ranges(
+            &bc_models::Period::Monthly,
+            NonZeroUsize::new(3).expect("3 > 0"),
+            date(2025, 3, 15),
+        );
+        assert_eq!(ranges.len(), 3);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "test assertions on known-length vec"
+        )]
+        {
+            // Oldest first, contiguous, newest contains as_of.
+            assert_eq!(ranges[0].0, date(2025, 1, 1));
+            assert_eq!(ranges[0].1, ranges[1].0);
+            assert_eq!(ranges[1].1, ranges[2].0);
+            assert_eq!(ranges[2].0, date(2025, 3, 1));
+            assert_eq!(ranges[2].1, date(2025, 4, 1));
+        }
     }
 }
