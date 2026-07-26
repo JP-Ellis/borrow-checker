@@ -10,6 +10,7 @@
  * commit flow) from `palette-filter-builder.spec.ts` verbatim.
  */
 import { browser, $, $$, expect } from '@wdio/globals';
+import { commitTagToken } from '../support/palette.js';
 
 // ── Navigation helpers ───────────────────────────────────────────────────────
 
@@ -161,48 +162,6 @@ async function expandedPostingDimStates(): Promise<string[]> {
         () => Array.from(document.querySelectorAll('[data-testid="posting-row"]'))
             .map(el => el.getAttribute('data-dimmed') ?? ''),
     );
-}
-
-// ── Palette helpers (mirrors palette-filter-builder.spec.ts) ────────────────
-
-/** Opens the ⌘K palette and returns the dialog element. */
-async function openPalette() {
-    const openButton = await $('button[aria-label="open command palette (⌘K)"]');
-    await openButton.click();
-
-    const dialog = await $('div[role="dialog"][aria-label="Command palette"]');
-    await expect(dialog).toBeDisplayed();
-    return dialog;
-}
-
-/**
- * Types `tag:<tagName>` into the palette's single inline search box, narrows
- * to the sole matching option, and commits it as a chip. Closes the palette
- * afterwards — chips sit behind the z-900 palette overlay, so the overlay
- * must be dismissed before any other top-bar interaction (chip removal).
- */
-async function commitTagToken(tagName: string): Promise<void> {
-    const dialog = await openPalette();
-
-    const input = await dialog.$('input[role="combobox"]');
-    await input.waitForDisplayed();
-    await input.setValue(`tag:${tagName}`);
-
-    const listbox = await $('#palette-listbox');
-    await browser.waitUntil(
-        async () => (await listbox.$$('div[role="option"]').length) === 1,
-        { timeoutMsg: `expected the tag search to narrow to \`${tagName}\`` },
-    );
-    const only = await listbox.$('div[role="option"]');
-    expect(await only.getAttribute('textContent')).toContain(tagName);
-    await only.click();
-
-    await browser.waitUntil(async () => (await input.getValue()) === '', {
-        timeoutMsg: 'expected the input to clear after committing the token',
-    });
-
-    await browser.keys('Escape');
-    await expect(dialog).not.toBeDisplayed();
 }
 
 // ── Filter chip helpers ──────────────────────────────────────────────────────

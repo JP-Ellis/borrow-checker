@@ -17,14 +17,10 @@
  * If no such transaction exists the test is skipped (not failed) with a
  * console warning.
  */
-import { dirname }          from 'node:path';
-import { fileURLToPath }    from 'node:url';
 import { resolve }          from 'node:path';
 import Database             from 'better-sqlite3';
 import { browser, $, $$ }  from '@wdio/globals';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH   = resolve(__dirname, '../../fixtures/test.db');
+import { DB_PATH } from '../support/db.js';
 
 // ── DB helpers ──────────────────────────────────────────────────────────────
 
