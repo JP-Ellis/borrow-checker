@@ -3,7 +3,6 @@ name: CI
 
 permissions:
   contents: read
-  packages: read
 
 on:
   pull_request:
@@ -136,65 +135,23 @@ jobs:
             librsvg2-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
-            libxdo-dev
+            libxdo-dev \
+            webkit2gtk-driver \
+            xvfb
 
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d  # v4.2.0
         timeout-minutes: 10
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
         with:
           cache-key: ${{ matrix.toolchain }}
-          # Include the Linux container bind-mount dirs so the container:linux-build
-          # artifacts are pruned and cached with the same logic as the main target/.
-          # These dirs are only created by the stable/Linux matrix entry; other
-          # entries simply have nothing to save here, which is harmless.
-          cache-workspaces: |
-            . -> target
-            . -> .linux-cache/target
-          cache-directories: .linux-cache/trunk
       - run: rustup toolchain install ${{ matrix.toolchain }} --no-self-update
         if: matrix.toolchain != 'stable'
       - run: mise run test
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
-      - name: Pre-build binaries for container cache
+      - name: Run E2E desktop tests
         if: matrix.toolchain == 'stable' && runner.os == 'Linux'
-        run: |
-          cargo build -p bc-ui --target wasm32-unknown-unknown
-          mise run //crates/bc-app:build:debug
-          cargo build -p bc-seed
-      - name: Prepare .linux-cache for container bind mounts
-        if: matrix.toolchain == 'stable' && runner.os == 'Linux'
-        run: |
-          # Docker requires real directories as bind-mount sources (not symlinks).
-          # node_modules: empty dir; aube install inside the container populates it
-          #   from the pnpm global store baked into the image.
-          # target: hard-link from the host Cargo build (already warmed by
-          #   setup-rust-toolchain cache) so the container reuses the pre-built binary,
-          #   including wasm32-unknown-unknown artifacts for the Leptos frontend.
-          mkdir -p .linux-cache/node_modules
-          cp -rn --link target/. .linux-cache/target/ 2>/dev/null \
-            || mkdir -p .linux-cache/target
-      - name: Obtain E2E container image
-        if: matrix.toolchain == 'stable' && runner.os == 'Linux'
-        run: |
-          IMAGE="$(cat e2e/.container-image 2>/dev/null)"
-          if [[ "$IMAGE" == ghcr.io/* ]]; then
-            # Pull the exact pinned image from GHCR for a reproducible environment.
-            echo "${{ secrets.GITHUB_TOKEN }}" \
-              | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            docker pull "$IMAGE"
-          else
-            # No pinned image yet — build the container locally.
-            # Run the update-e2e-snapshots workflow once to bootstrap the GHCR image.
-            mise run //e2e:container:build
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Run E2E desktop tests (in container)
-        if: matrix.toolchain == 'stable' && runner.os == 'Linux'
-        run: mise run //e2e:container
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: xvfb-run -a mise run //e2e:test
 
   coverage:
     name: Coverage
