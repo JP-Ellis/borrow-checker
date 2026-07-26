@@ -126,6 +126,32 @@ Check WASM-specifically:
 cargo clippy -p bc-ui --target wasm32-unknown-unknown --features csr -- -D warnings
 ```
 
+## Leptos Traps
+
+**`attr:` is for components only.** In `view!`, the `attr:` prefix spreads a DOM
+attribute onto a *component* (e.g. leptos_router's `<A>`). On a native element
+(`<div>`, `<button>`, `<tr>`) it is wrong — the prefix leaks into the attribute
+*name*, rendering literally as `attr:data-testid="…"`, so `[data-testid=…]`
+selectors never match. Use a plain `data-testid=…` on native elements. This
+compiles and passes clippy; only an e2e run or a DOM dump catches it.
+
+**A keyed `<For>` does not re-render on non-key changes.** `<For each … key=|r| r.key>`
+reuses the row view when a non-key field changes, so a captured `row` snapshot
+freezes at first render — staged state like a `deleted` flag or a struck-through
+class never appears. Derive per-row state from the shared signal instead:
+
+```rust
+let row = Signal::derive(move || rows.get().iter().find(|r| r.key == key).cloned());
+```
+
+**An `Effect` that reads a `NodeRef` must never write a signal that re-renders
+that node.** Doing so is an infinite reactive loop: the write re-renders the
+node, the new node updates the `NodeRef` signal, which re-runs the effect. In a
+real webview this presents as a hard hang — and headless Blink with
+`--virtual-time-budget` still captures a frame, so a screenshot probe will *not*
+reproduce it. Split such work into two effects: one that writes state, one that
+only focuses.
+
 ## Accessibility Baseline
 
 - Semantic HTML (`<header>`, `<nav>`, `<main>`, `<button>`)
