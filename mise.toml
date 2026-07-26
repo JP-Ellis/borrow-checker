@@ -2,6 +2,10 @@
 
 monorepo_root = true
 
+# 2026.7.6 both stopped consulting cargo-quickinstall by default and added the
+# setting below to opt back in — older versions cannot parse this file.
+min_version = "2026.7.6"
+
 [settings]
 experimental                      = true
 unix_default_inline_shell_args    = "bash -c -o errexit"
