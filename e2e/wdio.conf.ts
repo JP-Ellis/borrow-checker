@@ -1,13 +1,16 @@
-import { type ChildProcess, spawn } from 'node:child_process';
-import { execSync }                  from 'node:child_process';
-import { mkdirSync }                 from 'node:fs';
-import { join }                      from 'node:path';
-import { dirname, resolve }          from 'node:path';
-import { fileURLToPath }             from 'node:url';
-import type { Options }              from '@wdio/types';
+import { type ChildProcess, spawn }  from 'node:child_process';
+import { execSync }                   from 'node:child_process';
+import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
+import { join }                       from 'node:path';
+import { dirname, resolve }           from 'node:path';
+import { fileURLToPath }              from 'node:url';
+import Database                       from 'better-sqlite3';
+import type { Capabilities, Options } from '@wdio/types';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/* One tauri-driver per worker (see `beforeSession`), tracked so `afterSession`
+ * can reap it. Each worker is a separate process, so this holds at most one. */
 let tauriDriver: ChildProcess | undefined;
 
 async function waitForDriver(port: number, timeoutMs: number): Promise<void> {
@@ -26,22 +29,37 @@ async function waitForDriver(port: number, timeoutMs: number): Promise<void> {
 
 const APPLICATION =
   process.env['TAURI_BINARY'] ?? resolve(__dirname, '../target/debug/bc-app');
-const APP_CRATE    = resolve(__dirname, '../crates/bc-app');
-const TEST_DB_DIR  = resolve(__dirname, 'fixtures');
-const TEST_DB_PATH = join(TEST_DB_DIR, 'test.db');
+const APP_CRATE     = resolve(__dirname, '../crates/bc-app');
+const TEST_DB_DIR   = resolve(__dirname, 'fixtures');
+/* Seeded once, then copied per worker — never opened by the app itself. */
+const TEMPLATE_DB   = join(TEST_DB_DIR, 'template.db');
+
+/* Base ports; each worker offsets from these by its slot index. tauri-driver
+ * needs two: its own WebDriver port and the WebKitWebDriver it fronts. */
+const DRIVER_PORT_BASE = 4444;
+const NATIVE_PORT_BASE = 5555;
+
+/** Worker slot index parsed from a WDIO `cid` such as `0-3`. */
+function slotOf(cid: string): number {
+  return Number.parseInt(cid.split('-')[1] ?? '0', 10) || 0;
+}
 
 export const config: Options.Testrunner = {
   hostname: 'localhost',
-  port:     4444,
   path:     '/',
 
   specs: ['./tests/flows/**/*.spec.ts'],
 
-  maxInstances: 1,
+  /* Spec files are independent: each worker gets a private copy of the seeded
+   * database (see `beforeSession`), so they may run concurrently. Kept modest
+   * because every session launches a real WebKitGTK app that competes for CPU
+   * — past ~4 the processes contend and wall-clock stops improving. */
+  maxInstances: 4,
 
   capabilities: [
     {
-      maxInstances: 1,
+      browserName:  'wry',
+      maxInstances: 4,
       'wdio:enforceWebDriverClassic': true,
       'tauri:options': {
         application: APPLICATION,
@@ -64,22 +82,26 @@ export const config: Options.Testrunner = {
     timeout: 60_000,
   },
 
-  async onPrepare() {
+  onPrepare() {
     // Ensure fixtures directory exists.
     mkdirSync(TEST_DB_DIR, { recursive: true });
 
-    // Set BC_DB_PATH so the Tauri app reads the test database.
-    process.env['BC_DB_PATH'] = TEST_DB_PATH;
-
-    // Seed the test database.
+    // Seed the template database that every worker copies from.
     // SEED_BIN lets a caller point at an already-built binary; otherwise fall
     // back to cargo run (builds bc-seed on demand, no nightly required).
     const seedBin = process.env['SEED_BIN'] || 'cargo run -p bc-seed --';
     console.log('Seeding test database…');
-    execSync(`${seedBin} --db-path "${TEST_DB_PATH}" --force`, {
+    execSync(`${seedBin} --db-path "${TEMPLATE_DB}" --force`, {
       cwd:   __dirname,
       stdio: 'inherit',
     });
+
+    /* Fold the write-ahead log back into the main file. The seeder leaves most
+     * of its writes in `template.db-wal`, and workers copy only the `.db`, so
+     * without this they would each start from a partially-populated database. */
+    const template = new Database(TEMPLATE_DB);
+    template.pragma('wal_checkpoint(TRUNCATE)');
+    template.close();
 
     if (!process.env['SKIP_BUILD']) {
       console.log('Building Tauri debug binary…');
@@ -88,22 +110,61 @@ export const config: Options.Testrunner = {
         stdio: 'inherit',
       });
     }
+  },
 
-    tauriDriver = spawn('tauri-driver', [], {
-      stdio: [null, process.stdout, process.stderr],
-      env:   { ...process.env },  // passes BC_DB_PATH to tauri-driver + child processes
-    });
+  /**
+   * Give this worker its own database and its own tauri-driver.
+   *
+   * The app inherits its environment from the tauri-driver that launches it,
+   * so `BC_DB_PATH` has to be set on a driver owned by this worker — a single
+   * shared driver would hand every session the same database. Ports are
+   * derived from the worker slot so concurrent workers never collide.
+   */
+  async beforeSession(
+    cfg: Options.Testrunner,
+    _caps: Capabilities.RequestedStandaloneCapabilities,
+    _specs: string[],
+    cid: string,
+  ) {
+    const slot   = slotOf(cid);
+    const dbPath = join(TEST_DB_DIR, `test-${cid}.db`);
+    /* Drop any sidecars left by an earlier run: they would be replayed over
+     * the freshly copied file and resurrect the previous run's writes. */
+    for (const sidecar of ['-wal', '-shm']) {
+      rmSync(`${dbPath}${sidecar}`, { force: true });
+    }
+    copyFileSync(TEMPLATE_DB, dbPath);
+
+    const port = DRIVER_PORT_BASE + slot;
+    cfg.port = port;
+
+    /* Specs that assert directly against SQLite read this (see
+     * `tests/support/db.ts`) so they open the same file as the app. */
+    process.env['BC_DB_PATH'] = dbPath;
+
+    tauriDriver = spawn(
+      'tauri-driver',
+      [
+        '--port',        String(port),
+        '--native-port', String(NATIVE_PORT_BASE + slot),
+      ],
+      {
+        stdio: [null, process.stdout, process.stderr],
+        env:   { ...process.env, BC_DB_PATH: dbPath },
+      },
+    );
 
     try {
-      await waitForDriver(4444, 15_000);
-    } catch (err) {
+      await waitForDriver(port, 15_000);
+    } catch {
       tauriDriver.kill();
       // tauri-driver not available on this platform (e.g. macOS); skip gracefully
       process.exit(0);
     }
   },
 
-  async onComplete() {
+  afterSession() {
     tauriDriver?.kill();
+    tauriDriver = undefined;
   },
 };
