@@ -1,11 +1,6 @@
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { browser, $, $$, expect as wdioExpect } from '@wdio/globals';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEST_DB_PATH = resolve(__dirname, '../../fixtures/test.db');
+import { DB_PATH as TEST_DB_PATH } from '../support/db.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 

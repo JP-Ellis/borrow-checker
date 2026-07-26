@@ -19,14 +19,9 @@
  *   4. Stage-delete AUD (referenced by seeded postings), save, and assert the
  *      in-use block banner appears and the row is not actually removed.
  */
-import { dirname }       from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { resolve }       from 'node:path';
 import Database           from 'better-sqlite3';
 import { browser, $, $$ } from '@wdio/globals';
-
-const __dirname  = dirname(fileURLToPath(import.meta.url));
-const DB_PATH    = resolve(__dirname, '../../fixtures/test.db');
+import { DB_PATH } from '../support/db.js';
 
 // ── DB helpers ──────────────────────────────────────────────────────────────
 

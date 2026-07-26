@@ -9,14 +9,9 @@
  * drops by exactly two. The DB check is a before/after delta bracketing the
  * merge, so it is independent of ids and of any state other flow tests leave.
  */
-import { dirname }        from 'node:path';
-import { fileURLToPath }  from 'node:url';
-import { resolve }        from 'node:path';
 import Database           from 'better-sqlite3';
 import { browser, $, $$ } from '@wdio/globals';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH   = resolve(__dirname, '../../fixtures/test.db');
+import { DB_PATH } from '../support/db.js';
 
 /** Count transactions that currently have exactly one posting. */
 function singlePostingCount(): number {
