@@ -152,6 +152,13 @@ jobs:
       - name: Run E2E desktop tests
         if: matrix.toolchain == 'stable' && runner.os == 'Linux'
         run: xvfb-run -a mise run //e2e:test
+        env:
+          # Quieten warnings inherent to a headless runner, none of which the
+          # suite can act on: there is no accessibility bus for GTK to reach,
+          # and Xvfb offers no GPU for WebKit's DMA-BUF/DRI3 path.
+          NO_AT_BRIDGE: '1'
+          WEBKIT_DISABLE_DMABUF_RENDERER: '1'
+          LIBGL_ALWAYS_SOFTWARE: '1'
 
   coverage:
     name: Coverage
