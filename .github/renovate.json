@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:best-practices"],
+  "extends": ["config:best-practices", ":ignoreDevDependencies"],
   "timezone": "Australia/Melbourne",
   "pre-commit": {
     "enabled": true
@@ -16,6 +16,17 @@
     {
       "matchPackageNames": ["taiki-e/install-action"],
       "schedule": "before 4am on monday"
+    },
+    {
+      "description": "Crates from the wasmtime repository are published in lockstep and must be upgraded together.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["wasmtime", "wasmtime-*"],
+      "groupName": "wasmtime"
+    },
+    {
+      "description": "Only raise Cargo PRs when the manifest requirement itself has to change; in-range bumps are picked up by the weekly lock file maintenance.",
+      "matchManagers": ["cargo"],
+      "rangeStrategy": "replace"
     }
   ]
 }
