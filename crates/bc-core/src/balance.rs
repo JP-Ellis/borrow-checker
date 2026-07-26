@@ -60,6 +60,15 @@ pub struct Engine {
 /// `as_of`, oldest-first. Each bucket is a half-open `[start, end)` range one
 /// `period` wide.
 ///
+/// Every bucket is snapped to the period's own calendar boundary, so the first
+/// bucket generally starts *before* `as_of - count * period` and the last one
+/// ends *after* `as_of`.
+///
+/// The WASM side mirrors these snapping rules: `bc-ui` re-implements them in its
+/// `coverage_count` helper because `bc-core` is native-only and absent from the
+/// WASM bundle. Any change to the snapping here must be mirrored there, or the
+/// sparkline's coverage estimate silently drifts from the buckets it labels.
+///
 /// # Arguments
 ///
 /// * `period` - Bucket width.
@@ -661,12 +670,15 @@ mod tests {
     use bc_models::AccountType;
     use bc_models::Amount;
     use bc_models::CommodityCode;
+    use bc_models::Period;
     use bc_models::Posting;
     use bc_models::PostingId;
     use bc_models::Reconciliation;
     use bc_models::Transaction;
+    use jiff::civil::Date;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -1437,25 +1449,83 @@ mod tests {
         assert_eq!(s.income.value(), dec!(100));
     }
 
-    #[test]
-    fn bucket_ranges_are_contiguous_oldest_first() {
-        let ranges = super::bucket_ranges(
-            &bc_models::Period::Monthly,
-            NonZeroUsize::new(3).expect("3 > 0"),
-            date(2025, 3, 15),
-        );
+    #[rstest]
+    #[case::weekly(
+        Period::Weekly,
+        date(2025, 2, 10),
+        date(2025, 1, 27),
+        date(2025, 2, 17)
+    )]
+    #[case::monthly(Period::Monthly, date(2025, 3, 15), date(2025, 1, 1), date(2025, 4, 1))]
+    #[case::quarterly(
+        Period::Quarterly,
+        date(2025, 8, 20),
+        date(2025, 1, 1),
+        date(2025, 10, 1)
+    )]
+    #[case::calendar_year(
+        Period::CalendarYear,
+        date(2025, 5, 4),
+        date(2023, 1, 1),
+        date(2026, 1, 1)
+    )]
+    fn bucket_ranges_are_contiguous_oldest_first(
+        #[case] period: Period,
+        #[case] as_of: Date,
+        #[case] expected_first_start: Date,
+        #[case] expected_last_end: Date,
+    ) {
+        let ranges = super::bucket_ranges(&period, NonZeroUsize::new(3).expect("3 > 0"), as_of);
         assert_eq!(ranges.len(), 3);
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "test assertions on known-length vec"
-        )]
-        {
-            // Oldest first, contiguous, newest contains as_of.
-            assert_eq!(ranges[0].0, date(2025, 1, 1));
-            assert_eq!(ranges[0].1, ranges[1].0);
-            assert_eq!(ranges[1].1, ranges[2].0);
-            assert_eq!(ranges[2].0, date(2025, 3, 1));
-            assert_eq!(ranges[2].1, date(2025, 4, 1));
+
+        let first = ranges.first().expect("three buckets");
+        let last = ranges.last().expect("three buckets");
+        assert_eq!(first.0, expected_first_start);
+        assert_eq!(last.1, expected_last_end);
+        // Newest bucket contains `as_of`.
+        assert!(last.0 <= as_of && as_of < last.1);
+
+        for pair in ranges.windows(2) {
+            let [earlier, later] = pair else {
+                unreachable!("windows(2) always yields two elements")
+            };
+            assert!(earlier.0 < later.0, "buckets must be oldest-first");
+            assert_eq!(earlier.1, later.0, "buckets must be contiguous");
         }
+    }
+
+    /// Anchors the WASM-side mirror of this crate's calendar snapping.
+    ///
+    /// `bc-ui`'s `coverage_count` re-implements [`super::bucket_ranges`]'s
+    /// snapping rules because `bc-core` is absent from the WASM bundle. These
+    /// cases pin the `(period, count, as_of)` triples that `bc-ui`'s own tests
+    /// assume, so a change to the snapping here fails on this side too.
+    #[rstest]
+    #[case::daily(
+        Period::Custom { days: Some(1), weeks: None, months: None },
+        20,
+        date(2025, 2, 10),
+        date(2025, 1, 22)
+    )]
+    #[case::weekly(Period::Weekly, 7, date(2025, 2, 10), date(2025, 1, 1))]
+    #[case::monthly(Period::Monthly, 8, date(2025, 8, 19), date(2025, 1, 15))]
+    #[case::quarterly(Period::Quarterly, 5, date(2025, 8, 19), date(2024, 8, 1))]
+    #[case::calendar_year(Period::CalendarYear, 3, date(2025, 8, 19), date(2023, 6, 1))]
+    fn bucket_ranges_cover_span_start(
+        #[case] period: Period,
+        #[case] count: usize,
+        #[case] as_of: Date,
+        #[case] span_start: Date,
+    ) {
+        let ranges =
+            super::bucket_ranges(&period, NonZeroUsize::new(count).expect("count > 0"), as_of);
+        let first = ranges.first().expect("at least one bucket");
+        let last = ranges.last().expect("at least one bucket");
+        assert!(
+            first.0 <= span_start,
+            "oldest bucket start {:?} must reach span start {span_start:?}",
+            first.0
+        );
+        assert!(as_of < last.1, "newest bucket must contain as_of");
     }
 }
