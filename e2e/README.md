@@ -7,9 +7,13 @@ ships to users. IPC, SQLite persistence, and real rendering are all exercised.
 
 ## Prerequisites
 
+Linux only — `tauri-driver` drives `WebKitWebDriver`, which has no equivalent on
+macOS or Windows. On other platforms the suite exits gracefully instead of
+failing.
+
 - `cargo install tauri-cli tauri-driver` (one-time)
-- Linux: `webkitgtk-webdriver` package (Ubuntu 26.04+: included in `Containerfile`)
-- macOS/Windows: run via the container task (see below)
+- Ubuntu: the `webkit2gtk-driver` package (`webkitgtk-webdriver` from 25.10 on)
+- A display — headless runs need `xvfb-run`
 
 ## Quick start
 
@@ -21,33 +25,23 @@ aube install
 aubx wdio run wdio.conf.ts
 ```
 
-Prefer the `mise` tasks from the repo root — they handle dependency ordering:
+Prefer the `mise` task from the repo root — it handles dependency ordering:
 
 ```sh
-mise run test:e2e            # run locally (no container)
-mise run test:e2e --container  # run in Linux container (recommended on macOS)
+mise run test:e2e
 ```
-
-## Visual regression
-
-Baselines live in `tests/visual/__snapshots__/desktop_wry/` and are generated
-on Linux (WebKitGTK) for consistency. To regenerate them:
-
-```sh
-mise run test:e2e --container
-```
-
-Delete the relevant `*-wry.png` files before running to force a fresh capture.
 
 ## Test structure
 
-| Directory | What it covers |
-|-----------|---------------|
-| `tests/flows/` | Full app flows: shell navigation, transaction creation |
-| `tests/visual/` | Visual regression and design-token / APCA contrast checks |
+All specs live in `tests/flows/` and cover full app flows: shell navigation,
+transaction CRUD, budgets, and the global filter. Assertions target the DOM
+(text, ARIA labels, `data-testid`) rather than rendered pixels.
 
 ## Database seeding
 
 Each test run seeds `fixtures/test.db` via the `bc-seed` binary (invoked in
 the `onPrepare` hook in `wdio.conf.ts`). The `fixtures/` directory is
 gitignored — it is created at runtime.
+
+`bc-seed` generates data relative to the current date, so specs must derive
+expected dates from the clock rather than hard-coding them.
