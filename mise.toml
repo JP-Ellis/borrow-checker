@@ -7,6 +7,9 @@ experimental                      = true
 unix_default_inline_shell_args    = "bash -c -o errexit"
 windows_default_inline_shell_args = "pwsh -NonInteractive -Command"
 
+  [settings.cargo]
+  binstall_quickinstall = true
+
 [monorepo]
 config_roots = [
   "crates/bc-app",
