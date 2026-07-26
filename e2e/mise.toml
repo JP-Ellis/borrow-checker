@@ -109,6 +109,9 @@ docker run --rm \
   -w /repo \
   -e DISPLAY=:99 \
   -e WDIO_IN_CONTAINER=1 \
+  -e NO_AT_BRIDGE=1 \
+  -e WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+  -e LIBGL_ALWAYS_SOFTWARE=1 \
   bc-e2e-native \
   bash -c 'set -euo pipefail
     Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
