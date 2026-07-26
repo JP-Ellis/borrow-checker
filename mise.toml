@@ -91,9 +91,8 @@ BC_DB_PATH="$DEV_DB" cargo tauri dev
   run         = "cargo test --doc --workspace"
 
   [tasks."test:e2e"]
-  description = "Run E2E tests (desktop suite; container recommended on macOS)"
-  usage       = 'flag "--container" help="Run in a Linux container (matches CI; works on macOS)"'
-  run         = "mise run {% if usage.container %}//e2e:container{% else %}//e2e:test{% endif %}"
+  description = "Run E2E tests (desktop suite; Linux only)"
+  run         = "mise run //e2e:test"
 
   # MARK: Quality
 
@@ -105,7 +104,7 @@ BC_DB_PATH="$DEV_DB" cargo tauri dev
     { task = "lint:hack" },
     { task = "machete" },
     { task = "test" },
-    { task = "test:e2e", args = ["--container"] },
+    { task = "test:e2e" },
   ]
 
   [tasks.prek]

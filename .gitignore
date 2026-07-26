@@ -236,7 +236,6 @@ Temporary Items
 
 # Dev database seeded by `mise run dev:app` (ephemeral, machine-local)
 /.dev-db/
-.linux-cache/
 
 # Visual brainstorming companion (ephemeral)
 .superpowers/

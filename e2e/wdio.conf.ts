@@ -54,9 +54,9 @@ export const config: Options.Testrunner = {
   reporters: ['spec'],
 
   /* Default wait for `waitForDisplayed`/`waitForExist`/`waitUntil` and
-   * `expect(...)` polling. Deliberately generous to absorb container-in-CI
-   * cold-start and slowness; specs should only override when a wait genuinely
-   * needs to be shorter or much longer than this. */
+   * `expect(...)` polling. Deliberately generous to absorb CI cold-start and
+   * slowness; specs should only override when a wait genuinely needs to be
+   * shorter or much longer than this. */
   waitforTimeout: 15_000,
 
   mochaOpts: {
@@ -72,8 +72,8 @@ export const config: Options.Testrunner = {
     process.env['BC_DB_PATH'] = TEST_DB_PATH;
 
     // Seed the test database.
-    // SEED_BIN is set by the container task when a pre-built Linux binary is available;
-    // otherwise fall back to cargo run (builds bc-seed on demand, no nightly required).
+    // SEED_BIN lets a caller point at an already-built binary; otherwise fall
+    // back to cargo run (builds bc-seed on demand, no nightly required).
     const seedBin = process.env['SEED_BIN'] || 'cargo run -p bc-seed --';
     console.log('Seeding test database…');
     execSync(`${seedBin} --db-path "${TEST_DB_PATH}" --force`, {
