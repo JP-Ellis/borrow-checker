@@ -878,8 +878,10 @@ impl Period {
 /// Picks the finest bucket [`Period`] that yields a readable count for the
 /// span, then `count = ceil(span_days / nominal_bucket_days)` clamped to `>= 1`.
 /// Edge buckets may be partial. Nominal lengths: Daily = 1, Weekly = 7,
-/// Monthly = 31, Quarterly = 92 — chosen so the `PeriodNav` spans reproduce the
-/// established sparkline densities exactly.
+/// Monthly = 31, Quarterly = 92, `CalendarYear` = 365 — chosen so the
+/// `PeriodNav` spans reproduce the established sparkline densities exactly
+/// (the widest nav span is 366 days, which stays on Monthly) while very wide
+/// filter spans degrade to coarser buckets instead of hundreds of bars.
 ///
 /// # Arguments
 ///
@@ -901,8 +903,10 @@ pub fn sparkline_bucketing_for(start: Date, end: Date) -> (Period, u32) {
         (Period::Weekly, 7_u64)
     } else if span_days <= 730 {
         (Period::Monthly, 31_u64)
-    } else {
+    } else if span_days <= 1830 {
         (Period::Quarterly, 92_u64)
+    } else {
+        (Period::CalendarYear, 365_u64)
     };
     let count = span_days.div_ceil(nominal).max(1);
     (bucket, u32::try_from(count).unwrap_or(u32::MAX))
@@ -1004,6 +1008,7 @@ impl From<Period> for bc_models::Period {
 
 #[cfg(test)]
 mod tests {
+    use jiff::Span;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
@@ -1182,37 +1187,41 @@ mod tests {
         assert_eq!(p, p2);
     }
 
-    #[test]
-    fn sparkline_bucketing_for_spans() {
-        // ≤ 21 days → Daily; count = ceil(days / 1).
+    #[rstest]
+    /* Zero/negative span clamps count to ≥ 1. */
+    #[case(0, Period::Daily, 1)]
+    /* PeriodNav densities: Daily/Weekly → 14 days, Fortnightly → 8 weeks,
+     * Monthly → 13 weeks, Quarterly → 6 months, yearly → 12 months. These must
+     * not shift when the ladder gains tiers. */
+    #[case(14, Period::Daily, 14)]
+    #[case(56, Period::Weekly, 8)]
+    #[case(91, Period::Weekly, 13)]
+    #[case(181, Period::Monthly, 6)]
+    #[case(184, Period::Monthly, 6)]
+    #[case(365, Period::Monthly, 12)]
+    #[case(366, Period::Monthly, 12)]
+    /* Arbitrary filter range inside the weekly tier. */
+    #[case(45, Period::Weekly, 7)]
+    /* Tier boundaries and the first day past each. */
+    #[case(21, Period::Daily, 21)]
+    #[case(22, Period::Weekly, 4)]
+    #[case(120, Period::Weekly, 18)]
+    #[case(121, Period::Monthly, 4)]
+    #[case(730, Period::Monthly, 24)]
+    #[case(731, Period::Quarterly, 8)]
+    #[case(1830, Period::Quarterly, 20)]
+    #[case(1831, Period::CalendarYear, 6)]
+    fn sparkline_bucketing_for_spans(
+        #[case] span_days: i64,
+        #[case] expected_bucket: Period,
+        #[case] expected_count: u32,
+    ) {
+        let start = date(2025, 1, 1);
+        let end = start.saturating_add(Span::new().days(span_days));
+
         assert_eq!(
-            super::sparkline_bucketing_for(date(2025, 1, 1), date(2025, 1, 15)),
-            (Period::Daily, 14)
-        );
-        // ≤ 120 days → Weekly; 91-day span → ceil(91/7) = 13 (Monthly page density).
-        assert_eq!(
-            super::sparkline_bucketing_for(date(2025, 1, 1), date(2025, 4, 2)),
-            (Period::Weekly, 13)
-        );
-        // 45-day filter range → Weekly, ceil(45/7) = 7.
-        assert_eq!(
-            super::sparkline_bucketing_for(date(2025, 1, 1), date(2025, 2, 15)),
-            (Period::Weekly, 7)
-        );
-        // Full calendar year (365 days) → Monthly, ceil(365/31) = 12.
-        assert_eq!(
-            super::sparkline_bucketing_for(date(2025, 1, 1), date(2026, 1, 1)),
-            (Period::Monthly, 12)
-        );
-        // > 730 days → Quarterly.
-        assert_eq!(
-            super::sparkline_bucketing_for(date(2020, 1, 1), date(2025, 1, 1)).0,
-            Period::Quarterly
-        );
-        // Zero/negative span clamps count to ≥ 1.
-        assert_eq!(
-            super::sparkline_bucketing_for(date(2025, 1, 1), date(2025, 1, 1)),
-            (Period::Daily, 1)
+            super::sparkline_bucketing_for(start, end),
+            (expected_bucket, expected_count)
         );
     }
 
