@@ -41,7 +41,7 @@ static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 )]
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "sparkline bucket is only ever Daily/Weekly/Monthly; the wildcard title arm handles Monthly"
+    reason = "both wildcards sit over #[non_exhaustive] enums: the breadcrumb one absorbs future AccountType variants, and the sparkline title gives every bucket stage 2 can produce (Daily/Weekly/Monthly/Quarterly/CalendarYear) an explicit arm, leaving the wildcard for buckets stage 2 never returns and future variants"
 )]
 pub fn AccountDashboard(
     /// Account to display.
@@ -76,6 +76,15 @@ pub fn AccountDashboard(
             .with(|f| crate::pages::accounts::query::sparkline_bucketing(f, &period, start_win))
     });
 
+    // Whether the filter contributes a membership dimension — the same notion
+    // the stat tiles and the muted real balance use, so the "filtered" marker
+    // never disagrees with them.
+    let filter_is_active = Signal::derive(move || {
+        filter_store
+            .filter
+            .with(crate::pages::accounts::query::filter_has_non_date_dim)
+    });
+
     let sparkline_resource = LocalResource::new(move || {
         let id = sparkline_account_id.clone();
         let (bucket, count, span_end) = bucketing.get();
@@ -88,6 +97,9 @@ pub fn AccountDashboard(
             v.get();
         }
         async move {
+            if count == 0 {
+                return Ok(vec![]);
+            }
             bc_ipc::client::get_account_sparkline(&id, bucket, count, as_of, membership.as_ref())
                 .await
         }
@@ -337,10 +349,19 @@ pub fn AccountDashboard(
                     }
                     None => vec![],
                 };
-                let title = match bucket {
-                    bc_ipc::Period::Daily => format!("Cash Flow (Last {n} Days)"),
-                    bc_ipc::Period::Weekly => format!("Cash Flow (Last {n} Weeks)"),
-                    _ => format!("Cash Flow (Last {n} Months)"),
+                let marker = if filter_is_active.get() { ", filtered" } else { "" };
+                let title = if n == 0 {
+                    format!("Cash Flow (Empty Range{marker})")
+                } else {
+                    let unit = match bucket {
+                        bc_ipc::Period::Daily => "Days",
+                        bc_ipc::Period::Weekly => "Weeks",
+                        bc_ipc::Period::Monthly => "Months",
+                        bc_ipc::Period::Quarterly => "Quarters",
+                        bc_ipc::Period::CalendarYear => "Years",
+                        _ => "Periods",
+                    };
+                    format!("Cash Flow (Last {n} {unit}{marker})")
                 };
                 view! {
                     <div data-testid="dashboard-sparkline">
