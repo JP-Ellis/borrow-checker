@@ -76,7 +76,7 @@ pub fn filter_has_non_date_dim(filter: &Filter) -> bool {
 /// [`bc_ipc::sparkline_bucketing_for`]) yields a readable density.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "bc_ipc::Period is #[non_exhaustive]; Daily/Weekly and any future variant share a two-week context window (mirrors the dashboard title's wildcard arm)"
+    reason = "the wildcard absorbs Daily and Weekly (both take the two-week context window) plus any future #[non_exhaustive] bc_ipc::Period variant, which defaults to the same window"
 )]
 fn nav_span_len(period: &Period) -> jiff::Span {
     match period {
@@ -99,6 +99,10 @@ fn nav_span_len(period: &Period) -> jiff::Span {
 /// * `after:` only → `[date_from, nav_end)`;
 /// * `before:` only → a nav-length span ending at `date_until`;
 /// * no date bound → the `PeriodNav` span ending at the page window end.
+///
+/// Nothing constrains `date_from <= date_until`, so an inverted filter range
+/// yields an inverted (empty) span. Callers must treat `start >= end` as
+/// "matches nothing"; [`sparkline_bucketing`] does exactly that.
 ///
 /// # Arguments
 ///
@@ -124,7 +128,7 @@ pub fn sparkline_span(user: &Filter, period: &Period, window_start: Date) -> (Da
 /// to reach back to (or before) `span_start`, with the newest bucket containing
 /// `as_of`.
 ///
-/// Mirrors [`bc_core::balance::bucket_ranges`]: buckets are snapped to calendar
+/// Mirrors `bc_core::balance::bucket_ranges`: buckets are snapped to calendar
 /// boundaries and the newest one contains `as_of`, so the oldest may start
 /// before `span_start` (an accepted partial oldest bucket). Walks bucket
 /// boundaries backward from `as_of` until coverage reaches `span_start`, reusing
@@ -155,10 +159,15 @@ fn coverage_count(bucket: &Period, span_start: Date, as_of: Date) -> u32 {
 /// Composes stage 1 ([`sparkline_span`]) and stage 2
 /// ([`bc_ipc::sparkline_bucketing_for`]). For an **explicit-filter** span (either
 /// date bound set) the nominal count is bumped via [`coverage_count`] so the
-/// oldest calendar-snapped bucket reaches `date_from`; otherwise the leading
-/// postings would fall outside every bucket and be dropped from the date-clamped
-/// fetch, desyncing the sparkline from the balance tiles. `PeriodNav` spans are
-/// calendar-aligned and keep the nominal stage-2 count unchanged.
+/// oldest calendar-snapped bucket reaches the resolved span start (which is
+/// `date_from` when set, and the nav-length lookback from `date_until`
+/// otherwise); without the bump the leading postings would fall outside every
+/// bucket and be dropped from the date-clamped fetch, desyncing the sparkline
+/// from the balance tiles. `PeriodNav` spans are calendar-aligned and keep the
+/// nominal stage-2 count unchanged.
+///
+/// An inverted filter range (`date_from > date_until`) matches nothing, so the
+/// count is `0` and callers must render an empty sparkline rather than fetching.
 ///
 /// The corrected count flows to both the dashboard title and the client fetch,
 /// keeping the rendered bar count and the title label in sync.
@@ -171,7 +180,8 @@ fn coverage_count(bucket: &Period, span_start: Date, as_of: Date) -> u32 {
 ///
 /// # Returns
 ///
-/// The `(bucket, count, span_end)` triple to fetch and render.
+/// The `(bucket, count, span_end)` triple to fetch and render; `count == 0`
+/// means the span is empty and nothing should be fetched or drawn.
 #[must_use]
 pub fn sparkline_bucketing(
     user: &Filter,
@@ -179,6 +189,9 @@ pub fn sparkline_bucketing(
     window_start: Date,
 ) -> (Period, u32, Date) {
     let (span_start, span_end) = sparkline_span(user, period, window_start);
+    if span_start >= span_end {
+        return (Period::Daily, 0, span_end);
+    }
     let (bucket, nominal) = bc_ipc::sparkline_bucketing_for(span_start, span_end);
     let explicit = user.date_from.is_some() || user.date_until.is_some();
     let count = if explicit {
@@ -202,6 +215,7 @@ mod tests {
     use jiff::civil::Date;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal::Decimal;
 
     use super::effective_filter;
@@ -412,5 +426,66 @@ mod tests {
         let (bucket, count, _) =
             sparkline_bucketing(&user, &bc_ipc::Period::CalendarYear, date(2025, 1, 1));
         assert_eq!((bucket, count), (bc_ipc::Period::Monthly, 12));
+    }
+
+    /// The `PeriodNav` densities are emergent from two independent constants —
+    /// [`super::nav_span_len`] and the `bc_ipc` threshold ladder — so they are
+    /// pinned here for every [`Period`] variant.
+    #[rstest]
+    #[case(Period::Daily, Period::Daily, 14)]
+    #[case(Period::Weekly, Period::Daily, 14)]
+    #[case(Period::Fortnightly, Period::Weekly, 8)]
+    #[case(Period::Monthly, Period::Weekly, 13)]
+    #[case(Period::Quarterly, Period::Monthly, 6)]
+    #[case(
+        Period::FinancialQuarter { start_month: 7, start_day: 1 },
+        Period::Monthly,
+        6
+    )]
+    #[case(Period::CalendarYear, Period::Monthly, 12)]
+    #[case(
+        Period::FinancialYear { start_month: 7, start_day: 1 },
+        Period::Monthly,
+        12
+    )]
+    fn nav_densities_unchanged(
+        #[case] period: Period,
+        #[case] expected_bucket: Period,
+        #[case] expected_count: u32,
+    ) {
+        let user = bc_ipc::Filter::default();
+        let window_start = window_containing(&period, date(2025, 6, 15));
+
+        let (bucket, count, _) = sparkline_bucketing(&user, &period, window_start);
+
+        assert_eq!((bucket, count), (expected_bucket, expected_count));
+    }
+
+    #[test]
+    fn inverted_filter_range_yields_empty_bucketing() {
+        /* `after:2025-06-01 before:2025-01-01` matches nothing, so the sparkline
+         * must render explicitly empty rather than collapsing to a single bar. */
+        let mut user = bc_ipc::Filter::default();
+        user.date_from = Some(date(2025, 6, 1));
+        user.date_until = Some(date(2025, 1, 1));
+
+        let (bucket, count, span_end) =
+            sparkline_bucketing(&user, &Period::Monthly, date(2025, 1, 1));
+
+        assert_eq!(count, 0);
+        assert_eq!(bucket, Period::Daily);
+        assert_eq!(span_end, date(2025, 1, 1));
+    }
+
+    #[test]
+    fn equal_filter_bounds_yield_empty_bucketing() {
+        /* A half-open span of zero length is equally empty. */
+        let mut user = bc_ipc::Filter::default();
+        user.date_from = Some(date(2025, 3, 1));
+        user.date_until = Some(date(2025, 3, 1));
+
+        let (_, count, _) = sparkline_bucketing(&user, &Period::Monthly, date(2025, 1, 1));
+
+        assert_eq!(count, 0);
     }
 }
