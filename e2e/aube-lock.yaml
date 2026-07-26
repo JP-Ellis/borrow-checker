@@ -20,37 +20,37 @@ importers:
         version: 9.29.1
     devDependencies:
       '@types/better-sqlite3':
-        specifier: 7.6.13
+        specifier: ^7.6.13
         version: 7.6.13
       '@types/mocha':
-        specifier: 10.0.10
+        specifier: ^10.0.10
         version: 10.0.10
       '@wdio/cli':
-        specifier: 9.30.0
+        specifier: ^9.30.0
         version: 9.30.0(@types/node@25.9.1)(expect-webdriverio@5.6.5)
       '@wdio/globals':
-        specifier: 9.29.1
+        specifier: ^9.29.1
         version: 9.29.1(expect-webdriverio@5.6.5)(webdriverio@9.29.1)
       '@wdio/local-runner':
-        specifier: 9.30.0
+        specifier: ^9.30.0
         version: 9.30.0(@wdio/globals@9.29.1)(webdriverio@9.29.1)
       '@wdio/mocha-framework':
-        specifier: 9.30.0
+        specifier: ^9.30.0
         version: 9.30.0
       '@wdio/spec-reporter':
-        specifier: 9.29.1
+        specifier: ^9.29.1
         version: 9.29.1
       '@wdio/types':
-        specifier: 9.29.1
+        specifier: ^9.29.1
         version: 9.29.1
       better-sqlite3:
-        specifier: 13.0.1
+        specifier: ^13.0.1
         version: 13.0.1
       ts-node:
-        specifier: 10.9.2
+        specifier: ^10.9.2
         version: 10.9.2(@types/node@25.9.1)(typescript@7.0.2)
       typescript:
-        specifier: 7.0.2
+        specifier: ^7.0.2
         version: 7.0.2
 
 packages:
