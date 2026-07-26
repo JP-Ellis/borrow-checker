@@ -37,7 +37,36 @@ SKIP_BUILD=1 aubx wdio run wdio.conf.ts
 ## Test organisation
 
 All specs live in `tests/flows/` and cover functional flows (navigation, CRUD).
-They assert on the DOM — paths, text, ARIA labels — never on pixels.
+They assert on the DOM — paths, text, ARIA labels — never on pixels. Shared
+helpers live in `tests/support/`.
+
+## Parallelism and the database
+
+Spec files run concurrently (`maxInstances`). Each worker gets its own
+`tauri-driver` (ports offset by worker slot) and its own copy of the seeded
+database, because the app inherits `BC_DB_PATH` from the driver that launches
+it — a single shared driver would hand every session the same file.
+
+Consequences when writing specs:
+
+- **Never rely on another spec file's writes.** Each file starts from the same
+  freshly-copied seed and is otherwise isolated.
+- **Read the database via `DB_PATH` from `tests/support/db.js`**, never a
+  hardcoded `fixtures/test.db` — that path no longer exists.
+- **Wait before chaining off a lookup** (`await el.waitForDisplayed()`).
+  Start-up competes for CPU across workers, so an element that was reliably
+  present when tests ran serially may not be yet.
+
+`onPrepare` seeds `fixtures/template.db` and checkpoints its WAL before workers
+copy it; without that checkpoint the copies would be missing most of the seed.
+
+## Avoiding stale-element warnings
+
+Leptos replaces DOM nodes when a signal changes, so an element handle captured
+before a re-render is stale afterwards. WebdriverIO recovers by re-finding it
+from the original selector, but logs `Request encountered a stale element` each
+time. Re-query at the point of use rather than holding a handle across an
+interaction that re-renders — see `tests/support/palette.ts`.
 
 ## Adding tests
 
