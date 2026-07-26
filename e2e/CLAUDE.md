@@ -20,9 +20,11 @@ Prefer `mise` tasks from the repo root — they handle dependency ordering:
 mise run test:e2e     # build app + run tests
 ```
 
-The suite needs `tauri-driver` talking to `WebKitWebDriver`, so it runs on Linux
-only (on Ubuntu, the `webkit2gtk-driver` package). On other platforms
-`wdio.conf.ts` exits gracefully when the driver never comes up.
+On Linux this needs `WebKitWebDriver` (the `webkit2gtk-driver` package on
+Ubuntu) for `tauri-driver` to talk to. `tauri-driver` covers Linux and Windows;
+macOS has no desktop WebDriver client, so `wdio.conf.ts` exits gracefully when
+the driver never comes up. See the README for why the macOS-capable `embedded`
+provider is not adopted.
 
 Or run directly from this directory (requires the app to already be built):
 

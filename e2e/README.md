@@ -7,13 +7,25 @@ ships to users. IPC, SQLite persistence, and real rendering are all exercised.
 
 ## Prerequisites
 
-Linux only — `tauri-driver` drives `WebKitWebDriver`, which has no equivalent on
-macOS or Windows. On other platforms the suite exits gracefully instead of
-failing.
+`tauri-driver` covers Linux and Windows; macOS ships no desktop WebDriver
+client, so the suite exits gracefully there instead of failing.
 
 - `cargo install tauri-cli tauri-driver` (one-time)
 - Ubuntu: the `webkit2gtk-driver` package (`webkitgtk-webdriver` from 25.10 on)
 - A display — headless runs need `xvfb-run`
+
+### macOS
+
+Running the suite on macOS needs `@wdio/tauri-service` with its `embedded`
+driver provider, which relies on two crates (`tauri-plugin-wdio` and
+`tauri-plugin-wdio-webdriver`) plus the `@wdio/tauri-plugin` **frontend** JS
+module imported into the page. That last part is the blocker: `bc-ui` is
+Leptos/Trunk with no npm frontend dependencies, and without `window.wdioTauri`
+the service burns a 5s timeout per probe — a trial run took 21m34s and failed
+14 of 15 specs, against 4m06s and 15/15 here.
+
+CrabNebula's driver also supports macOS but requires a paid subscription
+(`CN_API_KEY`); it offers nothing over `tauri-driver` on Linux/Windows.
 
 ## Quick start
 
