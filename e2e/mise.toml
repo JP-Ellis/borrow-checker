@@ -10,3 +10,113 @@ depends     = [":setup", "//crates/bc-app:build:debug"]
 env         = { SKIP_BUILD = "1" }
 run         = "aubx wdio run wdio.conf.ts"
 
+# MARK: Container tasks
+# A Linux container so the suite can run on macOS and Windows, where
+# tauri-driver has no WebKitWebDriver to talk to. CI does NOT use this — it runs
+# the suite directly on its Linux runner. The image is therefore built locally
+# from the Containerfile on demand and never pinned to a registry digest, so it
+# cannot drift out of step with the toolchain in mise.toml.
+#
+# {{config_root}} expands to the absolute path of e2e/, so
+# {{config_root}}/.. is the repo root.
+
+[tasks."container:build"]
+description = "Build the E2E container image locally (tags it as bc-e2e-native)"
+sources     = [
+  "Containerfile",
+  "package.json",
+  "aube-lock.yaml",
+  "../mise.toml"
+]
+outputs     = ["../.linux-cache/.image-built"]
+run         = """
+#!/usr/bin/env bash
+set -euo pipefail
+# Always target linux/amd64 — on Apple Silicon this cross-compiles via QEMU.
+# DOCKER_BUILDKIT=1 enables BuildKit (required for --mount=type=secret and
+# heredoc RUN syntax) without needing the separate docker-buildx plugin.
+DOCKER_BUILDKIT=1 docker build --platform linux/amd64 -t bc-e2e-native \
+      -f {{config_root}}/Containerfile \
+      ${GITHUB_TOKEN:+--secret id=GITHUB_TOKEN,env=GITHUB_TOKEN} \
+      --build-arg NODE_VERSION="$(node --version)" \
+      --build-arg BINSTALL_VERSION="$(cargo-binstall -V)" \
+      --build-arg TRUNK_VERSION="$(trunk --version | cut -d' ' -f2)" \
+      --build-arg STYLANCE_VERSION="$(stylance --version | cut -d' ' -f2)" \
+      --build-arg AUBE_VERSION="$(aube --version | cut -d' ' -f1)" \
+      {{config_root}}/..
+mkdir -p {{config_root}}/../.linux-cache
+touch {{config_root}}/../.linux-cache/.image-built
+"""
+
+[tasks."container:cache-dirs"]
+description = "Create .linux-cache directories on the host (prevents Docker from owning them as root)"
+run         = """
+mkdir -p "{{config_root}}/../.linux-cache/target" \
+         "{{config_root}}/../.linux-cache/node_modules" \
+         "{{config_root}}/../.linux-cache/trunk"
+"""
+
+[tasks."container:linux-node-modules"]
+description = "Copy node_modules from the container image into the Linux cache (once per image)"
+depends     = ["container:build", "container:cache-dirs"]
+sources     = ["package.json", "aube-lock.yaml"]
+outputs     = ["../.linux-cache/node_modules/.aube-state/state.json"]
+run         = '''
+#!/usr/bin/env bash
+docker run --rm \
+  -v "{{config_root}}/../.linux-cache/node_modules:/repo/e2e/node_modules" \
+  bc-e2e-native \
+  bash -c 'cp -rn /build/e2e/node_modules/. /repo/e2e/node_modules/'
+'''
+
+[tasks."container:linux-build"]
+description = "Compile bc-app and bc-seed inside the Linux container (skipped when sources unchanged)"
+depends     = ["container:build", "container:cache-dirs"]
+sources     = [
+  "../crates/**/*.rs",
+  "../crates/**/*.scss",
+  "../crates/**/*.html",
+  "../Cargo.toml",
+  "../Cargo.lock",
+  "../crates/**/Cargo.toml",
+]
+outputs     = [
+  "../.linux-cache/target/debug/bc-app",
+  "../.linux-cache/target/debug/bc-seed",
+]
+run         = '''
+#!/usr/bin/env bash
+docker run --rm \
+  -v "{{config_root}}/..:/repo" \
+  -v "{{config_root}}/../.linux-cache/target:/repo/target" \
+  -v "{{config_root}}/../.linux-cache/trunk:/root/.cache/trunk" \
+  bc-e2e-native \
+  bash -c 'set -euo pipefail
+    mise run //crates/bc-app:build:debug
+    cargo build -p bc-seed'
+'''
+
+[tasks.container]
+description = "Run the E2E suite inside a Linux container (for macOS/Windows hosts)"
+depends     = ["container:linux-build", "container:linux-node-modules"]
+run         = '''
+#!/usr/bin/env bash
+docker run --rm \
+  -v "{{config_root}}/..:/repo" \
+  -v "{{config_root}}/../.linux-cache/target:/repo/target" \
+  -v "{{config_root}}/../.linux-cache/node_modules:/repo/e2e/node_modules" \
+  -v "{{config_root}}/../.linux-cache/trunk:/root/.cache/trunk" \
+  -w /repo \
+  -e DISPLAY=:99 \
+  -e WDIO_IN_CONTAINER=1 \
+  bc-e2e-native \
+  bash -c 'set -euo pipefail
+    Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+    XVFB_PID=$!
+    trap "kill $XVFB_PID 2>/dev/null" EXIT
+    sleep 1
+    cd /repo/e2e
+    SEED_BIN="/repo/target/debug/bc-seed" SKIP_BUILD=1 aubx wdio run wdio.conf.ts; STATUS=$?
+    kill $XVFB_PID 2>/dev/null
+    exit $STATUS'
+'''
