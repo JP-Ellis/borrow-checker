@@ -19,6 +19,7 @@
  * the budget recomputes with the filter applied.
  */
 import { browser, $, expect } from '@wdio/globals';
+import { commitAfterToken, commitTextToken } from '../support/palette.js';
 
 // ── Navigation helpers (mirrors budget.spec.ts) ─────────────────────────────
 
@@ -109,61 +110,6 @@ async function groceriesRowAmounts(): Promise<string> {
         const row = nameSpan?.parentElement;
         return row?.lastElementChild?.textContent ?? '';
     });
-}
-
-// ── Palette helpers (mirrors palette-filter-builder.spec.ts / register-global-filter.spec.ts) ──
-
-/** Opens the ⌘K palette and returns the dialog element. */
-async function openPalette() {
-    const openButton = await $('button[aria-label="open command palette (⌘K)"]');
-    await openButton.click();
-
-    const dialog = await $('div[role="dialog"][aria-label="Command palette"]');
-    await expect(dialog).toBeDisplayed();
-    return dialog;
-}
-
-/**
- * Types free payee/narration `text` into the palette's inline search box and
- * commits it with Enter (free text has no listbox suggestions — the listbox
- * shows only a "↵ search payee/narration" hint). Closes the palette
- * afterwards — chips sit behind the z-900 palette overlay, so the overlay
- * must be dismissed before any other top-bar interaction (chip removal).
- */
-async function commitTextToken(text: string): Promise<void> {
-    const dialog = await openPalette();
-
-    const input = await dialog.$('input[role="combobox"]');
-    await input.waitForDisplayed();
-    await input.setValue(text);
-    await browser.keys('Enter');
-
-    await browser.waitUntil(async () => (await input.getValue()) === '', {
-        timeoutMsg: 'expected the input to clear after committing the token',
-    });
-
-    await browser.keys('Escape');
-    await expect(dialog).not.toBeDisplayed();
-}
-
-/**
- * Types an `after:<date>` token into the palette and commits it with Enter.
- * Closes the palette afterwards, same rationale as `commitTextToken`.
- */
-async function commitAfterToken(date: string): Promise<void> {
-    const dialog = await openPalette();
-
-    const input = await dialog.$('input[role="combobox"]');
-    await input.waitForDisplayed();
-    await input.setValue(`after:${date}`);
-    await browser.keys('Enter');
-
-    await browser.waitUntil(async () => (await input.getValue()) === '', {
-        timeoutMsg: 'expected the input to clear after committing the token',
-    });
-
-    await browser.keys('Escape');
-    await expect(dialog).not.toBeDisplayed();
 }
 
 // ── Filter chip helpers (mirrors register-global-filter.spec.ts) ───────────

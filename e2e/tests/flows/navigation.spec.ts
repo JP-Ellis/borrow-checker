@@ -29,7 +29,12 @@ async function waitForPath(path: string, timeout = 5_000): Promise<void> {
 describe('Shell navigation', () => {
     it('header and main area are visible on every route', async () => {
         for (const { name, path } of ROUTES) {
-            const nav  = await $('nav[aria-label="main navigation"]');
+            const nav = await $('nav[aria-label="main navigation"]');
+            /* The shell may still be mounting on the first pass — workers run
+             * concurrently, so app start-up competes for CPU. Wait for the nav
+             * before chaining off it, or the lookup throws "element wasn't
+             * found" instead of retrying. */
+            await nav.waitForDisplayed();
             const link = await nav.$(`a=${name}`);
             await link.click();
 
@@ -61,7 +66,12 @@ describe('Shell navigation', () => {
 
     it('every route renders without showing the fallback page', async () => {
         for (const { name, path } of ROUTES) {
-            const nav  = await $('nav[aria-label="main navigation"]');
+            const nav = await $('nav[aria-label="main navigation"]');
+            /* The shell may still be mounting on the first pass — workers run
+             * concurrently, so app start-up competes for CPU. Wait for the nav
+             * before chaining off it, or the lookup throws "element wasn't
+             * found" instead of retrying. */
+            await nav.waitForDisplayed();
             const link = await nav.$(`a=${name}`);
             await link.click();
 
