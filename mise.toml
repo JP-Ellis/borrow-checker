@@ -95,8 +95,9 @@ BC_DB_PATH="$DEV_DB" cargo tauri dev
   run         = "cargo test --doc --workspace"
 
   [tasks."test:e2e"]
-  description = "Run E2E tests (desktop suite; Linux only)"
-  run         = "mise run //e2e:test"
+  description = "Run E2E tests (desktop suite; container required on macOS/Windows)"
+  usage       = 'flag "--container" help="Run in a locally-built Linux container (needed on macOS/Windows)"'
+  run         = "mise run {% if usage.container %}//e2e:container{% else %}//e2e:test{% endif %}"
 
   # MARK: Quality
 

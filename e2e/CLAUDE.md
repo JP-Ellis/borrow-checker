@@ -17,14 +17,16 @@ aubx tsc --noEmit     # TypeScript type check (no emit)
 Prefer `mise` tasks from the repo root — they handle dependency ordering:
 
 ```sh
-mise run test:e2e     # build app + run tests
+mise run test:e2e               # build app + run tests (Linux)
+mise run test:e2e --container   # run in a Linux container (macOS/Windows)
 ```
 
 On Linux this needs `WebKitWebDriver` (the `webkit2gtk-driver` package on
-Ubuntu) for `tauri-driver` to talk to. `tauri-driver` covers Linux and Windows;
-macOS has no desktop WebDriver client, so `wdio.conf.ts` exits gracefully when
-the driver never comes up. See the README for why the macOS-capable `embedded`
-provider is not adopted.
+Ubuntu) for `tauri-driver` to talk to. macOS has no desktop WebDriver client,
+so hosts other than Linux go through the container, whose image is built
+locally from `Containerfile` and never pinned to a registry digest — CI runs
+the suite natively and does not touch it. See the README for why the
+macOS-capable `embedded` provider is not adopted.
 
 Or run directly from this directory (requires the app to already be built):
 
