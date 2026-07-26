@@ -66,6 +66,48 @@ They are regenerated automatically as a dependency of `dev:app` and
 mise run gen:icons
 ```
 
+## Headless component screenshots
+
+Component QA routes under `/__test/component/*` are compiled in under
+`debug_assertions` and render from seeded fixtures with no IPC, so they can be
+screenshotted without the Tauri backend.
+
+1. **Regenerate the Stylance bundle first.** `style/bundle.scss` is generated and
+   gitignored, so a fresh checkout has a stale copy missing any newly-added
+   module classes — and `trunk serve` alone does not run Stylance. Without this
+   step the screenshot silently renders with rules missing. Re-run after every
+   SCSS edit; Trunk picks up the change automatically.
+
+   ```sh
+   cd crates/bc-ui && stylance .
+   ```
+
+1. **Serve:** `trunk serve` from `crates/bc-ui` (port 1420).
+
+1. **Shoot:** drive Chrome directly.
+
+   ```sh
+   google-chrome-stable --headless=new --disable-gpu --no-sandbox \
+     --window-size=1400,900 --virtual-time-budget=8000 \
+     --screenshot=/tmp/shot.png http://127.0.0.1:1420/__test/component/<route>
+   ```
+
+   For interaction, `puppeteer-core` against the same `executablePath` works;
+   add a per-character delay on typing and settle time after each action so
+   Leptos reactivity lands before the capture.
+
+When a screenshot looks wrong, check whether the class is applied but the rule
+is absent (`getComputedStyle` in `page.evaluate`) — a correct class with a
+transparent computed background means the bundle is stale, so return to step 1.
+
+**Limitation: components that call IPC on mount cannot be tested interactively
+this way.** With no Tauri backend, `tauri-sys` fails to deserialise the error,
+panics, and halts the whole WASM reactive runtime. The initial synchronous
+render still completes, so *static layout* screenshots remain valid — but
+nothing is reactive afterwards. Capture `pageerror` to detect it: an
+`unreachable` paired with a `tauri-sys` panic is this, not a real bug. Use the
+e2e suite for interactive verification of such components.
+
 ## Notes
 
 - The `crates/bc-ui/Trunk.toml` fixes the dev server port at **1420** and
