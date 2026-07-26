@@ -526,6 +526,22 @@ impl Service {
     /// The query's own date bounds are overridden with the bucket span, so the
     /// bucket ranges are the single date authority.
     ///
+    /// # Bucket span vs. filter range
+    ///
+    /// Buckets are snapped to calendar boundaries, so the span
+    /// `[oldest_bucket_start, newest_bucket_end)` may extend beyond the filter's
+    /// own `date_from`/`date_until` **at both ends**. The oldest bucket can begin
+    /// before `date_from`, and — less obviously — the newest bucket can end after
+    /// `date_until`: with `before:2025-02-11` and weekly buckets, the span runs to
+    /// 2025-02-17, so legs dated 2025-02-11..16 land in the newest bar even though
+    /// the filter excludes them.
+    ///
+    /// This is deliberate. The sparkline is a trend chart, where calendar-aligned
+    /// bars are worth more than bars clipped to the filter's exact range. The
+    /// consequence is that the sparkline may not tie out exactly against the
+    /// balance tiles rendered from [`Self::filtered_period_stats`], which honours
+    /// the requested window edges precisely.
+    ///
     /// # Arguments
     ///
     /// * `account_id` - The account whose legs are bucketed.
@@ -2015,6 +2031,213 @@ mod search_tests {
             assert_eq!(bucket.inflow.value(), dec!(0));
             assert_eq!(bucket.outflow.value(), dec!(0));
         }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_buckets_span_overrides_query_dates(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+        // Weekly buckets ending in the week of 2025-02-12 span
+        // [2025-01-27, 2025-02-17); the query's own bounds are strictly narrower.
+        svc.create(tx_on(&a, &b, date(2025, 1, 27), "before-from", dec!(100)))
+            .await
+            .expect("leading");
+        svc.create(tx_on(&a, &b, date(2025, 2, 5), "in-range", dec!(20)))
+            .await
+            .expect("middle");
+        svc.create(tx_on(&a, &b, date(2025, 2, 13), "after-until", dec!(7)))
+            .await
+            .expect("trailing");
+
+        let query = TransactionQuery {
+            date_from: Some(date(2025, 1, 29)),
+            date_until: Some(date(2025, 2, 11)),
+            ..Default::default()
+        };
+        let count = core::num::NonZeroUsize::new(3).expect("3 > 0");
+        let buckets = svc
+            .filtered_posting_buckets(&a, "AUD", &query, &Period::Weekly, count, date(2025, 2, 12))
+            .await
+            .expect("filtered_posting_buckets");
+
+        assert_eq!(buckets.len(), 3);
+        let values: Vec<_> = buckets.iter().map(|bucket| bucket.inflow.value()).collect();
+        // Both overshoot legs are summed: the bucket span, not the query's own
+        // date bounds, is the single date authority.
+        assert_eq!(values, vec![dec!(100), dec!(20), dec!(7)]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_buckets_sum_own_legs_not_matched_legs(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let c = accts
+            .create()
+            .name("C")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("C");
+
+        let svc = Service::new(pool.clone());
+        // Deliberately asymmetric: A's own leg (+100) shares no magnitude with
+        // B's matched leg (-30), so summing the matched legs instead of A's own
+        // legs yields a visibly different answer.
+        let split = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2025, 1, 10))
+            .payee("split".to_owned())
+            .description("desc")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(a.clone())
+                    .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(b.clone())
+                    .amount(Amount::new(dec!(-30), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(c)
+                    .amount(Amount::new(dec!(-70), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(split).await.expect("split");
+
+        // `accounts: [B]` is posting-scoped: only B's leg is a matched posting.
+        let query = TransactionQuery {
+            accounts: vec![b],
+            ..Default::default()
+        };
+        let count = core::num::NonZeroUsize::new(1).expect("1 > 0");
+        let buckets = svc
+            .filtered_posting_buckets(
+                &a,
+                "AUD",
+                &query,
+                &Period::Monthly,
+                count,
+                date(2025, 1, 20),
+            )
+            .await
+            .expect("filtered_posting_buckets");
+
+        assert_eq!(buckets.len(), 1);
+        let jan = buckets.first().expect("one bucket");
+        assert_eq!(jan.inflow.value(), dec!(100));
+        assert_eq!(jan.outflow.value(), dec!(0));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_buckets_ignore_other_commodities(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+
+        let svc = Service::new(pool.clone());
+        // A holds one AUD leg and one USD leg on the same date; the USD leg must
+        // never reach an AUD bucket.
+        let multi = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2025, 1, 10))
+            .payee("multi".to_owned())
+            .description("desc")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(a.clone())
+                    .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(b.clone())
+                    .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(a.clone())
+                    .amount(Amount::new(dec!(50), CommodityCode::new("USD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(b)
+                    .amount(Amount::new(dec!(-50), CommodityCode::new("USD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(multi).await.expect("multi");
+
+        let count = core::num::NonZeroUsize::new(1).expect("1 > 0");
+        let buckets = svc
+            .filtered_posting_buckets(
+                &a,
+                "AUD",
+                &TransactionQuery::default(),
+                &Period::Monthly,
+                count,
+                date(2025, 1, 20),
+            )
+            .await
+            .expect("filtered_posting_buckets");
+
+        assert_eq!(buckets.len(), 1);
+        let jan = buckets.first().expect("one bucket");
+        assert_eq!(jan.inflow.value(), dec!(100));
+        assert_eq!(jan.outflow.value(), dec!(0));
     }
 
     #[sqlx::test(migrations = "./migrations")]
