@@ -506,7 +506,7 @@ dependencies = [
  "bc-sdk",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
