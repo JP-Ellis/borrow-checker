@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn }  from 'node:child_process';
 import { execSync }                   from 'node:child_process';
 import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
+import { cpus }                       from 'node:os';
 import { join }                       from 'node:path';
 import { dirname, resolve }           from 'node:path';
 import { fileURLToPath }              from 'node:url';
@@ -44,6 +45,22 @@ function slotOf(cid: string): number {
   return Number.parseInt(cid.split('-')[1] ?? '0', 10) || 0;
 }
 
+/**
+ * How many spec files to run at once.
+ *
+ * A worker is not just a browser tab: it runs a full desktop app, its own
+ * tauri-driver, and WebKit's helper processes. Budgeting ~2 cores each keeps a
+ * 4-vCPU CI runner at 2 workers and a roomier workstation at the cap.
+ * Over-subscribing does not merely run slower — it starves the app enough that
+ * IPC writes miss their `waitforTimeout` and specs fail outright.
+ *
+ * `WDIO_MAX_INSTANCES` overrides it, which is also how to reproduce CI's
+ * concurrency locally.
+ */
+const MAX_INSTANCES =
+  Number.parseInt(process.env['WDIO_MAX_INSTANCES'] ?? '', 10)
+  || Math.max(1, Math.min(4, Math.floor(cpus().length / 2)));
+
 export const config: Options.Testrunner = {
   hostname: 'localhost',
   path:     '/',
@@ -53,13 +70,13 @@ export const config: Options.Testrunner = {
   /* Spec files are independent: each worker gets a private copy of the seeded
    * database (see `beforeSession`), so they may run concurrently. Kept modest
    * because every session launches a real WebKitGTK app that competes for CPU
-   * — past ~4 the processes contend and wall-clock stops improving. */
-  maxInstances: 4,
+   * — see `MAX_INSTANCES`. */
+  maxInstances: MAX_INSTANCES,
 
   capabilities: [
     {
       browserName:  'wry',
-      maxInstances: 4,
+      maxInstances: MAX_INSTANCES,
       'wdio:enforceWebDriverClassic': true,
       'tauri:options': {
         application: APPLICATION,
