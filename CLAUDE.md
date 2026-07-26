@@ -75,6 +75,8 @@ Keep only **basic** conversions (scalar/enum/`Commodity`↔DTO) inside `bc-ipc` 
 
 The workspace enables all Clippy groups at `warn` (priority = -1) and selectively allows exceptions. This means every public item needs a doc comment, `#[allow]` is banned in favour of `#[expect(lint, reason = "...")]`, `unwrap()` is disallowed in library code, and `clippy::module_name_repetitions` fires if you name a type after its module. Prefer naming types without the module prefix and re-exporting with an alias at the crate boundary.
 
+Hoist `use` statements to the top of the enclosing module — including `mod tests` — never inside a function body, unless a name collision leaves no alternative.
+
 ## Testing Conventions
 
 - Unit tests live in `#[cfg(test)] mod tests` alongside source.
@@ -82,6 +84,29 @@ The workspace enables all Clippy groups at `warn` (priority = -1) and selectivel
 - Use `pretty_assertions::assert_eq!` (not `std::assert_eq!`).
 - Use `rstest` for parameterised tests and `insta` for snapshot assertions.
 - Run a single test: `cargo nextest run -p <crate> <test-name>`.
+- **Never use real personal or financial data** in tests, fixtures, or doc examples. Invent obviously-fake values (account `123456789`, generic payees). Real data has leaked into this public repo before and required a history rewrite.
+- `bc-plugins` integration tests load pre-compiled `wasm32-wasip2` artifacts and fail in any checkout where `plugins/` has not been built. That is environmental, not a regression — to verify unrelated work, run `cargo nextest run --workspace -E 'not package(bc-plugins)'`.
+
+## Gotchas
+
+**The pre-commit hook runs workspace-wide clippy.** A commit that intentionally leaves the workspace non-compiling (a multi-crate migration landing crate by crate) will be blocked. Use `git commit --no-verify` for those intermediate commits and rely on a final full verification as the green gate. Never stub or gut a downstream crate just to satisfy the hook.
+
+**`bc-ui` native and wasm clippy catch different lints.** `mod components` and its descendants are `#[cfg(target_arch = "wasm32")]`-gated, so each target sees a different module graph. Both must pass:
+
+```sh
+cargo clippy -p bc-ui --target wasm32-unknown-unknown -- -D warnings
+cargo clippy -p bc-ui --all-targets -- -D warnings
+```
+
+This creates a **cross-target `#[expect]` trap**: a lint that fires only on one target makes a plain `#[expect]` *unfulfilled* on the other, which itself breaks `-D warnings`. Prefer renaming over suppressing; if you must suppress per-target, use `#[cfg_attr(not(target_arch = "wasm32"), expect(...))]`. Likewise an unused `pub` item still trips `dead_code` in this binary crate — and the first change that adds a wasm consumer must *remove* the now-unfulfilled expect.
+
+To unit-test pure logic that lives under the wasm-gated `components/` tree, put it in a Leptos-free file and `include!` it from a `#[cfg(test)] mod components_tests` shim in `main.rs`. A file mixing Leptos and pure logic cannot be shim-included — split the helper out first.
+
+## Design Principles
+
+**Warn, don't block.** This is a power-user tool; guardrails inform rather than gatekeep. An unbalanced transaction saves with a warning flag; editing a reconciled transaction is allowed with a warning. Reserve hard errors for genuinely unrepresentable states (unparsable amount, more than one elided posting, a posting with no account).
+
+**Schema changes may break.** The app has never been deployed, so there are no databases in the wild. Migrations may freely alter, drop, or recreate schema — prefer a clean schema over compatibility shims, and fold changes into existing migrations rather than writing data migrations.
 
 ## Commit Style
 

@@ -118,7 +118,9 @@ LoanTermsSet
 - Import idempotency — per-account source-reference deduplication
 - Future sync — replicate events to a server or mobile device
 
-**Double-entry accounting** is enforced at the core level: every transaction must balance to zero across accounts, consistent with ledger/beancount semantics.
+**Double-entry accounting** is the model: a transaction is a set of postings that
+should sum to zero per commodity, consistent with ledger/beancount semantics.
+Balance is *derived and advisory*, not an admission requirement — see §4.4.
 
 ### 4.3 Account Model
 
@@ -160,7 +162,80 @@ Fine-grained expense categories (`Expenses:Food:Restaurants`, `Expenses:Health:G
 
 Cross-cutting expense views are handled via tags on postings and accounts, enabling queries like "all food spend regardless of context" or "all spending tagged `person:me`" — without duplicating the account hierarchy.
 
-### 4.4 Backup & Restore (`bc-core`)
+### 4.4 Transaction Model
+
+A `Transaction` carries a canonical `date` (the sort key) plus free-form
+`extra_dates: Vec<(String, Date)>` for secondary dates a source supplies
+(posted, value, settlement). Its narrative fields are deliberately three:
+
+| Field | Meaning |
+| ------------- | ---------------------------------------------------------------------- |
+| `description` | Raw imported narration — usually the only text a bank export provides |
+| `payee` | Cleaned or derived counterparty; often `None`, falls back to `description` in the UI |
+| `note` | User annotation. Postings carry their own `note` |
+
+**Reconciliation is the only status axis.** `enum Reconciliation { Unreconciled, Flagged, Reconciled }`.
+An earlier `Pending / Cleared / Voided` conflated three separate concerns:
+finalisation is now *structural* (derived balance), voiding is a reversal link,
+and reconciliation is what remains. `Flagged` is an attention marker.
+
+**Balance is derived, never stored.** `balanced()` sums postings to zero per
+commodity after resolving an elided leg. It is false when there are no concrete
+legs, when the residual is non-zero for any commodity, or when two or more legs
+are elided.
+
+**Amount elision.** `Posting.amount: Option<Amount>` — `None` marks the leg that
+absorbs the residual, exactly as in ledger and beancount. At most one leg per
+transaction may be elided.
+
+**Storing is permissive.** Validation rejects only structurally impossible
+transactions: an empty posting list, two or more elided legs (the residual is
+ambiguous), or a lone posting that is itself elided (no amount at all anywhere).
+Everything else persists — including a fully-concrete unbalanced transaction.
+
+This matters because a one-sided CSV import is the normal case, not an error: a
+row saying `Assets:Bank:Checking -$50` with no counter-leg *must* persist so the
+account balance moves and the UI can surface it for categorisation. Unbalanced
+transactions therefore still count toward balances; `balanced()` is a quality
+flag that gates *reconciliation* only, never creation. See §5.2 for how
+importers produce these and §4.5 for how views filter them.
+
+**Tags** apply at both transaction and posting level. A transaction's tags flow
+*down* to every posting — never the reverse — so `effective_tag_ids` for a
+posting is the union of its own tags and its transaction's. This union is
+computed, not materialised.
+
+### 4.5 Query & Filtering (global filter)
+
+One structured, Fava-style filter is shared app-wide: date range, account
+subtree, tags, payee/narration text, amount magnitude, and reconciliation.
+Dimensions combine with AND; values *within* the account and tag dimensions
+combine with OR. Every view recomputes against it.
+
+**The query never prunes.** `Service::search` returns whole transactions
+annotated with which legs matched (`MatchedTransaction { transaction, matched_postings }`),
+so a consumer decides its own presentation rather than receiving a
+pre-truncated, possibly unbalanced transaction. Posting-scoped dimensions
+(account, amount, posting tags) distinguish legs; transaction-scoped ones (date,
+text, reconciliation, transaction tags) match the whole transaction.
+
+**SQL is a candidate filter; Rust is the source of truth.** The generated SQL
+narrows by coarse amount magnitude, producing a deliberate superset; exact
+matching happens in Rust via `AmountQuery::matches`. This is not an
+optimisation detail — it is what preserves commodity integrity. Comparing
+magnitudes in SQL would let `over:USD50` match a BTC amount, so amounts are
+never finally compared in SQL anywhere, including the budget actuals path.
+
+Consumers interpret the shared filter through their own lens:
+
+| View | Interpretation |
+| ------------- | -------------------------------------------------------------------------- |
+| Register | Intersection: the sidebar account is the scope, other dimensions refine it. A filter date bound overrides the period window and disables the period navigator. Non-matching legs are dimmed, never dropped |
+| Balances | Transaction-membership: the filter selects a set of transactions; the figure sums *the viewed account's own legs* across them. A muted unfiltered figure is shown alongside for context |
+| Sparklines | Same membership rule, bucketed. Filter dates re-anchor the span and drive bucket granularity |
+| Budgets | Actuals-only lens: the filter narrows what counts toward actuals; targets never change and no budget is pruned. **The date dimension is ignored** — the period navigator is the sole driver, since a filter range does not align with budget period grids |
+
+### 4.6 Backup & Restore (`bc-core`)
 
 Snapshots are taken via SQLite `VACUUM INTO` to a temp file, then atomically renamed into place — a backup is a standalone file with no `-wal`/`-shm` sidecars.
 
@@ -244,8 +319,8 @@ ______________________________________________________________________
 
 ### 6.1 Runtime
 
-- **`bc-plugins`**: WASM host runtime using [extism](https://extism.org/) (built on wasmtime)
-- **`bc-sdk`**: Standalone crate published to crates.io. Plugin authors depend on this, compile to `wasm32-wasip1`, and distribute a single `.wasm` file.
+- **`bc-plugins`**: WASM host runtime using [wasmtime](https://wasmtime.dev/) directly, with the guest interface described in WIT and bound via `wit-bindgen`
+- **`bc-sdk`**: Standalone crate published to crates.io. Plugin authors depend on this, compile to `wasm32-wasip2`, and distribute a single `.wasm` file.
 - **Plugin discovery**: `~/.config/borrow-checker/plugins/` (configurable). A `plugins.toml` manifest lists enabled plugins and their configuration.
 
 ### 6.2 ABI Versioning
@@ -387,7 +462,7 @@ Thin binary over `bc-core`. Commands:
 borrow-checker account [list|create|archive]
 borrow-checker transaction [list|add|amend|void]
 borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|book-value]
-borrow-checker import --account <account-id> <file>
+borrow-checker import --profile <name> --account <account-id>
 borrow-checker export --format <ledger|beancount> --output <file>
 borrow-checker report [net-worth|summary|budget]
 borrow-checker budget [status|allocate|list]
@@ -395,13 +470,13 @@ borrow-checker plugin [install|list|remove]
 borrow-checker completions <bash|elvish|fish|powershell|zsh>
 ```
 
-`--account` names the account whose statement is being imported; on the interim single-posting path each imported row is booked against it. This flag is a temporary dev affordance — the standalone `import <file>` command is superseded by the profile-driven sync engine in a later phase, at which point the target account comes from the profile config rather than the command line.
+Importers source their own files from the profile config (see §5.2), so `import` takes no file argument. `--account` names the account each imported row is booked against on the interim single-posting persistence path; it is a temporary dev affordance that disappears once persistence resolves each `RawPosting`'s account path to an id.
 
 `csv` and `json` native export are post-v1 additions (see §5.1 format compatibility table) and will extend the `--format` option when implemented.
 
 All commands support `--json` for structured output. Shell completions are generated on demand via `borrow-checker completions <bash|elvish|fish|powershell|zsh>`.
 
-Backup and restore (see §4.4) are exposed as CLI commands over the same `bc-core` service the GUI uses.
+Backup and restore (see §4.6) are exposed as CLI commands over the same `bc-core` service the GUI uses.
 
 ### 8.2 Tauri GUI (`bc-app`)
 
@@ -411,7 +486,7 @@ Layout: **icon rail + context-sensitive content**.
 - **Dashboard** is the home screen: net worth, spend this month, budget remaining, recent transactions, budget health bars, quick-import button
 - Accounts view: account tree (left panel) + transaction list + detail (right panel)
 - Power users navigate directly via the account tree; new users land on the dashboard
-- Settings → Backup panel: edit backup settings, trigger a manual backup, and restore from an existing snapshot (see §4.4)
+- Settings → Backup panel: edit backup settings, trigger a manual backup, and restore from an existing snapshot (see §4.6)
 
 ______________________________________________________________________
 
@@ -444,9 +519,20 @@ ______________________________________________________________________
 | ---------------------- | -------------------------------------------- | ---------------------------------------------------------------- |
 | Storage | SQLite via `sqlx` | Portable, zero-server, fast for single-user workloads |
 | Event log | Append-only SQLite table | Audit trail, undo/redo, future sync without full CQRS overhead |
-| WASM runtime | extism (wasmtime-backed) | Higher-level than raw wasmtime; handles ABI plumbing |
-| GUI framework | Tauri | Rust-native, small binary, web frontend flexibility |
+| WASM runtime | wasmtime + WIT / `wit-bindgen` | Component-model interfaces; WASI preopens let importers read their own files |
+| GUI framework | Tauri + Leptos (WASM) | Rust-native, small binary, real DOM for accessibility and charting |
+| Filter exactness | Coarse in SQL, exact in Rust | SQL magnitude comparison cannot respect commodity; the superset is narrowed in `AmountQuery::matches` |
+| Transaction admission | Permissive; balance is a derived flag | One-sided imports are the normal case and must persist to be categorised |
 | Plugin ABI versioning | Integer ABI + N+2 grace period | Simple, explicit, protects the community ecosystem |
 | Budget default | Zero-based; expense accounts are categories | Most intentional model; degrades gracefully to category tracking; round-trips cleanly with ledger/beancount |
 | Importer/account split | Importer = parser, Profile = account binding | Clean separation; same parser serves multiple accounts |
 | ID types | `mti` newtype wrappers (e.g. `profile_01h…`) | Type-safe, log-readable, no ID confusion across domain types |
+
+**Rejected: Slint as the UI framework.** Evaluated mid-2026 with a working
+proof-of-concept reproducing the accounts page. The DSL ergonomics and native
+startup and binary size were genuine wins, but its web target renders to a
+canvas rather than the DOM (weak accessibility, no browser devtools or CSS),
+it has no mature charting library for the sparkline and budget visuals,
+it offers no webview-plugin injection point equivalent to the `bc-ipc` seam,
+and it is single-vendor licensed. Revisit only if those change; the near-term
+alternative is better Leptos hot-reload, not a framework swap.

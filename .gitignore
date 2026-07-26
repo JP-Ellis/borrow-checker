@@ -7,6 +7,9 @@
 /docs/superpowers/
 coverage.lcov
 
+# Local-only working documents (may reference private financial data)
+*.local.md
+
 ################################################################################
 ## Standard Templates
 ## Sources from github/gitignore:
