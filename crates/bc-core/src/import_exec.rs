@@ -419,31 +419,40 @@ fn touched_accounts(rows: &[Vec<LegPlan>]) -> Vec<AccountId> {
 /// document transaction rules that out.
 ///
 /// Each existing posting consumes at most one leg, so one leg cannot explain
-/// two postings. An exact `(account, amount)` match is preferred; only when
-/// nothing matches exactly is the elided leg — whose amount is derived, and may
-/// therefore have been persisted as the materialised residual — allowed to
-/// explain a posting on its account.
+/// two postings. An exact `(account, amount)` match is preferred. Failing that,
+/// an elided leg may explain a posting on its account — an earlier pass may have
+/// materialised the residual onto it — but **only** when that posting carries
+/// exactly the residual this document determines. Accepting any amount instead
+/// would reopen the hole this check exists to close: two same-day, same-narration
+/// transactions sharing one identical leg would let an elided leg forgive a
+/// posting that belongs to the other one, grafting foreign legs onto it.
 ///
 /// # Arguments
 ///
 /// * `existing` - The candidate transaction already in the database.
 /// * `legs` - Every planned leg of the document transaction, matched or not.
+/// * `residual` - The residual the document determines, from
+///   [`document_residual`]; `None` when it determines none, which admits no
+///   materialised posting at all.
 ///
 /// # Returns
 ///
 /// `true` if the candidate is corroborated and may be appended to.
-fn corroborates(existing: &Transaction, legs: &[LegPlan]) -> bool {
+fn corroborates(existing: &Transaction, legs: &[LegPlan], residual: Option<&Amount>) -> bool {
     let mut unconsumed: Vec<&LegPlan> = legs.iter().collect();
     for posting in existing.postings() {
         let exact = unconsumed.iter().position(|leg| {
             leg.account_id == *posting.account_id() && leg.amount.as_ref() == posting.amount()
         });
-        let derived = || {
-            unconsumed
-                .iter()
-                .position(|leg| leg.amount.is_none() && leg.account_id == *posting.account_id())
+        let materialised = || {
+            unconsumed.iter().position(|leg| {
+                leg.amount.is_none()
+                    && leg.account_id == *posting.account_id()
+                    && posting.amount().is_some()
+                    && posting.amount() == residual
+            })
         };
-        match exact.or_else(derived) {
+        match exact.or_else(materialised) {
             Some(index) => {
                 unconsumed.swap_remove(index);
             }
@@ -695,7 +704,8 @@ impl Writer<'_> {
         }
 
         let candidate = self.transactions.find_by_id(owner).await?;
-        if !corroborates(&candidate, legs) {
+        let residual = document_residual(raw);
+        if !corroborates(&candidate, legs, residual.as_ref()) {
             tracing::warn!(
                 location = location_of(raw),
                 transaction = %owner,
@@ -889,6 +899,62 @@ mod tests {
             .call()
             .await
             .expect("Food")
+    }
+
+    /// Creates an account beside `sibling`, under the same parent.
+    async fn sibling_of(
+        pool: &SqlitePool,
+        sibling: &AccountId,
+        name: &str,
+        ty: AccountType,
+    ) -> AccountId {
+        let svc = crate::AccountService::new(pool.clone());
+        let existing = svc.find_by_id(sibling).await.expect("sibling account");
+        svc.create()
+            .name(name)
+            .account_type(ty)
+            .kind(AccountKind::DepositAccount)
+            .maybe_parent_id(existing.parent_id())
+            .call()
+            .await
+            .expect("create sibling")
+    }
+
+    /// A posting leg on `account`; `None` elides the amount.
+    fn leg(account: &str, amount: Option<i64>) -> RawPosting {
+        RawPosting::builder()
+            .account(account)
+            .maybe_amount(
+                amount.map(|value| Amount::new(Decimal::from(value), CommodityCode::new("AUD"))),
+            )
+            .build()
+    }
+
+    /// A transaction dated 2025-06-27, named `description`, with `legs`.
+    fn raw_with(description: &str, legs: Vec<RawPosting>) -> RawTransaction {
+        RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description(description)
+            .postings(legs)
+            .build()
+    }
+
+    /// Returns the transaction owning the single posting on `account`.
+    async fn owner_of_posting(pool: &SqlitePool, account: &AccountId) -> String {
+        sqlx::query_scalar("SELECT transaction_id FROM postings WHERE account_id = ?")
+            .bind(account.to_string())
+            .fetch_one(pool)
+            .await
+            .expect("posting owner")
+    }
+
+    /// Counts the postings of one transaction.
+    async fn postings_of(pool: &SqlitePool, transaction: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM postings WHERE transaction_id = ?")
+            .bind(transaction)
+            .fetch_one(pool)
+            .await
+            .expect("count postings of transaction")
     }
 
     /// A two-leg transaction: `Expenses:Food` +50, `Assets:Bank` elided.
@@ -1305,6 +1371,145 @@ mod tests {
             2,
             "the first transaction is left exactly as it was"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_missing_leg_attaches_to_the_transaction_owning_its_siblings(pool: SqlitePool) {
+        let (bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool);
+
+        // Two transactions sharing a date and a narration, so their identical
+        // Expenses:Food legs collide on fingerprint; only the second names an
+        // account that does not exist yet.
+        let plain = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Bank", Some(-50)),
+            ],
+        );
+        let with_fun = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Expenses:Fun", Some(30)),
+                leg("Assets:Bank", None),
+            ],
+        );
+        let batch = vec![plain, with_fun];
+
+        let first = run(&svcs, &batch).await;
+        assert_eq!(first.new_transactions, 2);
+        assert_eq!(first.skipped_postings, 1, "only the Expenses:Fun leg waits");
+
+        let fun = sibling_of(&pool, &food, "Fun", AccountType::Expense).await;
+        let second = run(&svcs, &batch).await;
+
+        assert_eq!(second.new_transactions, 0);
+        assert_eq!(second.attached_postings, 1);
+        assert_eq!(tx_count(&pool).await, 2, "still exactly two transactions");
+
+        // The *elided* Assets:Bank posting belongs to the second transaction
+        // alone, so it identifies which of the two candidates the leg had to land
+        // on. (The first transaction's Assets:Bank leg is concrete.)
+        let expected: String = sqlx::query_scalar(
+            "SELECT transaction_id FROM postings WHERE account_id = ? AND amount IS NULL",
+        )
+        .bind(bank.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("elided leg owner");
+        assert_eq!(
+            owner_of_posting(&pool, &fun).await,
+            expected,
+            "the leg must attach to the transaction owning its siblings, not merely \
+             to a transaction that happens to share a leg"
+        );
+        assert_eq!(postings_of(&pool, &expected).await, 3);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_elided_leg_does_not_excuse_a_foreign_posting(pool: SqlitePool) {
+        let (bank, _food) = two_account_tree(&pool).await;
+        sibling_of(&pool, &bank, "Cash", AccountType::Asset).await;
+        let svcs = services(&pool);
+
+        // One statement imports whole, leaving Assets:Bank at -50.
+        let imported = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Bank", Some(-50)),
+            ],
+        );
+        run(&svcs, &[imported]).await;
+
+        // A genuinely different transaction that happens to share the date, the
+        // narration and the Expenses:Food leg, so that leg matches the stored one
+        // and names the first transaction as the candidate. Its residual is -30,
+        // not the -50 the candidate holds, so the candidate is not this
+        // transaction and must not be appended to.
+        let lookalike = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Cash", Some(-20)),
+                leg("Assets:Bank", None),
+            ],
+        );
+        let outcome = run(&svcs, &[lookalike]).await;
+
+        assert_eq!(
+            outcome.attached_postings, 0,
+            "an elided leg may only explain a posting carrying the residual this \
+             document determines"
+        );
+        assert_eq!(outcome.new_transactions, 0);
+        assert_eq!(outcome.skipped_postings, 2);
+        assert_eq!(tx_count(&pool).await, 1);
+        assert_eq!(
+            posting_count(&pool).await,
+            2,
+            "the candidate keeps exactly the two legs it was imported with"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn legs_owned_by_several_transactions_are_skipped(pool: SqlitePool) {
+        let (bank, _food) = two_account_tree(&pool).await;
+        sibling_of(&pool, &bank, "Cash", AccountType::Asset).await;
+        let svcs = services(&pool);
+
+        // Two single-leg statements import as two separate transactions.
+        let separate = vec![
+            raw_with("ACME", vec![leg("Expenses:Food", Some(50))]),
+            raw_with("ACME", vec![leg("Assets:Cash", Some(-20))]),
+        ];
+        let first = run(&svcs, &separate).await;
+        assert_eq!(first.new_transactions, 2);
+
+        // A document pairing those two legs: each is already owned, by a
+        // different transaction, so which one it belongs to is unknowable.
+        let paired = raw_with(
+            "ACME",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Cash", Some(-20)),
+            ],
+        );
+        let outcome = run(&svcs, &[paired]).await;
+
+        assert_eq!(
+            outcome.new_transactions, 0,
+            "the legs already exist, so the document must not be duplicated"
+        );
+        assert_eq!(
+            outcome.attached_postings, 0,
+            "neither owner may absorb the other's leg"
+        );
+        assert_eq!(outcome.skipped_postings, 2);
+        assert_eq!(tx_count(&pool).await, 2);
+        assert_eq!(posting_count(&pool).await, 2);
     }
 
     #[sqlx::test(migrations = "./migrations")]
