@@ -62,21 +62,14 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     )
     .await?;
 
+    let report = Report::from(&outcome);
     if ctx.json {
-        return crate::output::print_json(&serde_json::json!({
-            "batch": outcome.batch_id.to_string(),
-            "new_transactions": outcome.new_transactions,
-            "attached_postings": outcome.attached_postings,
-            "skipped_postings": outcome.skipped_postings,
-            "unresolved_path_postings": outcome.unresolved_path_postings,
-            "other_skipped_postings": outcome.other_skipped_postings,
-            "unresolved_paths": outcome.unresolved_paths,
-        }));
+        return crate::output::print_json(&report.to_json(&outcome.batch_id.to_string()));
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        print!("{}", Report::from(&outcome).render());
+        print!("{}", report.render());
     }
     Ok(())
 }
@@ -182,6 +175,32 @@ impl Report<'_> {
         lines.push(String::new());
         lines.join("\n")
     }
+
+    /// Renders the machine-readable report for a completed import run.
+    ///
+    /// Built from the same numbers as [`Report::render`], so the two surfaces
+    /// cannot drift apart.
+    ///
+    /// # Arguments
+    ///
+    /// * `batch` - Identifier of the batch recording the run.
+    ///
+    /// # Returns
+    ///
+    /// The payload `--json` prints.
+    fn to_json(&self, batch: &str) -> serde_json::Value {
+        serde_json::json!({
+            "batch": batch,
+            "new_transactions": self.new_transactions,
+            "attached_postings": self.attached_postings,
+            "skipped_postings": self
+                .unresolved_path_postings
+                .saturating_add(self.other_skipped_postings),
+            "unresolved_path_postings": self.unresolved_path_postings,
+            "other_skipped_postings": self.other_skipped_postings,
+            "unresolved_paths": self.unresolved_paths,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -262,6 +281,27 @@ mod tests {
     fn report_attributes_both_causes_separately() {
         let unresolved = paths(&["Expenses:Fun"]);
         insta::assert_snapshot!(report(1, 1, 1, 1, &unresolved).render());
+    }
+
+    #[test]
+    fn the_json_payload_names_every_number_and_its_cause() {
+        let unresolved = paths(&["Expenses:Fun", "Expenses:Rent"]);
+        let payload = report(3, 2, 4, 1, &unresolved).to_json("import_batch_stub");
+
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "batch": "import_batch_stub",
+                "new_transactions": 3_usize,
+                "attached_postings": 2_usize,
+                "skipped_postings": 5_usize,
+                "unresolved_path_postings": 4_usize,
+                "other_skipped_postings": 1_usize,
+                "unresolved_paths": ["Expenses:Fun", "Expenses:Rent"],
+            }),
+            "a script reads these keys; renaming one or dropping the cause split is a \
+             breaking change"
+        );
     }
 
     /// An importer that yields one single-leg transaction, so a run can be
