@@ -37,6 +37,10 @@ pub struct AppContext {
     pub sources: bc_core::SourceService,
     /// Transfer resolution service (merge / unmerge / suggest).
     pub transfers: bc_core::TransferService,
+    /// Import batch provenance service.
+    pub batches: bc_core::ImportBatchService,
+    /// Whether to snapshot the database before each import run.
+    pub auto_pre_import: bool,
 }
 
 impl AppContext {
@@ -96,6 +100,8 @@ impl AppContext {
             db_path,
             sources: bc_core::SourceService::new(pool.clone()),
             transfers: bc_core::TransferService::new(pool.clone()),
+            batches: bc_core::ImportBatchService::new(pool.clone()),
+            auto_pre_import: backup_section.auto_pre_import(),
             budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
         })
     }

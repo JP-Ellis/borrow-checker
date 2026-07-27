@@ -12,14 +12,7 @@ use crate::common::TestContext;
 fn import_missing_profile_returns_error() {
     let ctx = TestContext::new();
 
-    let account_id = bc_models::AccountId::new().to_string();
     let mut cmd = ctx.command();
-    cmd.args([
-        "import",
-        "--profile",
-        "nonexistent",
-        "--account",
-        &account_id,
-    ]);
+    cmd.args(["import", "--profile", "nonexistent"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
