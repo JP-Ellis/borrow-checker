@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use bc_models::AccountId;
 use bc_models::Amount;
 use bc_models::CommodityCode;
+use bc_models::PostingId;
 use bc_models::SourceRef;
 use bc_models::SourceRefId;
 use bc_models::TransactionId;
@@ -24,7 +25,8 @@ type SourceRow = (
     String,
     String,
     String,
-    String,
+    Option<String>,
+    Option<String>,
     Option<String>,
     i64,
     String,
@@ -61,10 +63,10 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::BcError::InvalidInput`] if `source.account_id()` is not a
-    /// posting account of the target transaction. Returns [`crate::BcError`] on
-    /// event or row insert failure (including a `UNIQUE` violation if this
-    /// `(account, fingerprint, occurrence)` already exists).
+    /// Returns [`crate::BcError::InvalidInput`] if `source.posting_id()` is not a
+    /// posting of the target transaction on `source.account_id()`. Returns
+    /// [`crate::BcError`] on event or row insert failure (including a `UNIQUE`
+    /// violation if this `(account, fingerprint, occurrence)` already exists).
     #[inline]
     pub async fn attach(&self, source: &SourceRef) -> BcResult<()> {
         let mut db_tx = self.pool.begin().await?;
@@ -89,29 +91,32 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::BcError::InvalidInput`] if `source.account_id()` is not a
-    /// posting account of the target transaction. Returns [`crate::BcError`] on
-    /// event or row insert failure (including a `UNIQUE` violation if this
-    /// `(account, fingerprint, occurrence)` already exists).
+    /// Returns [`crate::BcError::InvalidInput`] if `source.posting_id()` is not a
+    /// posting of the target transaction on `source.account_id()`. Returns
+    /// [`crate::BcError`] on event or row insert failure (including a `UNIQUE`
+    /// violation if this `(account, fingerprint, occurrence)` already exists).
     pub(crate) async fn attach_in_tx(
         &self,
         db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         source: &SourceRef,
     ) -> BcResult<()> {
-        // Provenance must point at an account the transaction actually posts to,
-        // or dedup would later be scoped to the wrong account.
-        let is_posting_account: i64 = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM postings WHERE transaction_id = ? AND account_id = ?)",
+        // Provenance must point at a posting that belongs to the named
+        // transaction and account, or dedup would be scoped to the wrong leg.
+        let is_matching_posting: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM postings \
+             WHERE id = ? AND transaction_id = ? AND account_id = ?)",
         )
+        .bind(source.posting_id().to_string())
         .bind(source.transaction_id().to_string())
         .bind(source.account_id().to_string())
         .fetch_one(&mut **db_tx)
         .await?;
-        if is_posting_account == 0 {
+        if is_matching_posting == 0 {
             return Err(crate::BcError::InvalidInput(format!(
-                "source account {} is not a posting account of transaction {}",
-                source.account_id(),
-                source.transaction_id()
+                "source posting {} is not a posting of transaction {} on account {}",
+                source.posting_id(),
+                source.transaction_id(),
+                source.account_id()
             )));
         }
 
@@ -119,10 +124,11 @@ impl Service {
         let event = crate::Event::TransactionSourceAttached {
             id: source.id().clone(),
             transaction_id: source.transaction_id().clone(),
+            posting_id: source.posting_id().clone(),
             account_id: source.account_id().clone(),
             date: source.date(),
             narration: source.narration().to_owned(),
-            amount: source.amount().clone(),
+            amount: source.amount().cloned(),
             reference: source.reference().map(str::to_owned),
             occurrence: source.occurrence(),
         };
@@ -131,17 +137,18 @@ impl Service {
 
         sqlx::query(
             "INSERT INTO transaction_sources \
-             (id, transaction_id, account_id, date, narration, amount, commodity, \
+             (id, transaction_id, posting_id, account_id, date, narration, amount, commodity, \
               reference, occurrence, fingerprint, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(source.id().to_string())
         .bind(source.transaction_id().to_string())
+        .bind(source.posting_id().to_string())
         .bind(source.account_id().to_string())
         .bind(source.date().to_string())
         .bind(source.narration())
-        .bind(source.amount().value().to_string())
-        .bind(source.amount().commodity().as_str())
+        .bind(source.amount().map(|a| a.value().to_string()))
+        .bind(source.amount().map(|a| a.commodity().as_str().to_owned()))
         .bind(source.reference())
         .bind(i64::from(source.occurrence()))
         .bind(&fingerprint)
@@ -206,8 +213,8 @@ impl Service {
         transaction_id: &TransactionId,
     ) -> BcResult<Vec<SourceRef>> {
         let rows: Vec<SourceRow> = sqlx::query_as(
-            "SELECT id, transaction_id, account_id, date, narration, amount, commodity, \
-                        reference, occurrence, created_at \
+            "SELECT id, transaction_id, posting_id, account_id, date, narration, amount, \
+                        commodity, reference, occurrence, created_at \
                  FROM transaction_sources WHERE transaction_id = ? ORDER BY occurrence ASC",
         )
         .bind(transaction_id.to_string())
@@ -268,6 +275,7 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
     let (
         raw_id,
         raw_tx,
+        raw_posting,
         raw_acct,
         raw_date,
         narration,
@@ -284,16 +292,24 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
     let transaction_id = raw_tx
         .parse::<TransactionId>()
         .map_err(|e: bc_models::IdParseError| crate::BcError::BadData(e.to_string()))?;
+    let posting_id = raw_posting
+        .parse::<PostingId>()
+        .map_err(|e: bc_models::IdParseError| crate::BcError::BadData(e.to_string()))?;
     let account_id = raw_acct
         .parse::<AccountId>()
         .map_err(|e: bc_models::IdParseError| crate::BcError::BadData(e.to_string()))?;
     let date = raw_date
         .parse::<Date>()
         .map_err(|e| crate::BcError::BadData(e.to_string()))?;
-    let value = raw_amount
-        .parse::<rust_decimal::Decimal>()
-        .map_err(|e| crate::BcError::BadData(e.to_string()))?;
-    let amount = Amount::new(value, CommodityCode::new(&commodity));
+    let amount = match (raw_amount, commodity) {
+        (Some(raw_value), Some(code)) => {
+            let value = raw_value
+                .parse::<rust_decimal::Decimal>()
+                .map_err(|e| crate::BcError::BadData(e.to_string()))?;
+            Some(Amount::new(value, CommodityCode::new(&code)))
+        }
+        _ => None,
+    };
     let occurrence = u32::try_from(raw_occurrence)
         .map_err(|_err| crate::BcError::BadData("occurrence exceeds u32".into()))?;
     let created_at = raw_created
@@ -303,6 +319,7 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
     let with_reference = SourceRef::builder()
         .id(id)
         .transaction_id(transaction_id)
+        .posting_id(posting_id)
         .account_id(account_id)
         .date(date)
         .narration(narration)
@@ -395,7 +412,9 @@ mod tests {
             .expect("create account")
     }
 
-    async fn make_tx(pool: &SqlitePool, account: &AccountId) -> TransactionId {
+    /// Creates a two-legged transaction and returns its ID and the posting
+    /// ID of the leg on `account`.
+    async fn make_tx(pool: &SqlitePool, account: &AccountId) -> (TransactionId, PostingId) {
         let counter = crate::AccountService::new(pool.clone())
             .create()
             .name("Counter")
@@ -404,13 +423,14 @@ mod tests {
             .call()
             .await
             .expect("create counter");
+        let posting_id = PostingId::new();
         let tx = bc_models::Transaction::builder()
             .id(TransactionId::new())
             .date(date(2025, 6, 27))
             .description("row")
             .postings(vec![
                 bc_models::Posting::builder()
-                    .id(bc_models::PostingId::new())
+                    .id(posting_id.clone())
                     .account_id(account.clone())
                     .amount(Amount::new(
                         Decimal::from(100_i32),
@@ -434,20 +454,26 @@ mod tests {
             .create(tx)
             .await
             .expect("create tx");
-        id
+        (id, posting_id)
     }
 
-    fn source(tx: &TransactionId, account: &AccountId, occurrence: u32) -> SourceRef {
+    fn source(
+        tx: &TransactionId,
+        posting: &PostingId,
+        account: &AccountId,
+        occurrence: u32,
+    ) -> SourceRef {
         SourceRef::builder()
             .id(SourceRefId::new())
             .transaction_id(tx.clone())
+            .posting_id(posting.clone())
             .account_id(account.clone())
             .date(date(2025, 6, 27))
             .narration("ACME")
-            .amount(Amount::new(
+            .amount(Some(Amount::new(
                 Decimal::from(100_i32),
                 CommodityCode::new("AUD"),
-            ))
+            )))
             .occurrence(occurrence)
             .created_at(Timestamp::now())
             .build()
@@ -456,10 +482,12 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn attach_then_count_and_list(pool: SqlitePool) {
         let account = make_account(&pool).await;
-        let tx = make_tx(&pool, &account).await;
+        let (tx, posting) = make_tx(&pool, &account).await;
         let svc = Service::new(pool.clone());
 
-        svc.attach(&source(&tx, &account, 0)).await.expect("attach");
+        svc.attach(&source(&tx, &posting, &account, 0))
+            .await
+            .expect("attach");
 
         let occurrences = svc
             .existing_occurrences(&account)
@@ -468,7 +496,10 @@ mod tests {
         let fp = SourceRef::compute_fingerprint(
             jiff::civil::date(2025, 6, 27),
             "ACME",
-            &Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
+            Some(&Amount::new(
+                Decimal::from(100_i32),
+                CommodityCode::new("AUD"),
+            )),
             None,
         );
         assert_eq!(occurrences.get(&fp), Some(&HashSet::from([0])));
@@ -484,9 +515,9 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn detach_removes_the_ref(pool: SqlitePool) {
         let account = make_account(&pool).await;
-        let tx = make_tx(&pool, &account).await;
+        let (tx, posting) = make_tx(&pool, &account).await;
         let svc = Service::new(pool.clone());
-        let sr = source(&tx, &account, 0);
+        let sr = source(&tx, &posting, &account, 0);
         let id = sr.id().clone();
         svc.attach(&sr).await.expect("attach");
 
@@ -503,7 +534,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn attach_rejects_non_posting_account(pool: SqlitePool) {
         let account = make_account(&pool).await;
-        let tx = make_tx(&pool, &account).await;
+        let (tx, posting) = make_tx(&pool, &account).await;
         // A third account that is NOT a posting account of `tx`.
         let stranger = crate::AccountService::new(pool.clone())
             .create()
@@ -515,7 +546,7 @@ mod tests {
             .expect("create stranger");
         let svc = Service::new(pool.clone());
 
-        let result = svc.attach(&source(&tx, &stranger, 0)).await;
+        let result = svc.attach(&source(&tx, &posting, &stranger, 0)).await;
         assert!(
             matches!(result, Err(crate::BcError::InvalidInput(_))),
             "attaching to a non-posting account must be rejected, got {result:?}"
@@ -525,17 +556,17 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn detach_then_reattach_same_occurrence_succeeds(pool: SqlitePool) {
         let account = make_account(&pool).await;
-        let tx = make_tx(&pool, &account).await;
+        let (tx, posting) = make_tx(&pool, &account).await;
         let svc = Service::new(pool.clone());
 
         // Three identical references at occurrences 0, 1, 2.
-        let occ1 = source(&tx, &account, 1);
+        let occ1 = source(&tx, &posting, &account, 1);
         let occ1_id = occ1.id().clone();
-        svc.attach(&source(&tx, &account, 0))
+        svc.attach(&source(&tx, &posting, &account, 0))
             .await
             .expect("attach 0");
         svc.attach(&occ1).await.expect("attach 1");
-        svc.attach(&source(&tx, &account, 2))
+        svc.attach(&source(&tx, &posting, &account, 2))
             .await
             .expect("attach 2");
 
@@ -545,7 +576,10 @@ mod tests {
         let fp = SourceRef::compute_fingerprint(
             date(2025, 6, 27),
             "ACME",
-            &Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
+            Some(&Amount::new(
+                Decimal::from(100_i32),
+                CommodityCode::new("AUD"),
+            )),
             None,
         );
         let occurrences = svc
@@ -556,7 +590,7 @@ mod tests {
 
         // Re-attaching occurrence 1 (fresh id) must succeed — its slot is free,
         // so the UNIQUE (account, fingerprint, occurrence) key is not violated.
-        svc.attach(&source(&tx, &account, 1))
+        svc.attach(&source(&tx, &posting, &account, 1))
             .await
             .expect("re-attach occurrence 1 after detach");
     }

@@ -66,7 +66,7 @@ pub async fn execute_import(
             SourceRef::compute_fingerprint(
                 raw.date,
                 &raw.description,
-                &amount,
+                Some(&amount),
                 raw.reference.as_deref(),
             )
         })
@@ -104,8 +104,9 @@ pub async fn execute_import(
             continue;
         };
 
+        let posting_id = bc_models::PostingId::new();
         let posting_account = bc_models::Posting::builder()
-            .id(bc_models::PostingId::new())
+            .id(posting_id.clone())
             .account_id(account_id.clone())
             .amount(amount.clone())
             .build();
@@ -128,10 +129,11 @@ pub async fn execute_import(
         let source = SourceRef::builder()
             .id(SourceRefId::new())
             .transaction_id(tx_id)
+            .posting_id(posting_id)
             .account_id(account_id.clone())
             .date(raw.date)
             .narration(raw.description.clone())
-            .amount(amount)
+            .amount(Some(amount))
             .occurrence(decision.occurrence)
             .created_at(Timestamp::now())
             .reference(raw.reference.clone())
