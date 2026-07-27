@@ -6,6 +6,7 @@
 //! implements the [`Importer`] trait; the core engine drives the import via
 //! [`Config`].
 
+pub(crate) mod account_path;
 pub(crate) mod profile;
 pub(crate) mod registry;
 
