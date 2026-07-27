@@ -156,14 +156,19 @@ impl Report<'_> {
                 plural(self.unresolved_paths.len(), "unknown account"),
             ));
             lines.extend(self.unresolved_paths.iter().map(|path| format!("  {path}")));
-            lines.push(
+            lines.push(format!(
+                "Create {} and re-run to import {}.",
                 if self.unresolved_paths.len() == 1 {
-                    "Create it and re-run to import those postings."
+                    "it"
                 } else {
-                    "Create these accounts and re-run to import those postings."
-                }
-                .to_owned(),
-            );
+                    "these accounts"
+                },
+                if self.unresolved_path_postings == 1 {
+                    "that posting"
+                } else {
+                    "those postings"
+                },
+            ));
         }
 
         if self.other_skipped_postings > 0 {
@@ -182,6 +187,7 @@ impl Report<'_> {
 #[cfg(test)]
 mod tests {
     use clap::Parser as _;
+    use pretty_assertions::assert_eq;
 
     use super::Report;
 
@@ -256,5 +262,161 @@ mod tests {
     fn report_attributes_both_causes_separately() {
         let unresolved = paths(&["Expenses:Fun"]);
         insta::assert_snapshot!(report(1, 1, 1, 1, &unresolved).render());
+    }
+
+    /// An importer that yields one single-leg transaction, so a run can be
+    /// exercised without a compiled WASM plugin.
+    struct StubImporter;
+
+    impl bc_core::Importer for StubImporter {
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+
+        fn import(
+            &self,
+            _config: &bc_core::ImportConfig,
+        ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
+            Ok(vec![
+                bc_core::RawTransaction::builder()
+                    .date(jiff::civil::date(2026, 3, 14))
+                    .description("STUB ROW")
+                    .postings(vec![
+                        bc_core::RawPosting::builder()
+                            .account("Assets:Bank")
+                            .amount(bc_models::Amount::new(
+                                rust_decimal::Decimal::from(-25_i64),
+                                bc_models::CommodityCode::new("AUD"),
+                            ))
+                            .build(),
+                    ])
+                    .build(),
+            ])
+        }
+    }
+
+    /// Builds the stub importer behind the `stub` name.
+    fn make_stub() -> Box<dyn bc_core::Importer> {
+        Box::new(StubImporter)
+    }
+
+    /// Builds a context over a temporary database, with `stub` registered and a
+    /// `nightly` profile driving it.
+    ///
+    /// # Arguments
+    ///
+    /// * `home` - Directory to hold the database and the backup directory.
+    /// * `auto_pre_import` - The setting under test.
+    ///
+    /// # Returns
+    ///
+    /// The context, and the directory backups are written to.
+    async fn context_in(
+        home: &std::path::Path,
+        auto_pre_import: bool,
+    ) -> (crate::context::AppContext, std::path::PathBuf) {
+        let db_path = home.join("test.db");
+        let backup_dir = home.join("backups");
+        let policy =
+            bc_core::BackupPolicy::new(backup_dir.clone(), Some(5_u32), Some(30_u32), false);
+        let pool = bc_core::open_db_with_backup(&db_path, &policy)
+            .await
+            .expect("open database");
+
+        let mut importers = bc_core::ImporterRegistry::new();
+        importers.register(bc_core::ImporterFactory::new("stub", make_stub));
+
+        let profiles = bc_core::ImportProfileService::new(pool.clone());
+        profiles
+            .create(
+                "nightly",
+                "stub",
+                bc_core::ImportConfig::from_value(serde_json::json!({})),
+            )
+            .await
+            .expect("create profile");
+
+        let ctx = crate::context::AppContext {
+            json: false,
+            fortnightly_anchor: None,
+            plugin_registry: bc_plugins::PluginRegistry::load(&[], None)
+                .expect("empty plugin registry"),
+            importers,
+            accounts: bc_core::AccountService::new(pool.clone()),
+            transactions: bc_core::TransactionService::new(pool.clone()),
+            balances: bc_core::BalanceEngine::new(pool.clone()),
+            profiles,
+            assets: bc_core::AssetService::new(pool.clone()),
+            loans: bc_core::LoanService::new(pool.clone()),
+            budgets: bc_core::BudgetService::new(pool.clone()),
+            tags: bc_core::TagService::new(pool.clone()),
+            backup: bc_core::BackupService::new(pool.clone(), db_path.clone(), policy),
+            db_path,
+            sources: bc_core::SourceService::new(pool.clone()),
+            transfers: bc_core::TransferService::new(pool.clone()),
+            batches: bc_core::ImportBatchService::new(pool.clone()),
+            auto_pre_import,
+            budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
+        };
+        (ctx, backup_dir)
+    }
+
+    /// Counts `pre-import` snapshots in `dir`.
+    fn pre_import_snapshots(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir).map_or(0, |entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(".pre-import.sqlite")
+                })
+                .count()
+        })
+    }
+
+    #[tokio::test]
+    async fn an_import_snapshots_the_database_first() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, backup_dir) = context_in(home.path(), true).await;
+
+        super::execute(
+            super::Args {
+                profile: "nightly".to_owned(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("import runs");
+
+        assert_eq!(
+            pre_import_snapshots(&backup_dir),
+            1,
+            "a misconfigured profile writes plausible-looking wrong data whose source \
+             references then suppress a corrected re-import; restoring is the recovery path, \
+             so the snapshot must exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_pre_import_false_suppresses_the_snapshot() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, backup_dir) = context_in(home.path(), false).await;
+
+        super::execute(
+            super::Args {
+                profile: "nightly".to_owned(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("import runs");
+
+        assert_eq!(
+            pre_import_snapshots(&backup_dir),
+            0,
+            "the setting must actually suppress the snapshot, not merely exist"
+        );
     }
 }
