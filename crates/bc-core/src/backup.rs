@@ -22,6 +22,8 @@ pub enum BackupKind {
     PreMigration,
     /// Created automatically as a safety snapshot just before a restore swap (`.pre-restore`).
     PreRestore,
+    /// Created automatically before an import run (`.pre-import`).
+    PreImport,
 }
 
 impl BackupKind {
@@ -33,6 +35,7 @@ impl BackupKind {
             Self::Manual => "manual",
             Self::PreMigration => "pre-migration",
             Self::PreRestore => "pre-restore",
+            Self::PreImport => "pre-import",
         }
     }
 
@@ -44,6 +47,7 @@ impl BackupKind {
             "manual" => Some(Self::Manual),
             "pre-migration" => Some(Self::PreMigration),
             "pre-restore" => Some(Self::PreRestore),
+            "pre-import" => Some(Self::PreImport),
             _ => None,
         }
     }
@@ -565,6 +569,15 @@ mod tests {
         let pool = crate::open_db_at(&db_path).await.expect("open db");
         let policy = BackupPolicy::new(dir.join("backups"), Some(5), None, true);
         (super::Service::new(pool, db_path.clone(), policy), db_path)
+    }
+
+    #[test]
+    fn pre_import_kind_round_trips_through_its_suffix() {
+        assert_eq!(BackupKind::PreImport.suffix(), "pre-import");
+        assert_eq!(
+            BackupKind::from_suffix("pre-import"),
+            Some(BackupKind::PreImport)
+        );
     }
 
     #[tokio::test]
