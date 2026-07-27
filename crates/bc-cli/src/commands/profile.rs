@@ -56,8 +56,8 @@ fn config_format(label: &str, text: &str) -> ConfigFormat {
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Arg`] if the document is malformed, or if its root is
-/// not a table of key/value pairs.
+/// Returns [`CliError::Arg`] if the document is malformed, if its root is not
+/// a table of key/value pairs, or if that table is empty.
 fn parse_config(text: &str, format: ConfigFormat, label: &str) -> CliResult<serde_json::Value> {
     let value: serde_json::Value = match format {
         ConfigFormat::Toml => toml::from_str(text)
@@ -66,13 +66,17 @@ fn parse_config(text: &str, format: ConfigFormat, label: &str) -> CliResult<serd
             .map_err(|e| CliError::Arg(format!("invalid JSON in {label}: {e}")))?,
     };
 
-    if !value.is_object() {
+    let serde_json::Value::Object(object) = value else {
         return Err(CliError::Arg(format!(
             "config in {label} must be a table of key/value pairs"
         )));
+    };
+
+    if object.is_empty() {
+        return Err(CliError::Arg(format!("config in {label} is empty")));
     }
 
-    Ok(value)
+    Ok(serde_json::Value::Object(object))
 }
 
 /// Reads and parses a profile config from a file, or from stdin.
@@ -99,7 +103,8 @@ fn load_config(label: &str) -> CliResult<serde_json::Value> {
             .map_err(|e| CliError::Arg(format!("cannot read config file '{label}': {e}")))?
     };
 
-    parse_config(&text, config_format(label, &text), label)
+    let source = if label == "-" { "stdin" } else { label };
+    parse_config(&text, config_format(label, &text), source)
 }
 
 /// Arguments for the `profile` subcommand.
@@ -351,13 +356,9 @@ fn strip_nulls(value: serde_json::Value) -> serde_json::Value {
                 .map(|(k, v)| (k, strip_nulls(v)))
                 .collect(),
         ),
-        serde_json::Value::Array(items) => serde_json::Value::Array(
-            items
-                .into_iter()
-                .filter(|v| !v.is_null())
-                .map(strip_nulls)
-                .collect(),
-        ),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(strip_nulls).collect())
+        }
         other @ (serde_json::Value::Null
         | serde_json::Value::Bool(_)
         | serde_json::Value::Number(_)
@@ -524,6 +525,27 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_table_is_rejected() {
+        let empty_toml_err = parse_config("", ConfigFormat::Toml, "stdin")
+            .expect_err("an empty TOML document must be rejected");
+        assert!(
+            empty_toml_err.to_string().contains("stdin"),
+            "error must name the source, got: {empty_toml_err}"
+        );
+        assert!(
+            empty_toml_err.to_string().contains("empty"),
+            "error must say the config is empty, got: {empty_toml_err}"
+        );
+
+        let empty_json_err = parse_config("{}", ConfigFormat::Json, "bank.json")
+            .expect_err("an empty JSON object must be rejected");
+        assert!(
+            empty_json_err.to_string().contains("bank.json"),
+            "error must name the source, got: {empty_json_err}"
+        );
+    }
+
+    #[test]
     fn malformed_input_names_the_source() {
         let err = parse_config("this is not = = toml", ConfigFormat::Toml, "bank.toml")
             .expect_err("malformed TOML must be rejected");
@@ -560,6 +582,24 @@ mod tests {
             serde_json::json!({
                 "account": "Assets:Bank:Checking",
                 "preamble": { "strategy": "none" },
+            })
+        );
+    }
+
+    #[test]
+    fn strip_nulls_preserves_nulls_inside_arrays() {
+        let value = serde_json::json!({
+            "columns": ["Date", null, "Amount"],
+            "nested": [{ "name": "Date", "skip": null }],
+        });
+
+        let stripped = strip_nulls(value);
+
+        assert_eq!(
+            stripped,
+            serde_json::json!({
+                "columns": ["Date", null, "Amount"],
+                "nested": [{ "name": "Date" }],
             })
         );
     }
