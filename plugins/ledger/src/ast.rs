@@ -31,6 +31,8 @@ pub(crate) struct Transaction {
     pub comment: Option<String>,
     /// The list of postings.
     pub postings: Vec<Posting>,
+    /// 1-based source line number of the transaction's header line.
+    pub line: usize,
 }
 
 /// Transaction cleared status.

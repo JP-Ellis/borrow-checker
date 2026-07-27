@@ -37,6 +37,22 @@ pub struct RawPosting {
     pub tags: Vec<String>,
 }
 
+/// Where a [`RawTransaction`] came from, for diagnostics.
+///
+/// A source is not always a file — a plugin may call an API or read a database —
+/// so `display` carries free-form human-facing text and `uri` carries an
+/// optional addressable form. Import diagnostics print `display` verbatim.
+#[non_exhaustive]
+#[derive(bon::Builder, Debug, Clone, PartialEq, Eq)]
+pub struct SourceLocation {
+    /// Human-readable location, e.g. `"statements/june.csv row 14"`.
+    #[builder(into)]
+    pub display: String,
+    /// Optional machine-addressable form, e.g. `"file:///june.csv#row=14"`.
+    #[builder(into)]
+    pub uri: Option<String>,
+}
+
 /// A parsed transaction prior to account binding.
 ///
 /// Format-specific parser crates construct these directly from raw input.
@@ -64,6 +80,8 @@ pub struct RawTransaction {
     /// Free-form labelled dates (e.g. `("cleared", …)`).
     #[builder(default)]
     pub extra_dates: Vec<(String, Date)>,
+    /// Where this transaction came from, if the importer reported it.
+    pub source_location: Option<SourceLocation>,
     /// One or more posting legs. Single-account importers emit exactly one.
     ///
     /// Required: the WIT→core boundary rejects a transaction with no legs, and

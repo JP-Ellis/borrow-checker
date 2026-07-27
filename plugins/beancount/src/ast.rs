@@ -61,6 +61,8 @@ pub(crate) struct Transaction {
     pub tags: Vec<String>,
     /// The posting legs for this transaction.
     pub postings: Vec<Posting>,
+    /// 1-based source line number of the transaction's header line.
+    pub line: usize,
 }
 
 /// The flag on a Beancount transaction header line.

@@ -49,9 +49,10 @@ fn date(input: &mut &str) -> ModalResult<bc_sdk::Date> {
 /// Returns a string describing the parse error.
 pub(crate) fn parse(input: &str) -> Result<Vec<Entry>, String> {
     let mut entries = Vec::new();
-    let mut lines = input.lines().peekable();
+    let mut lines = input.lines().enumerate().peekable();
 
-    while let Some(line) = lines.next() {
+    while let Some((idx, line)) = lines.next() {
+        let line_no = idx.saturating_add(1);
         let trimmed = line.trim();
 
         if trimmed.is_empty() {
@@ -84,7 +85,7 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Entry>, String> {
 
         // Transaction header: starts with a digit (date)
         if trimmed.starts_with(|c: char| c.is_ascii_digit()) {
-            let tx = parse_transaction_header(trimmed, &mut lines)
+            let tx = parse_transaction_header(trimmed, line_no, &mut lines)
                 .map_err(|e| format!("parse error on '{trimmed}': {e}"))?;
             entries.push(Entry::Transaction(tx));
         }
@@ -96,7 +97,8 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Entry>, String> {
 /// Parses the transaction header line plus its indented posting lines.
 fn parse_transaction_header<'a>(
     header: &str,
-    lines: &mut core::iter::Peekable<impl Iterator<Item = &'a str>>,
+    line_no: usize,
+    lines: &mut core::iter::Peekable<impl Iterator<Item = (usize, &'a str)>>,
 ) -> Result<Transaction, String> {
     let mut header_input = header;
     let date = date(&mut header_input).map_err(|_| format!("bad date in header: '{header}'"))?;
@@ -115,9 +117,9 @@ fn parse_transaction_header<'a>(
     let mut postings = Vec::new();
     while lines
         .peek()
-        .is_some_and(|next| next.starts_with(' ') || next.starts_with('\t'))
+        .is_some_and(|(_, next)| next.starts_with(' ') || next.starts_with('\t'))
     {
-        let Some(posting_line) = lines.next() else {
+        let Some((_, posting_line)) = lines.next() else {
             break;
         };
         let trimmed = posting_line.trim();
@@ -137,6 +139,7 @@ fn parse_transaction_header<'a>(
         payee: payee.to_owned(),
         comment: comment.map(str::to_owned),
         postings,
+        line: line_no,
     })
 }
 

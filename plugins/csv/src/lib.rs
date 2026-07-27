@@ -16,6 +16,7 @@ use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
+use bc_sdk::SourceLocation;
 use rust_decimal::Decimal;
 
 use crate::config::AmountColumns;
@@ -61,7 +62,7 @@ impl bc_sdk::Importer for CsvImporter {
                     continue;
                 }
             };
-            match self.parse_bytes(&bytes, &cfg) {
+            match self.parse_bytes(&bytes, &cfg, &display) {
                 Ok(mut txs) => all.append(&mut txs),
                 Err(e) => {
                     bc_sdk::error!("failed to parse import file"; path = display, reason = e.to_string());
@@ -78,10 +79,22 @@ impl CsvImporter {
     /// Contains the delimiter validation, preamble skipping, header mapping,
     /// and row loop.
     ///
+    /// # Arguments
+    ///
+    /// * `bytes` - The raw file content.
+    /// * `cfg` - The CSV import configuration.
+    /// * `file` - The file's display path, used to build each transaction's
+    ///   [`SourceLocation`].
+    ///
     /// # Errors
     ///
     /// Returns [`ImportError`] on delimiter, header, or row parse failures.
-    fn parse_bytes(&self, bytes: &[u8], cfg: &Config) -> Result<Vec<RawTransaction>, ImportError> {
+    fn parse_bytes(
+        &self,
+        bytes: &[u8],
+        cfg: &Config,
+        file: &str,
+    ) -> Result<Vec<RawTransaction>, ImportError> {
         if !cfg.delimiter.is_ascii() {
             return Err(ImportError::BadValue {
                 field: "delimiter".to_owned(),
@@ -139,7 +152,8 @@ impl CsvImporter {
 
         let mut transactions = Vec::new();
 
-        for result in reader.records() {
+        for (row_idx, result) in reader.records().enumerate() {
+            let row = row_idx.saturating_add(1);
             let record = result.map_err(|e| ImportError::Parse(e.to_string()))?;
 
             let date_str = record_field(&record, date_idx, &cfg.date_column)?;
@@ -215,6 +229,11 @@ impl CsvImporter {
                     .maybe_payee(payee)
                     .description(description)
                     .maybe_reference(reference)
+                    .source_location(
+                        SourceLocation::builder()
+                            .display(format!("{file} row {row}"))
+                            .build(),
+                    )
                     .postings(vec![
                         RawPosting::builder()
                             .account(cfg.account.clone())
@@ -651,7 +670,7 @@ mod tests {
             commodity: Some("AUD".to_owned()),
             ..Config::default()
         };
-        let result = importer.parse_bytes(b"\x00\x00 not csv", &cfg);
+        let result = importer.parse_bytes(b"\x00\x00 not csv", &cfg, "statement.csv");
         assert!(result.is_err());
     }
 
