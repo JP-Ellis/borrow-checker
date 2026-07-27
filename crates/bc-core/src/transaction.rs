@@ -692,49 +692,92 @@ impl Service {
             .await?;
         }
 
-        for (position, posting) in tx.postings().iter().enumerate() {
-            let (cost_value, cost_commodity, cost_date, cost_label) =
-                if let Some(cost) = posting.cost() {
-                    (
-                        Some(cost.total().value().to_string()),
-                        Some(cost.total().commodity().as_str().to_owned()),
-                        cost.date().map(|d| d.to_string()),
-                        cost.label().map(str::to_owned),
-                    )
-                } else {
-                    (None, None, None, None)
-                };
-
-            sqlx::query(
-                "INSERT INTO postings \
-                 (id, transaction_id, account_id, amount, commodity, note, position, \
-                  cost_total_value, cost_total_commodity, cost_date, cost_label, \
-                  spread_from, spread_until) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(posting.id().to_string()) //  1. id
-            .bind(tx_id.to_string()) //  2. transaction_id
-            .bind(posting.account_id().to_string()) //  3. account_id
-            .bind(posting.amount().map(|a| a.value().to_string())) //  4. amount
-            .bind(posting.amount().map(|a| a.commodity().as_str().to_owned())) //  5. commodity
-            .bind(posting.note()) //  6. note
-            .bind(
-                i64::try_from(position)
-                    .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?,
-            ) //  7. position
-            .bind(cost_value) //  8. cost_total_value
-            .bind(cost_commodity) //  9. cost_total_commodity
-            .bind(cost_date) // 10. cost_date
-            .bind(cost_label) // 11. cost_label
-            .bind(posting.spread_from().map(|d| d.to_string())) // 12. spread_from
-            .bind(posting.spread_until().map(|d| d.to_string())) // 13. spread_until
-            .execute(&mut **db_tx)
-            .await?;
-
+        for (index, posting) in tx.postings().iter().enumerate() {
+            let position = i64::try_from(index)
+                .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?;
+            insert_posting_row(db_tx, &tx_id, posting, position).await?;
             crate::tag::insert_posting_tags(&mut *db_tx, posting.id(), posting.tag_ids()).await?;
         }
 
         Ok(tx_id)
+    }
+
+    /// Appends postings to an existing transaction within an open database
+    /// transaction.
+    ///
+    /// Import needs this because a transaction's legs may arrive across several
+    /// passes: a leg whose account did not exist on the first import is attached
+    /// to the *same* transaction once that account is created, rather than
+    /// creating a duplicate.
+    ///
+    /// New postings take positions after the highest existing one, so ordering
+    /// reflects arrival and positions never collide. No `Event` is appended:
+    /// posting mutations are projection-level, consistent with how
+    /// `TransactionAmended` already treats them.
+    ///
+    /// # Arguments
+    ///
+    /// * `db_tx` - An open SQLite transaction to write within.
+    /// * `transaction_id` - The transaction to append to.
+    /// * `postings` - The postings to append. An empty slice is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if `transaction_id` names no transaction.
+    /// Returns [`BcError::BadData`] if appending would leave two or more elided
+    /// postings, since the residual would then be ambiguous.
+    /// Returns [`BcError`] on database insert failure.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "consumed by the rewritten import executor landing in a later task on this branch"
+        )
+    )]
+    pub(crate) async fn add_postings_in_tx(
+        &self,
+        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        transaction_id: &TransactionId,
+        postings: &[Posting],
+    ) -> BcResult<()> {
+        if postings.is_empty() {
+            return Ok(());
+        }
+
+        let existing: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(MAX(position), -1) FROM postings WHERE transaction_id = ?",
+        )
+        .bind(transaction_id.to_string())
+        .fetch_optional(&mut **db_tx)
+        .await?;
+        let (existing_count, max_position) =
+            existing.ok_or_else(|| BcError::NotFound(transaction_id.to_string()))?;
+        if existing_count == 0 {
+            return Err(BcError::NotFound(transaction_id.to_string()));
+        }
+
+        let existing_elided: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM postings WHERE transaction_id = ? AND amount IS NULL",
+        )
+        .bind(transaction_id.to_string())
+        .fetch_one(&mut **db_tx)
+        .await?;
+        let added_elided = i64::try_from(postings.iter().filter(|p| p.amount().is_none()).count())
+            .map_err(|_err| BcError::BadData("elided posting count overflow".into()))?;
+        if existing_elided.saturating_add(added_elided) >= 2 {
+            return Err(BcError::BadData("two or more elided postings".into()));
+        }
+
+        for (offset, posting) in postings.iter().enumerate() {
+            let position = max_position
+                .saturating_add(1)
+                .saturating_add(i64::try_from(offset).map_err(|_err| {
+                    BcError::BadData("posting position exceeds i64::MAX".into())
+                })?);
+            insert_posting_row(db_tx, transaction_id, posting, position).await?;
+            crate::tag::insert_posting_tags(&mut *db_tx, posting.id(), posting.tag_ids()).await?;
+        }
+        Ok(())
     }
 
     /// Finds a transaction by ID, including all its postings with cost and tag data.
@@ -2290,6 +2333,64 @@ impl Service {
     }
 }
 
+/// Inserts one posting projection row at an explicit position.
+///
+/// Shared by [`Service::create_in_tx`] and [`Service::add_postings_in_tx`] so
+/// the column list cannot drift between the create and append paths.
+///
+/// # Arguments
+///
+/// * `db_tx` - An open SQLite transaction to write within.
+/// * `transaction_id` - The owning transaction.
+/// * `posting` - The posting to insert.
+/// * `position` - The ordinal position within the transaction.
+///
+/// # Errors
+///
+/// Returns [`BcError`] on insert failure.
+async fn insert_posting_row(
+    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    transaction_id: &TransactionId,
+    posting: &Posting,
+    position: i64,
+) -> BcResult<()> {
+    let (cost_value, cost_commodity, cost_date, cost_label) = if let Some(cost) = posting.cost() {
+        (
+            Some(cost.total().value().to_string()),
+            Some(cost.total().commodity().as_str().to_owned()),
+            cost.date().map(|d| d.to_string()),
+            cost.label().map(str::to_owned),
+        )
+    } else {
+        (None, None, None, None)
+    };
+
+    sqlx::query(
+        "INSERT INTO postings \
+         (id, transaction_id, account_id, amount, commodity, note, position, \
+          cost_total_value, cost_total_commodity, cost_date, cost_label, \
+          spread_from, spread_until) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(posting.id().to_string()) //  1. id
+    .bind(transaction_id.to_string()) //  2. transaction_id
+    .bind(posting.account_id().to_string()) //  3. account_id
+    .bind(posting.amount().map(|a| a.value().to_string())) //  4. amount
+    .bind(posting.amount().map(|a| a.commodity().as_str().to_owned())) //  5. commodity
+    .bind(posting.note()) //  6. note
+    .bind(position) //  7. position
+    .bind(cost_value) //  8. cost_total_value
+    .bind(cost_commodity) //  9. cost_total_commodity
+    .bind(cost_date) // 10. cost_date
+    .bind(cost_label) // 11. cost_label
+    .bind(posting.spread_from().map(|d| d.to_string())) // 12. spread_from
+    .bind(posting.spread_until().map(|d| d.to_string())) // 13. spread_until
+    .execute(&mut **db_tx)
+    .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use bc_models::AccountId;
@@ -3359,6 +3460,103 @@ mod tests {
         let found = svc.find_by_id(&tx_id).await.expect("find should succeed");
         assert_eq!(found.postings().len(), 2);
         assert!(found.balanced(), "concrete + elided should balance");
+    }
+
+    /// Creates a bare deposit account with the given name, for tests that only
+    /// need an account to exist and don't care about its type.
+    async fn test_account(pool: &sqlx::SqlitePool, name: &str) -> AccountId {
+        crate::account::Service::new(pool.clone())
+            .create()
+            .name(name)
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn add_postings_in_tx_appends_legs_after_existing_ones(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let bank = test_account(&pool, "Bank").await;
+        let food = test_account(&pool, "Food").await;
+
+        let tx_id = TransactionId::new();
+        let first = Posting::builder()
+            .id(PostingId::new())
+            .account_id(bank.clone())
+            .amount(Amount::new(
+                Decimal::from(-50_i64),
+                CommodityCode::new("AUD"),
+            ))
+            .build();
+        svc.create(
+            Transaction::builder()
+                .id(tx_id.clone())
+                .date(date(2025, 6, 27))
+                .description("SPLIT")
+                .postings(vec![first])
+                .reconciliation(Reconciliation::Unreconciled)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("create");
+
+        let added = Posting::builder()
+            .id(PostingId::new())
+            .account_id(food.clone())
+            .amount(Amount::new(
+                Decimal::from(50_i64),
+                CommodityCode::new("AUD"),
+            ))
+            .build();
+
+        let mut db_tx = pool.begin().await.expect("begin");
+        svc.add_postings_in_tx(&mut db_tx, &tx_id, &[added])
+            .await
+            .expect("add postings");
+        db_tx.commit().await.expect("commit");
+
+        let loaded = svc.find_by_id(&tx_id).await.expect("find");
+        assert_eq!(loaded.postings().len(), 2, "the leg was appended");
+        assert!(
+            loaded.balanced(),
+            "supplying the counter-leg balances the transaction"
+        );
+
+        let positions: Vec<i64> = sqlx::query_scalar(
+            "SELECT position FROM postings WHERE transaction_id = ? ORDER BY position",
+        )
+        .bind(tx_id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("positions");
+        assert_eq!(
+            positions,
+            vec![0, 1],
+            "the appended leg takes the next position, never colliding"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn add_postings_in_tx_rejects_an_unknown_transaction(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let bank = test_account(&pool, "Bank").await;
+        let orphan = Posting::builder()
+            .id(PostingId::new())
+            .account_id(bank)
+            .amount(Amount::new(Decimal::from(1_i64), CommodityCode::new("AUD")))
+            .build();
+
+        let mut db_tx = pool.begin().await.expect("begin");
+        let result = svc
+            .add_postings_in_tx(&mut db_tx, &TransactionId::new(), &[orphan])
+            .await;
+        assert!(
+            result.is_err(),
+            "attaching to a nonexistent transaction must fail loudly"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
