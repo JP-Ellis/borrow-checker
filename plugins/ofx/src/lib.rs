@@ -12,6 +12,7 @@ use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
+use bc_sdk::SourceLocation;
 use rust_decimal::Decimal;
 
 use crate::config::Config;
@@ -68,10 +69,13 @@ impl bc_sdk::Importer for OfxImporter {
             detail: format!("cannot read {:?}: {e}", cfg.source_file),
         })?;
         let stmt = parse(&bytes).map_err(ImportError::Parse)?;
+        let file = &cfg.source_file;
 
         stmt.transactions
             .into_iter()
-            .map(|tx| {
+            .enumerate()
+            .map(|(index, tx)| {
+                let index = index.saturating_add(1);
                 let amount = decimal_to_amount(tx.amount, &stmt.currency)?;
                 let description = tx
                     .memo
@@ -86,6 +90,11 @@ impl bc_sdk::Importer for OfxImporter {
                     .maybe_payee(tx.name)
                     .description(description)
                     .maybe_reference(reference)
+                    .source_location(
+                        SourceLocation::builder()
+                            .display(format!("{file} <STMTTRN> {index}"))
+                            .build(),
+                    )
                     .postings(vec![
                         RawPosting::builder()
                             .account(cfg.account.clone())

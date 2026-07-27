@@ -45,6 +45,16 @@ impl From<wt::RawPosting> for bc_core::RawPosting {
     }
 }
 
+impl From<wt::SourceLocation> for bc_core::SourceLocation {
+    #[inline]
+    fn from(l: wt::SourceLocation) -> Self {
+        bc_core::SourceLocation::builder()
+            .display(l.display)
+            .maybe_uri(l.uri)
+            .build()
+    }
+}
+
 impl TryFrom<wt::RawTransaction> for bc_core::RawTransaction {
     type Error = bc_core::ImportError;
 
@@ -69,6 +79,7 @@ impl TryFrom<wt::RawTransaction> for bc_core::RawTransaction {
             .maybe_reference(t.reference)
             .tags(t.tags)
             .extra_dates(extra_dates)
+            .maybe_source_location(t.source_location.map(Into::into))
             .postings(t.postings.into_iter().map(Into::into).collect())
             .build())
     }
@@ -118,6 +129,7 @@ mod tests {
             reference: None,
             tags: vec![],
             extra_dates: vec![],
+            source_location: None,
             postings: vec![],
         };
         assert!(
@@ -140,6 +152,7 @@ mod tests {
             reference: None,
             tags: vec![],
             extra_dates: vec![],
+            source_location: None,
             postings: vec![],
         };
         assert!(
@@ -162,6 +175,7 @@ mod tests {
             reference: None,
             tags: vec![],
             extra_dates: vec![],
+            source_location: None,
             postings: vec![wt::RawPosting {
                 account: "Assets:Bank:Checking".to_owned(),
                 amount: Some(wt::Amount {
@@ -196,6 +210,7 @@ mod tests {
             reference: None,
             tags: vec![],
             extra_dates: vec![],
+            source_location: None,
             postings: vec![],
         };
         assert!(
@@ -217,6 +232,73 @@ mod tests {
         assert!(
             matches!(bc_err, bc_core::ImportError::Parse(_)),
             "bad-value WIT error should map to Parse, not BadValue{{field=plugin}}; got: {bc_err:?}"
+        );
+    }
+
+    #[test]
+    fn wit_to_raw_transaction_carries_source_location() {
+        let t = wt::RawTransaction {
+            date: wt::Date {
+                year: 2025_i32,
+                month: 6_u8,
+                day: 27_u8,
+            },
+            payee: None,
+            description: "SPLIT".to_owned(),
+            note: None,
+            reference: None,
+            tags: vec![],
+            extra_dates: vec![],
+            source_location: Some(wt::SourceLocation {
+                display: "ledger/2025.beancount:412".to_owned(),
+                uri: Some("file:///ledger/2025.beancount#L412".to_owned()),
+            }),
+            postings: vec![wt::RawPosting {
+                account: "Assets:Bank".to_owned(),
+                amount: None,
+                balance: None,
+                note: None,
+                tags: vec![],
+            }],
+        };
+
+        let core = bc_core::RawTransaction::try_from(t).expect("valid");
+        let location = core.source_location.expect("location carried through");
+        assert_eq!(location.display, "ledger/2025.beancount:412");
+        assert_eq!(
+            location.uri.as_deref(),
+            Some("file:///ledger/2025.beancount#L412")
+        );
+    }
+
+    #[test]
+    fn wit_to_raw_transaction_tolerates_an_absent_source_location() {
+        let t = wt::RawTransaction {
+            date: wt::Date {
+                year: 2025_i32,
+                month: 6_u8,
+                day: 27_u8,
+            },
+            payee: None,
+            description: "SPLIT".to_owned(),
+            note: None,
+            reference: None,
+            tags: vec![],
+            extra_dates: vec![],
+            source_location: None,
+            postings: vec![wt::RawPosting {
+                account: "Assets:Bank".to_owned(),
+                amount: None,
+                balance: None,
+                note: None,
+                tags: vec![],
+            }],
+        };
+
+        let core = bc_core::RawTransaction::try_from(t).expect("valid");
+        assert!(
+            core.source_location.is_none(),
+            "a source with no address must not be forced to fabricate one"
         );
     }
 }

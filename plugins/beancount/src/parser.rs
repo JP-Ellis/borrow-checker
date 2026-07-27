@@ -30,9 +30,10 @@ use crate::ast::TxFlag;
 /// Returns a string describing the first parse error encountered.
 pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
     let mut directives = Vec::new();
-    let mut lines = input.lines().peekable();
+    let mut lines = input.lines().enumerate().peekable();
 
-    while let Some(line) = lines.next() {
+    while let Some((idx, line)) = lines.next() {
+        let line_no = idx.saturating_add(1);
         let trimmed = line.trim();
 
         if trimmed.is_empty()
@@ -72,6 +73,7 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
                 narration,
                 tags,
                 postings,
+                line: line_no,
             }));
         } else if let Some(r) = rest.strip_prefix("open ") {
             let mut parts = r.trim_start().splitn(2, ' ');
@@ -176,16 +178,18 @@ fn parse_payee_narration(s: &str) -> Result<(Option<String>, String, Vec<String>
 ///
 /// Returns an error if any posting line fails to parse.
 fn collect_postings<'a>(
-    lines: &mut core::iter::Peekable<impl Iterator<Item = &'a str>>,
+    lines: &mut core::iter::Peekable<impl Iterator<Item = (usize, &'a str)>>,
 ) -> Result<Vec<Posting>, String> {
     let mut postings = Vec::new();
-    while let Some(&next) = lines.peek() {
+    while let Some(&(_, next)) = lines.peek() {
         let starts_indented = next.starts_with(' ') || next.starts_with('\t');
         if !starts_indented {
             break;
         }
         // We just peeked successfully, so `next()` must return `Some`.
-        let Some(line) = lines.next() else { break };
+        let Some((_, line)) = lines.next() else {
+            break;
+        };
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with(';') {
             continue;

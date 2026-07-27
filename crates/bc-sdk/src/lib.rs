@@ -61,6 +61,7 @@ pub use types::ImportConfig;
 pub use types::ImportError;
 pub use types::RawPosting;
 pub use types::RawTransaction;
+pub use types::SourceLocation;
 
 /// The trait that every importer plugin must implement.
 ///
