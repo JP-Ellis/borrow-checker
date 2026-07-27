@@ -358,6 +358,26 @@ mod tests {
         clippy::indexing_slicing,
         reason = "test indices are known to be valid"
     )]
+    fn transaction_line_number_is_the_header_line_not_line_one() {
+        // A comment and a blank line precede the transaction, so the header
+        // sits on line 3. This catches both an off-by-one and a bug that
+        // anchors the count to the wrong line (e.g. the first posting).
+        let input = "; comment\n\n2025-01-15 * Woolworths\n    Expenses:Food    50.00 AUD\n    Assets:Bank   -50.00 AUD\n";
+        let entries = parse(input).expect("parse");
+        let Entry::Transaction(tx) = &entries[1] else {
+            panic!("expected tx")
+        };
+        assert_eq!(
+            tx.line, 3,
+            "header is on line 3, not the first posting line"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test indices are known to be valid"
+    )]
     fn parses_pending_status() {
         let input = "2025-01-15 ! Pending\n    X    1.00 AUD\n    Y   -1.00 AUD\n";
         let entries = parse(input).expect("parse");

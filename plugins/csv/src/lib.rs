@@ -231,7 +231,7 @@ impl CsvImporter {
                     .maybe_reference(reference)
                     .source_location(
                         SourceLocation::builder()
-                            .display(format!("{file} row {row}"))
+                            .display(format!("{file} data row {row}"))
                             .build(),
                     )
                     .postings(vec![
@@ -577,6 +577,57 @@ mod tests {
         assert_eq!(t1.postings[0].amount, Some(Amount::new(-12000, "AUD", 2)));
         assert_eq!(t1.description, "Groceries");
         assert_eq!(t1.payee, None);
+    }
+
+    #[test]
+    fn source_location_names_file_and_data_row_after_preamble() {
+        // Two metadata lines precede the header, skipped via `SkipLines`. The
+        // `display` string must count data rows (post-preamble, post-header),
+        // not physical file lines — this pins that documented scheme end to
+        // end rather than trusting the preamble skip to be a no-op.
+        let dir = std::env::temp_dir().join("bc-csv-import-source-location-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let csv = b"Statement export\nGenerated 2025-03-01\n\
+                    Date,Amount,Description,Payee\n\
+                    2025-03-15,50.00,Coffee shop,COFFEE\n\
+                    2025-03-16,-120.00,Groceries,ACME\n";
+        let path = dir.join("statement.csv");
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(csv).expect("write");
+
+        let config_json = serde_json::json!({
+            "commodity": "AUD",
+            "account": "Assets:Bank:Checking",
+            "source_dir": dir.to_str().expect("utf8"),
+            "source_glob": "*.csv",
+            "preamble": {"strategy": "skip_lines", "lines": 2},
+            "date_column": "Date",
+            "date_format": "%Y-%m-%d",
+            "amount_columns": {"style": "single", "column": "Amount"},
+            "description_column": "Description",
+            "payee_column": "Payee"
+        });
+        let config = ImportConfig::from_json_string(config_json.to_string());
+
+        let importer = CsvImporter;
+        let txns = importer.import(config).expect("import should succeed");
+
+        assert_eq!(txns.len(), 2);
+        let display_path = path.display().to_string();
+
+        let location0 = txns[0]
+            .source_location
+            .as_ref()
+            .expect("source location should be set");
+        assert_eq!(location0.display, format!("{display_path} data row 1"));
+
+        let location1 = txns[1]
+            .source_location
+            .as_ref()
+            .expect("source location should be set");
+        assert_eq!(location1.display, format!("{display_path} data row 2"));
     }
 
     #[test]

@@ -92,7 +92,7 @@ impl bc_sdk::Importer for OfxImporter {
                     .maybe_reference(reference)
                     .source_location(
                         SourceLocation::builder()
-                            .display(format!("{file} <STMTTRN> {index}"))
+                            .display(format!("{file} transaction {index}"))
                             .build(),
                     )
                     .postings(vec![
@@ -222,6 +222,40 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
             .expect("import");
         // Second transaction has no MEMO, so description = NAME.
         assert_eq!(txs[1].description, "Employer");
+    }
+
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test code: panicking on wrong index is the desired behaviour"
+    )]
+    fn source_location_names_file_and_transaction_ordinal() {
+        let source_file = write_temp_file(
+            "source_location_names_file_and_transaction_ordinal",
+            "statement.ofx",
+            OFX_V1,
+        );
+        let config = ImportConfig::from_json_string(
+            serde_json::json!({
+                "account": "Assets:Bank:Checking",
+                "source_file": source_file,
+            })
+            .to_string(),
+        );
+        let txs = OfxImporter::new().import(config).expect("import");
+        assert_eq!(txs.len(), 2);
+
+        let location0 = txs[0]
+            .source_location
+            .as_ref()
+            .expect("source location should be set");
+        assert_eq!(location0.display, format!("{source_file} transaction 1"));
+
+        let location1 = txs[1]
+            .source_location
+            .as_ref()
+            .expect("source location should be set");
+        assert_eq!(location1.display, format!("{source_file} transaction 2"));
     }
 
     #[test]
