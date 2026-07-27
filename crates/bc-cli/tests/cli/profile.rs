@@ -358,6 +358,15 @@ fn profile_edit_renames_the_profile() {
 }
 
 #[test]
+fn profile_edit_rename_only_does_not_warn_about_importer() {
+    let ctx = ctx_with_bank_profile();
+
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "edit", "bank", "--name", "savings"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
 fn profile_edit_with_no_changes_errors() {
     let ctx = ctx_with_bank_profile();
     let mut cmd = ctx.command();
