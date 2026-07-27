@@ -1,0 +1,7 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: "report(1, 0, 0, 2, &[]).render()"
+---
+Imported 1 transaction, attached 0 postings.
+
+Skipped 2 postings for other reasons; each was reported as a warning.
