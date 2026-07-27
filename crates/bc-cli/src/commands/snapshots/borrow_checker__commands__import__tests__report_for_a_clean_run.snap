@@ -1,0 +1,5 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: "report(3, 0, 0, 0, &[]).render()"
+---
+Imported 3 transactions, attached 0 postings.
