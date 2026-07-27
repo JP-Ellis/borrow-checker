@@ -5,6 +5,6 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Created import profile 'bank' (csv): [PROFILE_ID]
+Created import profile 'bank' (csv).
 ----- stderr -----
 warning: no installed importer named 'csv' (installed: none)

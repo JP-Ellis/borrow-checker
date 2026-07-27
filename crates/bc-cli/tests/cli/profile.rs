@@ -221,6 +221,38 @@ fn profile_list_shows_a_created_profile() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
+/// Two rows exercise the inter-row divider, whose width is derived from the
+/// CREATED column and so would vary run to run if the timestamp were rendered
+/// at jiff's default (trailing-zero-trimmed) precision.
+#[test]
+fn profile_list_shows_several_profiles() {
+    let ctx = ctx_with_bank_profile();
+    let cfg = ctx.home_dir.path().join("cards.toml");
+    std::fs::write(&cfg, BANK_CONFIG).expect("write config fixture");
+
+    let mut create = ctx.command();
+    create
+        .args([
+            "profile",
+            "create",
+            "--name",
+            "cards",
+            "--importer",
+            "ofx",
+            "--config",
+        ])
+        .arg(&cfg);
+    let output = ctx.run(&mut create);
+    assert!(
+        output.contains("success: true"),
+        "seeding second profile failed:\n{output}"
+    );
+
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
 #[test]
 fn profile_list_json_output() {
     let ctx = ctx_with_bank_profile();

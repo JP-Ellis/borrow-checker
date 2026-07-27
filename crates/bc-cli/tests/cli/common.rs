@@ -78,6 +78,16 @@ impl TestContext {
                 "[ALLOCATION_ID]".to_owned(),
             ),
             (
+                // Windows separates path components with `\`, so a temp-dir path
+                // echoed in an error message does not match the `/` form recorded
+                // on Unix. Normalise the separator directly after the temp dir so
+                // path-bearing snapshots are portable. Must precede the bare
+                // temp-dir filter below, which would otherwise consume the prefix.
+                Regex::new(&format!(r"{home_path_escaped}[\\/]"))
+                    .expect("valid temp-dir path regex"),
+                "[TEMP_DIR]/".to_owned(),
+            ),
+            (
                 Regex::new(&home_path_escaped).expect("valid temp-dir regex"),
                 "[TEMP_DIR]".to_owned(),
             ),
@@ -92,14 +102,6 @@ impl TestContext {
                 // trailing horizontal whitespace so table snapshots are stable.
                 Regex::new(r"(?m)[ \t]+$").expect("valid regex"),
                 String::new(),
-            ),
-            (
-                // A CREATED column's header-separator row is a run of `=` as wide as
-                // the whole table, which is likewise sized to the real timestamp
-                // width. Scoped to tables with a CREATED column (rather than every
-                // `=` separator) so unrelated tables' snapshots are untouched.
-                Regex::new(r"(?m)^([^\n]*\bCREATED\b[^\n]*\n)=+$").expect("valid regex"),
-                format!("${{1}}{}", "=".repeat(20)),
             ),
         ];
 
