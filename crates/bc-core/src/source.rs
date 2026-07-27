@@ -18,10 +18,13 @@ use crate::BcResult;
 use crate::events::insert_event;
 
 /// Raw `transaction_sources` row tuple, mirroring the `SELECT` column list.
+///
+/// The third element is `posting_id`, which is `None` for a tombstoned
+/// reference — one whose posting the user has since deleted.
 type SourceRow = (
     String,
     String,
-    String,
+    Option<String>,
     String,
     String,
     String,
@@ -39,7 +42,8 @@ type SourceRow = (
 pub struct StoredLeg {
     /// The occurrence ordinal this reference occupies.
     pub occurrence: u32,
-    /// The transaction that owns the posting this reference points at.
+    /// The transaction this reference belongs to. Still recorded for a
+    /// tombstoned reference, whose posting the user has deleted.
     pub transaction_id: TransactionId,
 }
 
@@ -74,10 +78,11 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::BcError::InvalidInput`] if `source.posting_id()` is not a
-    /// posting of the target transaction on `source.account_id()`. Returns
-    /// [`crate::BcError`] on event or row insert failure (including a `UNIQUE`
-    /// violation if this `(account, fingerprint, occurrence)` already exists).
+    /// Returns [`crate::BcError::InvalidInput`] if `source.posting_id()` is
+    /// `None`, or is not a posting of the target transaction on
+    /// `source.account_id()`. Returns [`crate::BcError`] on event or row insert
+    /// failure (including a `UNIQUE` violation if this
+    /// `(account, fingerprint, occurrence)` already exists).
     #[inline]
     pub async fn attach(&self, source: &SourceRef) -> BcResult<()> {
         let mut db_tx = self.pool.begin().await?;
@@ -102,30 +107,38 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::BcError::InvalidInput`] if `source.posting_id()` is not a
-    /// posting of the target transaction on `source.account_id()`. Returns
-    /// [`crate::BcError`] on event or row insert failure (including a `UNIQUE`
-    /// violation if this `(account, fingerprint, occurrence)` already exists).
+    /// Returns [`crate::BcError::InvalidInput`] if `source.posting_id()` is
+    /// `None`, or is not a posting of the target transaction on
+    /// `source.account_id()`. Returns [`crate::BcError`] on event or row insert
+    /// failure (including a `UNIQUE` violation if this
+    /// `(account, fingerprint, occurrence)` already exists).
     pub(crate) async fn attach_in_tx(
         &self,
         db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         source: &SourceRef,
     ) -> BcResult<()> {
+        // A fresh reference must name a live posting. `None` is only ever the
+        // tombstone left behind when an edit deletes the leg, never an input.
+        let Some(posting_id) = source.posting_id() else {
+            return Err(crate::BcError::InvalidInput(
+                "a source reference must name the posting it came from".to_owned(),
+            ));
+        };
+
         // Provenance must point at a posting that belongs to the named
         // transaction and account, or dedup would be scoped to the wrong leg.
         let is_matching_posting: i64 = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM postings \
              WHERE id = ? AND transaction_id = ? AND account_id = ?)",
         )
-        .bind(source.posting_id().to_string())
+        .bind(posting_id.to_string())
         .bind(source.transaction_id().to_string())
         .bind(source.account_id().to_string())
         .fetch_one(&mut **db_tx)
         .await?;
         if is_matching_posting == 0 {
             return Err(crate::BcError::InvalidInput(format!(
-                "source posting {} is not a posting of transaction {} on account {}",
-                source.posting_id(),
+                "source posting {posting_id} is not a posting of transaction {} on account {}",
                 source.transaction_id(),
                 source.account_id()
             )));
@@ -135,7 +148,7 @@ impl Service {
         let event = crate::Event::TransactionSourceAttached {
             id: source.id().clone(),
             transaction_id: source.transaction_id().clone(),
-            posting_id: source.posting_id().clone(),
+            posting_id: posting_id.clone(),
             account_id: source.account_id().clone(),
             date: source.date(),
             narration: source.narration().to_owned(),
@@ -154,7 +167,7 @@ impl Service {
         )
         .bind(source.id().to_string())
         .bind(source.transaction_id().to_string())
-        .bind(source.posting_id().to_string())
+        .bind(posting_id.to_string())
         .bind(source.account_id().to_string())
         .bind(source.date().to_string())
         .bind(source.narration())
@@ -213,6 +226,10 @@ impl Service {
     /// Import matching needs both halves of each stored leg: the occurrence, to
     /// decide whether a given slot is taken, and the owning transaction, so a
     /// later pass can attach a leg that an earlier pass could not resolve.
+    ///
+    /// Tombstoned references — those whose posting has been deleted — are
+    /// included. Their slot is still claimed, so a re-import of the same
+    /// document does not treat the deleted leg as missing and recreate it.
     ///
     /// # Arguments
     ///
@@ -360,9 +377,14 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
     let transaction_id = raw_tx
         .parse::<TransactionId>()
         .map_err(|e: bc_models::IdParseError| crate::BcError::BadData(e.to_string()))?;
+    // A NULL posting_id is a tombstone, not malformed data: the reference
+    // outlived the leg it describes.
     let posting_id = raw_posting
-        .parse::<PostingId>()
-        .map_err(|e: bc_models::IdParseError| crate::BcError::BadData(e.to_string()))?;
+        .map(|raw| {
+            raw.parse::<PostingId>()
+                .map_err(|e: bc_models::IdParseError| crate::BcError::BadData(e.to_string()))
+        })
+        .transpose()?;
     let account_id = raw_acct
         .parse::<AccountId>()
         .map_err(|e: bc_models::IdParseError| crate::BcError::BadData(e.to_string()))?;
@@ -561,7 +583,7 @@ mod tests {
         SourceRef::builder()
             .id(SourceRefId::new())
             .transaction_id(tx.clone())
-            .posting_id(posting.clone())
+            .posting_id(Some(posting.clone()))
             .account_id(account.clone())
             .date(date(2025, 6, 27))
             .narration("ACME")
@@ -719,7 +741,7 @@ mod tests {
         let source = SourceRef::builder()
             .id(SourceRefId::new())
             .transaction_id(tx.clone())
-            .posting_id(posting_id)
+            .posting_id(Some(posting_id))
             .account_id(account.clone())
             .date(date(2025, 6, 27))
             .narration("COFFEE")
@@ -774,7 +796,7 @@ mod tests {
             SourceRef::builder()
                 .id(SourceRefId::new())
                 .transaction_id(tx.clone())
-                .posting_id(posting.clone())
+                .posting_id(Some(posting.clone()))
                 .account_id(account.clone())
                 .date(date(2025, 6, 27))
                 .narration("COFFEE")
@@ -833,7 +855,7 @@ mod tests {
             SourceRef::builder()
                 .id(SourceRefId::new())
                 .transaction_id(tx.clone())
-                .posting_id(posting.clone())
+                .posting_id(Some(posting.clone()))
                 .account_id(account.clone())
                 .date(date(2025, 6, 27))
                 .narration("COFFEE")

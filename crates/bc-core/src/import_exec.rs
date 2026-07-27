@@ -759,7 +759,7 @@ impl Writer<'_> {
         SourceRef::builder()
             .id(SourceRefId::new())
             .transaction_id(transaction_id.clone())
-            .posting_id(posting_id.clone())
+            .posting_id(Some(posting_id.clone()))
             .account_id(leg.account_id.clone())
             .date(raw.date)
             .narration(raw.description.clone())
@@ -1510,6 +1510,68 @@ mod tests {
         assert_eq!(outcome.skipped_postings, 2);
         assert_eq!(tx_count(&pool).await, 2);
         assert_eq!(posting_count(&pool).await, 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_deleted_leg_is_not_recreated_by_a_re_import(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool);
+
+        let document = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Bank", Some(-50)),
+            ],
+        );
+
+        let first = run(&svcs, core::slice::from_ref(&document)).await;
+        assert_eq!(first.new_transactions, 1);
+        assert_eq!(posting_count(&pool).await, 2);
+
+        // The user deliberately deletes the Assets:Bank leg.
+        let owner: TransactionId = owner_of_posting(&pool, &food)
+            .await
+            .parse()
+            .expect("owning transaction id");
+        let stored = svcs
+            .transactions
+            .find_by_id(&owner)
+            .await
+            .expect("stored transaction");
+        let kept: Vec<Posting> = stored
+            .postings()
+            .iter()
+            .filter(|posting| *posting.account_id() == food)
+            .cloned()
+            .collect();
+        assert_eq!(kept.len(), 1, "exactly the Expenses:Food leg is kept");
+        let edited = Transaction::builder()
+            .id(owner.clone())
+            .date(stored.date())
+            .description(stored.description())
+            .postings(kept)
+            .reconciliation(stored.reconciliation())
+            .created_at(*stored.created_at())
+            .build();
+        svcs.transactions.edit(edited).await.expect("edit");
+        assert_eq!(posting_count(&pool).await, 1);
+
+        // Re-importing the unchanged document must respect that deletion: the
+        // tombstoned reference still claims the leg's occurrence slot, so the
+        // leg is never seen as missing.
+        let second = run(&svcs, &[document]).await;
+
+        assert_eq!(
+            second.attached_postings, 0,
+            "a leg the user deleted must not be resurrected by a re-import"
+        );
+        assert_eq!(second.new_transactions, 0);
+        assert_eq!(
+            posting_count(&pool).await,
+            1,
+            "the deleted leg stays deleted"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
