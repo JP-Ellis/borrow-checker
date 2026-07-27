@@ -166,3 +166,52 @@ fn profile_create_json_output() {
     .arg("--json");
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+#[test]
+fn profile_list_is_empty_by_default() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn profile_list_shows_a_created_profile() {
+    let ctx = ctx_with_bank_profile();
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn profile_list_json_output() {
+    let ctx = ctx_with_bank_profile();
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "list", "--json"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn profile_remove_deletes_the_profile() {
+    let ctx = ctx_with_bank_profile();
+
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "remove", "bank"]);
+    let removed = ctx.run(&mut cmd);
+    assert!(
+        removed.contains("success: true"),
+        "remove failed:\n{removed}"
+    );
+
+    let mut list = ctx.command();
+    list.args(["profile", "list"]);
+    cmd_snapshot!(ctx, &mut list);
+}
+
+#[test]
+fn profile_remove_unknown_name_errors() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "remove", "nonexistent"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
