@@ -1,7 +1,6 @@
 //! Source reference (import provenance) persistence service and import planner.
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 
 use bc_models::AccountId;
 use bc_models::Amount;
@@ -182,42 +181,6 @@ impl Service {
         .await?;
 
         Ok(())
-    }
-
-    /// Returns, per fingerprint, the set of occurrence ordinals already stored
-    /// for an account.
-    ///
-    /// The import planner consumes this as an existence check: a row is skipped
-    /// only when its exact `(fingerprint, occurrence)` slot is already present.
-    /// Keying on the stored occurrence rather than a dense count means detaching
-    /// an arbitrary reference can never desynchronise a later re-import.
-    ///
-    /// # Arguments
-    ///
-    /// * `account_id` - The account to load occurrences for.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::BcError`] on query failure or a malformed stored occurrence.
-    #[inline]
-    pub async fn existing_occurrences(
-        &self,
-        account_id: &AccountId,
-    ) -> BcResult<HashMap<String, HashSet<u32>>> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT fingerprint, occurrence FROM transaction_sources WHERE account_id = ?",
-        )
-        .bind(account_id.to_string())
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut map: HashMap<String, HashSet<u32>> = HashMap::new();
-        for (fingerprint, raw_occurrence) in rows {
-            let occurrence = u32::try_from(raw_occurrence)
-                .map_err(|_err| crate::BcError::BadData("occurrence exceeds u32".into()))?;
-            map.entry(fingerprint).or_default().insert(occurrence);
-        }
-        Ok(map)
     }
 
     /// Returns stored source legs for several accounts at once, keyed by
@@ -427,67 +390,6 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
     Ok(with_reference.build())
 }
 
-/// A per-row decision produced by [`plan_import`].
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImportDecision {
-    /// Index of this row in the input `fingerprints` slice (file order).
-    pub index: usize,
-    /// The row's dedup fingerprint.
-    pub fingerprint: String,
-    /// The row's occurrence ordinal among identical fingerprints in this batch.
-    pub occurrence: u32,
-    /// `true` if a stored source reference already covers this occurrence.
-    pub already_imported: bool,
-}
-
-/// Plans an import: decides, per row, whether it is already imported.
-///
-/// Walks `fingerprints` in file order, counting occurrences of each fingerprint.
-/// A row's `occurrence` is the number of identical fingerprints seen before it in
-/// this batch; it is `already_imported` when that exact `(fingerprint, occurrence)`
-/// slot is already stored in `existing`. This makes whole-hierarchy re-imports a
-/// no-op while still importing genuinely new (or genuinely duplicated) rows, and —
-/// because the check is per-slot rather than against a dense count — a re-import
-/// correctly re-creates a reference that was previously detached.
-///
-/// # Arguments
-///
-/// * `existing` - Stored occurrence ordinals per fingerprint for the target account.
-/// * `fingerprints` - Row fingerprints in file order.
-///
-/// # Returns
-///
-/// One [`ImportDecision`] per input fingerprint, in the same order.
-#[must_use]
-#[expect(
-    clippy::implicit_hasher,
-    reason = "callers always use the default std HashMap hasher"
-)]
-pub fn plan_import(
-    existing: &HashMap<String, HashSet<u32>>,
-    fingerprints: &[String],
-) -> Vec<ImportDecision> {
-    let mut seen: HashMap<String, u32> = HashMap::new();
-    fingerprints
-        .iter()
-        .enumerate()
-        .map(|(index, fingerprint)| {
-            let occurrence = seen.get(fingerprint).copied().unwrap_or(0);
-            seen.insert(fingerprint.clone(), occurrence.saturating_add(1));
-            let already_imported = existing
-                .get(fingerprint)
-                .is_some_and(|occurrences| occurrences.contains(&occurrence));
-            ImportDecision {
-                index,
-                fingerprint: fingerprint.clone(),
-                occurrence,
-                already_imported,
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use bc_models::AccountKind;
@@ -597,6 +499,20 @@ mod tests {
             .build()
     }
 
+    /// The stored occurrence ordinals for one `(account, fingerprint)`, sorted.
+    fn occurrences_at(
+        legs: &HashMap<(String, String), Vec<StoredLeg>>,
+        account: &AccountId,
+        fingerprint: &str,
+    ) -> Vec<u32> {
+        let mut found: Vec<u32> = legs
+            .get(&(account.to_string(), fingerprint.to_owned()))
+            .map(|stored| stored.iter().map(|leg| leg.occurrence).collect())
+            .unwrap_or_default();
+        found.sort_unstable();
+        found
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn attach_then_count_and_list(pool: SqlitePool) {
         let account = make_account(&pool).await;
@@ -607,10 +523,6 @@ mod tests {
             .await
             .expect("attach");
 
-        let occurrences = svc
-            .existing_occurrences(&account)
-            .await
-            .expect("occurrences");
         let fp = SourceRef::compute_fingerprint(
             jiff::civil::date(2025, 6, 27),
             "ACME",
@@ -620,7 +532,15 @@ mod tests {
             )),
             None,
         );
-        assert_eq!(occurrences.get(&fp), Some(&HashSet::from([0])));
+        let legs = svc
+            .existing_legs(core::slice::from_ref(&account))
+            .await
+            .expect("existing_legs");
+        assert_eq!(
+            occurrences_at(&legs, &account, &fp),
+            vec![0_u32],
+            "the attached reference claims occurrence 0"
+        );
 
         let listed = svc.list_for_transaction(&tx).await.expect("list");
         assert_eq!(listed.len(), 1);
@@ -718,11 +638,15 @@ mod tests {
             )),
             None,
         );
-        let occurrences = svc
-            .existing_occurrences(&account)
+        let legs = svc
+            .existing_legs(core::slice::from_ref(&account))
             .await
-            .expect("occurrences");
-        assert_eq!(occurrences.get(&fp), Some(&HashSet::from([0, 2])));
+            .expect("existing_legs");
+        assert_eq!(
+            occurrences_at(&legs, &account, &fp),
+            vec![0_u32, 2],
+            "detaching the middle reference leaves a gap in the stored slots"
+        );
 
         // Re-attaching occurrence 1 (fresh id) must succeed — its slot is free,
         // so the UNIQUE (account, fingerprint, occurrence) key is not violated.
@@ -910,52 +834,5 @@ mod tests {
             2,
             "each account's leg must occupy its own key, not a shared one"
         );
-    }
-
-    #[test]
-    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
-    fn plan_import_marks_new_rows_and_skips_seen() {
-        let mut existing = HashMap::new();
-        existing.insert("A".to_owned(), HashSet::from([0_u32]));
-
-        let fps = vec!["A".to_owned(), "A".to_owned(), "B".to_owned()];
-        let decisions = plan_import(&existing, &fps);
-
-        assert_eq!(decisions[0].occurrence, 0);
-        assert!(decisions[0].already_imported);
-        assert_eq!(decisions[1].occurrence, 1);
-        assert!(!decisions[1].already_imported);
-        assert_eq!(decisions[2].occurrence, 0);
-        assert!(!decisions[2].already_imported);
-    }
-
-    #[test]
-    fn plan_import_is_idempotent_when_slots_filled() {
-        let mut existing = HashMap::new();
-        existing.insert("A".to_owned(), HashSet::from([0_u32, 1]));
-        let fps = vec!["A".to_owned(), "A".to_owned()];
-        let decisions = plan_import(&existing, &fps);
-        assert!(
-            decisions.iter().all(|d| d.already_imported),
-            "re-import is a no-op"
-        );
-    }
-
-    #[test]
-    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
-    fn plan_import_reimports_detached_occurrence() {
-        // Occurrence 1 was detached, leaving a gap: stored slots are {0, 2}.
-        let mut existing = HashMap::new();
-        existing.insert("A".to_owned(), HashSet::from([0_u32, 2]));
-
-        let fps = vec!["A".to_owned(), "A".to_owned(), "A".to_owned()];
-        let decisions = plan_import(&existing, &fps);
-
-        assert!(decisions[0].already_imported, "occ 0 still stored");
-        assert!(
-            !decisions[1].already_imported,
-            "occ 1 was detached, so re-import re-creates it"
-        );
-        assert!(decisions[2].already_imported, "occ 2 still stored");
     }
 }
