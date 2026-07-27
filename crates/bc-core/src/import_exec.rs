@@ -12,7 +12,7 @@
 //! 4. **Match** each planned leg against the legs already stored
 //!    ([`Writer::owner_of`]).
 //! 5. **Corroborate** a matched candidate — every posting already on it must be
-//!    explained by a leg of this document transaction ([`corroborates`]).
+//!    explained by a leg of this document transaction ([`corroborate`]).
 //! 6. **Decide and write** per transaction — create, attach, or skip
 //!    ([`Writer::write_row`]).
 
@@ -49,7 +49,12 @@ pub struct ImportOutcome {
     pub batch_id: ImportBatchId,
     /// Transactions created.
     pub new_transactions: usize,
-    /// Postings attached to transactions an earlier run created.
+    /// Legs of the document booked onto transactions an earlier run created.
+    ///
+    /// Counts legs *adopted* as well as legs inserted: where the user had
+    /// already added the missing leg by hand, this run records provenance
+    /// against their posting rather than appending a second one, so the
+    /// transaction's own posting count does not always move with this number.
     pub attached_postings: usize,
     /// Postings that could not be persisted, whatever the cause. The sum of
     /// [`Self::unresolved_path_postings`] and [`Self::other_skipped_postings`].
@@ -509,11 +514,12 @@ struct Corroborated<'leg> {
 /// whether it carries provenance:
 ///
 /// - **By its reference.** A posting an import wrote is explained when its
-///   reference's `(fingerprint, occurrence)` matches a leg on the same account.
-///   References record what the *document* said, so an edit to the posting — a
-///   corrected amount, a recategorisation — moves the posting but never its
-///   reference, and the document's remaining legs can still arrive. Matching on
-///   the posting's current amount instead would strand them permanently.
+///   reference's `(account, fingerprint, occurrence)` matches a leg. Every
+///   component comes from the reference, which records what the *document*
+///   said, so an edit to the posting — a corrected amount, a recategorisation —
+///   moves the posting but never its reference, and the document's remaining
+///   legs can still arrive. Matching on the posting's current amount or account
+///   instead would strand them permanently.
 /// - **By adoption.** A posting with no provenance is one the user wrote, in all
 ///   likelihood the very leg an earlier pass could not resolve. It is explained
 ///   by an unstored leg on its account carrying the same amount, and that leg is
@@ -544,9 +550,10 @@ fn corroborate<'leg>(
     for posting in existing.postings() {
         let index = if let Some(recorded) = provenance.get(&posting.id().to_string()) {
             // Written by an import: match what the document said, not what the
-            // posting now holds.
+            // posting now holds — account included, since an edit can
+            // recategorise the posting away from the account it was booked to.
             unconsumed.iter().position(|candidate| {
-                candidate.leg.account_id == *posting.account_id()
+                candidate.leg.account_id == recorded.account_id
                     && candidate.leg.fingerprint == recorded.fingerprint
                     && candidate.leg.occurrence == recorded.occurrence
             })?
@@ -597,17 +604,20 @@ fn corroborate<'leg>(
 ///
 /// The postings, or `None` when the residual must be materialised but the
 /// document does not determine it.
-fn build_postings(raw: &RawTransaction, legs: &[LegPlan]) -> Option<Vec<Posting>> {
+fn build_postings(raw: &RawTransaction, legs: &[LegPlan]) -> BcResult<Option<Vec<Posting>>> {
     let residual = if legs.iter().all(|leg| leg.amount.is_none()) {
-        Some(document_residual(raw)?)
+        match document_residual(raw)? {
+            Some(residual) => Some(residual),
+            None => return Ok(None),
+        }
     } else {
         None
     };
-    Some(
+    Ok(Some(
         legs.iter()
             .map(|leg| leg.posting(residual.as_ref()))
             .collect(),
-    )
+    ))
 }
 
 /// Returns the amount an elided leg of `raw` absorbs, per the document itself.
@@ -621,20 +631,29 @@ fn build_postings(raw: &RawTransaction, legs: &[LegPlan]) -> Option<Vec<Posting>
 /// The negated sum of the concrete legs, or `None` when they are absent, net to
 /// zero, or span several commodities — in all three cases the document does not
 /// determine a single residual amount.
-fn document_residual(raw: &RawTransaction) -> Option<Amount> {
+///
+/// # Errors
+///
+/// Returns [`crate::BcError::BadData`] if the concrete legs sum out of
+/// [`rust_decimal::Decimal`]'s range. That is a defect in the row rather than an
+/// undetermined residual, and reporting it as the latter would name a cause the
+/// document does not have.
+fn document_residual(raw: &RawTransaction) -> BcResult<Option<Amount>> {
     let mut balances = Balances::new();
     for amount in raw
         .postings
         .iter()
         .filter_map(|posting| posting.amount.as_ref())
     {
-        balances.try_sub(amount).ok()?;
+        balances.try_sub(amount).map_err(|e| {
+            crate::BcError::BadData(format!("summing this row's amounts overflowed: {e}"))
+        })?;
     }
     let mut held = balances.into_iter();
-    match (held.next(), held.next()) {
+    Ok(match (held.next(), held.next()) {
         (Some(residual), None) => Some(residual),
         _ => None,
-    }
+    })
 }
 
 /// Human-facing location of `raw`, for diagnostics.
@@ -862,14 +881,25 @@ impl Writer<'_> {
         legs: &[LegPlan],
         counts: &mut Counts,
     ) -> BcResult<()> {
-        let Some(postings) = build_postings(raw, legs) else {
-            tracing::warn!(
-                location = location_of(raw),
-                "the elided leg is the only leg that resolved, and the document gives it no \
-                 single amount — its concrete legs are absent, net to zero, or span several \
-                 commodities; skipping the transaction"
-            );
-            counts.skip_other(legs.len());
+        // An overflow is this row's own defect, so it warns and skips like any
+        // other unpersistable row rather than aborting the run.
+        let built = row_local_value(
+            build_postings(raw, legs),
+            raw,
+            "summing the row's amounts",
+            legs.len(),
+            counts,
+        )?;
+        let Some(Some(postings)) = built else {
+            if built.is_some() {
+                tracing::warn!(
+                    location = location_of(raw),
+                    "the elided leg is the only leg that resolved, and the document gives it no \
+                     single amount — its concrete legs are absent, net to zero, or span several \
+                     commodities; skipping the transaction"
+                );
+                counts.skip_other(legs.len());
+            }
             return Ok(());
         };
 
@@ -1255,6 +1285,15 @@ mod tests {
             .expect("count postings of transaction")
     }
 
+    /// Counts the postings booked to one account.
+    async fn postings_of_account(pool: &SqlitePool, account: &AccountId) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM postings WHERE account_id = ?")
+            .bind(account.to_string())
+            .fetch_one(pool)
+            .await
+            .expect("count postings of account")
+    }
+
     /// A two-leg transaction: `Expenses:Food` +50, `Assets:Bank` elided.
     fn split_raw(description: &str) -> RawTransaction {
         RawTransaction::builder()
@@ -1445,6 +1484,19 @@ mod tests {
             1,
             "only the resolvable leg persists"
         );
+
+        // The batch record must attribute the skip to the cause it had, since a
+        // later discard reasons from these numbers.
+        let batch = svcs
+            .batches
+            .find_by_id(&outcome.batch_id)
+            .await
+            .expect("the batch record");
+        assert_eq!(batch.skipped_postings, 1);
+        assert_eq!(
+            batch.unresolved_path_postings, 1,
+            "the skip is attributed to the missing account, not to some other cause"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1496,15 +1548,24 @@ mod tests {
         let svcs = services(&pool);
 
         let batch: Vec<RawTransaction> = (0_i32..25_i32)
-            .map(|i| split_raw(&format!("SPLIT {i}")))
+            .map(|i| {
+                raw_with(
+                    &format!("SPLIT {i}"),
+                    vec![
+                        leg("Expenses:Food", Some(50)),
+                        leg("Bills:Rent", Some(20)),
+                        leg("Assets:Bank", None),
+                    ],
+                )
+            })
             .collect();
         let outcome = run(&svcs, &batch).await;
 
-        assert_eq!(outcome.skipped_postings, 25);
+        assert_eq!(outcome.skipped_postings, 50);
         assert_eq!(
             outcome.unresolved_paths,
-            vec!["Expenses:Food".to_owned()],
-            "one missing account is reported once, not 25 times"
+            vec!["Bills:Rent".to_owned(), "Expenses:Food".to_owned()],
+            "each missing account is reported once, in sorted order, not 25 times each"
         );
     }
 
@@ -1584,6 +1645,72 @@ mod tests {
 
         let again = run(&svcs, &batch).await;
         assert_eq!(again.new_transactions, 0, "re-import stays a no-op");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_leg_naming_an_archived_account_still_imports(pool: SqlitePool) {
+        let (bank, food) = two_account_tree(&pool).await;
+        crate::AccountService::new(pool.clone())
+            .archive(&food)
+            .await
+            .expect("archive Expenses:Food");
+        let svcs = services(&pool);
+
+        // Archiving records that an account is no longer in use; it does not make
+        // history unimportable, so the leg persists and is only warned about.
+        let outcome = run(&svcs, &[split_raw("SPLIT")]).await;
+
+        assert_eq!(outcome.new_transactions, 1);
+        assert_eq!(
+            outcome.skipped_postings, 0,
+            "an archived account resolves; it is not a missing one"
+        );
+        assert!(outcome.unresolved_paths.is_empty());
+        assert_eq!(postings_of_account(&pool, &food).await, 1);
+        assert_eq!(postings_of_account(&pool, &bank).await, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn identical_legs_on_different_accounts_share_occurrence_zero(pool: SqlitePool) {
+        let (bank, _food) = two_account_tree(&pool).await;
+        sibling_of(&pool, &bank, "Cash", AccountType::Asset).await;
+        let svcs = services(&pool);
+
+        // Two legs of one transaction that fingerprint identically — same date,
+        // narration, amount and (absent) reference — on different accounts. Slots
+        // are allocated per account, so both take occurrence 0; keying on the
+        // fingerprint alone would push the second to 1 and shift the ordinals a
+        // later pass matches against.
+        let document = raw_with(
+            "TRANSFER",
+            vec![
+                leg("Assets:Bank", Some(-25)),
+                leg("Assets:Cash", Some(-25)),
+                leg("Expenses:Food", Some(50)),
+            ],
+        );
+        let outcome = run(&svcs, core::slice::from_ref(&document)).await;
+        assert_eq!(outcome.new_transactions, 1);
+
+        let slots: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT account_id, occurrence FROM transaction_sources \
+             WHERE amount = '-25' ORDER BY account_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("the two identical legs");
+        assert_eq!(slots.len(), 2, "both legs are recorded");
+        assert!(
+            slots.iter().all(|(_account, occurrence)| *occurrence == 0),
+            "each account's slots are counted independently, got {slots:?}"
+        );
+
+        let again = run(&svcs, &[document]).await;
+        assert_eq!(
+            again.new_transactions, 0,
+            "and a re-import still recognises both legs"
+        );
+        assert_eq!(again.attached_postings, 0);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1759,11 +1886,60 @@ mod tests {
 
         assert_eq!(
             outcome.attached_postings, 0,
-            "an elided leg may only explain a posting carrying the residual this \
-             document determines"
+            "a posting is explained by the reference it carries, and this document \
+             fixes no leg matching the candidate's stored Assets:Bank reference"
         );
         assert_eq!(outcome.new_transactions, 0);
         assert_eq!(outcome.skipped_postings, 2);
+        assert_eq!(tx_count(&pool).await, 1);
+        assert_eq!(
+            posting_count(&pool).await,
+            2,
+            "the candidate keeps exactly the two legs it was imported with"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_residual_coinciding_with_a_foreign_posting_does_not_corroborate(pool: SqlitePool) {
+        let (bank, food) = two_account_tree(&pool).await;
+        sibling_of(&pool, &bank, "Cash", AccountType::Asset).await;
+        sibling_of(&pool, &food, "Fun", AccountType::Expense).await;
+        let svcs = services(&pool);
+
+        // One statement imports whole, leaving Assets:Bank at -50.
+        let imported = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Bank", Some(-50)),
+            ],
+        );
+        run(&svcs, &[imported]).await;
+
+        // A different transaction sharing the date, the narration and the
+        // Expenses:Food leg, so that leg names the first transaction as the
+        // candidate. Its extra legs net to zero, so its residual is -50 — exactly
+        // what the candidate's Assets:Bank posting already holds. Matching on that
+        // amount would corroborate a foreign transaction; matching on the stored
+        // reference (which fingerprints -50, not an absent amount) refuses it.
+        let lookalike = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Cash", Some(10)),
+                leg("Expenses:Fun", Some(-10)),
+                leg("Assets:Bank", None),
+            ],
+        );
+        let outcome = run(&svcs, &[lookalike]).await;
+
+        assert_eq!(
+            outcome.attached_postings, 0,
+            "a residual that coincides with a foreign posting's amount must not \
+             corroborate the transaction holding it"
+        );
+        assert_eq!(outcome.new_transactions, 0);
+        assert_eq!(outcome.skipped_postings, 3);
         assert_eq!(tx_count(&pool).await, 1);
         assert_eq!(
             posting_count(&pool).await,
@@ -2101,6 +2277,200 @@ mod tests {
                 .await
                 .expect("edited posting");
         assert_eq!(amount.as_deref(), Some("60"));
+    }
+
+    #[test]
+    fn a_bad_row_is_skipped_and_charged_to_the_run() {
+        let raw = split_raw("COFFEE");
+        let mut counts = Counts::default();
+
+        let outcome = row_local_value::<()>(
+            Err(crate::BcError::BadData(
+                "two or more elided postings".into(),
+            )),
+            &raw,
+            "creating the transaction",
+            2,
+            &mut counts,
+        )
+        .expect("a bad row must not abort the run");
+
+        assert!(outcome.is_none(), "the row is skipped");
+        assert_eq!(counts.other_skipped_postings, 2, "and its legs are charged");
+        assert_eq!(counts.new_transactions, 0);
+    }
+
+    #[test]
+    fn a_broken_invariant_aborts_the_run() {
+        let raw = split_raw("COFFEE");
+        let mut counts = Counts::default();
+
+        // `attach_in_tx` raises this when handed a reference whose posting does
+        // not belong to the named transaction — this module's own invariant, not
+        // a defect in the document.
+        let result = row_local_value::<()>(
+            Err(crate::BcError::InvalidInput(
+                "posting is not on this tx".into(),
+            )),
+            &raw,
+            "attaching the source reference",
+            2,
+            &mut counts,
+        );
+
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidInput(_))),
+            "an internal invariant violation must surface, got {result:?}"
+        );
+        assert_eq!(
+            counts.other_skipped_postings, 0,
+            "and must not be absorbed into the skip count"
+        );
+    }
+
+    #[test]
+    fn a_successful_step_yields_its_value_and_charges_nothing() {
+        let raw = split_raw("COFFEE");
+        let mut counts = Counts::default();
+
+        let outcome = row_local_value(Ok(7_u8), &raw, "creating the transaction", 2, &mut counts)
+            .expect("success");
+
+        assert_eq!(outcome, Some(7_u8));
+        assert_eq!(counts.other_skipped_postings, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_duplicate_slot_is_row_local_but_a_check_violation_is_not(pool: SqlitePool) {
+        let (bank, _food) = two_account_tree(&pool).await;
+        let svcs = services(&pool);
+        let document = raw("COFFEE", -5);
+        run(&svcs, core::slice::from_ref(&document)).await;
+
+        // Re-inserting a reference over an occupied (account, fingerprint,
+        // occurrence) slot is a document-level collision: row-local.
+        let (id, tx_id, fingerprint): (String, String, String) = sqlx::query_as(
+            "SELECT id, transaction_id, fingerprint FROM transaction_sources LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("the stored reference");
+        let duplicate = sqlx::query(
+            "INSERT INTO transaction_sources \
+             (id, transaction_id, account_id, date, narration, amount, commodity, occurrence, \
+              fingerprint, created_at) \
+             VALUES (?, ?, ?, '2025-06-27', 'COFFEE', '-5', 'AUD', 0, ?, '2025-06-27T00:00:00Z')",
+        )
+        .bind(format!("{id}x"))
+        .bind(&tx_id)
+        .bind(bank.to_string())
+        .bind(&fingerprint)
+        .execute(&pool)
+        .await
+        .expect_err("the unique slot key must reject this");
+        assert!(
+            is_row_local(&crate::BcError::from(duplicate)),
+            "a slot collision must warn and skip the row"
+        );
+
+        // A half-populated amount pair violates a CHECK: the data is malformed in
+        // a way no document can cause, so the run must not absorb it.
+        let malformed = sqlx::query(
+            "INSERT INTO transaction_sources \
+             (id, transaction_id, account_id, date, narration, amount, commodity, occurrence, \
+              fingerprint, created_at) \
+             VALUES (?, ?, ?, '2025-06-27', 'COFFEE', '-5', NULL, 9, 'other', \
+              '2025-06-27T00:00:00Z')",
+        )
+        .bind(format!("{id}y"))
+        .bind(&tx_id)
+        .bind(bank.to_string())
+        .execute(&pool)
+        .await
+        .expect_err("the CHECK must reject an amount without a commodity");
+        assert!(
+            !is_row_local(&crate::BcError::from(malformed)),
+            "a constraint violation that no document can cause must abort the run"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn recategorising_an_imported_leg_does_not_strand_its_siblings(pool: SqlitePool) {
+        // Only Expenses:Food exists, so Assets:Bank waits for a later pass.
+        let food = add_food(&pool).await;
+        let svcs = services(&pool);
+
+        let document = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Bank", Some(-50)),
+            ],
+        );
+        assert_eq!(
+            run(&svcs, core::slice::from_ref(&document))
+                .await
+                .new_transactions,
+            1
+        );
+
+        // The user recategorises the imported leg onto a different account. The
+        // posting id survives, so its reference does too, and the reference keeps
+        // the account the *document* named — which is what the next pass matches.
+        let dining = sibling_of(&pool, &food, "Dining", AccountType::Expense).await;
+        let owner: TransactionId = owner_of_posting(&pool, &food)
+            .await
+            .parse()
+            .expect("owning transaction id");
+        let stored = svcs
+            .transactions
+            .find_by_id(&owner)
+            .await
+            .expect("stored transaction");
+        let moved: Vec<Posting> = stored
+            .postings()
+            .iter()
+            .map(|posting| {
+                Posting::builder()
+                    .id(posting.id().clone())
+                    .account_id(dining.clone())
+                    .maybe_amount(posting.amount().cloned())
+                    .build()
+            })
+            .collect();
+        svcs.transactions
+            .edit(
+                Transaction::builder()
+                    .id(owner.clone())
+                    .date(stored.date())
+                    .description(stored.description())
+                    .postings(moved)
+                    .reconciliation(stored.reconciliation())
+                    .created_at(*stored.created_at())
+                    .build(),
+            )
+            .await
+            .expect("recategorise the leg");
+
+        let bank = bank_only_tree(&pool).await;
+        let second = run(&svcs, &[document]).await;
+
+        assert_eq!(
+            second.attached_postings, 1,
+            "recategorising one leg must not strand the document's remaining legs"
+        );
+        assert_eq!(second.new_transactions, 0, "and must not fork a duplicate");
+        assert_eq!(postings_of(&pool, &owner.to_string()).await, 2);
+        assert_eq!(
+            owner_of_posting(&pool, &bank).await,
+            owner.to_string(),
+            "the leg lands on the transaction its sibling belongs to"
+        );
+
+        // The recategorisation is left alone, and no leg reappears on the account
+        // the document named.
+        assert_eq!(postings_of_account(&pool, &dining).await, 1);
+        assert_eq!(postings_of_account(&pool, &food).await, 0);
     }
 
     #[sqlx::test(migrations = "./migrations")]
