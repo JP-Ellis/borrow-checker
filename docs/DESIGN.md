@@ -204,10 +204,13 @@ importers produce these and §4.5 for how views filter them.
 
 A transaction with some legs persisted and others still pending — an account
 one of its document legs names does not exist yet — is a normal intermediate
-state, not a defect. The elided leg is what makes this safe to leave alone:
-keeping its `amount` as `None` rather than materialising the residual means a
-later import pass can attach the missing leg to the same transaction without
-rewriting anything already stored (see §5.3).
+state, not a defect. The elided leg is usually what makes this safe to leave
+alone: it keeps its `amount` as `None`, so a later import pass can attach the
+pending leg to the same transaction without rewriting anything already stored
+(see §5.3). The exception is a row where the elided leg is the *only* one that
+resolved; keeping it elided would discard the document's sole statement of
+value, so the residual is materialised onto it, and a later pass leaves that
+amount as it found it (#350).
 
 Editing a transaction fully replaces its posting set, and import provenance
 survives that replace: a modified leg keeps its source reference, and a deleted
@@ -359,7 +362,8 @@ Multiple profiles can reference the same importer with different configuration. 
 >
 > Each import run is recorded in `import_batches` — the profile (if any), the
 > importer, and counts of new transactions, attached postings, and skipped
-> postings — opened before the run and closed with its final counts. This is
+> postings, the last split out into the subset whose account path named no
+> existing account — opened before the run and closed with its final counts. This is
 > provenance only: there is no teardown, discard, or rollback of a batch's
 > writes; discarding a batch's rows is tracked as #343. The `pre-import`
 > backup snapshot (see §4.6) is the safety net for now.
