@@ -147,6 +147,44 @@ fn profile_create_rejects_a_non_table_config() {
 }
 
 #[test]
+fn profile_create_reads_config_from_stdin() {
+    let ctx = TestContext::new();
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "profile",
+        "create",
+        "--name",
+        "bank",
+        "--importer",
+        "csv",
+        "--config",
+        "-",
+    ])
+    .write_stdin(BANK_CONFIG);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn profile_create_rejects_empty_stdin() {
+    let ctx = TestContext::new();
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "profile",
+        "create",
+        "--name",
+        "bank",
+        "--importer",
+        "csv",
+        "--config",
+        "-",
+    ])
+    .write_stdin("");
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
 fn profile_create_json_output() {
     let ctx = TestContext::new();
     let cfg = ctx.home_dir.path().join("bank.toml");
@@ -238,6 +276,39 @@ fn profile_show_unknown_name_errors() {
     let mut cmd = ctx.command();
     cmd.args(["profile", "show", "nonexistent"]);
     cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn profile_show_rejects_a_null_inside_an_array() {
+    let ctx = TestContext::new();
+    let cfg = ctx.home_dir.path().join("bank.json");
+    std::fs::write(
+        &cfg,
+        r#"{"account": "Assets:Bank:Checking", "columns": ["Date", null, "Amount"]}"#,
+    )
+    .expect("write config fixture");
+
+    let mut create = ctx.command();
+    create
+        .args([
+            "profile",
+            "create",
+            "--name",
+            "bank",
+            "--importer",
+            "csv",
+            "--config",
+        ])
+        .arg(&cfg);
+    let created = ctx.run(&mut create);
+    assert!(
+        created.contains("success: true"),
+        "seeding profile create failed:\n{created}"
+    );
+
+    let mut show = ctx.command();
+    show.args(["profile", "show", "bank"]);
+    cmd_snapshot!(ctx, &mut show);
 }
 
 #[test]
