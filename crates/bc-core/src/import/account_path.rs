@@ -1,5 +1,9 @@
 //! Colon-separated account paths and their resolution to account IDs.
 
+use std::collections::HashMap;
+
+use bc_models::AccountId;
+
 use crate::BcError;
 use crate::BcResult;
 
@@ -71,10 +75,130 @@ impl core::fmt::Display for AccountPath {
     }
 }
 
+/// The outcome of resolving one [`AccountPath`] against the account tree.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// The path names an existing account.
+    Resolved {
+        /// The resolved account.
+        id: AccountId,
+        /// Whether that account is archived. Import proceeds, with a warning.
+        archived: bool,
+    },
+    /// The path names no existing account.
+    Missing {
+        /// The deepest colon-joined prefix that did resolve; empty if the root
+        /// segment itself is absent.
+        resolved_prefix: String,
+        /// The first segment that could not be resolved.
+        missing_segment: String,
+    },
+}
+
+/// Resolves colon-separated account paths to [`AccountId`]s.
+///
+/// Built once per import from a single snapshot of the accounts table, so
+/// resolving thousands of legs costs no further queries. Archived accounts are
+/// included: they exist, so a path naming one resolves rather than reporting a
+/// missing account.
+///
+/// Resolution relies on sibling names being unique
+/// (`idx_accounts_sibling_unique`), which is what makes path → id a function.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct AccountResolver {
+    /// `(parent id string or "" for a root, name)` → account, plus its archived flag.
+    by_parent_and_name: HashMap<(String, String), (AccountId, bool)>,
+}
+
+impl AccountResolver {
+    /// Loads every account into an in-memory resolution map.
+    ///
+    /// # Arguments
+    ///
+    /// * `accounts` - The account service to snapshot.
+    ///
+    /// # Returns
+    ///
+    /// A resolver over every account, archived included.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or data parse failure.
+    #[inline]
+    pub async fn load(accounts: &crate::AccountService) -> BcResult<Self> {
+        let all = accounts.list_all().await?;
+        let by_parent_and_name = all
+            .iter()
+            .map(|account| {
+                let parent_key = account
+                    .parent_id()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                (
+                    (parent_key, account.name().to_owned()),
+                    (account.id().clone(), account.archived_at().is_some()),
+                )
+            })
+            .collect();
+        Ok(Self { by_parent_and_name })
+    }
+
+    /// Resolves a path by walking its segments down the account tree.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The parsed path to resolve.
+    ///
+    /// # Returns
+    ///
+    /// [`Resolution::Resolved`] naming the account, or [`Resolution::Missing`]
+    /// describing how far the walk got.
+    #[inline]
+    #[must_use]
+    pub fn resolve(&self, path: &AccountPath) -> Resolution {
+        let mut parent_key = String::new();
+        let mut walked: Vec<&str> = Vec::new();
+        let mut found: Option<(AccountId, bool)> = None;
+
+        for segment in path.segments() {
+            let key = (parent_key.clone(), segment.clone());
+            match self.by_parent_and_name.get(&key) {
+                Some((id, archived)) => {
+                    parent_key = id.to_string();
+                    walked.push(segment.as_str());
+                    found = Some((id.clone(), *archived));
+                }
+                None => {
+                    return Resolution::Missing {
+                        resolved_prefix: walked.join(":"),
+                        missing_segment: segment.clone(),
+                    };
+                }
+            }
+        }
+
+        match found {
+            Some((id, archived)) => Resolution::Resolved { id, archived },
+            // Unreachable: AccountPath::parse guarantees at least one segment,
+            // so the loop either returns Missing or sets `found`.
+            None => Resolution::Missing {
+                resolved_prefix: String::new(),
+                missing_segment: path.to_string(),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use bc_models::AccountId;
+    use bc_models::AccountKind;
+    use bc_models::AccountType;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
+    use sqlx::SqlitePool;
 
     use super::*;
 
@@ -138,5 +262,133 @@ mod tests {
     fn displays_as_a_colon_joined_string() {
         let path = AccountPath::parse(" Assets : Bank ").expect("valid path");
         assert_eq!(path.to_string(), "Assets:Bank");
+    }
+
+    /// Creates an account under an optional parent, returning its ID.
+    async fn account(pool: &SqlitePool, name: &str, parent: Option<&AccountId>) -> AccountId {
+        crate::AccountService::new(pool.clone())
+            .create()
+            .name(name)
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .maybe_parent_id(parent)
+            .call()
+            .await
+            .expect("create account")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn resolves_a_nested_path_to_its_leaf(pool: SqlitePool) {
+        let assets = account(&pool, "Assets", None).await;
+        let bank = account(&pool, "Bank", Some(&assets)).await;
+        let checking = account(&pool, "Checking", Some(&bank)).await;
+
+        let svc = crate::AccountService::new(pool.clone());
+        let resolver = AccountResolver::load(&svc).await.expect("load resolver");
+        let path = AccountPath::parse("Assets:Bank:Checking").expect("valid");
+
+        assert_eq!(
+            resolver.resolve(&path),
+            Resolution::Resolved {
+                id: checking,
+                archived: false
+            }
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn same_name_under_different_parents_resolves_distinctly(pool: SqlitePool) {
+        // Expenses:Food and Income:Food are different accounts sharing a leaf name.
+        let expenses = account(&pool, "Expenses", None).await;
+        let income = account(&pool, "Income", None).await;
+        let expense_food = account(&pool, "Food", Some(&expenses)).await;
+        let income_food = account(&pool, "Food", Some(&income)).await;
+
+        let svc = crate::AccountService::new(pool.clone());
+        let resolver = AccountResolver::load(&svc).await.expect("load resolver");
+
+        assert_eq!(
+            resolver.resolve(&AccountPath::parse("Expenses:Food").expect("valid")),
+            Resolution::Resolved {
+                id: expense_food,
+                archived: false
+            }
+        );
+        assert_eq!(
+            resolver.resolve(&AccountPath::parse("Income:Food").expect("valid")),
+            Resolution::Resolved {
+                id: income_food,
+                archived: false
+            }
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reports_the_resolved_prefix_and_missing_segment(pool: SqlitePool) {
+        let expenses = account(&pool, "Expenses", None).await;
+        account(&pool, "Food", Some(&expenses)).await;
+
+        let svc = crate::AccountService::new(pool.clone());
+        let resolver = AccountResolver::load(&svc).await.expect("load resolver");
+        let path = AccountPath::parse("Expenses:Food:Restaurants").expect("valid");
+
+        assert_eq!(
+            resolver.resolve(&path),
+            Resolution::Missing {
+                resolved_prefix: "Expenses:Food".to_owned(),
+                missing_segment: "Restaurants".to_owned(),
+            },
+            "the diagnostic must name what did resolve and what did not"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_missing_root_reports_an_empty_prefix(pool: SqlitePool) {
+        let svc = crate::AccountService::new(pool.clone());
+        let resolver = AccountResolver::load(&svc).await.expect("load resolver");
+        let path = AccountPath::parse("Liabilities:Card").expect("valid");
+
+        assert_eq!(
+            resolver.resolve(&path),
+            Resolution::Missing {
+                resolved_prefix: String::new(),
+                missing_segment: "Liabilities".to_owned(),
+            }
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_deeper_path_than_the_tree_is_missing_not_resolved(pool: SqlitePool) {
+        // 'Assets' exists as a leaf; 'Assets:Bank' must not silently resolve to it.
+        account(&pool, "Assets", None).await;
+
+        let svc = crate::AccountService::new(pool.clone());
+        let resolver = AccountResolver::load(&svc).await.expect("load resolver");
+
+        assert_eq!(
+            resolver.resolve(&AccountPath::parse("Assets:Bank").expect("valid")),
+            Resolution::Missing {
+                resolved_prefix: "Assets".to_owned(),
+                missing_segment: "Bank".to_owned(),
+            }
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn resolves_an_archived_account_and_flags_it(pool: SqlitePool) {
+        let assets = account(&pool, "Assets", None).await;
+        let old = account(&pool, "OldBank", Some(&assets)).await;
+        let svc = crate::AccountService::new(pool.clone());
+        svc.archive(&old).await.expect("archive");
+
+        let resolver = AccountResolver::load(&svc).await.expect("load resolver");
+        assert_eq!(
+            resolver.resolve(&AccountPath::parse("Assets:OldBank").expect("valid")),
+            Resolution::Resolved {
+                id: old,
+                archived: true
+            },
+            "an archived account exists, so it resolves \u{2014} flagged, not missing"
+        );
     }
 }
