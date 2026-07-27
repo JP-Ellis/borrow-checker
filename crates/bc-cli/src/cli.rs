@@ -10,6 +10,7 @@ use crate::commands::completions;
 use crate::commands::export;
 use crate::commands::import;
 use crate::commands::plugin;
+use crate::commands::profile;
 use crate::commands::report;
 use crate::commands::restore;
 use crate::commands::tag;
@@ -87,6 +88,8 @@ pub enum Commands {
     Tag(tag::Args),
     /// Manage plugins (requires Milestone 6).
     Plugin(plugin::Args),
+    /// Manage import profiles (create, list, show, edit, remove).
+    Profile(profile::Args),
     /// Generate shell completion scripts.
     Completions(completions::Args),
     /// Merge two transactions (e.g. the two legs of a transfer) into one.
