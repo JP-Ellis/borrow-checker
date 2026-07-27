@@ -87,6 +87,7 @@ pub use import_exec::execute_import;
 pub use loan::Service as LoanService;
 pub use period_overlap::PeriodOverlap;
 pub use settings::Store as SettingsStore;
+pub use source::PostingProvenance;
 pub use source::Service as SourceService;
 pub use source::StoredLeg;
 pub use tag::Service as TagService;
