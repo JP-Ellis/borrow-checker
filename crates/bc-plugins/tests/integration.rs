@@ -89,6 +89,12 @@ mod tests {
         assert_eq!(first.description, "Test");
         let posting = first.postings.first().expect("one posting emitted");
         assert_eq!(posting.account, "Assets:Test");
+        let location = first
+            .source_location
+            .as_ref()
+            .expect("csv plugin should report a source location");
+        assert_eq!(location.display, "import/transactions.csv data row 1");
+        assert!(location.uri.is_none(), "csv plugin does not populate a uri");
 
         drop(fs::remove_dir_all(&root));
     }
