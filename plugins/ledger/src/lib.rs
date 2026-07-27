@@ -241,4 +241,36 @@ mod tests {
             .expect("import");
         assert_eq!(txs.len(), 1);
     }
+
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test indices are known to be valid"
+    )]
+    fn source_location_names_the_file_and_the_header_line() {
+        // A comment and a blank line precede the transaction, and its postings
+        // follow the header, so a location naming line 1 or the posting's line
+        // would both be wrong.
+        let input = "; opening comment\n\n2025-01-15 * Woolworths\n    Expenses:Food    50.00 AUD\n    Assets:Bank   -50.00 AUD\n";
+        let config = test_config("source_location_names_the_file", input);
+        let expected = format!(
+            "{}:3",
+            std::env::temp_dir()
+                .join("bc-ledger-source_location_names_the_file")
+                .join("ledger.dat")
+                .display()
+        );
+
+        let txs = LedgerImporter.import(config).expect("import");
+        assert_eq!(txs.len(), 1);
+        let location = txs[0]
+            .source_location
+            .as_ref()
+            .expect("the ledger plugin reports where each transaction came from");
+        assert_eq!(location.display, expected);
+        assert!(
+            location.uri.is_none(),
+            "the ledger plugin does not populate a uri"
+        );
+    }
 }
