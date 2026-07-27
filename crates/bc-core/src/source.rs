@@ -414,10 +414,14 @@ mod tests {
 
     /// Creates a two-legged transaction and returns its ID and the posting
     /// ID of the leg on `account`.
+    ///
+    /// The counter account is given a fresh unique name each call (rather than a
+    /// fixed "Counter"), so calling this twice in one test — to build two distinct
+    /// transactions — does not collide with the sibling-unique index on `accounts`.
     async fn make_tx(pool: &SqlitePool, account: &AccountId) -> (TransactionId, PostingId) {
         let counter = crate::AccountService::new(pool.clone())
             .create()
-            .name("Counter")
+            .name(&format!("Counter-{}", AccountId::new()))
             .account_type(AccountType::Asset)
             .kind(AccountKind::DepositAccount)
             .call()
@@ -550,6 +554,24 @@ mod tests {
         assert!(
             matches!(result, Err(crate::BcError::InvalidInput(_))),
             "attaching to a non-posting account must be rejected, got {result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn attach_rejects_posting_from_a_different_transaction(pool: SqlitePool) {
+        let account = make_account(&pool).await;
+        let (tx, _posting) = make_tx(&pool, &account).await;
+        // A second, unrelated transaction that also posts to `account` — under the
+        // old account-scoped check this posting id would have been accepted for
+        // `tx` because the account matches; the new check must reject it because
+        // the posting itself belongs to a different transaction.
+        let (_other_tx, other_posting) = make_tx(&pool, &account).await;
+        let svc = Service::new(pool.clone());
+
+        let result = svc.attach(&source(&tx, &other_posting, &account, 0)).await;
+        assert!(
+            matches!(result, Err(crate::BcError::InvalidInput(_))),
+            "attaching a posting from a different transaction must be rejected, got {result:?}"
         );
     }
 
