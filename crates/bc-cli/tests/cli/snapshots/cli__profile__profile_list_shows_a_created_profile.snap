@@ -5,7 +5,7 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
- NAME | IMPORTER | CREATED                        
-==================================================
- bank | csv      | [TIMESTAMP] 
+ NAME | IMPORTER | CREATED
+====================
+ bank | csv      | [TIMESTAMP]
 ----- stderr -----
