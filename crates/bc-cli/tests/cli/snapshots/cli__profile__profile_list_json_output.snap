@@ -1,0 +1,18 @@
+---
+source: crates/bc-cli/tests/cli/profile.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "profiles": [
+    {
+      "created_at": "[TIMESTAMP]",
+      "id": "[PROFILE_ID]",
+      "importer": "csv",
+      "name": "bank"
+    }
+  ]
+}
+----- stderr -----

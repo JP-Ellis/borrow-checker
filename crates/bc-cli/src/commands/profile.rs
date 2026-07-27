@@ -127,6 +127,14 @@ pub enum Command {
         #[arg(long, value_name = "FILE")]
         config: String,
     },
+    /// List all import profiles.
+    List,
+    /// Remove an import profile by name.
+    Remove {
+        /// Name of the profile to remove.
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
 }
 
 /// Executes the `profile` subcommand.
@@ -148,6 +156,8 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             importer,
             config,
         } => create(ctx, name, importer, config).await,
+        Command::List => list(ctx).await,
+        Command::Remove { name } => remove(ctx, name).await,
     }
 }
 
@@ -213,6 +223,80 @@ async fn create(ctx: &AppContext, name: String, importer: String, config: String
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         println!("Created import profile '{name}' ({importer}): {id}");
+    }
+    Ok(())
+}
+
+/// Lists all import profiles as a table of name, importer, and creation time.
+///
+/// `created_at` is rendered in full RFC 3339 form rather than a friendlier
+/// date so that the integration harness's `[TIMESTAMP]` filter redacts it and
+/// snapshots stay stable across runs.
+///
+/// # Arguments
+///
+/// * `ctx` - The application context.
+///
+/// # Errors
+///
+/// Returns [`CliError::Core`] if the profile service call fails, or
+/// [`CliError::Json`] if JSON serialisation fails.
+async fn list(ctx: &AppContext) -> CliResult<()> {
+    let profiles = ctx.profiles.list_all().await?;
+
+    if ctx.json {
+        let items: Vec<serde_json::Value> = profiles
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.id.to_string(),
+                    "name": p.name,
+                    "importer": p.importer,
+                    "created_at": p.created_at.to_string(),
+                })
+            })
+            .collect();
+        return crate::output::print_json(&serde_json::json!({ "profiles": items }));
+    }
+
+    if profiles.is_empty() {
+        #[expect(clippy::print_stdout, reason = "CLI output")]
+        {
+            println!("No import profiles.");
+        }
+        return Ok(());
+    }
+
+    let rows: Vec<Vec<String>> = profiles
+        .iter()
+        .map(|p| vec![p.name.clone(), p.importer.clone(), p.created_at.to_string()])
+        .collect();
+    crate::output::print_table(&["NAME", "IMPORTER", "CREATED"], &rows);
+    Ok(())
+}
+
+/// Removes an import profile by name.
+///
+/// # Arguments
+///
+/// * `ctx` - The application context.
+/// * `name` - Name of the profile to remove.
+///
+/// # Errors
+///
+/// Returns [`CliError::Core`] if no profile with that name exists, or the
+/// delete fails.
+async fn remove(ctx: &AppContext, name: String) -> CliResult<()> {
+    let profile = ctx.profiles.find_by_name(&name).await?;
+    ctx.profiles.delete(&profile.id).await?;
+
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({ "removed": name }));
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("Removed import profile '{name}'.");
     }
     Ok(())
 }
