@@ -30,17 +30,8 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         crate::error::CliError::Arg(format!("invalid account ID '{}': {e}", args.account))
     })?;
 
-    // Find the import profile by name.
-    let profiles = ctx.profiles.list_all().await?;
-    let profile = profiles
-        .iter()
-        .find(|p| p.name == args.profile)
-        .ok_or_else(|| {
-            crate::error::CliError::Core(bc_core::BcError::NotFound(format!(
-                "import profile '{}'",
-                args.profile
-            )))
-        })?;
+    // Find the import profile by its unique name.
+    let profile = ctx.profiles.find_by_name(&args.profile).await?;
 
     // Create the importer.
     let importer = ctx

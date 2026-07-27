@@ -462,6 +462,7 @@ Thin binary over `bc-core`. Commands:
 borrow-checker account [list|create|archive]
 borrow-checker transaction [list|add|amend|void]
 borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|book-value]
+borrow-checker profile [create|list|show|edit|remove]
 borrow-checker import --profile <name> --account <account-id>
 borrow-checker export --format <ledger|beancount> --output <file>
 borrow-checker report [net-worth|summary|budget]
@@ -471,6 +472,14 @@ borrow-checker completions <bash|elvish|fish|powershell|zsh>
 ```
 
 Importers source their own files from the profile config (see §5.2), so `import` takes no file argument. `--account` names the account each imported row is booked against on the interim single-posting persistence path; it is a temporary dev affordance that disappears once persistence resolves each `RawPosting`'s account path to an id.
+
+Import profiles are created and edited from the CLI. `profile create` takes the
+importer's opaque config as a TOML or JSON file (`--config <FILE>`, or `-` for
+stdin); TOML is converted to JSON inside `bc-cli`, so `bc-core` and the plugin
+ABI continue to see a single JSON blob. Profile names are unique and are the
+identifier every surface uses. An unrecognised `--importer` is a warning, not
+an error: the plugin may not be installed yet, and `import` errors at the point
+of use.
 
 `csv` and `json` native export are post-v1 additions (see §5.1 format compatibility table) and will extend the `--format` option when implemented.
 
