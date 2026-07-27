@@ -74,6 +74,8 @@ pub use import::RawTransaction;
 pub use import::account_path::AccountPath;
 pub use import::account_path::AccountResolver;
 pub use import::account_path::Resolution;
+pub use import::batch::ImportBatch;
+pub use import::batch::Service as ImportBatchService;
 pub use import::profile::ImportProfile;
 pub use import::profile::Service as ImportProfileService;
 pub use import::registry::Factory as ImporterFactory;

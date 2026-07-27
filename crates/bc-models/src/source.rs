@@ -4,6 +4,7 @@ use jiff::Timestamp;
 use jiff::civil::Date;
 
 use crate::AccountId;
+use crate::ImportBatchId;
 use crate::PostingId;
 use crate::TransactionId;
 use crate::money::Amount;
@@ -39,6 +40,7 @@ crate::define_id!(SourceRefId, "source_ref");
 ///     .narration("ACME")
 ///     .amount(Some(Amount::new(Decimal::from(100), CommodityCode::new("AUD"))))
 ///     .occurrence(0)
+///     .import_batch_id(None)
 ///     .created_at(Timestamp::now())
 ///     .build();
 ///
@@ -87,6 +89,12 @@ pub struct SourceRef {
     /// Ordinal among same-day rows sharing an identical fingerprint. Disambiguates
     /// legitimately identical rows (e.g. two identical purchases on one day).
     occurrence: u32,
+
+    /// The import run that wrote this reference, if it came from an import.
+    ///
+    /// Provenance only: no operation deletes through it yet (see #343).
+    #[builder(required, default = None)]
+    import_batch_id: Option<ImportBatchId>,
 
     /// Timestamp recorded when this reference was first persisted.
     created_at: Timestamp,
@@ -154,6 +162,13 @@ impl SourceRef {
     #[must_use]
     pub fn occurrence(&self) -> u32 {
         self.occurrence
+    }
+
+    /// Returns the import run that wrote this reference, if any.
+    #[inline]
+    #[must_use]
+    pub fn import_batch_id(&self) -> Option<&ImportBatchId> {
+        self.import_batch_id.as_ref()
     }
 
     /// Returns the creation timestamp.
@@ -247,6 +262,7 @@ mod tests {
             .amount(Some(amount(100)))
             .reference(Some("REF1".to_owned()))
             .occurrence(0)
+            .import_batch_id(None)
             .created_at(Timestamp::now())
             .build();
 
@@ -256,6 +272,7 @@ mod tests {
         assert_eq!(sr.narration(), "ACME");
         assert_eq!(sr.reference(), Some("REF1"));
         assert_eq!(sr.occurrence(), 0);
+        assert_eq!(sr.import_batch_id(), None);
     }
 
     #[test]
@@ -324,6 +341,7 @@ mod tests {
             .amount(Some(amount(100)))
             .reference(None)
             .occurrence(0)
+            .import_batch_id(None)
             .created_at(Timestamp::now())
             .build();
 
@@ -333,5 +351,25 @@ mod tests {
             "provenance points at a specific leg, not just the transaction"
         );
         assert_eq!(sr.amount(), Some(&amount(100)));
+    }
+
+    #[test]
+    fn builder_records_the_import_batch_id() {
+        let batch = crate::ImportBatchId::new();
+        let sr = SourceRef::builder()
+            .id(SourceRefId::new())
+            .transaction_id(TransactionId::new())
+            .posting_id(PostingId::new())
+            .account_id(AccountId::new())
+            .date(date(2025, 6, 27))
+            .narration("ACME")
+            .amount(Some(amount(100)))
+            .reference(None)
+            .occurrence(0)
+            .import_batch_id(Some(batch.clone()))
+            .created_at(Timestamp::now())
+            .build();
+
+        assert_eq!(sr.import_batch_id(), Some(&batch));
     }
 }

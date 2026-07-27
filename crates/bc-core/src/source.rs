@@ -30,6 +30,7 @@ type SourceRow = (
     Option<String>,
     i64,
     String,
+    Option<String>,
 );
 
 /// A stored source reference, reduced to what import matching needs.
@@ -148,8 +149,8 @@ impl Service {
         sqlx::query(
             "INSERT INTO transaction_sources \
              (id, transaction_id, posting_id, account_id, date, narration, amount, commodity, \
-              reference, occurrence, fingerprint, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              reference, occurrence, fingerprint, created_at, import_batch_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(source.id().to_string())
         .bind(source.transaction_id().to_string())
@@ -163,6 +164,7 @@ impl Service {
         .bind(i64::from(source.occurrence()))
         .bind(&fingerprint)
         .bind(source.created_at().to_string())
+        .bind(source.import_batch_id().map(ToString::to_string))
         .execute(&mut **db_tx)
         .await?;
 
@@ -279,7 +281,7 @@ impl Service {
     ) -> BcResult<Vec<SourceRef>> {
         let rows: Vec<SourceRow> = sqlx::query_as(
             "SELECT id, transaction_id, posting_id, account_id, date, narration, amount, \
-                        commodity, reference, occurrence, created_at \
+                        commodity, reference, occurrence, created_at, import_batch_id \
                  FROM transaction_sources WHERE transaction_id = ? ORDER BY occurrence ASC",
         )
         .bind(transaction_id.to_string())
@@ -349,6 +351,7 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
         reference,
         raw_occurrence,
         raw_created,
+        raw_import_batch_id,
     ) = row;
 
     let id = raw_id
@@ -380,6 +383,12 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
     let created_at = raw_created
         .parse::<Timestamp>()
         .map_err(|e| crate::BcError::BadData(e.to_string()))?;
+    let import_batch_id = raw_import_batch_id
+        .map(|raw| {
+            raw.parse::<bc_models::ImportBatchId>()
+                .map_err(|e: bc_models::IdParseError| crate::BcError::BadData(e.to_string()))
+        })
+        .transpose()?;
 
     let with_reference = SourceRef::builder()
         .id(id)
@@ -390,6 +399,7 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
         .narration(narration)
         .amount(amount)
         .occurrence(occurrence)
+        .import_batch_id(import_batch_id)
         .created_at(created_at)
         .reference(reference);
     Ok(with_reference.build())
@@ -560,6 +570,7 @@ mod tests {
                 CommodityCode::new("AUD"),
             )))
             .occurrence(occurrence)
+            .import_batch_id(None)
             .created_at(Timestamp::now())
             .build()
     }
@@ -715,6 +726,7 @@ mod tests {
             .amount(Some(amount.clone()))
             .reference(None)
             .occurrence(0)
+            .import_batch_id(None)
             .created_at(Timestamp::now())
             .build();
         svc.attach(&source).await.expect("attach");
@@ -769,6 +781,7 @@ mod tests {
                 .amount(Some(amount.clone()))
                 .reference(None)
                 .occurrence(occurrence)
+                .import_batch_id(None)
                 .created_at(Timestamp::now())
                 .build()
         };
@@ -827,6 +840,7 @@ mod tests {
                 .amount(Some(amount.clone()))
                 .reference(None)
                 .occurrence(0)
+                .import_batch_id(None)
                 .created_at(Timestamp::now())
                 .build()
         };
