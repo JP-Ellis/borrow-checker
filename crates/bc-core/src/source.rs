@@ -32,6 +32,16 @@ type SourceRow = (
     String,
 );
 
+/// A stored source reference, reduced to what import matching needs.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredLeg {
+    /// The occurrence ordinal this reference occupies.
+    pub occurrence: u32,
+    /// The transaction that owns the posting this reference points at.
+    pub transaction_id: TransactionId,
+}
+
 /// Persists and queries [`SourceRef`] import-provenance records.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -191,6 +201,61 @@ impl Service {
             let occurrence = u32::try_from(raw_occurrence)
                 .map_err(|_err| crate::BcError::BadData("occurrence exceeds u32".into()))?;
             map.entry(fingerprint).or_default().insert(occurrence);
+        }
+        Ok(map)
+    }
+
+    /// Returns stored source legs for several accounts at once, keyed by
+    /// `(account id, fingerprint)`.
+    ///
+    /// Import matching needs both halves of each stored leg: the occurrence, to
+    /// decide whether a given slot is taken, and the owning transaction, so a
+    /// later pass can attach a leg that an earlier pass could not resolve.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_ids` - Accounts to load legs for. Duplicates are harmless.
+    ///
+    /// # Returns
+    ///
+    /// A map from `(account id string, fingerprint)` to the stored legs in that
+    /// slot group. Absent keys mean nothing is stored for that pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on query failure or a malformed stored
+    /// occurrence.
+    #[inline]
+    pub async fn existing_legs(
+        &self,
+        account_ids: &[AccountId],
+    ) -> BcResult<HashMap<(String, String), Vec<StoredLeg>>> {
+        let mut map: HashMap<(String, String), Vec<StoredLeg>> = HashMap::new();
+        // Queried per account rather than with a dynamic IN list: sqlx cannot
+        // bind a variable-length list, and an import touches few accounts
+        // relative to the rows it writes.
+        for account_id in account_ids {
+            let rows: Vec<(String, i64, String)> = sqlx::query_as(
+                "SELECT fingerprint, occurrence, transaction_id \
+                 FROM transaction_sources WHERE account_id = ?",
+            )
+            .bind(account_id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+
+            for (fingerprint, raw_occurrence, raw_tx) in rows {
+                let occurrence = u32::try_from(raw_occurrence)
+                    .map_err(|_err| crate::BcError::BadData("occurrence exceeds u32".into()))?;
+                let transaction_id = raw_tx
+                    .parse::<TransactionId>()
+                    .map_err(|e: bc_models::IdParseError| crate::BcError::BadData(e.to_string()))?;
+                map.entry((account_id.to_string(), fingerprint))
+                    .or_default()
+                    .push(StoredLeg {
+                        occurrence,
+                        transaction_id,
+                    });
+            }
         }
         Ok(map)
     }
@@ -615,6 +680,54 @@ mod tests {
         svc.attach(&source(&tx, &posting, &account, 1))
             .await
             .expect("re-attach occurrence 1 after detach");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn existing_legs_reports_the_owning_transaction(pool: SqlitePool) {
+        let account = make_account(&pool).await;
+        let (tx, posting_id) = make_tx(&pool, &account).await;
+        let svc = Service::new(pool.clone());
+
+        let amount = Amount::new(Decimal::from(-5_i64), CommodityCode::new("AUD"));
+        let source = SourceRef::builder()
+            .id(SourceRefId::new())
+            .transaction_id(tx.clone())
+            .posting_id(posting_id)
+            .account_id(account.clone())
+            .date(date(2025, 6, 27))
+            .narration("COFFEE")
+            .amount(Some(amount.clone()))
+            .reference(None)
+            .occurrence(0)
+            .created_at(Timestamp::now())
+            .build();
+        svc.attach(&source).await.expect("attach");
+
+        let legs = svc
+            .existing_legs(core::slice::from_ref(&account))
+            .await
+            .expect("existing_legs");
+
+        let fingerprint =
+            SourceRef::compute_fingerprint(date(2025, 6, 27), "COFFEE", Some(&amount), None);
+        let stored = legs
+            .get(&(account.to_string(), fingerprint))
+            .expect("leg present");
+        assert_eq!(stored.len(), 1);
+        let leg = stored.first().expect("leg present");
+        assert_eq!(leg.occurrence, 0);
+        assert_eq!(
+            leg.transaction_id, tx,
+            "the owning transaction is what lets a later pass attach a missing leg"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn existing_legs_is_empty_for_untouched_accounts(pool: SqlitePool) {
+        let account = make_account(&pool).await;
+        let svc = Service::new(pool.clone());
+        let legs = svc.existing_legs(&[account]).await.expect("existing_legs");
+        assert!(legs.is_empty());
     }
 
     #[test]
