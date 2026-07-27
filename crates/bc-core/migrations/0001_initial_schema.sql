@@ -375,7 +375,10 @@ CREATE TABLE transaction_sources (
     -- The import run that wrote this reference. NULL for references attached
     -- outside an import (SourceService::attach is public API).
     import_batch_id TEXT REFERENCES import_batches(id) ON DELETE SET NULL,
-    UNIQUE (account_id, fingerprint, occurrence)
+    UNIQUE (account_id, fingerprint, occurrence),
+    -- The amount pair is the fingerprint's amount component: half of one would
+    -- render a fingerprint that no longer matches the stored key.
+    CHECK ((amount IS NULL) = (commodity IS NULL))
 );
 
 CREATE INDEX idx_transaction_sources_account_fp
