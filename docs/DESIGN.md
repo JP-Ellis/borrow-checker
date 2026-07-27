@@ -135,6 +135,8 @@ Accounts form an arbitrary-depth tree through an optional `parent_id: Option<Acc
 - Rollups: summing a subtree gives the parent balance; virtual sub-accounts of a joint account should always sum to the real account's bank-statement balance
 - Beancount/ledger export: the colon-separated path is derived by walking the ancestor chain
 
+No two sibling accounts share a name (`idx_accounts_sibling_unique`, a `UNIQUE` index on `(parent_id, name)` with the parent folded through `COALESCE` so root accounts — whose `parent_id` is `NULL` — are compared too). This is what makes a colon-separated path resolve to at most one account during import (see §5.2). An archived account still owns its name: renaming or reusing it requires archiving or renaming that account first.
+
 **Account kind** governs how a leaf account's balance is maintained:
 
 | Kind | Description |
@@ -200,6 +202,13 @@ transactions therefore still count toward balances; `balanced()` is a quality
 flag that gates *reconciliation* only, never creation. See §5.2 for how
 importers produce these and §4.5 for how views filter them.
 
+A transaction with some legs persisted and others still pending — an account
+one of its document legs names does not exist yet — is a normal intermediate
+state, not a defect. The elided leg is what makes this safe to leave alone:
+keeping its `amount` as `None` rather than materialising the residual means a
+later import pass can attach the missing leg to the same transaction without
+rewriting anything already stored (see §5.3).
+
 **Tags** apply at both transaction and posting level. A transaction's tags flow
 *down* to every posting — never the reverse — so `effective_tag_ids` for a
 posting is the union of its own tags and its transaction's. This union is
@@ -246,8 +255,9 @@ Snapshots are taken via SQLite `VACUUM INTO` to a temp file, then atomically ren
 | `manual` | User-initiated, from the CLI or the GUI Settings panel |
 | `pre-migration` | Automatic, taken before applying schema migrations when `auto_pre_migration` is enabled and the database file already existed and was non-empty |
 | `pre-restore` | Automatic safety snapshot taken just before a restore swap; deliberately skips rotation so it can never prune the very backup being restored |
+| `pre-import` | Automatic, taken before an import run when `auto_pre_import` is enabled |
 
-**Retention** is a conservative union, configured in the `[backup]` section (`dir`, `retain_count` default 5, `retain_days` unset, `auto_pre_migration` default true): a backup is kept if it is among the `retain_count` newest **or** newer than `retain_days`; it is pruned only if it satisfies neither. When both limits are unset, nothing is pruned. On disk, `retain_count = 0` is the sentinel for "unlimited" (an absent key falls back to the default of 5).
+**Retention** is a conservative union, configured in the `[backup]` section (`dir`, `retain_count` default 5, `retain_days` unset, `auto_pre_migration` default true, `auto_pre_import` default true): a backup is kept if it is among the `retain_count` newest **or** newer than `retain_days`; it is pruned only if it satisfies neither. When both limits are unset, nothing is pruned. On disk, `retain_count = 0` is the sentinel for "unlimited" (an absent key falls back to the default of 5). Routine `pre-import` snapshots share this retention pool with manual and `pre-migration` backups, so a series of import runs can crowd out older manual backups under the same union; per-kind retention is tracked as #344.
 
 **Restore** validates the candidate first (copy to a temp directory, open it — which runs migrations — and run a sentinel query), then takes a `pre-restore` safety snapshot, then swaps the candidate in: the CLI closes the pool and swaps in-process; the GUI writes a restore-marker beside the database and relaunches, applying the swap at startup before any connection is opened. The swap itself clears stale `-wal`/`-shm` sidecars left by the replaced database and installs the candidate via a temp copy + atomic rename, so an interrupted restore leaves the live database untouched rather than corrupted.
 
@@ -279,7 +289,9 @@ pub trait Importer {
 }
 ```
 
-The importer is a **pure parsing concern** — it converts bytes to `RawTransaction` values. Accounts live **on the postings**: each `RawTransaction` carries one or more `RawPosting` legs, and every leg names its own account **path** (e.g. `Assets:Bank:Checking`). Multi-account formats (Ledger, Beancount) name each leg's account directly; single-account formats (CSV, OFX) emit exactly one leg whose account path comes from the importer's own config blob. A leg's `amount` is optional — `None` marks an elided residual that balances the transaction. Account **path → id** resolution happens later, in `bc-core` at persistence time.
+The importer is a **pure parsing concern** — it converts bytes to `RawTransaction` values. Accounts live **on the postings**: each `RawTransaction` carries one or more `RawPosting` legs, and every leg names its own account **path** (e.g. `Assets:Bank:Checking`). Multi-account formats (Ledger, Beancount) name each leg's account directly; single-account formats (CSV, OFX) emit exactly one leg whose account path comes from the importer's own config blob. A leg's `amount` is optional — `None` marks an elided residual that balances the transaction. An optional `SourceLocation { display, uri }` on `RawTransaction` lets an importer name where a row came from (a file path and row number, an API response, …) for diagnostics; `display` is free-form and `uri` is an optional machine-addressable form.
+
+Account **path → id** resolution happens later, in `bc-core` at persistence time, centralised in `AccountResolver`: it loads one snapshot of every account — archived included — per import run, then walks a path's segments down the parent/child tree. Matching is exact and case-sensitive, since Beancount capitalises its roots and Ledger permits spaces inside a segment; normalising would invent ambiguity rather than remove it. A path naming no account skips only that leg — never the rest of the row — and is never auto-created; the missing paths are collected into a deduplicated, sorted report so the user can create the accounts and re-run (see §5.3 for how a later run completes what an earlier one skipped).
 
 > **Option C factory pattern** — foundations implemented in Milestone 2, full plugin registry deferred to Milestone 6. `ImporterFactory` (in `bc-core`) holds two fn pointers: `fn(&[u8]) -> bool` for stateless format-level detection and `fn() -> Box<dyn Importer>` for instance creation. `ImporterRegistry` stores a list of factories and provides `detect_format`, `create_for_name`, and `create_for_bytes`. Each format crate exposes a free `importer_factory()` function. The `Importer::detect(&self, ...)` method is retained for profile-aware detection after an instance is configured with a specific account's import profile.
 
@@ -305,13 +317,36 @@ opaque `config` blob and stamped onto the emitted leg.
 
 Multiple profiles can reference the same importer with different configuration. All CLI/TUI/GUI import operations work on profiles, not raw importers.
 
-> **Deduplication:** Import idempotency is provided by per-account source
-> references (`transaction_sources`). Each imported statement row records a
-> `SourceRef` scoped to the owning account, fingerprinted on
-> `(date, narration, amount, reference)` with an occurrence ordinal to
-> disambiguate legitimately-identical rows; the `UNIQUE(account_id, fingerprint, occurrence)` key makes re-importing the same document hierarchy
-> a no-op. Per-profile loosened fingerprints and transfer-leg merging remain
-> deferred (see #266).
+> **Deduplication:** Import idempotency is provided by per-**posting** source
+> references (`transaction_sources`), not per-transaction. Every persisted leg
+> carries a `posting_id` and a `SourceRef` scoped to its owning account,
+> fingerprinted on `(date, narration, amount, reference)` with an occurrence
+> ordinal — allocated per `(account, fingerprint)` — to disambiguate
+> legitimately-identical rows; the `UNIQUE(account_id, fingerprint, occurrence)`
+> key makes re-importing the same document a no-op. An elided leg fingerprints
+> an *absent* amount (the value and commodity components render empty) rather
+> than its resolved residual, because the residual is derived and would change
+> if a sibling leg later changed — fingerprinting a computed value would make
+> the dedup key itself unstable.
+>
+> A transaction's legs can therefore arrive across several import runs: one
+> pass books the legs whose accounts already exist, and a later pass — after
+> the missing accounts are created — attaches the rest to the same
+> transaction rather than creating a duplicate. Before attaching, the run
+> corroborates the candidate: every posting already on it must be explained by
+> a leg of the document transaction being imported, either by an exact
+> `(account, amount)` match or by an elided leg materialising onto a posting
+> that holds exactly the residual this document determines. A candidate that
+> fails to corroborate is left alone and reported as a warning rather than
+> risk grafting a leg onto the wrong transaction. Per-profile loosened
+> fingerprints and transfer-leg merging remain deferred (see #266).
+>
+> Each import run is recorded in `import_batches` — the profile (if any), the
+> importer, and counts of new transactions, attached postings, and skipped
+> postings — opened before the run and closed with its final counts. This is
+> provenance only: there is no teardown, discard, or rollback of a batch's
+> writes; discarding a batch's rows is tracked as #343. The `pre-import`
+> backup snapshot (see §4.6) is the safety net for now.
 
 ______________________________________________________________________
 
@@ -463,7 +498,7 @@ borrow-checker account [list|create|archive]
 borrow-checker transaction [list|add|amend|void]
 borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|book-value]
 borrow-checker profile [create|list|show|edit|remove]
-borrow-checker import --profile <name> --account <account-id>
+borrow-checker import --profile <name>
 borrow-checker export --format <ledger|beancount> --output <file>
 borrow-checker report [net-worth|summary|budget]
 borrow-checker budget [status|allocate|list]
@@ -471,7 +506,7 @@ borrow-checker plugin [install|list|remove]
 borrow-checker completions <bash|elvish|fish|powershell|zsh>
 ```
 
-Importers source their own files from the profile config (see §5.2), so `import` takes no file argument. `--account` names the account each imported row is booked against on the interim single-posting persistence path; it is a temporary dev affordance that disappears once persistence resolves each `RawPosting`'s account path to an id.
+Importers source their own files from the profile config (see §5.2), so `import` takes no file argument and no account argument: each `RawPosting` names its own account path, resolved to an id in `bc-core` at persistence time (see §5.2, §5.3).
 
 Import profiles are created and edited from the CLI. `profile create` takes the
 importer's opaque config as a TOML or JSON file (`--config <FILE>`, or `-` for
