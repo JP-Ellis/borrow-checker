@@ -134,12 +134,6 @@ pub enum Command {
     },
     /// List all import profiles.
     List,
-    /// Remove an import profile by name.
-    Remove {
-        /// Name of the profile to remove.
-        #[arg(value_name = "NAME")]
-        name: String,
-    },
     /// Print a profile's config as TOML, ready to edit and feed back in.
     Show {
         /// Name of the profile to show.
@@ -160,6 +154,12 @@ pub enum Command {
         /// Path to a replacement TOML or JSON config file, or `-` for stdin.
         #[arg(long, value_name = "FILE")]
         config: Option<String>,
+    },
+    /// Remove an import profile by name.
+    Remove {
+        /// Name of the profile to remove.
+        #[arg(value_name = "NAME")]
+        name: String,
     },
 }
 
@@ -183,7 +183,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             config,
         } => create(ctx, name, importer, config).await,
         Command::List => list(ctx).await,
-        Command::Remove { name } => remove(ctx, name).await,
         Command::Show { name } => show(ctx, name).await,
         Command::Edit {
             name,
@@ -191,6 +190,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             importer,
             config,
         } => edit(ctx, name, new_name, importer, config).await,
+        Command::Remove { name } => remove(ctx, name).await,
     }
 }
 
@@ -308,38 +308,18 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
     Ok(())
 }
 
-/// Removes an import profile by name.
-///
-/// # Arguments
-///
-/// * `ctx` - The application context.
-/// * `name` - Name of the profile to remove.
-///
-/// # Errors
-///
-/// Returns [`CliError::Core`] if no profile with that name exists, or the
-/// delete fails.
-async fn remove(ctx: &AppContext, name: String) -> CliResult<()> {
-    let profile = ctx.profiles.find_by_name(&name).await?;
-    ctx.profiles.delete(&profile.id).await?;
-
-    if ctx.json {
-        return crate::output::print_json(&serde_json::json!({ "removed": name }));
-    }
-
-    #[expect(clippy::print_stdout, reason = "CLI output")]
-    {
-        println!("Removed import profile '{name}'.");
-    }
-    Ok(())
-}
-
-/// Recursively removes null-valued entries from a JSON value.
+/// Recursively removes null-valued object keys from a JSON value.
 ///
 /// TOML has no null, so a stored `"payee_column": null` cannot be rendered at
 /// all. Dropping it is faithful rather than lossy for these configs: to serde,
 /// an absent key and an explicit null mean the same thing for an `Option`
 /// field. `profile show --json` remains the exact view.
+///
+/// Array elements are left untouched: unlike an object key, a null inside an
+/// array is not equivalent to its absence — dropping it would shift every
+/// later index. A null should never appear inside an array in the first
+/// place; if one does, rendering as TOML fails loudly instead of silently
+/// corrupting the array.
 ///
 /// # Arguments
 ///
@@ -347,7 +327,7 @@ async fn remove(ctx: &AppContext, name: String) -> CliResult<()> {
 ///
 /// # Returns
 ///
-/// The same value with every null entry removed.
+/// The same value with every null object key removed.
 fn strip_nulls(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => serde_json::Value::Object(
@@ -439,6 +419,7 @@ async fn edit(
     }
 
     let profile = ctx.profiles.find_by_name(&name).await?;
+    let importer_supplied = importer.is_some();
     let next_name = new_name.unwrap_or_else(|| profile.name.clone());
     let next_importer = importer.unwrap_or_else(|| profile.importer.clone());
     let next_config = match config {
@@ -449,7 +430,9 @@ async fn edit(
     ctx.profiles
         .update(&profile.id, &next_name, &next_importer, next_config)
         .await?;
-    warn_unknown_importer(ctx, &next_importer);
+    if importer_supplied {
+        warn_unknown_importer(ctx, &next_importer);
+    }
 
     if ctx.json {
         return crate::output::print_json(&serde_json::json!({
@@ -462,6 +445,37 @@ async fn edit(
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         println!("Updated import profile '{next_name}'.");
+    }
+    Ok(())
+}
+
+/// Removes an import profile by name.
+///
+/// # Arguments
+///
+/// * `ctx` - The application context.
+/// * `name` - Name of the profile to remove.
+///
+/// # Errors
+///
+/// Returns [`CliError::Core`] if no profile with that name exists, or the
+/// delete fails.
+async fn remove(ctx: &AppContext, name: String) -> CliResult<()> {
+    let profile = ctx.profiles.find_by_name(&name).await?;
+    ctx.profiles.delete(&profile.id).await?;
+
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "removed": {
+                "id": profile.id.to_string(),
+                "name": name,
+            },
+        }));
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("Removed import profile '{name}'.");
     }
     Ok(())
 }

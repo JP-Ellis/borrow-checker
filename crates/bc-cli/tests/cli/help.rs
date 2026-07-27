@@ -24,6 +24,7 @@ fn top_level_help(#[case] flag: &str) {
 #[case("export")]
 #[case("report")]
 #[case("budget")]
+#[case("profile")]
 #[case("plugin")]
 #[case("completions")]
 fn subcommand_help(#[case] subcommand: &str) {
