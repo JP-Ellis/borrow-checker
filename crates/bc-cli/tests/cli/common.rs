@@ -82,8 +82,24 @@ impl TestContext {
                 "[TEMP_DIR]".to_owned(),
             ),
             (
-                Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z").expect("valid regex"),
+                Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z").expect("valid regex"),
                 "[TIMESTAMP]".to_owned(),
+            ),
+            (
+                // Table columns are sized to the real (pre-filter) timestamp width, so
+                // the `[TIMESTAMP]` replacement above leaves a run of trailing padding
+                // whose length varies with the timestamp's original width. Strip
+                // trailing horizontal whitespace so table snapshots are stable.
+                Regex::new(r"(?m)[ \t]+$").expect("valid regex"),
+                String::new(),
+            ),
+            (
+                // A CREATED column's header-separator row is a run of `=` as wide as
+                // the whole table, which is likewise sized to the real timestamp
+                // width. Scoped to tables with a CREATED column (rather than every
+                // `=` separator) so unrelated tables' snapshots are untouched.
+                Regex::new(r"(?m)^([^\n]*\bCREATED\b[^\n]*\n)=+$").expect("valid regex"),
+                format!("${{1}}{}", "=".repeat(20)),
             ),
         ];
 
