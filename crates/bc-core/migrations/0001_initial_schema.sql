@@ -335,7 +335,12 @@ CREATE TABLE import_batches (
     started_at        TEXT    NOT NULL,
     new_transactions  INTEGER NOT NULL DEFAULT 0,
     attached_postings INTEGER NOT NULL DEFAULT 0,
-    skipped_postings  INTEGER NOT NULL DEFAULT 0
+    -- Legs the run could not persist, whatever the cause.
+    skipped_postings  INTEGER NOT NULL DEFAULT 0,
+    -- The subset of skipped_postings whose account path named no existing
+    -- account, so the user can attribute the total: creating those accounts and
+    -- re-running attaches exactly these legs.
+    unresolved_path_postings INTEGER NOT NULL DEFAULT 0
 );
 
 -- MARK: Transaction sources
