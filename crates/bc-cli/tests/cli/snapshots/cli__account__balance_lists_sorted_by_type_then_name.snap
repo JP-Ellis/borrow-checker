@@ -5,11 +5,11 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
- ID                                 | NAME      | TYPE    | BALANCE | COMMODITY 
+ ID                                 | NAME      | TYPE    | BALANCE | COMMODITY
 ================================================================================
- [ACCOUNT_ID] | Checking  | Asset   | 40      | AUD       
+ [ACCOUNT_ID] | Checking  | Asset   | 40      | AUD
 ------------------------------------+-----------+---------+---------+-----------
- [ACCOUNT_ID] | Savings   | Asset   | 100     | AUD       
+ [ACCOUNT_ID] | Savings   | Asset   | 100     | AUD
 ------------------------------------+-----------+---------+---------+-----------
- [ACCOUNT_ID] | Groceries | Expense | -140    | AUD       
+ [ACCOUNT_ID] | Groceries | Expense | -140    | AUD
 ----- stderr -----

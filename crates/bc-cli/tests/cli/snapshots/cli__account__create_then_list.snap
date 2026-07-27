@@ -5,7 +5,7 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
- ID                                 | NAME    | TYPE  | KIND           
+ ID                                 | NAME    | TYPE  | KIND
 =======================================================================
- [ACCOUNT_ID] | Savings | Asset | DepositAccount 
+ [ACCOUNT_ID] | Savings | Asset | DepositAccount
 ----- stderr -----
