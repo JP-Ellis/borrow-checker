@@ -209,6 +209,11 @@ keeping its `amount` as `None` rather than materialising the residual means a
 later import pass can attach the missing leg to the same transaction without
 rewriting anything already stored (see §5.3).
 
+Editing a transaction fully replaces its posting set, and import provenance
+survives that replace: a modified leg keeps its source reference, and a deleted
+leg leaves a tombstoned one (see §5.3), so a re-import neither duplicates the
+legs that remain nor resurrects the ones that are gone.
+
 **Tags** apply at both transaction and posting level. A transaction's tags flow
 *down* to every posting — never the reverse — so `effective_tag_ids` for a
 posting is the union of its own tags and its transaction's. This union is
@@ -340,6 +345,17 @@ Multiple profiles can reference the same importer with different configuration. 
 > fails to corroborate is left alone and reported as a warning rather than
 > risk grafting a leg onto the wrong transaction. Per-profile loosened
 > fingerprints and transfer-leg merging remain deferred (see #266).
+>
+> A source reference outlives the posting it names. Deleting a leg clears the
+> reference's `posting_id` rather than deleting the reference, leaving a
+> tombstone: a `NULL` `posting_id` records a leg the source document contained
+> and the user has since removed. The tombstone still occupies its
+> `(account_id, fingerprint, occurrence)` slot, so re-importing the same
+> document does **not** recreate a leg the user deliberately deleted, and it
+> keeps its original `account_id` even where an edit recategorised the posting
+> — the reference describes the source document, not the edited state.
+> `SourceService::detach` remains the explicit "forget this provenance"
+> action, and does delete the row.
 >
 > Each import run is recorded in `import_batches` — the profile (if any), the
 > importer, and counts of new transactions, attached postings, and skipped

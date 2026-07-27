@@ -342,13 +342,22 @@ CREATE TABLE import_batches (
 
 -- Import provenance: one row per statement leg (posting) that produced a
 -- transaction. Scoped to the owning account; the UNIQUE constraint is the
--- idempotency key. All foreign keys cascade on delete: removing a
--- transaction, posting, or account takes its source references with it, so
--- no provenance row can dangle.
+-- idempotency key.
+--
+-- A reference outlives the posting it names. Deleting the posting clears
+-- posting_id rather than deleting the row, leaving a tombstone: a NULL
+-- posting_id records a leg the source document contained and the user has
+-- since removed. The tombstone still occupies its
+-- (account_id, fingerprint, occurrence) slot, so re-importing the same
+-- document does not recreate the leg.
+--
+-- transaction_id and account_id do cascade: removing a transaction or an
+-- account takes its provenance with it, so no row can dangle.
 CREATE TABLE transaction_sources (
     id             TEXT    NOT NULL PRIMARY KEY,
     transaction_id TEXT    NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
-    posting_id     TEXT    NOT NULL REFERENCES postings(id)     ON DELETE CASCADE,
+    -- NULL marks a tombstone: the leg existed in the source, and was deleted.
+    posting_id     TEXT             REFERENCES postings(id)     ON DELETE SET NULL,
     account_id     TEXT    NOT NULL REFERENCES accounts(id)     ON DELETE CASCADE,
     date           TEXT    NOT NULL, -- YYYY-MM-DD
     narration      TEXT    NOT NULL,
