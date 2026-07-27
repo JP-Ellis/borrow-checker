@@ -135,6 +135,8 @@ struct RawBackupSection {
     retain_days: Option<u32>,
     /// Take an automatic snapshot before applying schema migrations.
     auto_pre_migration: bool,
+    /// Take an automatic snapshot before each import run.
+    auto_pre_import: bool,
 }
 
 /// Returns the default raw `[backup]` section used by `RawSettings`'s serde default.
@@ -144,6 +146,7 @@ fn default_raw_backup() -> RawBackupSection {
         retain_count: Some(5),
         retain_days: None,
         auto_pre_migration: true,
+        auto_pre_import: true,
     }
 }
 
@@ -163,6 +166,8 @@ pub struct BackupSection {
     retain_days: Option<u32>,
     /// Take an automatic snapshot before applying schema migrations.
     auto_pre_migration: bool,
+    /// Take an automatic snapshot before each import run.
+    auto_pre_import: bool,
 }
 
 impl BackupSection {
@@ -200,6 +205,13 @@ impl BackupSection {
     pub fn auto_pre_migration(&self) -> bool {
         self.auto_pre_migration
     }
+
+    /// Returns whether an automatic snapshot is taken before each import.
+    #[inline]
+    #[must_use]
+    pub fn auto_pre_import(&self) -> bool {
+        self.auto_pre_import
+    }
 }
 
 impl Default for BackupSection {
@@ -210,6 +222,7 @@ impl Default for BackupSection {
             retain_count: Some(5),
             retain_days: None,
             auto_pre_migration: true,
+            auto_pre_import: true,
         }
     }
 }
@@ -324,7 +337,8 @@ impl Settings {
             .set_default("backup.dir", Option::<String>::None)?
             .set_default("backup.retain_count", 5_i64)?
             .set_default("backup.retain_days", Option::<i64>::None)?
-            .set_default("backup.auto_pre_migration", true)?;
+            .set_default("backup.auto_pre_migration", true)?
+            .set_default("backup.auto_pre_import", true)?;
 
         for path in config_file_paths() {
             tracing::debug!(path = %path.display(), "config: adding source");
@@ -433,12 +447,14 @@ impl Settings {
             retain_count: raw.backup.retain_count.filter(|&n| n != 0),
             retain_days: raw.backup.retain_days,
             auto_pre_migration: raw.backup.auto_pre_migration,
+            auto_pre_import: raw.backup.auto_pre_import,
         };
         tracing::debug!(
             backup.dir = ?backup.dir,
             backup.retain_count = ?backup.retain_count,
             backup.retain_days = ?backup.retain_days,
             backup.auto_pre_migration = backup.auto_pre_migration,
+            backup.auto_pre_import = backup.auto_pre_import,
             "config: backup section"
         );
 
@@ -868,6 +884,15 @@ mod tests {
     }
 
     #[test]
+    fn auto_pre_import_defaults_to_true() {
+        let section = BackupSection::default();
+        assert!(
+            section.auto_pre_import(),
+            "a snapshot before every import is the safe default"
+        );
+    }
+
+    #[test]
     fn default_backup_retain_count_is_five() {
         let s = Settings::default();
         assert_eq!(s.backup().retain_count(), Some(5));
@@ -955,6 +980,7 @@ mod tests {
                 retain_count: Some(0),
                 retain_days: None,
                 auto_pre_migration: true,
+                auto_pre_import: true,
             },
             ..valid_raw()
         };
@@ -970,6 +996,7 @@ mod tests {
                 retain_count: Some(0),
                 retain_days: None,
                 auto_pre_migration: true,
+                auto_pre_import: true,
             },
             ..valid_raw()
         };
