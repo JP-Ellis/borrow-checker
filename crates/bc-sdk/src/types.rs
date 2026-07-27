@@ -151,6 +151,22 @@ pub struct RawPosting {
     pub tags: Vec<String>,
 }
 
+/// Where a [`RawTransaction`] came from, for diagnostics.
+///
+/// A source is not always a file — a plugin may call an API or read a database —
+/// so `display` carries free-form human-facing text and `uri` carries an
+/// optional addressable form. The host prints `display` verbatim in diagnostics.
+#[derive(bon::Builder, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SourceLocation {
+    /// Human-readable location, e.g. `"statements/june.csv row 14"`.
+    #[builder(into)]
+    pub display: String,
+    /// Optional machine-addressable form, e.g. `"file:///june.csv#row=14"`.
+    #[builder(into)]
+    pub uri: Option<String>,
+}
+
 /// A parsed transaction prior to account binding. Carries one or more postings.
 #[derive(bon::Builder, Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -175,6 +191,8 @@ pub struct RawTransaction {
     /// Free-form labelled dates (e.g. `("cleared", …)`).
     #[builder(default)]
     pub extra_dates: Vec<(String, Date)>,
+    /// Where this transaction came from, if the importer can report it.
+    pub source_location: Option<SourceLocation>,
     /// One or more posting legs. Single-account importers emit exactly one.
     ///
     /// Required: a transaction with no legs is meaningless, so plugin authors
@@ -288,6 +306,7 @@ impl From<serde_json::Error> for ImportError {
 use crate::__bindings::borrow_checker::sdk::types::Amount as WitAmount;
 use crate::__bindings::borrow_checker::sdk::types::Date as WitDate;
 use crate::__bindings::borrow_checker::sdk::types::RawPosting as WitRawPosting;
+use crate::__bindings::borrow_checker::sdk::types::SourceLocation as WitSourceLocation;
 use crate::__bindings::exports::borrow_checker::sdk::importer::ImportError as WitImportError;
 use crate::__bindings::exports::borrow_checker::sdk::importer::RawTransaction as WitRawTransaction;
 
@@ -301,6 +320,17 @@ impl From<RawPosting> for WitRawPosting {
             balance: p.balance.map(Into::into),
             note: p.note,
             tags: p.tags,
+        }
+    }
+}
+
+#[doc(hidden)]
+impl From<SourceLocation> for WitSourceLocation {
+    #[inline]
+    fn from(l: SourceLocation) -> Self {
+        Self {
+            display: l.display,
+            uri: l.uri,
         }
     }
 }
@@ -334,6 +364,7 @@ impl From<RawTransaction> for WitRawTransaction {
                     )
                 })
                 .collect(),
+            source_location: t.source_location.map(Into::into),
             postings: t.postings.into_iter().map(Into::into).collect(),
         }
     }

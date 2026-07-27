@@ -13,6 +13,7 @@ use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
+use bc_sdk::SourceLocation;
 use rust_decimal::Decimal;
 
 use crate::ast::Directive;
@@ -66,6 +67,7 @@ impl bc_sdk::Importer for BeancountImporter {
             .map_err(|e| ImportError::Parse(format!("file is not valid UTF-8: {e}")))?;
 
         let directives = parse(text).map_err(ImportError::Parse)?;
+        let file = &cfg.source_file;
         let mut raw_txs = Vec::new();
 
         for directive in directives {
@@ -97,6 +99,11 @@ impl bc_sdk::Importer for BeancountImporter {
                     .maybe_payee(tx.payee)
                     .description(tx.narration)
                     .tags(tx.tags)
+                    .source_location(
+                        SourceLocation::builder()
+                            .display(format!("{file}:{}", tx.line))
+                            .build(),
+                    )
                     .postings(postings)
                     .build(),
             );

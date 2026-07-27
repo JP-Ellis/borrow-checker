@@ -35,6 +35,19 @@ interface types {
         tags: list<string>,
     }
 
+    /// Where a raw transaction came from, for diagnostics.
+    ///
+    /// A source is not always a file: a plugin may call an HTTP API or read a
+    /// database. `display` is the human-facing text a diagnostic prints; `uri`
+    /// is an optional machine-addressable form ("file:///ledger/2025.beancount#L412",
+    /// "https://api.example/tx/88f3") that a host may use to offer navigation.
+    record source-location {
+        /// Human-readable location, e.g. "statements/june.csv row 14".
+        display: string,
+        /// Optional addressable form. Absent when the source has no address.
+        uri: option<string>,
+    }
+
     /// A parsed transaction prior to account binding. One or more postings.
     record raw-transaction {
         date: date,
@@ -44,6 +57,7 @@ interface types {
         reference: option<string>,
         tags: list<string>,
         extra-dates: list<tuple<string, date>>,
+        source-location: option<source-location>,
         postings: list<raw-posting>,
     }
 

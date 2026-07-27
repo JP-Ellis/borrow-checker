@@ -8,6 +8,7 @@ use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
+use bc_sdk::SourceLocation;
 use rust_decimal::Decimal;
 
 mod ast;
@@ -71,6 +72,7 @@ impl bc_sdk::Importer for LedgerImporter {
             .map_err(|e| ImportError::Parse(format!("file is not valid UTF-8: {e}")))?;
 
         let entries = parse(text).map_err(ImportError::Parse)?;
+        let file = &cfg.source_file;
 
         let mut raw_txs = Vec::new();
 
@@ -111,6 +113,11 @@ impl bc_sdk::Importer for LedgerImporter {
                     .date(tx.date)
                     .maybe_payee(payee)
                     .description(description)
+                    .source_location(
+                        SourceLocation::builder()
+                            .display(format!("{file}:{}", tx.line))
+                            .build(),
+                    )
                     .postings(postings)
                     .build(),
             );
