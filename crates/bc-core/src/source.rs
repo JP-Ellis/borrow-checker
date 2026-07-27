@@ -477,6 +477,22 @@ mod tests {
             .expect("create account")
     }
 
+    /// Creates a root account with a caller-supplied name.
+    ///
+    /// Used when a test needs more than one distinct root account in the same
+    /// database: `make_account`'s fixed "Bank" name would collide with
+    /// `idx_accounts_sibling_unique` on a second call.
+    async fn make_account_named(pool: &SqlitePool, name: &str) -> AccountId {
+        crate::AccountService::new(pool.clone())
+            .create()
+            .name(name)
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account")
+    }
+
     /// Creates a two-legged transaction and returns its ID and the posting
     /// ID of the leg on `account`.
     ///
@@ -728,6 +744,136 @@ mod tests {
         let svc = Service::new(pool.clone());
         let legs = svc.existing_legs(&[account]).await.expect("existing_legs");
         assert!(legs.is_empty());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn existing_legs_groups_multiple_occurrences_of_one_fingerprint(pool: SqlitePool) {
+        let account = make_account(&pool).await;
+        // Two distinct transactions, each contributing one leg to `account` with
+        // the same date/narration/amount — i.e. the same fingerprint — at
+        // different occurrences, the way two genuinely identical charges land
+        // in one account.
+        let (tx_a, posting_a) = make_tx(&pool, &account).await;
+        let (tx_b, posting_b) = make_tx(&pool, &account).await;
+        let svc = Service::new(pool.clone());
+
+        let amount = Amount::new(Decimal::from(-5_i64), CommodityCode::new("AUD"));
+        let build = |tx: &TransactionId, posting: &PostingId, occurrence: u32| {
+            SourceRef::builder()
+                .id(SourceRefId::new())
+                .transaction_id(tx.clone())
+                .posting_id(posting.clone())
+                .account_id(account.clone())
+                .date(date(2025, 6, 27))
+                .narration("COFFEE")
+                .amount(Some(amount.clone()))
+                .reference(None)
+                .occurrence(occurrence)
+                .created_at(Timestamp::now())
+                .build()
+        };
+        svc.attach(&build(&tx_a, &posting_a, 0))
+            .await
+            .expect("attach occurrence 0");
+        svc.attach(&build(&tx_b, &posting_b, 1))
+            .await
+            .expect("attach occurrence 1");
+
+        let legs = svc
+            .existing_legs(core::slice::from_ref(&account))
+            .await
+            .expect("existing_legs");
+
+        let fingerprint =
+            SourceRef::compute_fingerprint(date(2025, 6, 27), "COFFEE", Some(&amount), None);
+        let mut stored = legs
+            .get(&(account.to_string(), fingerprint))
+            .expect("both legs present")
+            .clone();
+        stored.sort_by_key(|leg| leg.occurrence);
+
+        assert_eq!(
+            stored.len(),
+            2,
+            "both occurrences of the shared fingerprint must be kept, not overwritten"
+        );
+        let first = stored.first().expect("first leg present");
+        let second = stored.get(1).expect("second leg present");
+        assert_eq!(first.occurrence, 0);
+        assert_eq!(first.transaction_id, tx_a);
+        assert_eq!(second.occurrence, 1);
+        assert_eq!(second.transaction_id, tx_b);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn existing_legs_keeps_accounts_in_separate_buckets(pool: SqlitePool) {
+        let account_a = make_account_named(&pool, "Bank A").await;
+        let account_b = make_account_named(&pool, "Bank B").await;
+        let (tx_a, posting_a) = make_tx(&pool, &account_a).await;
+        let (tx_b, posting_b) = make_tx(&pool, &account_b).await;
+        let svc = Service::new(pool.clone());
+
+        // Same date/narration/amount on both accounts, so the fingerprint half
+        // of the key is identical — only the account should disambiguate them.
+        let amount = Amount::new(Decimal::from(-5_i64), CommodityCode::new("AUD"));
+        let build = |account: &AccountId, tx: &TransactionId, posting: &PostingId| {
+            SourceRef::builder()
+                .id(SourceRefId::new())
+                .transaction_id(tx.clone())
+                .posting_id(posting.clone())
+                .account_id(account.clone())
+                .date(date(2025, 6, 27))
+                .narration("COFFEE")
+                .amount(Some(amount.clone()))
+                .reference(None)
+                .occurrence(0)
+                .created_at(Timestamp::now())
+                .build()
+        };
+        svc.attach(&build(&account_a, &tx_a, &posting_a))
+            .await
+            .expect("attach to account A");
+        svc.attach(&build(&account_b, &tx_b, &posting_b))
+            .await
+            .expect("attach to account B");
+
+        let legs = svc
+            .existing_legs(&[account_a.clone(), account_b.clone()])
+            .await
+            .expect("existing_legs");
+
+        let fingerprint =
+            SourceRef::compute_fingerprint(date(2025, 6, 27), "COFFEE", Some(&amount), None);
+
+        let legs_a = legs
+            .get(&(account_a.to_string(), fingerprint.clone()))
+            .expect("account A's leg present");
+        assert_eq!(legs_a.len(), 1);
+        assert_eq!(
+            legs_a
+                .first()
+                .expect("account A's leg present")
+                .transaction_id,
+            tx_a
+        );
+
+        let legs_b = legs
+            .get(&(account_b.to_string(), fingerprint))
+            .expect("account B's leg present");
+        assert_eq!(legs_b.len(), 1);
+        assert_eq!(
+            legs_b
+                .first()
+                .expect("account B's leg present")
+                .transaction_id,
+            tx_b
+        );
+
+        assert_eq!(
+            legs.len(),
+            2,
+            "each account's leg must occupy its own key, not a shared one"
+        );
     }
 
     #[test]
