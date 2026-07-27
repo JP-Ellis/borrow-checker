@@ -344,8 +344,7 @@ Multiple profiles can reference the same importer with different configuration. 
 > corroborates the candidate: every posting already on it must be explained by
 > a leg of the document transaction being imported, and how it is explained
 > turns on whether it carries provenance. A posting an import wrote is
-> explained **by its reference** — the leg matching the `(account, fingerprint,
-> occurrence)` the reference recorded. Every component comes from the
+> explained **by its reference** — the leg matching the `(account, fingerprint, occurrence)` the reference recorded. Every component comes from the
 > reference rather than the posting, so an edit that corrects an amount or
 > recategorises the leg moves the posting but never its reference, and the
 > document's remaining legs can still arrive. A posting carrying no provenance
