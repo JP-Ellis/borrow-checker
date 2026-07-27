@@ -452,6 +452,62 @@ impl Service {
 
         account_rows.into_iter().map(Account::try_from).collect()
     }
+
+    /// Lists every account, including archived ones, ordered by name.
+    ///
+    /// Import path resolution needs archived accounts in the map: resolving a
+    /// path to an archived account is allowed (with a warning) rather than
+    /// treated as missing, since the account genuinely exists.
+    ///
+    /// Commodity and tag associations are loaded in bulk (two additional
+    /// queries) to avoid N+1 database round-trips.
+    ///
+    /// # Returns
+    ///
+    /// Every [`Account`] in the database, ordered by name ascending.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or data parse failure.
+    #[inline]
+    pub async fn list_all(&self) -> BcResult<Vec<Account>> {
+        let mut account_rows = sqlx::query_as::<_, AccountRow>(
+            "SELECT id, name, account_type, kind, description, parent_id, created_at, archived_at, \
+             acquisition_date, acquisition_cost, depreciation_policy \
+             FROM accounts ORDER BY name ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        if account_rows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Load every commodity association in one query.
+        let commodity_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT account_id, commodity_id \
+             FROM account_commodities \
+             ORDER BY account_id, position",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Load every tag association in one query.
+        let tag_rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT account_id, tag_id FROM account_tags")
+                .fetch_all(&self.pool)
+                .await?;
+
+        let mut commodities_map = build_commodities_map(commodity_rows)?;
+        let mut tags_map = build_tags_map(tag_rows)?;
+
+        for row in &mut account_rows {
+            row.commodities = commodities_map.remove(&row.id).unwrap_or_default();
+            row.tag_ids = tags_map.remove(&row.id).unwrap_or_default();
+        }
+
+        account_rows.into_iter().map(Account::try_from).collect()
+    }
 }
 
 #[cfg(test)]
@@ -756,5 +812,109 @@ mod tests {
         assert_eq!(active.len(), 1);
         let first = active.first().expect("one active account should exist");
         assert_eq!(first.name(), "Active");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn sibling_accounts_cannot_share_a_name(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let parent = svc
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create parent");
+
+        svc.create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&parent)
+            .call()
+            .await
+            .expect("first child");
+
+        let duplicate = svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&parent)
+            .call()
+            .await;
+
+        assert!(
+            duplicate.is_err(),
+            "a second sibling named 'Checking' must be rejected so paths stay unambiguous"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn root_accounts_cannot_share_a_name(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        svc.create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("first root");
+
+        let duplicate = svc
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await;
+
+        assert!(
+            duplicate.is_err(),
+            "COALESCE(parent_id, '') must de-duplicate roots too"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn list_all_includes_archived_accounts(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let live = svc
+            .create()
+            .name("Live")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create live");
+        let gone = svc
+            .create()
+            .name("Gone")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create gone");
+        svc.archive(&gone).await.expect("archive");
+
+        let active: Vec<AccountId> = svc
+            .list_active()
+            .await
+            .expect("list_active")
+            .into_iter()
+            .map(|a| a.id().clone())
+            .collect();
+        assert_eq!(active, vec![live.clone()], "list_active hides archived");
+
+        let mut all: Vec<AccountId> = svc
+            .list_all()
+            .await
+            .expect("list_all")
+            .into_iter()
+            .map(|a| a.id().clone())
+            .collect();
+        all.sort_by_key(ToString::to_string);
+        let mut expected = vec![live, gone];
+        expected.sort_by_key(ToString::to_string);
+        assert_eq!(all, expected, "list_all includes archived accounts");
     }
 }

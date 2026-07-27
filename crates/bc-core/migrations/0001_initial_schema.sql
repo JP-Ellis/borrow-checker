@@ -59,6 +59,14 @@ CREATE TABLE accounts (
 CREATE INDEX idx_accounts_name        ON accounts (name);
 CREATE INDEX idx_accounts_archived_at ON accounts (archived_at);
 
+-- No two sibling accounts share a name, so colon-separated paths resolve to at
+-- most one account. COALESCE folds NULL parents (roots) to '' so roots are
+-- de-duplicated too, which a plain UNIQUE would not do (SQLite treats NULLs as
+-- distinct). Archived accounts participate: an archived sibling still owns its
+-- name. Mirrors idx_tags_sibling_unique.
+CREATE UNIQUE INDEX idx_accounts_sibling_unique
+    ON accounts (COALESCE(parent_id, ''), name);
+
 -- MARK: Commodities
 
 -- Rich commodity registry.
