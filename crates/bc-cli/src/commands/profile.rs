@@ -135,6 +135,27 @@ pub enum Command {
         #[arg(value_name = "NAME")]
         name: String,
     },
+    /// Print a profile's config as TOML, ready to edit and feed back in.
+    Show {
+        /// Name of the profile to show.
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    /// Change a profile's name, importer, or config.
+    Edit {
+        /// Name of the profile to edit.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// New name for the profile.
+        #[arg(long = "name", value_name = "NEW_NAME")]
+        new_name: Option<String>,
+        /// New importer plugin identifier.
+        #[arg(long, value_name = "PLUGIN")]
+        importer: Option<String>,
+        /// Path to a replacement TOML or JSON config file, or `-` for stdin.
+        #[arg(long, value_name = "FILE")]
+        config: Option<String>,
+    },
 }
 
 /// Executes the `profile` subcommand.
@@ -158,6 +179,13 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         } => create(ctx, name, importer, config).await,
         Command::List => list(ctx).await,
         Command::Remove { name } => remove(ctx, name).await,
+        Command::Show { name } => show(ctx, name).await,
+        Command::Edit {
+            name,
+            new_name,
+            importer,
+            config,
+        } => edit(ctx, name, new_name, importer, config).await,
     }
 }
 
@@ -301,6 +329,142 @@ async fn remove(ctx: &AppContext, name: String) -> CliResult<()> {
     Ok(())
 }
 
+/// Recursively removes null-valued entries from a JSON value.
+///
+/// TOML has no null, so a stored `"payee_column": null` cannot be rendered at
+/// all. Dropping it is faithful rather than lossy for these configs: to serde,
+/// an absent key and an explicit null mean the same thing for an `Option`
+/// field. `profile show --json` remains the exact view.
+///
+/// # Arguments
+///
+/// * `value` - The JSON value to strip.
+///
+/// # Returns
+///
+/// The same value with every null entry removed.
+fn strip_nulls(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, strip_nulls(v)))
+                .collect(),
+        ),
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .into_iter()
+                .filter(|v| !v.is_null())
+                .map(strip_nulls)
+                .collect(),
+        ),
+        other @ (serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_)) => other,
+    }
+}
+
+/// Prints a profile's config as TOML, with its metadata as leading comments.
+///
+/// TOML ignores the comment lines, so `profile show bank > bank.toml` can be
+/// edited and fed straight back to `profile edit bank --config bank.toml`
+/// with no stripping step.
+///
+/// # Arguments
+///
+/// * `ctx` - The application context.
+/// * `name` - Name of the profile to show.
+///
+/// # Errors
+///
+/// Returns [`CliError::Core`] if no profile with that name exists, or
+/// [`CliError::Arg`] if the stored config cannot be rendered as TOML.
+async fn show(ctx: &AppContext, name: String) -> CliResult<()> {
+    let profile = ctx.profiles.find_by_name(&name).await?;
+
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "id": profile.id.to_string(),
+            "name": profile.name,
+            "importer": profile.importer,
+            "config": profile.config.as_value(),
+            "created_at": profile.created_at.to_string(),
+        }));
+    }
+
+    let stripped = strip_nulls(profile.config.as_value().clone());
+    let body = toml::to_string_pretty(&stripped)
+        .map_err(|e| CliError::Arg(format!("cannot render config as TOML: {e}")))?;
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("# profile: {} ({})", profile.name, profile.id);
+        println!("# importer: {}", profile.importer);
+        print!("{body}");
+    }
+    Ok(())
+}
+
+/// Changes a profile's name, importer, or config.
+///
+/// Unspecified fields keep their current values. Supplying none of them is an
+/// error rather than a silent no-op.
+///
+/// # Arguments
+///
+/// * `ctx` - The application context.
+/// * `name` - Name of the profile to edit.
+/// * `new_name` - Optional replacement name.
+/// * `importer` - Optional replacement importer identifier.
+/// * `config` - Optional path to a replacement config file, or `-` for stdin.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] if no field was supplied or a config file cannot
+/// be read, or [`CliError::Core`] if the profile does not exist or the new
+/// name is already taken.
+async fn edit(
+    ctx: &AppContext,
+    name: String,
+    new_name: Option<String>,
+    importer: Option<String>,
+    config: Option<String>,
+) -> CliResult<()> {
+    if new_name.is_none() && importer.is_none() && config.is_none() {
+        return Err(CliError::Arg(
+            "nothing to change: pass at least one of --name, --importer, --config".to_owned(),
+        ));
+    }
+
+    let profile = ctx.profiles.find_by_name(&name).await?;
+    let next_name = new_name.unwrap_or_else(|| profile.name.clone());
+    let next_importer = importer.unwrap_or_else(|| profile.importer.clone());
+    let next_config = match config {
+        Some(label) => bc_core::ImportConfig::from_value(load_config(&label)?),
+        None => profile.config.clone(),
+    };
+
+    ctx.profiles
+        .update(&profile.id, &next_name, &next_importer, next_config)
+        .await?;
+    warn_unknown_importer(ctx, &next_importer);
+
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "id": profile.id.to_string(),
+            "name": next_name,
+            "importer": next_importer,
+        }));
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("Updated import profile '{next_name}'.");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -379,5 +543,42 @@ mod tests {
             err.to_string().contains("absent.toml"),
             "error must name the path, got: {err}"
         );
+    }
+
+    #[test]
+    fn strip_nulls_removes_null_entries_recursively() {
+        let value = serde_json::json!({
+            "account": "Assets:Bank:Checking",
+            "payee_column": null,
+            "preamble": { "strategy": "none", "lines": null },
+        });
+
+        let stripped = strip_nulls(value);
+
+        assert_eq!(
+            stripped,
+            serde_json::json!({
+                "account": "Assets:Bank:Checking",
+                "preamble": { "strategy": "none" },
+            })
+        );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known structure")]
+    fn a_stripped_config_renders_as_toml() {
+        let value = serde_json::json!({
+            "account": "Assets:Bank:Checking",
+            "payee_column": null,
+            "preamble": { "strategy": "skip_lines", "lines": 3_i32 },
+        });
+
+        let rendered = toml::to_string_pretty(&strip_nulls(value)).expect("config renders as TOML");
+        let reparsed = parse_config(&rendered, ConfigFormat::Toml, "rendered")
+            .expect("rendered TOML reparses");
+
+        assert_eq!(reparsed["account"], "Assets:Bank:Checking");
+        assert_eq!(reparsed["preamble"]["lines"], 3_i32);
+        assert!(reparsed.get("payee_column").is_none());
     }
 }

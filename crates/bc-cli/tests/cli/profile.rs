@@ -215,3 +215,80 @@ fn profile_remove_unknown_name_errors() {
     cmd.args(["profile", "remove", "nonexistent"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+#[test]
+fn profile_show_renders_config_as_toml() {
+    let ctx = ctx_with_bank_profile();
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "show", "bank"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn profile_show_json_output() {
+    let ctx = ctx_with_bank_profile();
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "show", "bank", "--json"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn profile_show_unknown_name_errors() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "show", "nonexistent"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn profile_edit_replaces_the_config() {
+    let ctx = ctx_with_bank_profile();
+    let cfg = ctx.home_dir.path().join("bank-v2.toml");
+    std::fs::write(
+        &cfg,
+        "account = \"Assets:Bank:Savings\"\nsource_dir = \"Assets/Bank/Savings\"\n",
+    )
+    .expect("write config fixture");
+
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "edit", "bank", "--config"]).arg(&cfg);
+    let edited = ctx.run(&mut cmd);
+    assert!(edited.contains("success: true"), "edit failed:\n{edited}");
+
+    let mut show = ctx.command();
+    show.args(["profile", "show", "bank"]);
+    cmd_snapshot!(ctx, &mut show);
+}
+
+#[test]
+fn profile_edit_renames_the_profile() {
+    let ctx = ctx_with_bank_profile();
+
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "edit", "bank", "--name", "savings"]);
+    let renamed = ctx.run(&mut cmd);
+    assert!(
+        renamed.contains("success: true"),
+        "rename failed:\n{renamed}"
+    );
+
+    let mut list = ctx.command();
+    list.args(["profile", "list"]);
+    cmd_snapshot!(ctx, &mut list);
+}
+
+#[test]
+fn profile_edit_with_no_changes_errors() {
+    let ctx = ctx_with_bank_profile();
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "edit", "bank"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn profile_edit_unknown_name_errors() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "edit", "nonexistent", "--importer", "ofx"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}

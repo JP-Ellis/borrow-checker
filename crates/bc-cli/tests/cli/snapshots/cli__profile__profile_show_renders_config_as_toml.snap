@@ -1,0 +1,13 @@
+---
+source: crates/bc-cli/tests/cli/profile.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+# profile: bank ([PROFILE_ID])
+# importer: csv
+account = "Assets:Bank:Checking"
+date_column = "Date"
+source_dir = "Assets/Bank/Checking"
+----- stderr -----
