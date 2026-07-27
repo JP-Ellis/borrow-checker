@@ -1,0 +1,13 @@
+---
+source: crates/bc-cli/tests/cli/profile.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+ NAME  | IMPORTER | CREATED
+=========================================
+ bank  | csv      | [TIMESTAMP]
+-------+----------+----------------------
+ cards | ofx      | [TIMESTAMP]
+----- stderr -----
