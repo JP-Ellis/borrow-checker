@@ -4,6 +4,7 @@ use jiff::Timestamp;
 use jiff::civil::Date;
 
 use crate::AccountId;
+use crate::PostingId;
 use crate::TransactionId;
 use crate::money::Amount;
 
@@ -21,7 +22,7 @@ crate::define_id!(SourceRefId, "source_ref");
 /// # Example
 ///
 /// ```
-/// use bc_models::{Amount, CommodityCode, SourceRef, SourceRefId, TransactionId, AccountId};
+/// use bc_models::{Amount, CommodityCode, PostingId, SourceRef, SourceRefId, TransactionId, AccountId};
 /// use jiff::Timestamp;
 /// use jiff::civil::date;
 /// use rust_decimal::Decimal;
@@ -29,10 +30,11 @@ crate::define_id!(SourceRefId, "source_ref");
 /// let sr = SourceRef::builder()
 ///     .id(SourceRefId::new())
 ///     .transaction_id(TransactionId::new())
+///     .posting_id(PostingId::new())
 ///     .account_id(AccountId::new())
 ///     .date(date(2025, 6, 27))
 ///     .narration("ACME")
-///     .amount(Amount::new(Decimal::from(100), CommodityCode::new("AUD")))
+///     .amount(Some(Amount::new(Decimal::from(100), CommodityCode::new("AUD"))))
 ///     .occurrence(0)
 ///     .created_at(Timestamp::now())
 ///     .build();
@@ -48,6 +50,14 @@ pub struct SourceRef {
     /// The transaction this statement row produced.
     transaction_id: TransactionId,
 
+    /// The specific posting this statement leg produced.
+    ///
+    /// Provenance is per-leg: a multi-account source transaction yields one
+    /// reference per posting, each pointing at the leg it came from. This is
+    /// what lets a later import pass attach a leg that was missing from an
+    /// earlier one.
+    posting_id: PostingId,
+
     /// The account whose statement this row came from (scope of the fingerprint).
     /// Must be one of the transaction's posting accounts.
     account_id: AccountId,
@@ -59,8 +69,12 @@ pub struct SourceRef {
     #[builder(into)]
     narration: String,
 
-    /// Amount as seen on this account's statement.
-    amount: Amount,
+    /// Amount as seen on this account's statement, or `None` for an elided leg.
+    ///
+    /// An elided leg absorbs the transaction's residual, which is derived rather
+    /// than stored, so it has neither a value nor a commodity of its own.
+    #[builder(required, default = None)]
+    amount: Option<Amount>,
 
     /// Institution-provided reference/txid, if the source supplied one.
     #[builder(required, default = None)]
@@ -89,6 +103,13 @@ impl SourceRef {
         &self.transaction_id
     }
 
+    /// Returns the posting this reference points at.
+    #[inline]
+    #[must_use]
+    pub fn posting_id(&self) -> &PostingId {
+        &self.posting_id
+    }
+
     /// Returns the account whose statement produced this row.
     #[inline]
     #[must_use]
@@ -110,11 +131,11 @@ impl SourceRef {
         &self.narration
     }
 
-    /// Returns the statement amount.
+    /// Returns the statement amount, or `None` for an elided leg.
     #[inline]
     #[must_use]
-    pub fn amount(&self) -> &Amount {
-        &self.amount
+    pub fn amount(&self) -> Option<&Amount> {
+        self.amount.as_ref()
     }
 
     /// Returns the institution reference, if any.
@@ -142,20 +163,22 @@ impl SourceRef {
     #[inline]
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        Self::compute_fingerprint(self.date, &self.narration, &self.amount, self.reference())
+        Self::compute_fingerprint(self.date, &self.narration, self.amount(), self.reference())
     }
 
-    /// Computes the canonical dedup fingerprint from a row's components.
+    /// Computes the canonical dedup fingerprint from a leg's components.
     ///
     /// The components are joined with the ASCII unit separator (`U+001F`), which
-    /// never appears in bank statement text, so differing component splits cannot
-    /// collide. An absent `reference` renders identically to an empty string.
+    /// never appears in bank statement text, so differing component splits
+    /// cannot collide. An absent `reference` renders identically to an empty
+    /// string, and an absent `amount` — an elided leg — renders as two empty
+    /// components.
     ///
     /// # Arguments
     ///
     /// * `date` - The row's value date.
     /// * `narration` - The raw imported description.
-    /// * `amount` - The statement amount.
+    /// * `amount` - The statement amount, or `None` for an elided leg.
     /// * `reference` - The institution reference, if any.
     ///
     /// # Returns
@@ -165,13 +188,15 @@ impl SourceRef {
     pub fn compute_fingerprint(
         date: Date,
         narration: &str,
-        amount: &Amount,
+        amount: Option<&Amount>,
         reference: Option<&str>,
     ) -> String {
+        let (value, commodity) = match amount {
+            Some(a) => (a.value().to_string(), a.commodity().as_str().to_owned()),
+            None => (String::new(), String::new()),
+        };
         format!(
             "{date}\u{1f}{narration}\u{1f}{value}\u{1f}{commodity}\u{1f}{reference}",
-            value = amount.value(),
-            commodity = amount.commodity().as_str(),
             reference = reference.unwrap_or_default(),
         )
     }
@@ -187,6 +212,7 @@ mod tests {
 
     use crate::AccountId;
     use crate::CommodityCode;
+    use crate::PostingId;
     use crate::SourceRef;
     use crate::SourceRefId;
     use crate::TransactionId;
@@ -205,20 +231,23 @@ mod tests {
     #[test]
     fn builder_populates_all_fields() {
         let tx = TransactionId::new();
+        let posting = PostingId::new();
         let acct = AccountId::new();
         let sr = SourceRef::builder()
             .id(SourceRefId::new())
             .transaction_id(tx.clone())
+            .posting_id(posting.clone())
             .account_id(acct.clone())
             .date(date(2025, 6, 27))
             .narration("ACME")
-            .amount(amount(100))
+            .amount(Some(amount(100)))
             .reference(Some("REF1".to_owned()))
             .occurrence(0)
             .created_at(Timestamp::now())
             .build();
 
         assert_eq!(sr.transaction_id(), &tx);
+        assert_eq!(sr.posting_id(), &posting);
         assert_eq!(sr.account_id(), &acct);
         assert_eq!(sr.narration(), "ACME");
         assert_eq!(sr.reference(), Some("REF1"));
@@ -227,27 +256,78 @@ mod tests {
 
     #[test]
     fn fingerprint_is_stable_and_component_sensitive() {
-        let fp1 = SourceRef::compute_fingerprint(date(2025, 6, 27), "ACME", &amount(100), None);
-        let fp2 = SourceRef::compute_fingerprint(date(2025, 6, 27), "ACME", &amount(100), None);
+        let fp1 =
+            SourceRef::compute_fingerprint(date(2025, 6, 27), "ACME", Some(&amount(100)), None);
+        let fp2 =
+            SourceRef::compute_fingerprint(date(2025, 6, 27), "ACME", Some(&amount(100)), None);
         assert_eq!(fp1, fp2, "same components hash identically");
 
-        let fp3 = SourceRef::compute_fingerprint(date(2025, 6, 27), "ACME", &amount(101), None);
+        let fp3 =
+            SourceRef::compute_fingerprint(date(2025, 6, 27), "ACME", Some(&amount(101)), None);
         assert_ne!(fp1, fp3, "differing amount yields a different fingerprint");
     }
 
     #[test]
     fn absent_and_empty_reference_are_equal() {
-        let none = SourceRef::compute_fingerprint(date(2025, 6, 27), "X", &amount(1), None);
-        let empty = SourceRef::compute_fingerprint(date(2025, 6, 27), "X", &amount(1), Some(""));
+        let none = SourceRef::compute_fingerprint(date(2025, 6, 27), "X", Some(&amount(1)), None);
+        let empty =
+            SourceRef::compute_fingerprint(date(2025, 6, 27), "X", Some(&amount(1)), Some(""));
         assert_eq!(none, empty, "absent reference renders same as empty string");
     }
 
     #[test]
     fn distinct_reference_disambiguates_identical_rows() {
-        let a =
-            SourceRef::compute_fingerprint(date(2025, 6, 27), "COFFEE", &amount(5), Some("txid-a"));
-        let b =
-            SourceRef::compute_fingerprint(date(2025, 6, 27), "COFFEE", &amount(5), Some("txid-b"));
+        let a = SourceRef::compute_fingerprint(
+            date(2025, 6, 27),
+            "COFFEE",
+            Some(&amount(5)),
+            Some("txid-a"),
+        );
+        let b = SourceRef::compute_fingerprint(
+            date(2025, 6, 27),
+            "COFFEE",
+            Some(&amount(5)),
+            Some("txid-b"),
+        );
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn an_absent_amount_fingerprints_as_an_empty_component() {
+        let elided = SourceRef::compute_fingerprint(date(2025, 6, 27), "SPLIT", None, None);
+        let concrete =
+            SourceRef::compute_fingerprint(date(2025, 6, 27), "SPLIT", Some(&amount(100)), None);
+        assert_ne!(
+            elided, concrete,
+            "an elided leg must not collide with a concrete one"
+        );
+        assert!(
+            elided.contains("\u{1f}\u{1f}"),
+            "the absent amount renders as empty components: {elided}"
+        );
+    }
+
+    #[test]
+    fn builder_records_the_posting_id() {
+        let posting = PostingId::new();
+        let sr = SourceRef::builder()
+            .id(SourceRefId::new())
+            .transaction_id(TransactionId::new())
+            .posting_id(posting.clone())
+            .account_id(AccountId::new())
+            .date(date(2025, 6, 27))
+            .narration("ACME")
+            .amount(Some(amount(100)))
+            .reference(None)
+            .occurrence(0)
+            .created_at(Timestamp::now())
+            .build();
+
+        assert_eq!(
+            sr.posting_id(),
+            &posting,
+            "provenance points at a specific leg, not just the transaction"
+        );
+        assert_eq!(sr.amount(), Some(&amount(100)));
     }
 }
