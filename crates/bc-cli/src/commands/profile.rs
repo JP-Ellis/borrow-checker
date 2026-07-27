@@ -207,21 +207,45 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 /// * `ctx` - The application context, holding the importer registry.
 /// * `importer` - The importer name supplied on the command line.
 fn warn_unknown_importer(ctx: &AppContext, importer: &str) {
-    if ctx.importers.names().any(|n| n == importer) {
-        return;
+    if let Some(warning) = unknown_importer_warning(ctx.importers.names(), importer) {
+        #[expect(clippy::print_stderr, reason = "user-visible validation warning")]
+        {
+            eprintln!("{warning}");
+        }
+    }
+}
+
+/// Builds the unrecognised-importer warning, or `None` if the name is installed.
+///
+/// Split from [`warn_unknown_importer`] so both branches are testable: the
+/// integration harness runs against an empty plugin directory, so its registry
+/// never contains a name to match and the installed case is unreachable there.
+///
+/// # Arguments
+///
+/// * `installed` - The names of the installed importers, in registry order.
+/// * `importer` - The importer name supplied on the command line.
+///
+/// # Returns
+///
+/// `Some(warning)` if no installed importer matches, or `None` if one does.
+fn unknown_importer_warning<'a>(
+    installed: impl Iterator<Item = &'a str>,
+    importer: &str,
+) -> Option<String> {
+    let names: Vec<&str> = installed.collect();
+    if names.contains(&importer) {
+        return None;
     }
 
-    let installed: Vec<&str> = ctx.importers.names().collect();
-    let list = if installed.is_empty() {
+    let list = if names.is_empty() {
         "none".to_owned()
     } else {
-        installed.join(", ")
+        names.join(", ")
     };
-
-    #[expect(clippy::print_stderr, reason = "user-visible validation warning")]
-    {
-        eprintln!("warning: no installed importer named '{importer}' (installed: {list})");
-    }
+    Some(format!(
+        "warning: no installed importer named '{importer}' (installed: {list})"
+    ))
 }
 
 /// Creates an import profile from a config file.
@@ -255,7 +279,7 @@ async fn create(ctx: &AppContext, name: String, importer: String, config: String
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        println!("Created import profile '{name}' ({importer}): {id}");
+        println!("Created import profile '{name}' ({importer}).");
     }
     Ok(())
 }
@@ -264,7 +288,10 @@ async fn create(ctx: &AppContext, name: String, importer: String, config: String
 ///
 /// `created_at` is rendered in full RFC 3339 form rather than a friendlier
 /// date so that the integration harness's `[TIMESTAMP]` filter redacts it and
-/// snapshots stay stable across runs.
+/// snapshots stay stable across runs. It is truncated to whole seconds: jiff
+/// trims trailing zeros from the fractional part, so an untruncated timestamp
+/// varies in width between runs and the table sizes its columns to whatever
+/// width that run happened to produce. `--json` keeps the full precision.
 ///
 /// # Arguments
 ///
@@ -302,7 +329,13 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
 
     let rows: Vec<Vec<String>> = profiles
         .iter()
-        .map(|p| vec![p.name.clone(), p.importer.clone(), p.created_at.to_string()])
+        .map(|p| {
+            vec![
+                p.name.clone(),
+                p.importer.clone(),
+                format!("{:.0}", p.created_at),
+            ]
+        })
         .collect();
     crate::output::print_table(&["NAME", "IMPORTER", "CREATED"], &rows);
     Ok(())
@@ -485,6 +518,39 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn an_installed_importer_produces_no_warning() {
+        let warning = unknown_importer_warning(["ofx", "csv", "ledger"].into_iter(), "csv");
+        assert_eq!(warning, None);
+    }
+
+    #[test]
+    fn an_unknown_importer_lists_the_installed_ones() {
+        let warning = unknown_importer_warning(["ofx", "ledger"].into_iter(), "csv");
+        assert_eq!(
+            warning,
+            Some("warning: no installed importer named 'csv' (installed: ofx, ledger)".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_unknown_importer_with_nothing_installed_says_none() {
+        let warning = unknown_importer_warning(core::iter::empty(), "csv");
+        assert_eq!(
+            warning,
+            Some("warning: no installed importer named 'csv' (installed: none)".to_owned())
+        );
+    }
+
+    #[test]
+    fn importer_matching_is_exact() {
+        let warning = unknown_importer_warning(["csv-extended"].into_iter(), "csv");
+        assert!(
+            warning.is_some(),
+            "a prefix match must not count as installed"
+        );
+    }
 
     #[test]
     fn toml_and_json_configs_produce_the_same_value() {
