@@ -10,12 +10,15 @@ use crate::money::Amount;
 
 crate::define_id!(SourceRefId, "source_ref");
 
-/// A provenance record tying a transaction to the statement row that produced it.
+/// A provenance record tying a single posting (leg) to the statement row that
+/// produced it.
 ///
-/// A source reference is scoped to the [`AccountId`] whose statement the row came
-/// from — the stable, true source — not to the import profile or importer version.
-/// Importers sweeping the whole document hierarchy use the [`Self::fingerprint`] plus
-/// [`Self::occurrence`] to recognise rows they have already imported.
+/// Provenance is per-leg, not per-transaction: a multi-account source transaction
+/// yields one reference per posting, each scoped to the [`AccountId`] whose
+/// statement that leg's row came from — the stable, true source — not to the
+/// import profile or importer version. Importers sweeping the whole document
+/// hierarchy use the [`Self::fingerprint`] plus [`Self::occurrence`] to recognise
+/// rows they have already imported.
 ///
 /// Re-exported from the crate root as [`crate::SourceRef`].
 ///
@@ -59,7 +62,8 @@ pub struct SourceRef {
     posting_id: PostingId,
 
     /// The account whose statement this row came from (scope of the fingerprint).
-    /// Must be one of the transaction's posting accounts.
+    /// Must be the account of [`Self::posting_id`] specifically, not merely one of
+    /// the transaction's other posting accounts.
     account_id: AccountId,
 
     /// Value date of the statement row.
