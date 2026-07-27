@@ -247,6 +247,15 @@ fn profile_remove_deletes_the_profile() {
 }
 
 #[test]
+fn profile_remove_json_output() {
+    let ctx = ctx_with_bank_profile();
+
+    let mut cmd = ctx.command();
+    cmd.args(["profile", "remove", "bank", "--json"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
 fn profile_remove_unknown_name_errors() {
     let ctx = TestContext::new();
     let mut cmd = ctx.command();
