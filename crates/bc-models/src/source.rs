@@ -34,7 +34,7 @@ crate::define_id!(SourceRefId, "source_ref");
 /// let sr = SourceRef::builder()
 ///     .id(SourceRefId::new())
 ///     .transaction_id(TransactionId::new())
-///     .posting_id(PostingId::new())
+///     .posting_id(Some(PostingId::new()))
 ///     .account_id(AccountId::new())
 ///     .date(date(2025, 6, 27))
 ///     .narration("ACME")
@@ -55,13 +55,20 @@ pub struct SourceRef {
     /// The transaction this statement row produced.
     transaction_id: TransactionId,
 
-    /// The specific posting this statement leg produced.
+    /// The specific posting this statement leg produced, or `None` once that
+    /// posting has been deleted.
     ///
     /// Provenance is per-leg: a multi-account source transaction yields one
     /// reference per posting, each pointing at the leg it came from. This is
     /// what lets a later import pass attach a leg that was missing from an
     /// earlier one.
-    posting_id: PostingId,
+    ///
+    /// A reference outlives its posting. `None` is a tombstone: the source
+    /// document contained this leg and the user has since removed it. The
+    /// reference remains history, keeps its occurrence slot, and so stops a
+    /// re-import recreating the leg.
+    #[builder(required, default = None)]
+    posting_id: Option<PostingId>,
 
     /// The account whose statement this row came from (scope of the fingerprint).
     /// Must be the account of [`Self::posting_id`] specifically, not merely one of
@@ -115,11 +122,12 @@ impl SourceRef {
         &self.transaction_id
     }
 
-    /// Returns the posting this reference points at.
+    /// Returns the posting this reference points at, or `None` if that posting
+    /// has been deleted.
     #[inline]
     #[must_use]
-    pub fn posting_id(&self) -> &PostingId {
-        &self.posting_id
+    pub fn posting_id(&self) -> Option<&PostingId> {
+        self.posting_id.as_ref()
     }
 
     /// Returns the account whose statement produced this row.
@@ -255,7 +263,7 @@ mod tests {
         let sr = SourceRef::builder()
             .id(SourceRefId::new())
             .transaction_id(tx.clone())
-            .posting_id(posting.clone())
+            .posting_id(Some(posting.clone()))
             .account_id(acct.clone())
             .date(date(2025, 6, 27))
             .narration("ACME")
@@ -267,7 +275,7 @@ mod tests {
             .build();
 
         assert_eq!(sr.transaction_id(), &tx);
-        assert_eq!(sr.posting_id(), &posting);
+        assert_eq!(sr.posting_id(), Some(&posting));
         assert_eq!(sr.account_id(), &acct);
         assert_eq!(sr.narration(), "ACME");
         assert_eq!(sr.reference(), Some("REF1"));
@@ -334,7 +342,7 @@ mod tests {
         let sr = SourceRef::builder()
             .id(SourceRefId::new())
             .transaction_id(TransactionId::new())
-            .posting_id(posting.clone())
+            .posting_id(Some(posting.clone()))
             .account_id(AccountId::new())
             .date(date(2025, 6, 27))
             .narration("ACME")
@@ -347,7 +355,7 @@ mod tests {
 
         assert_eq!(
             sr.posting_id(),
-            &posting,
+            Some(&posting),
             "provenance points at a specific leg, not just the transaction"
         );
         assert_eq!(sr.amount(), Some(&amount(100)));
@@ -359,7 +367,7 @@ mod tests {
         let sr = SourceRef::builder()
             .id(SourceRefId::new())
             .transaction_id(TransactionId::new())
-            .posting_id(PostingId::new())
+            .posting_id(Some(PostingId::new()))
             .account_id(AccountId::new())
             .date(date(2025, 6, 27))
             .narration("ACME")

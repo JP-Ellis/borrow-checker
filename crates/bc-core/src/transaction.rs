@@ -500,92 +500,61 @@ struct PostingRow {
     spread_until: Option<String>,
 }
 
-/// Raw `transaction_sources` row snapshot, mirroring the `SELECT` column list
-/// in [`Service::apply_transaction_projection`]'s pre-delete snapshot.
-/// `transaction_id` is omitted since it is constant across the snapshot.
-type SourceSnapshotRow = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    i64,
-    String,
-    String,
-    Option<String>,
-);
+/// One `transaction_sources` row's identity and the posting it named, captured
+/// before [`Service::apply_transaction_projection`] replaces the posting set.
+///
+/// The second element is already `None` for a row tombstoned by an earlier edit.
+type SourcePostingLink = (String, Option<String>);
 
-/// Reinserts snapshotted `transaction_sources` rows whose posting survived a
-/// posting-set replace.
+/// Re-points snapshotted `transaction_sources` rows at the postings that
+/// survived a posting-set replace.
 ///
 /// [`Service::apply_transaction_projection`] fully replaces a transaction's
-/// postings, and `transaction_sources.posting_id` cascades on that delete, so
-/// this restores provenance for legs that kept their posting id across the
-/// edit. A leg the edit genuinely removed has no matching id among
-/// `new_postings`, so its source reference is correctly left deleted.
+/// postings. `transaction_sources.posting_id` is `ON DELETE SET NULL`, so that
+/// replace clears every reference's posting link without destroying the
+/// reference itself; this restores the link for each leg that kept its posting
+/// id across the edit.
+///
+/// A leg the edit genuinely removed has no matching id among `new_postings`, so
+/// its reference is left with a `NULL` `posting_id` — a tombstone. That is
+/// deliberate: the reference is history of what the source document contained,
+/// and it keeps its `(account_id, fingerprint, occurrence)` slot so re-importing
+/// the same document does not recreate a leg the user chose to delete.
+///
+/// A tombstone also keeps its **original** `account_id`, even where the edit
+/// recategorised the posting onto a different account. The reference describes
+/// the source document, not the edited state, so stored provenance can name an
+/// account that [`crate::SourceService::attach_in_tx`] would reject on a fresh
+/// write.
 ///
 /// # Arguments
 ///
 /// * `db_tx` - The open SQLite transaction the caller is already writing within.
-/// * `tx_id_str` - The owning transaction's ID, pre-rendered as a string.
 /// * `new_postings` - The postings just reinserted by the caller.
-/// * `snapshot` - The `transaction_sources` rows captured before the posting delete.
+/// * `snapshot` - The reference-to-posting links captured before the delete.
 ///
 /// # Errors
 ///
 /// Returns [`BcError`] on database write failure.
-async fn restore_surviving_sources(
+async fn relink_surviving_sources(
     db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    tx_id_str: &str,
     new_postings: &[Posting],
-    snapshot: Vec<SourceSnapshotRow>,
+    snapshot: Vec<SourcePostingLink>,
 ) -> BcResult<()> {
     let surviving_posting_ids: std::collections::HashSet<String> = new_postings
         .iter()
         .map(|posting| posting.id().to_string())
         .collect();
-    for (
-        id,
-        posting_id,
-        account_id,
-        date,
-        narration,
-        amount,
-        commodity,
-        reference,
-        occurrence,
-        fingerprint,
-        created_at,
-        import_batch_id,
-    ) in snapshot
-    {
-        if !surviving_posting_ids.contains(posting_id.as_str()) {
+    for (id, snapshotted) in snapshot {
+        let Some(surviving) = snapshotted.filter(|p| surviving_posting_ids.contains(p.as_str()))
+        else {
             continue;
-        }
-        sqlx::query(
-            "INSERT INTO transaction_sources \
-             (id, transaction_id, posting_id, account_id, date, narration, amount, \
-              commodity, reference, occurrence, fingerprint, created_at, import_batch_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(id)
-        .bind(tx_id_str)
-        .bind(posting_id)
-        .bind(account_id)
-        .bind(date)
-        .bind(narration)
-        .bind(amount)
-        .bind(commodity)
-        .bind(reference)
-        .bind(occurrence)
-        .bind(fingerprint)
-        .bind(created_at)
-        .bind(import_batch_id)
-        .execute(&mut **db_tx)
-        .await?;
+        };
+        sqlx::query("UPDATE transaction_sources SET posting_id = ? WHERE id = ?")
+            .bind(surviving)
+            .bind(id)
+            .execute(&mut **db_tx)
+            .await?;
     }
     Ok(())
 }
@@ -1869,13 +1838,11 @@ impl Service {
         .execute(&mut **db_tx)
         .await?;
 
-        // `transaction_sources.posting_id` cascades on `postings` deletion, so the
-        // DELETE below silently destroys import provenance for every leg unless we
-        // snapshot it first and restore whatever legs survive the replace.
-        let source_snapshot: Vec<SourceSnapshotRow> = sqlx::query_as(
-            "SELECT id, posting_id, account_id, date, narration, amount, commodity, \
-                    reference, occurrence, fingerprint, created_at, import_batch_id \
-             FROM transaction_sources WHERE transaction_id = ?",
+        // `transaction_sources.posting_id` is `ON DELETE SET NULL`, so the DELETE
+        // below clears every reference's posting link. Snapshot the links first so
+        // the legs that survive the replace can be re-pointed at their postings.
+        let source_snapshot: Vec<SourcePostingLink> = sqlx::query_as(
+            "SELECT id, posting_id FROM transaction_sources WHERE transaction_id = ?",
         )
         .bind(&tx_id_str)
         .fetch_all(&mut **db_tx)
@@ -1909,52 +1876,14 @@ impl Service {
             .await?;
         }
 
-        for (position, posting) in updated.postings().iter().enumerate() {
-            let (cost_value, cost_commodity, cost_date, cost_label) =
-                if let Some(cost) = posting.cost() {
-                    (
-                        Some(cost.total().value().to_string()),
-                        Some(cost.total().commodity().as_str().to_owned()),
-                        cost.date().map(|d| d.to_string()),
-                        cost.label().map(str::to_owned),
-                    )
-                } else {
-                    (None, None, None, None)
-                };
-
-            sqlx::query(
-                "INSERT INTO postings \
-                 (id, transaction_id, account_id, amount, commodity, note, position, \
-                  cost_total_value, cost_total_commodity, cost_date, cost_label, \
-                  spread_from, spread_until) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(posting.id().to_string()) //  1. id
-            .bind(&tx_id_str) //  2. transaction_id
-            .bind(posting.account_id().to_string()) //  3. account_id
-            .bind(posting.amount().map(|a| a.value().to_string())) //  4. amount
-            .bind(posting.amount().map(|a| a.commodity().as_str().to_owned())) //  5. commodity
-            .bind(posting.note()) //  6. note
-            .bind(
-                i64::try_from(position)
-                    .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?,
-            ) //  7. position
-            .bind(cost_value) //  8. cost_total_value
-            .bind(cost_commodity) //  9. cost_total_commodity
-            .bind(cost_date) // 10. cost_date
-            .bind(cost_label) // 11. cost_label
-            .bind(posting.spread_from().map(|d| d.to_string())) // 12. spread_from
-            .bind(posting.spread_until().map(|d| d.to_string())) // 13. spread_until
-            .execute(&mut **db_tx)
-            .await?;
-
+        for (index, posting) in updated.postings().iter().enumerate() {
+            let position = i64::try_from(index)
+                .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?;
+            insert_posting_row(db_tx, updated.id(), posting, position).await?;
             crate::tag::insert_posting_tags(&mut *db_tx, posting.id(), posting.tag_ids()).await?;
         }
 
-        // Restore provenance for legs that survived the replace (same posting id).
-        // A leg the edit genuinely removed has no matching id among the reinserted
-        // postings, so its source reference is correctly left deleted.
-        restore_surviving_sources(db_tx, &tx_id_str, updated.postings(), source_snapshot).await?;
+        relink_surviving_sources(db_tx, updated.postings(), source_snapshot).await?;
 
         Ok(())
     }
@@ -3740,7 +3669,7 @@ mod tests {
         let source = bc_models::SourceRef::builder()
             .id(bc_models::SourceRefId::new())
             .transaction_id(id.clone())
-            .posting_id(posting_a.clone())
+            .posting_id(Some(posting_a.clone()))
             .account_id(acc_a.clone())
             .date(date(2026, 1, 10))
             .narration("COFFEE")
@@ -3773,12 +3702,246 @@ mod tests {
             "editing a transaction must not destroy its import provenance"
         );
         let restored = listed.first().expect("one source ref");
-        assert_eq!(restored.posting_id(), &posting_a);
+        assert_eq!(restored.posting_id(), Some(&posting_a));
         assert_eq!(
             restored.import_batch_id(),
             Some(&batch_id),
             "the snapshot/restore path must carry import_batch_id, not just the \
              other columns"
+        );
+    }
+
+    /// An imported-looking two-leg transaction with provenance on its first leg.
+    ///
+    /// Returns the stored transaction, the posting id of the leg carrying
+    /// provenance, the two accounts, and the batch that "imported" it.
+    async fn imported_two_legger(
+        pool: &sqlx::SqlitePool,
+    ) -> (
+        Transaction,
+        PostingId,
+        AccountId,
+        AccountId,
+        bc_models::ImportBatchId,
+    ) {
+        let acct_svc = crate::AccountService::new(pool.clone());
+        let acc_a = acct_svc
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account A");
+        let acc_b = acct_svc
+            .create()
+            .name("Expenses")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account B");
+
+        let posting_a = PostingId::new();
+        let original = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2026, 1, 10))
+            .description("COFFEE")
+            .postings(vec![
+                Posting::builder()
+                    .id(posting_a.clone())
+                    .account_id(acc_a.clone())
+                    .amount(Amount::new(dec!(-5), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_b.clone())
+                    .amount(Amount::new(dec!(5), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        Service::new(pool.clone())
+            .create(original.clone())
+            .await
+            .expect("create");
+
+        let batch_id = crate::ImportBatchService::new(pool.clone())
+            .open(None, "csv")
+            .await
+            .expect("open batch");
+        let source = bc_models::SourceRef::builder()
+            .id(bc_models::SourceRefId::new())
+            .transaction_id(original.id().clone())
+            .posting_id(Some(posting_a.clone()))
+            .account_id(acc_a.clone())
+            .date(date(2026, 1, 10))
+            .narration("COFFEE")
+            .amount(Some(Amount::new(dec!(-5), CommodityCode::new("AUD"))))
+            .occurrence(0)
+            .import_batch_id(Some(batch_id.clone()))
+            .created_at(Timestamp::now())
+            .build();
+        crate::SourceService::new(pool.clone())
+            .attach(&source)
+            .await
+            .expect("attach source");
+
+        (original, posting_a, acc_a, acc_b, batch_id)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn deleting_a_leg_leaves_a_tombstoned_source_ref(pool: sqlx::SqlitePool) {
+        let (original, _posting_a, acc_a, acc_b, batch_id) = imported_two_legger(&pool).await;
+
+        // Drop the leg that carries provenance, keeping only its counter-leg.
+        let kept: Vec<Posting> = original
+            .postings()
+            .iter()
+            .filter(|posting| *posting.account_id() == acc_b)
+            .cloned()
+            .collect();
+        let updated = Transaction::builder()
+            .id(original.id().clone())
+            .date(original.date())
+            .description(original.description())
+            .postings(kept)
+            .reconciliation(original.reconciliation())
+            .created_at(*original.created_at())
+            .build();
+        Service::new(pool.clone())
+            .edit(updated)
+            .await
+            .expect("edit should succeed");
+
+        let row: (
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            i64,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT posting_id, account_id, narration, amount, occurrence, import_batch_id \
+                 FROM transaction_sources WHERE transaction_id = ?",
+        )
+        .bind(original.id().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("the reference survives the deletion of its leg");
+
+        assert_eq!(
+            row.0, None,
+            "the reference is tombstoned, not deleted: it records a leg the \
+             document contained and the user removed"
+        );
+        assert_eq!(row.1, acc_a.to_string(), "every other column is intact");
+        assert_eq!(row.2, "COFFEE");
+        assert_eq!(row.3, Some("-5".to_owned()));
+        assert_eq!(row.4, 0_i64);
+        assert_eq!(row.5, Some(batch_id.to_string()));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn modifying_a_leg_keeps_its_source_ref_linked(pool: sqlx::SqlitePool) {
+        let (original, posting_a, acc_a, _acc_b, _batch_id) = imported_two_legger(&pool).await;
+
+        // Change the leg's amount while keeping its posting id — a modification,
+        // not a deletion.
+        let postings: Vec<Posting> = original
+            .postings()
+            .iter()
+            .map(|posting| {
+                if posting.id() == &posting_a {
+                    Posting::builder()
+                        .id(posting_a.clone())
+                        .account_id(acc_a.clone())
+                        .amount(Amount::new(dec!(-7), CommodityCode::new("AUD")))
+                        .build()
+                } else {
+                    posting.clone()
+                }
+            })
+            .collect();
+        let updated = Transaction::builder()
+            .id(original.id().clone())
+            .date(original.date())
+            .description(original.description())
+            .postings(postings)
+            .reconciliation(original.reconciliation())
+            .created_at(*original.created_at())
+            .build();
+        Service::new(pool.clone())
+            .edit(updated)
+            .await
+            .expect("edit should succeed");
+
+        let listed = crate::SourceService::new(pool.clone())
+            .list_for_transaction(original.id())
+            .await
+            .expect("list sources after edit");
+        let restored = listed.first().expect("one source ref");
+        assert_eq!(
+            restored.posting_id(),
+            Some(&posting_a),
+            "modifying a leg leaves its reference pointing at it"
+        );
+        assert_eq!(
+            restored.amount(),
+            Some(&Amount::new(dec!(-5), CommodityCode::new("AUD"))),
+            "the reference records what the source document said, not the edit"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_recategorised_leg_keeps_its_original_account_on_its_ref(pool: sqlx::SqlitePool) {
+        let (original, posting_a, acc_a, acc_b, _batch_id) = imported_two_legger(&pool).await;
+
+        // Move the leg onto the other account, keeping its posting id.
+        let postings: Vec<Posting> = original
+            .postings()
+            .iter()
+            .map(|posting| {
+                if posting.id() == &posting_a {
+                    Posting::builder()
+                        .id(posting_a.clone())
+                        .account_id(acc_b.clone())
+                        .amount(Amount::new(dec!(-5), CommodityCode::new("AUD")))
+                        .build()
+                } else {
+                    posting.clone()
+                }
+            })
+            .collect();
+        let updated = Transaction::builder()
+            .id(original.id().clone())
+            .date(original.date())
+            .description(original.description())
+            .postings(postings)
+            .reconciliation(original.reconciliation())
+            .created_at(*original.created_at())
+            .build();
+        Service::new(pool.clone())
+            .edit(updated)
+            .await
+            .expect("edit should succeed");
+
+        let listed = crate::SourceService::new(pool.clone())
+            .list_for_transaction(original.id())
+            .await
+            .expect("list sources after edit");
+        let restored = listed.first().expect("one source ref");
+        assert_eq!(
+            restored.posting_id(),
+            Some(&posting_a),
+            "the leg survives, so its reference stays linked"
+        );
+        assert_eq!(
+            restored.account_id(),
+            &acc_a,
+            "the reference names the account whose statement produced the row, \
+             so recategorising the posting does not rewrite it"
         );
     }
 

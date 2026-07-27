@@ -834,7 +834,7 @@ mod db_tests {
         let source = SourceRef::builder()
             .id(SourceRefId::new())
             .transaction_id(tx_id.clone())
-            .posting_id(posting_id)
+            .posting_id(Some(posting_id))
             .account_id(acct.clone())
             .date(when)
             .narration("TRANSFER")
