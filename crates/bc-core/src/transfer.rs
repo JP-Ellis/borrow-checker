@@ -929,12 +929,14 @@ mod db_tests {
         // Re-importing the Mortgage statement row finds its (moved) source ref and skips.
         let txs = crate::TransactionService::new(pool.clone());
         let srcs = crate::SourceService::new(pool.clone());
+        let accts = crate::AccountService::new(pool.clone());
+        let batches = crate::ImportBatchService::new(pool.clone());
         let raw = RawTransaction::builder()
             .date(date(2025, 6, 27))
             .description("TRANSFER")
             .postings(vec![
                 RawPosting::builder()
-                    .account("Assets:Mortgage")
+                    .account("Mortgage")
                     .maybe_amount(Some(Amount::new(
                         Decimal::from(100_i64),
                         CommodityCode::new("AUD"),
@@ -942,10 +944,13 @@ mod db_tests {
                     .build(),
             ])
             .build();
-        let imported = crate::execute_import(&txs, &srcs, &mortgage, &[raw])
+        let outcome = crate::execute_import(&txs, &srcs, &accts, &batches, None, "test", &[raw])
             .await
             .expect("reimport");
-        assert_eq!(imported, 0, "the moved ref still dedups the mortgage leg");
+        assert_eq!(
+            outcome.new_transactions, 0,
+            "the moved ref still dedups the mortgage leg"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]

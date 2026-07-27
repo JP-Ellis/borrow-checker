@@ -730,13 +730,6 @@ impl Service {
     /// Returns [`BcError::BadData`] if appending would leave two or more elided
     /// postings, since the residual would then be ambiguous.
     /// Returns [`BcError`] on database insert failure.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "consumed by the rewritten import executor landing in a later task on this branch"
-        )
-    )]
     pub(crate) async fn add_postings_in_tx(
         &self,
         db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
