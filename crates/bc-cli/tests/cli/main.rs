@@ -13,6 +13,7 @@ mod backup;
 mod budget;
 mod export;
 mod import;
+mod profile;
 mod report;
 mod restore;
 mod transaction;

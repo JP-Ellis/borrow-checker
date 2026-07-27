@@ -1,0 +1,14 @@
+---
+source: crates/bc-cli/tests/cli/profile.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "id": "[PROFILE_ID]",
+  "importer": "csv",
+  "name": "bank"
+}
+----- stderr -----
+warning: no installed importer named 'csv' (installed: none)
