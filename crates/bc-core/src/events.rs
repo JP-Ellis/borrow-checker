@@ -334,14 +334,16 @@ pub enum Event {
         id: SourceRefId,
         /// The transaction this row produced.
         transaction_id: TransactionId,
+        /// The specific posting this statement leg produced.
+        posting_id: PostingId,
         /// The account whose statement produced this row.
         account_id: AccountId,
         /// Value date of the row.
         date: jiff::civil::Date,
         /// Raw imported narration.
         narration: String,
-        /// Statement amount.
-        amount: Amount,
+        /// Amount as recorded on the statement, or `None` for an elided leg.
+        amount: Option<Amount>,
         /// Institution reference, if any.
         reference: Option<String>,
         /// Occurrence ordinal among identical fingerprints.
@@ -1104,10 +1106,14 @@ mod tests {
         let event = Event::TransactionSourceAttached {
             id: SourceRefId::new(),
             transaction_id: tx.clone(),
+            posting_id: PostingId::new(),
             account_id: AccountId::new(),
             date: date(2025, 6, 27),
             narration: "ACME".to_owned(),
-            amount: Amount::new(Decimal::from(100_i32), CommodityCode::new("AUD")),
+            amount: Some(Amount::new(
+                Decimal::from(100_i32),
+                CommodityCode::new("AUD"),
+            )),
             reference: None,
             occurrence: 0,
         };

@@ -632,10 +632,14 @@ mod tests {
         let event = crate::Event::TransactionSourceAttached {
             id: bc_models::SourceRefId::new(),
             transaction_id: bc_models::TransactionId::new(),
+            posting_id: bc_models::PostingId::new(),
             account_id: account.clone(),
             date: jiff::civil::date(2025, 6, 27),
             narration: "ACME".to_owned(),
-            amount: bc_models::Amount::new(rust_decimal::Decimal::from(100_i32), "AUD"),
+            amount: Some(bc_models::Amount::new(
+                rust_decimal::Decimal::from(100_i32),
+                "AUD",
+            )),
             reference: None,
             occurrence: 0,
         };

@@ -325,18 +325,20 @@ CREATE INDEX idx_budget_revisions_budget ON budget_revisions (budget_id, effecti
 
 -- MARK: Transaction sources
 
--- Import provenance: one row per statement row that produced a transaction.
--- Scoped to the owning account; the UNIQUE constraint is the idempotency key.
--- Both foreign keys cascade on delete: removing a transaction or an account
--- takes its source references with it, so no provenance row can dangle.
+-- Import provenance: one row per statement leg (posting) that produced a
+-- transaction. Scoped to the owning account; the UNIQUE constraint is the
+-- idempotency key. All foreign keys cascade on delete: removing a
+-- transaction, posting, or account takes its source references with it, so
+-- no provenance row can dangle.
 CREATE TABLE transaction_sources (
     id             TEXT    NOT NULL PRIMARY KEY,
     transaction_id TEXT    NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    posting_id     TEXT    NOT NULL REFERENCES postings(id)     ON DELETE CASCADE,
     account_id     TEXT    NOT NULL REFERENCES accounts(id)     ON DELETE CASCADE,
     date           TEXT    NOT NULL, -- YYYY-MM-DD
     narration      TEXT    NOT NULL,
-    amount         TEXT    NOT NULL, -- decimal string
-    commodity      TEXT    NOT NULL, -- CommodityCode (e.g. "AUD")
+    amount         TEXT,             -- decimal string; NULL for an elided leg
+    commodity      TEXT,             -- CommodityCode; NULL for an elided leg
     reference      TEXT,             -- institution txid/reference; NULL if absent
     occurrence     INTEGER NOT NULL, -- 0-based ordinal among identical fingerprints
     fingerprint    TEXT    NOT NULL, -- canonical dedup key
@@ -349,3 +351,6 @@ CREATE INDEX idx_transaction_sources_account_fp
 
 CREATE INDEX idx_transaction_sources_tx
     ON transaction_sources (transaction_id);
+
+CREATE INDEX idx_transaction_sources_posting
+    ON transaction_sources (posting_id);

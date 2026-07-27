@@ -810,13 +810,14 @@ mod db_tests {
     ) -> TransactionId {
         let money = Amount::new(Decimal::from(amount), CommodityCode::new("AUD"));
         let tx_id = TransactionId::new();
+        let posting_id = PostingId::new();
         let tx = Transaction::builder()
             .id(tx_id.clone())
             .date(when)
             .description("TRANSFER")
             .postings(vec![
                 Posting::builder()
-                    .id(PostingId::new())
+                    .id(posting_id.clone())
                     .account_id(acct.clone())
                     .amount(money.clone())
                     .build(),
@@ -833,10 +834,11 @@ mod db_tests {
         let source = SourceRef::builder()
             .id(SourceRefId::new())
             .transaction_id(tx_id.clone())
+            .posting_id(posting_id)
             .account_id(acct.clone())
             .date(when)
             .narration("TRANSFER")
-            .amount(money)
+            .amount(Some(money))
             .occurrence(0)
             .created_at(Timestamp::now())
             .build();
