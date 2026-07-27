@@ -947,6 +947,14 @@ mod db_tests {
         let outcome = crate::execute_import(&txs, &srcs, &accts, &batches, None, "test", &[raw])
             .await
             .expect("reimport");
+        // Without these two, the assertion below would pass just as well if the
+        // account path had failed to resolve and the leg had been silently
+        // skipped — proving nothing about the moved reference.
+        assert!(
+            outcome.unresolved_paths.is_empty(),
+            "the Mortgage path must resolve, or the dedup claim is vacuous"
+        );
+        assert_eq!(outcome.skipped_postings, 0, "the leg reached the matcher");
         assert_eq!(
             outcome.new_transactions, 0,
             "the moved ref still dedups the mortgage leg"
