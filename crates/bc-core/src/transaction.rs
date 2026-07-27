@@ -515,6 +515,7 @@ type SourceSnapshotRow = (
     i64,
     String,
     String,
+    Option<String>,
 );
 
 /// Reinserts snapshotted `transaction_sources` rows whose posting survived a
@@ -558,6 +559,7 @@ async fn restore_surviving_sources(
         occurrence,
         fingerprint,
         created_at,
+        import_batch_id,
     ) in snapshot
     {
         if !surviving_posting_ids.contains(posting_id.as_str()) {
@@ -566,8 +568,8 @@ async fn restore_surviving_sources(
         sqlx::query(
             "INSERT INTO transaction_sources \
              (id, transaction_id, posting_id, account_id, date, narration, amount, \
-              commodity, reference, occurrence, fingerprint, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              commodity, reference, occurrence, fingerprint, created_at, import_batch_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(tx_id_str)
@@ -581,6 +583,7 @@ async fn restore_surviving_sources(
         .bind(occurrence)
         .bind(fingerprint)
         .bind(created_at)
+        .bind(import_batch_id)
         .execute(&mut **db_tx)
         .await?;
     }
@@ -1878,7 +1881,7 @@ impl Service {
         // snapshot it first and restore whatever legs survive the replace.
         let source_snapshot: Vec<SourceSnapshotRow> = sqlx::query_as(
             "SELECT id, posting_id, account_id, date, narration, amount, commodity, \
-                    reference, occurrence, fingerprint, created_at \
+                    reference, occurrence, fingerprint, created_at, import_batch_id \
              FROM transaction_sources WHERE transaction_id = ?",
         )
         .bind(&tx_id_str)
@@ -3739,6 +3742,8 @@ mod tests {
         let id = svc.create(original.clone()).await.expect("create");
 
         let source_svc = crate::SourceService::new(pool.clone());
+        let batch_svc = crate::ImportBatchService::new(pool.clone());
+        let batch_id = batch_svc.open(None, "csv").await.expect("open batch");
         let source = bc_models::SourceRef::builder()
             .id(bc_models::SourceRefId::new())
             .transaction_id(id.clone())
@@ -3748,6 +3753,7 @@ mod tests {
             .narration("COFFEE")
             .amount(Some(Amount::new(dec!(-5), CommodityCode::new("AUD"))))
             .occurrence(0)
+            .import_batch_id(Some(batch_id.clone()))
             .created_at(Timestamp::now())
             .build();
         source_svc.attach(&source).await.expect("attach source");
@@ -3773,9 +3779,13 @@ mod tests {
             1,
             "editing a transaction must not destroy its import provenance"
         );
+        let restored = listed.first().expect("one source ref");
+        assert_eq!(restored.posting_id(), &posting_a);
         assert_eq!(
-            listed.first().expect("one source ref").posting_id(),
-            &posting_a
+            restored.import_batch_id(),
+            Some(&batch_id),
+            "the snapshot/restore path must carry import_batch_id, not just the \
+             other columns"
         );
     }
 

@@ -135,6 +135,7 @@ pub async fn execute_import(
             .narration(raw.description.clone())
             .amount(Some(amount))
             .occurrence(decision.occurrence)
+            .import_batch_id(None)
             .created_at(Timestamp::now())
             .reference(raw.reference.clone())
             .build();

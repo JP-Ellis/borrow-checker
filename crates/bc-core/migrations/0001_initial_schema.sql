@@ -323,6 +323,21 @@ CREATE TABLE budget_revisions (
 );
 CREATE INDEX idx_budget_revisions_budget ON budget_revisions (budget_id, effective_from);
 
+-- MARK: Import batches
+
+-- One row per import run. Provenance only: this records what a run did so a
+-- future batch-scoped discard (#343) has the data it needs. Nothing deletes
+-- through it today.
+CREATE TABLE import_batches (
+    id                TEXT    NOT NULL PRIMARY KEY,
+    profile_id        TEXT    REFERENCES import_profiles(id) ON DELETE SET NULL,
+    importer          TEXT    NOT NULL,
+    started_at        TEXT    NOT NULL,
+    new_transactions  INTEGER NOT NULL DEFAULT 0,
+    attached_postings INTEGER NOT NULL DEFAULT 0,
+    skipped_postings  INTEGER NOT NULL DEFAULT 0
+);
+
 -- MARK: Transaction sources
 
 -- Import provenance: one row per statement leg (posting) that produced a
@@ -343,6 +358,9 @@ CREATE TABLE transaction_sources (
     occurrence     INTEGER NOT NULL, -- 0-based ordinal among identical fingerprints
     fingerprint    TEXT    NOT NULL, -- canonical dedup key
     created_at     TEXT    NOT NULL,
+    -- The import run that wrote this reference. NULL for references attached
+    -- outside an import (SourceService::attach is public API).
+    import_batch_id TEXT REFERENCES import_batches(id) ON DELETE SET NULL,
     UNIQUE (account_id, fingerprint, occurrence)
 );
 
@@ -354,3 +372,6 @@ CREATE INDEX idx_transaction_sources_tx
 
 CREATE INDEX idx_transaction_sources_posting
     ON transaction_sources (posting_id);
+
+CREATE INDEX idx_transaction_sources_batch
+    ON transaction_sources (import_batch_id);
