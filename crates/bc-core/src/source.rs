@@ -54,6 +54,11 @@ pub struct StoredLeg {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostingProvenance {
+    /// The account the document booked this leg against.
+    ///
+    /// The reference's own account, not the posting's. An edit that
+    /// recategorises the posting leaves this as the document stated it.
+    pub account_id: AccountId,
     /// The dedup fingerprint the document determined.
     pub fingerprint: String,
     /// The occurrence ordinal within this posting's `(account, fingerprint)` group.
@@ -283,8 +288,8 @@ impl Service {
         &self,
         transaction_id: &TransactionId,
     ) -> BcResult<HashMap<String, PostingProvenance>> {
-        let rows: Vec<(String, String, i64)> = sqlx::query_as(
-            "SELECT posting_id, fingerprint, occurrence FROM transaction_sources \
+        let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+            "SELECT posting_id, account_id, fingerprint, occurrence FROM transaction_sources \
              WHERE transaction_id = ? AND posting_id IS NOT NULL",
         )
         .bind(transaction_id.to_string())
@@ -292,12 +297,16 @@ impl Service {
         .await?;
 
         let mut map = HashMap::with_capacity(rows.len());
-        for (posting_id, fingerprint, raw_occurrence) in rows {
+        for (posting_id, raw_account, fingerprint, raw_occurrence) in rows {
             let occurrence = u32::try_from(raw_occurrence)
                 .map_err(|_err| crate::BcError::BadData("occurrence exceeds u32".into()))?;
+            let account_id = raw_account
+                .parse::<AccountId>()
+                .map_err(|e: bc_models::IdParseError| crate::BcError::BadData(e.to_string()))?;
             map.insert(
                 posting_id,
                 PostingProvenance {
+                    account_id,
                     fingerprint,
                     occurrence,
                 },
@@ -418,6 +427,9 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
     let date = raw_date
         .parse::<Date>()
         .map_err(|e| crate::BcError::BadData(e.to_string()))?;
+    // Both NULL is an elided leg; both set is a concrete one. A half-populated
+    // pair is malformed, not elided — reading it as elided would silently
+    // recompute a fingerprint that no longer matches the row's stored key.
     let amount = match (raw_amount, commodity) {
         (Some(raw_value), Some(code)) => {
             let value = raw_value
@@ -425,7 +437,12 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
                 .map_err(|e| crate::BcError::BadData(e.to_string()))?;
             Some(Amount::new(value, CommodityCode::new(&code)))
         }
-        _ => None,
+        (None, None) => None,
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(crate::BcError::BadData(
+                "source reference has an amount without a commodity, or the reverse".into(),
+            ));
+        }
     };
     let occurrence = u32::try_from(raw_occurrence)
         .map_err(|_err| crate::BcError::BadData("occurrence exceeds u32".into()))?;
@@ -659,10 +676,9 @@ mod tests {
     async fn attach_rejects_posting_from_a_different_transaction(pool: SqlitePool) {
         let account = make_account(&pool).await;
         let (tx, _posting) = make_tx(&pool, &account).await;
-        // A second, unrelated transaction that also posts to `account` — under the
-        // old account-scoped check this posting id would have been accepted for
-        // `tx` because the account matches; the new check must reject it because
-        // the posting itself belongs to a different transaction.
+        // A second, unrelated transaction that also posts to `account`. Matching
+        // accounts is not enough: the reference names a posting, and that posting
+        // must belong to the reference's own transaction.
         let (_other_tx, other_posting) = make_tx(&pool, &account).await;
         let svc = Service::new(pool.clone());
 

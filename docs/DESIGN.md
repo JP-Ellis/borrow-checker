@@ -342,12 +342,23 @@ Multiple profiles can reference the same importer with different configuration. 
 > the missing accounts are created — attaches the rest to the same
 > transaction rather than creating a duplicate. Before attaching, the run
 > corroborates the candidate: every posting already on it must be explained by
-> a leg of the document transaction being imported, either by an exact
-> `(account, amount)` match or by an elided leg materialising onto a posting
-> that holds exactly the residual this document determines. A candidate that
-> fails to corroborate is left alone and reported as a warning rather than
-> risk grafting a leg onto the wrong transaction. Per-profile loosened
-> fingerprints and transfer-leg merging remain deferred (see #266).
+> a leg of the document transaction being imported, and how it is explained
+> turns on whether it carries provenance. A posting an import wrote is
+> explained **by its reference** — the leg matching the `(account, fingerprint,
+> occurrence)` the reference recorded. Every component comes from the
+> reference rather than the posting, so an edit that corrects an amount or
+> recategorises the leg moves the posting but never its reference, and the
+> document's remaining legs can still arrive. A posting carrying no provenance
+> is one the user wrote, in all likelihood the very leg an earlier pass could
+> not resolve; it is explained **by adoption** — an unresolved leg on its
+> account holding the same amount — and provenance is then recorded against
+> that posting instead of a duplicate being inserted. A candidate with a
+> posting explained neither way belongs to some other document: it is left
+> alone and reported as a warning rather than risk grafting a leg onto the
+> wrong transaction. Matching on references rather than on current amounts is
+> also what keeps corroboration independent of the derived residual.
+> Per-profile loosened fingerprints and transfer-leg merging remain deferred
+> (see #266).
 >
 > A source reference outlives the posting it names. Deleting a leg clears the
 > reference's `posting_id` rather than deleting the reference, leaving a
