@@ -1,4 +1,4 @@
-//! Source reference (import provenance) persistence service and import planner.
+//! Source reference (import provenance) persistence and matching queries.
 
 use std::collections::HashMap;
 
@@ -44,6 +44,20 @@ pub struct StoredLeg {
     /// The transaction this reference belongs to. Still recorded for a
     /// tombstoned reference, whose posting the user has deleted.
     pub transaction_id: TransactionId,
+}
+
+/// The provenance a stored posting carries, as its source document stated it.
+///
+/// Import matching compares these rather than the posting's current amount: a
+/// reference records what the document said, so it is unchanged by a later edit
+/// to the posting it names.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostingProvenance {
+    /// The dedup fingerprint the document determined.
+    pub fingerprint: String,
+    /// The occurrence ordinal within this posting's `(account, fingerprint)` group.
+    pub occurrence: u32,
 }
 
 /// Persists and queries [`SourceRef`] import-provenance records.
@@ -238,6 +252,56 @@ impl Service {
                         transaction_id,
                     });
             }
+        }
+        Ok(map)
+    }
+
+    /// Returns the provenance of each posting of `transaction_id` that has any,
+    /// keyed by posting id.
+    ///
+    /// A posting absent from the map carries no provenance: the user added it by
+    /// hand. That distinction is what lets an import tell a leg it wrote from a
+    /// leg the user wrote, so it can adopt the latter instead of duplicating it.
+    ///
+    /// Tombstoned references are excluded — they name no posting, so they cannot
+    /// describe one.
+    ///
+    /// # Arguments
+    ///
+    /// * `transaction_id` - The transaction whose postings to describe.
+    ///
+    /// # Returns
+    ///
+    /// A map from posting id to the provenance recorded for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on query failure or a malformed stored
+    /// occurrence.
+    #[inline]
+    pub async fn provenance_by_posting(
+        &self,
+        transaction_id: &TransactionId,
+    ) -> BcResult<HashMap<String, PostingProvenance>> {
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT posting_id, fingerprint, occurrence FROM transaction_sources \
+             WHERE transaction_id = ? AND posting_id IS NOT NULL",
+        )
+        .bind(transaction_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut map = HashMap::with_capacity(rows.len());
+        for (posting_id, fingerprint, raw_occurrence) in rows {
+            let occurrence = u32::try_from(raw_occurrence)
+                .map_err(|_err| crate::BcError::BadData("occurrence exceeds u32".into()))?;
+            map.insert(
+                posting_id,
+                PostingProvenance {
+                    fingerprint,
+                    occurrence,
+                },
+            );
         }
         Ok(map)
     }
