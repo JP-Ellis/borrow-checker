@@ -21,6 +21,7 @@ Commands:
   budget             Manage budgets: create, list, archive, status
   tag                Manage tags: create, rename, delete, list
   plugin             Manage plugins (requires Milestone 6)
+  profile            Manage import profiles (create, list, show, edit, remove)
   completions        Generate shell completion scripts
   merge              Merge two transactions (e.g. the two legs of a transfer) into one
   unmerge            Reverse a previous merge, splitting a transaction back into two

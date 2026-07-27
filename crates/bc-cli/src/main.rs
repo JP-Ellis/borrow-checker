@@ -64,6 +64,7 @@ async fn main() {
         Commands::Budget(args) => commands::budget::execute(args, &ctx).await,
         Commands::Tag(args) => commands::tag::execute(args, &ctx).await,
         Commands::Plugin(args) => commands::plugin::execute(args, &ctx).await,
+        Commands::Profile(args) => commands::profile::execute(args, &ctx).await,
         Commands::Completions(args) => commands::completions::execute(args),
         Commands::Merge(args) => commands::transfer::merge(args, &ctx).await,
         Commands::Unmerge(args) => commands::transfer::unmerge(args, &ctx).await,
