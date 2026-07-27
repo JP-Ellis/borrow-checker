@@ -65,8 +65,19 @@ impl Service {
     ///
     /// Returns [`BcError::Serialisation`] if the config cannot be serialised.
     /// Returns [`BcError::Database`] on database insert failure.
+    /// Returns [`BcError::InvalidInput`] if a profile with that name exists.
     #[inline]
     pub async fn create(&self, name: &str, importer: &str, config: Config) -> BcResult<ProfileId> {
+        match self.find_by_name(name).await {
+            Ok(_) => {
+                return Err(BcError::InvalidInput(format!(
+                    "import profile '{name}' already exists"
+                )));
+            }
+            Err(BcError::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+
         let id = ProfileId::new();
         let created_at = Timestamp::now();
         let config_json =
@@ -105,6 +116,7 @@ impl Service {
     /// Returns [`BcError::NotFound`] if no profile with that ID exists.
     /// Returns [`BcError::Serialisation`] if the config cannot be serialised.
     /// Returns [`BcError::Database`] on database update failure.
+    /// Returns [`BcError::InvalidInput`] if a profile with that name exists.
     #[inline]
     pub async fn update(
         &self,
@@ -113,6 +125,16 @@ impl Service {
         importer: &str,
         config: Config,
     ) -> BcResult<()> {
+        match self.find_by_name(name).await {
+            Ok(existing) if existing.id != *id => {
+                return Err(BcError::InvalidInput(format!(
+                    "import profile '{name}' already exists"
+                )));
+            }
+            Ok(_) | Err(BcError::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+
         let config_json =
             serde_json::to_string(config.as_value()).map_err(BcError::Serialisation)?;
 
@@ -161,6 +183,38 @@ impl Service {
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| BcError::NotFound(format!("import profile {id}")))?;
+
+        parse_row(&row.0, row.1, row.2, &row.3, &row.4)
+    }
+
+    /// Finds an import profile by its unique name.
+    ///
+    /// Profile names are unique, so this is the lookup every user-facing
+    /// surface uses — names are what the CLI and GUI expose, not IDs.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The profile name to look up.
+    ///
+    /// # Returns
+    ///
+    /// The [`ImportProfile`] if found.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if no profile with that name exists.
+    /// Returns [`BcError::BadData`] if any stored value cannot be parsed.
+    /// Returns [`BcError::Database`] on database query failure.
+    #[inline]
+    pub async fn find_by_name(&self, name: &str) -> BcResult<ImportProfile> {
+        let row: (String, String, String, String, String) = sqlx::query_as(
+            "SELECT id, name, importer, config, created_at \
+             FROM import_profiles WHERE name = ?",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| BcError::NotFound(format!("import profile '{name}'")))?;
 
         parse_row(&row.0, row.1, row.2, &row.3, &row.4)
     }
@@ -337,5 +391,73 @@ mod tests {
 
         let all = svc.list_all().await.expect("list_all should succeed");
         assert_eq!(all.len(), 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn find_by_name_returns_the_matching_profile(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let id = svc
+            .create("Bank Savings", "csv", Config::default())
+            .await
+            .expect("create should succeed");
+
+        let found = svc
+            .find_by_name("Bank Savings")
+            .await
+            .expect("find_by_name should succeed");
+        assert_eq!(found.id, id);
+        assert_eq!(found.importer, "csv");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn find_by_name_unknown_returns_not_found(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let result = svc.find_by_name("nonexistent").await;
+        assert!(matches!(result, Err(BcError::NotFound(_))));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_with_a_duplicate_name_is_rejected(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        svc.create("bank", "csv", Config::default())
+            .await
+            .expect("first create should succeed");
+
+        let result = svc.create("bank", "ofx", Config::default()).await;
+        assert!(matches!(result, Err(BcError::InvalidInput(_))));
+
+        let all = svc.list_all().await.expect("list_all should succeed");
+        assert_eq!(all.len(), 1, "the rejected create must not insert a row");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn update_onto_another_profiles_name_is_rejected(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        svc.create("bank", "csv", Config::default())
+            .await
+            .expect("create bank");
+        let other = svc
+            .create("cards", "csv", Config::default())
+            .await
+            .expect("create cards");
+
+        let result = svc.update(&other, "bank", "csv", Config::default()).await;
+        assert!(matches!(result, Err(BcError::InvalidInput(_))));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn update_keeping_the_same_name_succeeds(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let id = svc
+            .create("bank", "csv", Config::default())
+            .await
+            .expect("create should succeed");
+
+        svc.update(&id, "bank", "ofx", Config::default())
+            .await
+            .expect("renaming a profile to its own name must be allowed");
+
+        let found = svc.find_by_id(&id).await.expect("find should succeed");
+        assert_eq!(found.importer, "ofx");
     }
 }

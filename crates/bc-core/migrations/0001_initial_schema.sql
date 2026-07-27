@@ -219,7 +219,7 @@ CREATE TABLE meta (
 
 CREATE TABLE import_profiles (
     id         TEXT PRIMARY KEY NOT NULL,
-    name       TEXT NOT NULL,
+    name       TEXT NOT NULL UNIQUE,
     importer   TEXT NOT NULL,
     config     TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
