@@ -1,0 +1,11 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: "report(1, 1, 1, 1, &unresolved).render()"
+---
+Imported 1 transaction, attached 1 posting.
+
+Skipped 1 posting naming 1 unknown account:
+  Expenses:Fun
+Create it and re-run to import those postings.
+
+Skipped 1 posting for other reasons; each was reported as a warning.
