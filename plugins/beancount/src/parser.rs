@@ -438,6 +438,22 @@ mod tests {
     }
 
     #[test]
+    fn transaction_line_number_is_the_header_line_not_line_one() {
+        // A comment and a blank line precede the transaction, so the header
+        // sits on line 3. This catches both an off-by-one and a bug that
+        // anchors the count to the wrong line (e.g. the first posting).
+        let input = "; comment\n\n2025-01-15 * \"Woolworths\" \"Groceries\"\n  Expenses:Food   50.00 AUD\n  Assets:Bank  -50.00 AUD\n";
+        let directives = parse(input).expect("parse");
+        let Directive::Transaction(tx) = directives.first().expect("directive") else {
+            panic!("expected Transaction directive")
+        };
+        assert_eq!(
+            tx.line, 3,
+            "header is on line 3, not the first posting line"
+        );
+    }
+
+    #[test]
     fn parse_date_rejects_invalid_separators() {
         let mut bad = "2025X01Y15";
         assert!(date(&mut bad).is_err(), "non-hyphen separators should fail");
