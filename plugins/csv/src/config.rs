@@ -1,5 +1,134 @@
 //! Configuration types for the CSV importer.
 
+/// How a column is addressed within a CSV row.
+///
+/// Deserializes from either a bare JSON string (matched case-insensitively
+/// against the header row) or a bare non-negative JSON integer (a zero-based
+/// physical position). Both forms are accepted wherever a column is named:
+///
+/// ```json
+/// { "date_column": "Date" }
+/// { "date_column": 0 }
+/// ```
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColumnRef {
+    /// Matched case-insensitively against the header row.
+    Name(String),
+    /// Zero-based physical position within the row.
+    Index(usize),
+}
+
+impl ColumnRef {
+    /// Returns the column name when this reference is name-based.
+    ///
+    /// # Returns
+    ///
+    /// `Some(name)` for [`ColumnRef::Name`], `None` for [`ColumnRef::Index`].
+    #[must_use]
+    #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "additive only; wired into Config by a later task in this effort"
+        )
+    )]
+    pub fn as_name(&self) -> Option<&str> {
+        match *self {
+            Self::Name(ref name) => Some(name.as_str()),
+            Self::Index(_) => None,
+        }
+    }
+
+    /// Returns a human-readable description for use in error messages.
+    ///
+    /// # Returns
+    ///
+    /// `'Date'` for a name reference, `column 3` for an index reference.
+    #[must_use]
+    #[inline]
+    #[expect(
+        dead_code,
+        reason = "additive only; used for error messages by a later task in this effort"
+    )]
+    pub fn describe(&self) -> String {
+        match *self {
+            Self::Name(ref name) => format!("'{name}'"),
+            Self::Index(index) => format!("column {index}"),
+        }
+    }
+}
+
+impl serde::Serialize for ColumnRef {
+    #[inline]
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match *self {
+            Self::Name(ref name) => serializer.serialize_str(name),
+            Self::Index(index) => {
+                let as_u64 = u64::try_from(index).map_err(|_| {
+                    serde::ser::Error::custom(format!("column index {index} exceeds u64"))
+                })?;
+                serializer.serialize_u64(as_u64)
+            }
+        }
+    }
+}
+
+/// Serde visitor accepting either a column name or a zero-based column index.
+struct ColumnRefVisitor;
+
+impl serde::de::Visitor<'_> for ColumnRefVisitor {
+    type Value = ColumnRef;
+
+    fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("a column name string, or a non-negative zero-based column index")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(ColumnRef::Name(value.to_owned()))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        usize::try_from(value)
+            .map(ColumnRef::Index)
+            .map_err(|_| E::custom(format!("column index {value} is too large")))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        if value < 0 {
+            return Err(E::custom(format!(
+                "column index {value} must not be negative; indices are zero-based"
+            )));
+        }
+        usize::try_from(value)
+            .map(ColumnRef::Index)
+            .map_err(|_| E::custom(format!("column index {value} is too large")))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ColumnRef {
+    #[inline]
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(ColumnRefVisitor)
+    }
+}
+
 /// Describes how many lines of preamble metadata precede the CSV header row.
 ///
 /// Many bank CSV exports include metadata rows before the actual column headers.
@@ -215,6 +344,60 @@ mod tests {
         let cfg = Config::default();
         let cols = cfg.required_column_names();
         assert_eq!(cols, vec!["Date", "Amount"]);
+    }
+
+    #[test]
+    fn column_ref_deserializes_string_as_name() {
+        let r: ColumnRef = serde_json::from_str(r#""Date""#).expect("string is a valid ColumnRef");
+        assert_eq!(r, ColumnRef::Name("Date".to_owned()));
+    }
+
+    #[test]
+    fn column_ref_deserializes_integer_as_index() {
+        let r: ColumnRef = serde_json::from_str("3").expect("integer is a valid ColumnRef");
+        assert_eq!(r, ColumnRef::Index(3));
+    }
+
+    #[test]
+    fn column_ref_deserializes_zero_as_index() {
+        let r: ColumnRef = serde_json::from_str("0").expect("zero is a valid column index");
+        assert_eq!(r, ColumnRef::Index(0));
+    }
+
+    #[test]
+    fn column_ref_rejects_negative_index() {
+        let err = serde_json::from_str::<ColumnRef>("-1").expect_err("negative index is invalid");
+        assert!(
+            err.to_string().contains("negative"),
+            "error should explain the sign problem, got: {err}"
+        );
+    }
+
+    #[test]
+    fn column_ref_rejects_fractional_index() {
+        serde_json::from_str::<ColumnRef>("1.5").expect_err("fractional index is invalid");
+    }
+
+    #[test]
+    fn column_ref_rejects_object() {
+        serde_json::from_str::<ColumnRef>(r#"{"name": "Date"}"#).expect_err("object is invalid");
+    }
+
+    #[test]
+    fn column_ref_round_trips_through_json() {
+        let name = ColumnRef::Name("Amount".to_owned());
+        assert_eq!(
+            serde_json::to_string(&name).expect("serialize"),
+            r#""Amount""#
+        );
+        let index = ColumnRef::Index(2);
+        assert_eq!(serde_json::to_string(&index).expect("serialize"), "2");
+    }
+
+    #[test]
+    fn column_ref_as_name_distinguishes_variants() {
+        assert_eq!(ColumnRef::Name("Date".to_owned()).as_name(), Some("Date"));
+        assert_eq!(ColumnRef::Index(0).as_name(), None);
     }
 
     #[test]
