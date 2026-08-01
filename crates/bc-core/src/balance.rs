@@ -615,28 +615,81 @@ impl Engine {
     /// dominant commodity is the one appearing in the most of that account's
     /// residuals; ties resolve to first-seen order.
     ///
+    /// Callers must additionally check the account is still active: this
+    /// derives purely from [`crate::residual::Residuals`], which is not
+    /// filtered by `archived_at` (see [`Self::default_balances`]).
+    ///
     /// # Arguments
     ///
-    /// * `residuals` - Residuals loaded across all accounts.
+    /// * `totals` - Per-account residual totals, e.g. from
+    ///   [`crate::residual::Residuals::totals_by_account`].
     ///
     /// # Returns
     ///
     /// A map from account id string to commodity code.
+    fn residual_commodities(
+        totals: &std::collections::HashMap<String, bc_models::Balances>,
+    ) -> std::collections::HashMap<String, String> {
+        totals
+            .iter()
+            .filter_map(|(account_id, balances)| {
+                let (code, _) = balances.iter().next()?;
+                Some((account_id.clone(), code.to_owned()))
+            })
+            .collect()
+    }
+
+    /// Sums each account's postings that are in its own default commodity.
+    ///
+    /// Elided postings (no commodity/amount) and postings in a non-default
+    /// commodity are skipped; elided postings contribute via the residual
+    /// fallback added by the caller instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `posting_rows` - `(account_id, commodity, amount)` rows, amount/commodity
+    ///   `None` for an elided posting.
+    /// * `commodity_by_account` - Each in-scope account's default commodity.
+    ///
+    /// # Returns
+    ///
+    /// A map from account id string to summed balance, zero-seeded for every
+    /// key of `commodity_by_account` so accounts with no matching postings
+    /// still appear.
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::BadData`] if a residual total overflows.
-    fn residual_commodities(
-        residuals: &crate::residual::Residuals,
-    ) -> BcResult<std::collections::HashMap<String, String>> {
-        let totals = residuals.totals_by_account()?;
-        Ok(totals
-            .into_iter()
-            .filter_map(|(account_id, balances)| {
-                let (code, _) = balances.iter().next()?;
-                Some((account_id, code.to_owned()))
-            })
-            .collect())
+    /// Returns [`BcError::BadData`] if an amount fails to parse or a running
+    /// total overflows.
+    fn sum_default_commodity_postings(
+        posting_rows: &[(String, Option<String>, Option<String>)],
+        commodity_by_account: &std::collections::HashMap<String, String>,
+    ) -> BcResult<std::collections::HashMap<String, Decimal>> {
+        let mut map: std::collections::HashMap<String, Decimal> = commodity_by_account
+            .keys()
+            .map(|id| (id.clone(), Decimal::ZERO))
+            .collect();
+
+        for (acc_id, opt_commodity, opt_amt_str) in posting_rows {
+            let (Some(commodity), Some(amt_str)) = (opt_commodity, opt_amt_str) else {
+                continue; // elided posting — contributes via its residual below
+            };
+            let Some(default_commodity) = commodity_by_account.get(acc_id) else {
+                continue; // no default commodity — skip
+            };
+            if commodity != default_commodity {
+                continue; // posting is in a non-default commodity — skip
+            }
+            let amount = amt_str.parse::<Decimal>().map_err(|e| {
+                BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
+            })?;
+            let entry = map.entry(acc_id.clone()).or_insert(Decimal::ZERO);
+            *entry = entry.checked_add(amount).ok_or_else(|| {
+                BcError::BadData("balance overflow: sum exceeds Decimal range".into())
+            })?;
+        }
+
+        Ok(map)
     }
 
     /// Returns the default-commodity balance for every active account in one query.
@@ -660,37 +713,44 @@ impl Engine {
     /// Returns [`BcError`] on database or parse failure.
     #[inline]
     pub async fn default_balances(&self) -> BcResult<std::collections::HashMap<AccountId, Amount>> {
-        // Fetch the effective default commodity per active account.
-        // Prefers account_commodities (position = 0); falls back to the most-used posting
-        // commodity so accounts imported without explicit commodity setup are still included.
-        let commodity_rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT id, commodity_code FROM (
-                 SELECT a.id,
-                        COALESCE(
-                            c.code,
-                            (SELECT p.commodity
-                             FROM postings p
-                             WHERE p.account_id = a.id
-                             GROUP BY p.commodity
-                             ORDER BY COUNT(*) DESC
-                             LIMIT 1)
-                        ) AS commodity_code
-                 FROM accounts a
-                 LEFT JOIN account_commodities ac ON ac.account_id = a.id AND ac.position = 0
-                 LEFT JOIN commodities c ON c.id = ac.commodity_id
-                 WHERE a.archived_at IS NULL
-             )
-             WHERE commodity_code IS NOT NULL",
+        // Fetch every active account, with its effective default commodity when one is
+        // resolvable. Prefers account_commodities (position = 0); falls back to the
+        // most-used posting commodity so accounts imported without explicit commodity
+        // setup are still included. This is also the authoritative active-account set
+        // used below: `Residuals::load` has no `archived_at` filter (it does not know
+        // which account owns the transaction it is resolving), so the residual
+        // commodity/balance fallback must be intersected against this set rather than
+        // trusted on its own — otherwise an archived account whose only postings are
+        // elided would leak back into the result.
+        let account_rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT a.id,
+                    COALESCE(
+                        c.code,
+                        (SELECT p.commodity
+                         FROM postings p
+                         WHERE p.account_id = a.id
+                         GROUP BY p.commodity
+                         ORDER BY COUNT(*) DESC
+                         LIMIT 1)
+                    ) AS commodity_code
+             FROM accounts a
+             LEFT JOIN account_commodities ac ON ac.account_id = a.id AND ac.position = 0
+             LEFT JOIN commodities c ON c.id = ac.commodity_id
+             WHERE a.archived_at IS NULL",
         )
         .fetch_all(&self.pool)
         .await?;
 
-        let residuals = crate::residual::Residuals::for_all_accounts(&self.pool).await?;
-        let residual_commodities = Self::residual_commodities(&residuals)?;
-
-        if commodity_rows.is_empty() && residual_commodities.is_empty() {
+        if account_rows.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
+
+        let active_account_ids: std::collections::HashSet<String> =
+            account_rows.iter().map(|(id, _)| id.clone()).collect();
+
+        let residuals = crate::residual::Residuals::for_all_accounts(&self.pool).await?;
+        let residual_totals = residuals.totals_by_account()?;
+        let residual_commodities = Self::residual_commodities(&residual_totals);
 
         // Fetch all postings for those accounts (one query, filtered in Rust).
         // Elided postings (NULL amount/commodity) are included in the SQL result but
@@ -706,52 +766,33 @@ impl Engine {
 
         // Build commodity lookup: account_id_str → commodity_code. An account
         // whose postings are all elided has no stored commodity anywhere, so it
-        // falls back to the commodity of its own residuals.
-        let mut commodity_by_account: std::collections::HashMap<String, String> = commodity_rows
-            .iter()
-            .map(|(id, code)| (id.clone(), code.clone()))
+        // falls back to the commodity of its own residuals — but only when the
+        // account is still active (see the comment above on `account_rows`).
+        let mut commodity_by_account: std::collections::HashMap<String, String> = account_rows
+            .into_iter()
+            .filter_map(|(id, code)| code.map(|c| (id, c)))
             .collect();
         #[expect(
             clippy::iter_over_hash_type,
-            reason = "iteration order is irrelevant: each entry only fills a gap left by commodity_rows, and insertion is idempotent regardless of order"
+            reason = "iteration order is irrelevant: each entry only fills a gap left by account_rows, and insertion is idempotent regardless of order"
         )]
         for (account_id, code) in residual_commodities {
-            commodity_by_account.entry(account_id).or_insert(code);
+            if active_account_ids.contains(&account_id) {
+                commodity_by_account.entry(account_id).or_insert(code);
+            }
         }
 
         // Sum posting amounts per account for that account's default commodity.
-        let mut map: std::collections::HashMap<String, Decimal> = commodity_by_account
-            .keys()
-            .map(|id| (id.clone(), Decimal::ZERO))
-            .collect();
-
-        for (acc_id, opt_commodity, opt_amt_str) in &posting_rows {
-            let (Some(commodity), Some(amt_str)) = (opt_commodity, opt_amt_str) else {
-                continue; // elided posting — contributes via its residual below
-            };
-            let Some(default_commodity) = commodity_by_account.get(acc_id) else {
-                continue; // no default commodity — skip
-            };
-            if commodity != default_commodity {
-                continue; // posting is in a non-default commodity — skip
-            }
-            let amount = amt_str.parse::<Decimal>().map_err(|e| {
-                BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
-            })?;
-            let entry = map.entry(acc_id.clone()).or_insert(Decimal::ZERO);
-            *entry = entry.checked_add(amount).ok_or_else(|| {
-                BcError::BadData("balance overflow: sum exceeds Decimal range".into())
-            })?;
-        }
+        let mut map = Self::sum_default_commodity_postings(&posting_rows, &commodity_by_account)?;
 
         // Add each account's derived residual for its default commodity.
         #[expect(
             clippy::iter_over_hash_type,
             reason = "iteration order is irrelevant: each account's residual is added to its own map entry independently, via commutative Decimal addition"
         )]
-        for (acc_id, balances) in residuals.totals_by_account()? {
+        for (acc_id, balances) in residual_totals {
             let Some(default_commodity) = commodity_by_account.get(&acc_id) else {
-                continue; // account archived or otherwise out of scope
+                continue; // account archived (commodity_by_account is the active-account set) or otherwise out of scope
             };
             let Some(value) = balances.get(default_commodity) else {
                 continue; // residual holds nothing in this account's commodity
@@ -1928,6 +1969,53 @@ mod tests {
                 .await
                 .expect("commodity"),
             Some("AUD".to_owned()),
+        );
+    }
+
+    /// An archived account whose only postings are elided must not leak into
+    /// `default_balances` via the residual fallback: `Residuals::load` has no
+    /// `archived_at` filter, so the fallback must intersect against the
+    /// active-account set explicitly.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn default_balances_excludes_archived_account_via_residual(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let bank = acct_svc
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Bank");
+        let food = acct_svc
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Food");
+
+        sqlx::query("INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES ('tx_a1', '2026-01-01', 'Groceries', 'unreconciled', '2026-01-01T00:00:00Z')")
+            .execute(&pool).await.expect("insert transaction");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_food_a', 'tx_a1', ?, '50.00', 'AUD', 0)")
+            .bind(food.to_string()).execute(&pool).await.expect("insert concrete leg");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_bank_a', 'tx_a1', ?, NULL, NULL, 1)")
+            .bind(bank.to_string()).execute(&pool).await.expect("insert elided leg");
+
+        acct_svc.archive(&bank).await.expect("archive Bank");
+
+        let engine = Engine::new(pool.clone());
+        let balances = engine.default_balances().await.expect("default balances");
+
+        assert_eq!(
+            balances.get(&bank),
+            None,
+            "archived account must not appear even though its only leg is elided"
+        );
+        assert_eq!(
+            balances.get(&food).expect("food must appear").value(),
+            dec!(50.00)
         );
     }
 }
