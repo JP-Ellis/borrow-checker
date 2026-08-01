@@ -19,7 +19,8 @@ use crate::events::insert_event;
 /// Raw `transaction_sources` row tuple, mirroring the `SELECT` column list.
 ///
 /// The third element is `posting_id`, which is `None` for a tombstoned
-/// reference — one whose posting the user has since deleted.
+/// reference — one whose posting the user has since deleted. The last is
+/// `owns_posting`, stored as SQLite's 0/1 integer boolean.
 type SourceRow = (
     String,
     String,
@@ -33,6 +34,7 @@ type SourceRow = (
     i64,
     String,
     Option<String>,
+    i64,
 );
 
 /// A stored source reference, reduced to what import matching needs.
@@ -180,8 +182,8 @@ impl Service {
         sqlx::query(
             "INSERT INTO transaction_sources \
              (id, transaction_id, posting_id, account_id, date, narration, amount, commodity, \
-              reference, occurrence, fingerprint, created_at, import_batch_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              reference, occurrence, fingerprint, created_at, import_batch_id, owns_posting) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(source.id().to_string())
         .bind(source.transaction_id().to_string())
@@ -196,6 +198,7 @@ impl Service {
         .bind(&fingerprint)
         .bind(source.created_at().to_string())
         .bind(source.import_batch_id().map(ToString::to_string))
+        .bind(i64::from(source.owns_posting()))
         .execute(&mut **db_tx)
         .await?;
 
@@ -334,7 +337,8 @@ impl Service {
     ) -> BcResult<Vec<SourceRef>> {
         let rows: Vec<SourceRow> = sqlx::query_as(
             "SELECT id, transaction_id, posting_id, account_id, date, narration, amount, \
-                        commodity, reference, occurrence, created_at, import_batch_id \
+                        commodity, reference, occurrence, created_at, import_batch_id, \
+                        owns_posting \
                  FROM transaction_sources WHERE transaction_id = ? ORDER BY occurrence ASC",
         )
         .bind(transaction_id.to_string())
@@ -405,6 +409,7 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
         raw_occurrence,
         raw_created,
         raw_import_batch_id,
+        raw_owns_posting,
     ) = row;
 
     let id = raw_id
@@ -466,6 +471,7 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
         .amount(amount)
         .occurrence(occurrence)
         .import_batch_id(import_batch_id)
+        .owns_posting(raw_owns_posting != 0)
         .created_at(created_at)
         .reference(reference);
     Ok(with_reference.build())
@@ -913,6 +919,57 @@ mod tests {
             legs.len(),
             2,
             "each account's leg must occupy its own key, not a shared one"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn ownership_round_trips_through_the_projection(pool: SqlitePool) {
+        let account = make_account(&pool).await;
+        let (tx, posting) = make_tx(&pool, &account).await;
+        let svc = Service::new(pool.clone());
+
+        let owned = SourceRef::builder()
+            .id(SourceRefId::new())
+            .transaction_id(tx.clone())
+            .posting_id(Some(posting.clone()))
+            .account_id(account.clone())
+            .date(date(2025, 6, 27))
+            .narration("ACME")
+            .amount(Some(Amount::new(
+                Decimal::from(100_i32),
+                CommodityCode::new("AUD"),
+            )))
+            .occurrence(0)
+            .import_batch_id(None)
+            .owns_posting(true)
+            .created_at(Timestamp::now())
+            .build();
+        svc.attach(&owned).await.expect("attach");
+
+        let stored = svc.list_for_transaction(&tx).await.expect("list");
+        assert_eq!(stored.len(), 1);
+        assert!(
+            stored.first().expect("one source ref").owns_posting(),
+            "a reference whose posting the import created must read back as owning it"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_reference_defaults_to_not_owning_its_posting(pool: SqlitePool) {
+        let account = make_account(&pool).await;
+        let (tx, posting) = make_tx(&pool, &account).await;
+        let svc = Service::new(pool.clone());
+
+        // `source` never sets ownership, standing in for every caller outside an
+        // import: they attached provenance to a posting that already existed.
+        svc.attach(&source(&tx, &posting, &account, 0))
+            .await
+            .expect("attach");
+
+        let stored = svc.list_for_transaction(&tx).await.expect("list");
+        assert!(
+            !stored.first().expect("one source ref").owns_posting(),
+            "provenance attached outside an import created no posting"
         );
     }
 }

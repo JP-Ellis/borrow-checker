@@ -103,6 +103,18 @@ pub struct SourceRef {
     #[builder(required, default = None)]
     import_batch_id: Option<ImportBatchId>,
 
+    /// Whether the import that wrote this reference also created the posting it
+    /// names.
+    ///
+    /// `false` when the posting already existed and the import recorded
+    /// provenance against it — an *adoption* — and `false` for a reference
+    /// attached outside an import, which created nothing. Discarding a batch
+    /// deletes the postings that batch created and leaves the rest standing;
+    /// which is which cannot be recovered after the fact, so it is recorded
+    /// here at attach time.
+    #[builder(default = false)]
+    owns_posting: bool,
+
     /// Timestamp recorded when this reference was first persisted.
     created_at: Timestamp,
 }
@@ -177,6 +189,18 @@ impl SourceRef {
     #[must_use]
     pub fn import_batch_id(&self) -> Option<&ImportBatchId> {
         self.import_batch_id.as_ref()
+    }
+
+    /// Returns whether the import that wrote this reference created its posting.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the posting was inserted by that import, `false` if it already
+    /// existed or the reference came from outside an import.
+    #[inline]
+    #[must_use]
+    pub fn owns_posting(&self) -> bool {
+        self.owns_posting
     }
 
     /// Returns the creation timestamp.

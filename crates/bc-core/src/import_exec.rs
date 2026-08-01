@@ -924,7 +924,7 @@ impl Writer<'_> {
             let mut db_tx = self.transactions.pool().begin().await?;
             self.transactions.create_in_tx(&mut db_tx, tx).await?;
             for (posting, leg) in postings.iter().zip(legs) {
-                let source = self.source_ref(raw, leg, &tx_id, posting.id());
+                let source = self.source_ref(raw, leg, &tx_id, posting.id(), true);
                 self.sources.attach_in_tx(&mut db_tx, &source).await?;
             }
             db_tx.commit().await?;
@@ -1036,11 +1036,11 @@ impl Writer<'_> {
                     .await?;
             }
             for (posting, leg) in postings.iter().zip(&insertions) {
-                let source = self.source_ref(raw, leg, owner, posting.id());
+                let source = self.source_ref(raw, leg, owner, posting.id(), true);
                 self.sources.attach_in_tx(&mut db_tx, &source).await?;
             }
             for (posting_id, leg) in &adoptions {
-                let source = self.source_ref(raw, leg, owner, posting_id);
+                let source = self.source_ref(raw, leg, owner, posting_id, false);
                 self.sources.attach_in_tx(&mut db_tx, &source).await?;
             }
             db_tx.commit().await?;
@@ -1073,6 +1073,8 @@ impl Writer<'_> {
     /// * `leg` - The planned leg.
     /// * `transaction_id` - The transaction the posting belongs to.
     /// * `posting_id` - The posting this leg produced.
+    /// * `owns_posting` - `true` when this run inserted that posting, `false`
+    ///   when it adopted a posting the user had already written.
     ///
     /// # Returns
     ///
@@ -1083,6 +1085,7 @@ impl Writer<'_> {
         leg: &LegPlan,
         transaction_id: &TransactionId,
         posting_id: &PostingId,
+        owns_posting: bool,
     ) -> SourceRef {
         SourceRef::builder()
             .id(SourceRefId::new())
@@ -1095,6 +1098,7 @@ impl Writer<'_> {
             .reference(raw.reference.clone())
             .occurrence(leg.occurrence)
             .import_batch_id(Some(self.batch_id.clone()))
+            .owns_posting(owns_posting)
             .created_at(Timestamp::now())
             .build()
     }
@@ -2560,6 +2564,116 @@ mod tests {
         assert_eq!(
             stamped, 2,
             "every leg's provenance names the run that wrote it"
+        );
+    }
+
+    /// Hand-adds a posting on `account` for `amount`, mirroring the way a user
+    /// responds to a partial-import warning by writing the missing leg
+    /// themselves.
+    ///
+    /// Loads the single stored transaction — the only one an import that has
+    /// run so far could have produced — rather than looking one up by
+    /// posting, since `account` has no posting on it yet.
+    async fn add_posting_by_hand(svcs: &Services, account: &AccountId, amount: i64) {
+        let mut stored_transactions = svcs.transactions.list().await.expect("list transactions");
+        let stored = stored_transactions
+            .pop()
+            .expect("exactly one stored transaction");
+        assert!(
+            stored_transactions.is_empty(),
+            "add_posting_by_hand expects a single stored transaction"
+        );
+        let mut postings = stored.postings().to_vec();
+        postings.push(
+            Posting::builder()
+                .id(PostingId::new())
+                .account_id(account.clone())
+                .amount(Amount::new(
+                    Decimal::from(amount),
+                    CommodityCode::new("AUD"),
+                ))
+                .build(),
+        );
+        svcs.transactions
+            .edit(
+                Transaction::builder()
+                    .id(stored.id().clone())
+                    .date(stored.date())
+                    .description(stored.description())
+                    .postings(postings)
+                    .reconciliation(stored.reconciliation())
+                    .created_at(*stored.created_at())
+                    .build(),
+            )
+            .await
+            .expect("hand-add the missing leg");
+    }
+
+    /// Every source reference in the database, in insertion order.
+    async fn all_refs(pool: &SqlitePool) -> Vec<(bool, String)> {
+        sqlx::query_as(
+            "SELECT owns_posting, account_id FROM transaction_sources ORDER BY created_at",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("query refs")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_inserted_leg_is_recorded_as_owned(pool: SqlitePool) {
+        let svcs = services(&pool);
+        two_account_tree(&pool).await;
+        let raw = raw_with(
+            "ACME",
+            vec![
+                leg("Assets:Bank", Some(-50)),
+                leg("Expenses:Food", Some(50)),
+            ],
+        );
+
+        run(&svcs, &[raw]).await;
+
+        let refs = all_refs(&pool).await;
+        assert_eq!(refs.len(), 2);
+        assert!(
+            refs.iter().all(|(owns, _)| *owns),
+            "every leg this run inserted is owned by it"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_adopted_leg_is_not_recorded_as_owned(pool: SqlitePool) {
+        // Pass one: only Assets:Bank exists, so the food leg is skipped and the
+        // transaction lands one-sided.
+        let svcs = services(&pool);
+        bank_only_tree(&pool).await;
+        let raw = raw_with(
+            "ACME",
+            vec![
+                leg("Assets:Bank", Some(-50)),
+                leg("Expenses:Food", Some(50)),
+            ],
+        );
+        run(&svcs, core::slice::from_ref(&raw)).await;
+
+        // The user creates the account and adds the missing leg by hand — the
+        // obvious response to the partial-import warning.
+        let food = add_food(&pool).await;
+        add_posting_by_hand(&svcs, &food, 50).await;
+
+        // Pass two adopts that posting rather than inserting a second one.
+        run(&svcs, core::slice::from_ref(&raw)).await;
+
+        let refs = all_refs(&pool).await;
+        let adopted: Vec<&(bool, String)> = refs.iter().filter(|(owns, _)| !owns).collect();
+        assert_eq!(
+            adopted.len(),
+            1,
+            "the hand-written leg was adopted, not created"
+        );
+        assert_eq!(
+            adopted.first().expect("one adopted reference").1,
+            food.to_string()
         );
     }
 }
