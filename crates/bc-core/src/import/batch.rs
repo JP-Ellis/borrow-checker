@@ -20,15 +20,16 @@ pub struct ImportBatch {
     pub importer: String,
     /// When the run started.
     pub started_at: Timestamp,
-    /// Transactions created by this run.
-    pub new_transactions: i64,
-    /// Postings attached to transactions an earlier run had created.
-    pub attached_postings: i64,
-    /// Postings the run could not persist, whatever the cause.
-    pub skipped_postings: i64,
-    /// The subset of [`Self::skipped_postings`] whose account path named no
-    /// existing account.
-    pub unresolved_path_postings: i64,
+    /// When the run completed, or `None` if it never did.
+    pub finished_at: Option<Timestamp>,
+    /// When the run was discarded, or `None` if it still stands.
+    pub discarded_at: Option<Timestamp>,
+    /// What the run did, or `None` if it never completed.
+    ///
+    /// An aborted run leaves rows behind that its counts would not account
+    /// for, so there is no honest total to report. `None` forces a reader to
+    /// say what it does about that rather than spending zeros as a result.
+    pub counts: Option<Counts>,
 }
 
 /// The final tallies of one import run, as [`Service::close`] records them.
@@ -47,6 +48,21 @@ pub struct Counts {
     pub unresolved_path_postings: usize,
     /// Postings skipped for any other reason.
     pub other_skipped_postings: usize,
+}
+
+impl Counts {
+    /// Returns the total postings skipped, whatever the cause.
+    ///
+    /// # Returns
+    ///
+    /// The sum of [`Self::unresolved_path_postings`] and
+    /// [`Self::other_skipped_postings`], saturating rather than overflowing.
+    #[must_use]
+    #[inline]
+    pub fn skipped(&self) -> usize {
+        self.unresolved_path_postings
+            .saturating_add(self.other_skipped_postings)
+    }
 }
 
 /// Service recording import batch provenance.
@@ -93,10 +109,8 @@ impl Service {
         let started_at = Timestamp::now();
 
         sqlx::query(
-            "INSERT INTO import_batches \
-             (id, profile_id, importer, started_at, new_transactions, attached_postings, \
-              skipped_postings, unresolved_path_postings) \
-             VALUES (?, ?, ?, ?, 0, 0, 0, 0)",
+            "INSERT INTO import_batches (id, profile_id, importer, started_at) \
+             VALUES (?, ?, ?, ?)",
         )
         .bind(id.to_string())
         .bind(profile_id.map(ToString::to_string))
@@ -109,7 +123,8 @@ impl Service {
         Ok(id)
     }
 
-    /// Records the final counts for a completed import run.
+    /// Records the final counts for a completed import run and stamps its
+    /// completion time.
     ///
     /// # Arguments
     ///
@@ -123,23 +138,22 @@ impl Service {
     /// Returns [`BcError::Database`] on database update failure.
     #[inline]
     pub async fn close(&self, id: &ImportBatchId, counts: Counts) -> BcResult<()> {
-        let skipped_postings = counts
-            .unresolved_path_postings
-            .saturating_add(counts.other_skipped_postings);
         let to_i64 = |value: usize| {
             i64::try_from(value).map_err(|_err| BcError::BadData("import count exceeds i64".into()))
         };
+        let finished_at = Timestamp::now();
 
         let result = sqlx::query(
             "UPDATE import_batches \
-             SET new_transactions = ?, attached_postings = ?, skipped_postings = ?, \
-                 unresolved_path_postings = ? \
+             SET finished_at = ?, new_transactions = ?, attached_postings = ?, \
+                 unresolved_path_postings = ?, other_skipped_postings = ? \
              WHERE id = ?",
         )
+        .bind(finished_at.to_string())
         .bind(to_i64(counts.new_transactions)?)
         .bind(to_i64(counts.attached_postings)?)
-        .bind(to_i64(skipped_postings)?)
         .bind(to_i64(counts.unresolved_path_postings)?)
+        .bind(to_i64(counts.other_skipped_postings)?)
         .bind(id.to_string())
         .execute(&self.pool)
         .await?;
@@ -152,7 +166,7 @@ impl Service {
             batch_id = %id,
             new_transactions = counts.new_transactions,
             attached_postings = counts.attached_postings,
-            skipped_postings,
+            skipped_postings = counts.skipped(),
             unresolved_path_postings = counts.unresolved_path_postings,
             "import batch closed"
         );
@@ -176,11 +190,9 @@ impl Service {
     /// Returns [`BcError::Database`] on database query failure.
     #[inline]
     pub async fn find_by_id(&self, id: &ImportBatchId) -> BcResult<ImportBatch> {
-        let row: Row = sqlx::query_as(
-            "SELECT id, profile_id, importer, started_at, new_transactions, attached_postings, \
-                    skipped_postings, unresolved_path_postings \
-             FROM import_batches WHERE id = ?",
-        )
+        let row: Row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {COLUMNS} FROM import_batches WHERE id = ?"
+        )))
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?
@@ -188,10 +200,51 @@ impl Service {
 
         parse_row(row)
     }
+
+    /// Lists every import batch, newest first.
+    ///
+    /// Discarded batches are included: the listing is the audit trail, and
+    /// omitting them would make a repeated discard look like it did nothing.
+    ///
+    /// # Returns
+    ///
+    /// Every [`ImportBatch`] on record, ordered by start time descending.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if any stored value cannot be parsed.
+    /// Returns [`BcError::Database`] on database query failure.
+    #[inline]
+    pub async fn list(&self) -> BcResult<Vec<ImportBatch>> {
+        let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {COLUMNS} FROM import_batches ORDER BY started_at DESC"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(parse_row).collect()
+    }
 }
 
 /// Raw `import_batches` row tuple, mirroring the `SELECT` column list.
-type Row = (String, Option<String>, String, String, i64, i64, i64, i64);
+type Row = (
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+);
+
+/// The `SELECT` column list shared by [`Service::find_by_id`] and
+/// [`Service::list`], in [`Row`] order.
+const COLUMNS: &str = "id, profile_id, importer, started_at, finished_at, discarded_at, \
+                       new_transactions, attached_postings, unresolved_path_postings, \
+                       other_skipped_postings";
 
 /// Parses a raw `import_batches` row into an [`ImportBatch`].
 ///
@@ -201,18 +254,21 @@ type Row = (String, Option<String>, String, String, i64, i64, i64, i64);
 ///
 /// # Errors
 ///
-/// Returns [`BcError::BadData`] if any ID or timestamp string is malformed.
-#[inline]
+/// Returns [`BcError::BadData`] if any ID or timestamp string is malformed, if
+/// a stored count is negative, or if the outcome columns are partly populated
+/// (which the table's `CHECK` should already prevent).
 fn parse_row(row: Row) -> BcResult<ImportBatch> {
     let (
         raw_id,
         raw_profile_id,
         importer,
         raw_started_at,
+        raw_finished_at,
+        raw_discarded_at,
         new_transactions,
         attached_postings,
-        skipped_postings,
         unresolved_path_postings,
+        other_skipped_postings,
     ) = row;
 
     let id = raw_id
@@ -226,19 +282,45 @@ fn parse_row(row: Row) -> BcResult<ImportBatch> {
         })
         .transpose()?;
 
-    let started_at = raw_started_at
-        .parse::<Timestamp>()
-        .map_err(|e| BcError::BadData(e.to_string()))?;
+    let parse_ts = |raw: String| {
+        raw.parse::<Timestamp>()
+            .map_err(|e| BcError::BadData(e.to_string()))
+    };
+    let started_at = parse_ts(raw_started_at)?;
+    let finished_at = raw_finished_at.map(parse_ts).transpose()?;
+    let discarded_at = raw_discarded_at.map(parse_ts).transpose()?;
+
+    let to_usize = |value: i64| {
+        usize::try_from(value).map_err(|_err| BcError::BadData("import count is negative".into()))
+    };
+    let counts = match (
+        new_transactions,
+        attached_postings,
+        unresolved_path_postings,
+        other_skipped_postings,
+    ) {
+        (Some(new), Some(attached), Some(unresolved), Some(other)) => Some(Counts {
+            new_transactions: to_usize(new)?,
+            attached_postings: to_usize(attached)?,
+            unresolved_path_postings: to_usize(unresolved)?,
+            other_skipped_postings: to_usize(other)?,
+        }),
+        (None, None, None, None) => None,
+        _ => {
+            return Err(BcError::BadData(format!(
+                "import batch {id} has a partly recorded outcome"
+            )));
+        }
+    };
 
     Ok(ImportBatch {
         id,
         profile_id,
         importer,
         started_at,
-        new_transactions,
-        attached_postings,
-        skipped_postings,
-        unresolved_path_postings,
+        finished_at,
+        discarded_at,
+        counts,
     })
 }
 
@@ -250,7 +332,21 @@ mod tests {
     use super::*;
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn open_then_close_records_the_counts(pool: SqlitePool) {
+    async fn a_freshly_opened_batch_has_no_counts(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let id = svc.open(None, "ledger").await.expect("open batch");
+
+        let batch = svc.find_by_id(&id).await.expect("find batch");
+        assert_eq!(
+            batch.counts, None,
+            "a run that has not completed has no outcome to report"
+        );
+        assert_eq!(batch.finished_at, None);
+        assert_eq!(batch.discarded_at, None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn closing_records_the_counts_and_the_finish(pool: SqlitePool) {
         let svc = Service::new(pool.clone());
         let id = svc.open(None, "csv").await.expect("open batch");
 
@@ -267,26 +363,31 @@ mod tests {
         .expect("close batch");
 
         let batch = svc.find_by_id(&id).await.expect("find batch");
-        assert_eq!(batch.importer, "csv");
-        assert_eq!(batch.new_transactions, 12);
-        assert_eq!(batch.attached_postings, 3);
-        assert_eq!(
-            batch.skipped_postings, 5,
-            "the stored total is the sum of the causes"
-        );
-        assert_eq!(batch.unresolved_path_postings, 4);
-        assert_eq!(batch.profile_id, None);
+        let counts = batch.counts.expect("a closed batch reports its counts");
+        assert_eq!(counts.new_transactions, 12);
+        assert_eq!(counts.attached_postings, 3);
+        assert_eq!(counts.unresolved_path_postings, 4);
+        assert_eq!(counts.other_skipped_postings, 1);
+        assert_eq!(counts.skipped(), 5, "the total is the sum of the causes");
+        assert!(batch.finished_at.is_some());
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn a_freshly_opened_batch_has_zero_counts(pool: SqlitePool) {
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    async fn list_returns_batches_newest_first(pool: SqlitePool) {
         let svc = Service::new(pool.clone());
-        let id = svc.open(None, "ledger").await.expect("open batch");
-        let batch = svc.find_by_id(&id).await.expect("find batch");
-        assert_eq!(batch.new_transactions, 0);
-        assert_eq!(batch.attached_postings, 0);
-        assert_eq!(batch.skipped_postings, 0);
-        assert_eq!(batch.unresolved_path_postings, 0);
+        let first = svc.open(None, "csv").await.expect("open first");
+        svc.close(&first, Counts::default()).await.expect("close");
+        let second = svc.open(None, "ledger").await.expect("open second");
+
+        let batches = svc.list().await.expect("list batches");
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].id, second, "the newest run is listed first");
+        assert_eq!(batches[1].id, first);
+        assert_eq!(
+            batches[0].counts, None,
+            "the still-open run reports no counts"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]

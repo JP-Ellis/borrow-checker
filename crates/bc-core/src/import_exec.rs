@@ -1496,9 +1496,10 @@ mod tests {
             .find_by_id(&outcome.batch_id)
             .await
             .expect("the batch record");
-        assert_eq!(batch.skipped_postings, 1);
+        let counts = batch.counts.expect("a closed batch reports its counts");
+        assert_eq!(counts.skipped(), 1);
         assert_eq!(
-            batch.unresolved_path_postings, 1,
+            counts.unresolved_path_postings, 1,
             "the skip is attributed to the missing account, not to some other cause"
         );
     }
@@ -2122,9 +2123,10 @@ mod tests {
             .find_by_id(&outcome.batch_id)
             .await
             .expect("the batch is still closed with its final counts");
-        assert_eq!(batch.new_transactions, 1);
-        assert_eq!(batch.attached_postings, 1);
-        assert_eq!(batch.skipped_postings, 0);
+        let counts = batch.counts.expect("a closed batch reports its counts");
+        assert_eq!(counts.new_transactions, 1);
+        assert_eq!(counts.attached_postings, 1);
+        assert_eq!(counts.skipped(), 0);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2552,7 +2554,13 @@ mod tests {
             .await
             .expect("batch recorded");
         assert_eq!(batch.importer, "test");
-        assert_eq!(batch.new_transactions, 1);
+        assert_eq!(
+            batch
+                .counts
+                .expect("a closed batch reports its counts")
+                .new_transactions,
+            1
+        );
 
         let stamped: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM transaction_sources WHERE import_batch_id = ?",
