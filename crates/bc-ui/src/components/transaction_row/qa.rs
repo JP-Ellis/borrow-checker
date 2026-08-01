@@ -5,6 +5,7 @@ use bc_ipc::AccountRef;
 use bc_ipc::Amount;
 use bc_ipc::AuditEntry;
 use bc_ipc::Posting;
+use bc_ipc::PostingAmount;
 use bc_ipc::Reconciliation;
 use bc_ipc::TagInfo;
 use bc_ipc::Transaction;
@@ -25,7 +26,7 @@ fn leg(id: &str, acct_id: &str, acct_name: &str, minor: i64) -> Posting {
     Posting::new(
         id,
         AccountRef::new(acct_id, acct_name),
-        bc_ipc::PostingAmount::Stored(Amount::new(Decimal::new(minor, 2), "AUD")),
+        PostingAmount::Stored(Amount::new(Decimal::new(minor, 2), "AUD")),
         None::<&str>,
         vec![],
         None,
@@ -39,7 +40,7 @@ fn elided(id: &str, acct_id: &str, acct_name: &str, residual_minor: i64) -> Post
     Posting::new(
         id,
         AccountRef::new(acct_id, acct_name),
-        bc_ipc::PostingAmount::Derived(vec![Amount::new(Decimal::new(residual_minor, 2), "AUD")]),
+        PostingAmount::Derived(vec![Amount::new(Decimal::new(residual_minor, 2), "AUD")]),
         None::<&str>,
         vec![],
         None,
@@ -272,6 +273,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
                 account_name: "Assets :: Checking".to_owned(),
                 amount: "-42.00".to_owned(),
                 currency: "AUD".to_owned(),
+                derived_residual: vec![],
                 note: String::new(),
                 tags: vec![],
                 spread_from: None,
@@ -284,6 +286,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
                 account_name: "Expenses :: Groceries".to_owned(),
                 amount: "42.00".to_owned(),
                 currency: "AUD".to_owned(),
+                derived_residual: vec![],
                 note: String::new(),
                 tags: vec![],
                 spread_from: None,

@@ -12,10 +12,8 @@ use crate::components::chip::Chip;
 use crate::components::num::format_amount;
 use crate::components::tag_picker::TagPicker;
 use crate::components::transaction_row::edit_ctx::TxEditCtx;
-use crate::components::transaction_row::editable::BalanceState;
-use crate::components::transaction_row::editable::EditablePosting;
+use crate::components::transaction_row::editable;
 use crate::components::transaction_row::editable::EditableTransaction;
-use crate::components::transaction_row::editable::derive_balance;
 use crate::components::transaction_row::editable::parse_amount;
 use crate::components::transaction_row::spread;
 use crate::components::transaction_row::spread::SpreadDisplay;
@@ -48,6 +46,7 @@ pub fn PostingLine(
 ) -> impl IntoView {
     let ctx = expect_context::<TxEditCtx>();
     let working = ctx.working;
+    let original = ctx.original;
     let ctx_accounts = ctx.accounts;
     let all_tags = ctx.all_tags;
     let currencies = ctx.currencies;
@@ -235,46 +234,32 @@ pub fn PostingLine(
         })
     };
 
-    // MARK: Ghost amount — detected when this posting is the sole inferred leg.
-    let is_inferred = move || {
-        let w = working.get();
-        let is_elided = w
-            .postings
-            .iter()
-            .find(|p| p.uid == uid)
-            .is_some_and(EditablePosting::is_elided);
-        is_elided
-            && matches!(
-                derive_balance(&w, &currencies.get()),
-                BalanceState::Inferred { .. }
-            )
+    // MARK: Ghost amount.
+    //
+    // Pristine (buffer not yet dirty): trust the backend's derived residual
+    // verbatim — the only source that can represent a multi-commodity
+    // residual. Dirty (any leg edited): fall back to client-side derivation
+    // over the currently-typed amounts, since only that reflects an
+    // in-progress edit the backend has not seen. See `editable::ghost_amounts`.
+    let ghost_amounts = move || {
+        let dirty = working.with(|w| original.with_value(|o| w != o));
+        working.with(|w| editable::ghost_amounts(w, dirty, uid, &currencies.get()))
     };
 
+    let is_inferred = move || !ghost_amounts().is_empty();
+
     let ghost_placeholder = move || {
-        let w = working.get();
-        let is_elided = w
-            .postings
+        ghost_amounts()
             .iter()
-            .find(|p| p.uid == uid)
-            .is_some_and(EditablePosting::is_elided);
-        if !is_elided {
-            return String::new();
-        }
-        match derive_balance(&w, &currencies.get()) {
-            BalanceState::Inferred {
-                remainder,
-                currency,
-            } => {
-                let meta =
-                    crate::components::num::meta::display_meta_for(&currency, &currencies.get());
-                format_amount(&remainder, &meta)
-            }
-            BalanceState::Balanced
-            | BalanceState::Unbalanced { .. }
-            | BalanceState::Ambiguous
-            | BalanceState::Invalid
-            | BalanceState::Empty => String::new(),
-        }
+            .map(|a| {
+                let meta = crate::components::num::meta::display_meta_for(
+                    &a.currency_code,
+                    &currencies.get(),
+                );
+                format_amount(&a.value, &meta)
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     };
 
     let amt_cell_class = move || {
