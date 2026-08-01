@@ -13,6 +13,6 @@ fn import_missing_profile_returns_error() {
     let ctx = TestContext::new();
 
     let mut cmd = ctx.command();
-    cmd.args(["import", "--profile", "nonexistent"]);
+    cmd.args(["import", "run", "--profile", "nonexistent"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
