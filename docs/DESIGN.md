@@ -264,8 +264,9 @@ Snapshots are taken via SQLite `VACUUM INTO` to a temp file, then atomically ren
 | `pre-migration` | Automatic, taken before applying schema migrations when `auto_pre_migration` is enabled and the database file already existed and was non-empty |
 | `pre-restore` | Automatic safety snapshot taken just before a restore swap; deliberately skips rotation so it can never prune the very backup being restored |
 | `pre-import` | Automatic, taken before an import run when `auto_pre_import` is enabled |
+| `pre-discard` | Automatic, taken before an `import discard` run when `auto_pre_discard` is enabled |
 
-**Retention** is a conservative union, configured in the `[backup]` section (`dir`, `retain_count` default 5, `retain_days` unset, `auto_pre_migration` default true, `auto_pre_import` default true): a backup is kept if it is among the `retain_count` newest **or** newer than `retain_days`; it is pruned only if it satisfies neither. When both limits are unset, nothing is pruned. On disk, `retain_count = 0` is the sentinel for "unlimited" (an absent key falls back to the default of 5). Routine `pre-import` snapshots share this retention pool with manual and `pre-migration` backups, so a series of import runs can crowd out older manual backups under the same union; per-kind retention is tracked as #344.
+**Retention** is a conservative union, configured in the `[backup]` section (`dir`, `retain_count` default 5, `retain_days` unset, `auto_pre_migration` default true, `auto_pre_import` default true, `auto_pre_discard` default true): a backup is kept if it is among the `retain_count` newest **or** newer than `retain_days`; it is pruned only if it satisfies neither. When both limits are unset, nothing is pruned. On disk, `retain_count = 0` is the sentinel for "unlimited" (an absent key falls back to the default of 5). Routine `pre-import` and `pre-discard` snapshots share this retention pool with manual and `pre-migration` backups, so a series of import or discard runs can crowd out older manual backups under the same union; per-kind retention is tracked as #344.
 
 **Restore** validates the candidate first (copy to a temp directory, open it — which runs migrations — and run a sentinel query), then takes a `pre-restore` safety snapshot, then swaps the candidate in: the CLI closes the pool and swaps in-process; the GUI writes a restore-marker beside the database and relaunches, applying the swap at startup before any connection is opened. The swap itself clears stale `-wal`/`-shm` sidecars left by the replaced database and installs the candidate via a temp copy + atomic rename, so an interrupted restore leaves the live database untouched rather than corrupted.
 
@@ -359,6 +360,13 @@ Multiple profiles can reference the same importer with different configuration. 
 > Per-profile loosened fingerprints and transfer-leg merging remain deferred
 > (see #266).
 >
+> Which of these two explanations applied is recorded on the reference itself,
+> as `owns_posting`: true for a posting the import wrote, false for one it
+> adopted. The column exists for discard (see below) — undoing a run must
+> delete the postings it created but only detach its references from postings
+> it merely adopted, and current-state matching alone cannot tell the two
+> apart once the run is history.
+>
 > A source reference outlives the posting it names. Deleting a leg clears the
 > reference's `posting_id` rather than deleting the reference, leaving a
 > tombstone: a `NULL` `posting_id` records a leg the source document contained
@@ -368,15 +376,28 @@ Multiple profiles can reference the same importer with different configuration. 
 > keeps its original `account_id` even where an edit recategorised the posting
 > — the reference describes the source document, not the edited state.
 > `SourceService::detach` remains the explicit "forget this provenance"
-> action, and does delete the row.
+> action, and does delete the row. The one case where a tombstone does not
+> outlive the deletion that created it: discarding the batch that wrote it (see
+> below) deletes the tombstone along with every other reference the batch
+> owns, freeing its slot — the run is undone, so nothing is left for a
+> re-import to guard against.
 >
 > Each import run is recorded in `import_batches` — the profile (if any), the
-> importer, and counts of new transactions, attached postings, and skipped
-> postings, the last split out into the subset whose account path named no
-> existing account — opened before the run and closed with its final counts. This is
-> provenance only: there is no teardown, discard, or rollback of a batch's
-> writes; discarding a batch's rows is tracked as #343. The `pre-import`
-> backup snapshot (see §4.6) is the safety net for now.
+> importer, `started_at`, `finished_at`, `discarded_at`, and counts of new
+> transactions, attached postings, and skipped postings, the last split out
+> into the subset whose account path named no existing account. `finished_at`
+> and the counts are set together when the run completes; a run that aborted
+> before then has neither, so it is never misread as one that completed and
+> did nothing. `import discard <batch-id>` (`bc-cli`; see §8.1) undoes a run:
+> every posting it created is deleted along with its references (a tombstone
+> included, per above), a posting it only adopted is detached but kept, and
+> any transaction left holding no postings is deleted too, taking along
+> whatever other batches' references happened to be riding on it. Discard
+> means the run never happened, not that it is reverted — there is no
+> undiscard. It takes a `pre-discard` snapshot (`backup.auto_pre_discard`, see
+> §4.6) before writing, and records one `ImportBatchDiscarded` event carrying
+> the removal counts; restoring that snapshot is the recovery path if a
+> discard turns out to be a mistake.
 
 ______________________________________________________________________
 
@@ -529,6 +550,8 @@ borrow-checker transaction [list|add|amend|void]
 borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|book-value]
 borrow-checker profile [create|list|show|edit|remove]
 borrow-checker import run --profile <name>
+borrow-checker import list
+borrow-checker import discard <batch-id>
 borrow-checker export --format <ledger|beancount> --output <file>
 borrow-checker report [net-worth|summary|budget]
 borrow-checker budget [status|allocate|list]
@@ -536,7 +559,7 @@ borrow-checker plugin [install|list|remove]
 borrow-checker completions <bash|elvish|fish|powershell|zsh>
 ```
 
-Importers source their own files from the profile config (see §5.2), so `import` takes no file argument and no account argument: each `RawPosting` names its own account path, resolved to an id in `bc-core` at persistence time (see §5.2, §5.3).
+Importers source their own files from the profile config (see §5.2), so `import run` takes no file argument and no account argument: each `RawPosting` names its own account path, resolved to an id in `bc-core` at persistence time (see §5.2, §5.3). `import` is a subcommand group: `run` executes a profile, `list` shows every run newest first with its outcome, and `discard <batch-id>` undoes one (see §5.3) — reported the same way `run` is, with `--json` covering all three.
 
 Import profiles are created and edited from the CLI. `profile create` takes the
 importer's opaque config as a TOML or JSON file (`--config <FILE>`, or `-` for
