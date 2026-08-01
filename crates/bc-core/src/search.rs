@@ -463,6 +463,8 @@ impl Service {
             let tx = &m.transaction;
             let date = tx.date();
             let mut touches_in_window = false;
+            let residual =
+                crate::residual::residual_of(tx.postings().iter().map(bc_models::Posting::amount));
             for posting in tx.postings() {
                 if posting.account_id() != account_id {
                     continue;
@@ -470,13 +472,20 @@ impl Service {
                 if date >= from && date < until {
                     touches_in_window = true;
                 }
-                let Some(amount) = posting.amount() else {
-                    continue;
+                let value = if let Some(amount) = posting.amount() {
+                    if amount.commodity().as_str() != commodity {
+                        continue;
+                    }
+                    amount.value()
+                } else {
+                    let Ok(crate::residual::Residual::Attributable(ref balances)) = residual else {
+                        continue;
+                    };
+                    let Some(value) = balances.get(commodity) else {
+                        continue;
+                    };
+                    value
                 };
-                if amount.commodity().as_str() != commodity {
-                    continue;
-                }
-                let value = amount.value();
                 if date < from {
                     opening = opening
                         .checked_add(value)
@@ -586,16 +595,26 @@ impl Service {
         for m in &matched {
             let tx = &m.transaction;
             let date = tx.date();
+            let residual =
+                crate::residual::residual_of(tx.postings().iter().map(bc_models::Posting::amount));
             for posting in tx.postings() {
                 if posting.account_id() != account_id {
                     continue;
                 }
-                let Some(amount) = posting.amount() else {
-                    continue;
+                let value = if let Some(amount) = posting.amount() {
+                    if amount.commodity().as_str() != commodity {
+                        continue;
+                    }
+                    amount.value()
+                } else {
+                    let Ok(crate::residual::Residual::Attributable(ref balances)) = residual else {
+                        continue;
+                    };
+                    let Some(value) = balances.get(commodity) else {
+                        continue;
+                    };
+                    value
                 };
-                if amount.commodity().as_str() != commodity {
-                    continue;
-                }
                 let Some(idx) = ranges
                     .iter()
                     .position(|(start, end)| date >= *start && date < *end)
@@ -605,7 +624,6 @@ impl Service {
                 let Some(slot) = acc.get_mut(idx) else {
                     continue;
                 };
-                let value = amount.value();
                 if value >= Decimal::ZERO {
                     slot.0 = slot
                         .0
@@ -1489,6 +1507,160 @@ mod search_tests {
             .expect("real");
         assert_eq!(stats.closing.value(), real.closing.value());
         assert_eq!(stats.opening.value(), real.opening.value());
+    }
+
+    /// Builds a two-leg transaction whose second leg (`elided_acc`) is elided,
+    /// absorbing the concrete leg's negated amount as its residual.
+    fn tx_with_elided(
+        concrete_acc: &bc_models::AccountId,
+        elided_acc: &bc_models::AccountId,
+        d: Date,
+        payee: &str,
+        value: rust_decimal::Decimal,
+    ) -> Transaction {
+        Transaction::builder()
+            .id(TransactionId::new())
+            .date(d)
+            .payee(payee.to_owned())
+            .description("desc")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(concrete_acc.clone())
+                    .amount(Amount::new(value, CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(elided_acc.clone())
+                    .maybe_amount(None)
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
+            .build()
+    }
+
+    /// A filtered and an unfiltered account page must agree on the closing
+    /// balance for an account whose every posting is an elided residual leg —
+    /// otherwise `filtered_period_stats` and `account_period_stats` disagree
+    /// on the same underlying transactions (bug #354 finding 1).
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_stats_include_the_residual_for_all_elided_account(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let bank = accts
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("Bank");
+        let food = accts
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("Food");
+        let svc = Service::new(pool.clone());
+        // Bank is the elided leg on every transaction — the Beancount idiom.
+        svc.create(tx_with_elided(
+            &food,
+            &bank,
+            date(2026, 6, 2),
+            "t1",
+            dec!(50),
+        ))
+        .await
+        .expect("t1");
+        svc.create(tx_with_elided(
+            &food,
+            &bank,
+            date(2026, 6, 10),
+            "t2",
+            dec!(25),
+        ))
+        .await
+        .expect("t2");
+
+        // A filter matching every transaction (empty query) must not collapse
+        // the derived residual to zero.
+        let filtered = svc
+            .filtered_period_stats(
+                &bank,
+                "AUD",
+                &TransactionQuery::default(),
+                date(2026, 6, 1),
+                date(2026, 7, 1),
+            )
+            .await
+            .expect("filtered stats");
+
+        let engine = crate::BalanceEngine::new(pool.clone());
+        let real = engine
+            .account_period_stats(&bank, "AUD", date(2026, 6, 1), date(2026, 7, 1))
+            .await
+            .expect("real stats");
+
+        assert_eq!(real.closing.value(), dec!(-75));
+        assert_eq!(
+            filtered.closing.value(),
+            real.closing.value(),
+            "filtered and unfiltered closing balances must agree for an all-elided account"
+        );
+        assert_eq!(filtered.expenses.value(), real.expenses.value());
+    }
+
+    /// The sparkline path must derive the same residual as the tiles path for
+    /// an all-elided account (bug #354 finding 1).
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_buckets_include_the_residual_for_all_elided_account(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let bank = accts
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("Bank");
+        let food = accts
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("Food");
+        let svc = Service::new(pool.clone());
+        svc.create(tx_with_elided(
+            &food,
+            &bank,
+            date(2026, 6, 2),
+            "t1",
+            dec!(50),
+        ))
+        .await
+        .expect("t1");
+
+        let count = core::num::NonZeroUsize::new(1).expect("nonzero");
+        let buckets = svc
+            .filtered_posting_buckets(
+                &bank,
+                "AUD",
+                &TransactionQuery::default(),
+                &Period::Monthly,
+                count,
+                date(2026, 6, 15),
+            )
+            .await
+            .expect("filtered_posting_buckets");
+
+        // Food debits 50, so Bank's elided leg absorbs a -50 residual — an outflow.
+        let bucket = buckets.first().expect("one bucket");
+        assert_eq!(bucket.inflow.value(), dec!(0));
+        assert_eq!(bucket.outflow.value(), dec!(50));
     }
 
     #[sqlx::test(migrations = "./migrations")]
