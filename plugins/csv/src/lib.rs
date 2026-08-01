@@ -342,7 +342,7 @@ fn resolve(col_index: &HashMap<String, usize>, column: &ColumnRef) -> Result<usi
         ColumnRef::Name(ref name) => col_index
             .get(&name.to_ascii_lowercase())
             .copied()
-            .ok_or_else(|| ImportError::MissingField(name.clone())),
+            .ok_or_else(|| ImportError::MissingField(column.describe())),
         ColumnRef::Index(index) => Ok(index),
     }
 }
