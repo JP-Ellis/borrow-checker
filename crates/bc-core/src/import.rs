@@ -311,6 +311,31 @@ pub trait Importer: Send + Sync + 'static {
     ///
     /// Returns [`Error`] on configuration, I/O, parse, or field errors.
     fn import(&self, config: &Config) -> Result<Vec<RawTransaction>, Error>;
+
+    /// Checks a configuration for coherence without reading any files.
+    ///
+    /// The default implementation accepts every configuration. Importers whose
+    /// configuration admits combinations that are syntactically valid but
+    /// meaningless should override it, so a profile can be checked when it is
+    /// saved rather than when an import runs.
+    ///
+    /// Implementations must not perform I/O.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Format-specific configuration.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the configuration is coherent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] describing why the configuration is incoherent.
+    #[inline]
+    fn validate(&self, _config: &Config) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

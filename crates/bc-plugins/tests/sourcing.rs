@@ -88,6 +88,75 @@ fn csv_plugin_reads_files_from_preopened_root() {
     drop(fs::remove_dir_all(&root));
 }
 
+/// Loads the CSV plugin through the registry, as a caller normally would.
+///
+/// Returns a `Box<dyn Importer>` — the same handle the application gets, which
+/// is why `validate` has to be a trait method.
+#[expect(clippy::expect_used, reason = "test helper panics on setup failure")]
+fn load_csv_importer(documents_root: &std::path::Path) -> Box<dyn bc_core::Importer> {
+    let plugin_dir = get_plugin_dir();
+    assert!(
+        plugin_dir.exists(),
+        "Plugin directory does not exist: {}. Please run `mise run build-plugins` first.",
+        plugin_dir.display()
+    );
+    let registry = PluginRegistry::load(&[plugin_dir], Some(documents_root))
+        .expect("Failed to load plugin registry");
+    registry
+        .into_importer_registry()
+        .create_for_name("csv")
+        .expect("CSV plugin not found in registry")
+}
+
+#[test]
+fn validate_rejects_an_incoherent_csv_config_without_reading_files() {
+    let root = env::temp_dir().join("bc-validate-incoherent-e2e");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&root).expect("mkdir");
+    let importer = load_csv_importer(root.as_path());
+
+    // `source_dir` deliberately does not exist: validate must not read files.
+    let config = ImportConfig::from_value(serde_json::json!({
+        "commodity": "AUD",
+        "account": "Liabilities:Bank:Card",
+        "source_dir": "does/not/exist",
+        "source_glob": "*.csv",
+        "header": {"kind": "absent"},
+        "date_column": "Date",
+        "amount_columns": {"style": "single", "column": 1_i32}
+    }));
+
+    let err = importer
+        .validate(&config)
+        .expect_err("a named column on a headerless file is incoherent");
+    assert!(
+        err.to_string().contains("date_column"),
+        "error should name the offending field, got: {err}"
+    );
+}
+
+#[test]
+fn validate_accepts_a_coherent_csv_config() {
+    let root = env::temp_dir().join("bc-validate-coherent-e2e");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&root).expect("mkdir");
+    let importer = load_csv_importer(root.as_path());
+
+    let config = ImportConfig::from_value(serde_json::json!({
+        "commodity": "AUD",
+        "account": "Liabilities:Bank:Card",
+        "source_dir": "does/not/exist",
+        "source_glob": "*.csv",
+        "header": {"kind": "absent"},
+        "date_column": 0_i32,
+        "amount_columns": {"style": "single", "column": 1_i32}
+    }));
+
+    importer
+        .validate(&config)
+        .expect("an all-positional headerless config is coherent, and validate reads no files");
+}
+
 #[test]
 fn import_errors_when_documents_root_unset() {
     let plugin_dir = get_plugin_dir();

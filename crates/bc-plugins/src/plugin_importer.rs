@@ -174,6 +174,12 @@ impl bc_core::Importer for PluginImporter {
             bc_core::ImportError::Parse(format!("plugin instantiation failed: {e}"))
         })?;
 
+        bindings
+            .borrow_checker_sdk_importer()
+            .call_validate(&mut store, &config_json)
+            .map_err(|e| bc_core::ImportError::Parse(format!("plugin call failed: {e}")))?
+            .map_err(bc_core::ImportError::from)?;
+
         let result = bindings
             .borrow_checker_sdk_importer()
             .call_parse(&mut store, &config_json)
@@ -183,5 +189,23 @@ impl bc_core::Importer for PluginImporter {
         txs.into_iter()
             .map(bc_core::RawTransaction::try_from)
             .collect::<Result<Vec<_>, _>>()
+    }
+
+    #[inline]
+    fn validate(&self, config: &bc_core::ImportConfig) -> Result<(), bc_core::ImportError> {
+        let config_json = serde_json::to_string(config.as_value())
+            .map_err(|e| bc_core::ImportError::Parse(format!("config serialisation: {e}")))?;
+
+        // No `documents_root` check: validation reads no files, so a profile
+        // can be checked before its source directory exists.
+        let (bindings, mut store) = self.instantiate().map_err(|e| {
+            bc_core::ImportError::Parse(format!("plugin instantiation failed: {e}"))
+        })?;
+
+        bindings
+            .borrow_checker_sdk_importer()
+            .call_validate(&mut store, &config_json)
+            .map_err(|e| bc_core::ImportError::Parse(format!("plugin call failed: {e}")))?
+            .map_err(bc_core::ImportError::from)
     }
 }
