@@ -2852,4 +2852,104 @@ mod tests {
             "the leg the user deleted is back, imported fresh"
         );
     }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_surviving_transactions_leg_is_freed_by_discard(pool: SqlitePool) {
+        // The other round-trip tests all discard a batch that owns every leg
+        // of its transaction(s), so the transaction ends up empty and
+        // `ON DELETE CASCADE` on `transactions` sweeps its references away
+        // regardless of whether discard itself hard-deleted or merely
+        // tombstoned them — that cascade would paper over the exact bug this
+        // feature exists to prevent. Here the transaction survives its
+        // batch's discard, so nothing but a genuine hard delete can free the
+        // leg's slot.
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool);
+
+        // Batch 1: COFFEE lands as a lone, unbalanced Assets:Bank leg — not
+        // owned by the batch under test.
+        let solo = raw_with("COFFEE", vec![leg("Assets:Bank", Some(-50))]);
+        let batch1 = run(&svcs, core::slice::from_ref(&solo)).await;
+        assert_eq!(batch1.new_transactions, 1);
+        assert_eq!(posting_count(&pool).await, 1);
+
+        // Batch 2, under a wrong configuration: alongside COFFEE's own
+        // Expenses:Food leg (fine on its own), RENT imports with its sign
+        // backwards. Import batches are discarded as a whole, so fixing RENT
+        // means redoing the batch — taking COFFEE's correct leg down with it.
+        let full = raw_with(
+            "COFFEE",
+            vec![
+                leg("Assets:Bank", Some(-50)),
+                leg("Expenses:Food", Some(50)),
+            ],
+        );
+        let sign_wrong = raw_with(
+            "RENT",
+            vec![
+                leg("Assets:Bank", Some(120)),
+                leg("Expenses:Food", Some(-120)),
+            ],
+        );
+        let batch2 = run(&svcs, &[full.clone(), sign_wrong]).await;
+        assert_eq!(
+            batch2.new_transactions, 1,
+            "RENT lands as its own (wrong) transaction"
+        );
+        assert_eq!(
+            batch2.attached_postings, 1,
+            "COFFEE's Food leg attaches to the transaction batch 1 started"
+        );
+        assert_eq!(posting_count(&pool).await, 4);
+
+        let outcome = svcs
+            .batches
+            .discard(&batch2.batch_id)
+            .await
+            .expect("discard");
+        assert_eq!(
+            outcome.removed_postings, 3,
+            "COFFEE's Food leg and both of RENT's legs were batch 2's own"
+        );
+        assert_eq!(
+            outcome.removed_transactions, 1,
+            "RENT's transaction is left with nothing and is swept"
+        );
+        assert_eq!(
+            posting_count(&pool).await,
+            1,
+            "only batch 1's Assets:Bank leg on COFFEE remains"
+        );
+
+        // Corrected configuration: COFFEE is resubmitted byte-for-byte
+        // unchanged (its Food leg was never wrong; the batch-wide discard
+        // simply wiped its reference), RENT with its sign fixed.
+        let sign_right = raw_with(
+            "RENT",
+            vec![
+                leg("Assets:Bank", Some(-120)),
+                leg("Expenses:Food", Some(120)),
+            ],
+        );
+        let batch3 = run(&svcs, &[full, sign_right]).await;
+
+        assert_eq!(
+            batch3.attached_postings, 1,
+            "freeing batch 2's slot lets COFFEE's Food leg attach again"
+        );
+        assert_eq!(
+            batch3.new_transactions, 1,
+            "RENT imports cleanly under the corrected sign"
+        );
+        assert_eq!(
+            posting_count(&pool).await,
+            4,
+            "COFFEE (2 legs) and the corrected RENT (2 legs)"
+        );
+        assert_eq!(
+            postings_of_account(&pool, &food).await,
+            2,
+            "COFFEE's and RENT's Food legs both landed"
+        );
+    }
 }
