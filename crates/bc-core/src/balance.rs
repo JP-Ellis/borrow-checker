@@ -567,7 +567,10 @@ impl Engine {
     ///
     /// Prefers the configured default from `account_commodities` (position = 0). When no
     /// commodity is configured, falls back to the most-used posting commodity so that
-    /// accounts imported without explicit commodity setup still return a useful value.
+    /// accounts imported without explicit commodity setup still return a useful value. When
+    /// every posting on the account is elided (so no stored commodity exists at all), falls
+    /// back further to the account's first-seen residual commodity — see
+    /// [`Self::residual_commodities`].
     ///
     /// # Errors
     ///
@@ -608,12 +611,13 @@ impl Engine {
             .and_then(|balances| balances.iter().next().map(|(code, _)| code.to_owned())))
     }
 
-    /// Returns each account's dominant residual commodity.
+    /// Returns each account's first-seen residual commodity.
     ///
     /// Used only as the last tier of commodity inference, for an account whose
     /// postings are *all* elided and therefore carry no stored commodity. The
-    /// dominant commodity is the one appearing in the most of that account's
-    /// residuals; ties resolve to first-seen order.
+    /// chosen commodity is whichever one iterates first from that account's
+    /// residual [`bc_models::Balances`] — no counting or weighting by
+    /// magnitude, purely iteration order.
     ///
     /// Callers must additionally check the account is still active: this
     /// derives purely from [`crate::residual::Residuals`], which is not
@@ -1931,6 +1935,28 @@ mod tests {
             total,
             Decimal::ZERO,
             "AUD must close to zero across all accounts"
+        );
+
+        // `default_balances` exercises a different path than `balance_for`: it
+        // infers each account's commodity (tier-3 falls back to the residual
+        // for Bank, whose every posting is elided) and intersects against the
+        // set of non-archived accounts. It must agree with the direct sum.
+        let default_balances = engine.default_balances().await.expect("default balances");
+        let default_total = [&bank, &food, &rent]
+            .into_iter()
+            .try_fold(Decimal::ZERO, |acc, account| {
+                let value = default_balances
+                    .get(account)
+                    .unwrap_or_else(|| panic!("{account} must appear in default_balances"))
+                    .value();
+                acc.checked_add(value)
+            })
+            .expect("no overflow");
+
+        assert_eq!(
+            default_total,
+            Decimal::ZERO,
+            "default_balances must also close to zero across all accounts"
         );
     }
 
