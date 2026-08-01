@@ -7,6 +7,8 @@ use sqlx::SqlitePool;
 
 use crate::BcError;
 use crate::BcResult;
+use crate::DiscardOutcome;
+use crate::import::discard;
 
 /// A record of one import run.
 #[non_exhaustive]
@@ -223,6 +225,31 @@ impl Service {
         .await?;
 
         rows.into_iter().map(parse_row).collect()
+    }
+
+    /// Discards this batch: undoes the import run that produced it.
+    ///
+    /// Every reference the run wrote is deleted, freeing its dedup slot; every
+    /// posting the run created goes with them; every transaction left with no
+    /// postings is deleted. A posting the run merely adopted survives, losing
+    /// only its provenance. See the `import::discard` module for the reasoning.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The batch to discard.
+    ///
+    /// # Returns
+    ///
+    /// A [`DiscardOutcome`] describing what was removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if no batch with that ID exists,
+    /// [`BcError::InvalidInput`] if it has already been discarded, and
+    /// [`BcError::Database`] on database failure.
+    #[inline]
+    pub async fn discard(&self, id: &ImportBatchId) -> BcResult<DiscardOutcome> {
+        discard::discard(&self.pool, id).await
     }
 }
 
