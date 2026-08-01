@@ -79,6 +79,7 @@ pub use import::batch::Counts as ImportBatchCounts;
 pub use import::batch::ImportBatch;
 pub use import::batch::Service as ImportBatchService;
 pub use import::discard::Outcome as DiscardOutcome;
+pub use import::discard::already_discarded_error as import_batch_already_discarded_error;
 pub use import::profile::ImportProfile;
 pub use import::profile::Service as ImportProfileService;
 pub use import::registry::Factory as ImporterFactory;
