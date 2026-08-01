@@ -469,13 +469,30 @@ impl TransactionExt for bc_ipc::Transaction {
         forest: &bc_models::TagForest,
     ) -> Self {
         let tx_tag_ids = tx.tag_ids();
+        let residual =
+            crate::residual::residual_of(tx.postings().iter().map(bc_models::Posting::amount));
         let postings = tx
             .postings()
             .iter()
             .map(|p| {
                 let account_id = p.account_id().to_string();
                 let account_name = build_account_path(&account_id, account_map);
-                let amount = p.amount().map(bc_ipc::Amount::from);
+                let amount = match p.amount() {
+                    Some(a) => bc_ipc::PostingAmount::Stored(bc_ipc::Amount::from(a)),
+                    None => match residual {
+                        Ok(crate::residual::Residual::Attributable(ref balances)) => {
+                            bc_ipc::PostingAmount::Derived(
+                                balances
+                                    .iter()
+                                    .map(|(code, value)| bc_ipc::Amount::new(value, code))
+                                    .collect(),
+                            )
+                        }
+                        // Two or more elided legs, or a residual that overflowed
+                        // Decimal — neither is attributable to this leg.
+                        Ok(_) | Err(_) => bc_ipc::PostingAmount::Ambiguous,
+                    },
+                };
                 bc_ipc::Posting::new(
                     p.id().to_string(),
                     bc_ipc::AccountRef::new(account_id, account_name),
@@ -584,6 +601,7 @@ mod tests {
 
     use crate::budget_tree::BudgetTreeSummary;
     use crate::ipc::AuditEntryExt as _;
+    use crate::ipc::TransactionExt;
 
     #[test]
     fn transfer_suggestion_converts_to_ipc_dto() {
@@ -821,5 +839,99 @@ mod tests {
         let map: HashMap<String, &bc_models::Account> = HashMap::new();
         let fake_id = "account_00000000000000000000000000";
         assert_eq!(super::build_account_path(fake_id, &map), fake_id);
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    fn elided_leg_converts_to_a_derived_amount() {
+        use bc_models::Amount;
+        use rust_decimal_macros::dec;
+
+        let bank = bc_models::AccountId::new();
+        let food = bc_models::AccountId::new();
+        let tx = bc_models::Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(jiff::civil::date(2026, 1, 1))
+            .description("Groceries")
+            .reconciliation(bc_models::Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(vec![
+                bc_models::Posting::builder()
+                    .id(bc_models::PostingId::new())
+                    .account_id(food)
+                    .amount(Amount::new(dec!(50), "AUD"))
+                    .build(),
+                bc_models::Posting::builder()
+                    .id(bc_models::PostingId::new())
+                    .account_id(bank)
+                    .maybe_amount(None)
+                    .build(),
+            ])
+            .build();
+
+        let accounts = HashMap::new();
+        let forest = bc_models::TagForest::default();
+        let dto = <bc_ipc::Transaction as TransactionExt>::from_model_with_accounts(
+            &tx, &accounts, &forest,
+        );
+
+        let bc_ipc::PostingAmount::Derived(residual) = &dto.postings[1].amount else {
+            panic!("the elided leg must carry a derived amount");
+        };
+        assert_eq!(residual.len(), 1);
+        assert_eq!(residual[0].value, dec!(-50));
+        assert_eq!(residual[0].currency_code, "AUD");
+
+        assert!(matches!(
+            dto.postings[0].amount,
+            bc_ipc::PostingAmount::Stored(_)
+        ));
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    fn two_elided_legs_convert_to_ambiguous() {
+        use bc_models::Amount;
+        use rust_decimal_macros::dec;
+
+        let tx = bc_models::Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(jiff::civil::date(2026, 1, 1))
+            .description("Ambiguous")
+            .reconciliation(bc_models::Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(vec![
+                bc_models::Posting::builder()
+                    .id(bc_models::PostingId::new())
+                    .account_id(bc_models::AccountId::new())
+                    .amount(Amount::new(dec!(50), "AUD"))
+                    .build(),
+                bc_models::Posting::builder()
+                    .id(bc_models::PostingId::new())
+                    .account_id(bc_models::AccountId::new())
+                    .maybe_amount(None)
+                    .build(),
+                bc_models::Posting::builder()
+                    .id(bc_models::PostingId::new())
+                    .account_id(bc_models::AccountId::new())
+                    .maybe_amount(None)
+                    .build(),
+            ])
+            .build();
+
+        let accounts = HashMap::new();
+        let forest = bc_models::TagForest::default();
+        let dto = <bc_ipc::Transaction as TransactionExt>::from_model_with_accounts(
+            &tx, &accounts, &forest,
+        );
+
+        assert!(matches!(
+            dto.postings[1].amount,
+            bc_ipc::PostingAmount::Ambiguous
+        ));
+        assert!(matches!(
+            dto.postings[2].amount,
+            bc_ipc::PostingAmount::Ambiguous
+        ));
     }
 }
