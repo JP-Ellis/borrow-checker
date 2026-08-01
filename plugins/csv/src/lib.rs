@@ -42,6 +42,7 @@ impl bc_sdk::Importer for CsvImporter {
     #[inline]
     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
         let cfg: Config = config.as_typed()?;
+        cfg.validate()?;
 
         let files = crate::glob::matching_files(&cfg.source_dir, &cfg.source_glob)?;
         if files.is_empty() {
@@ -787,6 +788,38 @@ mod tests {
         assert_eq!(
             txns[1].postings[0].amount,
             Some(Amount::new(-4500, "AUD", 2))
+        );
+    }
+
+    #[test]
+    fn import_rejects_named_columns_on_a_headerless_file() {
+        // The failure must arrive from config validation, not from the per-file
+        // loop — which logs and skips, silently yielding zero transactions.
+        let dir = std::env::temp_dir().join("bc-csv-import-invalid-config-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let mut f = std::fs::File::create(dir.join("statement.csv")).expect("create");
+        f.write_all(b"01/02/2025,120.00,GENERIC GROCER\n")
+            .expect("write");
+
+        let config_json = serde_json::json!({
+            "commodity": "AUD",
+            "account": "Liabilities:Bank:Card",
+            "source_dir": dir.to_str().expect("utf8"),
+            "source_glob": "*.csv",
+            "header": {"kind": "absent"},
+            "date_column": "Date",
+            "date_format": "%d/%m/%Y",
+            "amount_columns": {"style": "single", "column": 1}
+        });
+
+        let importer = CsvImporter;
+        let err = importer
+            .import(ImportConfig::from_json_string(config_json.to_string()))
+            .expect_err("a named column on a headerless file is not importable");
+        assert!(
+            err.to_string().contains("date_column"),
+            "error should name the offending field, got: {err}"
         );
     }
 
