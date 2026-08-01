@@ -90,6 +90,13 @@ interface importer {
     ///
     /// Note: `import` is a reserved WIT keyword, so this function is named `parse`.
     parse: func(config: import-config) -> result<list<raw-transaction>, import-error>;
+
+    /// Check a config for coherence without reading any files.
+    ///
+    /// Hosts may call this when an import profile is saved, so configuration
+    /// errors surface at authoring time rather than at import time. It must
+    /// not perform I/O.
+    validate: func(config: import-config) -> result<_, import-error>;
 }
 
 /// The exporter interface that exporter plugins will export.

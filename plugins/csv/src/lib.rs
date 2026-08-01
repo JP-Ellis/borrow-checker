@@ -74,6 +74,12 @@ impl bc_sdk::Importer for CsvImporter {
         }
         Ok(all)
     }
+
+    #[inline]
+    fn validate(&self, config: ImportConfig) -> Result<(), ImportError> {
+        let cfg: Config = config.as_typed()?;
+        cfg.validate()
+    }
 }
 
 impl CsvImporter {
