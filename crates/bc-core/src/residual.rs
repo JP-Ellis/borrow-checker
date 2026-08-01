@@ -119,13 +119,6 @@ pub(crate) struct Residuals {
     by_account: HashMap<String, Balances>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "loader consumed by the balance engine in Task 3/4; not yet wired in production code"
-    )
-)]
 impl Residuals {
     /// Loads residuals for every elided posting belonging to `account_id`.
     ///
@@ -301,6 +294,13 @@ impl Residuals {
     ///
     /// One `(account id, balances)` pair per account that holds at least one
     /// elided posting whose transaction was attributable.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no production call site yet iterates residuals by account without also needing the totals map; kept for the balance engine's future per-account residual views"
+        )
+    )]
     pub(crate) fn accounts_with_residuals(&self) -> impl Iterator<Item = (&str, &Balances)> {
         self.by_account
             .iter()
