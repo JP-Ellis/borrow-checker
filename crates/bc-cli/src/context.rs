@@ -41,6 +41,12 @@ pub struct AppContext {
     pub batches: bc_core::ImportBatchService,
     /// Whether to snapshot the database before each import run.
     pub auto_pre_import: bool,
+    /// Whether to snapshot the database before discarding an import batch.
+    #[expect(
+        dead_code,
+        reason = "consumed by `import discard` in a later task; wired into AppContext now to keep the setting symmetric with auto_pre_import"
+    )]
+    pub auto_pre_discard: bool,
 }
 
 impl AppContext {
@@ -102,6 +108,7 @@ impl AppContext {
             transfers: bc_core::TransferService::new(pool.clone()),
             batches: bc_core::ImportBatchService::new(pool.clone()),
             auto_pre_import: backup_section.auto_pre_import(),
+            auto_pre_discard: backup_section.auto_pre_discard(),
             budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
         })
     }
