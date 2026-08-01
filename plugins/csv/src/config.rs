@@ -325,7 +325,7 @@ impl Default for Config {
 impl Config {
     /// Returns the column names that are required to identify the CSV header row.
     ///
-    /// Used by the [`Preamble::AutoDetect`] strategy to locate the header line.
+    /// Used by the [`Header::AutoDetect`] strategy to locate the header line.
     /// Always includes the date column and at least one amount column.
     ///
     /// # Returns
