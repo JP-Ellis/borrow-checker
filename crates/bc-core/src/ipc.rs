@@ -160,6 +160,17 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                 ("import", format!("imported from {name}: {narration}"))
             }
             Event::TransactionSourceDetached { .. } => ("import", "source removed".to_owned()),
+            Event::ImportBatchDiscarded {
+                removed_postings,
+                removed_transactions,
+                ..
+            } => (
+                "import",
+                format!(
+                    "import discarded: {removed_postings} postings, \
+                     {removed_transactions} transactions removed"
+                ),
+            ),
             other => {
                 let k = other.kind();
                 (k, k.to_owned())
@@ -659,6 +670,26 @@ mod tests {
         assert!(
             !entry.message.contains(&account.to_string()),
             "message must not leak the raw account id"
+        );
+    }
+
+    #[test]
+    fn import_batch_discarded_renders_readable_audit_entry() {
+        let event = crate::Event::ImportBatchDiscarded {
+            batch_id: bc_models::ImportBatchId::new(),
+            removed_postings: 6,
+            removed_transactions: 4,
+            detached_adopted: 3,
+            freed_tombstones: 5,
+            other_batch_references_removed: 7,
+            edited_postings: 1,
+            reconciled_postings: 2,
+        };
+        let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &HashMap::new());
+        assert_eq!(entry.kind, "import");
+        assert_eq!(
+            entry.message,
+            "import discarded: 6 postings, 4 transactions removed"
         );
     }
 
