@@ -209,6 +209,7 @@ mod tests {
     use bc_ipc::Amount;
     use bc_ipc::Period;
     use bc_ipc::Posting;
+    use bc_ipc::PostingAmount;
     use bc_ipc::Reconciliation;
     use bc_ipc::Transaction;
     use jiff::Span;
@@ -278,7 +279,7 @@ mod tests {
                 Posting::new(
                     "posting-1",
                     AccountRef::new(account_id, "Account One"),
-                    Some(Amount::new(Decimal::new(-1_000, 2), "AUD")),
+                    PostingAmount::Stored(Amount::new(Decimal::new(-1_000, 2), "AUD")),
                     None::<&str>,
                     vec![],
                     None,
@@ -287,7 +288,7 @@ mod tests {
                 Posting::new(
                     "posting-2",
                     AccountRef::new("other-account", "Account Two"),
-                    Some(Amount::new(Decimal::new(1_000, 2), "AUD")),
+                    PostingAmount::Stored(Amount::new(Decimal::new(1_000, 2), "AUD")),
                     None::<&str>,
                     vec![],
                     None,

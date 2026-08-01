@@ -72,11 +72,11 @@ impl EditablePosting {
             account_name: p.account.name.clone(),
             amount: p
                 .amount
-                .as_ref()
+                .stored()
                 .map_or_else(String::new, |a| format!("{} {}", a.currency_code, a.value)),
             currency: p
                 .amount
-                .as_ref()
+                .stored()
                 .map_or_else(String::new, |a| a.currency_code.clone()),
             note: p.note.clone().unwrap_or_default(),
             tags: p.tags.clone(),
@@ -507,6 +507,7 @@ pub mod tests {
     use bc_ipc::Amount;
     use bc_ipc::CommodityInfo;
     use bc_ipc::Posting;
+    use bc_ipc::PostingAmount;
     use bc_ipc::Reconciliation;
     use bc_ipc::Transaction;
     use jiff::civil::Date;
@@ -527,7 +528,7 @@ pub mod tests {
             Posting::new(
                 "p1",
                 AccountRef::new("checking", "Checking"),
-                Some(Amount::new(Decimal::new(-8_420, 2), "AUD")),
+                PostingAmount::Stored(Amount::new(Decimal::new(-8_420, 2), "AUD")),
                 None::<&str>,
                 vec![],
                 None,
@@ -536,7 +537,7 @@ pub mod tests {
             Posting::new(
                 "p2",
                 AccountRef::new("groceries", "Groceries"),
-                Some(Amount::new(Decimal::new(8_420, 2), "AUD")),
+                PostingAmount::Stored(Amount::new(Decimal::new(8_420, 2), "AUD")),
                 None::<&str>,
                 vec![],
                 None,
@@ -572,7 +573,7 @@ pub mod tests {
                 Posting::new(
                     "p-1",
                     AccountRef::new("acct-checking", "Assets :: Checking"),
-                    Some(Amount::new(Decimal::new(-8_420, 2), "AUD")),
+                    PostingAmount::Stored(Amount::new(Decimal::new(-8_420, 2), "AUD")),
                     None::<&str>,
                     vec![],
                     None,
@@ -581,7 +582,7 @@ pub mod tests {
                 Posting::new(
                     "p-2",
                     AccountRef::new("acct-groceries", "Expenses :: Groceries"),
-                    None,
+                    PostingAmount::Derived(vec![]),
                     Some("split"),
                     vec!["tag-x".to_owned()],
                     None,
@@ -607,7 +608,7 @@ pub mod tests {
                 Posting::new(
                     "p-1",
                     AccountRef::new("acct-checking", "Assets :: Checking"),
-                    Some(Amount::new(Decimal::new(-8_420, 2), "AUD")),
+                    PostingAmount::Stored(Amount::new(Decimal::new(-8_420, 2), "AUD")),
                     None::<&str>,
                     vec![],
                     None,
@@ -616,7 +617,7 @@ pub mod tests {
                 Posting::new(
                     "p-2",
                     AccountRef::new("acct-groceries", "Expenses :: Groceries"),
-                    Some(Amount::new(Decimal::new(8_420, 2), "AUD")),
+                    PostingAmount::Stored(Amount::new(Decimal::new(8_420, 2), "AUD")),
                     None::<&str>,
                     vec![],
                     None,
@@ -674,7 +675,7 @@ pub mod tests {
         let p = Posting::new(
             "p-9",
             AccountRef::new("a", "A :: B"),
-            Some(Amount::new(Decimal::new(1_250, 2), "USD")),
+            PostingAmount::Stored(Amount::new(Decimal::new(1_250, 2), "USD")),
             None::<&str>,
             vec![],
             Some(Date::constant(2026, 1, 1)),
