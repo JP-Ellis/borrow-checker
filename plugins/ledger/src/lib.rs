@@ -125,6 +125,18 @@ impl bc_sdk::Importer for LedgerImporter {
 
         Ok(raw_txs)
     }
+
+    /// Accepts every configuration without checking it.
+    ///
+    /// Config validation rules for the ledger importer are not implemented
+    /// yet; see [issue #361](https://github.com/JP-Ellis/borrow-checker/issues/361).
+    #[inline]
+    fn validate(&self, _config: ImportConfig) -> Result<(), ImportError> {
+        bc_sdk::warn!(
+            "config validation is not implemented for the ledger importer; config accepted without checks"
+        );
+        Ok(())
+    }
 }
 
 /// Converts a [`rust_decimal::Decimal`] and currency string into a [`bc_sdk::Amount`].
