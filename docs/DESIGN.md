@@ -528,7 +528,7 @@ borrow-checker account [list|create|archive]
 borrow-checker transaction [list|add|amend|void]
 borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|book-value]
 borrow-checker profile [create|list|show|edit|remove]
-borrow-checker import --profile <name>
+borrow-checker import run --profile <name>
 borrow-checker export --format <ledger|beancount> --output <file>
 borrow-checker report [net-worth|summary|budget]
 borrow-checker budget [status|allocate|list]

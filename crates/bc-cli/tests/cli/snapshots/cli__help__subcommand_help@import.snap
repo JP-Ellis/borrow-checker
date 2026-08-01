@@ -1,5 +1,6 @@
 ---
 source: crates/bc-cli/tests/cli/help.rs
+assertion_line: 35
 expression: output
 ---
 success: true
@@ -7,16 +8,17 @@ exit_code: 0
 ----- stdout -----
 Import transactions using a named import profile
 
-Usage: borrow-checker import [OPTIONS] --profile <NAME>
+Usage: borrow-checker import [OPTIONS] <COMMAND>
+
+Commands:
+  run   Run an import using a named profile
+  help  Print this message or the help of the given subcommand(s)
 
 Options:
       --json
           Emit machine-readable JSON instead of human-readable output
 
           [env: BC_JSON=]
-
-      --profile <NAME>
-          Name of the import profile to use
 
       --db-path <DB_PATH>
           Path to the SQLite database file.
