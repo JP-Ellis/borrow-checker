@@ -289,6 +289,10 @@ pub enum Error {
 ///     ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
 ///         todo!()
 ///     }
+///
+///     fn validate(&self, config: &bc_core::ImportConfig) -> Result<(), bc_core::ImportError> {
+///         Ok(())
+///     }
 /// }
 /// ```
 pub trait Importer: Send + Sync + 'static {
@@ -315,10 +319,13 @@ pub trait Importer: Send + Sync + 'static {
 
     /// Checks a configuration for coherence without reading any files.
     ///
-    /// The default implementation accepts every configuration. Importers whose
-    /// configuration admits combinations that are syntactically valid but
-    /// meaningless should override it, so a profile can be checked when it is
-    /// saved rather than when an import runs.
+    /// Importers whose configuration admits combinations that are syntactically
+    /// valid but meaningless should reject them here, so a profile can be
+    /// checked when it is saved rather than when an import runs. An importer
+    /// with nothing to check yet should still implement this explicitly,
+    /// returning `Ok(())` — there is no default, so a delegate wrapper that
+    /// forgets to forward this method fails to compile rather than silently
+    /// skipping validation.
     ///
     /// Implementations must not perform I/O.
     ///
@@ -333,10 +340,7 @@ pub trait Importer: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns [`Error`] describing why the configuration is incoherent.
-    #[inline]
-    fn validate(&self, _config: &Config) -> Result<(), Error> {
-        Ok(())
-    }
+    fn validate(&self, config: &Config) -> Result<(), Error>;
 }
 
 #[cfg(test)]

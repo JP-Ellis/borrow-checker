@@ -726,6 +726,10 @@ mod tests {
                     .build(),
             ])
         }
+
+        fn validate(&self, _config: &bc_core::ImportConfig) -> Result<(), bc_core::ImportError> {
+            Ok(())
+        }
     }
 
     /// Builds the stub importer behind the `stub` name.
