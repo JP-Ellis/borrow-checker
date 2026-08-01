@@ -891,4 +891,189 @@ mod tests {
         let result = importer.import(ImportConfig::from_json_string(cfg.to_string()));
         assert!(result.is_err());
     }
+
+    #[test]
+    fn import_headerless_four_column_with_running_balance() {
+        // Shape: date, signed amount, description, running balance. dd/mm/yyyy,
+        // quoted fields, a leading '+' on credits.
+        let dir = std::env::temp_dir().join("bc-csv-import-headerless-balance-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let csv = "01/02/2025,\"+120.00\",\"Repayment/Payment\",\"-1234.56\"\n\
+                   02/02/2025,\"-45.00\",\"GENERIC GROCER\",\"-1279.56\"\n";
+        let mut f = std::fs::File::create(dir.join("statement.csv")).expect("create");
+        f.write_all(csv.as_bytes()).expect("write");
+
+        let config_json = serde_json::json!({
+            "commodity": "AUD",
+            "account": "Liabilities:Bank:Card",
+            "source_dir": dir.to_str().expect("utf8"),
+            "source_glob": "*.csv",
+            "header": {"kind": "absent"},
+            "date_column": 0,
+            "date_format": "%d/%m/%Y",
+            "amount_columns": {"style": "single", "column": 1},
+            "description_column": 2,
+            "balance_column": 3
+        });
+
+        let importer = CsvImporter;
+        let txns = importer
+            .import(ImportConfig::from_json_string(config_json.to_string()))
+            .expect("import should succeed");
+
+        assert_eq!(txns.len(), 2);
+        assert_eq!(txns[0].date, Date::new(2025, 2, 1));
+        assert_eq!(
+            txns[0].postings[0].amount,
+            Some(Amount::new(12000, "AUD", 2))
+        );
+        assert_eq!(
+            txns[0].postings[0].balance,
+            Some(Amount::new(-123_456, "AUD", 2))
+        );
+        assert_eq!(txns[0].description, "Repayment/Payment");
+        assert_eq!(
+            txns[1].postings[0].amount,
+            Some(Amount::new(-4500, "AUD", 2))
+        );
+    }
+
+    #[test]
+    fn import_headerless_three_column_without_balance() {
+        // Shape: date, signed amount, description. Unquoted description with
+        // runs of internal whitespace, which `Trim::All` must not collapse.
+        let dir = std::env::temp_dir().join("bc-csv-import-headerless-nobalance-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let csv = "03/02/2025,\"-33.03\",GENERIC GROCER - SUBURB    SUBURB NORTH\n";
+        let mut f = std::fs::File::create(dir.join("statement.csv")).expect("create");
+        f.write_all(csv.as_bytes()).expect("write");
+
+        let config_json = serde_json::json!({
+            "commodity": "AUD",
+            "account": "Liabilities:Bank:Card",
+            "source_dir": dir.to_str().expect("utf8"),
+            "source_glob": "*.csv",
+            "header": {"kind": "absent"},
+            "date_column": 0,
+            "date_format": "%d/%m/%Y",
+            "amount_columns": {"style": "single", "column": 1},
+            "description_column": 2
+        });
+
+        let importer = CsvImporter;
+        let txns = importer
+            .import(ImportConfig::from_json_string(config_json.to_string()))
+            .expect("import should succeed");
+
+        assert_eq!(txns.len(), 1);
+        assert_eq!(txns[0].date, Date::new(2025, 2, 3));
+        assert_eq!(
+            txns[0].postings[0].amount,
+            Some(Amount::new(-3303, "AUD", 2))
+        );
+        assert_eq!(
+            txns[0].description,
+            "GENERIC GROCER - SUBURB    SUBURB NORTH"
+        );
+        assert_eq!(txns[0].postings[0].balance, None);
+    }
+
+    #[test]
+    fn import_headerless_with_a_preamble_to_skip() {
+        // The two axes are independent: discard a banner *and* have no header.
+        let dir = std::env::temp_dir().join("bc-csv-import-headerless-preamble-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let csv = "Statement export\n\
+                   01/02/2025,120.00,GENERIC GROCER\n";
+        let mut f = std::fs::File::create(dir.join("statement.csv")).expect("create");
+        f.write_all(csv.as_bytes()).expect("write");
+
+        let config_json = serde_json::json!({
+            "commodity": "AUD",
+            "account": "Liabilities:Bank:Card",
+            "source_dir": dir.to_str().expect("utf8"),
+            "source_glob": "*.csv",
+            "preamble": {"strategy": "skip_lines", "lines": 1},
+            "header": {"kind": "absent"},
+            "date_column": 0,
+            "date_format": "%d/%m/%Y",
+            "amount_columns": {"style": "single", "column": 1},
+            "description_column": 2
+        });
+
+        let importer = CsvImporter;
+        let txns = importer
+            .import(ImportConfig::from_json_string(config_json.to_string()))
+            .expect("import should succeed");
+
+        assert_eq!(
+            txns.len(),
+            1,
+            "the banner is discarded, the data row is kept"
+        );
+        assert_eq!(txns[0].date, Date::new(2025, 2, 1));
+    }
+
+    #[test]
+    fn import_mixes_named_and_positional_columns_with_a_header() {
+        // The header has a blank name, which cannot be addressed by name at all.
+        let dir = std::env::temp_dir().join("bc-csv-import-mixed-addressing-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let csv = "Date,Amount,,Details\n\
+                   2025-02-01,120.00,IGNORED,GENERIC GROCER\n";
+        let mut f = std::fs::File::create(dir.join("statement.csv")).expect("create");
+        f.write_all(csv.as_bytes()).expect("write");
+
+        let config_json = serde_json::json!({
+            "commodity": "AUD",
+            "account": "Assets:Bank:Checking",
+            "source_dir": dir.to_str().expect("utf8"),
+            "source_glob": "*.csv",
+            "date_column": "Date",
+            "date_format": "%Y-%m-%d",
+            "amount_columns": {"style": "single", "column": "Amount"},
+            "description_column": 3
+        });
+
+        let importer = CsvImporter;
+        let txns = importer
+            .import(ImportConfig::from_json_string(config_json.to_string()))
+            .expect("import should succeed");
+
+        assert_eq!(txns.len(), 1);
+        assert_eq!(txns[0].description, "GENERIC GROCER");
+        assert_eq!(
+            txns[0].postings[0].amount,
+            Some(Amount::new(12000, "AUD", 2))
+        );
+    }
+
+    #[test]
+    fn parse_bytes_errors_on_out_of_range_index() {
+        // Out-of-range is a parse-time error by design: it cannot be known from
+        // the config alone, so `validate` does not and cannot catch it.
+        let importer = CsvImporter;
+        let cfg = Config {
+            account: "Liabilities:Bank:Card".to_owned(),
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            date_format: "%d/%m/%Y".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(9),
+            },
+            commodity: Some("AUD".to_owned()),
+            ..Config::default()
+        };
+        let result = importer.parse_bytes(b"01/02/2025,120.00\n", &cfg, "statement.csv");
+        let err = result.expect_err("column 9 does not exist in a two-column row");
+        assert_eq!(err.to_string(), "missing required field: column 9");
+    }
 }
