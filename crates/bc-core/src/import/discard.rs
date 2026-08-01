@@ -142,11 +142,30 @@ async fn ensure_discardable(
             .await?;
     match existing {
         None => Err(BcError::NotFound(format!("import batch {id}"))),
-        Some(Some(_)) => Err(BcError::InvalidInput(format!(
-            "import batch {id} has already been discarded"
-        ))),
+        Some(Some(_)) => Err(already_discarded_error(id)),
         Some(None) => Ok(()),
     }
+}
+
+/// Builds the error for a batch that has already been discarded.
+///
+/// This is the single source of that error's text. A caller that wants to
+/// reject a repeat discard *before* doing work this guard only runs after —
+/// `bc-cli`'s `execute_discard` skips a wasted snapshot this way — calls this
+/// directly rather than duplicating the message, so the two call sites cannot
+/// drift apart. [`ensure_discardable`] remains the authoritative check: this
+/// function only builds the error, it does not decide when to raise it.
+///
+/// # Arguments
+///
+/// * `id` - The batch that has already been discarded.
+///
+/// # Returns
+///
+/// A [`BcError::InvalidInput`] naming the batch.
+#[must_use]
+pub fn already_discarded_error(id: &ImportBatchId) -> BcError {
+    BcError::InvalidInput(format!("import batch {id} has already been discarded"))
 }
 
 /// What the batch's reference rows say the discard has to do.
