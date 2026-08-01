@@ -42,10 +42,6 @@ pub struct AppContext {
     /// Whether to snapshot the database before each import run.
     pub auto_pre_import: bool,
     /// Whether to snapshot the database before discarding an import batch.
-    #[expect(
-        dead_code,
-        reason = "consumed by `import discard` in a later task; wired into AppContext now to keep the setting symmetric with auto_pre_import"
-    )]
     pub auto_pre_discard: bool,
 }
 

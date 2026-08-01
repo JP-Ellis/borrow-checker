@@ -11,9 +11,10 @@ Import transactions using a named import profile
 Usage: borrow-checker import [OPTIONS] <COMMAND>
 
 Commands:
-  run   Run an import using a named profile
-  list  List import runs, newest first
-  help  Print this message or the help of the given subcommand(s)
+  run      Run an import using a named profile
+  list     List import runs, newest first
+  discard  Discard an import run, undoing what it created
+  help     Print this message or the help of the given subcommand(s)
 
 Options:
       --json

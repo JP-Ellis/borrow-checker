@@ -20,6 +20,8 @@ pub enum Command {
     Run(RunArgs),
     /// List import runs, newest first.
     List,
+    /// Discard an import run, undoing what it created.
+    Discard(DiscardArgs),
 }
 
 /// Arguments for `import run`.
@@ -46,6 +48,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
         Command::Run(run) => execute_run(run, ctx).await,
         Command::List => execute_list(ctx).await,
+        Command::Discard(discard) => execute_discard(discard, ctx).await,
     }
 }
 
@@ -132,6 +135,146 @@ async fn execute_list(ctx: &AppContext) -> CliResult<()> {
         print!("{}", render_list(&batches));
     }
     Ok(())
+}
+
+/// Arguments for `import discard`.
+#[non_exhaustive]
+#[derive(Debug, clap::Args)]
+pub struct DiscardArgs {
+    /// ID of the batch to discard, as shown by `import list`.
+    #[arg(value_name = "BATCH_ID")]
+    pub batch: String,
+}
+
+/// Executes `import discard`.
+///
+/// # Arguments
+///
+/// * `args` - The parsed arguments, naming the batch.
+/// * `ctx` - The shared application context.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError`] if the ID is malformed, the batch does
+/// not exist or has already been discarded, or the snapshot cannot be written.
+async fn execute_discard(args: DiscardArgs, ctx: &AppContext) -> CliResult<()> {
+    let batch_id = args
+        .batch
+        .parse::<bc_models::ImportBatchId>()
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid batch id: {e}")))?;
+
+    // Resolved before the snapshot so a mistyped ID costs nothing.
+    let record = ctx.batches.find_by_id(&batch_id).await?;
+
+    // Discard deletes postings and transactions outright. Restoring this
+    // snapshot is the recovery path; the audit event carries counts, not a
+    // copy of what was removed.
+    if ctx.auto_pre_discard {
+        let snapshot = ctx
+            .backup
+            .backup(bc_core::BackupKind::PreDiscard, None)
+            .await?;
+        tracing::info!(path = %snapshot.path.display(), "pre-discard snapshot taken");
+    }
+
+    let outcome = ctx.batches.discard(&batch_id).await?;
+
+    if ctx.json {
+        return crate::output::print_json(&discard_to_json(&outcome));
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        print!("{}", render_discard(&outcome, &record));
+    }
+    Ok(())
+}
+
+/// Renders the human-readable discard report.
+///
+/// Every line after the first is a warning about work the discard touched that
+/// the import did not create, so each is printed only when it has something to
+/// say. None of them stops the discard.
+///
+/// # Arguments
+///
+/// * `outcome` - What the discard removed.
+/// * `batch` - The batch record, for the header.
+///
+/// # Returns
+///
+/// The report, newline-terminated.
+fn render_discard(outcome: &bc_core::DiscardOutcome, batch: &bc_core::ImportBatch) -> String {
+    let mut lines: Vec<String> = vec![
+        format!(
+            "Discarded batch {} ({}, {}).",
+            outcome.batch_id, batch.importer, batch.started_at
+        ),
+        format!(
+            "  {} removed, {} removed",
+            plural(outcome.removed_postings, "posting"),
+            plural(outcome.removed_transactions, "transaction"),
+        ),
+    ];
+
+    if outcome.edited_postings > 0 {
+        lines.push(format!(
+            "  {} of them you had edited since the import",
+            outcome.edited_postings,
+        ));
+    }
+    if outcome.reconciled_postings > 0 {
+        lines.push(format!(
+            "  {} of them sat in reconciled transactions",
+            outcome.reconciled_postings,
+        ));
+    }
+    if outcome.detached_adopted > 0 {
+        lines.push(format!(
+            "  {} kept — their provenance was adopted, not imported",
+            plural(outcome.detached_adopted, "posting"),
+        ));
+    }
+    if outcome.freed_tombstones > 0 {
+        lines.push(format!(
+            "  {} freed for legs you had deleted",
+            plural(outcome.freed_tombstones, "slot"),
+        ));
+    }
+    if outcome.other_batch_references_removed > 0 {
+        lines.push(format!(
+            "  {} from other batches removed with their transactions",
+            plural(outcome.other_batch_references_removed, "reference"),
+        ));
+    }
+
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+/// Renders the machine-readable discard report.
+///
+/// Built from the same outcome as [`render_discard`], so the two surfaces
+/// cannot drift apart.
+///
+/// # Arguments
+///
+/// * `outcome` - What the discard removed.
+///
+/// # Returns
+///
+/// The payload `--json` prints.
+fn discard_to_json(outcome: &bc_core::DiscardOutcome) -> serde_json::Value {
+    serde_json::json!({
+        "batch": outcome.batch_id.to_string(),
+        "removed_postings": outcome.removed_postings,
+        "removed_transactions": outcome.removed_transactions,
+        "detached_adopted": outcome.detached_adopted,
+        "freed_tombstones": outcome.freed_tombstones,
+        "other_batch_references_removed": outcome.other_batch_references_removed,
+        "edited_postings": outcome.edited_postings,
+        "reconciled_postings": outcome.reconciled_postings,
+    })
 }
 
 /// Describes what a run did, in one column.
@@ -704,5 +847,118 @@ mod tests {
         let batches = bc_core::ImportBatchService::new(pool);
         let listed = batches.list().await.expect("list");
         assert!(super::render_list(&listed).contains("No import"));
+    }
+
+    #[sqlx::test(migrations = "../bc-core/migrations")]
+    async fn the_discard_report_names_only_what_happened(pool: sqlx::SqlitePool) {
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let id = batches.open(None, "csv").await.expect("open");
+        batches
+            .close(&id, bc_core::ImportBatchCounts::default())
+            .await
+            .expect("close");
+        let record = batches.find_by_id(&id).await.expect("find");
+        let outcome = batches.discard(&id).await.expect("discard");
+
+        let rendered = super::render_discard(&outcome, &record);
+
+        assert!(rendered.contains("0 postings removed"));
+        assert!(
+            !rendered.contains("adopted"),
+            "a line with nothing to report is not printed"
+        );
+        assert!(!rendered.contains("edited"));
+        assert!(!rendered.contains("reconciled"));
+        assert!(!rendered.contains("freed"));
+        assert!(!rendered.contains("other batches"));
+    }
+
+    /// Builds a context over a temporary database, with a batch already open
+    /// and closed, ready to discard.
+    ///
+    /// # Arguments
+    ///
+    /// * `home` - Directory to hold the database and the backup directory.
+    /// * `auto_pre_discard` - The setting under test.
+    ///
+    /// # Returns
+    ///
+    /// The context, the directory backups are written to, and the ID of the
+    /// closed batch.
+    async fn context_with_a_batch(
+        home: &std::path::Path,
+        auto_pre_discard: bool,
+    ) -> (
+        crate::context::AppContext,
+        std::path::PathBuf,
+        bc_models::ImportBatchId,
+    ) {
+        let (mut ctx, backup_dir) = context_in(home, true).await;
+        ctx.auto_pre_discard = auto_pre_discard;
+
+        let batch_id = ctx.batches.open(None, "stub").await.expect("open");
+        ctx.batches
+            .close(&batch_id, bc_core::ImportBatchCounts::default())
+            .await
+            .expect("close");
+
+        (ctx, backup_dir, batch_id)
+    }
+
+    /// Counts `pre-discard` snapshots in `dir`.
+    fn pre_discard_snapshots(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir).map_or(0, |entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(".pre-discard.sqlite")
+                })
+                .count()
+        })
+    }
+
+    #[tokio::test]
+    async fn a_discard_snapshots_the_database_first() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, backup_dir, batch_id) = context_with_a_batch(home.path(), true).await;
+
+        super::execute_discard(
+            super::DiscardArgs {
+                batch: batch_id.to_string(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("discard");
+
+        assert_eq!(pre_discard_snapshots(&backup_dir), 1);
+    }
+
+    #[tokio::test]
+    async fn auto_pre_discard_false_suppresses_the_snapshot() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, backup_dir, batch_id) = context_with_a_batch(home.path(), false).await;
+
+        super::execute_discard(
+            super::DiscardArgs {
+                batch: batch_id.to_string(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("discard");
+
+        assert_eq!(pre_discard_snapshots(&backup_dir), 0);
+    }
+
+    #[test]
+    fn an_unparsable_batch_id_is_an_argument_error() {
+        // Parsing happens before any database work, so a typo does not snapshot.
+        "not-a-batch-id"
+            .parse::<bc_models::ImportBatchId>()
+            .expect_err("not a valid batch id");
     }
 }
