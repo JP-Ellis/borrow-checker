@@ -35,7 +35,9 @@ pub struct Outcome {
     pub detached_adopted: usize,
     /// Tombstoned references removed, freeing their occurrence slots.
     pub freed_tombstones: usize,
-    /// References belonging to other runs that went with a deleted transaction.
+    /// Any other reference that went with a deleted transaction: one this
+    /// batch did not own, whether it belonged to another run or was attached
+    /// with no batch at all (via the public `SourceService::attach`).
     pub other_batch_references_removed: usize,
     /// Of [`Self::removed_postings`], those whose account or amount no longer
     /// matched the reference describing them — the user had edited them.
@@ -108,6 +110,9 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
         removed_transactions = outcome.removed_transactions,
         detached_adopted = outcome.detached_adopted,
         freed_tombstones = outcome.freed_tombstones,
+        other_batch_references_removed = outcome.other_batch_references_removed,
+        edited_postings = outcome.edited_postings,
+        reconciled_postings = outcome.reconciled_postings,
         "import batch discarded"
     );
     Ok(outcome)
@@ -130,7 +135,7 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
 /// Returns [`BcError::NotFound`] if no batch with that ID exists,
 /// [`BcError::InvalidInput`] if it has already been discarded, and
 /// [`BcError::Database`] on query failure.
-async fn ensure_discardable(
+pub(crate) async fn ensure_discardable(
     conn: &mut sqlx::SqliteConnection,
     id: &ImportBatchId,
     id_str: &str,
@@ -149,12 +154,13 @@ async fn ensure_discardable(
 
 /// Builds the error for a batch that has already been discarded.
 ///
-/// This is the single source of that error's text. A caller that wants to
-/// reject a repeat discard *before* doing work this guard only runs after —
-/// `bc-cli`'s `execute_discard` skips a wasted snapshot this way — calls this
-/// directly rather than duplicating the message, so the two call sites cannot
-/// drift apart. [`ensure_discardable`] remains the authoritative check: this
-/// function only builds the error, it does not decide when to raise it.
+/// This is the single source of that error's text. [`ensure_discardable`] is
+/// the only caller, so both the predicate (has this batch already been
+/// discarded?) and its message live in core; nothing outside this crate
+/// decides when the error fires. [`crate::ImportBatchService::ensure_discardable`]
+/// exposes the same check as a cheap short-circuit `bc-cli`'s `execute_discard`
+/// can run before it pays for a snapshot — [`ensure_discardable`] here remains
+/// the authoritative guard, run again inside `discard`'s transaction.
 ///
 /// # Arguments
 ///
@@ -164,7 +170,7 @@ async fn ensure_discardable(
 ///
 /// A [`BcError::InvalidInput`] naming the batch.
 #[must_use]
-pub fn already_discarded_error(id: &ImportBatchId) -> BcError {
+fn already_discarded_error(id: &ImportBatchId) -> BcError {
     BcError::InvalidInput(format!("import batch {id} has already been discarded"))
 }
 
@@ -308,8 +314,8 @@ async fn delete_postings(
 ///
 /// # Returns
 ///
-/// The number of transactions deleted, and the number of other runs'
-/// references that went with them.
+/// The number of transactions deleted, and the number of other references —
+/// this batch's own are already gone by this point — that went with them.
 ///
 /// # Errors
 ///
@@ -331,10 +337,11 @@ async fn sweep_empty_transactions(
             continue;
         }
 
-        // Counted after this batch's own references are gone, so it names only
-        // what belonged to other runs. Those cascade with the transaction,
-        // freeing their slots too — correct, since the transaction itself no
-        // longer exists to be duplicated.
+        // Counted after this batch's own references are gone, so it names
+        // every other reference left on the transaction — another run's, or
+        // one attached with no batch at all. Those cascade with the
+        // transaction, freeing their slots too — correct, since the
+        // transaction itself no longer exists to be duplicated.
         let collateral: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM transaction_sources WHERE transaction_id = ?")
                 .bind(transaction_id)
