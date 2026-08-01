@@ -195,6 +195,20 @@ commodity after resolving an elided leg. It is false when there are no concrete
 legs, when the residual is non-zero for any commodity, or when two or more legs
 are elided.
 
+That derivation extends to *account balances*, not only `balanced()`. An elided
+leg absorbs its transaction's residual — the negation of its sibling legs' sum —
+and the balance engine resolves it on every read (`bc-core`'s `residual`
+module), so it stays correct when a sibling changes. Nothing is stored.
+
+The residual is a **per-commodity vector**: with concrete legs in several
+commodities, each commodity's residual is contributed independently and no
+rate is ever consulted (FX conversion is #233). `balanced()` is unchanged and
+still reports false when more than one commodity remains, so a
+multi-commodity residual is flagged while still counting toward balances —
+warn, don't block. A transaction with two or more elided legs has a residual
+that is real but not attributable to any single leg, so it contributes to no
+balance at all.
+
 **Amount elision.** `Posting.amount: Option<Amount>` — `None` marks the leg that
 absorbs the residual, exactly as in ledger and beancount. At most one leg per
 transaction may be elided.
