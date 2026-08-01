@@ -41,6 +41,9 @@ type CreateFn = Arc<dyn Fn() -> Box<dyn Importer> + Send + Sync>;
 ///     fn import(&self, _config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
 ///         Ok(vec![])
 ///     }
+///     fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
+///         Ok(())
+///     }
 /// }
 ///
 /// fn make_my_importer() -> Box<dyn Importer> {
@@ -92,6 +95,9 @@ impl core::fmt::Debug for Factory {
 ///     fn name(&self) -> &str { "my-format" }
 ///     fn import(&self, _config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
 ///         Ok(vec![])
+///     }
+///     fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
+///         Ok(())
 ///     }
 /// }
 ///
@@ -151,6 +157,7 @@ impl Registry {
     /// impl Importer for Stub {
     ///     fn name(&self) -> &str { "stub" }
     ///     fn import(&self, _: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+    ///     fn validate(&self, _: &ImportConfig) -> Result<(), ImportError> { Ok(()) }
     /// }
     ///
     /// fn make_stub() -> Box<dyn Importer> { Box::new(Stub) }
@@ -202,6 +209,7 @@ impl Registry {
     /// impl Importer for Stub {
     ///     fn name(&self) -> &str { "stub" }
     ///     fn import(&self, _: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+    ///     fn validate(&self, _: &ImportConfig) -> Result<(), ImportError> { Ok(()) }
     /// }
     ///
     /// fn make_stub() -> Box<dyn Importer> { Box::new(Stub) }
@@ -241,6 +249,9 @@ impl Factory {
     ///     fn name(&self) -> &str { "null" }
     ///     fn import(&self, _config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
     ///         Ok(vec![])
+    ///     }
+    ///     fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
+    ///         Ok(())
     ///     }
     /// }
     ///
@@ -305,6 +316,10 @@ mod tests {
             _config: &super::super::Config,
         ) -> Result<Vec<super::super::RawTransaction>, super::super::Error> {
             Ok(vec![])
+        }
+
+        fn validate(&self, _config: &super::super::Config) -> Result<(), super::super::Error> {
+            Ok(())
         }
     }
 
@@ -376,6 +391,10 @@ mod tests {
                 _config: &super::super::Config,
             ) -> Result<Vec<super::super::RawTransaction>, super::super::Error> {
                 Ok(vec![])
+            }
+
+            fn validate(&self, _config: &super::super::Config) -> Result<(), super::super::Error> {
+                Ok(())
             }
         }
         fn create_sized() -> Box<dyn super::Importer> {
