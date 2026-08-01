@@ -574,7 +574,7 @@ impl Engine {
     /// Returns [`BcError`] on database failure.
     #[inline]
     pub async fn default_commodity_for(&self, account_id: &AccountId) -> BcResult<Option<String>> {
-        let (commodity_code,): (Option<String>,) = sqlx::query_as(
+        let (result,): (Option<String>,) = sqlx::query_as(
             "SELECT COALESCE(
                  (SELECT c.code
                   FROM account_commodities ac
@@ -594,7 +594,49 @@ impl Engine {
         .bind(account_id.to_string())
         .fetch_one(&self.pool)
         .await?;
-        Ok(commodity_code)
+
+        if let Some(code) = result {
+            return Ok(Some(code));
+        }
+
+        // Every posting on this account may be elided, in which case no stored
+        // commodity exists anywhere — derive one from the residual instead.
+        let residuals = crate::residual::Residuals::for_account(&self.pool, account_id).await?;
+        let totals = residuals.totals_by_account()?;
+        Ok(totals
+            .get(&account_id.to_string())
+            .and_then(|balances| balances.iter().next().map(|(code, _)| code.to_owned())))
+    }
+
+    /// Returns each account's dominant residual commodity.
+    ///
+    /// Used only as the last tier of commodity inference, for an account whose
+    /// postings are *all* elided and therefore carry no stored commodity. The
+    /// dominant commodity is the one appearing in the most of that account's
+    /// residuals; ties resolve to first-seen order.
+    ///
+    /// # Arguments
+    ///
+    /// * `residuals` - Residuals loaded across all accounts.
+    ///
+    /// # Returns
+    ///
+    /// A map from account id string to commodity code.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if a residual total overflows.
+    fn residual_commodities(
+        residuals: &crate::residual::Residuals,
+    ) -> BcResult<std::collections::HashMap<String, String>> {
+        let totals = residuals.totals_by_account()?;
+        Ok(totals
+            .into_iter()
+            .filter_map(|(account_id, balances)| {
+                let (code, _) = balances.iter().next()?;
+                Some((account_id, code.to_owned()))
+            })
+            .collect())
     }
 
     /// Returns the default-commodity balance for every active account in one query.
@@ -610,6 +652,8 @@ impl Engine {
     /// The commodity for each account is resolved in priority order:
     /// 1. The configured default from `account_commodities` (position = 0).
     /// 2. The most-used posting commodity (for accounts imported without explicit commodity setup).
+    /// 3. The dominant commodity of the account's own residuals (for an account whose
+    ///    postings are all elided and therefore carry no stored commodity at all).
     ///
     /// # Errors
     ///
@@ -641,7 +685,10 @@ impl Engine {
         .fetch_all(&self.pool)
         .await?;
 
-        if commodity_rows.is_empty() {
+        let residuals = crate::residual::Residuals::for_all_accounts(&self.pool).await?;
+        let residual_commodities = Self::residual_commodities(&residuals)?;
+
+        if commodity_rows.is_empty() && residual_commodities.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
 
@@ -657,11 +704,20 @@ impl Engine {
         .fetch_all(&self.pool)
         .await?;
 
-        // Build commodity lookup: account_id_str → commodity_code.
-        let commodity_by_account: std::collections::HashMap<String, String> = commodity_rows
+        // Build commodity lookup: account_id_str → commodity_code. An account
+        // whose postings are all elided has no stored commodity anywhere, so it
+        // falls back to the commodity of its own residuals.
+        let mut commodity_by_account: std::collections::HashMap<String, String> = commodity_rows
             .iter()
             .map(|(id, code)| (id.clone(), code.clone()))
             .collect();
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "iteration order is irrelevant: each entry only fills a gap left by commodity_rows, and insertion is idempotent regardless of order"
+        )]
+        for (account_id, code) in residual_commodities {
+            commodity_by_account.entry(account_id).or_insert(code);
+        }
 
         // Sum posting amounts per account for that account's default commodity.
         let mut map: std::collections::HashMap<String, Decimal> = commodity_by_account
@@ -671,7 +727,7 @@ impl Engine {
 
         for (acc_id, opt_commodity, opt_amt_str) in &posting_rows {
             let (Some(commodity), Some(amt_str)) = (opt_commodity, opt_amt_str) else {
-                continue; // elided posting — skip
+                continue; // elided posting — contributes via its residual below
             };
             let Some(default_commodity) = commodity_by_account.get(acc_id) else {
                 continue; // no default commodity — skip
@@ -684,6 +740,24 @@ impl Engine {
             })?;
             let entry = map.entry(acc_id.clone()).or_insert(Decimal::ZERO);
             *entry = entry.checked_add(amount).ok_or_else(|| {
+                BcError::BadData("balance overflow: sum exceeds Decimal range".into())
+            })?;
+        }
+
+        // Add each account's derived residual for its default commodity.
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "iteration order is irrelevant: each account's residual is added to its own map entry independently, via commutative Decimal addition"
+        )]
+        for (acc_id, balances) in residuals.totals_by_account()? {
+            let Some(default_commodity) = commodity_by_account.get(&acc_id) else {
+                continue; // account archived or otherwise out of scope
+            };
+            let Some(value) = balances.get(default_commodity) else {
+                continue; // residual holds nothing in this account's commodity
+            };
+            let entry = map.entry(acc_id).or_insert(Decimal::ZERO);
+            *entry = entry.checked_add(value).ok_or_else(|| {
                 BcError::BadData("balance overflow: sum exceeds Decimal range".into())
             })?;
         }
@@ -1709,5 +1783,151 @@ mod tests {
 
         assert_eq!(inflow.value(), Decimal::ZERO);
         assert_eq!(outflow.value(), dec!(50.00), "the residual is an outflow");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn default_balances_include_elided_residuals(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let bank = acct_svc
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Bank");
+        let food = acct_svc
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Food");
+
+        sqlx::query("INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES ('tx_d1', '2026-01-01', 'Groceries', 'unreconciled', '2026-01-01T00:00:00Z')")
+            .execute(&pool).await.expect("insert transaction");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_food_d', 'tx_d1', ?, '50.00', 'AUD', 0)")
+            .bind(food.to_string()).execute(&pool).await.expect("insert concrete leg");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_bank_d', 'tx_d1', ?, NULL, NULL, 1)")
+            .bind(bank.to_string()).execute(&pool).await.expect("insert elided leg");
+
+        let engine = Engine::new(pool.clone());
+        let balances = engine.default_balances().await.expect("default balances");
+
+        // The bank account's only posting is elided, so its commodity is
+        // inferable only from the residual.
+        let bank_balance = balances.get(&bank).expect("bank must appear");
+        assert_eq!(bank_balance.value(), dec!(-50.00));
+        assert_eq!(bank_balance.commodity().as_str(), "AUD");
+        assert_eq!(
+            balances.get(&food).expect("food must appear").value(),
+            dec!(50.00)
+        );
+    }
+
+    /// The invariant the ledger migration reconciles against: every commodity
+    /// closes to zero across all accounts once residuals are derived.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn all_accounts_sum_to_zero_per_commodity(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let bank = acct_svc
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Bank");
+        let food = acct_svc
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Food");
+        let rent = acct_svc
+            .create()
+            .name("Rent")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Rent");
+
+        // Three transactions, each with an elided bank leg — the Beancount idiom.
+        for (n, account, amount) in [
+            ("1", &food, "50.00"),
+            ("2", &rent, "1200.00"),
+            ("3", &food, "25.50"),
+        ] {
+            sqlx::query("INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES (?, '2026-01-01', 'Test', 'unreconciled', '2026-01-01T00:00:00Z')")
+                .bind(format!("tx_z{n}")).execute(&pool).await.expect("insert transaction");
+            sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES (?, ?, ?, ?, 'AUD', 0)")
+                .bind(format!("p_c{n}")).bind(format!("tx_z{n}")).bind(account.to_string()).bind(amount)
+                .execute(&pool).await.expect("insert concrete leg");
+            sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES (?, ?, ?, NULL, NULL, 1)")
+                .bind(format!("p_e{n}")).bind(format!("tx_z{n}")).bind(bank.to_string())
+                .execute(&pool).await.expect("insert elided leg");
+        }
+
+        let engine = Engine::new(pool.clone());
+        let mut total = Decimal::ZERO;
+        for account in [&bank, &food, &rent] {
+            total = total
+                .checked_add(
+                    engine
+                        .balance_for(account, "AUD")
+                        .await
+                        .expect("balance")
+                        .value(),
+                )
+                .expect("no overflow");
+        }
+
+        assert_eq!(
+            total,
+            Decimal::ZERO,
+            "AUD must close to zero across all accounts"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn default_commodity_falls_back_to_the_residual(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let bank = acct_svc
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Bank");
+        let food = acct_svc
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Food");
+
+        sqlx::query("INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES ('tx_c1', '2026-01-01', 'Groceries', 'unreconciled', '2026-01-01T00:00:00Z')")
+            .execute(&pool).await.expect("insert transaction");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_food_c', 'tx_c1', ?, '50.00', 'AUD', 0)")
+            .bind(food.to_string()).execute(&pool).await.expect("insert concrete leg");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_bank_c', 'tx_c1', ?, NULL, NULL, 1)")
+            .bind(bank.to_string()).execute(&pool).await.expect("insert elided leg");
+
+        let engine = Engine::new(pool.clone());
+
+        assert_eq!(
+            engine
+                .default_commodity_for(&bank)
+                .await
+                .expect("commodity"),
+            Some("AUD".to_owned()),
+        );
     }
 }
