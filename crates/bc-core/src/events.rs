@@ -8,6 +8,7 @@ use bc_models::BudgetId;
 use bc_models::BudgetRevisionId;
 use bc_models::DepreciationId;
 use bc_models::EventId;
+use bc_models::ImportBatchId;
 use bc_models::LoanId;
 use bc_models::Period;
 use bc_models::PostingId;
@@ -378,6 +379,33 @@ pub enum Event {
         /// The transaction restored by the unmerge.
         absorbed_id: TransactionId,
     },
+    /// An import batch was discarded, undoing the run that produced it.
+    ///
+    /// One event covers the whole discard. Emitting a `PostingRemoved` per row
+    /// would write hundreds of events describing a single user action;
+    /// [`Self::TransactionsMerged`] is the precedent for one event covering a
+    /// multi-row change.
+    ImportBatchDiscarded {
+        /// The batch that was discarded.
+        batch_id: ImportBatchId,
+        /// Postings deleted because the run had created them.
+        removed_postings: u64,
+        /// Transactions deleted because the discard left them with no postings.
+        removed_transactions: u64,
+        /// References removed from postings the run adopted rather than
+        /// created. Those postings still stand.
+        detached_adopted: u64,
+        /// Tombstoned references removed, freeing their occurrence slots so a
+        /// re-import can recreate those legs.
+        freed_tombstones: u64,
+        /// References belonging to other runs that went with a transaction this
+        /// discard deleted.
+        other_batch_references_removed: u64,
+        /// Of `removed_postings`, those the user had edited since the import.
+        edited_postings: u64,
+        /// Of `removed_postings`, those in a no-longer-unreconciled transaction.
+        reconciled_postings: u64,
+    },
 }
 
 /// Snapshot of the transaction absorbed by a merge, sufficient to recreate it on unmerge.
@@ -447,6 +475,7 @@ impl Event {
             Self::TransactionSourceDetached { .. } => "TransactionSourceDetached",
             Self::TransactionsMerged { .. } => "TransactionsMerged",
             Self::TransactionUnmerged { .. } => "TransactionUnmerged",
+            Self::ImportBatchDiscarded { .. } => "ImportBatchDiscarded",
         }
     }
 
@@ -490,6 +519,7 @@ impl Event {
             | Self::TransactionSourceDetached { transaction_id, .. } => transaction_id.to_string(),
             Self::TransactionsMerged { survivor_id, .. }
             | Self::TransactionUnmerged { survivor_id, .. } => survivor_id.to_string(),
+            Self::ImportBatchDiscarded { batch_id, .. } => batch_id.to_string(),
         }
     }
 }
