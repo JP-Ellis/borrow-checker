@@ -18,6 +18,8 @@ pub struct Args {
 pub enum Command {
     /// Run an import using a named profile.
     Run(RunArgs),
+    /// List import runs, newest first.
+    List,
 }
 
 /// Arguments for `import run`.
@@ -43,6 +45,7 @@ pub struct RunArgs {
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
         Command::Run(run) => execute_run(run, ctx).await,
+        Command::List => execute_list(ctx).await,
     }
 }
 
@@ -106,6 +109,122 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
         print!("{}", report.render());
     }
     Ok(())
+}
+
+/// Executes `import list`.
+///
+/// # Arguments
+///
+/// * `ctx` - The shared application context.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError`] if the batches cannot be read.
+async fn execute_list(ctx: &AppContext) -> CliResult<()> {
+    let batches = ctx.batches.list().await?;
+
+    if ctx.json {
+        return crate::output::print_json(&list_to_json(&batches));
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        print!("{}", render_list(&batches));
+    }
+    Ok(())
+}
+
+/// Describes what a run did, in one column.
+///
+/// A run that never finished reports `incomplete` rather than the zeros its
+/// unrecorded counts would otherwise render as: those zeros sit beside rows
+/// proving the run wrote something, and reading them as a result is what makes
+/// the bad batch the one a user skips over.
+///
+/// # Arguments
+///
+/// * `batch` - The run to describe.
+///
+/// # Returns
+///
+/// The outcome column's text.
+fn outcome_of(batch: &bc_core::ImportBatch) -> String {
+    if batch.discarded_at.is_some() {
+        return "discarded".to_owned();
+    }
+    match &batch.counts {
+        None => "incomplete".to_owned(),
+        Some(counts) => format!(
+            "{} new, {} attached, {} skipped",
+            counts.new_transactions,
+            counts.attached_postings,
+            counts.skipped()
+        ),
+    }
+}
+
+/// Renders the human-readable batch listing.
+///
+/// # Arguments
+///
+/// * `batches` - The runs to list, newest first.
+///
+/// # Returns
+///
+/// The listing, newline-terminated.
+fn render_list(batches: &[bc_core::ImportBatch]) -> String {
+    if batches.is_empty() {
+        return "No import runs recorded.\n".to_owned();
+    }
+
+    let mut lines: Vec<String> = vec![format!(
+        "{:<32}  {:<19}  {:<10}  {}",
+        "BATCH", "STARTED", "IMPORTER", "OUTCOME"
+    )];
+    lines.extend(batches.iter().map(|batch| {
+        format!(
+            "{:<32}  {:<19}  {:<10}  {}",
+            batch.id,
+            batch.started_at,
+            batch.importer,
+            outcome_of(batch)
+        )
+    }));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+/// Renders the machine-readable batch listing.
+///
+/// Built from the same values as [`render_list`], so the two surfaces cannot
+/// drift apart.
+///
+/// # Arguments
+///
+/// * `batches` - The runs to list, newest first.
+///
+/// # Returns
+///
+/// The payload `--json` prints.
+fn list_to_json(batches: &[bc_core::ImportBatch]) -> serde_json::Value {
+    serde_json::json!({
+        "batches": batches
+            .iter()
+            .map(|batch| serde_json::json!({
+                "id": batch.id.to_string(),
+                "importer": batch.importer,
+                "profile": batch.profile_id.as_ref().map(ToString::to_string),
+                "started_at": batch.started_at.to_string(),
+                "finished_at": batch.finished_at.map(|ts| ts.to_string()),
+                "discarded_at": batch.discarded_at.map(|ts| ts.to_string()),
+                "new_transactions": batch.counts.map(|c| c.new_transactions),
+                "attached_postings": batch.counts.map(|c| c.attached_postings),
+                "skipped_postings": batch.counts.map(|c| c.skipped()),
+                "unresolved_path_postings": batch.counts.map(|c| c.unresolved_path_postings),
+                "other_skipped_postings": batch.counts.map(|c| c.other_skipped_postings),
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// Renders `count` with `noun`, pluralised.
@@ -253,10 +372,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        irrefutable_let_patterns,
-        reason = "Command has only the Run variant until later tasks add list/discard"
-    )]
     fn run_takes_the_profile() {
         let wrap = Wrap::try_parse_from(["bc", "run", "--profile", "Bank"]).expect("parse");
         let Command::Run(run) = wrap.args.command else {
@@ -508,5 +623,39 @@ mod tests {
             0,
             "the setting must actually suppress the snapshot, not merely exist"
         );
+    }
+
+    #[sqlx::test(migrations = "../bc-core/migrations")]
+    async fn list_renders_each_outcome_state(pool: sqlx::SqlitePool) {
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let done = batches.open(None, "csv").await.expect("open");
+        let mut done_counts = bc_core::ImportBatchCounts::default();
+        done_counts.new_transactions = 12;
+        done_counts.attached_postings = 3;
+        batches.close(&done, done_counts).await.expect("close");
+        let thrown_away = batches.open(None, "ofx").await.expect("open");
+        batches
+            .close(&thrown_away, bc_core::ImportBatchCounts::default())
+            .await
+            .expect("close");
+        batches.discard(&thrown_away).await.expect("discard");
+        let _open = batches.open(None, "ledger").await.expect("open");
+
+        let listed = batches.list().await.expect("list");
+        let rendered = super::render_list(&listed);
+
+        assert!(rendered.contains("incomplete"), "an open run says so");
+        assert!(rendered.contains("discarded"), "a discarded run says so");
+        assert!(
+            rendered.contains("12"),
+            "a completed run reports what it did"
+        );
+    }
+
+    #[sqlx::test(migrations = "../bc-core/migrations")]
+    async fn an_empty_list_says_so(pool: sqlx::SqlitePool) {
+        let batches = bc_core::ImportBatchService::new(pool);
+        let listed = batches.list().await.expect("list");
+        assert!(super::render_list(&listed).contains("No import"));
     }
 }
