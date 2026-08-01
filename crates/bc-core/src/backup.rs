@@ -24,6 +24,8 @@ pub enum BackupKind {
     PreRestore,
     /// Created automatically before an import run (`.pre-import`).
     PreImport,
+    /// Created automatically before discarding an import batch (`.pre-discard`).
+    PreDiscard,
 }
 
 impl BackupKind {
@@ -36,6 +38,7 @@ impl BackupKind {
             Self::PreMigration => "pre-migration",
             Self::PreRestore => "pre-restore",
             Self::PreImport => "pre-import",
+            Self::PreDiscard => "pre-discard",
         }
     }
 
@@ -48,6 +51,7 @@ impl BackupKind {
             "pre-migration" => Some(Self::PreMigration),
             "pre-restore" => Some(Self::PreRestore),
             "pre-import" => Some(Self::PreImport),
+            "pre-discard" => Some(Self::PreDiscard),
             _ => None,
         }
     }
@@ -577,6 +581,15 @@ mod tests {
         assert_eq!(
             BackupKind::from_suffix("pre-import"),
             Some(BackupKind::PreImport)
+        );
+    }
+
+    #[test]
+    fn the_pre_discard_kind_round_trips_through_its_suffix() {
+        assert_eq!(BackupKind::PreDiscard.suffix(), "pre-discard");
+        assert_eq!(
+            BackupKind::from_suffix("pre-discard"),
+            Some(BackupKind::PreDiscard)
         );
     }
 
