@@ -168,13 +168,10 @@ async fn execute_discard(args: DiscardArgs, ctx: &AppContext) -> CliResult<()> {
 
     // Rejected before the snapshot too: core's `discard` is the authoritative
     // guard against a repeat, but it only raises the error after this
-    // function has already written a full database copy. Checking here
-    // avoids that wasted snapshot; calling core's own error builder — rather
-    // than duplicating its message — keeps the two in agreement by
-    // construction rather than by coincidence.
-    if record.discarded_at.is_some() {
-        return Err(bc_core::import_batch_already_discarded_error(&batch_id).into());
-    }
+    // function has already written a full database copy. `ensure_discardable`
+    // runs the same predicate and message as a cheap short-circuit, so this
+    // check and `discard`'s own cannot drift apart.
+    ctx.batches.ensure_discardable(&batch_id).await?;
 
     // Discard deletes postings and transactions outright. Restoring this
     // snapshot is the recovery path; the audit event carries counts, not a
@@ -253,8 +250,8 @@ fn render_discard(outcome: &bc_core::DiscardOutcome, batch: &bc_core::ImportBatc
     }
     if outcome.other_batch_references_removed > 0 {
         lines.push(format!(
-            "  {} from other batches removed with {} transaction{}",
-            plural(outcome.other_batch_references_removed, "reference"),
+            "  {} removed with {} transaction{}",
+            plural(outcome.other_batch_references_removed, "other reference"),
             if outcome.other_batch_references_removed == 1 {
                 "its"
             } else {
@@ -904,7 +901,7 @@ mod tests {
         assert!(!rendered.contains("edited"));
         assert!(!rendered.contains("reconciled"));
         assert!(!rendered.contains("freed"));
-        assert!(!rendered.contains("other batches"));
+        assert!(!rendered.contains("other reference"));
     }
 
     /// Creates a top-level asset account and returns its ID.
@@ -1273,7 +1270,7 @@ mod tests {
         assert!(!rendered.contains("edited"));
         assert!(!rendered.contains("adopted"));
         assert!(!rendered.contains("freed"));
-        assert!(!rendered.contains("other batches"));
+        assert!(!rendered.contains("other reference"));
     }
 
     #[sqlx::test(migrations = "../bc-core/migrations")]
@@ -1315,7 +1312,7 @@ mod tests {
 
         let rendered = super::render_discard(&outcome, &record);
         assert!(
-            rendered.contains("1 reference from other batches removed with its transaction"),
+            rendered.contains("1 other reference removed with its transaction"),
             "a singular count must read 'its transaction', not 'their transactions': {rendered}"
         );
         assert!(

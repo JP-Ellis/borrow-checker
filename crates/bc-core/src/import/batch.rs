@@ -227,6 +227,32 @@ impl Service {
         rows.into_iter().map(parse_row).collect()
     }
 
+    /// Checks that a batch exists and has not already been discarded, without
+    /// doing any of the work discarding it would require.
+    ///
+    /// This is a cheap short-circuit for a caller that wants to reject a
+    /// repeat (or unknown) discard before paying for something expensive on
+    /// its way there — `bc-cli`'s `execute_discard` calls this before taking a
+    /// pre-discard snapshot. It shares core's predicate and error message by
+    /// construction, so the two cannot drift apart, but it is not itself the
+    /// authoritative guard: [`Self::discard`] re-checks inside its own
+    /// transaction, where the check and the work it gates cannot race.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The batch to check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if no batch with that ID exists,
+    /// [`BcError::InvalidInput`] if it has already been discarded, and
+    /// [`BcError::Database`] on query failure.
+    #[inline]
+    pub async fn ensure_discardable(&self, id: &ImportBatchId) -> BcResult<()> {
+        let mut conn = self.pool.acquire().await?;
+        discard::ensure_discardable(&mut conn, id, &id.to_string()).await
+    }
+
     /// Discards this batch: undoes the import run that produced it.
     ///
     /// Every reference the run wrote is deleted, freeing its dedup slot; every
