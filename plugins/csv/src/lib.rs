@@ -20,7 +20,9 @@ use bc_sdk::SourceLocation;
 use rust_decimal::Decimal;
 
 use crate::config::AmountColumns;
+use crate::config::ColumnRef;
 use crate::config::Config;
+use crate::config::Header;
 use crate::preamble::find_csv_start;
 
 /// Imports transactions from delimited text (CSV) files.
@@ -117,31 +119,29 @@ impl CsvImporter {
         )]
         let delimiter_byte = cfg.delimiter as u8;
 
+        let has_header_row = !matches!(cfg.header, Header::Absent);
+
         let mut reader = csv::ReaderBuilder::new()
             .delimiter(delimiter_byte)
+            .has_headers(has_header_row)
             .trim(csv::Trim::All)
             .from_reader(csv_bytes);
 
-        // Build a case-insensitive column-name → zero-based index map.
-        let headers = reader
-            .headers()
-            .map_err(|e| ImportError::Parse(e.to_string()))?
-            .clone();
-
-        let col_index: HashMap<String, usize> = headers
-            .iter()
-            .enumerate()
-            .map(|(i, h)| (h.to_ascii_lowercase(), i))
-            .collect();
-
-        let lookup = |name: &str| -> Result<usize, ImportError> {
-            col_index
-                .get(&name.to_ascii_lowercase())
-                .copied()
-                .ok_or_else(|| ImportError::MissingField(name.to_owned()))
+        // Case-insensitive column-name → zero-based index map. Empty when the
+        // file has no header row, in which case every reference is positional.
+        let col_index: HashMap<String, usize> = if has_header_row {
+            reader
+                .headers()
+                .map_err(|e| ImportError::Parse(e.to_string()))?
+                .iter()
+                .enumerate()
+                .map(|(i, h)| (h.to_ascii_lowercase(), i))
+                .collect()
+        } else {
+            HashMap::new()
         };
 
-        let date_idx = lookup(&cfg.date_column)?;
+        let date_idx = resolve(&col_index, &cfg.date_column)?;
 
         let commodity = cfg
             .commodity
@@ -157,10 +157,10 @@ impl CsvImporter {
             let row = row_idx.saturating_add(1);
             let record = result.map_err(|e| ImportError::Parse(e.to_string()))?;
 
-            let date_str = record_field(&record, date_idx, &cfg.date_column)?;
+            let date_str = record_field(&record, date_idx, &cfg.date_column.describe())?;
             let parsed = jiff::civil::Date::strptime(&cfg.date_format, &date_str).map_err(|e| {
                 ImportError::BadValue {
-                    field: cfg.date_column.clone(),
+                    field: cfg.date_column.describe(),
                     detail: e.to_string(),
                 }
             })?;
@@ -170,59 +170,54 @@ impl CsvImporter {
                 parsed.day() as u8,
             );
 
-            let amount_value = parse_amount(&cfg, &record, &col_index)?;
+            let amount_value = parse_amount(cfg, &record, &col_index)?;
             let amount = decimal_to_amount(amount_value, commodity, "amount")?;
 
-            let balance = if let Some(col) = &cfg.balance_column {
-                let &idx = col_index
-                    .get(&col.to_ascii_lowercase())
-                    .ok_or_else(|| ImportError::MissingField(col.clone()))?;
-                let raw_owned = record_field(&record, idx, col)?;
+            let balance = if let Some(column) = cfg.balance_column.as_ref() {
+                let idx = resolve(&col_index, column)?;
+                let raw_owned = record_field(&record, idx, &column.describe())?;
                 let raw = raw_owned.trim();
                 if raw.is_empty() {
                     None
                 } else {
                     let val = parse_number(raw, cfg.decimal_separator, cfg.thousands_separator)
                         .map_err(|e| ImportError::BadValue {
-                            field: col.clone(),
+                            field: column.describe(),
                             detail: e,
                         })?;
-                    Some(decimal_to_amount(val, commodity, col.as_str())?)
+                    Some(decimal_to_amount(val, commodity, &column.describe())?)
                 }
             } else {
                 None
             };
 
-            let payee = cfg.payee_column.as_ref().and_then(|col| {
-                col_index
-                    .get(&col.to_ascii_lowercase())
-                    .and_then(|&idx| record.get(idx))
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-            });
+            let payee = cfg
+                .payee_column
+                .as_ref()
+                .and_then(|column| resolve(&col_index, column).ok())
+                .and_then(|idx| record.get(idx))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
 
             let description = cfg
                 .description_column
                 .as_ref()
-                .and_then(|col| {
-                    col_index
-                        .get(&col.to_ascii_lowercase())
-                        .and_then(|&idx| record.get(idx))
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_owned)
-                })
+                .and_then(|column| resolve(&col_index, column).ok())
+                .and_then(|idx| record.get(idx))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
                 .unwrap_or_default();
 
-            let reference = cfg.reference_column.as_ref().and_then(|col| {
-                col_index
-                    .get(&col.to_ascii_lowercase())
-                    .and_then(|&idx| record.get(idx))
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-            });
+            let reference = cfg
+                .reference_column
+                .as_ref()
+                .and_then(|column| resolve(&col_index, column).ok())
+                .and_then(|idx| record.get(idx))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
 
             transactions.push(
                 RawTransaction::builder()
@@ -318,6 +313,33 @@ fn record_field(
         .ok_or_else(|| ImportError::MissingField(column_name.to_owned()))
 }
 
+/// Resolves a column reference to a zero-based index within a row.
+///
+/// # Arguments
+///
+/// * `col_index` - Case-insensitive header-name to index map. Empty when the
+///   file has no header row.
+/// * `column` - The reference to resolve.
+///
+/// # Returns
+///
+/// The zero-based column index.
+///
+/// # Errors
+///
+/// Returns [`ImportError::MissingField`] when a name-based reference does not
+/// appear in the header.
+#[inline]
+fn resolve(col_index: &HashMap<String, usize>, column: &ColumnRef) -> Result<usize, ImportError> {
+    match *column {
+        ColumnRef::Name(ref name) => col_index
+            .get(&name.to_ascii_lowercase())
+            .copied()
+            .ok_or_else(|| ImportError::MissingField(name.clone())),
+        ColumnRef::Index(index) => Ok(index),
+    }
+}
+
 /// Parses the monetary amount from a record using the configured amount
 /// column strategy.
 ///
@@ -340,32 +362,28 @@ fn parse_amount(
     record: &csv::StringRecord,
     col_index: &HashMap<String, usize>,
 ) -> Result<Decimal, ImportError> {
-    match &cfg.amount_columns {
-        AmountColumns::Single { column } => {
-            let idx = col_index
-                .get(&column.to_ascii_lowercase())
-                .copied()
-                .ok_or_else(|| ImportError::MissingField(column.clone()))?;
-            let raw = record_field(record, idx, column)?;
+    match cfg.amount_columns {
+        AmountColumns::Single { ref column } => {
+            let idx = resolve(col_index, column)?;
+            let raw = record_field(record, idx, &column.describe())?;
             parse_number(&raw, cfg.decimal_separator, cfg.thousands_separator).map_err(|e| {
                 ImportError::BadValue {
-                    field: column.clone(),
+                    field: column.describe(),
                     detail: e,
                 }
             })
         }
         AmountColumns::SplitDebitCredit {
-            debit_column,
-            credit_column,
+            ref debit_column,
+            ref credit_column,
         } => {
-            let debit_idx = col_index.get(&debit_column.to_ascii_lowercase()).copied();
-            let credit_idx = col_index.get(&credit_column.to_ascii_lowercase()).copied();
-
-            let debit_raw = debit_idx
+            let debit_raw = resolve(col_index, debit_column)
+                .ok()
                 .and_then(|i| record.get(i))
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
-            let credit_raw = credit_idx
+            let credit_raw = resolve(col_index, credit_column)
+                .ok()
                 .and_then(|i| record.get(i))
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
@@ -374,7 +392,7 @@ fn parse_amount(
                 (Some(d), None) => {
                     let val = parse_number(d, cfg.decimal_separator, cfg.thousands_separator)
                         .map_err(|e| ImportError::BadValue {
-                            field: debit_column.clone(),
+                            field: debit_column.describe(),
                             detail: e,
                         })?;
                     // Negate: a positive debit figure means money going out.
@@ -382,14 +400,18 @@ fn parse_amount(
                 }
                 (None, Some(c)) => parse_number(c, cfg.decimal_separator, cfg.thousands_separator)
                     .map_err(|e| ImportError::BadValue {
-                        field: credit_column.clone(),
+                        field: credit_column.describe(),
                         detail: e,
                     }),
                 (Some(_), Some(_)) => Err(ImportError::Parse(format!(
-                    "both '{debit_column}' and '{credit_column}' are populated in the same row"
+                    "both {} and {} are populated in the same row",
+                    debit_column.describe(),
+                    credit_column.describe()
                 ))),
                 (None, None) => Err(ImportError::MissingField(format!(
-                    "{debit_column} or {credit_column}"
+                    "{} or {}",
+                    debit_column.describe(),
+                    credit_column.describe()
                 ))),
             }
         }
@@ -718,12 +740,54 @@ mod tests {
         let importer = CsvImporter;
         let cfg = Config {
             account: "Assets:Bank:Checking".to_owned(),
-            date_column: "Date".to_owned(),
+            date_column: ColumnRef::Name("Date".to_owned()),
             commodity: Some("AUD".to_owned()),
             ..Config::default()
         };
         let result = importer.parse_bytes(b"\x00\x00 not csv", &cfg, "statement.csv");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn import_headerless_csv_by_index() {
+        let dir = std::env::temp_dir().join("bc-csv-import-headerless-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let csv = b"01/02/2025,120.00,GENERIC GROCER\n\
+                    02/02/2025,-45.00,ACME HARDWARE\n";
+        let mut f = std::fs::File::create(dir.join("statement.csv")).expect("create");
+        f.write_all(csv).expect("write");
+
+        let config_json = serde_json::json!({
+            "commodity": "AUD",
+            "account": "Liabilities:Bank:Card",
+            "source_dir": dir.to_str().expect("utf8"),
+            "source_glob": "*.csv",
+            "header": {"kind": "absent"},
+            "date_column": 0,
+            "date_format": "%d/%m/%Y",
+            "amount_columns": {"style": "single", "column": 1},
+            "description_column": 2
+        });
+
+        let importer = CsvImporter;
+        let txns = importer
+            .import(ImportConfig::from_json_string(config_json.to_string()))
+            .expect("import should succeed");
+
+        assert_eq!(txns.len(), 2, "no row should be consumed as a header");
+        assert_eq!(txns[0].date, Date::new(2025, 2, 1));
+        assert_eq!(
+            txns[0].postings[0].amount,
+            Some(Amount::new(12000, "AUD", 2))
+        );
+        assert_eq!(txns[0].description, "GENERIC GROCER");
+        assert_eq!(txns[1].date, Date::new(2025, 2, 2));
+        assert_eq!(
+            txns[1].postings[0].amount,
+            Some(Amount::new(-4500, "AUD", 2))
+        );
     }
 
     #[test]
