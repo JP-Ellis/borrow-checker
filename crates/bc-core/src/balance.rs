@@ -126,13 +126,23 @@ impl Engine {
         .fetch_all(&self.pool)
         .await?;
 
-        let total = rows.into_iter().try_fold(Decimal::ZERO, |acc, (amt,)| {
+        let concrete = rows.into_iter().try_fold(Decimal::ZERO, |acc, (amt,)| {
             let d = amt
                 .parse::<Decimal>()
                 .map_err(|e| BcError::BadData(format!("invalid decimal amount '{amt}': {e}")))?;
             acc.checked_add(d).ok_or_else(|| {
                 BcError::BadData("balance overflow: sum exceeds Decimal range".into())
             })
+        })?;
+
+        // Elided legs carry no stored amount, so they are absent from the query
+        // above; their residual is derived and added here (see `crate::residual`).
+        let residual = crate::residual::Residuals::for_account(&self.pool, account_id)
+            .await?
+            .total_in(commodity)?;
+
+        let total = concrete.checked_add(residual).ok_or_else(|| {
+            BcError::BadData("balance overflow: sum exceeds Decimal range".into())
         })?;
         Ok(Amount::new(total, commodity))
     }
@@ -248,7 +258,8 @@ impl Engine {
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
+        let mut out: Vec<(jiff::civil::Date, Decimal)> = rows
+            .into_iter()
             .map(|(date_str, amt_str)| {
                 let date = date_str
                     .parse::<jiff::civil::Date>()
@@ -258,7 +269,40 @@ impl Engine {
                     .map_err(|e| BcError::BadData(format!("invalid amount '{amt_str}': {e}")))?;
                 Ok((date, amount))
             })
-            .collect()
+            .collect::<BcResult<Vec<_>>>()?;
+
+        // Elided legs have a NULL commodity, so the query above cannot match
+        // them. Fetch them separately and resolve each one's residual; a
+        // residual carries its transaction's date, so ordering is unaffected.
+        let elided: Vec<(String, String)> = sqlx::query_as(
+            "SELECT p.id, t.date
+             FROM postings p
+             JOIN transactions t ON t.id = p.transaction_id
+             WHERE p.account_id = ?
+               AND p.amount IS NULL
+               AND t.date >= ?
+               AND t.date  < ?",
+        )
+        .bind(account_id.to_string())
+        .bind(from.to_string())
+        .bind(to.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        if !elided.is_empty() {
+            let residuals = crate::residual::Residuals::for_account(&self.pool, account_id).await?;
+            for (posting_id, date_str) in elided {
+                let Some(value) = residuals.component(&posting_id, commodity) else {
+                    continue;
+                };
+                let date = date_str
+                    .parse::<jiff::civil::Date>()
+                    .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
+                out.push((date, value));
+            }
+        }
+
+        Ok(out)
     }
 
     /// Returns the total inflow and outflow for `account_id` in `commodity` over `[from, to)`.
@@ -1527,5 +1571,143 @@ mod tests {
             first.0
         );
         assert!(as_of < last.1, "newest bucket must contain as_of");
+    }
+
+    /// The #354 repro: `Expenses:Food +50 / Assets:Bank <elided>`.
+    ///
+    /// Before the fix `Assets:Bank` read zero while `Expenses:Food` read +50.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn elided_leg_moves_its_account_balance(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let bank = acct_svc
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Bank");
+        let food = acct_svc
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Food");
+
+        sqlx::query("INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES ('tx_e1', '2026-01-01', 'Groceries', 'unreconciled', '2026-01-01T00:00:00Z')")
+            .execute(&pool).await.expect("insert transaction");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_food', 'tx_e1', ?, '50.00', 'AUD', 0)")
+            .bind(food.to_string()).execute(&pool).await.expect("insert concrete leg");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_bank', 'tx_e1', ?, NULL, NULL, 1)")
+            .bind(bank.to_string()).execute(&pool).await.expect("insert elided leg");
+
+        let engine = Engine::new(pool.clone());
+
+        assert_eq!(
+            engine
+                .balance_for(&food, "AUD")
+                .await
+                .expect("food balance")
+                .value(),
+            dec!(50.00),
+        );
+        assert_eq!(
+            engine
+                .balance_for(&bank, "AUD")
+                .await
+                .expect("bank balance")
+                .value(),
+            dec!(-50.00),
+            "the elided leg must absorb the residual",
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn ambiguous_transaction_contributes_no_residual(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let bank = acct_svc
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Bank");
+        let food = acct_svc
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Food");
+        let fun = acct_svc
+            .create()
+            .name("Fun")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Fun");
+
+        sqlx::query("INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES ('tx_e2', '2026-01-01', 'Ambiguous', 'unreconciled', '2026-01-01T00:00:00Z')")
+            .execute(&pool).await.expect("insert transaction");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_food2', 'tx_e2', ?, '50.00', 'AUD', 0)")
+            .bind(food.to_string()).execute(&pool).await.expect("insert concrete leg");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_bank2', 'tx_e2', ?, NULL, NULL, 1)")
+            .bind(bank.to_string()).execute(&pool).await.expect("insert first elided leg");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_fun2', 'tx_e2', ?, NULL, NULL, 2)")
+            .bind(fun.to_string()).execute(&pool).await.expect("insert second elided leg");
+
+        let engine = Engine::new(pool.clone());
+
+        assert_eq!(
+            engine
+                .balance_for(&bank, "AUD")
+                .await
+                .expect("bank balance")
+                .value(),
+            Decimal::ZERO,
+            "a residual split across two elided legs is not attributable",
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn elided_leg_counts_toward_period_flows(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let bank = acct_svc
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Bank");
+        let food = acct_svc
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Food");
+
+        sqlx::query("INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES ('tx_e3', '2026-01-15', 'Groceries', 'unreconciled', '2026-01-01T00:00:00Z')")
+            .execute(&pool).await.expect("insert transaction");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_food3', 'tx_e3', ?, '50.00', 'AUD', 0)")
+            .bind(food.to_string()).execute(&pool).await.expect("insert concrete leg");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_bank3', 'tx_e3', ?, NULL, NULL, 1)")
+            .bind(bank.to_string()).execute(&pool).await.expect("insert elided leg");
+
+        let engine = Engine::new(pool.clone());
+        let (inflow, outflow) = engine
+            .posting_flows(&bank, "AUD", date(2026, 1, 1), date(2026, 2, 1))
+            .await
+            .expect("flows");
+
+        assert_eq!(inflow.value(), Decimal::ZERO);
+        assert_eq!(outflow.value(), dec!(50.00), "the residual is an outflow");
     }
 }
