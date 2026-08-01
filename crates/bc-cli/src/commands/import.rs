@@ -528,8 +528,22 @@ impl Report<'_> {
 
 #[cfg(test)]
 mod tests {
+    use bc_models::AccountId;
+    use bc_models::AccountKind;
+    use bc_models::AccountType;
+    use bc_models::Amount;
+    use bc_models::CommodityCode;
+    use bc_models::ImportBatchId;
+    use bc_models::PostingId;
+    use bc_models::Reconciliation;
+    use bc_models::SourceRef;
+    use bc_models::TransactionId;
     use clap::Parser as _;
+    use jiff::Timestamp;
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
+    use sqlx::SqlitePool;
 
     use super::Command;
     use super::Report;
@@ -871,6 +885,343 @@ mod tests {
         assert!(!rendered.contains("reconciled"));
         assert!(!rendered.contains("freed"));
         assert!(!rendered.contains("other batches"));
+    }
+
+    /// Creates a top-level asset account and returns its ID.
+    async fn account(pool: &SqlitePool, name: &str) -> AccountId {
+        bc_core::AccountService::new(pool.clone())
+            .create()
+            .name(name)
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account")
+    }
+
+    /// Inserts an unreconciled transaction whose postings each carry 50 AUD on
+    /// `account_id`, one posting per element of `postings`. `amount` (in AUD)
+    /// distinguishes this transaction's fingerprint from a sibling scenario's,
+    /// since the fingerprint does not otherwise vary by transaction.
+    async fn transaction_with_postings(
+        pool: &SqlitePool,
+        account_id: &AccountId,
+        posting_count: usize,
+        amount: i64,
+    ) -> (TransactionId, Vec<PostingId>) {
+        let posting_ids: Vec<PostingId> = core::iter::repeat_with(PostingId::new)
+            .take(posting_count)
+            .collect();
+        let tx = bc_models::Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("ACME")
+            .postings(
+                posting_ids
+                    .iter()
+                    .map(|posting_id| {
+                        bc_models::Posting::builder()
+                            .id(posting_id.clone())
+                            .account_id(account_id.clone())
+                            .amount(Amount::new(
+                                Decimal::from(amount),
+                                CommodityCode::new("AUD"),
+                            ))
+                            .build()
+                    })
+                    .collect(),
+            )
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let id = tx.id().clone();
+        bc_core::TransactionService::new(pool.clone())
+            .create(tx)
+            .await
+            .expect("create tx");
+        (id, posting_ids)
+    }
+
+    /// What a test-only [`SourceRef`] attachment needs beyond the transaction
+    /// and posting it names — bundled so `attach_at` stays under the
+    /// argument-count lint rather than earning a suppression.
+    struct AttachSpec {
+        /// Whether the attaching batch created the posting.
+        owns_posting: bool,
+        /// Disambiguates same-day, same-amount rows on one account.
+        occurrence: u32,
+        /// Must match the named posting's own amount, as a real import's
+        /// reference would.
+        amount: i64,
+    }
+
+    /// Attaches a reference owned by `batch`, pointing at `posting_id`, per
+    /// `spec` — a distinct `occurrence` lets several references share an
+    /// account and fingerprint without colliding on the dedup slot.
+    async fn attach_at(
+        pool: &SqlitePool,
+        batch: &ImportBatchId,
+        transaction_id: &TransactionId,
+        posting_id: &PostingId,
+        account_id: &AccountId,
+        spec: &AttachSpec,
+    ) -> bc_models::SourceRefId {
+        let id = bc_models::SourceRefId::new();
+        let source = SourceRef::builder()
+            .id(id.clone())
+            .transaction_id(transaction_id.clone())
+            .posting_id(Some(posting_id.clone()))
+            .account_id(account_id.clone())
+            .date(date(2026, 1, 15))
+            .narration("ACME")
+            .amount(Some(Amount::new(
+                Decimal::from(spec.amount),
+                CommodityCode::new("AUD"),
+            )))
+            .reference(None)
+            .occurrence(spec.occurrence)
+            .import_batch_id(Some(batch.clone()))
+            .owns_posting(spec.owns_posting)
+            .created_at(Timestamp::now())
+            .build();
+        bc_core::SourceService::new(pool.clone())
+            .attach(&source)
+            .await
+            .expect("attach");
+        id
+    }
+
+    /// Tombstones a reference the way an edit does: clears its posting link,
+    /// leaving the reference itself as history.
+    async fn tombstone(pool: &SqlitePool, reference: &bc_models::SourceRefId) {
+        sqlx::query("UPDATE transaction_sources SET posting_id = NULL WHERE id = ?")
+            .bind(reference.to_string())
+            .execute(pool)
+            .await
+            .expect("tombstone");
+    }
+
+    /// Deletes a posting row outright, the way a fully-applied leg deletion
+    /// does once its reference has already been tombstoned.
+    async fn delete_posting(pool: &SqlitePool, posting_id: &PostingId) {
+        sqlx::query("DELETE FROM postings WHERE id = ?")
+            .bind(posting_id.to_string())
+            .execute(pool)
+            .await
+            .expect("delete posting");
+    }
+
+    /// Recategorises a posting, the way a user's edit does, so its reference no
+    /// longer agrees with what it recorded at attach time.
+    async fn recategorise(pool: &SqlitePool, posting_id: &PostingId, elsewhere: &AccountId) {
+        sqlx::query("UPDATE postings SET account_id = ? WHERE id = ?")
+            .bind(elsewhere.to_string())
+            .bind(posting_id.to_string())
+            .execute(pool)
+            .await
+            .expect("recategorise");
+    }
+
+    /// Marks a transaction reconciled, the way confirming it against a
+    /// statement does.
+    async fn reconcile(pool: &SqlitePool, transaction_id: &TransactionId) {
+        sqlx::query("UPDATE transactions SET reconciliation = 'reconciled' WHERE id = ?")
+            .bind(transaction_id.to_string())
+            .execute(pool)
+            .await
+            .expect("reconcile");
+    }
+
+    /// Plain: `count` owned postings on one transaction, untouched — a
+    /// baseline contribution to `removed_postings`/`removed_transactions`
+    /// with no side effect on any other count.
+    async fn plain_scenario(pool: &SqlitePool, batch: &ImportBatchId, acct: &AccountId) {
+        let (tx, postings) = transaction_with_postings(pool, acct, 2, 50).await;
+        for (index, posting_id) in postings.iter().enumerate() {
+            let spec = AttachSpec {
+                owns_posting: true,
+                occurrence: u32::try_from(index).expect("small index"),
+                amount: 50,
+            };
+            attach_at(pool, batch, &tx, posting_id, acct, &spec).await;
+        }
+    }
+
+    /// Edited: one owned posting, recategorised before discard — contributes
+    /// `edited_postings` alongside `removed_postings`/`removed_transactions`.
+    async fn edited_scenario(
+        pool: &SqlitePool,
+        batch: &ImportBatchId,
+        acct: &AccountId,
+        elsewhere: &AccountId,
+    ) {
+        let (tx, postings) = transaction_with_postings(pool, acct, 1, 51).await;
+        let posting = postings.first().expect("one posting");
+        let spec = AttachSpec {
+            owns_posting: true,
+            occurrence: 0,
+            amount: 51,
+        };
+        attach_at(pool, batch, &tx, posting, acct, &spec).await;
+        recategorise(pool, posting, elsewhere).await;
+    }
+
+    /// Reconciled: two owned postings on one transaction, reconciled before
+    /// discard — contributes `reconciled_postings` alongside
+    /// `removed_postings`/`removed_transactions`.
+    async fn reconciled_scenario(pool: &SqlitePool, batch: &ImportBatchId, acct: &AccountId) {
+        let (tx, postings) = transaction_with_postings(pool, acct, 2, 52).await;
+        for (index, posting_id) in postings.iter().enumerate() {
+            let spec = AttachSpec {
+                owns_posting: true,
+                occurrence: u32::try_from(index).expect("small index"),
+                amount: 52,
+            };
+            attach_at(pool, batch, &tx, posting_id, acct, &spec).await;
+        }
+        reconcile(pool, &tx).await;
+    }
+
+    /// Adopted: three references pointing at postings the batch did not
+    /// create, each on its own transaction (and its own amount) so none
+    /// collide on a slot — contributes only `detached_adopted`.
+    async fn adopted_scenario(pool: &SqlitePool, batch: &ImportBatchId, acct: &AccountId) {
+        for amount in [53_i64, 54, 55] {
+            let (tx, postings) = transaction_with_postings(pool, acct, 1, amount).await;
+            let posting = postings.first().expect("one posting");
+            let spec = AttachSpec {
+                owns_posting: false,
+                occurrence: 0,
+                amount,
+            };
+            attach_at(pool, batch, &tx, posting, acct, &spec).await;
+        }
+    }
+
+    /// Tombstoned: five references the batch owns, already orphaned before
+    /// discard — the posting and its transaction are otherwise untouched, so
+    /// this contributes only `freed_tombstones`.
+    async fn tombstoned_scenario(pool: &SqlitePool, batch: &ImportBatchId, acct: &AccountId) {
+        for amount in [56_i64, 57, 58, 59, 60] {
+            let (tx, postings) = transaction_with_postings(pool, acct, 1, amount).await;
+            let posting = postings.first().expect("one posting");
+            let spec = AttachSpec {
+                owns_posting: true,
+                occurrence: 0,
+                amount,
+            };
+            let reference = attach_at(pool, batch, &tx, posting, acct, &spec).await;
+            tombstone(pool, &reference).await;
+        }
+    }
+
+    /// Collateral: one transaction holding the discarded batch's own posting
+    /// plus seven already-orphaned references belonging to `other_batch`.
+    /// Once the discarded batch's posting is removed the transaction empties
+    /// and is deleted, sweeping the other batch's leftover tombstones with
+    /// it — contributing `other_batch_references_removed` alongside
+    /// `removed_postings`/`removed_transactions`.
+    async fn collateral_scenario(
+        pool: &SqlitePool,
+        batch: &ImportBatchId,
+        other_batch: &ImportBatchId,
+        acct: &AccountId,
+    ) {
+        let (tx, postings) = transaction_with_postings(pool, acct, 8, 61).await;
+        let (mine, others) = postings.split_first().expect("at least one posting");
+        let spec = AttachSpec {
+            owns_posting: true,
+            occurrence: 0,
+            amount: 61,
+        };
+        attach_at(pool, batch, &tx, mine, acct, &spec).await;
+        for (index, other_posting) in others.iter().enumerate() {
+            let occurrence = u32::try_from(index)
+                .expect("small index")
+                .checked_add(1)
+                .expect("small index");
+            let other_spec = AttachSpec {
+                owns_posting: true,
+                occurrence,
+                amount: 61,
+            };
+            let reference =
+                attach_at(pool, other_batch, &tx, other_posting, acct, &other_spec).await;
+            tombstone(pool, &reference).await;
+            delete_posting(pool, other_posting).await;
+        }
+    }
+
+    /// Builds a [`bc_core::DiscardOutcome`] (via a real discard) with every
+    /// optional count non-zero and pairwise distinct — 1 through 7, no two
+    /// alike — so a transposed pair in the report would be visible rather
+    /// than coincidentally matching.
+    ///
+    /// The seven counts, by construction:
+    /// - `edited_postings` = 1 (one owned posting, recategorised before discard)
+    /// - `reconciled_postings` = 2 (two owned postings in one reconciled transaction)
+    /// - `detached_adopted` = 3 (three adopted-only references)
+    /// - `removed_transactions` = 4 (one plain, one edited, one reconciled, one collateral)
+    /// - `freed_tombstones` = 5 (five references tombstoned before discard)
+    /// - `removed_postings` = 6 (2 plain + 1 edited + 2 reconciled + 1 collateral)
+    /// - `other_batch_references_removed` = 7 (seven orphaned references from
+    ///   another batch, swept when the collateral transaction empties)
+    async fn discard_everything_at_once(
+        pool: &SqlitePool,
+    ) -> (bc_core::DiscardOutcome, bc_core::ImportBatch) {
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+        let other_batch = batches.open(None, "ofx").await.expect("open other");
+        let acct = account(pool, "Checking").await;
+        let elsewhere = account(pool, "Savings").await;
+
+        plain_scenario(pool, &batch, &acct).await;
+        edited_scenario(pool, &batch, &acct, &elsewhere).await;
+        reconciled_scenario(pool, &batch, &acct).await;
+        adopted_scenario(pool, &batch, &acct).await;
+        tombstoned_scenario(pool, &batch, &acct).await;
+        collateral_scenario(pool, &batch, &other_batch, &acct).await;
+
+        let record = batches.find_by_id(&batch).await.expect("find");
+        let outcome = batches.discard(&batch).await.expect("discard");
+        (outcome, record)
+    }
+
+    #[sqlx::test(migrations = "../bc-core/migrations")]
+    async fn every_optional_discard_line_fires_with_a_distinct_count(pool: SqlitePool) {
+        let (outcome, record) = discard_everything_at_once(&pool).await;
+
+        pretty_assertions::assert_eq!(outcome.removed_postings, 6);
+        pretty_assertions::assert_eq!(outcome.removed_transactions, 4);
+        pretty_assertions::assert_eq!(outcome.edited_postings, 1);
+        pretty_assertions::assert_eq!(outcome.reconciled_postings, 2);
+        pretty_assertions::assert_eq!(outcome.detached_adopted, 3);
+        pretty_assertions::assert_eq!(outcome.freed_tombstones, 5);
+        pretty_assertions::assert_eq!(outcome.other_batch_references_removed, 7);
+
+        // The header names the batch ID and start time, both fresh per test
+        // run; redact them to fixed placeholders so the snapshot is stable.
+        let stabilised = super::render_discard(&outcome, &record)
+            .replace(&outcome.batch_id.to_string(), "BATCH_ID")
+            .replace(&record.started_at.to_string(), "STARTED_AT");
+        insta::assert_snapshot!(stabilised);
+
+        let payload = super::discard_to_json(&outcome);
+        pretty_assertions::assert_eq!(
+            payload,
+            serde_json::json!({
+                "batch": outcome.batch_id.to_string(),
+                "removed_postings": 6_usize,
+                "removed_transactions": 4_usize,
+                "detached_adopted": 3_usize,
+                "freed_tombstones": 5_usize,
+                "other_batch_references_removed": 7_usize,
+                "edited_postings": 1_usize,
+                "reconciled_postings": 2_usize,
+            }),
+            "the JSON surface must derive from the same outcome as the human report, \
+             not a separately maintained count"
+        );
     }
 
     /// Builds a context over a temporary database, with a batch already open
