@@ -5,6 +5,7 @@ use bc_ipc::Amount;
 use bc_ipc::AuditEntry;
 use bc_ipc::FilteredTransaction;
 use bc_ipc::Posting;
+use bc_ipc::PostingAmount;
 use bc_ipc::Reconciliation;
 use bc_ipc::Transaction;
 use leptos::prelude::*;
@@ -47,7 +48,7 @@ fn coles_transaction() -> Transaction {
             Posting::new(
                 "posting-coles-debit",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                Some(Amount::new(Decimal::new(-8_420, 2), "AUD")),
+                PostingAmount::Stored(Amount::new(Decimal::new(-8_420, 2), "AUD")),
                 None::<&str>,
                 vec![],
                 None,
@@ -56,7 +57,7 @@ fn coles_transaction() -> Transaction {
             Posting::new(
                 "posting-coles-groceries",
                 AccountRef::new("groceries", "Expenses :: Groceries"),
-                Some(Amount::new(Decimal::new(8_420, 2), "AUD")),
+                PostingAmount::Stored(Amount::new(Decimal::new(8_420, 2), "AUD")),
                 None::<&str>,
                 vec![],
                 None,
@@ -88,7 +89,7 @@ fn salary_transaction() -> Transaction {
             Posting::new(
                 "posting-salary-income",
                 AccountRef::new("income-salary", "Income :: Salary"),
-                Some(Amount::new(Decimal::new(-846_154, 2), "AUD")),
+                PostingAmount::Stored(Amount::new(Decimal::new(-846_154, 2), "AUD")),
                 Some("gross pay"),
                 vec![],
                 None,
@@ -97,7 +98,7 @@ fn salary_transaction() -> Transaction {
             Posting::new(
                 "posting-salary-takehome",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                Some(Amount::new(Decimal::new(428_055, 2), "AUD")),
+                PostingAmount::Stored(Amount::new(Decimal::new(428_055, 2), "AUD")),
                 Some("take-home"),
                 vec![],
                 None,
@@ -124,7 +125,7 @@ fn partially_matched_transaction() -> FilteredTransaction {
             Posting::new(
                 "posting-dinner-debit",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
-                Some(Amount::new(Decimal::new(-12_000, 2), "AUD")),
+                PostingAmount::Stored(Amount::new(Decimal::new(-12_000, 2), "AUD")),
                 None::<&str>,
                 vec![],
                 None,
@@ -133,7 +134,7 @@ fn partially_matched_transaction() -> FilteredTransaction {
             Posting::new(
                 "posting-dinner-dining",
                 AccountRef::new("dining", "Expenses :: Dining"),
-                Some(Amount::new(Decimal::new(8_000, 2), "AUD")),
+                PostingAmount::Stored(Amount::new(Decimal::new(8_000, 2), "AUD")),
                 None::<&str>,
                 vec![],
                 None,
@@ -142,7 +143,7 @@ fn partially_matched_transaction() -> FilteredTransaction {
             Posting::new(
                 "posting-dinner-shared",
                 AccountRef::new("shared-owed", "Assets :: Owed by Roommate"),
-                Some(Amount::new(Decimal::new(4_000, 2), "AUD")),
+                PostingAmount::Stored(Amount::new(Decimal::new(4_000, 2), "AUD")),
                 None::<&str>,
                 vec![],
                 None,
