@@ -137,6 +137,8 @@ struct RawBackupSection {
     auto_pre_migration: bool,
     /// Take an automatic snapshot before each import run.
     auto_pre_import: bool,
+    /// Take an automatic snapshot before discarding an import batch.
+    auto_pre_discard: bool,
 }
 
 /// Returns the default raw `[backup]` section used by `RawSettings`'s serde default.
@@ -147,6 +149,7 @@ fn default_raw_backup() -> RawBackupSection {
         retain_days: None,
         auto_pre_migration: true,
         auto_pre_import: true,
+        auto_pre_discard: true,
     }
 }
 
@@ -168,6 +171,8 @@ pub struct BackupSection {
     auto_pre_migration: bool,
     /// Take an automatic snapshot before each import run.
     auto_pre_import: bool,
+    /// Take an automatic snapshot before discarding an import batch.
+    auto_pre_discard: bool,
 }
 
 impl BackupSection {
@@ -212,6 +217,17 @@ impl BackupSection {
     pub fn auto_pre_import(&self) -> bool {
         self.auto_pre_import
     }
+
+    /// Returns whether an automatic snapshot is taken before a batch discard.
+    ///
+    /// # Returns
+    ///
+    /// `true` when discard snapshots the database first.
+    #[inline]
+    #[must_use]
+    pub fn auto_pre_discard(&self) -> bool {
+        self.auto_pre_discard
+    }
 }
 
 impl Default for BackupSection {
@@ -223,6 +239,7 @@ impl Default for BackupSection {
             retain_days: None,
             auto_pre_migration: true,
             auto_pre_import: true,
+            auto_pre_discard: true,
         }
     }
 }
@@ -338,7 +355,8 @@ impl Settings {
             .set_default("backup.retain_count", 5_i64)?
             .set_default("backup.retain_days", Option::<i64>::None)?
             .set_default("backup.auto_pre_migration", true)?
-            .set_default("backup.auto_pre_import", true)?;
+            .set_default("backup.auto_pre_import", true)?
+            .set_default("backup.auto_pre_discard", true)?;
 
         for path in config_file_paths() {
             tracing::debug!(path = %path.display(), "config: adding source");
@@ -448,6 +466,7 @@ impl Settings {
             retain_days: raw.backup.retain_days,
             auto_pre_migration: raw.backup.auto_pre_migration,
             auto_pre_import: raw.backup.auto_pre_import,
+            auto_pre_discard: raw.backup.auto_pre_discard,
         };
         tracing::debug!(
             backup.dir = ?backup.dir,
@@ -455,6 +474,7 @@ impl Settings {
             backup.retain_days = ?backup.retain_days,
             backup.auto_pre_migration = backup.auto_pre_migration,
             backup.auto_pre_import = backup.auto_pre_import,
+            backup.auto_pre_discard = backup.auto_pre_discard,
             "config: backup section"
         );
 
@@ -893,6 +913,15 @@ mod tests {
     }
 
     #[test]
+    fn auto_pre_discard_defaults_to_true() {
+        let section = BackupSection::default();
+        assert!(
+            section.auto_pre_discard(),
+            "discard is irreversible; snapshot first unless told otherwise"
+        );
+    }
+
+    #[test]
     fn default_backup_retain_count_is_five() {
         let s = Settings::default();
         assert_eq!(s.backup().retain_count(), Some(5));
@@ -981,6 +1010,7 @@ mod tests {
                 retain_days: None,
                 auto_pre_migration: true,
                 auto_pre_import: true,
+                auto_pre_discard: true,
             },
             ..valid_raw()
         };
@@ -997,6 +1027,7 @@ mod tests {
                 retain_days: None,
                 auto_pre_migration: true,
                 auto_pre_import: true,
+                auto_pre_discard: true,
             },
             ..valid_raw()
         };
