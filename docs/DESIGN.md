@@ -101,18 +101,27 @@ The core owns two layers:
 
 ```
 AccountCreated / AccountUpdated / AccountArchived
-TransactionCreated / TransactionAmended / TransactionVoided
-BudgetCreated / BudgetUpdated / BudgetArchived / BudgetAllocated
-ImportBatchStarted / ImportBatchCompleted
-PluginRegistered / PluginUnregistered
+TransactionCreated / TransactionAmended / TransactionVoided / TransactionReversed
+TransactionPayeeChanged / TransactionDateChanged / TransactionDescriptionChanged
+TransactionNoteChanged / TransactionTagsChanged / TransactionExtraDatesChanged
+TransactionReconciled
+PostingRecategorised / PostingAmountChanged / PostingNoteChanged / PostingSpreadChanged
+PostingAdded / PostingRemoved
 AssetValuationRecorded
 DepreciationCalculated
 LoanTermsSet
+BudgetCreated / BudgetRevisionSet / BudgetRevisionRemoved / BudgetArchived
+TransactionSourceAttached / TransactionSourceDetached
+TransactionsMerged / TransactionUnmerged
+ImportBatchDiscarded
 ```
 
 **What the event log provides:**
 
-- Undo/redo — walk the log backward/forward
+- Undo/redo — walk the log backward/forward. `ImportBatchDiscarded` is
+  deliberately excluded: it carries removal counts, not a snapshot of what was
+  removed, so there is nothing to replay it against. Recovery from a discard is
+  the pre-discard backup (see §4.6), not the event log.
 - Full audit trail — every change is timestamped and sourced
 - Time-travel queries — "what was my balance on 1 Jan?"
 - Import idempotency — per-account source-reference deduplication
