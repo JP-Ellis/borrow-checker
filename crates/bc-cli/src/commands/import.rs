@@ -874,6 +874,83 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "../bc-core/migrations")]
+    #[expect(clippy::indexing_slicing, reason = "test code with known structure")]
+    async fn list_to_json_covers_each_outcome_state(pool: sqlx::SqlitePool) {
+        // Mirrors `list_renders_each_outcome_state`, but on the machine
+        // surface: `counts.map(...)` fans a single `Option<Counts>` out to
+        // five independent JSON fields, and a typo'd key or a wrong fanout
+        // would still leave the human-readable table looking fine.
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+
+        let done = batches.open(None, "csv").await.expect("open");
+        let mut done_counts = bc_core::ImportBatchCounts::default();
+        done_counts.new_transactions = 12;
+        done_counts.attached_postings = 3;
+        done_counts.unresolved_path_postings = 1;
+        done_counts.other_skipped_postings = 2;
+        batches.close(&done, done_counts).await.expect("close");
+
+        let thrown_away = batches.open(None, "ofx").await.expect("open");
+        batches
+            .close(&thrown_away, bc_core::ImportBatchCounts::default())
+            .await
+            .expect("close");
+        batches.discard(&thrown_away).await.expect("discard");
+
+        let open = batches.open(None, "ledger").await.expect("open");
+
+        let listed = batches.list().await.expect("list");
+        let payload = super::list_to_json(&listed);
+        let entries = payload["batches"].as_array().expect("batches array");
+        let find = |id: &bc_models::ImportBatchId| {
+            entries
+                .iter()
+                .find(|entry| entry["id"] == id.to_string())
+                .unwrap_or_else(|| panic!("no entry for batch {id}"))
+        };
+
+        let done_entry = find(&done);
+        pretty_assertions::assert_eq!(done_entry["new_transactions"], serde_json::json!(12_usize));
+        pretty_assertions::assert_eq!(done_entry["attached_postings"], serde_json::json!(3_usize));
+        pretty_assertions::assert_eq!(done_entry["skipped_postings"], serde_json::json!(3_usize));
+        pretty_assertions::assert_eq!(
+            done_entry["unresolved_path_postings"],
+            serde_json::json!(1_usize)
+        );
+        pretty_assertions::assert_eq!(
+            done_entry["other_skipped_postings"],
+            serde_json::json!(2_usize)
+        );
+        pretty_assertions::assert_eq!(done_entry["discarded_at"], serde_json::Value::Null);
+
+        let discarded_entry = find(&thrown_away);
+        pretty_assertions::assert_ne!(
+            discarded_entry["discarded_at"],
+            serde_json::Value::Null,
+            "a discarded batch records when"
+        );
+        pretty_assertions::assert_eq!(
+            discarded_entry["new_transactions"],
+            serde_json::json!(0_usize),
+            "a completed-but-discarded batch still reports its recorded counts"
+        );
+
+        let open_entry = find(&open);
+        pretty_assertions::assert_eq!(
+            open_entry["new_transactions"],
+            serde_json::Value::Null,
+            "an incomplete batch reports null counts, not zeros"
+        );
+        pretty_assertions::assert_eq!(
+            open_entry["skipped_postings"],
+            serde_json::Value::Null,
+            "the derived skipped total must follow the same None, not become 0"
+        );
+        pretty_assertions::assert_eq!(open_entry["finished_at"], serde_json::Value::Null);
+        pretty_assertions::assert_eq!(open_entry["discarded_at"], serde_json::Value::Null);
+    }
+
+    #[sqlx::test(migrations = "../bc-core/migrations")]
     async fn an_empty_list_says_so(pool: sqlx::SqlitePool) {
         let batches = bc_core::ImportBatchService::new(pool);
         let listed = batches.list().await.expect("list");
