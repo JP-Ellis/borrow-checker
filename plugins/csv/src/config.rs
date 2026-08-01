@@ -343,9 +343,14 @@ impl Config {
     /// Returns every configured column reference, paired with its config field
     /// name.
     ///
-    /// This is the single place that knows the full set of columns: both
-    /// [`Config::validate`] and [`Config::required_column_names`] derive from
-    /// it, so a new column field is added here and nowhere else.
+    /// This is the single place that knows the full set of columns. Rules
+    /// about the *required* columns belong on [`required_column_refs`]
+    /// instead — [`Config::required_column_names`] and the `AutoDetect` arm
+    /// of [`Config::validate`] both derive from that narrower set; only the
+    /// `Absent` arm of `validate` needs the full set here. Add a new column
+    /// field here and nowhere else.
+    ///
+    /// [`required_column_refs`]: Self::required_column_refs
     ///
     /// # Returns
     ///
@@ -752,6 +757,12 @@ mod tests {
     #[test]
     fn header_default_is_present() {
         assert_eq!(Header::default(), Header::Present);
+    }
+
+    #[test]
+    fn header_deserializes_present() {
+        let h: Header = serde_json::from_str(r#"{"kind": "present"}"#).expect("valid header");
+        assert_eq!(h, Header::Present);
     }
 
     #[test]

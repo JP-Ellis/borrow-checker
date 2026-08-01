@@ -115,8 +115,7 @@ pub trait Importer: Default {
     ///
     /// Returns [`ImportError`] describing why the configuration is incoherent.
     #[inline]
-    fn validate(&self, config: ImportConfig) -> Result<(), ImportError> {
-        drop(config);
+    fn validate(&self, _config: ImportConfig) -> Result<(), ImportError> {
         Ok(())
     }
 }
