@@ -42,6 +42,12 @@ pub struct EditablePosting {
     pub amount: String,
     /// ISO currency code for `amount`.
     pub currency: String,
+    /// The backend's derived residual for this leg at load time, one entry per
+    /// commodity, empty when there is none (a concrete amount, an ambiguous
+    /// elision, or a zero residual). Never sent back to the backend — used only
+    /// to seed the pristine ghost display in [`ghost_amounts`]; superseded by
+    /// client-side derivation via [`derive_balance`] once the buffer is dirty.
+    pub derived_residual: Vec<Amount>,
     /// Free-text note; empty means none.
     pub note: String,
     /// Resolved tag colon-paths attached to this posting (e.g. `"person:josh"`).
@@ -62,7 +68,10 @@ impl EditablePosting {
     ///
     /// # Returns
     ///
-    /// The editor-friendly posting; elided legs map to an empty `amount`.
+    /// The editor-friendly posting; elided legs map to an empty `amount`. The
+    /// write path is unaffected by a `Derived`/`Ambiguous` source amount — it
+    /// is never written back, so a load-then-save round trip still nulls the
+    /// leg out (see [`Self::derived_residual`]).
     #[must_use]
     pub fn from_posting(p: &Posting, uid: u64) -> Self {
         Self {
@@ -78,6 +87,15 @@ impl EditablePosting {
                 .amount
                 .stored()
                 .map_or_else(String::new, |a| a.currency_code.clone()),
+            derived_residual: match &p.amount {
+                bc_ipc::PostingAmount::Derived(amounts) => amounts.clone(),
+                // `Stored` carries no residual; `Ambiguous` has none
+                // attributable to this single leg; any future variant is
+                // treated the same way until it is handled explicitly.
+                bc_ipc::PostingAmount::Stored(_) | bc_ipc::PostingAmount::Ambiguous | _ => {
+                    Vec::new()
+                }
+            },
             note: p.note.clone().unwrap_or_default(),
             tags: p.tags.clone(),
             spread_from: p.spread_from,
@@ -194,6 +212,7 @@ impl EditableTransaction {
             account_name: String::new(),
             amount: String::new(),
             currency,
+            derived_residual: Vec::new(),
             note: String::new(),
             tags: vec![],
             spread_from: None,
@@ -501,6 +520,58 @@ pub fn derive_balance(working: &EditableTransaction, currencies: &[CommodityInfo
     }
 }
 
+/// Returns the amount(s) to render as `uid`'s ghost/inferred display, or an
+/// empty `Vec` when nothing should be shown.
+///
+/// While the working buffer is pristine (`dirty == false`), the backend's
+/// [`EditablePosting::derived_residual`] — seeded at load time — is trusted
+/// verbatim; this is the only path that can represent a multi-commodity
+/// residual, which client-side [`derive_balance`] cannot. Once the buffer is
+/// dirty, `derive_balance` takes over so the display reflects the in-progress
+/// edit the backend has not seen. A stated (non-elided) posting, a zero or
+/// ambiguous residual, or a balanced/unbalanced/invalid/empty working buffer
+/// all yield an empty `Vec`.
+///
+/// # Arguments
+///
+/// * `working` - The working buffer.
+/// * `dirty` - Whether `working` differs from its pristine snapshot.
+/// * `uid` - The posting to compute a ghost display for.
+/// * `currencies` - The set of known commodities used to resolve amount markers.
+///
+/// # Returns
+///
+/// The amount(s) to display, one per commodity; empty when there is nothing
+/// to show.
+#[must_use]
+pub fn ghost_amounts(
+    working: &EditableTransaction,
+    dirty: bool,
+    uid: u64,
+    currencies: &[CommodityInfo],
+) -> Vec<Amount> {
+    let Some(p) = working.postings.iter().find(|p| p.uid == uid) else {
+        return Vec::new();
+    };
+    if !p.is_elided() {
+        return Vec::new();
+    }
+    if !dirty {
+        return p.derived_residual.clone();
+    }
+    match derive_balance(working, currencies) {
+        BalanceState::Inferred {
+            remainder,
+            currency,
+        } => vec![Amount::new(remainder, currency)],
+        BalanceState::Balanced
+        | BalanceState::Unbalanced { .. }
+        | BalanceState::Ambiguous
+        | BalanceState::Invalid
+        | BalanceState::Empty => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use bc_ipc::AccountRef;
@@ -520,6 +591,7 @@ pub mod tests {
     use super::EditablePosting;
     use super::EditableTransaction;
     use super::derive_balance;
+    use super::ghost_amounts;
     use super::parse_amount;
     use super::parse_tags;
 
@@ -696,10 +768,20 @@ pub mod tests {
             account_name: "A".to_owned(),
             amount: amount.to_owned(),
             currency: currency.to_owned(),
+            derived_residual: vec![],
             note: String::new(),
             tags: vec![],
             spread_from: None,
             spread_until: None,
+        }
+    }
+
+    /// Builds an elided [`EditablePosting`] (blank amount) seeded with a
+    /// backend-derived residual, for [`ghost_amounts`] pristine-path tests.
+    fn ep_derived(currency_amounts: Vec<Amount>) -> EditablePosting {
+        EditablePosting {
+            derived_residual: currency_amounts,
+            ..ep("", "")
         }
     }
 
@@ -827,6 +909,163 @@ pub mod tests {
     fn balance_no_concrete_amounts_is_empty() {
         let s = derive_balance(&et(vec![ep("", "AUD")]), &registry());
         assert_eq!(s, BalanceState::Empty);
+    }
+
+    #[test]
+    fn ghost_amounts_pristine_single_commodity_shows_backend_value() {
+        let residual = vec![Amount::new(Decimal::new(-8_420, 2), "AUD")];
+        let w = et(vec![
+            ep("AUD 84.20", "AUD"),
+            EditablePosting {
+                uid: 1,
+                ..ep_derived(residual.clone())
+            },
+        ]);
+        assert_eq!(ghost_amounts(&w, false, 1, &registry()), residual);
+    }
+
+    #[test]
+    fn ghost_amounts_pristine_multi_commodity_shows_every_commodity() {
+        let residual = vec![
+            Amount::new(Decimal::new(-8_420, 2), "AUD"),
+            Amount::new(Decimal::new(-1_000, 2), "USD"),
+        ];
+        let w = et(vec![EditablePosting {
+            uid: 1,
+            ..ep_derived(residual.clone())
+        }]);
+        assert_eq!(ghost_amounts(&w, false, 1, &registry()), residual);
+    }
+
+    #[test]
+    fn ghost_amounts_pristine_zero_residual_is_blank() {
+        let w = et(vec![EditablePosting {
+            uid: 1,
+            ..ep_derived(vec![])
+        }]);
+        assert_eq!(ghost_amounts(&w, false, 1, &registry()), Vec::new());
+    }
+
+    #[test]
+    fn ghost_amounts_pristine_ambiguous_is_blank() {
+        // `EditablePosting::from_posting` maps an `Ambiguous` source amount to
+        // an empty `derived_residual`, same as a zero `Derived` residual.
+        let p = Posting::new(
+            "p-1",
+            AccountRef::new("a", "A"),
+            PostingAmount::Ambiguous,
+            None::<&str>,
+            vec![],
+            None,
+            None,
+        );
+        let ep = EditablePosting::from_posting(&p, 1);
+        assert_eq!(ep.derived_residual, Vec::new());
+        let w = et(vec![ep]);
+        assert_eq!(ghost_amounts(&w, false, 1, &registry()), Vec::new());
+    }
+
+    #[test]
+    fn ghost_amounts_dirty_ignores_stale_backend_seed() {
+        // A backend-seeded residual that no longer matches the (now dirty)
+        // buffer must not leak through — dirty always defers to client-side
+        // derivation over the current typed values.
+        let stale_residual = vec![Amount::new(Decimal::new(9_99_99, 2), "AUD")];
+        let w = et(vec![
+            ep("AUD -84.20", "AUD"),
+            EditablePosting {
+                uid: 1,
+                ..ep_derived(stale_residual)
+            },
+        ]);
+        let expected = vec![Amount::new(Decimal::new(84_20, 2), "AUD")];
+        assert_eq!(ghost_amounts(&w, true, 1, &registry()), expected);
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn ghost_amounts_switches_to_client_derived_after_sibling_edit() {
+        let residual = vec![Amount::new(Decimal::new(-8_420, 2), "AUD")];
+        let mut w = et(vec![
+            ep("AUD 84.20", "AUD"),
+            EditablePosting {
+                uid: 1,
+                ..ep_derived(residual.clone())
+            },
+        ]);
+        assert_eq!(ghost_amounts(&w, false, 1, &registry()), residual);
+
+        // The user edits the sibling leg's amount; the buffer is now dirty.
+        w.postings[0].amount = "AUD 90.00".to_owned();
+        let expected = vec![Amount::new(Decimal::new(-90_00, 2), "AUD")];
+        assert_eq!(ghost_amounts(&w, true, 1, &registry()), expected);
+    }
+
+    #[test]
+    fn ghost_amounts_stated_leg_is_blank() {
+        let w = et(vec![ep("AUD 84.20", "AUD")]);
+        assert_eq!(ghost_amounts(&w, false, 0, &registry()), Vec::new());
+        assert_eq!(ghost_amounts(&w, true, 0, &registry()), Vec::new());
+    }
+
+    #[test]
+    fn from_transaction_includes_every_leg_regardless_of_filtering() {
+        // `EditableTransaction::from` takes only the `Transaction` — it has no
+        // `matched_postings`/filter parameter to apply, so a filtered register
+        // view can never change which legs (or how many) populate the working
+        // buffer, nor therefore the residual any elided leg is seeded with.
+        // Filtering (`TxEditCtx::matched`) is a separate, display-only overlay
+        // consulted solely by the dimming hint in `posting_row.rs`.
+        let t = sample_two_posting_tx();
+        let w = EditableTransaction::from(&t);
+        assert_eq!(w.postings.len(), t.postings.len());
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn to_edit_does_not_materialize_derived_residual() {
+        let tx = Transaction::new(
+            "tx-1",
+            Date::constant(2026, 4, 30),
+            "Coles",
+            "",
+            None::<&str>,
+            vec![],
+            Reconciliation::Unreconciled,
+            vec![],
+            vec![
+                Posting::new(
+                    "p-1",
+                    AccountRef::new("checking", "Checking"),
+                    PostingAmount::Stored(Amount::new(Decimal::new(-8_420, 2), "AUD")),
+                    None::<&str>,
+                    vec![],
+                    None,
+                    None,
+                ),
+                Posting::new(
+                    "p-2",
+                    AccountRef::new("groceries", "Groceries"),
+                    PostingAmount::Derived(vec![Amount::new(Decimal::new(8_420, 2), "AUD")]),
+                    None::<&str>,
+                    vec![],
+                    None,
+                    None,
+                ),
+            ],
+            vec![],
+        );
+        let w = EditableTransaction::from(&tx);
+        assert_eq!(
+            w.postings[1].derived_residual,
+            vec![Amount::new(Decimal::new(8_420, 2), "AUD")]
+        );
+        assert_eq!(w.postings[1].amount, "");
+
+        // Saving without editing anything must still null the elided leg out —
+        // the backend-derived value seeds the display only, never the write path.
+        let out = w.to_edit_transaction(&registry()).expect("valid");
+        assert_eq!(out.postings[1].amount, None);
     }
 
     #[test]
