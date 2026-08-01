@@ -95,15 +95,6 @@ where
     }
 }
 
-/// One elided posting and the residual it absorbs.
-#[derive(Debug, Clone)]
-struct Entry {
-    /// Id of the elided posting.
-    posting_id: String,
-    /// Per-commodity residual the posting absorbs.
-    balances: Balances,
-}
-
 /// One row of the set-based residual query.
 type ResidualRow = (String, String, String, Option<String>, Option<String>);
 
@@ -113,8 +104,9 @@ type ResidualRow = (String, String, String, Option<String>, Option<String>);
 /// which would be N+1 on every balance read.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Residuals {
-    /// One entry per elided posting whose transaction was attributable.
-    entries: Vec<Entry>,
+    /// Per-commodity residual balances, keyed by elided posting id, one entry
+    /// per elided posting whose transaction was attributable.
+    entries: HashMap<String, Balances>,
     /// Entries' balances, pre-aggregated by account id.
     by_account: HashMap<String, Balances>,
 }
@@ -197,7 +189,7 @@ impl Residuals {
                 .push((posting_id, acct_id, parsed));
         }
 
-        let mut entries = Vec::new();
+        let mut entries: HashMap<String, Balances> = HashMap::new();
         let mut by_account: HashMap<String, Balances> = HashMap::new();
         for legs in by_transaction.values() {
             let residual = residual_of(legs.iter().map(|(_, _, amount)| amount.as_ref()))
@@ -207,10 +199,7 @@ impl Residuals {
             };
             for (posting_id, acct_id, amount) in legs {
                 if amount.is_none() {
-                    entries.push(Entry {
-                        posting_id: posting_id.clone(),
-                        balances: balances.clone(),
-                    });
+                    entries.insert(posting_id.clone(), balances.clone());
                     let totals = by_account.entry(acct_id.clone()).or_default();
                     for (code, value) in balances.iter() {
                         totals.try_add(&Amount::new(value, code)).map_err(|e| {
@@ -244,12 +233,14 @@ impl Residuals {
     ///
     /// Returns [`BcError::BadData`] if the running total overflows.
     pub(crate) fn total_in(&self, commodity: &str) -> BcResult<Decimal> {
-        self.entries.iter().try_fold(Decimal::ZERO, |acc, entry| {
-            let component = entry.balances.get(commodity).unwrap_or(Decimal::ZERO);
-            acc.checked_add(component).ok_or_else(|| {
-                BcError::BadData("residual overflow: sum exceeds Decimal range".into())
+        self.entries
+            .values()
+            .try_fold(Decimal::ZERO, |acc, balances| {
+                let component = balances.get(commodity).unwrap_or(Decimal::ZERO);
+                acc.checked_add(component).ok_or_else(|| {
+                    BcError::BadData("residual overflow: sum exceeds Decimal range".into())
+                })
             })
-        })
     }
 
     /// Groups every held residual by account id.
@@ -282,10 +273,8 @@ impl Residuals {
     /// The component, or `None` when the posting holds no residual in that
     /// commodity (including when its transaction was ambiguous).
     pub(crate) fn component(&self, posting_id: &str, commodity: &str) -> Option<Decimal> {
-        self.entries
-            .iter()
-            .find(|entry| entry.posting_id == posting_id)
-            .and_then(|entry| entry.balances.get(commodity))
+        let balances = self.entries.get(posting_id)?;
+        balances.get(commodity)
     }
 
     /// Iterates every account holding a residual, with its aggregated balances.
