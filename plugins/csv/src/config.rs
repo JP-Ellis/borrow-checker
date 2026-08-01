@@ -353,13 +353,6 @@ impl Config {
     /// then whichever optional columns are set.
     #[must_use]
     #[inline]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "additive only; wired into Config::validate by a later task in this effort"
-        )
-    )]
     pub fn column_refs(&self) -> Vec<(&'static str, &ColumnRef)> {
         let mut refs = self.required_column_refs();
         let optional: [(&'static str, &Option<ColumnRef>); 4] = [
@@ -393,6 +386,73 @@ impl Config {
             .filter_map(|(_, column)| column.as_name())
             .collect()
     }
+
+    /// Checks the configuration for internal coherence.
+    ///
+    /// This inspects the configuration only; it reads no files. Problems that
+    /// depend on file contents — an index past the end of a row, for instance —
+    /// remain parse-time errors.
+    ///
+    /// All violations are reported together rather than one per call, because
+    /// a headerless profile converted from a name-based one typically has
+    /// several at once.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the configuration is coherent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bc_sdk::ImportError::InvalidConfig`] listing every violation:
+    /// - a name-based column reference when the file has no header row;
+    /// - an index-based date or amount column under [`Header::AutoDetect`],
+    ///   which matches the header line against column names.
+    #[inline]
+    pub fn validate(&self) -> Result<(), bc_sdk::ImportError> {
+        let mut problems: Vec<String> = Vec::new();
+
+        match self.header {
+            Header::Absent => {
+                let named: Vec<&str> = self
+                    .column_refs()
+                    .into_iter()
+                    .filter(|&(_, column)| column.as_name().is_some())
+                    .map(|(field, _)| field)
+                    .collect();
+                if !named.is_empty() {
+                    problems.push(format!(
+                        "header.kind is \"absent\", so there are no column names to match, \
+                         but these fields are addressed by name: {}. \
+                         Use zero-based integer indices instead.",
+                        named.join(", ")
+                    ));
+                }
+            }
+            Header::AutoDetect { .. } => {
+                let positional: Vec<&str> = self
+                    .required_column_refs()
+                    .into_iter()
+                    .filter(|&(_, column)| column.as_name().is_none())
+                    .map(|(field, _)| field)
+                    .collect();
+                if !positional.is_empty() {
+                    problems.push(format!(
+                        "header.kind is \"auto_detect\", which finds the header by matching \
+                         column names, but these required fields are addressed by index: {}. \
+                         Name them, or use a different header.kind.",
+                        positional.join(", ")
+                    ));
+                }
+            }
+            Header::Present => {}
+        }
+
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(bc_sdk::ImportError::InvalidConfig(problems.join("; ")))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -400,6 +460,140 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn validate_accepts_a_default_config() {
+        Config::default()
+            .validate()
+            .expect("the default config is coherent");
+    }
+
+    #[test]
+    fn validate_accepts_positional_columns_on_a_headerless_file() {
+        let cfg = Config {
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(1),
+            },
+            ..Config::default()
+        };
+        cfg.validate()
+            .expect("all-positional on a headerless file is coherent");
+    }
+
+    #[test]
+    fn validate_accepts_mixed_addressing_when_a_header_is_present() {
+        // Headers exist but one is blank or duplicated, so it is addressed by index.
+        let cfg = Config {
+            header: Header::Present,
+            date_column: ColumnRef::Name("Date".to_owned()),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(3),
+            },
+            ..Config::default()
+        };
+        cfg.validate()
+            .expect("mixed addressing is legitimate with a header");
+    }
+
+    #[test]
+    fn validate_rejects_named_columns_on_a_headerless_file() {
+        let cfg = Config {
+            header: Header::Absent,
+            date_column: ColumnRef::Name("Date".to_owned()),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(1),
+            },
+            payee_column: Some(ColumnRef::Name("Merchant".to_owned())),
+            ..Config::default()
+        };
+        let err = cfg.validate().expect_err("named refs need a header row");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("date_column"),
+            "should name date_column: {msg}"
+        );
+        assert!(
+            msg.contains("payee_column"),
+            "should name payee_column: {msg}"
+        );
+        assert!(
+            !msg.contains("amount_columns"),
+            "should not name the positional amount column: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_reports_every_named_column_at_once() {
+        // A headerless profile typically has several; fixing them one run at a
+        // time would be miserable, so all are reported together.
+        let cfg = Config {
+            header: Header::Absent,
+            date_column: ColumnRef::Name("Date".to_owned()),
+            amount_columns: AmountColumns::SplitDebitCredit {
+                debit_column: ColumnRef::Name("Debit".to_owned()),
+                credit_column: ColumnRef::Name("Credit".to_owned()),
+            },
+            description_column: Some(ColumnRef::Name("Details".to_owned())),
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("named refs need a header row")
+            .to_string();
+        for field in [
+            "date_column",
+            "amount_columns.debit_column",
+            "amount_columns.credit_column",
+            "description_column",
+        ] {
+            assert!(msg.contains(field), "should name {field}: {msg}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_auto_detect_with_positional_required_columns() {
+        // Auto-detection matches a line against column *names*. With none, the
+        // match set is empty, `.all()` is vacuously true, and the first data row
+        // is silently eaten as the header.
+        let cfg = Config {
+            header: Header::AutoDetect { max_scan_lines: 10 },
+            date_column: ColumnRef::Index(0),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(1),
+            },
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("auto-detect needs names to match on")
+            .to_string();
+        assert!(
+            msg.contains("date_column"),
+            "should name date_column: {msg}"
+        );
+        assert!(
+            msg.contains("amount_columns.column"),
+            "should name the amount column: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_allows_auto_detect_with_positional_optional_columns() {
+        // Only the required columns must be named; optional ones may be positional.
+        let cfg = Config {
+            header: Header::AutoDetect { max_scan_lines: 10 },
+            date_column: ColumnRef::Name("Date".to_owned()),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Amount".to_owned()),
+            },
+            balance_column: Some(ColumnRef::Index(6)),
+            ..Config::default()
+        };
+        cfg.validate()
+            .expect("optional positional columns do not affect header detection");
+    }
 
     #[test]
     fn default_config_has_expected_values() {
