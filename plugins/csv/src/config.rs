@@ -27,13 +27,6 @@ impl ColumnRef {
     /// `Some(name)` for [`ColumnRef::Name`], `None` for [`ColumnRef::Index`].
     #[must_use]
     #[inline]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "additive only; wired into Config by a later task in this effort"
-        )
-    )]
     pub fn as_name(&self) -> Option<&str> {
         match *self {
             Self::Name(ref name) => Some(name.as_str()),
@@ -48,10 +41,6 @@ impl ColumnRef {
     /// `'Date'` for a name reference, `column 3` for an index reference.
     #[must_use]
     #[inline]
-    #[expect(
-        dead_code,
-        reason = "additive only; used for error messages by a later task in this effort"
-    )]
     pub fn describe(&self) -> String {
         match *self {
             Self::Name(ref name) => format!("'{name}'"),
@@ -187,20 +176,20 @@ impl Default for Header {
 /// Some files use a single signed column; others use separate debit and credit
 /// columns where both values are always positive.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "style", rename_all = "snake_case")]
 pub enum AmountColumns {
     /// Single signed column: positive = credit (in), negative = debit (out).
     Single {
-        /// The name of the amount column.
-        column: String,
+        /// The amount column.
+        column: ColumnRef,
     },
     /// Separate columns; both always positive; exactly one populated per row.
     SplitDebitCredit {
-        /// The name of the debit (money out) column.
-        debit_column: String,
-        /// The name of the credit (money in) column.
-        credit_column: String,
+        /// The debit (money out) column.
+        debit_column: ColumnRef,
+        /// The credit (money in) column.
+        credit_column: ColumnRef,
     },
 }
 
@@ -208,7 +197,7 @@ impl Default for AmountColumns {
     #[inline]
     fn default() -> Self {
         Self::Single {
-            column: "Amount".into(),
+            column: ColumnRef::Name("Amount".to_owned()),
         }
     }
 }
@@ -242,23 +231,23 @@ pub struct Config {
     /// The field delimiter character.
     #[serde(default = "default_delimiter")]
     pub delimiter: char,
-    /// The name of the column containing the transaction date.
+    /// The column containing the transaction date.
     #[serde(default = "default_date_column")]
-    pub date_column: String,
+    pub date_column: ColumnRef,
     /// The date format string (jiff `strptime` syntax, e.g. `"%Y-%m-%d"`).
     #[serde(default = "default_date_format")]
     pub date_format: String,
     /// Which column(s) hold the monetary amount.
     #[serde(default)]
     pub amount_columns: AmountColumns,
-    /// Optional column name for the payee or merchant.
-    pub payee_column: Option<String>,
-    /// Optional column name for the free-text description.
-    pub description_column: Option<String>,
-    /// Optional column name for an institution-supplied reference number.
-    pub reference_column: Option<String>,
-    /// Optional column name for the running balance after each transaction.
-    pub balance_column: Option<String>,
+    /// Optional column for the payee or merchant.
+    pub payee_column: Option<ColumnRef>,
+    /// Optional column for the free-text description.
+    pub description_column: Option<ColumnRef>,
+    /// Optional column for an institution-supplied reference number.
+    pub reference_column: Option<ColumnRef>,
+    /// Optional column for the running balance after each transaction.
+    pub balance_column: Option<ColumnRef>,
     /// Commodity code (e.g. `"AUD"`). Required when the file does not contain one.
     pub commodity: Option<String>,
     /// The character used as the decimal separator in numeric fields.
@@ -280,10 +269,10 @@ fn default_source_glob() -> String {
     "*".to_owned()
 }
 
-/// Returns the default date column name.
+/// Returns the default date column reference.
 #[inline]
-fn default_date_column() -> String {
-    "Date".into()
+fn default_date_column() -> ColumnRef {
+    ColumnRef::Name("Date".to_owned())
 }
 
 /// Returns the default date format string.
@@ -323,10 +312,75 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Returns the column names that are required to identify the CSV header row.
+    /// Returns the column references that must resolve for any import, paired
+    /// with their config field names.
     ///
-    /// Used by the [`Header::AutoDetect`] strategy to locate the header line.
-    /// Always includes the date column and at least one amount column.
+    /// These are the date column and the amount column(s) — the ones without
+    /// which a row cannot become a transaction.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec` of `(field name, reference)` pairs.
+    #[must_use]
+    #[inline]
+    pub fn required_column_refs(&self) -> Vec<(&'static str, &ColumnRef)> {
+        let mut refs: Vec<(&'static str, &ColumnRef)> = vec![("date_column", &self.date_column)];
+        match self.amount_columns {
+            AmountColumns::Single { ref column } => {
+                refs.push(("amount_columns.column", column));
+            }
+            AmountColumns::SplitDebitCredit {
+                ref debit_column,
+                ref credit_column,
+            } => {
+                refs.push(("amount_columns.debit_column", debit_column));
+                refs.push(("amount_columns.credit_column", credit_column));
+            }
+        }
+        refs
+    }
+
+    /// Returns every configured column reference, paired with its config field
+    /// name.
+    ///
+    /// This is the single place that knows the full set of columns: both
+    /// [`Config::validate`] and [`Config::required_column_names`] derive from
+    /// it, so a new column field is added here and nowhere else.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec` of `(field name, reference)` pairs — required columns first,
+    /// then whichever optional columns are set.
+    #[must_use]
+    #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "additive only; wired into Config::validate by a later task in this effort"
+        )
+    )]
+    pub fn column_refs(&self) -> Vec<(&'static str, &ColumnRef)> {
+        let mut refs = self.required_column_refs();
+        let optional: [(&'static str, &Option<ColumnRef>); 4] = [
+            ("payee_column", &self.payee_column),
+            ("description_column", &self.description_column),
+            ("reference_column", &self.reference_column),
+            ("balance_column", &self.balance_column),
+        ];
+        for (field, maybe_ref) in optional {
+            if let Some(column) = maybe_ref.as_ref() {
+                refs.push((field, column));
+            }
+        }
+        refs
+    }
+
+    /// Returns the column names required to identify the CSV header row.
+    ///
+    /// Used by [`Header::AutoDetect`] to locate the header line. Index-based
+    /// references contribute no name and are omitted; [`Config::validate`]
+    /// rejects the configurations where that would leave nothing to match on.
     ///
     /// # Returns
     ///
@@ -334,18 +388,10 @@ impl Config {
     #[must_use]
     #[inline]
     pub fn required_column_names(&self) -> Vec<&str> {
-        let mut cols = vec![self.date_column.as_str()];
-        match &self.amount_columns {
-            AmountColumns::Single { column } => cols.push(column.as_str()),
-            AmountColumns::SplitDebitCredit {
-                debit_column,
-                credit_column,
-            } => {
-                cols.push(debit_column.as_str());
-                cols.push(credit_column.as_str());
-            }
-        }
-        cols
+        self.required_column_refs()
+            .into_iter()
+            .filter_map(|(_, column)| column.as_name())
+            .collect()
     }
 }
 
@@ -359,7 +405,7 @@ mod tests {
     fn default_config_has_expected_values() {
         let cfg = Config::default();
         assert_eq!(cfg.delimiter, ',');
-        assert_eq!(cfg.date_column, "Date");
+        assert_eq!(cfg.date_column, ColumnRef::Name("Date".to_owned()));
         assert_eq!(cfg.date_format, "%Y-%m-%d");
         assert_eq!(cfg.decimal_separator, '.');
         assert!(cfg.thousands_separator.is_none());
@@ -369,8 +415,73 @@ mod tests {
     #[test]
     fn required_column_names_single() {
         let cfg = Config::default();
-        let cols = cfg.required_column_names();
-        assert_eq!(cols, vec!["Date", "Amount"]);
+        assert_eq!(cfg.required_column_names(), vec!["Date", "Amount"]);
+    }
+
+    #[test]
+    fn required_column_names_omits_positional_refs() {
+        // Index refs have no name to match a header line against.
+        let cfg = Config {
+            date_column: ColumnRef::Index(0),
+            ..Config::default()
+        };
+        assert_eq!(cfg.required_column_names(), vec!["Amount"]);
+    }
+
+    #[test]
+    fn column_refs_lists_required_then_configured_optionals() {
+        let cfg = Config {
+            date_column: ColumnRef::Index(0),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(1),
+            },
+            description_column: Some(ColumnRef::Index(2)),
+            ..Config::default()
+        };
+        let fields: Vec<&str> = cfg
+            .column_refs()
+            .into_iter()
+            .map(|(field, _)| field)
+            .collect();
+        assert_eq!(
+            fields,
+            vec!["date_column", "amount_columns.column", "description_column"]
+        );
+    }
+
+    #[test]
+    fn column_refs_omits_unset_optional_columns() {
+        let cfg = Config::default();
+        let fields: Vec<&str> = cfg
+            .column_refs()
+            .into_iter()
+            .map(|(field, _)| field)
+            .collect();
+        assert_eq!(fields, vec!["date_column", "amount_columns.column"]);
+    }
+
+    #[test]
+    fn column_refs_names_both_split_amount_columns() {
+        let cfg = Config {
+            amount_columns: AmountColumns::SplitDebitCredit {
+                debit_column: ColumnRef::Index(1),
+                credit_column: ColumnRef::Index(2),
+            },
+            ..Config::default()
+        };
+        let fields: Vec<&str> = cfg
+            .column_refs()
+            .into_iter()
+            .map(|(field, _)| field)
+            .collect();
+        assert_eq!(
+            fields,
+            vec![
+                "date_column",
+                "amount_columns.debit_column",
+                "amount_columns.credit_column"
+            ]
+        );
     }
 
     #[test]
@@ -431,13 +542,12 @@ mod tests {
     fn required_column_names_split() {
         let cfg = Config {
             amount_columns: AmountColumns::SplitDebitCredit {
-                debit_column: "Debit".into(),
-                credit_column: "Credit".into(),
+                debit_column: ColumnRef::Name("Debit".to_owned()),
+                credit_column: ColumnRef::Name("Credit".to_owned()),
             },
             ..Config::default()
         };
-        let cols = cfg.required_column_names();
-        assert_eq!(cols, vec!["Date", "Debit", "Credit"]);
+        assert_eq!(cfg.required_column_names(), vec!["Date", "Debit", "Credit"]);
     }
 
     #[test]
@@ -473,7 +583,7 @@ mod tests {
         assert_eq!(
             AmountColumns::default(),
             AmountColumns::Single {
-                column: "Amount".into()
+                column: ColumnRef::Name("Amount".to_owned())
             }
         );
     }
