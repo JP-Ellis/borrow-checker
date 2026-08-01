@@ -375,6 +375,10 @@ CREATE TABLE transaction_sources (
     -- The import run that wrote this reference. NULL for references attached
     -- outside an import (SourceService::attach is public API).
     import_batch_id TEXT REFERENCES import_batches(id) ON DELETE SET NULL,
+    -- Whether that import created this posting, as opposed to adopting a
+    -- posting the user had already written. Discarding a batch deletes the
+    -- postings it created and detaches the ones it adopted.
+    owns_posting   INTEGER NOT NULL DEFAULT 0,
     UNIQUE (account_id, fingerprint, occurrence),
     -- The amount pair is the fingerprint's amount component: half of one would
     -- render a fingerprint that no longer matches the stored key.
