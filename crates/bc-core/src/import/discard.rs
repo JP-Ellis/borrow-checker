@@ -490,6 +490,30 @@ mod tests {
         account_id: &AccountId,
         owns_posting: bool,
     ) -> SourceRefId {
+        attach_at(
+            pool,
+            batch,
+            transaction_id,
+            posting_id,
+            account_id,
+            owns_posting,
+            0,
+        )
+        .await
+    }
+
+    /// Attaches a reference owned by `batch`, pointing at `posting_id`, at a
+    /// specific `occurrence` — for tests that need a second reference to share
+    /// an account and fingerprint without colliding on the dedup slot.
+    async fn attach_at(
+        pool: &SqlitePool,
+        batch: &ImportBatchId,
+        transaction_id: &TransactionId,
+        posting_id: &PostingId,
+        account_id: &AccountId,
+        owns_posting: bool,
+        occurrence: u32,
+    ) -> SourceRefId {
         let id = SourceRefId::new();
         let source = SourceRef::builder()
             .id(id.clone())
@@ -503,7 +527,7 @@ mod tests {
                 CommodityCode::new("AUD"),
             )))
             .reference(None)
-            .occurrence(0)
+            .occurrence(occurrence)
             .import_batch_id(Some(batch.clone()))
             .owns_posting(owns_posting)
             .created_at(Timestamp::now())
@@ -647,6 +671,48 @@ mod tests {
         assert_eq!(
             count(&pool, "SELECT COUNT(*) FROM transaction_sources").await,
             0
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_surviving_transactions_other_batch_reference_is_tombstoned(pool: SqlitePool) {
+        let batches = ImportBatchService::new(pool.clone());
+        let first = batches.open(None, "csv").await.expect("open first");
+        let second = batches.open(None, "csv").await.expect("open second");
+        let acct = account(&pool, "Checking").await;
+        let other = account(&pool, "Groceries").await;
+        let (tx, posting) = transaction_with_posting(&pool, &acct).await;
+        attach(&pool, &first, &tx, &posting, &acct, true).await;
+        // The second run's own leg keeps the transaction alive on its own.
+        let second_posting = add_posting(&pool, &tx, &other).await;
+        attach(&pool, &second, &tx, &second_posting, &other, true).await;
+        // The second run also adopted the first run's leg — a reference to the
+        // same posting, but not owning it. A distinct occurrence, since the
+        // first run's own reference already holds slot 0 on this fingerprint.
+        let adopted_ref = attach_at(&pool, &second, &tx, &posting, &acct, false, 1).await;
+
+        let outcome = batches.discard(&first).await.expect("discard");
+
+        assert_eq!(outcome.removed_postings, 1, "the first run's own leg goes");
+        assert_eq!(
+            outcome.removed_transactions, 0,
+            "the second run's own leg still holds the transaction up"
+        );
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM transaction_sources").await,
+            2,
+            "both of the second run's references remain"
+        );
+        let tombstoned_posting: Option<String> =
+            sqlx::query_scalar("SELECT posting_id FROM transaction_sources WHERE id = ?")
+                .bind(adopted_ref.to_string())
+                .fetch_one(&pool)
+                .await
+                .expect("fetch adopted reference");
+        assert_eq!(
+            tombstoned_posting, None,
+            "deleting the posting it named tombstones the adopted reference, \
+             it does not delete the reference row"
         );
     }
 
