@@ -325,22 +325,36 @@ CREATE INDEX idx_budget_revisions_budget ON budget_revisions (budget_id, effecti
 
 -- MARK: Import batches
 
--- One row per import run. Provenance only: this records what a run did so a
--- future batch-scoped discard (#343) has the data it needs. Nothing deletes
--- through it today.
+-- One row per import run.
+--
+-- The counts are NULL until the run completes, so an aborted run is
+-- distinguishable from one that finished having done nothing. The CHECK ties
+-- them to finished_at, making a half-recorded outcome unrepresentable.
+--
+-- The two skip causes are stored side by side rather than as a total plus a
+-- subset of that total, so reading them back needs no subtraction.
 CREATE TABLE import_batches (
-    id                TEXT    NOT NULL PRIMARY KEY,
-    profile_id        TEXT    REFERENCES import_profiles(id) ON DELETE SET NULL,
-    importer          TEXT    NOT NULL,
-    started_at        TEXT    NOT NULL,
-    new_transactions  INTEGER NOT NULL DEFAULT 0,
-    attached_postings INTEGER NOT NULL DEFAULT 0,
-    -- Legs the run could not persist, whatever the cause.
-    skipped_postings  INTEGER NOT NULL DEFAULT 0,
-    -- The subset of skipped_postings whose account path named no existing
-    -- account, so the user can attribute the total: creating those accounts and
-    -- re-running attaches exactly these legs.
-    unresolved_path_postings INTEGER NOT NULL DEFAULT 0
+    id                       TEXT NOT NULL PRIMARY KEY,
+    profile_id               TEXT REFERENCES import_profiles(id) ON DELETE SET NULL,
+    importer                 TEXT NOT NULL,
+    started_at               TEXT NOT NULL,
+    -- NULL while the run is open, and permanently if it aborted.
+    finished_at              TEXT,
+    -- NULL until the run is discarded. The row survives its own discard so the
+    -- listing can still show what was thrown away.
+    discarded_at             TEXT,
+    new_transactions         INTEGER,
+    attached_postings        INTEGER,
+    -- Legs skipped because their account path named no existing account.
+    unresolved_path_postings INTEGER,
+    -- Legs skipped for any other reason; each was warned about individually.
+    other_skipped_postings   INTEGER,
+    CHECK (
+        (finished_at IS NULL) = (new_transactions IS NULL)
+        AND (finished_at IS NULL) = (attached_postings IS NULL)
+        AND (finished_at IS NULL) = (unresolved_path_postings IS NULL)
+        AND (finished_at IS NULL) = (other_skipped_postings IS NULL)
+    )
 );
 
 -- MARK: Transaction sources
