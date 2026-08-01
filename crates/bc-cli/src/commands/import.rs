@@ -163,7 +163,33 @@ fn outcome_of(batch: &bc_core::ImportBatch) -> String {
     }
 }
 
+/// Renders the profile column: the profile's ID, or `-` if the run was not
+/// profile-driven.
+///
+/// A run's importer alone does not distinguish it from another run: two
+/// profiles can share the same importer (two CSV bank profiles, say), and the
+/// profile is what tells them apart in this table.
+///
+/// # Arguments
+///
+/// * `batch` - The run to describe.
+///
+/// # Returns
+///
+/// The profile column's text.
+fn profile_of(batch: &bc_core::ImportBatch) -> String {
+    batch
+        .profile_id
+        .as_ref()
+        .map_or_else(|| "-".to_owned(), ToString::to_string)
+}
+
 /// Renders the human-readable batch listing.
+///
+/// Columns are `BATCH`, `STARTED`, `IMPORTER`, `PROFILE`, `OUTCOME`. Column
+/// widths match the widest real value each column holds (a full
+/// [`bc_models::ImportBatchId`] or [`bc_models::ProfileId`], and an RFC 3339
+/// timestamp), so the header and every row line up.
 ///
 /// # Arguments
 ///
@@ -178,15 +204,16 @@ fn render_list(batches: &[bc_core::ImportBatch]) -> String {
     }
 
     let mut lines: Vec<String> = vec![format!(
-        "{:<32}  {:<19}  {:<10}  {}",
-        "BATCH", "STARTED", "IMPORTER", "OUTCOME"
+        "{:<39}  {:<30}  {:<10}  {:<34}  {}",
+        "BATCH", "STARTED", "IMPORTER", "PROFILE", "OUTCOME"
     )];
     lines.extend(batches.iter().map(|batch| {
         format!(
-            "{:<32}  {:<19}  {:<10}  {}",
+            "{:<39}  {:<30}  {:<10}  {:<34}  {}",
             batch.id,
             batch.started_at,
             batch.importer,
+            profile_of(batch),
             outcome_of(batch)
         )
     }));
@@ -640,15 +667,35 @@ mod tests {
             .expect("close");
         batches.discard(&thrown_away).await.expect("discard");
         let _open = batches.open(None, "ledger").await.expect("open");
+        let nothing_to_do = batches.open(None, "beancount").await.expect("open");
+        batches
+            .close(&nothing_to_do, bc_core::ImportBatchCounts::default())
+            .await
+            .expect("close");
 
         let listed = batches.list().await.expect("list");
         let rendered = super::render_list(&listed);
 
+        assert!(rendered.contains("PROFILE"), "the profile column is named");
         assert!(rendered.contains("incomplete"), "an open run says so");
         assert!(rendered.contains("discarded"), "a discarded run says so");
         assert!(
             rendered.contains("12"),
             "a completed run reports what it did"
+        );
+
+        let nothing_to_do_line = rendered
+            .lines()
+            .find(|line| line.contains("beancount"))
+            .expect("the completed-but-empty run has a row");
+        assert!(
+            nothing_to_do_line.contains("0 new, 0 attached, 0 skipped"),
+            "a run that completed but did nothing reports zeros, not silence"
+        );
+        assert!(
+            !nothing_to_do_line.contains("incomplete"),
+            "a completed run reporting zeros must read differently from one that never \
+             finished; collapsing the two hides a batch that legitimately imported nothing"
         );
     }
 
