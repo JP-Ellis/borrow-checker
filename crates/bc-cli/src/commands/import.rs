@@ -166,6 +166,18 @@ async fn execute_discard(args: DiscardArgs, ctx: &AppContext) -> CliResult<()> {
     // Resolved before the snapshot so a mistyped ID costs nothing.
     let record = ctx.batches.find_by_id(&batch_id).await?;
 
+    // Rejected before the snapshot too: core's `discard` is the authoritative
+    // guard against a repeat, but it only raises the error after this
+    // function has already written a full database copy. Checking here
+    // avoids that wasted snapshot while leaving the error the user sees
+    // unchanged.
+    if record.discarded_at.is_some() {
+        return Err(bc_core::BcError::InvalidInput(format!(
+            "import batch {batch_id} has already been discarded"
+        ))
+        .into());
+    }
+
     // Discard deletes postings and transactions outright. Restoring this
     // snapshot is the recovery path; the audit event carries counts, not a
     // copy of what was removed.
@@ -243,8 +255,18 @@ fn render_discard(outcome: &bc_core::DiscardOutcome, batch: &bc_core::ImportBatc
     }
     if outcome.other_batch_references_removed > 0 {
         lines.push(format!(
-            "  {} from other batches removed with their transactions",
+            "  {} from other batches removed with {} transaction{}",
             plural(outcome.other_batch_references_removed, "reference"),
+            if outcome.other_batch_references_removed == 1 {
+                "its"
+            } else {
+                "their"
+            },
+            if outcome.other_batch_references_removed == 1 {
+                ""
+            } else {
+                "s"
+            },
         ));
     }
 
@@ -1224,6 +1246,38 @@ mod tests {
         );
     }
 
+    #[sqlx::test(migrations = "../bc-core/migrations")]
+    async fn a_mixed_discard_gates_each_line_on_its_own_count(pool: SqlitePool) {
+        // Only `reconciled_postings` is non-zero; every other optional count
+        // is zero. A line gated on the wrong field (say, the reconciled line
+        // keyed off `edited_postings`) would pass both the all-zero and
+        // all-non-zero cases above but fail here.
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+        let acct = account(&pool, "Checking").await;
+
+        reconciled_scenario(&pool, &batch, &acct).await;
+
+        let record = batches.find_by_id(&batch).await.expect("find");
+        let outcome = batches.discard(&batch).await.expect("discard");
+
+        pretty_assertions::assert_eq!(outcome.edited_postings, 0);
+        pretty_assertions::assert_eq!(outcome.reconciled_postings, 2);
+        pretty_assertions::assert_eq!(outcome.detached_adopted, 0);
+        pretty_assertions::assert_eq!(outcome.freed_tombstones, 0);
+        pretty_assertions::assert_eq!(outcome.other_batch_references_removed, 0);
+
+        let rendered = super::render_discard(&outcome, &record);
+        assert!(
+            rendered.contains("reconciled"),
+            "the one non-zero optional line must fire"
+        );
+        assert!(!rendered.contains("edited"));
+        assert!(!rendered.contains("adopted"));
+        assert!(!rendered.contains("freed"));
+        assert!(!rendered.contains("other batches"));
+    }
+
     /// Builds a context over a temporary database, with a batch already open
     /// and closed, ready to discard.
     ///
@@ -1303,6 +1357,48 @@ mod tests {
         .expect("discard");
 
         assert_eq!(pre_discard_snapshots(&backup_dir), 0);
+    }
+
+    #[tokio::test]
+    async fn a_repeat_discard_does_not_snapshot() {
+        // The already-discarded guard lives in core's `discard`, but it must
+        // be checked here too, before the snapshot: otherwise a repeat
+        // discard pays for a full database copy and then errors anyway.
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, backup_dir, batch_id) = context_with_a_batch(home.path(), true).await;
+
+        super::execute_discard(
+            super::DiscardArgs {
+                batch: batch_id.to_string(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("first discard");
+        assert_eq!(pre_discard_snapshots(&backup_dir), 1);
+
+        let result = super::execute_discard(
+            super::DiscardArgs {
+                batch: batch_id.to_string(),
+            },
+            &ctx,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(crate::error::CliError::Core(
+                    bc_core::BcError::InvalidInput(_)
+                ))
+            ),
+            "a repeat discard must still surface core's own error"
+        );
+        assert_eq!(
+            pre_discard_snapshots(&backup_dir),
+            1,
+            "the repeat must not write a second, wasted snapshot"
+        );
     }
 
     #[test]
