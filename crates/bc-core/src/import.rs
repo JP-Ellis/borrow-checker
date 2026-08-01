@@ -8,6 +8,7 @@
 
 pub(crate) mod account_path;
 pub(crate) mod batch;
+pub(crate) mod discard;
 pub(crate) mod profile;
 pub(crate) mod registry;
 
