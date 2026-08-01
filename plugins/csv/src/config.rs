@@ -129,26 +129,21 @@ impl<'de> serde::Deserialize<'de> for ColumnRef {
     }
 }
 
-/// Describes how many lines of preamble metadata precede the CSV header row.
+/// Describes how many lines of leading metadata precede the CSV data.
 ///
-/// Many bank CSV exports include metadata rows before the actual column headers.
-/// This enum lets callers declare the strategy for skipping those lines.
+/// Many bank exports include banner or metadata rows before anything useful.
+/// This enum declares only what to *discard*; whether a header row follows is
+/// described separately by [`Header`].
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "strategy", rename_all = "snake_case")]
 pub enum Preamble {
-    /// First line is the header row — no preamble.
+    /// No preamble — the data (or its header) starts at the first line.
     None,
-    /// Skip exactly `lines` lines before the header.
+    /// Discard exactly `lines` lines.
     SkipLines {
         /// The number of lines to skip.
         lines: u32,
-    },
-    /// Scan from the top; first line whose CSV fields all match the configured
-    /// column names (case-insensitive) is the header. Lines before it are discarded.
-    AutoDetect {
-        /// Maximum number of lines to scan before giving up.
-        max_scan_lines: u32,
     },
 }
 
@@ -156,6 +151,34 @@ impl Default for Preamble {
     #[inline]
     fn default() -> Self {
         Self::None
+    }
+}
+
+/// Describes whether the file has a header row, and how to find it.
+///
+/// This is independent of [`Preamble`]: a file may have metadata lines to
+/// discard *and* no header row, or neither, or both.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Header {
+    /// The first line after the preamble is the header row.
+    Present,
+    /// Scan from the top; the first line whose fields all match the configured
+    /// column names (case-insensitive) is the header. Earlier lines are
+    /// discarded.
+    AutoDetect {
+        /// Maximum number of lines to scan before giving up.
+        max_scan_lines: u32,
+    },
+    /// There is no header row; columns are addressed by index.
+    Absent,
+}
+
+impl Default for Header {
+    #[inline]
+    fn default() -> Self {
+        Self::Present
     }
 }
 
@@ -210,9 +233,12 @@ pub struct Config {
     /// single `*` wildcard (e.g. `"*.csv"`). Defaults to `"*"` (all files).
     #[serde(default = "default_source_glob")]
     pub source_glob: String,
-    /// How to skip over metadata lines before the header row.
+    /// How to skip over metadata lines before the data begins.
     #[serde(default)]
     pub preamble: Preamble,
+    /// Whether the file has a header row, and how to locate it.
+    #[serde(default)]
+    pub header: Header,
     /// The field delimiter character.
     #[serde(default = "default_delimiter")]
     pub delimiter: char,
@@ -280,6 +306,7 @@ impl Default for Config {
             source_dir: String::new(),
             source_glob: default_source_glob(),
             preamble: Preamble::default(),
+            header: Header::default(),
             delimiter: default_delimiter(),
             date_column: default_date_column(),
             date_format: default_date_format(),
@@ -416,6 +443,29 @@ mod tests {
     #[test]
     fn preamble_default_is_none() {
         assert_eq!(Preamble::default(), Preamble::None);
+    }
+
+    #[test]
+    fn header_default_is_present() {
+        assert_eq!(Header::default(), Header::Present);
+    }
+
+    #[test]
+    fn header_deserializes_absent() {
+        let h: Header = serde_json::from_str(r#"{"kind": "absent"}"#).expect("valid header");
+        assert_eq!(h, Header::Absent);
+    }
+
+    #[test]
+    fn header_deserializes_auto_detect_with_scan_limit() {
+        let h: Header = serde_json::from_str(r#"{"kind": "auto_detect", "max_scan_lines": 5}"#)
+            .expect("valid header");
+        assert_eq!(h, Header::AutoDetect { max_scan_lines: 5 });
+    }
+
+    #[test]
+    fn config_defaults_to_a_present_header() {
+        assert_eq!(Config::default().header, Header::Present);
     }
 
     #[test]

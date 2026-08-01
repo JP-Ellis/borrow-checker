@@ -106,7 +106,8 @@ impl CsvImporter {
         }
 
         let required = cfg.required_column_names();
-        let csv_bytes = find_csv_start(bytes, &cfg.preamble, cfg.delimiter, &required)?;
+        let csv_bytes =
+            find_csv_start(bytes, &cfg.preamble, &cfg.header, cfg.delimiter, &required)?;
 
         // SAFETY: non-ASCII delimiters are rejected above, so this truncation
         // is always lossless for printable ASCII characters.
