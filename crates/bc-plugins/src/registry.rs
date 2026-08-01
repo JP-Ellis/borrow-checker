@@ -280,6 +280,11 @@ impl bc_core::Importer for PluginImporterRef {
     ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
         self.0.import(config)
     }
+
+    #[inline]
+    fn validate(&self, config: &bc_core::ImportConfig) -> Result<(), bc_core::ImportError> {
+        self.0.validate(config)
+    }
 }
 
 /// Builds a wasmtime [`Linker`] with WASI and the bc-sdk logger host import wired up.
