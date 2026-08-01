@@ -250,28 +250,24 @@ pub fn focal_on_account<'a>(
 pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount {
     match perspective {
         RowPerspective::Account { account_id } => {
-            let inferred = inferred_amount(tx);
             let mut total = Decimal::ZERO;
             let mut currency = String::new();
             let mut any = false;
             for p in focal_on_account(tx, account_id) {
-                let amt = match p.amount.as_ref() {
-                    Some(a) => Some(a.clone()),
-                    None => inferred.clone(),
+                let Some(a) = p.amount.display_amount() else {
+                    continue;
                 };
-                if let Some(a) = amt {
-                    if currency.is_empty() {
-                        currency.clone_from(&a.currency_code);
-                    }
-                    #[expect(
-                        clippy::arithmetic_side_effects,
-                        reason = "same-commodity focal sum within one transaction"
-                    )]
-                    {
-                        total += a.value;
-                    }
-                    any = true;
+                if currency.is_empty() {
+                    currency.clone_from(&a.currency_code);
                 }
+                #[expect(
+                    clippy::arithmetic_side_effects,
+                    reason = "same-commodity focal sum within one transaction"
+                )]
+                {
+                    total += a.value;
+                }
+                any = true;
             }
             if any {
                 Amount::new(total, currency)
@@ -285,26 +281,20 @@ pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount
             window_end,
             ..
         } => {
-            let inferred = inferred_amount(tx);
             let mut total = Decimal::ZERO;
             let mut currency = String::new();
             for p in focal_on_account(tx, account_id) {
-                let contribution = match p.amount.as_ref() {
-                    Some(a) => {
-                        if currency.is_empty() {
-                            currency.clone_from(&a.currency_code);
-                        }
-                        prorated_value(p, *window_start, *window_end)
-                    }
-                    None => match inferred.as_ref() {
-                        Some(a) => {
-                            if currency.is_empty() {
-                                currency.clone_from(&a.currency_code);
-                            }
-                            a.value // inferred leg has no spread; contributes whole value
-                        }
-                        None => Decimal::ZERO,
-                    },
+                let Some(a) = p.amount.display_amount() else {
+                    continue;
+                };
+                if currency.is_empty() {
+                    currency.clone_from(&a.currency_code);
+                }
+                // A derived leg carries no spread, so it contributes whole.
+                let contribution = if p.amount.is_elided() {
+                    a.value
+                } else {
+                    prorated_value(p, *window_start, *window_end)
                 };
                 #[expect(
                     clippy::arithmetic_side_effects,
@@ -319,47 +309,10 @@ pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount
         RowPerspective::Global => sum_focal(
             tx.postings
                 .iter()
-                .filter_map(|p| p.amount.as_ref())
+                .filter_map(|p| p.amount.stored())
                 .filter(|a| a.value > Decimal::ZERO),
         ),
     }
-}
-
-/// Returns the amount a single elided leg infers to, or `None` when zero or two
-/// or more legs are elided (inference undefined). Mirrors `is_balanced`.
-///
-/// # Arguments
-///
-/// * `tx` - The transaction to infer from.
-///
-/// # Returns
-///
-/// The inferred [`Amount`] for the single elided leg, or `None` if inference
-/// is undefined.
-fn inferred_amount(tx: &Transaction) -> Option<Amount> {
-    let elided = tx.postings.iter().filter(|p| p.amount.is_none()).count();
-    if elided != 1 {
-        return None;
-    }
-    let mut total = Decimal::ZERO;
-    let mut currency = String::new();
-    for a in tx.postings.iter().filter_map(|p| p.amount.as_ref()) {
-        if currency.is_empty() {
-            currency.clone_from(&a.currency_code);
-        }
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "same-commodity sum within one transaction; no overflow in practice"
-        )]
-        {
-            total += a.value;
-        }
-    }
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "same-commodity sum within one transaction; no overflow in practice"
-    )]
-    Some(Amount::new(Decimal::ZERO - total, currency))
 }
 
 /// Sums a sequence of amounts, taking the currency from the first one.
@@ -400,7 +353,7 @@ pub fn prorated_value(
     window_start: jiff::civil::Date,
     window_end: jiff::civil::Date,
 ) -> Decimal {
-    let Some(value) = p.amount.as_ref().map(|a| a.value) else {
+    let Some(value) = p.amount.stored().map(|a| a.value) else {
         return Decimal::ZERO;
     };
     let (Some(from), Some(until)) = (p.spread_from, p.spread_until) else {
@@ -451,12 +404,12 @@ fn inclusive_days(a: jiff::civil::Date, b: jiff::civil::Date) -> i64 {
 /// `true` if the transaction is balanced, `false` otherwise.
 #[must_use]
 pub fn is_balanced(tx: &Transaction) -> bool {
-    let elided = tx.postings.iter().filter(|p| p.amount.is_none()).count();
+    let elided = tx.postings.iter().filter(|p| p.amount.is_elided()).count();
     if elided >= 2 {
         return false;
     }
     let mut totals: BTreeMap<&str, Decimal> = BTreeMap::new();
-    for a in tx.postings.iter().filter_map(|p| p.amount.as_ref()) {
+    for a in tx.postings.iter().filter_map(|p| p.amount.stored()) {
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "balance check: summing monetary values of the same commodity within a single transaction"
@@ -1308,6 +1261,7 @@ mod tests {
     use bc_ipc::AccountRef;
     use bc_ipc::Amount;
     use bc_ipc::Posting;
+    use bc_ipc::PostingAmount;
     use bc_ipc::Reconciliation;
     use bc_ipc::Transaction;
     use jiff::civil::Date;
@@ -1319,11 +1273,31 @@ mod tests {
     use super::is_balanced;
     use super::prorated_value;
 
+    /// Builds a posting; `minor` gives cents for a stored amount, `None` for a
+    /// zero-residual derived (elided) leg.
     fn posting(id: &str, acct: &str, minor: Option<i64>) -> Posting {
+        let amount = match minor {
+            Some(m) => PostingAmount::Stored(Amount::new(Decimal::new(m, 2), "AUD")),
+            None => PostingAmount::Derived(vec![]),
+        };
         Posting::new(
             id,
             AccountRef::new(acct, acct),
-            minor.map(|m| Amount::new(Decimal::new(m, 2), "AUD")),
+            amount,
+            None::<&str>,
+            vec![],
+            None,
+            None,
+        )
+    }
+
+    /// Builds a posting whose amount is derived to a known single-commodity
+    /// residual (mirrors what the backend would compute for a single elided leg).
+    fn derived_posting(id: &str, acct: &str, minor: i64) -> Posting {
+        Posting::new(
+            id,
+            AccountRef::new(acct, acct),
+            PostingAmount::Derived(vec![Amount::new(Decimal::new(minor, 2), "AUD")]),
             None::<&str>,
             vec![],
             None,
@@ -1492,7 +1466,7 @@ mod tests {
     fn account_headline_infers_elided_focal_leg() {
         let t = tx(vec![
             posting("a", "groceries", Some(8_420)),
-            posting("b", "checking", None), // elided focal leg
+            derived_posting("b", "checking", -8_420), // elided focal leg
         ]);
         let amt = headline_amount(
             &t,
@@ -1523,7 +1497,7 @@ mod tests {
     fn budget_headline_infers_elided_focal_leg() {
         let t = tx(vec![
             posting("a", "groceries", Some(8_420)),
-            posting("b", "checking", None),
+            derived_posting("b", "checking", -8_420),
         ]);
         let amt = headline_amount(
             &t,

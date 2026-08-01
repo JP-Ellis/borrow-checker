@@ -25,7 +25,7 @@ fn leg(id: &str, acct_id: &str, acct_name: &str, minor: i64) -> Posting {
     Posting::new(
         id,
         AccountRef::new(acct_id, acct_name),
-        Some(Amount::new(Decimal::new(minor, 2), "AUD")),
+        bc_ipc::PostingAmount::Stored(Amount::new(Decimal::new(minor, 2), "AUD")),
         None::<&str>,
         vec![],
         None,
@@ -33,12 +33,13 @@ fn leg(id: &str, acct_id: &str, acct_name: &str, minor: i64) -> Posting {
     )
 }
 
-/// Builds an elided posting (no concrete amount → renders as ghost/inferred).
-fn elided(id: &str, acct_id: &str, acct_name: &str) -> Posting {
+/// Builds an elided posting whose amount is derived to a single-commodity
+/// residual of `residual_minor` cents (renders as ghost/inferred).
+fn elided(id: &str, acct_id: &str, acct_name: &str, residual_minor: i64) -> Posting {
     Posting::new(
         id,
         AccountRef::new(acct_id, acct_name),
-        None,
+        bc_ipc::PostingAmount::Derived(vec![Amount::new(Decimal::new(residual_minor, 2), "AUD")]),
         None::<&str>,
         vec![],
         None,
@@ -158,7 +159,7 @@ fn elided_tx() -> Transaction {
         vec!["income".to_owned()],
         vec![
             leg("p-1", "checking", "Assets :: Checking", 500_000),
-            elided("p-2", "salary", "Income :: Salary"),
+            elided("p-2", "salary", "Income :: Salary", -500_000),
         ],
     )
 }
