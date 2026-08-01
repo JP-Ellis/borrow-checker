@@ -42,6 +42,7 @@ pub use accounts::NewPosting;
 pub use accounts::NewTransaction;
 pub use accounts::Period;
 pub use accounts::Posting;
+pub use accounts::PostingAmount;
 pub use accounts::Reconciliation;
 pub use accounts::SparkPoint;
 pub use accounts::Transaction;

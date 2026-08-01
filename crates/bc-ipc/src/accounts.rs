@@ -228,6 +228,75 @@ impl AccountRef {
     }
 }
 
+/// The amount a posting carries, stored or derived.
+///
+/// A leg whose amount the source document elides has no stored amount; it
+/// absorbs its transaction's residual instead, derived on read and never
+/// persisted (`docs/DESIGN.md` §4.4). This type keeps the two cases distinct so
+/// a derived value can never be mistaken for a stated one — in particular, no
+/// variant here can be sent back through [`EditPosting`], whose `amount` stays
+/// `Option<Amount>`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum PostingAmount {
+    /// The source document stated this amount, and it is what is persisted.
+    Stored(Amount),
+    /// Derived from the transaction's other legs; nothing is persisted. One
+    /// entry per commodity, empty when the residual is zero.
+    Derived(Vec<Amount>),
+    /// Two or more legs are elided, so the residual — though real — is not
+    /// attributable to any single leg.
+    Ambiguous,
+}
+
+impl PostingAmount {
+    /// Returns the stored amount, or `None` when this posting's amount is derived.
+    ///
+    /// # Returns
+    ///
+    /// The stated [`Amount`], or `None`.
+    #[must_use]
+    #[inline]
+    pub fn stored(&self) -> Option<&Amount> {
+        match *self {
+            Self::Stored(ref amount) => Some(amount),
+            Self::Derived(_) | Self::Ambiguous => None,
+        }
+    }
+
+    /// Returns `true` when the source document elided this leg's amount.
+    ///
+    /// # Returns
+    ///
+    /// `true` for [`Self::Derived`] and [`Self::Ambiguous`].
+    #[must_use]
+    #[inline]
+    pub fn is_elided(&self) -> bool {
+        !matches!(*self, Self::Stored(_))
+    }
+
+    /// Returns the single amount to display, stored or derived.
+    ///
+    /// A multi-commodity residual has no single display amount and yields
+    /// `None`, as does [`Self::Ambiguous`].
+    ///
+    /// # Returns
+    ///
+    /// The [`Amount`] to render, or `None`.
+    #[must_use]
+    #[inline]
+    pub fn display_amount(&self) -> Option<&Amount> {
+        match *self {
+            Self::Stored(ref amount) => Some(amount),
+            Self::Derived(ref amounts) => match amounts.as_slice() {
+                [single] => Some(single),
+                _ => None,
+            },
+            Self::Ambiguous => None,
+        }
+    }
+}
+
 /// One leg of a double-entry transaction.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -236,8 +305,8 @@ pub struct Posting {
     pub id: String,
     /// Account reference — carries the stable ID and human-readable display name.
     pub account: AccountRef,
-    /// Posting amount. `None` when the amount is elided (inferred to balance the transaction).
-    pub amount: Option<Amount>,
+    /// Posting amount — stored, or derived when the source document elided it.
+    pub amount: PostingAmount,
     /// Optional inline comment shown in the TOML view.
     pub note: Option<String>,
     /// Resolved tag paths attached to this posting (colon-joined; includes inherited transaction tags).
@@ -255,7 +324,7 @@ impl Posting {
     ///
     /// * `id` - Stable posting identifier (UUID string).
     /// * `account` - Account reference with ID and display name.
-    /// * `amount` - Posting amount, or `None` if elided (inferred to balance).
+    /// * `amount` - Posting amount, stored or derived.
     /// * `note` - Optional inline comment, or `None`.
     /// * `tags` - Tag IDs attached to this posting.
     /// * `spread_from` - Accrual spread start date, or `None`.
@@ -265,7 +334,7 @@ impl Posting {
     pub fn new(
         id: impl Into<String>,
         account: AccountRef,
-        amount: Option<Amount>,
+        amount: PostingAmount,
         note: Option<impl Into<String>>,
         tags: Vec<String>,
         spread_from: Option<jiff::civil::Date>,
@@ -1075,7 +1144,7 @@ mod tests {
         let posting = Posting::new(
             "posting-1",
             AccountRef::new("acc-1", "Assets :: Checking"),
-            None,
+            PostingAmount::Ambiguous,
             Some("posting note"),
             vec!["tag-abc".to_owned()],
             None,
@@ -1107,7 +1176,10 @@ mod tests {
             tx2.extra_dates.first().map(|(l, _)| l.as_str()),
             Some("effective")
         );
-        assert_eq!(tx2.postings.first().and_then(|p| p.amount.as_ref()), None);
+        assert!(matches!(
+            tx2.postings.first().map(|p| &p.amount),
+            Some(PostingAmount::Ambiguous)
+        ));
         assert_eq!(
             tx2.postings.first().map(|p| p.tags.as_slice()),
             Some(["tag-abc".to_owned()].as_slice())
