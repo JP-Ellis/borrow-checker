@@ -169,13 +169,11 @@ async fn execute_discard(args: DiscardArgs, ctx: &AppContext) -> CliResult<()> {
     // Rejected before the snapshot too: core's `discard` is the authoritative
     // guard against a repeat, but it only raises the error after this
     // function has already written a full database copy. Checking here
-    // avoids that wasted snapshot while leaving the error the user sees
-    // unchanged.
+    // avoids that wasted snapshot; calling core's own error builder — rather
+    // than duplicating its message — keeps the two in agreement by
+    // construction rather than by coincidence.
     if record.discarded_at.is_some() {
-        return Err(bc_core::BcError::InvalidInput(format!(
-            "import batch {batch_id} has already been discarded"
-        ))
-        .into());
+        return Err(bc_core::import_batch_already_discarded_error(&batch_id).into());
     }
 
     // Discard deletes postings and transactions outright. Restoring this
@@ -1276,6 +1274,54 @@ mod tests {
         assert!(!rendered.contains("adopted"));
         assert!(!rendered.contains("freed"));
         assert!(!rendered.contains("other batches"));
+    }
+
+    #[sqlx::test(migrations = "../bc-core/migrations")]
+    async fn a_single_collateral_reference_reads_grammatically(pool: SqlitePool) {
+        // Fix 3 exists because a count of 1 rendered "1 reference ... removed
+        // with their transactions". Drive a real discard with exactly one
+        // other-batch reference riding on the swept transaction — an
+        // inverted comparison in the pronoun/suffix ternaries would flip
+        // both branches at once and still read as grammatical nonsense, so
+        // this has to check the actual words, not just that a line fired.
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+        let other_batch = batches.open(None, "ofx").await.expect("open other");
+        let acct = account(&pool, "Checking").await;
+
+        let (tx, postings) = transaction_with_postings(&pool, &acct, 2, 62).await;
+        let (mine, others) = postings.split_first().expect("two postings");
+        let other_posting = others.first().expect("one other posting");
+        let spec = AttachSpec {
+            owns_posting: true,
+            occurrence: 0,
+            amount: 62,
+        };
+        attach_at(&pool, &batch, &tx, mine, &acct, &spec).await;
+        let other_spec = AttachSpec {
+            owns_posting: true,
+            occurrence: 1,
+            amount: 62,
+        };
+        let reference =
+            attach_at(&pool, &other_batch, &tx, other_posting, &acct, &other_spec).await;
+        tombstone(&pool, &reference).await;
+        delete_posting(&pool, other_posting).await;
+
+        let record = batches.find_by_id(&batch).await.expect("find");
+        let outcome = batches.discard(&batch).await.expect("discard");
+
+        pretty_assertions::assert_eq!(outcome.other_batch_references_removed, 1);
+
+        let rendered = super::render_discard(&outcome, &record);
+        assert!(
+            rendered.contains("1 reference from other batches removed with its transaction"),
+            "a singular count must read 'its transaction', not 'their transactions': {rendered}"
+        );
+        assert!(
+            !rendered.contains("their"),
+            "the plural pronoun must not appear for a singular count: {rendered}"
+        );
     }
 
     /// Builds a context over a temporary database, with a batch already open
