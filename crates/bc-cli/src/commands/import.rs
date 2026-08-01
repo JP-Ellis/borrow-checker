@@ -7,6 +7,23 @@ use crate::error::CliResult;
 #[non_exhaustive]
 #[derive(Debug, clap::Args)]
 pub struct Args {
+    /// The import operation to perform.
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+/// Available import operations.
+#[derive(Debug, clap::Subcommand)]
+#[non_exhaustive]
+pub enum Command {
+    /// Run an import using a named profile.
+    Run(RunArgs),
+}
+
+/// Arguments for `import run`.
+#[non_exhaustive]
+#[derive(Debug, clap::Args)]
+pub struct RunArgs {
     /// Name of the import profile to use.
     #[arg(long, value_name = "NAME")]
     pub profile: String,
@@ -14,12 +31,29 @@ pub struct Args {
 
 /// Executes the `import` subcommand.
 ///
+/// # Arguments
+///
+/// * `args` - The parsed arguments, naming the operation.
+/// * `ctx` - The shared application context.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError`] if the chosen operation fails.
+#[inline]
+pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
+    match args.command {
+        Command::Run(run) => execute_run(run, ctx).await,
+    }
+}
+
+/// Executes the `import run` subcommand.
+///
 /// # Errors
 ///
 /// Returns [`crate::error::CliError`] if the profile does not exist, or the
 /// importer fails to source and parse its configured files.
 #[inline]
-pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
+pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
     // Find the import profile by its unique name.
     let profile = ctx.profiles.find_by_name(&args.profile).await?;
 
@@ -208,6 +242,7 @@ mod tests {
     use clap::Parser as _;
     use pretty_assertions::assert_eq;
 
+    use super::Command;
     use super::Report;
 
     /// Wrapper needed because `Args` is a subcommand arg group.
@@ -218,14 +253,28 @@ mod tests {
     }
 
     #[test]
-    fn profile_is_the_only_required_argument() {
-        let ok = Wrap::try_parse_from(["x", "--profile", "bank"]);
-        assert!(ok.is_ok(), "--profile alone must parse");
+    #[expect(
+        irrefutable_let_patterns,
+        reason = "Command has only the Run variant until later tasks add list/discard"
+    )]
+    fn run_takes_the_profile() {
+        let wrap = Wrap::try_parse_from(["bc", "run", "--profile", "Bank"]).expect("parse");
+        let Command::Run(run) = wrap.args.command else {
+            panic!("expected the run subcommand");
+        };
+        assert_eq!(run.profile, "Bank");
+    }
+
+    #[test]
+    fn a_bare_profile_flag_is_rejected() {
+        // `import --profile X` was the old shape; it must not silently keep working.
+        assert!(Wrap::try_parse_from(["bc", "--profile", "Bank"]).is_err());
     }
 
     #[test]
     fn account_flag_is_rejected() {
-        let rejected = Wrap::try_parse_from(["x", "--profile", "bank", "--account", "acc-1"]);
+        let rejected =
+            Wrap::try_parse_from(["x", "run", "--profile", "bank", "--account", "acc-1"]);
         assert!(
             rejected.is_err(),
             "--account is gone: every leg names its own account path"
@@ -234,7 +283,7 @@ mod tests {
 
     #[test]
     fn a_trailing_file_positional_is_rejected() {
-        let rejected = Wrap::try_parse_from(["x", "--profile", "bank", "some/file.csv"]);
+        let rejected = Wrap::try_parse_from(["x", "run", "--profile", "bank", "some/file.csv"]);
         assert!(rejected.is_err(), "importers source their own files");
     }
 
@@ -422,8 +471,8 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
         let (ctx, backup_dir) = context_in(home.path(), true).await;
 
-        super::execute(
-            super::Args {
+        super::execute_run(
+            super::RunArgs {
                 profile: "nightly".to_owned(),
             },
             &ctx,
@@ -445,8 +494,8 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
         let (ctx, backup_dir) = context_in(home.path(), false).await;
 
-        super::execute(
-            super::Args {
+        super::execute_run(
+            super::RunArgs {
                 profile: "nightly".to_owned(),
             },
             &ctx,
