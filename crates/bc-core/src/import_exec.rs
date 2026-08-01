@@ -2684,4 +2684,172 @@ mod tests {
             food.to_string()
         );
     }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_wrong_run_can_be_discarded_and_redone(pool: SqlitePool) {
+        let svcs = services(&pool);
+        two_account_tree(&pool).await;
+
+        // The wrong run: amounts sign-flipped, as an inverted convention gives.
+        let wrong = vec![
+            raw_with(
+                "ACME",
+                vec![
+                    leg("Assets:Bank", Some(50)),
+                    leg("Expenses:Food", Some(-50)),
+                ],
+            ),
+            raw_with(
+                "BETA",
+                vec![
+                    leg("Assets:Bank", Some(75)),
+                    leg("Expenses:Food", Some(-75)),
+                ],
+            ),
+        ];
+        let bad = run(&svcs, &wrong).await;
+        assert_eq!(bad.new_transactions, 2);
+
+        let outcome = svcs.batches.discard(&bad.batch_id).await.expect("discard");
+        assert_eq!(outcome.removed_postings, 4);
+        assert_eq!(outcome.removed_transactions, 2);
+
+        // The corrected run. These rows fingerprint differently from the wrong
+        // ones, so nothing here depends on dedup — only on the wrong rows being
+        // gone.
+        let right = vec![
+            raw_with(
+                "ACME",
+                vec![
+                    leg("Assets:Bank", Some(-50)),
+                    leg("Expenses:Food", Some(50)),
+                ],
+            ),
+            raw_with(
+                "BETA",
+                vec![
+                    leg("Assets:Bank", Some(-75)),
+                    leg("Expenses:Food", Some(75)),
+                ],
+            ),
+        ];
+        let good = run(&svcs, &right).await;
+
+        assert_eq!(good.new_transactions, 2);
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(remaining, 2, "only the corrected rows remain");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn re_importing_the_identical_document_lands_after_a_discard(pool: SqlitePool) {
+        // The sharper case: the *same* rows, so every fingerprint matches what the
+        // discarded run held. Only genuinely freed slots let this import anything.
+        let svcs = services(&pool);
+        two_account_tree(&pool).await;
+        let rows = vec![raw_with(
+            "ACME",
+            vec![
+                leg("Assets:Bank", Some(-50)),
+                leg("Expenses:Food", Some(50)),
+            ],
+        )];
+
+        let first = run(&svcs, &rows).await;
+        svcs.batches
+            .discard(&first.batch_id)
+            .await
+            .expect("discard");
+        let second = run(&svcs, &rows).await;
+
+        assert_eq!(
+            second.new_transactions, 1,
+            "the freed slot lets the identical row import again"
+        );
+        let refs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transaction_sources")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(refs, 2, "the second run's references replaced the first's");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_freed_tombstone_slot_lets_the_leg_reappear(pool: SqlitePool) {
+        // Task 3's unit tests prove a tombstone's reference row is gone once
+        // discarded; this proves a later import actually repopulates the slot,
+        // through the real import path rather than the database directly.
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool);
+
+        let document = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Bank", Some(-50)),
+            ],
+        );
+
+        let first = run(&svcs, core::slice::from_ref(&document)).await;
+        assert_eq!(first.new_transactions, 1);
+        assert_eq!(posting_count(&pool).await, 2);
+
+        // The user deletes the Assets:Bank leg, leaving its reference a
+        // tombstone: gone as a posting, still holding its occurrence slot.
+        let owner: TransactionId = owner_of_posting(&pool, &food)
+            .await
+            .parse()
+            .expect("owning transaction id");
+        let stored = svcs
+            .transactions
+            .find_by_id(&owner)
+            .await
+            .expect("stored transaction");
+        let kept: Vec<Posting> = stored
+            .postings()
+            .iter()
+            .filter(|posting| *posting.account_id() == food)
+            .cloned()
+            .collect();
+        assert_eq!(kept.len(), 1, "exactly the Expenses:Food leg is kept");
+        svcs.transactions
+            .edit(
+                Transaction::builder()
+                    .id(owner.clone())
+                    .date(stored.date())
+                    .description(stored.description())
+                    .postings(kept)
+                    .reconciliation(stored.reconciliation())
+                    .created_at(*stored.created_at())
+                    .build(),
+            )
+            .await
+            .expect("delete the Assets:Bank leg");
+        assert_eq!(posting_count(&pool).await, 1);
+
+        // Discarding the whole run must free the tombstoned slot along with
+        // the surviving leg's — not just the postings that still exist.
+        svcs.batches
+            .discard(&first.batch_id)
+            .await
+            .expect("discard");
+        assert_eq!(
+            source_count(&pool).await,
+            0,
+            "discard clears every reference the run held, tombstoned or not"
+        );
+
+        let second = run(&svcs, &[document]).await;
+
+        assert_eq!(
+            second.new_transactions, 1,
+            "the freed tombstone slot lets the whole row import again"
+        );
+        assert_eq!(
+            posting_count(&pool).await,
+            2,
+            "the leg the user deleted is back, imported fresh"
+        );
+    }
 }
