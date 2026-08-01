@@ -91,6 +91,20 @@ fn generate_importer_export(item_impl: &ItemImpl) -> syn::Result<TokenStream2> {
                 .map(|txs| txs.into_iter().map(::core::convert::Into::into).collect())
                 .map_err(::core::convert::Into::into)
             }
+
+            fn validate(
+                config: ::std::string::String,
+            ) -> ::std::result::Result<
+                (),
+                ::bc_sdk::__bindings::exports::borrow_checker::sdk::importer::ImportError,
+            > {
+                let config = ::bc_sdk::ImportConfig::from_json_string(config);
+                <#self_ty as ::bc_sdk::Importer>::validate(
+                    &<#self_ty as ::std::default::Default>::default(),
+                    config,
+                )
+                .map_err(::core::convert::Into::into)
+            }
         }
 
         ::bc_sdk::export!(#export_struct with_types_in ::bc_sdk::__bindings);
@@ -128,6 +142,26 @@ mod tests {
         assert!(
             generate_importer_export(&item).is_err(),
             "bare impl (no trait) should return a syn error"
+        );
+    }
+
+    #[test]
+    fn generated_glue_exports_validate() {
+        let item: ItemImpl = parse_str(
+            "impl Importer for MyPlugin {
+                fn name(&self) -> &str { \"my-plugin\" }
+                fn import(&self, _: ImportConfig)
+                    -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+            }",
+        )
+        .expect("test input is valid syn");
+        let generated = generate_importer_export(&item)
+            .expect("trait impl should generate")
+            .to_string();
+        assert!(
+            generated.contains("fn validate"),
+            "generated Guest impl must export validate even when the plugin does \
+             not override it, or the component will not satisfy the world"
         );
     }
 }

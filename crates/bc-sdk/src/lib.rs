@@ -97,4 +97,26 @@ pub trait Importer: Default {
     ///
     /// Returns [`ImportError`] on configuration, I/O, parse, or field errors.
     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError>;
+
+    /// Check `config` for internal coherence without reading any files.
+    ///
+    /// The default implementation accepts every configuration. Override it when
+    /// a configuration admits combinations that are syntactically valid but
+    /// meaningless, so the host can report them when a profile is saved rather
+    /// than when an import runs.
+    ///
+    /// Implementations must not perform I/O.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Opaque JSON configuration from the import profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImportError`] describing why the configuration is incoherent.
+    #[inline]
+    fn validate(&self, config: ImportConfig) -> Result<(), ImportError> {
+        drop(config);
+        Ok(())
+    }
 }
