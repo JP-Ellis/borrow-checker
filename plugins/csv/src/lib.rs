@@ -830,6 +830,52 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_named_columns_on_a_headerless_file() {
+        // Same incoherent combination as `import_rejects_named_columns_on_a_headerless_file`,
+        // but exercised through `validate` directly: no file is read, so this
+        // must fail from config coherence alone.
+        let config_json = serde_json::json!({
+            "commodity": "AUD",
+            "account": "Liabilities:Bank:Card",
+            "source_dir": "unused",
+            "source_glob": "*.csv",
+            "header": {"kind": "absent"},
+            "date_column": "Date",
+            "date_format": "%d/%m/%Y",
+            "amount_columns": {"style": "single", "column": 1}
+        });
+
+        let importer = CsvImporter;
+        let err = importer
+            .validate(ImportConfig::from_json_string(config_json.to_string()))
+            .expect_err("a named column on a headerless file is not importable");
+        assert!(
+            err.to_string().contains("date_column"),
+            "error should name the offending field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_a_coherent_headerless_config() {
+        let config_json = serde_json::json!({
+            "commodity": "AUD",
+            "account": "Liabilities:Bank:Card",
+            "source_dir": "unused",
+            "source_glob": "*.csv",
+            "header": {"kind": "absent"},
+            "date_column": 0,
+            "date_format": "%d/%m/%Y",
+            "amount_columns": {"style": "single", "column": 1},
+            "description_column": 2
+        });
+
+        let importer = CsvImporter;
+        importer
+            .validate(ImportConfig::from_json_string(config_json.to_string()))
+            .expect("coherent headerless config should validate");
+    }
+
+    #[test]
     fn import_errors_when_no_files_match_glob() {
         let dir = std::env::temp_dir().join("bc-csv-import-empty-test");
         let _ = std::fs::remove_dir_all(&dir);
