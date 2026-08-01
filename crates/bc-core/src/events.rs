@@ -398,8 +398,8 @@ pub enum Event {
         /// Tombstoned references removed, freeing their occurrence slots so a
         /// re-import can recreate those legs.
         freed_tombstones: u64,
-        /// References belonging to other runs that went with a transaction this
-        /// discard deleted.
+        /// Any other reference — another run's, or one attached with no batch
+        /// at all — that went with a transaction this discard deleted.
         other_batch_references_removed: u64,
         /// Of `removed_postings`, those the user had edited since the import.
         edited_postings: u64,
