@@ -20,8 +20,8 @@ use crate::shell::ConsoleShell;
 #[component(transparent)]
 fn DebugRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
     cfg_select! {
-        debug_assertions => { crate::pages::__test::TestRoutes() }
-        _ => { () }
+        debug_assertions => crate::pages::__test::TestRoutes(),
+        _ => (),
     }
 }
 
