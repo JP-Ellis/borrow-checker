@@ -1,0 +1,12 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+assertion_line: 1198
+expression: stabilised
+---
+Discarded batch BATCH_ID (csv, STARTED_AT).
+  6 postings removed, 4 transactions removed
+  1 of them you had edited since the import
+  2 of them sat in reconciled transactions
+  3 postings kept — their provenance was adopted, not imported
+  5 slots freed for legs you had deleted
+  7 references from other batches removed with their transactions
