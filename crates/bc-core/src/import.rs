@@ -315,17 +315,23 @@ pub trait Importer: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns [`Error`] on configuration, I/O, parse, or field errors.
+    ///
+    /// Implementations run [`Importer::validate`] before parsing, so a config
+    /// error surfaces here too rather than only through a separate call.
     fn import(&self, config: &Config) -> Result<Vec<RawTransaction>, Error>;
 
     /// Checks a configuration for coherence without reading any files.
     ///
     /// Importers whose configuration admits combinations that are syntactically
-    /// valid but meaningless should reject them here, so a profile can be
-    /// checked when it is saved rather than when an import runs. An importer
-    /// with nothing to check yet should still implement this explicitly,
-    /// returning `Ok(())` — there is no default, so a delegate wrapper that
-    /// forgets to forward this method fails to compile rather than silently
-    /// skipping validation.
+    /// valid but meaningless should reject them here. This runs before every
+    /// [`Importer::import`], and can also be called on its own to check a
+    /// profile without importing anything — the GUI does not yet do so
+    /// (see [issue #358](https://github.com/JP-Ellis/borrow-checker/issues/358)).
+    ///
+    /// An importer with nothing to check yet should still implement this
+    /// explicitly, returning `Ok(())`. There is deliberately no default body:
+    /// a delegate wrapper that forgets to forward this method must fail to
+    /// compile rather than silently skip validation.
     ///
     /// Implementations must not perform I/O.
     ///

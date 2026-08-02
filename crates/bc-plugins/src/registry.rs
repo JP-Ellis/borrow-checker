@@ -267,14 +267,12 @@ pub fn query_metadata(wasm_path: &std::path::Path) -> Result<crate::PluginMetada
 /// pointing to the same underlying component without cloning or re-compiling it.
 struct PluginImporterRef(Arc<PluginImporter>);
 
-/// Every method of [`bc_core::Importer`] must be forwarded here.
+/// Every method must delegate to `self.0`; none may be left to a trait default.
 ///
-/// This impl exists only to let `create_for_name` return `Box<dyn Importer>`
-/// without cloning the underlying `Arc<PluginImporter>`; each method must
-/// delegate to `self.0`. An omitted forward used to compile silently and fall
-/// back to the trait's default body, which is why [`bc_core::Importer::validate`]
-/// no longer has one — a forgotten forward is now a compile error instead of a
-/// method that quietly never reaches WASM.
+/// A defaulted method that this impl forgets to forward compiles cleanly and
+/// silently returns the default instead of reaching WASM. [`bc_core::Importer`]
+/// therefore declares every method without a body, so an omitted forward here
+/// is a compile error.
 impl bc_core::Importer for PluginImporterRef {
     #[inline]
     fn name(&self) -> &str {

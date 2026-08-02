@@ -1,4 +1,9 @@
-//! Preamble-detection logic for CSV files with leading metadata rows.
+//! Locates the start of the CSV data.
+//!
+//! Two independent axes: how many leading metadata lines to discard
+//! ([`Preamble`]), and whether a header row follows and how to find it
+//! ([`Header`]). The preamble is applied first, then the header is located
+//! within what remains.
 
 use crate::config::Header;
 use crate::config::Preamble;
