@@ -145,23 +145,31 @@ mod tests {
         );
     }
 
+    /// Every WIT export the world requires must appear in the generated glue.
+    ///
+    /// That the exports *delegate* to the trait rather than fabricating a
+    /// result is asserted in `bc-sdk`'s `importer_macro` integration test,
+    /// which compiles the macro and calls through it.
     #[test]
-    fn generated_glue_exports_validate() {
+    fn generated_glue_exports_the_whole_world() {
         let item: ItemImpl = parse_str(
             "impl Importer for MyPlugin {
                 fn name(&self) -> &str { \"my-plugin\" }
                 fn import(&self, _: ImportConfig)
                     -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+                fn validate(&self, _: ImportConfig) -> Result<(), ImportError> { Ok(()) }
             }",
         )
         .expect("test input is valid syn");
         let generated = generate_importer_export(&item)
             .expect("trait impl should generate")
             .to_string();
-        assert!(
-            generated.contains("fn validate"),
-            "generated Guest impl must export validate even when the plugin does \
-             not override it, or the component will not satisfy the world"
-        );
+        for export in ["fn sdk_abi", "fn name", "fn parse", "fn validate"] {
+            assert!(
+                generated.contains(export),
+                "generated Guest impl is missing {export}, so the component \
+                 will not satisfy the world"
+            );
+        }
     }
 }
