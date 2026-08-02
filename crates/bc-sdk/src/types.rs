@@ -246,7 +246,10 @@ impl ImportConfig {
     /// assert_eq!(typed.delimiter, ',');
     /// ```
     #[inline]
-    pub fn as_typed<T: DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
+    pub fn as_typed<T>(&self) -> Result<T, serde_json::Error>
+    where
+        T: DeserializeOwned,
+    {
         serde_json::from_str(&self.0)
     }
 

@@ -13,7 +13,10 @@ use crate::error::CliResult;
 ///
 /// Returns [`crate::error::CliError::Json`] if serialisation fails.
 #[inline]
-pub fn print_json<T: serde::Serialize>(value: &T) -> CliResult<()> {
+pub fn print_json<T>(value: &T) -> CliResult<()>
+where
+    T: serde::Serialize,
+{
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }

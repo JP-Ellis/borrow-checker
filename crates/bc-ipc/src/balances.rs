@@ -183,7 +183,10 @@ impl Extend<Amount> for Balances {
         clippy::arithmetic_side_effects,
         reason = "intentional += accumulation; side effect is the desired behavior"
     )]
-    fn extend<I: IntoIterator<Item = Amount>>(&mut self, iter: I) {
+    fn extend<I>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = Amount>,
+    {
         for amount in iter {
             *self += &amount;
         }
@@ -192,7 +195,10 @@ impl Extend<Amount> for Balances {
 
 impl FromIterator<Amount> for Balances {
     #[inline]
-    fn from_iter<I: IntoIterator<Item = Amount>>(iter: I) -> Self {
+    fn from_iter<I>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = Amount>,
+    {
         let mut balances = Self::new();
         balances.extend(iter);
         balances
