@@ -370,6 +370,11 @@ CREATE TABLE import_batches (
 -- (account_id, fingerprint, occurrence) slot, so re-importing the same
 -- document does not recreate the leg.
 --
+-- Discarding the batch that wrote a tombstone is the one thing that removes
+-- one, freeing the slot. That run never happened, so the leg it recorded is
+-- not a leg the user chose to delete, and a corrected re-import has to be able
+-- to recreate it.
+--
 -- transaction_id and account_id do cascade: removing a transaction or an
 -- account takes its provenance with it, so no row can dangle.
 CREATE TABLE transaction_sources (
@@ -396,7 +401,12 @@ CREATE TABLE transaction_sources (
     UNIQUE (account_id, fingerprint, occurrence),
     -- The amount pair is the fingerprint's amount component: half of one would
     -- render a fingerprint that no longer matches the stored key.
-    CHECK ((amount IS NULL) = (commodity IS NULL))
+    CHECK ((amount IS NULL) = (commodity IS NULL)),
+    -- owns_posting decides whether a discard deletes a posting or merely
+    -- detaches it, and its readers disagree about anything outside 0/1: the
+    -- projection decodes it as `!= 0`, the discard's edit counts filter on
+    -- `= 1`. A third value would delete a posting without counting it.
+    CHECK (owns_posting IN (0, 1))
 );
 
 CREATE INDEX idx_transaction_sources_account_fp

@@ -840,6 +840,7 @@ mod db_tests {
             .narration("TRANSFER")
             .amount(Some(money))
             .occurrence(0)
+            .owns_posting(false)
             .created_at(Timestamp::now())
             .build();
         crate::SourceService::new(pool.clone())
