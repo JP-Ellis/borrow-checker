@@ -163,7 +163,8 @@ impl Residuals {
                  FROM postings e
                  WHERE e.amount IS NULL
                    AND (?1 IS NULL OR e.account_id = ?1)
-             )",
+             )
+             ORDER BY sib.transaction_id, sib.id",
         )
         .bind(account_id)
         .fetch_all(pool)
@@ -171,6 +172,10 @@ impl Residuals {
 
         // Group legs by transaction, preserving each leg's identity. A `BTreeMap`
         // keeps iteration order deterministic rather than hash-order dependent.
+        // The query's `ORDER BY` does the same within a transaction: leg order
+        // sets the first-seen commodity order of the residual `Balances`, which
+        // drives both the multi-commodity display order and the commodity
+        // inferred by `BalanceEngine::residual_commodities`.
         let mut by_transaction: BTreeMap<String, Vec<(String, String, Option<Amount>)>> =
             BTreeMap::new();
         for (transaction_id, posting_id, acct_id, amount, commodity) in rows {
