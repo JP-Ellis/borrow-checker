@@ -91,7 +91,9 @@ impl EditablePosting {
                 bc_ipc::PostingAmount::Derived(amounts) => amounts.clone(),
                 // `Stored` carries no residual; `Ambiguous` has none
                 // attributable to this single leg; any future variant is
-                // treated the same way until it is handled explicitly.
+                // treated the same way until it is handled explicitly. The
+                // named variants are listed alongside the wildcard because
+                // `clippy::wildcard_enum_match_arm` requires it.
                 bc_ipc::PostingAmount::Stored(_) | bc_ipc::PostingAmount::Ambiguous | _ => {
                     Vec::new()
                 }
@@ -445,17 +447,15 @@ pub enum BalanceState {
     Balanced,
     /// Exactly one elided leg; `remainder` is the value it will infer.
     Inferred {
-        /// The amount the elided leg will take to balance.
-        remainder: Decimal,
-        /// Currency of the inferred remainder.
-        currency: String,
+        /// The amounts the elided leg will take to balance, one per commodity
+        /// in first-seen order. Never empty and never holds a zero.
+        remainder: Vec<Amount>,
     },
     /// All amounts present but they do not net to zero (commits with a warning).
     Unbalanced {
-        /// The non-zero net (positive means a surplus).
-        delta: Decimal,
-        /// Currency of the delta.
-        currency: String,
+        /// The non-zero net per commodity (positive means a surplus), in
+        /// first-seen order. Never empty and never holds a zero.
+        delta: Vec<Amount>,
     },
     /// More than one elided leg — inference is ambiguous (hard error).
     Ambiguous,
@@ -469,8 +469,11 @@ pub enum BalanceState {
 ///
 /// Mirrors `bc_models::Transaction::balanced` semantics: two-or-more elided legs
 /// are ambiguous; a single elided leg infers the remainder; otherwise the
-/// concrete legs must net to zero. Amounts are summed using the first present
-/// currency (mixed-currency transactions show the raw net).
+/// concrete legs must net to zero.
+///
+/// Totals are accumulated **per commodity**, mirroring `bc_models::Balances`, so
+/// a transaction whose concrete legs span several commodities yields one entry
+/// per commodity rather than a sum of unlike units. No rate is ever consulted.
 ///
 /// # Arguments
 ///
@@ -486,16 +489,16 @@ pub fn derive_balance(working: &EditableTransaction, currencies: &[CommodityInfo
     if elided >= 2 {
         return BalanceState::Ambiguous;
     }
-    let mut total = Decimal::ZERO;
-    let mut currency = String::new();
+    // Per-commodity running totals in first-seen order, mirroring `Balances`.
+    let mut totals: Vec<(String, Decimal)> = Vec::new();
     let mut any = false;
     for p in working.postings.iter().filter(|p| !p.is_elided()) {
         match parse_amount(currencies, &p.amount) {
             Ok((v, code)) => {
-                if currency.is_empty() {
-                    currency = code;
+                match totals.iter_mut().find(|(c, _)| *c == code) {
+                    Some((_, running)) => *running = running.saturating_add(v),
+                    None => totals.push((code, v)),
                 }
-                total = total.saturating_add(v);
                 any = true;
             }
             Err(_) => return BalanceState::Invalid,
@@ -505,18 +508,27 @@ pub fn derive_balance(working: &EditableTransaction, currencies: &[CommodityInfo
         return BalanceState::Empty;
     }
     if elided == 1 {
-        return BalanceState::Inferred {
-            remainder: Decimal::ZERO.saturating_sub(total),
-            currency,
-        };
+        let remainder: Vec<Amount> = totals
+            .into_iter()
+            .filter(|(_, v)| !v.is_zero())
+            .map(|(code, v)| Amount::new(Decimal::ZERO.saturating_sub(v), code))
+            .collect();
+        // Every commodity cancelled out: the elided leg absorbs nothing, but the
+        // transaction still balances with it present.
+        if remainder.is_empty() {
+            return BalanceState::Balanced;
+        }
+        return BalanceState::Inferred { remainder };
     }
-    if total.is_zero() {
+    let delta: Vec<Amount> = totals
+        .into_iter()
+        .filter(|(_, v)| !v.is_zero())
+        .map(|(code, v)| Amount::new(v, code))
+        .collect();
+    if delta.is_empty() {
         BalanceState::Balanced
     } else {
-        BalanceState::Unbalanced {
-            delta: total,
-            currency,
-        }
+        BalanceState::Unbalanced { delta }
     }
 }
 
@@ -525,10 +537,10 @@ pub fn derive_balance(working: &EditableTransaction, currencies: &[CommodityInfo
 ///
 /// While the working buffer is pristine (`dirty == false`), the backend's
 /// [`EditablePosting::derived_residual`] — seeded at load time — is trusted
-/// verbatim; this is the only path that can represent a multi-commodity
-/// residual, which client-side [`derive_balance`] cannot. Once the buffer is
-/// dirty, `derive_balance` takes over so the display reflects the in-progress
-/// edit the backend has not seen. A stated (non-elided) posting, a zero or
+/// verbatim. Once the buffer is dirty, [`derive_balance`] takes over so the
+/// display reflects the in-progress edit the backend has not seen; it derives
+/// per commodity, so a multi-commodity residual survives the handover intact.
+/// A stated (non-elided) posting, a zero or
 /// ambiguous residual, or a balanced/unbalanced/invalid/empty working buffer
 /// all yield an empty `Vec`.
 ///
@@ -560,10 +572,7 @@ pub fn ghost_amounts(
         return p.derived_residual.clone();
     }
     match derive_balance(working, currencies) {
-        BalanceState::Inferred {
-            remainder,
-            currency,
-        } => vec![Amount::new(remainder, currency)],
+        BalanceState::Inferred { remainder } => remainder,
         BalanceState::Balanced
         | BalanceState::Unbalanced { .. }
         | BalanceState::Ambiguous
@@ -629,6 +638,21 @@ pub mod tests {
             true,
             false,
         )]
+    }
+
+    /// `registry()` plus USD, for the cross-commodity residual tests.
+    fn registry_multi() -> Vec<CommodityInfo> {
+        let mut r = registry();
+        r.push(CommodityInfo::new(
+            "c3",
+            "USD",
+            Some("US$".to_owned()),
+            vec![],
+            2,
+            false,
+            false,
+        ));
+        r
     }
 
     fn sample_tx() -> Transaction {
@@ -869,8 +893,7 @@ pub mod tests {
         assert_eq!(
             s,
             BalanceState::Inferred {
-                remainder: Decimal::new(84_20, 2),
-                currency: "AUD".to_owned()
+                remainder: vec![Amount::new(Decimal::new(84_20, 2), "AUD")]
             }
         );
     }
@@ -890,8 +913,7 @@ pub mod tests {
         assert_eq!(
             s,
             BalanceState::Unbalanced {
-                delta: Decimal::new(-4_20, 2),
-                currency: "AUD".to_owned()
+                delta: vec![Amount::new(Decimal::new(-4_20, 2), "AUD")]
             }
         );
     }
@@ -935,6 +957,89 @@ pub mod tests {
             ..ep_derived(residual.clone())
         }]);
         assert_eq!(ghost_amounts(&w, false, 1, &registry()), residual);
+    }
+
+    #[test]
+    fn balance_multi_commodity_infers_one_remainder_per_commodity() {
+        let s = derive_balance(
+            &et(vec![
+                ep("AUD 84.20", "AUD"),
+                ep("USD 10.00", "USD"),
+                ep("", "AUD"),
+            ]),
+            &registry_multi(),
+        );
+        assert_eq!(
+            s,
+            BalanceState::Inferred {
+                remainder: vec![
+                    Amount::new(Decimal::new(-84_20, 2), "AUD"),
+                    Amount::new(Decimal::new(-10_00, 2), "USD"),
+                ]
+            },
+            "each commodity's residual is derived independently, never summed"
+        );
+    }
+
+    #[test]
+    fn balance_multi_commodity_unbalanced_keeps_commodities_apart() {
+        let s = derive_balance(
+            &et(vec![ep("AUD 84.20", "AUD"), ep("USD 10.00", "USD")]),
+            &registry_multi(),
+        );
+        assert_eq!(
+            s,
+            BalanceState::Unbalanced {
+                delta: vec![
+                    Amount::new(Decimal::new(84_20, 2), "AUD"),
+                    Amount::new(Decimal::new(10_00, 2), "USD"),
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn balance_drops_commodities_that_cancel_to_zero() {
+        let s = derive_balance(
+            &et(vec![
+                ep("AUD 84.20", "AUD"),
+                ep("AUD -84.20", "AUD"),
+                ep("USD 10.00", "USD"),
+                ep("", "AUD"),
+            ]),
+            &registry_multi(),
+        );
+        assert_eq!(
+            s,
+            BalanceState::Inferred {
+                remainder: vec![Amount::new(Decimal::new(-10_00, 2), "USD")]
+            },
+            "AUD nets to zero and is omitted; only USD remains outstanding"
+        );
+    }
+
+    #[test]
+    fn ghost_amounts_dirty_multi_commodity_keeps_every_commodity() {
+        // Regression: the dirty branch used to hand off to a `derive_balance`
+        // that summed unlike commodities into one figure under the first
+        // currency seen, so editing any field (even the payee) turned a correct
+        // `-84.20 AUD, -10.00 USD` ghost into a fabricated `-94.20 AUD`.
+        let w = et(vec![
+            ep("AUD 84.20", "AUD"),
+            ep("USD 10.00", "USD"),
+            EditablePosting {
+                uid: 1,
+                ..ep("", "AUD")
+            },
+        ]);
+        assert_eq!(
+            ghost_amounts(&w, true, 1, &registry_multi()),
+            vec![
+                Amount::new(Decimal::new(-84_20, 2), "AUD"),
+                Amount::new(Decimal::new(-10_00, 2), "USD"),
+            ],
+            "a dirty buffer must not collapse commodities into a single amount"
+        );
     }
 
     #[test]
