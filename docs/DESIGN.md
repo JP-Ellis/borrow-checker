@@ -196,9 +196,15 @@ commodities, each commodity's residual is contributed independently and no
 rate is ever consulted (FX conversion is #233). `balanced()` is unchanged and
 still reports false when more than one commodity remains, so a
 multi-commodity residual is flagged while still counting toward balances —
-warn, don't block. A transaction with two or more elided legs has a residual
-that is real but not attributable to any single leg, so it contributes to no
-balance at all.
+warn, don't block.
+
+Two or more elided legs cannot be written through the app — validation rejects
+that shape (see **Storing is permissive** below). The balance engine still
+handles it defensively, for a database hand-edited outside the app: such a
+transaction has a residual that is real but not attributable to any single leg,
+so it contributes to no balance at all. That is what `Residual::Ambiguous` and
+`PostingAmount::Ambiguous` represent — a state the reader tolerates, not one
+the writer can produce.
 
 **Amount elision.** `Posting.amount: Option<Amount>` — `None` marks the leg that
 absorbs the residual, exactly as in ledger and beancount. At most one leg per

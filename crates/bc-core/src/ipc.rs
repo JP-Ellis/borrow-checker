@@ -596,8 +596,10 @@ impl TryFrom<bc_ipc::Filter> for TransactionQuery {
 mod tests {
     use std::collections::HashMap;
 
+    use bc_models::Amount;
     use jiff::Timestamp;
     use pretty_assertions::assert_eq;
+    use rust_decimal_macros::dec;
 
     use crate::budget_tree::BudgetTreeSummary;
     use crate::ipc::AuditEntryExt as _;
@@ -844,9 +846,6 @@ mod tests {
     #[test]
     #[expect(clippy::indexing_slicing, reason = "test with known length")]
     fn elided_leg_converts_to_a_derived_amount() {
-        use bc_models::Amount;
-        use rust_decimal_macros::dec;
-
         let bank = bc_models::AccountId::new();
         let food = bc_models::AccountId::new();
         let tx = bc_models::Transaction::builder()
@@ -891,9 +890,6 @@ mod tests {
     #[test]
     #[expect(clippy::indexing_slicing, reason = "test with known length")]
     fn two_elided_legs_convert_to_ambiguous() {
-        use bc_models::Amount;
-        use rust_decimal_macros::dec;
-
         let tx = bc_models::Transaction::builder()
             .id(bc_models::TransactionId::new())
             .date(jiff::civil::date(2026, 1, 1))
