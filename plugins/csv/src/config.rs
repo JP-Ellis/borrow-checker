@@ -1,5 +1,7 @@
 //! Configuration types for the CSV importer.
 
+use std::collections::BTreeMap;
+
 /// How a column is addressed within a CSV row.
 ///
 /// Deserializes from either a bare JSON string (matched case-insensitively
@@ -45,6 +47,20 @@ impl ColumnRef {
         match *self {
             Self::Name(ref name) => format!("'{name}'"),
             Self::Index(index) => format!("column {index}"),
+        }
+    }
+
+    /// Returns the key under which two references address the same column.
+    ///
+    /// This mirrors resolution: names are folded case-insensitively, indices
+    /// compare by value. A name and an index never share a key, because which
+    /// physical column a name denotes is unknown until the header is read.
+    /// Note this is a finer relation than the derived [`PartialEq`], which
+    /// treats `"Amount"` and `"amount"` as distinct.
+    fn dedup_key(&self) -> String {
+        match *self {
+            Self::Name(ref name) => format!("name:{}", name.to_ascii_lowercase()),
+            Self::Index(index) => format!("index:{index}"),
         }
     }
 }
@@ -153,11 +169,15 @@ impl Default for Preamble {
 pub enum Header {
     /// The first line after the preamble is the header row.
     Present,
-    /// Scan from the top; the first line whose fields all match the configured
-    /// column names (case-insensitive) is the header. Earlier lines are
-    /// discarded.
+    /// Scan forward from the first line *after* the preamble; the first line
+    /// whose fields all match the configured column names (case-insensitive)
+    /// is the header. Lines scanned before it are discarded.
     AutoDetect {
         /// Maximum number of lines to scan before giving up.
+        ///
+        /// Counted from the end of the preamble, not from the start of the
+        /// file, so lines already discarded by [`Preamble`] do not consume the
+        /// budget. Must be non-zero.
         max_scan_lines: u32,
     },
     /// There is no header row; columns are addressed by index.
@@ -204,8 +224,13 @@ impl Default for AmountColumns {
 
 /// Full configuration for the CSV importer.
 ///
-/// Supports configurable column names, delimiters, date formats, amount
-/// representations, and preamble handling for bank-style CSV exports.
+/// Supports configurable delimiters, date formats, amount representations,
+/// preamble handling, and columns addressed either by header name or by
+/// zero-based position (see [`ColumnRef`]) for bank-style CSV exports.
+///
+/// Not every syntactically valid combination is meaningful — addressing a
+/// column by name in a file with no header row, for instance. [`Config::validate`]
+/// rejects those without reading a file.
 ///
 /// Construct using [`Config::default()`] and then set individual fields,
 /// or deserialize from JSON.
@@ -343,12 +368,12 @@ impl Config {
     /// Returns every configured column reference, paired with its config field
     /// name.
     ///
-    /// This is the single place that knows the full set of columns. Rules
-    /// about the *required* columns belong on [`required_column_refs`]
-    /// instead — [`Config::required_column_names`] and the `AutoDetect` arm
-    /// of [`Config::validate`] both derive from that narrower set; only the
-    /// `Absent` arm of `validate` needs the full set here. Add a new column
-    /// field here and nowhere else.
+    /// Together with [`required_column_refs`] this is the only place that
+    /// enumerates the column fields. A new **optional** column goes in the
+    /// `optional` array below and nowhere else; a new **required** one goes in
+    /// [`required_column_refs`], which this method extends — putting a required
+    /// column here instead would hide it from [`Config::required_column_names`]
+    /// and from the `AutoDetect` arm of [`Config::validate`].
     ///
     /// [`required_column_refs`]: Self::required_column_refs
     ///
@@ -411,10 +436,25 @@ impl Config {
     /// Returns [`bc_sdk::ImportError::InvalidConfig`] listing every violation:
     /// - a name-based column reference when the file has no header row;
     /// - an index-based date or amount column under [`Header::AutoDetect`],
-    ///   which matches the header line against column names.
+    ///   which matches the header line against column names;
+    /// - [`Header::AutoDetect`] with `max_scan_lines` of zero, which can never
+    ///   find a header;
+    /// - two configuration fields addressing the same column.
     #[inline]
     pub fn validate(&self) -> Result<(), bc_sdk::ImportError> {
         let mut problems: Vec<String> = Vec::new();
+
+        let mut by_column: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
+        for (field, column) in self.column_refs() {
+            by_column.entry(column.dedup_key()).or_default().push(field);
+        }
+        for (_, fields) in by_column.iter().filter(|&(_, group)| group.len() > 1) {
+            problems.push(format!(
+                "these fields all address the same column: {}. \
+                 Each column reference must denote a distinct column.",
+                fields.join(", ")
+            ));
+        }
 
         match self.header {
             Header::Absent => {
@@ -433,7 +473,16 @@ impl Config {
                     ));
                 }
             }
-            Header::AutoDetect { .. } => {
+            Header::AutoDetect { max_scan_lines } => {
+                if max_scan_lines == 0 {
+                    problems.push(
+                        "header.kind is \"auto_detect\" with max_scan_lines of 0, so no line \
+                         is ever examined and the header can never be found. Raise it, or \
+                         use a different header.kind."
+                            .to_owned(),
+                    );
+                }
+
                 let positional: Vec<&str> = self
                     .required_column_refs()
                     .into_iter()
@@ -581,6 +630,127 @@ mod tests {
         assert!(
             msg.contains("amount_columns.column"),
             "should name the amount column: {msg}"
+        );
+    }
+
+    /// R2 rejects *any* positional required column, not only the all-positional
+    /// case.
+    ///
+    /// A weaker rule that fired only when every required ref was positional
+    /// would pass the two neighbouring tests, so this pins the intermediate
+    /// case: one name to match the header on, one index that cannot be checked.
+    #[test]
+    fn validate_rejects_auto_detect_with_one_positional_required_column() {
+        let cfg = Config {
+            header: Header::AutoDetect { max_scan_lines: 10 },
+            date_column: ColumnRef::Name("Date".to_owned()),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(1),
+            },
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("a single positional required column is enough to fail")
+            .to_string();
+        assert!(
+            msg.contains("amount_columns.column"),
+            "should name the positional amount column: {msg}"
+        );
+        assert!(
+            !msg.contains("date_column"),
+            "should not name the correctly-addressed date column: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_auto_detect_with_zero_scan_lines() {
+        let cfg = Config {
+            header: Header::AutoDetect { max_scan_lines: 0 },
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("scanning zero lines can never find a header")
+            .to_string();
+        assert!(
+            msg.contains("max_scan_lines"),
+            "should name max_scan_lines: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_two_fields_addressing_the_same_index() {
+        let cfg = Config {
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            amount_columns: AmountColumns::SplitDebitCredit {
+                debit_column: ColumnRef::Index(1),
+                credit_column: ColumnRef::Index(1),
+            },
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("debit and credit cannot be the same column")
+            .to_string();
+        assert!(
+            msg.contains("amount_columns.debit_column")
+                && msg.contains("amount_columns.credit_column"),
+            "should name both colliding fields: {msg}"
+        );
+    }
+
+    /// Duplicate detection folds case, because resolution does.
+    ///
+    /// The derived `PartialEq` on [`ColumnRef`] would treat these as distinct,
+    /// which is why [`ColumnRef::dedup_key`] exists.
+    #[test]
+    fn validate_rejects_names_differing_only_in_case() {
+        let cfg = Config {
+            header: Header::Present,
+            date_column: ColumnRef::Name("Date".to_owned()),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Amount".to_owned()),
+            },
+            payee_column: Some(ColumnRef::Name("amount".to_owned())),
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("'Amount' and 'amount' resolve to the same column")
+            .to_string();
+        assert!(
+            msg.contains("amount_columns.column") && msg.contains("payee_column"),
+            "should name both colliding fields: {msg}"
+        );
+    }
+
+    /// A name and an index never collide, since a name's physical position is
+    /// unknown until the header is read.
+    #[test]
+    fn validate_does_not_treat_a_name_and_an_index_as_duplicates() {
+        let cfg = Config {
+            header: Header::Present,
+            date_column: ColumnRef::Name("Date".to_owned()),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(0),
+            },
+            ..Config::default()
+        };
+        cfg.validate()
+            .expect("a name and an index are not comparable");
+    }
+
+    /// The old `Preamble::AutoDetect` spelling must fail loudly rather than
+    /// deserializing into something with a different meaning.
+    #[test]
+    fn preamble_rejects_the_old_auto_detect_variant() {
+        let err = serde_json::from_str::<Preamble>(r#"{"strategy":"auto_detect"}"#)
+            .expect_err("auto_detect moved to header.kind");
+        assert!(
+            err.to_string().contains("auto_detect"),
+            "error should name the removed variant: {err}"
         );
     }
 
