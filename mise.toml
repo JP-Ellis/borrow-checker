@@ -183,9 +183,17 @@ BC_DB_PATH="$DEV_DB" cargo tauri dev
   [tasks."build-plugins"]
   description = "Compile WASM importer plugins and stage them under target/plugins/"
   depends     = ["install:wasm-targets"]
+  # bc-sdk is compiled into every plugin, so a WIT or SDK change must
+  # invalidate the staged .wasm artifacts. Without it a WIT-only change leaves
+  # stale components behind that no longer satisfy the world.
   sources     = [
     "plugins/*/src/**/*.rs",
     "plugins/*/Cargo.toml",
+    "crates/bc-sdk/src/**/*.rs",
+    "crates/bc-sdk/wit/**/*.wit",
+    "crates/bc-sdk/Cargo.toml",
+    "crates/bc-sdk-macros/src/**/*.rs",
+    "crates/bc-sdk-macros/Cargo.toml",
     "Cargo.toml",
     "Cargo.lock"
   ]
