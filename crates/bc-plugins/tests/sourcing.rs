@@ -157,6 +157,84 @@ fn validate_accepts_a_coherent_csv_config() {
         .expect("an all-positional headerless config is coherent, and validate reads no files");
 }
 
+/// An incoherent config must fail the import loudly rather than yielding an
+/// empty transaction list.
+///
+/// `source_dir` exists and holds a readable file, so an import that skipped
+/// validation would log-and-skip its way to `Ok(vec![])` — a silent success
+/// carrying no data.
+///
+/// Both the host (before `call_parse`) and the CSV plugin (at the top of its
+/// own `import`) check this, so the test does not isolate either layer; it
+/// pins the outcome a caller depends on. Isolating the host's call would need
+/// a fixture plugin that validates but does not self-check.
+#[test]
+fn import_rejects_an_incoherent_config_rather_than_importing_nothing() {
+    let root = env::temp_dir().join("bc-validate-before-parse-e2e");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&root).expect("mkdir");
+    fs::write(root.join("statement.csv"), "01/02/2025,120.00\n").expect("write");
+    let importer = load_csv_importer(root.as_path());
+
+    // Headerless, but the date column is addressed by name: incoherent.
+    let config = ImportConfig::from_value(serde_json::json!({
+        "commodity": "AUD",
+        "account": "Liabilities:Bank:Card",
+        "source_dir": ".",
+        "source_glob": "*.csv",
+        "date_format": "%d/%m/%Y",
+        "header": {"kind": "absent"},
+        "date_column": "Date",
+        "amount_columns": {"style": "single", "column": 1_i32}
+    }));
+
+    let err = importer
+        .import(&config)
+        .expect_err("an incoherent config must be rejected before any file is parsed");
+    assert!(
+        err.to_string().contains("date_column"),
+        "should fail with the validation error naming the field, got: {err}"
+    );
+
+    drop(fs::remove_dir_all(&root));
+}
+
+/// `validate` must not require a configured documents root.
+///
+/// Checking a profile reads no files, so it has to work before the source
+/// directory exists — otherwise validation at profile-save time (#358) is
+/// impossible. This pins the deliberate absence of the `documents_root` guard
+/// that `import` has.
+#[test]
+fn validate_succeeds_when_documents_root_unset() {
+    let plugin_dir = get_plugin_dir();
+    assert!(
+        plugin_dir.exists(),
+        "Plugin directory does not exist: {}. Please run `mise run build-plugins` first.",
+        plugin_dir.display()
+    );
+    let registry =
+        PluginRegistry::load(&[plugin_dir], None).expect("Failed to load plugin registry");
+    let importer = registry
+        .into_importer_registry()
+        .create_for_name("csv")
+        .expect("CSV plugin not found in registry");
+
+    let config = ImportConfig::from_value(serde_json::json!({
+        "commodity": "AUD",
+        "account": "Liabilities:Bank:Card",
+        "source_dir": "does/not/exist",
+        "source_glob": "*.csv",
+        "header": {"kind": "absent"},
+        "date_column": 0_i32,
+        "amount_columns": {"style": "single", "column": 1_i32}
+    }));
+
+    importer
+        .validate(&config)
+        .expect("validate reads no files, so it needs no documents root");
+}
+
 #[test]
 fn import_errors_when_documents_root_unset() {
     let plugin_dir = get_plugin_dir();

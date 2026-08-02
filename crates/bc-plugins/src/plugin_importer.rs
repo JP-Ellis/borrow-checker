@@ -174,6 +174,10 @@ impl bc_core::Importer for PluginImporter {
             bc_core::ImportError::Parse(format!("plugin instantiation failed: {e}"))
         })?;
 
+        // Check the config before parsing, so that a plugin which does not
+        // check its own is still covered. Well-behaved plugins validate at the
+        // top of `parse` too, which makes this call redundant for them — and
+        // therefore not independently observable in the tests.
         bindings
             .borrow_checker_sdk_importer()
             .call_validate(&mut store, &config_json)
