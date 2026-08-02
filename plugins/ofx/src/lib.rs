@@ -112,9 +112,6 @@ impl bc_sdk::Importer for OfxImporter {
     /// see [issue #361](https://github.com/JP-Ellis/borrow-checker/issues/361).
     #[inline]
     fn validate(&self, _config: ImportConfig) -> Result<(), ImportError> {
-        bc_sdk::warn!(
-            "config validation is not implemented for the ofx importer; config accepted without checks"
-        );
         Ok(())
     }
 }
