@@ -93,9 +93,9 @@ interface importer {
 
     /// Check a config for coherence without reading any files.
     ///
-    /// Hosts may call this when an import profile is saved, so configuration
-    /// errors surface at authoring time rather than at import time. It must
-    /// not perform I/O.
+    /// The host calls this before every `parse`, and may also call it on its
+    /// own — when an import profile is saved, for instance — so configuration
+    /// errors can surface at authoring time. It must not perform I/O.
     validate: func(config: import-config) -> result<_, import-error>;
 }
 
