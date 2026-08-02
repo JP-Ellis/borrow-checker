@@ -137,7 +137,11 @@ mod tests {
     /// Compile-time check: `OtelError` implements [`core::error::Error`].
     #[test]
     fn otel_error_implements_std_error() {
-        fn assert_error<E: core::error::Error>() {}
+        fn assert_error<E>()
+        where
+            E: core::error::Error,
+        {
+        }
         assert_error::<OtelError>();
     }
 

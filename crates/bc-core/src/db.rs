@@ -167,7 +167,10 @@ async fn has_pending_migrations(pool: &SqlitePool) -> BcResult<bool> {
 /// against `#[non_exhaustive]` additions).
 /// Returns [`BcError::Serialisation`] if serialisation itself fails.
 #[inline]
-pub(crate) fn to_db_str<T: serde::Serialize>(val: T) -> BcResult<String> {
+pub(crate) fn to_db_str<T>(val: T) -> BcResult<String>
+where
+    T: serde::Serialize,
+{
     match serde_json::to_value(val)? {
         serde_json::Value::String(s) => Ok(s),
         other @ (serde_json::Value::Null
@@ -197,7 +200,10 @@ pub(crate) fn to_db_str<T: serde::Serialize>(val: T) -> BcResult<String> {
 /// Returns [`BcError::Serialisation`] if the string is not recognised by the
 /// type's deserialiser (e.g. unknown variant).
 #[inline]
-pub(crate) fn from_db_str<T: serde::de::DeserializeOwned>(s: &str) -> BcResult<T> {
+pub(crate) fn from_db_str<T>(s: &str) -> BcResult<T>
+where
+    T: serde::de::DeserializeOwned,
+{
     serde_json::from_value(serde_json::Value::String(s.to_owned())).map_err(Into::into)
 }
 

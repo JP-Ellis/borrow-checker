@@ -72,7 +72,11 @@ mod tests {
 
     #[test]
     fn is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
+        fn assert_send_sync<T>()
+        where
+            T: Send + Sync,
+        {
+        }
         assert_send_sync::<Error>();
     }
 }
