@@ -588,6 +588,7 @@ impl Engine {
                  (SELECT p.commodity
                   FROM postings p
                   WHERE p.account_id = ?
+                    AND p.commodity IS NOT NULL
                   GROUP BY p.commodity
                   ORDER BY COUNT(*) DESC
                   LIMIT 1)
@@ -709,8 +710,9 @@ impl Engine {
     /// The commodity for each account is resolved in priority order:
     /// 1. The configured default from `account_commodities` (position = 0).
     /// 2. The most-used posting commodity (for accounts imported without explicit commodity setup).
-    /// 3. The dominant commodity of the account's own residuals (for an account whose
-    ///    postings are all elided and therefore carry no stored commodity at all).
+    /// 3. The first-seen commodity of the account's own residuals (for an account whose
+    ///    postings are all elided and therefore carry no stored commodity at all) —
+    ///    iteration order only, with no weighting; see [`Self::residual_commodities`].
     ///
     /// # Errors
     ///
@@ -733,6 +735,7 @@ impl Engine {
                         (SELECT p.commodity
                          FROM postings p
                          WHERE p.account_id = a.id
+                           AND p.commodity IS NOT NULL
                          GROUP BY p.commodity
                          ORDER BY COUNT(*) DESC
                          LIMIT 1)
@@ -1995,6 +1998,72 @@ mod tests {
                 .await
                 .expect("commodity"),
             Some("AUD".to_owned()),
+        );
+    }
+
+    /// Elided legs must not form their own `GROUP BY` bucket in the tier-2
+    /// "most-used posting commodity" subselect. When they outnumber every
+    /// stored commodity, an unguarded `GROUP BY p.commodity` returns the NULL
+    /// group, `COALESCE` yields NULL, and tier 3 fires on an account that has
+    /// stored commodities — dropping every concrete posting as "non-default".
+    #[sqlx::test(migrations = "./migrations")]
+    async fn stored_commodity_wins_over_more_numerous_elided_legs(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let bank = acct_svc
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Bank");
+        let food = acct_svc
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Food");
+
+        // Bank holds one stored USD leg and three elided legs whose siblings are
+        // in AUD, so the NULL group (3) outnumbers the USD group (1).
+        sqlx::query("INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES ('tx_s0', '2026-01-01', 'Stored', 'unreconciled', '2026-01-01T00:00:00Z')")
+            .execute(&pool).await.expect("insert transaction");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_bank_s', 'tx_s0', ?, '-20.00', 'USD', 0)")
+            .bind(bank.to_string()).execute(&pool).await.expect("insert stored leg");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_food_s', 'tx_s0', ?, '20.00', 'USD', 1)")
+            .bind(food.to_string()).execute(&pool).await.expect("insert stored sibling");
+
+        for (i, tx) in ["tx_s1", "tx_s2", "tx_s3"].into_iter().enumerate() {
+            sqlx::query("INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES (?, '2026-01-02', 'Groceries', 'unreconciled', '2026-01-02T00:00:00Z')")
+                .bind(tx).execute(&pool).await.expect("insert transaction");
+            sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES (?, ?, ?, '50.00', 'AUD', 0)")
+                .bind(format!("p_food_{i}")).bind(tx).bind(food.to_string())
+                .execute(&pool).await.expect("insert concrete leg");
+            sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES (?, ?, ?, NULL, NULL, 1)")
+                .bind(format!("p_bank_{i}")).bind(tx).bind(bank.to_string())
+                .execute(&pool).await.expect("insert elided leg");
+        }
+
+        let engine = Engine::new(pool.clone());
+
+        assert_eq!(
+            engine
+                .default_commodity_for(&bank)
+                .await
+                .expect("commodity"),
+            Some("USD".to_owned()),
+            "a stored commodity must beat the elided legs' NULL group",
+        );
+
+        let balances = engine.default_balances().await.expect("default balances");
+        assert_eq!(
+            balances
+                .get(&bank)
+                .map(|a| (a.value(), a.commodity().as_str().to_owned())),
+            Some((dec!(-20.00), "USD".to_owned())),
+            "the stored USD leg must not be dropped as a non-default commodity",
         );
     }
 
