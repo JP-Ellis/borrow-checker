@@ -3676,6 +3676,7 @@ mod tests {
             .amount(Some(Amount::new(dec!(-5), CommodityCode::new("AUD"))))
             .occurrence(0)
             .import_batch_id(Some(batch_id.clone()))
+            .owns_posting(true)
             .created_at(Timestamp::now())
             .build();
         source_svc.attach(&source).await.expect("attach source");
@@ -3781,6 +3782,7 @@ mod tests {
             .amount(Some(Amount::new(dec!(-5), CommodityCode::new("AUD"))))
             .occurrence(0)
             .import_batch_id(Some(batch_id.clone()))
+            .owns_posting(true)
             .created_at(Timestamp::now())
             .build();
         crate::SourceService::new(pool.clone())

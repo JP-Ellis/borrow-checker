@@ -393,15 +393,21 @@ Multiple profiles can reference the same importer with different configuration. 
 >
 > Each import run is recorded in `import_batches` — the profile (if any), the
 > importer, `started_at`, `finished_at`, `discarded_at`, and counts of new
-> transactions, attached postings, and skipped postings, the last split out
-> into the subset whose account path named no existing account. `finished_at`
+> transactions, attached postings, and the two causes a posting is skipped for
+> — an account path naming no existing account, and anything else — held side
+> by side rather than as a total plus a subset of it. `finished_at`
 > and the counts are set together when the run completes; a run that aborted
 > before then has neither, so it is never misread as one that completed and
 > did nothing. `import discard <batch-id>` (`bc-cli`; see §8.1) undoes a run:
 > every posting it created is deleted along with its references (a tombstone
 > included, per above), a posting it only adopted is detached but kept, and
 > any transaction left holding no postings is deleted too, taking along
-> whatever other batches' references happened to be riding on it. Discard
+> whatever other batches' references happened to be riding on it. A surviving
+> transaction's remaining legs are renumbered, since every other writer treats
+> `postings.position` as contiguous from zero. Another batch's reference that
+> merely adopted a deleted posting is reported separately from one swept away
+> with its transaction: the first is left as a tombstone, keeping its slot,
+> and only the second is gone. Discard
 > means the run never happened, not that it is reverted — there is no
 > undiscard. It takes a `pre-discard` snapshot (`backup.auto_pre_discard`, see
 > §4.6) before writing, and records one `ImportBatchDiscarded` event carrying

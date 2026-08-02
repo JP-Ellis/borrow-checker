@@ -39,12 +39,21 @@ pub struct Outcome {
     /// batch did not own, whether it belonged to another run or was attached
     /// with no batch at all (via the public `SourceService::attach`).
     pub other_batch_references_removed: usize,
-    /// Of [`Self::removed_postings`], those whose account or amount no longer
-    /// matched the reference describing them — the user had edited them.
+    /// Any other reference left naming a posting this discard deleted, whose
+    /// transaction survived. It becomes a tombstone rather than going away, so
+    /// unlike [`Self::other_batch_references_removed`] it keeps its slot.
+    pub other_batch_references_tombstoned: usize,
+    /// Of [`Self::removed_postings`], those whose account, amount or commodity
+    /// no longer matched the reference describing them — the user had edited
+    /// them.
     pub edited_postings: usize,
-    /// Of [`Self::removed_postings`], those in a transaction that was no
-    /// longer unreconciled.
+    /// Of [`Self::removed_postings`], those in a transaction the user had
+    /// reconciled against a statement.
     pub reconciled_postings: usize,
+    /// Of [`Self::removed_postings`], those in a transaction the user had
+    /// flagged for review. Counted apart from [`Self::reconciled_postings`]:
+    /// losing a flag and losing a statement confirmation are different losses.
+    pub flagged_postings: usize,
 }
 
 /// Discards an import batch.
@@ -68,31 +77,39 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
     let id_str = id.to_string();
     let mut db_tx = pool.begin().await?;
 
-    ensure_discardable(&mut db_tx, id, &id_str).await?;
+    ensure_discardable(&mut db_tx, id).await?;
     let plan = Plan::read(&mut db_tx, &id_str).await?;
-    // Counted while the rows still exist: both compare a posting against the
+    // Counted while the rows still exist: each compares a posting against the
     // reference describing it, and the references are about to be deleted.
-    let (edited_postings, reconciled_postings) = count_edits(&mut db_tx, &id_str).await?;
+    let edits = count_edits(&mut db_tx, &id_str).await?;
 
     // Free the slots first. Deleting the postings first would only make the
-    // ON DELETE SET NULL trigger churn rows that are about to vanish.
+    // ON DELETE SET NULL clause churn rows that are about to vanish.
     sqlx::query("DELETE FROM transaction_sources WHERE import_batch_id = ?")
         .bind(&id_str)
         .execute(&mut *db_tx)
         .await?;
+
+    // Read once this batch's own references are gone, so every row it names
+    // belongs to someone else. Those on a swept transaction disappear with it;
+    // the rest are still here afterwards, as tombstones.
+    let collateral = collateral_references(&mut db_tx, &plan.owned_postings).await?;
+
     delete_postings(&mut db_tx, &plan.owned_postings).await?;
-    let (removed_transactions, other_batch_references_removed) =
-        sweep_empty_transactions(&mut db_tx, &plan.touched).await?;
+    let swept = sweep_empty_transactions(&mut db_tx, &plan.touched).await?;
+    renumber_positions(&mut db_tx, &swept.survivors).await?;
 
     let outcome = Outcome {
         batch_id: id.clone(),
         removed_postings: plan.owned_postings.len(),
-        removed_transactions,
+        removed_transactions: swept.removed_transactions,
         detached_adopted: plan.detached_adopted,
         freed_tombstones: plan.freed_tombstones,
-        other_batch_references_removed,
-        edited_postings,
-        reconciled_postings,
+        other_batch_references_removed: swept.other_batch_references_removed,
+        other_batch_references_tombstoned: count_surviving(&mut db_tx, &collateral).await?,
+        edited_postings: edits.edited,
+        reconciled_postings: edits.reconciled,
+        flagged_postings: edits.flagged,
     };
 
     sqlx::query("UPDATE import_batches SET discarded_at = ? WHERE id = ?")
@@ -111,8 +128,10 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
         detached_adopted = outcome.detached_adopted,
         freed_tombstones = outcome.freed_tombstones,
         other_batch_references_removed = outcome.other_batch_references_removed,
+        other_batch_references_tombstoned = outcome.other_batch_references_tombstoned,
         edited_postings = outcome.edited_postings,
         reconciled_postings = outcome.reconciled_postings,
+        flagged_postings = outcome.flagged_postings,
         "import batch discarded"
     );
     Ok(outcome)
@@ -127,8 +146,9 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
 /// # Arguments
 ///
 /// * `conn` - An open SQLite connection or transaction.
-/// * `id` - The batch being discarded, for the error messages.
-/// * `id_str` - That batch's ID as stored.
+/// * `id` - The batch being discarded, both for the lookup and the error
+///   messages. Taking one value rather than an ID and a pre-rendered string
+///   leaves no way for the row checked and the batch named to disagree.
 ///
 /// # Errors
 ///
@@ -138,11 +158,10 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
 pub(crate) async fn ensure_discardable(
     conn: &mut sqlx::SqliteConnection,
     id: &ImportBatchId,
-    id_str: &str,
 ) -> BcResult<()> {
     let existing: Option<Option<String>> =
         sqlx::query_scalar("SELECT discarded_at FROM import_batches WHERE id = ?")
-            .bind(id_str)
+            .bind(id.to_string())
             .fetch_optional(conn)
             .await?;
     match existing {
@@ -229,12 +248,33 @@ impl Plan {
     }
 }
 
-/// Counts the batch's own postings the user has since edited or reconciled.
+/// Curation the discard is about to destroy, counted per posting.
+struct Edits {
+    /// Postings that no longer agree with the reference describing them.
+    edited: usize,
+    /// Postings in a transaction reconciled against a statement.
+    reconciled: usize,
+    /// Postings in a transaction flagged for review.
+    flagged: usize,
+}
+
+/// Counts the batch's own postings the user has since edited, reconciled or
+/// flagged.
 ///
 /// A posting is "edited" when it no longer agrees with the reference describing
 /// it: the reference records what the document said and never moves, so a
-/// corrected amount or a recategorisation shows up as a disagreement. `IS NOT`
-/// is SQLite's null-safe inequality, which an elided leg's NULL amount needs.
+/// corrected amount or a recategorisation shows up as a disagreement.
+///
+/// A NULL on the reference is not a disagreement. It means the document stated
+/// no amount, and an elided leg is then given the document's residual at import
+/// time — so a naive null-safe comparison reports every such leg as edited by a
+/// user who never touched it. Only a reference that recorded a value can
+/// evidence a change to it; `IS NOT` still catches a value the user has since
+/// cleared.
+///
+/// Reconciled and flagged are counted apart. Both mean the user did something
+/// deliberate to the transaction, but only the first means it was confirmed
+/// against a statement, and the report says so in those words.
 ///
 /// # Arguments
 ///
@@ -243,36 +283,68 @@ impl Plan {
 ///
 /// # Returns
 ///
-/// The edited and reconciled posting counts, in that order.
+/// The [`Edits`] the discard is about to destroy.
 ///
 /// # Errors
 ///
 /// Returns [`BcError::Database`] on query failure.
-async fn count_edits(conn: &mut sqlx::SqliteConnection, id_str: &str) -> BcResult<(usize, usize)> {
+async fn count_edits(conn: &mut sqlx::SqliteConnection, id_str: &str) -> BcResult<Edits> {
     let edited: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM transaction_sources s \
          JOIN postings p ON p.id = s.posting_id \
          WHERE s.import_batch_id = ? AND s.owns_posting = 1 \
            AND (p.account_id <> s.account_id \
-                OR p.amount IS NOT s.amount \
-                OR p.commodity IS NOT s.commodity)",
+                OR (s.amount IS NOT NULL AND p.amount IS NOT s.amount) \
+                OR (s.commodity IS NOT NULL AND p.commodity IS NOT s.commodity))",
     )
     .bind(id_str)
     .fetch_one(&mut *conn)
     .await?;
 
-    let reconciled: i64 = sqlx::query_scalar(
+    let reconciled = count_by_reconciliation(&mut *conn, id_str, "reconciled").await?;
+    let flagged = count_by_reconciliation(conn, id_str, "flagged").await?;
+
+    Ok(Edits {
+        edited: to_usize(edited),
+        reconciled,
+        flagged,
+    })
+}
+
+/// Counts the batch's own postings sitting in a transaction in the given
+/// reconciliation state.
+///
+/// # Arguments
+///
+/// * `conn` - An open SQLite connection or transaction.
+/// * `id_str` - The batch's ID as stored.
+/// * `state` - The stored `reconciliation` value to match.
+///
+/// # Returns
+///
+/// The number of the batch's own postings in that state.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on query failure.
+async fn count_by_reconciliation(
+    conn: &mut sqlx::SqliteConnection,
+    id_str: &str,
+    state: &str,
+) -> BcResult<usize> {
+    let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM transaction_sources s \
          JOIN postings p ON p.id = s.posting_id \
          JOIN transactions t ON t.id = p.transaction_id \
          WHERE s.import_batch_id = ? AND s.owns_posting = 1 \
-           AND t.reconciliation <> 'unreconciled'",
+           AND t.reconciliation = ?",
     )
     .bind(id_str)
+    .bind(state)
     .fetch_one(conn)
     .await?;
 
-    Ok((to_usize(edited), to_usize(reconciled)))
+    Ok(to_usize(count))
 }
 
 /// Deletes the given postings and their tag memberships.
@@ -305,6 +377,88 @@ async fn delete_postings(
     Ok(())
 }
 
+/// Collects the references — none of them this batch's, whose own are already
+/// deleted by the time this runs — still naming a posting the discard is about
+/// to remove.
+///
+/// Read before the postings go, because afterwards `ON DELETE SET NULL` has
+/// blanked the link that identifies them and they are indistinguishable from
+/// tombstones that were already there.
+///
+/// # Arguments
+///
+/// * `conn` - An open SQLite connection or transaction.
+/// * `posting_ids` - The postings about to be deleted.
+///
+/// # Returns
+///
+/// The IDs of those references.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on query failure.
+async fn collateral_references(
+    conn: &mut sqlx::SqliteConnection,
+    posting_ids: &[String],
+) -> BcResult<Vec<String>> {
+    let mut ids = Vec::new();
+    for posting_id in posting_ids {
+        let mut found: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM transaction_sources WHERE posting_id = ?")
+                .bind(posting_id)
+                .fetch_all(&mut *conn)
+                .await?;
+        ids.append(&mut found);
+    }
+    Ok(ids)
+}
+
+/// Counts how many of the given references are still present.
+///
+/// Run after the sweep: one that outlived it sits on a surviving transaction
+/// and is now a tombstone, where one that did not went with its transaction and
+/// is already counted as removed.
+///
+/// # Arguments
+///
+/// * `conn` - An open SQLite connection or transaction.
+/// * `reference_ids` - The references to look for.
+///
+/// # Returns
+///
+/// How many of them still exist.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on query failure.
+async fn count_surviving(
+    conn: &mut sqlx::SqliteConnection,
+    reference_ids: &[String],
+) -> BcResult<usize> {
+    let mut surviving: usize = 0;
+    for reference_id in reference_ids {
+        let present: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM transaction_sources WHERE id = ?")
+                .bind(reference_id)
+                .fetch_one(&mut *conn)
+                .await?;
+        if present > 0 {
+            surviving = surviving.saturating_add(1);
+        }
+    }
+    Ok(surviving)
+}
+
+/// What the sweep did.
+struct Swept {
+    /// Transactions deleted for holding no postings.
+    removed_transactions: usize,
+    /// Other references that went with them.
+    other_batch_references_removed: usize,
+    /// Touched transactions that still stand.
+    survivors: Vec<String>,
+}
+
 /// Deletes every named transaction that now holds no postings.
 ///
 /// # Arguments
@@ -314,8 +468,7 @@ async fn delete_postings(
 ///
 /// # Returns
 ///
-/// The number of transactions deleted, and the number of other references —
-/// this batch's own are already gone by this point — that went with them.
+/// What the sweep removed, and which of the touched transactions survived.
 ///
 /// # Errors
 ///
@@ -323,9 +476,10 @@ async fn delete_postings(
 async fn sweep_empty_transactions(
     conn: &mut sqlx::SqliteConnection,
     transaction_ids: &BTreeSet<String>,
-) -> BcResult<(usize, usize)> {
+) -> BcResult<Swept> {
     let mut removed_transactions: usize = 0;
     let mut other_batch_references_removed: usize = 0;
+    let mut survivors: Vec<String> = Vec::new();
 
     for transaction_id in transaction_ids {
         let remaining: i64 =
@@ -334,6 +488,7 @@ async fn sweep_empty_transactions(
                 .fetch_one(&mut *conn)
                 .await?;
         if remaining > 0 {
+            survivors.push(transaction_id.clone());
             continue;
         }
 
@@ -367,7 +522,48 @@ async fn sweep_empty_transactions(
             other_batch_references_removed.saturating_add(to_usize(collateral));
     }
 
-    Ok((removed_transactions, other_batch_references_removed))
+    Ok(Swept {
+        removed_transactions,
+        other_batch_references_removed,
+        survivors,
+    })
+}
+
+/// Closes the gaps a discard leaves in a surviving transaction's posting
+/// positions.
+///
+/// Postings are numbered contiguously from zero everywhere else: the projection
+/// renumbers on write, and `add_postings_in_tx` appends at `MAX(position) + 1`.
+/// Discard is the first path that removes a posting from a transaction that
+/// stays, so without this a later merge — which places its posting at the
+/// survivor's posting *count* — would collide with an existing position and
+/// leave the transaction's legs in an arbitrary order.
+///
+/// # Arguments
+///
+/// * `conn` - An open SQLite connection or transaction.
+/// * `transaction_ids` - The transactions that survived the sweep.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on update failure.
+async fn renumber_positions(
+    conn: &mut sqlx::SqliteConnection,
+    transaction_ids: &[String],
+) -> BcResult<()> {
+    for transaction_id in transaction_ids {
+        sqlx::query(
+            "UPDATE postings SET position = ( \
+               SELECT COUNT(*) FROM postings AS earlier \
+               WHERE earlier.transaction_id = postings.transaction_id \
+                 AND earlier.position < postings.position \
+             ) WHERE transaction_id = ?",
+        )
+        .bind(transaction_id)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
 }
 
 /// Converts a `COUNT(*)` result to a `usize`, saturating rather than failing.
@@ -407,8 +603,10 @@ fn event_for(outcome: &Outcome) -> BcResult<crate::Event> {
         detached_adopted: to_u64(outcome.detached_adopted)?,
         freed_tombstones: to_u64(outcome.freed_tombstones)?,
         other_batch_references_removed: to_u64(outcome.other_batch_references_removed)?,
+        other_batch_references_tombstoned: to_u64(outcome.other_batch_references_tombstoned)?,
         edited_postings: to_u64(outcome.edited_postings)?,
         reconciled_postings: to_u64(outcome.reconciled_postings)?,
+        flagged_postings: to_u64(outcome.flagged_postings)?,
     })
 }
 
@@ -740,6 +938,262 @@ mod tests {
             "deleting the posting it named tombstones the adopted reference, \
              it does not delete the reference row"
         );
+        assert_eq!(
+            outcome.other_batch_references_tombstoned, 1,
+            "another batch's reference lost its posting; the report has to say so, \
+             since the transaction surviving means nothing else reveals it"
+        );
+        assert_eq!(
+            outcome.other_batch_references_removed, 0,
+            "nothing was swept, so nothing was removed with a transaction"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_swept_transactions_other_batch_reference_is_not_double_counted(pool: SqlitePool) {
+        // The same collateral reference, but on a transaction that empties.
+        // It goes with the transaction, so it belongs to `..._removed` and
+        // must not also appear in `..._tombstoned`.
+        let batches = ImportBatchService::new(pool.clone());
+        let first = batches.open(None, "csv").await.expect("open first");
+        let second = batches.open(None, "csv").await.expect("open second");
+        let acct = account(&pool, "Checking").await;
+        let (tx, posting) = transaction_with_posting(&pool, &acct).await;
+        attach(&pool, &first, &tx, &posting, &acct, true).await;
+        attach_at(&pool, &second, &tx, &posting, &acct, false, 1).await;
+
+        let outcome = batches.discard(&first).await.expect("discard");
+
+        assert_eq!(outcome.removed_transactions, 1, "nothing held it up");
+        assert_eq!(outcome.other_batch_references_removed, 1);
+        assert_eq!(
+            outcome.other_batch_references_tombstoned, 0,
+            "a reference counted as removed must not be counted as tombstoned too"
+        );
+    }
+
+    /// Hands out occurrence slots, so every reference a test attaches to one
+    /// account can share a fingerprint without colliding.
+    struct Slots(u32);
+
+    impl Slots {
+        /// Returns the next unused slot.
+        fn next(&mut self) -> u32 {
+            let slot = self.0;
+            self.0 = self.0.checked_add(1).expect("small test");
+            slot
+        }
+    }
+
+    /// Builds a transaction holding `count` postings on `acct`, each attached
+    /// to `batch` as a posting that batch created.
+    async fn owned_transaction(
+        pool: &SqlitePool,
+        batch: &ImportBatchId,
+        acct: &AccountId,
+        count: usize,
+        slots: &mut Slots,
+    ) -> (TransactionId, Vec<PostingId>) {
+        let (tx, first) = transaction_with_posting(pool, acct).await;
+        let mut postings = vec![first];
+        for _ in 1..count {
+            postings.push(add_posting(pool, &tx, acct).await);
+        }
+        for posting in &postings {
+            attach_at(pool, batch, &tx, posting, acct, true, slots.next()).await;
+        }
+        (tx, postings)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_discard_event_carries_every_count(pool: SqlitePool) {
+        // Asserts the payload, not just that an event exists. `event_for` maps
+        // nine same-typed counts by hand, and a transposed pair would report
+        // the wrong numbers forever in the only durable record of an
+        // irreversible operation. Every count is made pairwise distinct, so no
+        // swap can hide behind two fields that happen to agree.
+        let batches = ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+        let other = batches.open(None, "ofx").await.expect("open other");
+        let acct = account(&pool, "Checking").await;
+        let elsewhere = account(&pool, "Savings").await;
+        let mut slots = Slots(0);
+
+        // Two owned postings, reconciled: reconciled_postings = 2.
+        let (reconciled_tx, _) = owned_transaction(&pool, &batch, &acct, 2, &mut slots).await;
+        sqlx::query("UPDATE transactions SET reconciliation = 'reconciled' WHERE id = ?")
+            .bind(reconciled_tx.to_string())
+            .execute(&pool)
+            .await
+            .expect("reconcile");
+
+        // Four owned postings, flagged: flagged_postings = 4.
+        let (flagged_tx, _) = owned_transaction(&pool, &batch, &acct, 4, &mut slots).await;
+        sqlx::query("UPDATE transactions SET reconciliation = 'flagged' WHERE id = ?")
+            .bind(flagged_tx.to_string())
+            .execute(&pool)
+            .await
+            .expect("flag");
+
+        // One owned posting carrying five of the other batch's adoptions. The
+        // transaction empties, so all five go with it:
+        // other_batch_references_removed = 5.
+        let (swept_tx, swept) = owned_transaction(&pool, &batch, &acct, 1, &mut slots).await;
+        let swept_posting = swept.first().expect("one posting");
+        for _ in 0..5_u32 {
+            attach_at(
+                &pool,
+                &other,
+                &swept_tx,
+                swept_posting,
+                &acct,
+                false,
+                slots.next(),
+            )
+            .await;
+        }
+
+        // Seven owned postings, each adopted by the other batch, on a
+        // transaction an eighth unreferenced posting keeps alive:
+        // other_batch_references_tombstoned = 7.
+        let (surviving_tx, surviving) =
+            owned_transaction(&pool, &batch, &acct, 7, &mut slots).await;
+        for posting in &surviving {
+            attach_at(
+                &pool,
+                &other,
+                &surviving_tx,
+                posting,
+                &acct,
+                false,
+                slots.next(),
+            )
+            .await;
+        }
+        add_posting(&pool, &surviving_tx, &acct).await;
+
+        // One reference on a posting the batch did not create: detached_adopted = 1.
+        let (adopted_tx, adopted_posting) = transaction_with_posting(&pool, &acct).await;
+        attach_at(
+            &pool,
+            &batch,
+            &adopted_tx,
+            &adopted_posting,
+            &acct,
+            false,
+            slots.next(),
+        )
+        .await;
+
+        // Six of the batch's own references, already orphaned by the user
+        // deleting those legs: freed_tombstones = 6. The postings stay, so the
+        // transaction survives and contributes nothing else.
+        let (tombstoned_tx, tombstoned) =
+            owned_transaction(&pool, &batch, &acct, 6, &mut slots).await;
+        sqlx::query("UPDATE transaction_sources SET posting_id = NULL WHERE transaction_id = ?")
+            .bind(tombstoned_tx.to_string())
+            .execute(&pool)
+            .await
+            .expect("tombstone");
+        assert_eq!(tombstoned.len(), 6, "six legs were orphaned");
+
+        // The eight postings the user recategorised — the swept one and the
+        // seven surviving-collateral ones: edited_postings = 8.
+        for posting in core::iter::once(swept_posting).chain(surviving.iter()) {
+            sqlx::query("UPDATE postings SET account_id = ? WHERE id = ?")
+                .bind(elsewhere.to_string())
+                .bind(posting.to_string())
+                .execute(&pool)
+                .await
+                .expect("recategorise");
+        }
+
+        let outcome = batches.discard(&batch).await.expect("discard");
+
+        let payload: String =
+            sqlx::query_scalar("SELECT payload FROM events WHERE kind = 'ImportBatchDiscarded'")
+                .fetch_one(&pool)
+                .await
+                .expect("query event payload");
+        let event: crate::Event = serde_json::from_str(&payload).expect("decode payload");
+
+        let crate::Event::ImportBatchDiscarded {
+            batch_id,
+            removed_postings,
+            removed_transactions,
+            detached_adopted,
+            freed_tombstones,
+            other_batch_references_removed,
+            other_batch_references_tombstoned,
+            edited_postings,
+            reconciled_postings,
+            flagged_postings,
+        } = event
+        else {
+            panic!("the discard appended an event of the wrong kind");
+        };
+
+        assert_eq!(batch_id, batch);
+        assert_eq!(detached_adopted, 1, "one adopted reference");
+        assert_eq!(reconciled_postings, 2, "two postings in the reconciled run");
+        assert_eq!(
+            removed_transactions, 3,
+            "the reconciled, flagged and swept transactions all emptied"
+        );
+        assert_eq!(flagged_postings, 4, "four postings in the flagged run");
+        assert_eq!(
+            other_batch_references_removed, 5,
+            "five adoptions rode the swept transaction down"
+        );
+        assert_eq!(freed_tombstones, 6, "six references were already orphaned");
+        assert_eq!(
+            other_batch_references_tombstoned, 7,
+            "seven adoptions outlived their postings on a surviving transaction"
+        );
+        assert_eq!(edited_postings, 8, "eight postings were recategorised");
+        assert_eq!(
+            removed_postings, 14,
+            "2 reconciled + 4 flagged + 1 swept + 7 surviving-collateral"
+        );
+
+        // The same nine values via the outcome, so a mapping that is
+        // self-consistently wrong in both surfaces still cannot pass.
+        assert_eq!(
+            usize::try_from(removed_postings).expect("fits"),
+            outcome.removed_postings
+        );
+        assert_eq!(
+            usize::try_from(removed_transactions).expect("fits"),
+            outcome.removed_transactions
+        );
+        assert_eq!(
+            usize::try_from(detached_adopted).expect("fits"),
+            outcome.detached_adopted
+        );
+        assert_eq!(
+            usize::try_from(freed_tombstones).expect("fits"),
+            outcome.freed_tombstones
+        );
+        assert_eq!(
+            usize::try_from(other_batch_references_removed).expect("fits"),
+            outcome.other_batch_references_removed
+        );
+        assert_eq!(
+            usize::try_from(other_batch_references_tombstoned).expect("fits"),
+            outcome.other_batch_references_tombstoned
+        );
+        assert_eq!(
+            usize::try_from(edited_postings).expect("fits"),
+            outcome.edited_postings
+        );
+        assert_eq!(
+            usize::try_from(reconciled_postings).expect("fits"),
+            outcome.reconciled_postings
+        );
+        assert_eq!(
+            usize::try_from(flagged_postings).expect("fits"),
+            outcome.flagged_postings
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -789,6 +1243,161 @@ mod tests {
         assert_eq!(
             outcome.edited_postings, 0,
             "reconciling changes no value the reference records"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_posting_whose_amount_changed_is_counted_as_edited(pool: SqlitePool) {
+        // The edit predicate is a three-way disjunction and only its
+        // account_id arm was exercised. Correcting an amount is the more
+        // common edit to an imported row than recategorising it.
+        let batches = ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+        let acct = account(&pool, "Checking").await;
+        let (tx, posting) = transaction_with_posting(&pool, &acct).await;
+        attach(&pool, &batch, &tx, &posting, &acct, true).await;
+        sqlx::query("UPDATE postings SET amount = '55' WHERE id = ?")
+            .bind(posting.to_string())
+            .execute(&pool)
+            .await
+            .expect("correct the amount");
+
+        let outcome = batches.discard(&batch).await.expect("discard");
+
+        assert_eq!(
+            outcome.edited_postings, 1,
+            "a corrected amount is an edit the user is about to lose"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_materialised_residual_is_not_mistaken_for_an_edit(pool: SqlitePool) {
+        // An elided leg records no amount on its reference and is given the
+        // document's residual on its posting, so the two legitimately differ
+        // from the moment of import. A null-safe comparison alone reports
+        // every such leg as edited by a user who never touched it.
+        let batches = ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+        let acct = account(&pool, "Checking").await;
+        let (tx, posting) = transaction_with_posting(&pool, &acct).await;
+        let reference = attach(&pool, &batch, &tx, &posting, &acct, true).await;
+        // As `import_exec` writes an elided leg: the posting carries the
+        // residual, the reference fingerprints the empty amount.
+        sqlx::query("UPDATE transaction_sources SET amount = NULL, commodity = NULL WHERE id = ?")
+            .bind(reference.to_string())
+            .execute(&pool)
+            .await
+            .expect("elide the reference amount");
+
+        let outcome = batches.discard(&batch).await.expect("discard");
+
+        assert_eq!(outcome.removed_postings, 1);
+        assert_eq!(
+            outcome.edited_postings, 0,
+            "the import itself wrote this difference; the user changed nothing"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_tagged_posting_and_its_tagged_transaction_are_removed(pool: SqlitePool) {
+        // posting_tags, transaction_tags and transaction_dates do not cascade
+        // from the rows discard deletes, so each needs its own DELETE. Without
+        // them a discard of anything the user had tagged aborts on a foreign
+        // key violation instead of running.
+        let batches = ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+        let acct = account(&pool, "Checking").await;
+        let (tx, posting) = transaction_with_posting(&pool, &acct).await;
+        attach(&pool, &batch, &tx, &posting, &acct, true).await;
+
+        let tag = crate::TagService::new(pool.clone())
+            .create_path(&bc_models::TagPath::new(["groceries"]).expect("valid tag path"))
+            .await
+            .expect("create tag");
+        sqlx::query("INSERT INTO posting_tags (posting_id, tag_id) VALUES (?, ?)")
+            .bind(posting.to_string())
+            .bind(tag.to_string())
+            .execute(&pool)
+            .await
+            .expect("tag the posting");
+        sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
+            .bind(tx.to_string())
+            .bind(tag.to_string())
+            .execute(&pool)
+            .await
+            .expect("tag the transaction");
+        sqlx::query("INSERT INTO transaction_dates (transaction_id, label, date) VALUES (?, ?, ?)")
+            .bind(tx.to_string())
+            .bind("settled")
+            .bind("2026-01-16")
+            .execute(&pool)
+            .await
+            .expect("label a date");
+
+        let outcome = batches
+            .discard(&batch)
+            .await
+            .expect("a tagged batch discards");
+
+        assert_eq!(outcome.removed_postings, 1);
+        assert_eq!(outcome.removed_transactions, 1);
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM posting_tags").await, 0);
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM transaction_tags").await,
+            0
+        );
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM transaction_dates").await,
+            0
+        );
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM tags").await,
+            1,
+            "the tag itself is not the batch's to delete"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_surviving_transactions_positions_are_left_contiguous(pool: SqlitePool) {
+        // Every other writer keeps positions contiguous from zero, and
+        // `TransferService::merge` places its posting at the survivor's
+        // posting *count* — so a gap left here would collide with an existing
+        // position and scramble the leg order on the next merge.
+        let batches = ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+        let acct = account(&pool, "Checking").await;
+        let (tx, first) = transaction_with_posting(&pool, &acct).await;
+        let second = add_posting(&pool, &tx, &acct).await;
+        let third = add_posting(&pool, &tx, &acct).await;
+        // Discard the middle leg only, which is the one that leaves a gap.
+        attach(&pool, &batch, &tx, &second, &acct, true).await;
+
+        let outcome = batches.discard(&batch).await.expect("discard");
+
+        assert_eq!(outcome.removed_transactions, 0, "two legs still stand");
+        let positions: Vec<i64> = sqlx::query_scalar(
+            "SELECT position FROM postings WHERE transaction_id = ? ORDER BY position",
+        )
+        .bind(tx.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("read positions");
+        assert_eq!(
+            positions,
+            vec![0, 1],
+            "the gap the removed leg left must be closed, not preserved"
+        );
+        let surviving: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM postings WHERE transaction_id = ? ORDER BY position",
+        )
+        .bind(tx.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("read survivors");
+        assert_eq!(
+            surviving,
+            vec![first.to_string(), third.to_string()],
+            "renumbering must preserve the surviving legs' relative order"
         );
     }
 

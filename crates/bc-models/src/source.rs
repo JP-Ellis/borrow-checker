@@ -41,6 +41,7 @@ crate::define_id!(SourceRefId, "source_ref");
 ///     .amount(Some(Amount::new(Decimal::from(100), CommodityCode::new("AUD"))))
 ///     .occurrence(0)
 ///     .import_batch_id(None)
+///     .owns_posting(false)
 ///     .created_at(Timestamp::now())
 ///     .build();
 ///
@@ -99,7 +100,7 @@ pub struct SourceRef {
 
     /// The import run that wrote this reference, if it came from an import.
     ///
-    /// Provenance only: no operation deletes through it yet (see #343).
+    /// Discarding that batch deletes every reference carrying its ID.
     #[builder(required, default = None)]
     import_batch_id: Option<ImportBatchId>,
 
@@ -112,7 +113,10 @@ pub struct SourceRef {
     /// deletes the postings that batch created and leaves the rest standing;
     /// which is which cannot be recovered after the fact, so it is recorded
     /// here at attach time.
-    #[builder(default = false)]
+    ///
+    /// Deliberately has no default. Getting it wrong either destroys a posting
+    /// the user wrote or strands one the import created, and the compiler
+    /// cannot see either, so every caller is made to say which it means.
     owns_posting: bool,
 
     /// Timestamp recorded when this reference was first persisted.
@@ -295,6 +299,7 @@ mod tests {
             .reference(Some("REF1".to_owned()))
             .occurrence(0)
             .import_batch_id(None)
+            .owns_posting(false)
             .created_at(Timestamp::now())
             .build();
 
@@ -374,6 +379,7 @@ mod tests {
             .reference(None)
             .occurrence(0)
             .import_batch_id(None)
+            .owns_posting(false)
             .created_at(Timestamp::now())
             .build();
 
@@ -399,6 +405,7 @@ mod tests {
             .reference(None)
             .occurrence(0)
             .import_batch_id(Some(batch.clone()))
+            .owns_posting(true)
             .created_at(Timestamp::now())
             .build();
 

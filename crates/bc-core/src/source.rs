@@ -582,6 +582,7 @@ mod tests {
             )))
             .occurrence(occurrence)
             .import_batch_id(None)
+            .owns_posting(false)
             .created_at(Timestamp::now())
             .build()
     }
@@ -759,6 +760,7 @@ mod tests {
             .reference(None)
             .occurrence(0)
             .import_batch_id(None)
+            .owns_posting(false)
             .created_at(Timestamp::now())
             .build();
         svc.attach(&source).await.expect("attach");
@@ -814,6 +816,7 @@ mod tests {
                 .reference(None)
                 .occurrence(occurrence)
                 .import_batch_id(None)
+                .owns_posting(false)
                 .created_at(Timestamp::now())
                 .build()
         };
@@ -873,6 +876,7 @@ mod tests {
                 .reference(None)
                 .occurrence(0)
                 .import_batch_id(None)
+                .owns_posting(false)
                 .created_at(Timestamp::now())
                 .build()
         };

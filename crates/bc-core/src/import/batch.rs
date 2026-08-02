@@ -136,7 +136,8 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if a count exceeds `i64::MAX`.
-    /// Returns [`BcError::NotFound`] if no batch with that ID exists.
+    /// Returns [`BcError::NotFound`] if no batch with that ID exists, or if it
+    /// was discarded while the run was still going.
     /// Returns [`BcError::Database`] on database update failure.
     #[inline]
     pub async fn close(&self, id: &ImportBatchId, counts: Counts) -> BcResult<()> {
@@ -145,11 +146,16 @@ impl Service {
         };
         let finished_at = Timestamp::now();
 
+        // `discarded_at IS NULL` keeps a run that was discarded mid-flight from
+        // recording an outcome over the top of the discard. The two would
+        // otherwise both succeed, leaving a batch that claims to be discarded
+        // and finished while the rows written after the discard still stand —
+        // and no second discard can reach them.
         let result = sqlx::query(
             "UPDATE import_batches \
              SET finished_at = ?, new_transactions = ?, attached_postings = ?, \
                  unresolved_path_postings = ?, other_skipped_postings = ? \
-             WHERE id = ?",
+             WHERE id = ? AND discarded_at IS NULL",
         )
         .bind(finished_at.to_string())
         .bind(to_i64(counts.new_transactions)?)
@@ -250,7 +256,7 @@ impl Service {
     #[inline]
     pub async fn ensure_discardable(&self, id: &ImportBatchId) -> BcResult<()> {
         let mut conn = self.pool.acquire().await?;
-        discard::ensure_discardable(&mut conn, id, &id.to_string()).await
+        discard::ensure_discardable(&mut conn, id).await
     }
 
     /// Discards this batch: undoes the import run that produced it.
@@ -308,8 +314,8 @@ const COLUMNS: &str = "id, profile_id, importer, started_at, finished_at, discar
 /// # Errors
 ///
 /// Returns [`BcError::BadData`] if any ID or timestamp string is malformed, if
-/// a stored count is negative, or if the outcome columns are partly populated
-/// (which the table's `CHECK` should already prevent).
+/// a stored count does not fit a `usize`, or if the outcome columns are partly
+/// populated (which the table's `CHECK` should already prevent).
 fn parse_row(row: Row) -> BcResult<ImportBatch> {
     let (
         raw_id,
@@ -343,8 +349,11 @@ fn parse_row(row: Row) -> BcResult<ImportBatch> {
     let finished_at = raw_finished_at.map(parse_ts).transpose()?;
     let discarded_at = raw_discarded_at.map(parse_ts).transpose()?;
 
+    // Negative on any target; also too large on a 32-bit one, hence the
+    // range wording rather than a claim about the sign.
     let to_usize = |value: i64| {
-        usize::try_from(value).map_err(|_err| BcError::BadData("import count is negative".into()))
+        usize::try_from(value)
+            .map_err(|_err| BcError::BadData(format!("import count {value} out of range")))
     };
     let counts = match (
         new_transactions,
@@ -450,6 +459,69 @@ mod tests {
             .close(&bc_models::ImportBatchId::new(), Counts::default())
             .await;
         assert!(matches!(result, Err(crate::BcError::NotFound(_))));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_half_recorded_outcome_is_rejected_by_the_database(pool: SqlitePool) {
+        // The claim that a partly-recorded outcome is unrepresentable rests
+        // entirely on the table's CHECK. Nothing else fails if a later schema
+        // edit drops one of its four conjuncts, which would let an aborted run
+        // resurface as one that imported some of what it did.
+        let svc = Service::new(pool.clone());
+        let id = svc.open(None, "csv").await.expect("open batch");
+
+        for column in [
+            "new_transactions",
+            "attached_postings",
+            "unresolved_path_postings",
+            "other_skipped_postings",
+        ] {
+            let result = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "UPDATE import_batches SET {column} = 1 WHERE id = ?"
+            )))
+            .bind(id.to_string())
+            .execute(&pool)
+            .await;
+            assert!(
+                result.is_err(),
+                "{column} must not be recordable while finished_at is NULL"
+            );
+        }
+
+        let orphan_finish = sqlx::query("UPDATE import_batches SET finished_at = ? WHERE id = ?")
+            .bind(Timestamp::now().to_string())
+            .bind(id.to_string())
+            .execute(&pool)
+            .await;
+        assert!(
+            orphan_finish.is_err(),
+            "a run cannot finish without recording its counts either"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn closing_a_discarded_batch_is_refused(pool: SqlitePool) {
+        // A run discarded while it was still going must not then record an
+        // outcome over the top. Both writes succeeding would leave a batch
+        // that reads as discarded *and* finished, while the rows it wrote
+        // after the discard stand — and no second discard can reach them,
+        // because the batch already counts as discarded.
+        let svc = Service::new(pool.clone());
+        let id = svc.open(None, "csv").await.expect("open batch");
+        svc.discard(&id).await.expect("discard");
+
+        let result = svc.close(&id, Counts::default()).await;
+
+        assert!(
+            matches!(result, Err(crate::BcError::NotFound(_))),
+            "closing a discarded run must fail rather than overwrite the discard"
+        );
+        let batch = svc.find_by_id(&id).await.expect("find batch");
+        assert!(batch.discarded_at.is_some(), "the discard still stands");
+        assert_eq!(
+            batch.counts, None,
+            "no outcome was recorded over the discard"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]

@@ -76,8 +76,9 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
 
     // Snapshot before writing: a misconfigured profile (wrong date format, an
     // inverted sign convention) produces plausible-looking wrong data whose
-    // source references then suppress a corrected re-import. Restoring is the
-    // recovery path (see #343).
+    // source references then suppress a corrected re-import. Restoring is one
+    // recovery path; `import discard` is the other, and unlike a restore it
+    // keeps everything else that has happened since.
     if ctx.auto_pre_import {
         let record = ctx
             .backup
@@ -187,7 +188,7 @@ async fn execute_discard(args: DiscardArgs, ctx: &AppContext) -> CliResult<()> {
     let outcome = ctx.batches.discard(&batch_id).await?;
 
     if ctx.json {
-        return crate::output::print_json(&discard_to_json(&outcome));
+        return crate::output::print_json(&discard_to_json(&outcome, &record));
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
@@ -199,9 +200,10 @@ async fn execute_discard(args: DiscardArgs, ctx: &AppContext) -> CliResult<()> {
 
 /// Renders the human-readable discard report.
 ///
-/// Every line after the first is a warning about work the discard touched that
-/// the import did not create, so each is printed only when it has something to
-/// say. None of them stops the discard.
+/// The header and the totals line always print. Every line after those is a
+/// warning — about the user's own work the discard destroyed, or about what it
+/// touched beyond the batch — and prints only when its own count is non-zero.
+/// None of them stops the discard.
 ///
 /// # Arguments
 ///
@@ -236,6 +238,12 @@ fn render_discard(outcome: &bc_core::DiscardOutcome, batch: &bc_core::ImportBatc
             outcome.reconciled_postings,
         ));
     }
+    if outcome.flagged_postings > 0 {
+        lines.push(format!(
+            "  {} of them sat in flagged transactions",
+            outcome.flagged_postings,
+        ));
+    }
     if outcome.detached_adopted > 0 {
         lines.push(format!(
             "  {} kept — their provenance was adopted, not imported",
@@ -264,6 +272,17 @@ fn render_discard(outcome: &bc_core::DiscardOutcome, batch: &bc_core::ImportBatc
             },
         ));
     }
+    if outcome.other_batch_references_tombstoned > 0 {
+        lines.push(format!(
+            "  {} from another batch lost {} posting",
+            plural(outcome.other_batch_references_tombstoned, "reference"),
+            if outcome.other_batch_references_tombstoned == 1 {
+                "its"
+            } else {
+                "their"
+            },
+        ));
+    }
 
     lines.push(String::new());
     lines.join("\n")
@@ -271,26 +290,35 @@ fn render_discard(outcome: &bc_core::DiscardOutcome, batch: &bc_core::ImportBatc
 
 /// Renders the machine-readable discard report.
 ///
-/// Built from the same outcome as [`render_discard`], so the two surfaces
-/// cannot drift apart.
+/// Built from the same outcome and record as [`render_discard`], so the two
+/// surfaces cannot drift apart — including the importer and start time, which
+/// name the run a script has just destroyed without a second `import list`.
 ///
 /// # Arguments
 ///
 /// * `outcome` - What the discard removed.
+/// * `batch` - The batch record, for the identifying fields.
 ///
 /// # Returns
 ///
 /// The payload `--json` prints.
-fn discard_to_json(outcome: &bc_core::DiscardOutcome) -> serde_json::Value {
+fn discard_to_json(
+    outcome: &bc_core::DiscardOutcome,
+    batch: &bc_core::ImportBatch,
+) -> serde_json::Value {
     serde_json::json!({
         "batch": outcome.batch_id.to_string(),
+        "importer": batch.importer,
+        "started_at": batch.started_at.to_string(),
         "removed_postings": outcome.removed_postings,
         "removed_transactions": outcome.removed_transactions,
         "detached_adopted": outcome.detached_adopted,
         "freed_tombstones": outcome.freed_tombstones,
         "other_batch_references_removed": outcome.other_batch_references_removed,
+        "other_batch_references_tombstoned": outcome.other_batch_references_tombstoned,
         "edited_postings": outcome.edited_postings,
         "reconciled_postings": outcome.reconciled_postings,
+        "flagged_postings": outcome.flagged_postings,
     })
 }
 
@@ -850,12 +878,33 @@ mod tests {
         let listed = batches.list().await.expect("list");
         let rendered = super::render_list(&listed);
 
-        assert!(rendered.contains("PROFILE"), "the profile column is named");
+        let header = rendered.lines().next().expect("a header row");
+        for column in ["BATCH", "IMPORTER", "PROFILE", "STARTED", "OUTCOME"] {
+            assert!(header.contains(column), "the {column} column is named");
+        }
         assert!(rendered.contains("incomplete"), "an open run says so");
         assert!(rendered.contains("discarded"), "a discarded run says so");
+
+        // Scoped to the csv row rather than searched for across the whole
+        // table: the batch IDs and timestamps are random per run, so a bare
+        // `contains("12")` passes on a stray digit pair and stops discriminating.
+        let done_line = rendered
+            .lines()
+            .find(|line| line.contains("csv"))
+            .expect("the completed run has a row");
         assert!(
-            rendered.contains("12"),
-            "a completed run reports what it did"
+            done_line.contains("12 new, 3 attached"),
+            "a completed run reports what it did: {done_line}"
+        );
+        let done_started_at = listed
+            .iter()
+            .find(|batch| batch.id == done)
+            .expect("the completed run is listed")
+            .started_at
+            .to_string();
+        assert!(
+            done_line.contains(&done_started_at),
+            "each row carries its run's start time: {done_line}"
         );
 
         let nothing_to_do_line = rendered
@@ -993,10 +1042,14 @@ mod tests {
             .expect("create account")
     }
 
-    /// Inserts an unreconciled transaction whose postings each carry 50 AUD on
-    /// `account_id`, one posting per element of `postings`. `amount` (in AUD)
-    /// distinguishes this transaction's fingerprint from a sibling scenario's,
-    /// since the fingerprint does not otherwise vary by transaction.
+    /// Inserts an unreconciled transaction on `account_id` holding
+    /// `posting_count` postings, each carrying `amount` AUD.
+    ///
+    /// Every posting shares the one amount because a reference has to record
+    /// what its posting holds. The amount varies *between* transactions instead:
+    /// it is part of the fingerprint, which does not otherwise differ from one
+    /// scenario to the next, so two scenarios sharing it would contend for the
+    /// same dedup slot.
     async fn transaction_with_postings(
         pool: &SqlitePool,
         account_id: &AccountId,
@@ -1119,11 +1172,22 @@ mod tests {
     /// Marks a transaction reconciled, the way confirming it against a
     /// statement does.
     async fn reconcile(pool: &SqlitePool, transaction_id: &TransactionId) {
-        sqlx::query("UPDATE transactions SET reconciliation = 'reconciled' WHERE id = ?")
+        set_reconciliation(pool, transaction_id, "reconciled").await;
+    }
+
+    /// Marks a transaction flagged, the way sending it back for review does.
+    async fn flag(pool: &SqlitePool, transaction_id: &TransactionId) {
+        set_reconciliation(pool, transaction_id, "flagged").await;
+    }
+
+    /// Puts a transaction into the given stored reconciliation state.
+    async fn set_reconciliation(pool: &SqlitePool, transaction_id: &TransactionId, state: &str) {
+        sqlx::query("UPDATE transactions SET reconciliation = ? WHERE id = ?")
+            .bind(state)
             .bind(transaction_id.to_string())
             .execute(pool)
             .await
-            .expect("reconcile");
+            .expect("set reconciliation");
     }
 
     /// Plain: `count` owned postings on one transaction, untouched — a
@@ -1192,11 +1256,65 @@ mod tests {
         }
     }
 
-    /// Tombstoned: five references the batch owns, already orphaned before
+    /// Flagged: four owned postings on one transaction, flagged for review
+    /// before discard — contributes `flagged_postings` alongside
+    /// `removed_postings`/`removed_transactions`, and nothing to
+    /// `reconciled_postings`.
+    async fn flagged_scenario(pool: &SqlitePool, batch: &ImportBatchId, acct: &AccountId) {
+        let (tx, postings) = transaction_with_postings(pool, acct, 4, 66).await;
+        for (index, posting_id) in postings.iter().enumerate() {
+            let spec = AttachSpec {
+                owns_posting: true,
+                occurrence: u32::try_from(index).expect("small index"),
+                amount: 66,
+            };
+            attach_at(pool, batch, &tx, posting_id, acct, &spec).await;
+        }
+        flag(pool, &tx).await;
+    }
+
+    /// Surviving collateral: one transaction holding eight postings the batch
+    /// owns, each also carrying a reference from `other_batch` that merely
+    /// adopted it, plus a ninth posting nothing references.
+    ///
+    /// The ninth keeps the transaction alive through the sweep, so the other
+    /// batch's eight references are left naming deleted postings rather than
+    /// going away with their transaction — contributing
+    /// `other_batch_references_tombstoned` (not `..._removed`) alongside
+    /// `removed_postings`, and nothing to `removed_transactions`.
+    async fn surviving_collateral_scenario(
+        pool: &SqlitePool,
+        batch: &ImportBatchId,
+        other_batch: &ImportBatchId,
+        acct: &AccountId,
+    ) {
+        let (tx, postings) = transaction_with_postings(pool, acct, 9, 67).await;
+        let (_survivor, owned) = postings.split_first().expect("at least one posting");
+        for (index, posting_id) in owned.iter().enumerate() {
+            let slot = u32::try_from(index).expect("small index");
+            let mine = AttachSpec {
+                owns_posting: true,
+                occurrence: slot.checked_mul(2).expect("small index"),
+                amount: 67,
+            };
+            attach_at(pool, batch, &tx, posting_id, acct, &mine).await;
+            let theirs = AttachSpec {
+                owns_posting: false,
+                occurrence: slot
+                    .checked_mul(2)
+                    .and_then(|even| even.checked_add(1))
+                    .expect("small index"),
+                amount: 67,
+            };
+            attach_at(pool, other_batch, &tx, posting_id, acct, &theirs).await;
+        }
+    }
+
+    /// Tombstoned: nine references the batch owns, already orphaned before
     /// discard — the posting and its transaction are otherwise untouched, so
     /// this contributes only `freed_tombstones`.
     async fn tombstoned_scenario(pool: &SqlitePool, batch: &ImportBatchId, acct: &AccountId) {
-        for amount in [56_i64, 57, 58, 59, 60] {
+        for amount in [56_i64, 57, 58, 59, 60, 62, 63, 64, 65] {
             let (tx, postings) = transaction_with_postings(pool, acct, 1, amount).await;
             let posting = postings.first().expect("one posting");
             let spec = AttachSpec {
@@ -1247,19 +1365,23 @@ mod tests {
     }
 
     /// Builds a [`bc_core::DiscardOutcome`] (via a real discard) with every
-    /// optional count non-zero and pairwise distinct — 1 through 7, no two
-    /// alike — so a transposed pair in the report would be visible rather
-    /// than coincidentally matching.
+    /// optional count non-zero and pairwise distinct, so a transposed pair in
+    /// the report would be visible rather than coincidentally matching.
     ///
-    /// The seven counts, by construction:
+    /// The nine counts, by construction:
     /// - `edited_postings` = 1 (one owned posting, recategorised before discard)
     /// - `reconciled_postings` = 2 (two owned postings in one reconciled transaction)
     /// - `detached_adopted` = 3 (three adopted-only references)
-    /// - `removed_transactions` = 4 (one plain, one edited, one reconciled, one collateral)
-    /// - `freed_tombstones` = 5 (five references tombstoned before discard)
-    /// - `removed_postings` = 6 (2 plain + 1 edited + 2 reconciled + 1 collateral)
+    /// - `flagged_postings` = 4 (four owned postings in one flagged transaction)
+    /// - `removed_transactions` = 5 (plain, edited, reconciled, flagged, collateral)
     /// - `other_batch_references_removed` = 7 (seven orphaned references from
     ///   another batch, swept when the collateral transaction empties)
+    /// - `other_batch_references_tombstoned` = 8 (eight adopting references
+    ///   from another batch, left naming deleted postings on a transaction
+    ///   that survived)
+    /// - `freed_tombstones` = 9 (nine references tombstoned before discard)
+    /// - `removed_postings` = 18 (2 plain + 1 edited + 2 reconciled + 4 flagged
+    ///   + 1 collateral + 8 surviving-collateral)
     async fn discard_everything_at_once(
         pool: &SqlitePool,
     ) -> (bc_core::DiscardOutcome, bc_core::ImportBatch) {
@@ -1272,9 +1394,11 @@ mod tests {
         plain_scenario(pool, &batch, &acct).await;
         edited_scenario(pool, &batch, &acct, &elsewhere).await;
         reconciled_scenario(pool, &batch, &acct).await;
+        flagged_scenario(pool, &batch, &acct).await;
         adopted_scenario(pool, &batch, &acct).await;
         tombstoned_scenario(pool, &batch, &acct).await;
         collateral_scenario(pool, &batch, &other_batch, &acct).await;
+        surviving_collateral_scenario(pool, &batch, &other_batch, &acct).await;
 
         let record = batches.find_by_id(&batch).await.expect("find");
         let outcome = batches.discard(&batch).await.expect("discard");
@@ -1285,13 +1409,15 @@ mod tests {
     async fn every_optional_discard_line_fires_with_a_distinct_count(pool: SqlitePool) {
         let (outcome, record) = discard_everything_at_once(&pool).await;
 
-        pretty_assertions::assert_eq!(outcome.removed_postings, 6);
-        pretty_assertions::assert_eq!(outcome.removed_transactions, 4);
+        pretty_assertions::assert_eq!(outcome.removed_postings, 18);
+        pretty_assertions::assert_eq!(outcome.removed_transactions, 5);
         pretty_assertions::assert_eq!(outcome.edited_postings, 1);
         pretty_assertions::assert_eq!(outcome.reconciled_postings, 2);
+        pretty_assertions::assert_eq!(outcome.flagged_postings, 4);
         pretty_assertions::assert_eq!(outcome.detached_adopted, 3);
-        pretty_assertions::assert_eq!(outcome.freed_tombstones, 5);
+        pretty_assertions::assert_eq!(outcome.freed_tombstones, 9);
         pretty_assertions::assert_eq!(outcome.other_batch_references_removed, 7);
+        pretty_assertions::assert_eq!(outcome.other_batch_references_tombstoned, 8);
 
         // The header names the batch ID and start time, both fresh per test
         // run; redact them to fixed placeholders so the snapshot is stable.
@@ -1300,18 +1426,22 @@ mod tests {
             .replace(&record.started_at.to_string(), "STARTED_AT");
         insta::assert_snapshot!(stabilised);
 
-        let payload = super::discard_to_json(&outcome);
+        let payload = super::discard_to_json(&outcome, &record);
         pretty_assertions::assert_eq!(
             payload,
             serde_json::json!({
                 "batch": outcome.batch_id.to_string(),
-                "removed_postings": 6_usize,
-                "removed_transactions": 4_usize,
+                "importer": "csv",
+                "started_at": record.started_at.to_string(),
+                "removed_postings": 18_usize,
+                "removed_transactions": 5_usize,
                 "detached_adopted": 3_usize,
-                "freed_tombstones": 5_usize,
+                "freed_tombstones": 9_usize,
                 "other_batch_references_removed": 7_usize,
+                "other_batch_references_tombstoned": 8_usize,
                 "edited_postings": 1_usize,
                 "reconciled_postings": 2_usize,
+                "flagged_postings": 4_usize,
             }),
             "the JSON surface must derive from the same outcome as the human report, \
              not a separately maintained count"
@@ -1352,12 +1482,11 @@ mod tests {
 
     #[sqlx::test(migrations = "../bc-core/migrations")]
     async fn a_single_collateral_reference_reads_grammatically(pool: SqlitePool) {
-        // Fix 3 exists because a count of 1 rendered "1 reference ... removed
-        // with their transactions". Drive a real discard with exactly one
-        // other-batch reference riding on the swept transaction — an
-        // inverted comparison in the pronoun/suffix ternaries would flip
-        // both branches at once and still read as grammatical nonsense, so
-        // this has to check the actual words, not just that a line fired.
+        // Drive a real discard with exactly one other-batch reference riding
+        // on the swept transaction. An inverted comparison in the
+        // pronoun/suffix ternaries would flip both branches at once and still
+        // read as grammatical nonsense, so this has to check the actual words,
+        // not just that a line fired.
         let batches = bc_core::ImportBatchService::new(pool.clone());
         let batch = batches.open(None, "csv").await.expect("open");
         let other_batch = batches.open(None, "ofx").await.expect("open other");
@@ -1395,6 +1524,35 @@ mod tests {
         assert!(
             !rendered.contains("their"),
             "the plural pronoun must not appear for a singular count: {rendered}"
+        );
+    }
+
+    #[sqlx::test(migrations = "../bc-core/migrations")]
+    async fn a_flagged_transaction_is_not_reported_as_reconciled(pool: SqlitePool) {
+        // `flagged` and `reconciled` are both "not unreconciled", so a
+        // predicate testing for that would fold them together and tell the
+        // user their flagged rows had been confirmed against a statement.
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+        let acct = account(&pool, "Checking").await;
+
+        flagged_scenario(&pool, &batch, &acct).await;
+
+        let record = batches.find_by_id(&batch).await.expect("find");
+        let outcome = batches.discard(&batch).await.expect("discard");
+
+        pretty_assertions::assert_eq!(outcome.flagged_postings, 4);
+        pretty_assertions::assert_eq!(
+            outcome.reconciled_postings,
+            0,
+            "a flagged transaction was never reconciled"
+        );
+
+        let rendered = super::render_discard(&outcome, &record);
+        assert!(rendered.contains("4 of them sat in flagged transactions"));
+        assert!(
+            !rendered.contains("reconciled"),
+            "nothing here was reconciled: {rendered}"
         );
     }
 
@@ -1521,11 +1679,60 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_unparsable_batch_id_is_an_argument_error() {
-        // Parsing happens before any database work, so a typo does not snapshot.
-        "not-a-batch-id"
-            .parse::<bc_models::ImportBatchId>()
-            .expect_err("not a valid batch id");
+    #[tokio::test]
+    async fn an_unparsable_batch_id_is_an_argument_error() {
+        // Parsing happens before any database work, so a typo does not
+        // snapshot. Driving the whole command is what pins that ordering:
+        // parsing the ID in isolation would pass with the parse moved below
+        // the snapshot.
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, backup_dir, _batch_id) = context_with_a_batch(home.path(), true).await;
+
+        let result = super::execute_discard(
+            super::DiscardArgs {
+                batch: "not-a-batch-id".to_owned(),
+            },
+            &ctx,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(crate::error::CliError::Arg(_))),
+            "a malformed ID is the user's argument error, not a core failure"
+        );
+        assert_eq!(
+            pre_discard_snapshots(&backup_dir),
+            0,
+            "a typo must not cost a full database copy"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_batch_id_does_not_snapshot() {
+        // Same ordering guarantee one step later: the ID parses, but names no
+        // batch. Resolution has to happen before the snapshot too.
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, backup_dir, _batch_id) = context_with_a_batch(home.path(), true).await;
+
+        let result = super::execute_discard(
+            super::DiscardArgs {
+                batch: bc_models::ImportBatchId::new().to_string(),
+            },
+            &ctx,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(crate::error::CliError::Core(bc_core::BcError::NotFound(_)))
+            ),
+            "an unknown batch must be reported as not found"
+        );
+        assert_eq!(
+            pre_discard_snapshots(&backup_dir),
+            0,
+            "an unknown batch must not cost a full database copy"
+        );
     }
 }
