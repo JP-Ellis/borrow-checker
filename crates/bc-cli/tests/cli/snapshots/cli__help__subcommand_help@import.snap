@@ -1,12 +1,11 @@
 ---
 source: crates/bc-cli/tests/cli/help.rs
-assertion_line: 35
 expression: output
 ---
 success: true
 exit_code: 0
 ----- stdout -----
-Import transactions using a named import profile
+Manage imports (run, list, discard)
 
 Usage: borrow-checker import [OPTIONS] <COMMAND>
 

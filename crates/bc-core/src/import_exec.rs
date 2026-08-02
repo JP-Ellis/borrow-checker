@@ -2777,9 +2777,10 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn a_freed_tombstone_slot_lets_the_leg_reappear(pool: SqlitePool) {
-        // Task 3's unit tests prove a tombstone's reference row is gone once
-        // discarded; this proves a later import actually repopulates the slot,
-        // through the real import path rather than the database directly.
+        // The discard module's own tests prove a tombstone's reference row is
+        // gone once discarded; this proves a later import actually repopulates
+        // the slot, through the real import path rather than the database
+        // directly.
         let (_bank, food) = two_account_tree(&pool).await;
         let svcs = services(&pool);
 

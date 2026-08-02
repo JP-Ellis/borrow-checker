@@ -401,10 +401,16 @@ pub enum Event {
         /// Any other reference — another run's, or one attached with no batch
         /// at all — that went with a transaction this discard deleted.
         other_batch_references_removed: u64,
+        /// Any other reference left naming a deleted posting whose transaction
+        /// survived, so it became a tombstone rather than going away.
+        other_batch_references_tombstoned: u64,
         /// Of `removed_postings`, those the user had edited since the import.
         edited_postings: u64,
-        /// Of `removed_postings`, those in a no-longer-unreconciled transaction.
+        /// Of `removed_postings`, those in a transaction reconciled against a
+        /// statement.
         reconciled_postings: u64,
+        /// Of `removed_postings`, those in a transaction flagged for review.
+        flagged_postings: u64,
     },
 }
 

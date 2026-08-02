@@ -682,8 +682,10 @@ mod tests {
             detached_adopted: 3,
             freed_tombstones: 5,
             other_batch_references_removed: 7,
+            other_batch_references_tombstoned: 8,
             edited_postings: 1,
             reconciled_postings: 2,
+            flagged_postings: 9,
         };
         let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &HashMap::new());
         assert_eq!(entry.kind, "import");
