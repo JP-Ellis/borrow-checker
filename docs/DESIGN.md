@@ -301,11 +301,14 @@ Post-v1 built-in formats are delivered as additions to `bc-formats` (not as plug
 
 ```rust
 pub trait Importer {
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     fn detect(&self, bytes: &[u8]) -> bool;  // format / profile-aware sniffing
-    fn import(&self, bytes: &[u8], config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError>;
+    fn import(&self, config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError>;
+    fn validate(&self, config: &ImportConfig) -> Result<(), ImportError>;
 }
 ```
+
+`validate` checks a config for internal coherence without touching the filesystem, so an incoherent profile can be rejected without running an import. It runs before every `import`, and may also be called on its own. It has **no default body**: an importer with no rules yet returns `Ok(())` explicitly, so that a delegating wrapper which forgets to forward it fails to compile instead of silently accepting everything.
 
 The importer is a **pure parsing concern** — it converts bytes to `RawTransaction` values. Accounts live **on the postings**: each `RawTransaction` carries one or more `RawPosting` legs, and every leg names its own account **path** (e.g. `Assets:Bank:Checking`). Multi-account formats (Ledger, Beancount) name each leg's account directly; single-account formats (CSV, OFX) emit exactly one leg whose account path comes from the importer's own config blob. A leg's `amount` is optional — `None` marks an elided residual that balances the transaction. An optional `SourceLocation { display, uri }` on `RawTransaction` lets an importer name where a row came from (a file path and row number, an API response, …) for diagnostics; `display` is free-form and `uri` is an optional machine-addressable form.
 
@@ -437,6 +440,8 @@ The SDK uses a **single integer ABI version**, separate from semver. Only breaki
 | 2.x | `[2, 3]` | v1 dropped, v2 deprecated |
 
 During the grace period the host loads deprecated-ABI plugins via a compatibility shim and warns the user at startup with a link to the migration guide.
+
+**Before the first public release** this policy is not yet in force. There are no plugins outside this repository, so the WIT world may gain or change exported functions without incrementing `SDK_ABI`; the mitigation is simply that all first-party plugins are rebuilt in the same change. Note the consequence: a stale `.wasm` fails to instantiate and is skipped at load with a generic probe error rather than the ABI-mismatch diagnostic, because the host must instantiate a component before it can call `sdk_abi()`. Once the app is public, every such change requires a real ABI bump and the support window above.
 
 ### 6.3 Plugin Phases
 
