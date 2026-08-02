@@ -41,6 +41,11 @@ impl bc_sdk::Importer for CsvImporter {
 
     #[inline]
     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+        // Validate before touching the filesystem. The host also validates
+        // before calling in, but `import` is a public trait method: reached
+        // directly, an incoherent config would otherwise fail per-file in the
+        // loop below, which logs and skips, silently yielding zero
+        // transactions.
         let cfg: Config = config.as_typed()?;
         cfg.validate()?;
 
@@ -198,33 +203,10 @@ impl CsvImporter {
                 None
             };
 
-            let payee = cfg
-                .payee_column
-                .as_ref()
-                .and_then(|column| resolve(&col_index, column).ok())
-                .and_then(|idx| record.get(idx))
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned);
-
-            let description = cfg
-                .description_column
-                .as_ref()
-                .and_then(|column| resolve(&col_index, column).ok())
-                .and_then(|idx| record.get(idx))
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned)
+            let payee = optional_text(&record, &col_index, cfg.payee_column.as_ref())?;
+            let description = optional_text(&record, &col_index, cfg.description_column.as_ref())?
                 .unwrap_or_default();
-
-            let reference = cfg
-                .reference_column
-                .as_ref()
-                .and_then(|column| resolve(&col_index, column).ok())
-                .and_then(|idx| record.get(idx))
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned);
+            let reference = optional_text(&record, &col_index, cfg.reference_column.as_ref())?;
 
             transactions.push(
                 RawTransaction::builder()
@@ -320,6 +302,44 @@ fn record_field(
         .ok_or_else(|| ImportError::MissingField(column_name.to_owned()))
 }
 
+/// Reads an optional free-text column from a record.
+///
+/// A column that is not configured yields `None`. A column that *is*
+/// configured must resolve and must be present in the row: an unresolvable
+/// name or an index past the end of the row is a configuration error, not an
+/// empty value. This matches `balance_column` and the required columns, so
+/// that a mistyped column reference cannot import as silently blank text.
+///
+/// # Arguments
+///
+/// * `record` - The CSV record being processed.
+/// * `col_index` - Case-insensitive header-name to index map.
+/// * `column` - The configured reference, if any.
+///
+/// # Returns
+///
+/// The trimmed field value, or `None` when the column is unconfigured or the
+/// cell is empty.
+///
+/// # Errors
+///
+/// Returns [`ImportError::MissingField`] when a configured column cannot be
+/// resolved or the row is too short to contain it.
+#[inline]
+fn optional_text(
+    record: &csv::StringRecord,
+    col_index: &HashMap<String, usize>,
+    column: Option<&ColumnRef>,
+) -> Result<Option<String>, ImportError> {
+    let Some(column) = column else {
+        return Ok(None);
+    };
+    let idx = resolve(col_index, column)?;
+    let raw = record_field(record, idx, &column.describe())?;
+    let trimmed = raw.trim();
+    Ok((!trimmed.is_empty()).then(|| trimmed.to_owned()))
+}
+
 /// Resolves a column reference to a zero-based index within a row.
 ///
 /// # Arguments
@@ -384,14 +404,17 @@ fn parse_amount(
             ref debit_column,
             ref credit_column,
         } => {
-            let debit_raw = resolve(col_index, debit_column)
-                .ok()
-                .and_then(|i| record.get(i))
+            // Both references must resolve; only the *cells* may be empty,
+            // since exactly one of the pair is populated per row.
+            let debit_idx = resolve(col_index, debit_column)?;
+            let credit_idx = resolve(col_index, credit_column)?;
+
+            let debit_raw = record
+                .get(debit_idx)
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
-            let credit_raw = resolve(col_index, credit_column)
-                .ok()
-                .and_then(|i| record.get(i))
+            let credit_raw = record
+                .get(credit_idx)
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
 
@@ -1075,5 +1098,212 @@ mod tests {
         let result = importer.parse_bytes(b"01/02/2025,120.00\n", &cfg, "statement.csv");
         let err = result.expect_err("column 9 does not exist in a two-column row");
         assert_eq!(err.to_string(), "missing required field: column 9");
+    }
+
+    /// An out-of-range index on an *optional* column must fail like a required
+    /// one, rather than importing a silently blank value.
+    ///
+    /// Hand-counting indices off a headerless file makes an off-by-one the
+    /// likeliest mistake this addressing mode introduces.
+    fn headerless_two_column_config() -> Config {
+        Config {
+            account: "Liabilities:Bank:Card".to_owned(),
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            date_format: "%d/%m/%Y".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(1),
+            },
+            commodity: Some("AUD".to_owned()),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn parse_bytes_errors_on_out_of_range_payee_index() {
+        let cfg = Config {
+            payee_column: Some(ColumnRef::Index(9)),
+            ..headerless_two_column_config()
+        };
+        let result = CsvImporter.parse_bytes(b"01/02/2025,120.00\n", &cfg, "statement.csv");
+        let err = result.expect_err("column 9 does not exist in a two-column row");
+        assert_eq!(err.to_string(), "missing required field: column 9");
+    }
+
+    #[test]
+    fn parse_bytes_errors_on_out_of_range_description_index() {
+        let cfg = Config {
+            description_column: Some(ColumnRef::Index(9)),
+            ..headerless_two_column_config()
+        };
+        let result = CsvImporter.parse_bytes(b"01/02/2025,120.00\n", &cfg, "statement.csv");
+        let err = result.expect_err("column 9 does not exist in a two-column row");
+        assert_eq!(err.to_string(), "missing required field: column 9");
+    }
+
+    #[test]
+    fn parse_bytes_errors_on_out_of_range_reference_index() {
+        let cfg = Config {
+            reference_column: Some(ColumnRef::Index(9)),
+            ..headerless_two_column_config()
+        };
+        let result = CsvImporter.parse_bytes(b"01/02/2025,120.00\n", &cfg, "statement.csv");
+        let err = result.expect_err("column 9 does not exist in a two-column row");
+        assert_eq!(err.to_string(), "missing required field: column 9");
+    }
+
+    /// A name-addressed optional column absent from the header is likewise a
+    /// configuration error rather than a silently blank value.
+    #[test]
+    fn parse_bytes_errors_on_an_absent_optional_column_name() {
+        let cfg = Config {
+            account: "Liabilities:Bank:Card".to_owned(),
+            header: Header::Present,
+            date_column: ColumnRef::Name("Date".to_owned()),
+            date_format: "%d/%m/%Y".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Amount".to_owned()),
+            },
+            description_column: Some(ColumnRef::Name("Narrative".to_owned())),
+            commodity: Some("AUD".to_owned()),
+            ..Config::default()
+        };
+        let result =
+            CsvImporter.parse_bytes(b"Date,Amount\n01/02/2025,120.00\n", &cfg, "statement.csv");
+        let err = result.expect_err("'Narrative' is not in the header");
+        assert_eq!(err.to_string(), "missing required field: 'Narrative'");
+    }
+
+    /// An optional column that resolves but holds an empty cell is still
+    /// absent, not an error — only unresolvable references fail.
+    #[test]
+    fn parse_bytes_treats_an_empty_optional_cell_as_absent() {
+        let importer = CsvImporter;
+        let cfg = Config {
+            account: "Liabilities:Bank:Card".to_owned(),
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            date_format: "%d/%m/%Y".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(1),
+            },
+            payee_column: Some(ColumnRef::Index(2)),
+            commodity: Some("AUD".to_owned()),
+            ..Config::default()
+        };
+
+        let txs = importer
+            .parse_bytes(b"01/02/2025,120.00,\n", &cfg, "statement.csv")
+            .expect("an empty payee cell is not an error");
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0].payee, None);
+    }
+
+    /// Split debit/credit columns must work under positional addressing.
+    #[test]
+    fn parse_bytes_handles_headerless_split_debit_credit() {
+        let importer = CsvImporter;
+        let cfg = Config {
+            account: "Liabilities:Bank:Card".to_owned(),
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            date_format: "%d/%m/%Y".to_owned(),
+            amount_columns: AmountColumns::SplitDebitCredit {
+                debit_column: ColumnRef::Index(1),
+                credit_column: ColumnRef::Index(2),
+            },
+            commodity: Some("AUD".to_owned()),
+            ..Config::default()
+        };
+
+        let data = b"01/02/2025,33.03,\n02/02/2025,,369.00\n";
+        let txs = importer
+            .parse_bytes(data, &cfg, "statement.csv")
+            .expect("split debit/credit by index should parse");
+
+        assert_eq!(txs.len(), 2);
+        // A positive debit figure is money out, so it is negated.
+        assert_eq!(
+            txs[0].postings[0].amount,
+            Some(Amount::new(-3303, "AUD", 2))
+        );
+        assert_eq!(
+            txs[1].postings[0].amount,
+            Some(Amount::new(36900, "AUD", 2))
+        );
+    }
+
+    /// Both split columns populated in one row is a per-row parse error, and
+    /// the message must name the columns by their positional description.
+    #[test]
+    fn parse_bytes_rejects_both_split_columns_populated_by_index() {
+        let importer = CsvImporter;
+        let cfg = Config {
+            account: "Liabilities:Bank:Card".to_owned(),
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            date_format: "%d/%m/%Y".to_owned(),
+            amount_columns: AmountColumns::SplitDebitCredit {
+                debit_column: ColumnRef::Index(1),
+                credit_column: ColumnRef::Index(2),
+            },
+            commodity: Some("AUD".to_owned()),
+            ..Config::default()
+        };
+
+        let result = importer.parse_bytes(b"01/02/2025,33.03,369.00\n", &cfg, "statement.csv");
+        let err = result.expect_err("a row cannot be both a debit and a credit");
+        assert_eq!(
+            err.to_string(),
+            "parse error: both column 1 and column 2 are populated in the same row"
+        );
+    }
+
+    /// Neither split column populated names both columns in the error.
+    #[test]
+    fn parse_bytes_rejects_neither_split_column_populated_by_index() {
+        let importer = CsvImporter;
+        let cfg = Config {
+            account: "Liabilities:Bank:Card".to_owned(),
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            date_format: "%d/%m/%Y".to_owned(),
+            amount_columns: AmountColumns::SplitDebitCredit {
+                debit_column: ColumnRef::Index(1),
+                credit_column: ColumnRef::Index(2),
+            },
+            commodity: Some("AUD".to_owned()),
+            ..Config::default()
+        };
+
+        let result = importer.parse_bytes(b"01/02/2025,,\n", &cfg, "statement.csv");
+        let err = result.expect_err("a row must be either a debit or a credit");
+        assert_eq!(
+            err.to_string(),
+            "missing required field: column 1 or column 2"
+        );
+    }
+
+    /// A split column addressed by a name absent from the header is a
+    /// configuration error, not an empty cell that collapses to "neither".
+    #[test]
+    fn parse_bytes_errors_when_a_split_column_name_is_absent() {
+        let importer = CsvImporter;
+        let cfg = Config {
+            account: "Liabilities:Bank:Card".to_owned(),
+            header: Header::Present,
+            date_column: ColumnRef::Name("Date".to_owned()),
+            date_format: "%d/%m/%Y".to_owned(),
+            amount_columns: AmountColumns::SplitDebitCredit {
+                debit_column: ColumnRef::Name("Debit".to_owned()),
+                credit_column: ColumnRef::Name("Missing".to_owned()),
+            },
+            commodity: Some("AUD".to_owned()),
+            ..Config::default()
+        };
+
+        let result = importer.parse_bytes(b"Date,Debit\n01/02/2025,33.03\n", &cfg, "statement.csv");
+        let err = result.expect_err("the credit column is not in the header");
+        assert_eq!(err.to_string(), "missing required field: 'Missing'");
     }
 }
