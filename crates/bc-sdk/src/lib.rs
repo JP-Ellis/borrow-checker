@@ -17,6 +17,8 @@
 //!     fn name(&self) -> &str { "my-format" }
 //!
 //!     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+//!
+//!     fn validate(&self, config: ImportConfig) -> Result<(), ImportError> { Ok(()) }
 //! }
 //! ```
 
@@ -100,10 +102,14 @@ pub trait Importer: Default {
 
     /// Check `config` for internal coherence without reading any files.
     ///
-    /// The default implementation accepts every configuration. Override it when
-    /// a configuration admits combinations that are syntactically valid but
-    /// meaningless, so the host can report them when a profile is saved rather
-    /// than when an import runs.
+    /// Reject configurations that are syntactically valid but meaningless, so
+    /// the host can report them without running an import. The host calls this
+    /// before every [`Importer::import`], and may also call it on its own when
+    /// an import profile is saved.
+    ///
+    /// There is no default body: an importer with no rules yet must still say
+    /// so by returning `Ok(())` explicitly, so that "nothing to check" is a
+    /// deliberate statement rather than a silent fallback.
     ///
     /// Implementations must not perform I/O.
     ///
@@ -114,8 +120,5 @@ pub trait Importer: Default {
     /// # Errors
     ///
     /// Returns [`ImportError`] describing why the configuration is incoherent.
-    #[inline]
-    fn validate(&self, _config: ImportConfig) -> Result<(), ImportError> {
-        Ok(())
-    }
+    fn validate(&self, config: ImportConfig) -> Result<(), ImportError>;
 }
