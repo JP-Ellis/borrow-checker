@@ -149,9 +149,13 @@ members  = [
     single_call_fn                 = "allow"  # helper functions aid readability even when called once
     single_char_lifetime_names     = "allow"  # `'a`, `'b` lifetime names are standard for short-lived generics
     std_instead_of_alloc           = "allow"  # `std::` is used throughout; alloc-only builds are not a goal
+    std_instead_of_core            = "allow"  # `std::` is used throughout; no-std builds are not a goal
     unreachable                    = "allow"  # `unreachable!()` is used to mark logically impossible branches
 
-    # Known upstream issues — revisit when fixed
+    # Known upstream issues — revisit when fixed.
+    # Fires on `#[cfg(test)] mod tests`; fixed by
+    # https://github.com/rust-lang/rust-clippy/pull/17346 but not yet released.
+    inline_modules     = "allow"
     # https://github.com/rust-lang/rust-clippy/issues/14056
     panic_in_result_fn = "allow"
 

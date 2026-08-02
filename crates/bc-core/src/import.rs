@@ -129,7 +129,10 @@ impl Config {
     /// let cfg = Config::from_typed(&MyCfg { delimiter: ',' }).expect("serialisation is infallible for this type");
     /// ```
     #[inline]
-    pub fn from_typed<T: serde::Serialize>(value: &T) -> Result<Self, serde_json::Error> {
+    pub fn from_typed<T>(value: &T) -> Result<Self, serde_json::Error>
+    where
+        T: serde::Serialize,
+    {
         let v = serde_json::to_value(value)?;
         Ok(Self(v))
     }
@@ -159,7 +162,10 @@ impl Config {
     /// assert_eq!(back, original);
     /// ```
     #[inline]
-    pub fn into_typed<T: serde::de::DeserializeOwned>(self) -> Result<T, serde_json::Error> {
+    pub fn into_typed<T>(self) -> Result<T, serde_json::Error>
+    where
+        T: serde::de::DeserializeOwned,
+    {
         serde_json::from_value(self.0)
     }
 
@@ -208,7 +214,10 @@ impl Config {
     /// assert_eq!(back, original);
     /// ```
     #[inline]
-    pub fn as_typed<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
+    pub fn as_typed<T>(&self) -> Result<T, serde_json::Error>
+    where
+        T: serde::de::DeserializeOwned,
+    {
         serde_json::from_value(self.0.clone())
     }
 
