@@ -951,24 +951,34 @@ fn TransactionDetail(
             <PostingsList />
 
             {move || {
+                let render = |amounts: &[bc_ipc::Amount]| {
+                    let known = currencies.get();
+                    amounts
+                        .iter()
+                        .map(|a| {
+                            let meta = crate::components::num::meta::display_meta_for(
+                                &a.currency_code,
+                                &known,
+                            );
+                            crate::components::num::format_amount(&a.value, &meta)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
                 let (extra, text) = match balance_state.get() {
                     BalanceState::Balanced => (style::balance_ok, "balances".to_owned()),
-                    BalanceState::Inferred { remainder, currency } => {
-                        let meta = crate::components::num::meta::display_meta_for(
-                            &currency,
-                            &currencies.get(),
-                        );
-                        let amt = crate::components::num::format_amount(&remainder, &meta);
-                        (style::balance_ok, format!("balances \u{2014} auto {amt}"))
+                    BalanceState::Inferred { remainder } => {
+                        (
+                            style::balance_ok,
+                            format!("balances \u{2014} auto {}", render(&remainder)),
+                        )
                     }
                     BalanceState::Empty => (style::balance_ok, "no amounts yet".to_owned()),
-                    BalanceState::Unbalanced { delta, currency } => {
-                        let meta = crate::components::num::meta::display_meta_for(
-                            &currency,
-                            &currencies.get(),
-                        );
-                        let amt = crate::components::num::format_amount(&delta, &meta);
-                        (style::balance_bad, format!("unbalanced \u{2014} \u{03A3} = {amt}"))
+                    BalanceState::Unbalanced { delta } => {
+                        (
+                            style::balance_bad,
+                            format!("unbalanced \u{2014} \u{03A3} = {}", render(&delta)),
+                        )
                     }
                     BalanceState::Ambiguous => {
                         (style::balance_bad, "more than one blank amount".to_owned())
@@ -977,6 +987,8 @@ fn TransactionDetail(
                         (style::balance_bad, "an amount does not parse".to_owned())
                     }
                 };
+                // Each commodity is rendered with its own display metadata and
+                // joined; nothing is summed across commodities.
                 view! {
                     <div class=style::balance>
                         <span class=format!("{} {}", style::bal_text, extra)>{text}</span>
