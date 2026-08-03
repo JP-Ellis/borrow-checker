@@ -51,6 +51,7 @@ members  = [
   config                = { version = "0.15", default-features = false, features = [
     "toml"
   ] }
+  criterion             = { version = "0.8", features = ["async_tokio"] }
   csv                   = "1"
   directories           = "6"
   insta                 = { version = "1", features = [
