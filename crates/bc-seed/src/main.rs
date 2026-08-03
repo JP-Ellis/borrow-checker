@@ -14,6 +14,7 @@
     reason = "test fixture seeding binary; not a public library"
 )]
 
+mod generate;
 mod rng;
 
 use std::path::PathBuf;
