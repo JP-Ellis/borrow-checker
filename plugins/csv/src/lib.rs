@@ -266,10 +266,6 @@ fn decimal_to_amount(
     })?;
     // scale is the number of decimal digits; monetary values have at most
     // 28 digits of scale so saturating to u8::MAX is safe in practice.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "scale.min(255) clamps to u8 range before the cast; monetary decimals have at most 28 digits"
-    )]
     let scale_u8 = scale.min(255) as u8;
     Ok(Amount::new(minor_units, currency, scale_u8))
 }
