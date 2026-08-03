@@ -24,23 +24,34 @@ publish = false
 name    = "bc-app"
 publish = false
 
-# Importer plugins: shipped as WASM artifacts bundled inside the app, with no
-# independent consumers. Unlike bc-cli/bc-app they want no GitHub release
-# either, so `release = false` rather than `publish = false`.
+# Importer plugins: shipped as WASM artifacts bundled inside the app.
+#
+# `publish = false` is permanent — these are WASM binaries, never crates.io
+# crates, and they path-depend on bc-sdk. It must match the `publish = false`
+# in each plugin's Cargo.toml: release-plz hard-errors if the two disagree.
+#
+# `release = false` is temporary — it suppresses the version bump, changelog,
+# tag and GitHub release. Flip it to `true` once the .wasm artifacts are
+# attached to GitHub releases, giving the same shape as bc-cli/bc-app: no
+# crates.io publish, but GitHub releases that carry binaries.
 [[package]]
 name    = "bc-plugin-beancount"
+publish = false
 release = false
 
 [[package]]
 name    = "bc-plugin-csv"
+publish = false
 release = false
 
 [[package]]
 name    = "bc-plugin-ledger"
+publish = false
 release = false
 
 [[package]]
 name    = "bc-plugin-ofx"
+publish = false
 release = false
 
 [changelog]
