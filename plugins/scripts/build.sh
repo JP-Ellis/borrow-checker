@@ -28,7 +28,8 @@ fi
 for name in "${PLUGINS[@]}"; do
   echo "==> Building plugin: $name"
 
-  cargo rustc --release --target wasm32-wasip2 -p "bc-plugin-$name" \
+  cargo rustc --release --target wasm32-wasip2 \
+    --manifest-path "$WORKSPACE_ROOT/Cargo.toml" -p "bc-plugin-$name" \
     --crate-type cdylib
 
   # Cargo uses underscores in artifact names: bc-plugin-csv → bc_plugin_csv.wasm
