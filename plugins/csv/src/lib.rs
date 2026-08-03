@@ -192,9 +192,9 @@ impl CsvImporter {
                         debit_column.describe(),
                         credit_column.describe()
                     )),
-                    AmountColumns::Single { .. } => ImportError::MissingField(format!(
-                        "row {row} has no amount in the configured column(s)"
-                    )),
+                    AmountColumns::Single { ref column } => {
+                        ImportError::MissingField(column.describe())
+                    }
                 })?;
 
             let balance = if let Some(column) = cfg.balance_column.as_ref() {

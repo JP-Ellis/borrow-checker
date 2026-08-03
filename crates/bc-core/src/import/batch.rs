@@ -37,8 +37,9 @@ pub struct ImportBatch {
 /// The final tallies of one import run, as [`Service::close`] records them.
 ///
 /// Skips are carried by cause rather than as one total, so a report can
-/// attribute each number: an unresolved account path is actionable (create the
-/// account and re-run), everything else was warned about individually.
+/// attribute each number: an unresolved account path and an unregistered
+/// commodity code are both actionable (create the account, or register the
+/// commodity, and re-run), everything else was warned about individually.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
@@ -480,7 +481,7 @@ mod tests {
     async fn a_half_recorded_outcome_is_rejected_by_the_database(pool: SqlitePool) {
         // The claim that a partly-recorded outcome is unrepresentable rests
         // entirely on the table's CHECK. Nothing else fails if a later schema
-        // edit drops one of its four conjuncts, which would let an aborted run
+        // edit drops one of its five conjuncts, which would let an aborted run
         // resurface as one that imported some of what it did.
         let svc = Service::new(pool.clone());
         let id = svc.open(None, "csv").await.expect("open batch");

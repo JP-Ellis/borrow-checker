@@ -1,10 +1,11 @@
-//! Import execution: resolve every raw leg's account path, then create
-//! transactions and attach per-leg provenance for the legs that are new.
+//! Import execution: resolve every raw leg's account path and commodity code,
+//! then create transactions and attach per-leg provenance for the legs that
+//! are new.
 //!
 //! The run is a pipeline of six steps, each its own function below:
 //!
-//! 1. **Resolve** every leg's account path against one snapshot of the account
-//!    tree ([`resolve_legs`]).
+//! 1. **Resolve** every leg's account path and commodity code against one
+//!    snapshot of the account tree and commodity registry ([`resolve_legs`]).
 //! 2. **Validate** each raw transaction's structure — two or more elided legs
 //!    leave the residual ambiguous ([`has_ambiguous_residual`]).
 //! 3. **Allocate** an occurrence slot per `(account, fingerprint)` across every
@@ -552,15 +553,15 @@ fn canonicalise(commodities: &CommodityResolver, amount: Option<&Amount>) -> Can
     let Some(stated) = amount else {
         return Canonical::Resolved(None);
     };
-    let raw = stated.commodity().as_str();
-    if raw.trim().is_empty() {
+    let trimmed = stated.commodity().as_str().trim();
+    if trimmed.is_empty() {
         return Canonical::Blank;
     }
-    match commodities.resolve(stated.commodity()) {
+    match commodities.resolve(&CommodityCode::new(trimmed)) {
         Some(code) => {
             Canonical::Resolved(Some(Amount::new(stated.value(), CommodityCode::new(code))))
         }
-        None => Canonical::Unregistered(raw.to_owned()),
+        None => Canonical::Unregistered(trimmed.to_owned()),
     }
 }
 
@@ -1228,8 +1229,11 @@ impl Writer<'_> {
 
     /// Builds the provenance record for one persisted leg.
     ///
-    /// The recorded amount is the document's, elided included: fingerprints must
-    /// depend only on what the document said, never on a value derived from it.
+    /// The recorded amount is the *canonicalised* amount — the commodity code
+    /// resolved to its registered spelling, elided still included — not the
+    /// document's raw text. This is deliberate: fingerprinting the raw code
+    /// would make a file importing `btc` and a later one importing `BTC`
+    /// produce different fingerprints for the same posting and duplicate it.
     ///
     /// # Arguments
     ///
@@ -3377,6 +3381,21 @@ mod tests {
     async fn a_lower_case_code_resolves_and_stores_the_registered_spelling(pool: sqlx::SqlitePool) {
         let outcome = import_one_leg(&pool, "Assets:Bank:Checking", dec!(5), "aud").await;
         assert_eq!(outcome.unresolved_commodity_postings, 0);
+        let stored: String = sqlx::query_scalar("SELECT commodity FROM postings")
+            .fetch_one(&pool)
+            .await
+            .expect("one posting");
+        assert_eq!(stored, "AUD");
+    }
+
+    /// A code padded with whitespace is not "blank" and must still resolve —
+    /// otherwise it is reported as unregistered under a code the user cannot
+    /// usefully register (registering `AUD` would not fix `" AUD "`).
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_padded_code_resolves_to_the_canonical_code(pool: sqlx::SqlitePool) {
+        let outcome = import_one_leg(&pool, "Assets:Bank:Checking", dec!(5), " AUD ").await;
+        assert_eq!(outcome.unresolved_commodity_postings, 0);
+        assert!(outcome.unresolved_commodities.is_empty());
         let stored: String = sqlx::query_scalar("SELECT commodity FROM postings")
             .fetch_one(&pool)
             .await
