@@ -488,6 +488,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::config::CommoditySource;
 
     #[test]
     fn parse_number_strips_currency_symbols() {
@@ -712,7 +713,9 @@ mod tests {
         let cfg = Config {
             account: "Assets:Bank:Checking".to_owned(),
             date_column: ColumnRef::Name("Date".to_owned()),
-            commodity: Some("AUD".to_owned()),
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
             ..Config::default()
         };
         let result = importer.parse_bytes(b"\x00\x00 not csv", &cfg, "statement.csv");
@@ -1033,7 +1036,9 @@ mod tests {
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Index(9),
             },
-            commodity: Some("AUD".to_owned()),
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
             ..Config::default()
         };
         let result = importer.parse_bytes(b"01/02/2025,120.00\n", &cfg, "statement.csv");
@@ -1055,7 +1060,9 @@ mod tests {
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Index(1),
             },
-            commodity: Some("AUD".to_owned()),
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
             ..Config::default()
         }
     }
@@ -1106,7 +1113,9 @@ mod tests {
                 column: ColumnRef::Name("Amount".to_owned()),
             },
             description_column: Some(ColumnRef::Name("Narrative".to_owned())),
-            commodity: Some("AUD".to_owned()),
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
             ..Config::default()
         };
         let result =
@@ -1129,7 +1138,9 @@ mod tests {
                 column: ColumnRef::Index(1),
             },
             payee_column: Some(ColumnRef::Index(2)),
-            commodity: Some("AUD".to_owned()),
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
             ..Config::default()
         };
 
@@ -1153,7 +1164,9 @@ mod tests {
                 debit_column: ColumnRef::Index(1),
                 credit_column: ColumnRef::Index(2),
             },
-            commodity: Some("AUD".to_owned()),
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
             ..Config::default()
         };
 
@@ -1188,7 +1201,9 @@ mod tests {
                 debit_column: ColumnRef::Index(1),
                 credit_column: ColumnRef::Index(2),
             },
-            commodity: Some("AUD".to_owned()),
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
             ..Config::default()
         };
 
@@ -1213,7 +1228,9 @@ mod tests {
                 debit_column: ColumnRef::Index(1),
                 credit_column: ColumnRef::Index(2),
             },
-            commodity: Some("AUD".to_owned()),
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
             ..Config::default()
         };
 
@@ -1239,7 +1256,9 @@ mod tests {
                 debit_column: ColumnRef::Name("Debit".to_owned()),
                 credit_column: ColumnRef::Name("Missing".to_owned()),
             },
-            commodity: Some("AUD".to_owned()),
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
             ..Config::default()
         };
 

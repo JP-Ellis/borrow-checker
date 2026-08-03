@@ -135,6 +135,62 @@ impl<'de> serde::Deserialize<'de> for ColumnRef {
     }
 }
 
+/// Where a row's commodity code comes from.
+///
+/// Bank statements carry one currency for the whole file; exchange exports name
+/// the asset per row. Deserializes from a bare JSON string as [`Self::Fixed`],
+/// so profiles written before per-row commodities load unchanged:
+///
+/// ```json
+/// { "commodity": "AUD" }
+/// { "commodity": { "source": "fixed",  "code": "AUD" } }
+/// { "commodity": { "source": "column", "column": "Coin" } }
+/// ```
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum CommoditySource {
+    /// One code applies to every row in the file.
+    Fixed {
+        /// The commodity code, e.g. `"AUD"`.
+        code: String,
+    },
+    /// Each row names its own code in a column.
+    Column {
+        /// The column holding the code.
+        column: ColumnRef,
+    },
+}
+
+impl<'de> serde::Deserialize<'de> for CommoditySource {
+    #[inline]
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// The tagged form, mirroring `CommoditySource`'s own shape.
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "source", rename_all = "snake_case")]
+        enum Tagged {
+            Fixed { code: String },
+            Column { column: ColumnRef },
+        }
+
+        /// A bare string is the pre-per-row-commodity spelling of `Fixed`.
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Bare(String),
+            Tagged(Tagged),
+        }
+
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Bare(code) | Repr::Tagged(Tagged::Fixed { code }) => Self::Fixed { code },
+            Repr::Tagged(Tagged::Column { column }) => Self::Column { column },
+        })
+    }
+}
+
 /// Describes how many lines of leading metadata precede the CSV data.
 ///
 /// Many bank exports include banner or metadata rows before anything useful.
@@ -274,8 +330,10 @@ pub struct Config {
     pub reference_column: Option<ColumnRef>,
     /// Optional column for the running balance after each transaction.
     pub balance_column: Option<ColumnRef>,
-    /// Commodity code (e.g. `"AUD"`). Required when the file does not contain one.
-    pub commodity: Option<String>,
+    /// Where each row's commodity code comes from. Required — [`Config::validate`]
+    /// rejects a profile without one.
+    #[serde(default)]
+    pub commodity: Option<CommoditySource>,
     /// The character used as the decimal separator in numeric fields.
     #[serde(default = "default_decimal_separator")]
     pub decimal_separator: char,
@@ -966,5 +1024,83 @@ mod tests {
                 column: ColumnRef::Name("Amount".to_owned())
             }
         );
+    }
+
+    /// Every profile written before per-row commodities spells this as a bare
+    /// string. They must keep deserializing untouched.
+    #[test]
+    fn commodity_deserializes_a_bare_string_as_fixed() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"account":"Assets:Bank","source_dir":"Bank","commodity":"AUD"}"#,
+        )
+        .expect("a bare string is a valid commodity");
+        assert_eq!(
+            cfg.commodity,
+            Some(CommoditySource::Fixed {
+                code: "AUD".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn commodity_deserializes_the_tagged_fixed_form() {
+        let c: CommoditySource =
+            serde_json::from_str(r#"{"source":"fixed","code":"AUD"}"#).expect("valid");
+        assert_eq!(
+            c,
+            CommoditySource::Fixed {
+                code: "AUD".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn commodity_deserializes_a_named_column() {
+        let c: CommoditySource =
+            serde_json::from_str(r#"{"source":"column","column":"Coin"}"#).expect("valid");
+        assert_eq!(
+            c,
+            CommoditySource::Column {
+                column: ColumnRef::Name("Coin".to_owned())
+            }
+        );
+    }
+
+    /// Headerless files address every column by index, this one included.
+    #[test]
+    fn commodity_deserializes_an_indexed_column() {
+        let c: CommoditySource =
+            serde_json::from_str(r#"{"source":"column","column":4}"#).expect("valid");
+        assert_eq!(
+            c,
+            CommoditySource::Column {
+                column: ColumnRef::Index(4)
+            }
+        );
+    }
+
+    #[test]
+    fn commodity_always_serializes_tagged() {
+        let fixed = CommoditySource::Fixed {
+            code: "AUD".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&fixed).expect("serialize"),
+            r#"{"source":"fixed","code":"AUD"}"#
+        );
+        let column = CommoditySource::Column {
+            column: ColumnRef::Name("Coin".to_owned()),
+        };
+        assert_eq!(
+            serde_json::to_string(&column).expect("serialize"),
+            r#"{"source":"column","column":"Coin"}"#
+        );
+    }
+
+    #[test]
+    fn commodity_absent_deserializes_as_none() {
+        let cfg: Config = serde_json::from_str(r#"{"account":"Assets:Bank","source_dir":"Bank"}"#)
+            .expect("commodity is optional at the serde layer");
+        assert!(cfg.commodity.is_none());
     }
 }
