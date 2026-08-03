@@ -156,10 +156,13 @@ impl CsvImporter {
 
         let date_idx = resolve(&col_index, &cfg.date_column)?;
 
-        let commodity_source = cfg.commodity.as_ref().ok_or_else(|| ImportError::BadValue {
-            field: "commodity".to_owned(),
-            detail: "commodity is not set; give a code or a column".to_owned(),
-        })?;
+        let commodity_source = cfg
+            .commodity
+            .as_ref()
+            .ok_or_else(|| ImportError::BadValue {
+                field: "commodity".to_owned(),
+                detail: "commodity is not set; give a code or a column".to_owned(),
+            })?;
 
         let mut transactions = Vec::new();
 
@@ -237,7 +240,11 @@ impl CsvImporter {
                 };
                 let code = match row_commodity(&leg.commodity, &record, &col_index) {
                     Ok(code) => code,
-                    Err(e) => {
+                    // A blank cell means this row does not name the leg's
+                    // commodity, which is a per-row omission. An unresolvable
+                    // column reference is a profile that does not match the
+                    // file, and would drop the leg from every row silently.
+                    Err(e @ ImportError::BadValue { .. }) => {
                         bc_sdk::warn!(
                             "extra leg has an amount but no commodity; dropping the leg";
                             account = leg.account.clone(),
@@ -246,6 +253,7 @@ impl CsvImporter {
                         );
                         continue;
                     }
+                    Err(e) => return Err(e),
                 };
                 let value = if leg.negate { -value } else { value };
                 postings.push(
@@ -1625,5 +1633,41 @@ mod tests {
             .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
             .expect("the row still parses");
         assert_eq!(txs[0].postings.len(), 1);
+    }
+
+    /// A blank cell omits one leg on one row, but a commodity column the file
+    /// does not have is a profile that does not match the file: dropping the
+    /// leg would silently discard it from every row.
+    #[test]
+    fn import_fails_when_an_extra_leg_commodity_column_is_absent() {
+        let csv = "Date,Base,Quantity,Fees\n\
+                   2025-01-02,BTC,0.50000000,25.00\n";
+        let cfg = Config {
+            account: "Assets:Crypto:Exchange".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Quantity".to_owned()),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Base".to_owned()),
+            }),
+            extra_legs: vec![LegSpec {
+                account: "Expenses:Fees".to_owned(),
+                amount_columns: AmountColumns::Single {
+                    column: ColumnRef::Name("Fees".to_owned()),
+                },
+                commodity: CommoditySource::Column {
+                    column: ColumnRef::Name("Quote".to_owned()),
+                },
+                negate: false,
+            }],
+            ..Config::default()
+        };
+        let err = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect_err("an unresolvable commodity column aborts the import");
+        assert!(
+            matches!(err, ImportError::MissingField(ref field) if field.contains("Quote")),
+            "expected a MissingField naming Quote, got {err:?}"
+        );
     }
 }
