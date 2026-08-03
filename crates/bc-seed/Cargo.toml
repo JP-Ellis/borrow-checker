@@ -27,11 +27,13 @@ clap                = { workspace = true }
 jiff                = { workspace = true }
 rust_decimal        = { workspace = true }
 rust_decimal_macros = { workspace = true }
+sqlx                = { workspace = true }
 tokio               = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
 rstest            = { workspace = true }
+tempfile          = { workspace = true }
 
 [lints]
 workspace = true
