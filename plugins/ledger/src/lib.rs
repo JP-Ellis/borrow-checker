@@ -9,7 +9,6 @@ use bc_sdk::ImportError;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
 use bc_sdk::SourceLocation;
-use rust_decimal::Decimal;
 
 mod ast;
 mod config;
@@ -89,10 +88,7 @@ impl bc_sdk::Importer for LedgerImporter {
             for posting in tx.postings {
                 let amount = posting
                     .amount
-                    .map(|ast::PostingAmount { value, commodity }| {
-                        decimal_to_amount(value, commodity)
-                    })
-                    .transpose()?;
+                    .map(|ast::PostingAmount { value, commodity }| Amount::new(value, commodity));
                 postings.push(
                     RawPosting::builder()
                         .account(posting.account)
@@ -136,50 +132,13 @@ impl bc_sdk::Importer for LedgerImporter {
     }
 }
 
-/// Converts a [`rust_decimal::Decimal`] and currency string into a [`bc_sdk::Amount`].
-///
-/// The minor units are derived from the decimal's mantissa (already in minor-unit form).
-///
-/// # Arguments
-///
-/// * `value` - The decimal value to convert.
-/// * `currency` - The ISO 4217 currency code, e.g. `"AUD"`.
-///
-/// # Returns
-///
-/// A [`bc_sdk::Amount`] with `minor_units`, `currency`, and `scale` set.
-///
-/// # Errors
-///
-/// Returns [`ImportError::Parse`] if the decimal mantissa does not fit in an
-/// `i64` (i.e. the value is too large to represent as minor units).
-#[inline]
-fn decimal_to_amount(value: Decimal, currency: impl Into<String>) -> Result<Amount, ImportError> {
-    // Decimal::mantissa() is already the unscaled integer (minor units).
-    // For 50.00: mantissa=5000, scale=2 → minor_units=5000 (correct: 50.00 AUD = 5000 cents)
-    let minor_units = i64::try_from(value.mantissa()).map_err(|_| {
-        ImportError::Parse(format!(
-            "amount mantissa overflows i64: {value} is too large to represent"
-        ))
-    })?;
-    // rust_decimal caps scale at 28, well within u8::MAX (255); try_from makes
-    // this invariant explicit and returns an error if it ever breaks.
-    let scale = u8::try_from(value.scale()).map_err(|_| {
-        ImportError::Parse(format!(
-            "decimal scale {} exceeds u8 maximum ({})",
-            value.scale(),
-            u8::MAX
-        ))
-    })?;
-    Ok(Amount::new(minor_units, currency, scale))
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
 
     use bc_sdk::Importer as _;
     use pretty_assertions::assert_eq;
+    use rust_decimal_macros::dec;
 
     use super::*;
 
@@ -213,11 +172,14 @@ mod tests {
         assert_eq!(txs[0].date, bc_sdk::Date::new(2025_i32, 1_u8, 15_u8));
         assert_eq!(txs[0].postings.len(), 2);
         assert_eq!(txs[0].postings[0].account, "Expenses:Food");
-        assert_eq!(txs[0].postings[0].amount, Some(Amount::new(5000, "AUD", 2)));
+        assert_eq!(
+            txs[0].postings[0].amount,
+            Some(Amount::new(dec!(50.00), "AUD"))
+        );
         assert_eq!(txs[0].postings[1].account, "Assets:Bank");
         assert_eq!(
             txs[0].postings[1].amount,
-            Some(Amount::new(-5000, "AUD", 2))
+            Some(Amount::new(dec!(-50.00), "AUD"))
         );
     }
 
@@ -236,7 +198,7 @@ mod tests {
         assert_eq!(txs[0].postings[0].account, "Expenses:Rent");
         assert_eq!(
             txs[0].postings[0].amount,
-            Some(Amount::new(150_000, "AUD", 2))
+            Some(Amount::new(dec!(1500.00), "AUD"))
         );
         assert_eq!(txs[0].postings[1].account, "Assets:Bank");
         assert_eq!(txs[0].postings[1].amount, None);

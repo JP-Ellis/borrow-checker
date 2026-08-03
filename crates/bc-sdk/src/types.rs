@@ -2,13 +2,15 @@
 //!
 //! These types are a simplified, WASM-portable representation of the domain
 //! types in `bc_core` / `bc_models`. They are intentionally different: dates
-//! are plain `{year, month, day}` integers; amounts use minor units rather
-//! than `rust_decimal::Decimal`. The conversion layer in `bc_plugins::translate`
-//! bridges between these wire types and the host's domain types.
+//! are plain `{year, month, day}` integers; amounts carry their commodity as
+//! a source-supplied string rather than a validated commodity code. The
+//! conversion layer in `bc_plugins::translate` bridges between these wire
+//! types and the host's domain types.
 //!
 //! If you change a type here, verify that `bc_plugins::translate` still compiles
 //! and produces correct values.
 
+use rust_decimal::Decimal;
 use serde::de::DeserializeOwned;
 
 /// A calendar date.
@@ -95,18 +97,16 @@ fn days_in_month(year: i32, month: u8) -> u8 {
     }
 }
 
-/// A monetary amount represented in minor units to avoid floating-point imprecision.
+/// A monetary amount, carried as an exact decimal rather than minor units.
 ///
-/// Example: AUD 10.50 → `minor_units = 1050`, `currency = "AUD"`, `scale = 2`.
+/// Example: AUD 10.50 → `value = dec!(10.50)`, `commodity = "AUD"`.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Amount {
-    /// Minor units (e.g. cents). Negative for debits.
-    pub minor_units: i64,
-    /// ISO 4217 currency code, e.g. `"AUD"`.
-    pub currency: String,
-    /// Number of decimal places, e.g. `2` for AUD cents.
-    pub scale: u8,
+    /// The exact decimal value. Negative for debits.
+    pub value: Decimal,
+    /// Commodity code as the source names it, e.g. `"AUD"`, `"BTC"`.
+    pub commodity: String,
 }
 
 impl Amount {
@@ -114,20 +114,18 @@ impl Amount {
     ///
     /// # Arguments
     ///
-    /// * `minor_units` - Minor units (e.g. cents). Negative for debits.
-    /// * `currency` - ISO 4217 currency code, e.g. `"AUD"`.
-    /// * `scale` - Number of decimal places, e.g. `2` for AUD cents.
+    /// * `value` - The exact decimal value. Negative for debits.
+    /// * `commodity` - Commodity code as the source names it, e.g. `"AUD"`.
     ///
     /// # Returns
     ///
     /// A new [`Amount`] with the given fields.
     #[inline]
     #[must_use]
-    pub fn new(minor_units: i64, currency: impl Into<String>, scale: u8) -> Self {
+    pub fn new(value: Decimal, commodity: impl Into<String>) -> Self {
         Self {
-            minor_units,
-            currency: currency.into(),
-            scale,
+            value,
+            commodity: commodity.into(),
         }
     }
 }
@@ -378,9 +376,8 @@ impl From<Amount> for WitAmount {
     #[inline]
     fn from(a: Amount) -> Self {
         Self {
-            minor_units: a.minor_units,
-            currency: a.currency,
-            scale: a.scale,
+            value: a.value.to_string(),
+            commodity: a.commodity,
         }
     }
 }
@@ -401,9 +398,36 @@ impl From<ImportError> for WitImportError {
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
     use serde::Deserialize;
 
     use super::*;
+    use crate::__bindings::borrow_checker::sdk::types::Amount as WitAmount;
+
+    #[test]
+    fn amount_carries_a_decimal_and_a_commodity() {
+        let a = Amount::new(dec!(10.50), "AUD");
+        assert_eq!(a.value, dec!(10.50));
+        assert_eq!(a.commodity, "AUD");
+    }
+
+    /// The old i64 minor-units wire format capped an 18-decimal value at ±9.223.
+    /// Real exchange exports exceed that, so the string form must carry it intact.
+    #[test]
+    fn amount_survives_eighteen_decimal_places_above_the_old_i64_ceiling() {
+        let big = Decimal::from_str_exact("123.456789012345678").expect("valid decimal");
+        let wit: WitAmount = Amount::new(big, "ETH").into();
+        assert_eq!(wit.value, "123.456789012345678");
+        assert_eq!(wit.commodity, "ETH");
+    }
+
+    /// Trailing zeros are significant: they are the source's stated precision.
+    #[test]
+    fn amount_preserves_trailing_zeros_on_the_wire() {
+        let wit: WitAmount = Amount::new(dec!(50.00), "AUD").into();
+        assert_eq!(wit.value, "50.00");
+    }
 
     #[test]
     fn import_config_as_typed_round_trips() {
@@ -431,10 +455,9 @@ mod tests {
 
     #[test]
     fn amount_new_stores_fields() {
-        let a = Amount::new(1050_i64, "AUD", 2_u8);
-        assert_eq!(a.minor_units, 1050);
-        assert_eq!(a.currency, "AUD");
-        assert_eq!(a.scale, 2);
+        let a = Amount::new(dec!(10.50), "AUD");
+        assert_eq!(a.value, dec!(10.50));
+        assert_eq!(a.commodity, "AUD");
     }
 
     #[test]
@@ -472,7 +495,7 @@ mod tests {
             .postings(vec![
                 RawPosting::builder()
                     .account("Assets:Bank:Checking")
-                    .maybe_amount(Some(Amount::new(-500, "AUD", 2)))
+                    .maybe_amount(Some(Amount::new(dec!(-5.00), "AUD")))
                     .build(),
             ])
             .build();
@@ -481,6 +504,6 @@ mod tests {
         assert_eq!(tx.postings.len(), 1);
         let posting = tx.postings.first().expect("one posting");
         assert_eq!(posting.account, "Assets:Bank:Checking");
-        assert_eq!(posting.amount, Some(Amount::new(-500, "AUD", 2)));
+        assert_eq!(posting.amount, Some(Amount::new(dec!(-5.00), "AUD")));
     }
 }

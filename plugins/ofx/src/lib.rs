@@ -13,7 +13,6 @@ use bc_sdk::ImportError;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
 use bc_sdk::SourceLocation;
-use rust_decimal::Decimal;
 
 use crate::config::Config;
 use crate::parser::parse;
@@ -59,8 +58,7 @@ impl bc_sdk::Importer for OfxImporter {
     /// # Errors
     ///
     /// Returns [`ImportError::BadValue`] if `source_file` cannot be read, or
-    /// [`ImportError::Parse`] if the file cannot be parsed or if an amount
-    /// value cannot be represented as an `i64` minor-unit integer.
+    /// [`ImportError::Parse`] if the file cannot be parsed.
     #[inline]
     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
         let cfg: Config = config.as_typed()?;
@@ -76,7 +74,7 @@ impl bc_sdk::Importer for OfxImporter {
             .enumerate()
             .map(|(index, tx)| {
                 let index = index.saturating_add(1);
-                let amount = decimal_to_amount(tx.amount, &stmt.currency)?;
+                let amount = Amount::new(tx.amount, &stmt.currency);
                 let description = tx
                     .memo
                     .as_deref()
@@ -116,35 +114,6 @@ impl bc_sdk::Importer for OfxImporter {
     }
 }
 
-/// Converts a [`Decimal`] value and currency string into a [`bc_sdk::Amount`].
-///
-/// # Arguments
-///
-/// * `value` - The decimal value to convert.
-/// * `currency` - The ISO 4217 currency code (e.g. `"AUD"`).
-///
-/// # Returns
-///
-/// A [`bc_sdk::Amount`] with `minor_units`, `currency`, and `scale` derived
-/// from the decimal's mantissa and exponent.
-///
-/// # Errors
-///
-/// Returns [`ImportError::Parse`] if the decimal value cannot be represented
-/// as an `i64` minor-unit integer.
-#[inline]
-fn decimal_to_amount(value: Decimal, currency: impl Into<String>) -> Result<Amount, ImportError> {
-    let scale = value.scale();
-    // mantissa() gives the unscaled integer: 50.00 → mantissa=5000, scale=2 → minor_units=5000
-    let minor_units = i64::try_from(value.mantissa())
-        .map_err(|_| ImportError::Parse(format!("amount out of i64 range: {value}")))?;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "rust_decimal's max scale is 28, well within u8 range"
-    )]
-    Ok(Amount::new(minor_units, currency, scale as u8))
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
@@ -154,6 +123,7 @@ mod tests {
     use bc_sdk::ImportConfig;
     use bc_sdk::Importer as _;
     use pretty_assertions::assert_eq;
+    use rust_decimal_macros::dec;
 
     use super::*;
 
@@ -209,14 +179,14 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
         assert_eq!(txs[0].postings[0].account, "Assets:Bank:Checking");
         assert_eq!(
             txs[0].postings[0].amount,
-            Some(Amount::new(-5000, "AUD", 2))
+            Some(Amount::new(dec!(-50.00), "AUD"))
         );
         assert_eq!(txs[1].description, "Employer");
         assert_eq!(txs[1].postings.len(), 1);
         assert_eq!(txs[1].postings[0].account, "Assets:Bank:Checking");
         assert_eq!(
             txs[1].postings[0].amount,
-            Some(Amount::new(300_000, "AUD", 2))
+            Some(Amount::new(dec!(3000.00), "AUD"))
         );
     }
 
@@ -283,32 +253,5 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
         assert_eq!(tx.reference, None);
         assert_eq!(tx.postings.len(), 1);
         assert_eq!(tx.postings[0].account, "Assets:Bank:Checking");
-    }
-
-    #[test]
-    fn decimal_to_amount_round_trips_typical_bank_values() {
-        use rust_decimal_macros::dec;
-        assert_eq!(
-            decimal_to_amount(dec!(50.00), "AUD").expect("no overflow"),
-            Amount::new(5000, "AUD", 2)
-        );
-        assert_eq!(
-            decimal_to_amount(dec!(-1234.56), "AUD").expect("no overflow"),
-            Amount::new(-123_456, "AUD", 2)
-        );
-        assert_eq!(
-            decimal_to_amount(dec!(0.00), "AUD").expect("no overflow"),
-            Amount::new(0, "AUD", 2)
-        );
-    }
-
-    #[test]
-    fn decimal_to_amount_overflow_returns_error() {
-        use rust_decimal_macros::dec;
-        let huge = dec!(99999999999999999999999999.99);
-        assert!(
-            decimal_to_amount(huge, "AUD").is_err(),
-            "expected error for out-of-range mantissa"
-        );
     }
 }

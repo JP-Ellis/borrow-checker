@@ -9,16 +9,16 @@ interface types {
         day: u8,
     }
 
-    /// A monetary amount in minor units to avoid floating-point imprecision.
+    /// A monetary amount, carried as a decimal string so no magnitude or
+    /// precision is lost between plugin and host.
     ///
-    /// Example: AUD 10.50 → minor-units=1050, currency="AUD", scale=2
+    /// Example: AUD 10.50 → value="10.50", commodity="AUD"
     record amount {
-        /// Minor units (e.g. cents). Negative for debits.
-        minor-units: s64,
-        /// ISO 4217 currency code, e.g. "AUD".
-        currency: string,
-        /// Number of decimal places, e.g. 2 for AUD cents.
-        scale: u8,
+        /// Decimal value in canonical string form, e.g. "-12.50", "0.000000015".
+        /// Trailing zeros are significant: they are the source's stated precision.
+        value: string,
+        /// Commodity code as the source names it, e.g. "AUD", "BTC".
+        commodity: string,
     }
 
     /// A single posting leg of a raw transaction, prior to account-id resolution.

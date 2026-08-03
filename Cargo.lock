@@ -565,6 +565,8 @@ dependencies = [
  "bc-sdk-macros",
  "bon",
  "pretty_assertions",
+ "rust_decimal",
+ "rust_decimal_macros",
  "serde",
  "serde_json",
  "thiserror 2.0.19",

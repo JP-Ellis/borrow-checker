@@ -56,6 +56,8 @@ pub use bc_sdk_macros::importer;
 /// runtime. The host attributes them to `target = "bc::plugin"`.
 pub mod log;
 
+pub use rust_decimal::Decimal;
+
 pub mod types;
 pub use types::Amount;
 pub use types::Date;
