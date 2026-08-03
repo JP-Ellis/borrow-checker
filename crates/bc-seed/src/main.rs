@@ -207,6 +207,12 @@ async fn main() -> anyhow::Result<()> {
             config.months, config.tx_per_month
         );
         generate::run(&pool, &config).await?;
+        // Checkpoint so the on-disk `.db` file holds the full ledger
+        // deterministically; otherwise how much data sits in the `-wal`
+        // sidecar depends on async-runtime shutdown timing at process exit.
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE);")
+            .execute(&pool)
+            .await?;
         println!("Generated ledger written to {}", args.db_path.display());
         return Ok(());
     }
