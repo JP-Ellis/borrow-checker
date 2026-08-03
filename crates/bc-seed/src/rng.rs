@@ -6,7 +6,11 @@
 
 #![cfg_attr(
     not(test),
-    expect(dead_code, reason = "consumed by the generator in Task 2")
+    expect(
+        dead_code,
+        reason = "consumed only by generate::plan::build, which is not yet \
+                   wired into main.rs until a later task"
+    )
 )]
 
 /// Multiplier for the xorshift64\* output scrambler.
