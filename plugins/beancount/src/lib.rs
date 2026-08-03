@@ -14,7 +14,6 @@ use bc_sdk::ImportError;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
 use bc_sdk::SourceLocation;
-use rust_decimal::Decimal;
 
 use crate::ast::Directive;
 use crate::ast::PostingAmount;
@@ -83,8 +82,7 @@ impl bc_sdk::Importer for BeancountImporter {
             for posting in tx.postings {
                 let amount = posting
                     .amount
-                    .map(|PostingAmount { value, currency }| decimal_to_amount(value, currency))
-                    .transpose()?;
+                    .map(|PostingAmount { value, currency }| Amount::new(value, currency));
                 postings.push(
                     RawPosting::builder()
                         .account(posting.account)
@@ -122,35 +120,6 @@ impl bc_sdk::Importer for BeancountImporter {
     }
 }
 
-/// Converts a [`Decimal`] value and currency string into a [`bc_sdk::Amount`].
-///
-/// # Arguments
-///
-/// * `value` - The decimal value to convert.
-/// * `currency` - The ISO 4217 currency code (e.g. `"AUD"`).
-///
-/// # Returns
-///
-/// A [`bc_sdk::Amount`] with `minor_units`, `currency`, and `scale` derived
-/// from the decimal's mantissa and exponent.
-///
-/// # Errors
-///
-/// Returns [`ImportError::Parse`] if the decimal value cannot be represented
-/// as an `i64` minor-unit integer.
-#[inline]
-fn decimal_to_amount(value: Decimal, currency: impl Into<String>) -> Result<Amount, ImportError> {
-    let scale = value.scale();
-    // mantissa() gives the unscaled integer: 50.00 → mantissa=5000, scale=2 → minor_units=5000
-    let minor_units = i64::try_from(value.mantissa())
-        .map_err(|_| ImportError::Parse(format!("amount out of i64 range: {value}")))?;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "rust_decimal's max scale is 28, well within u8 range"
-    )]
-    Ok(Amount::new(minor_units, currency, scale as u8))
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
@@ -160,6 +129,7 @@ mod tests {
     use bc_sdk::ImportConfig;
     use bc_sdk::Importer as _;
     use pretty_assertions::assert_eq;
+    use rust_decimal_macros::dec;
 
     use super::*;
 
@@ -194,9 +164,15 @@ mod tests {
         assert_eq!(tx.date, Date::new(2025, 1, 15));
         assert_eq!(tx.postings.len(), 2);
         assert_eq!(tx.postings[0].account, "Assets:Bank:Checking");
-        assert_eq!(tx.postings[0].amount, Some(Amount::new(432_100, "AUD", 2)));
+        assert_eq!(
+            tx.postings[0].amount,
+            Some(Amount::new(dec!(4321.00), "AUD"))
+        );
         assert_eq!(tx.postings[1].account, "Income:Salary:Acme");
-        assert_eq!(tx.postings[1].amount, Some(Amount::new(-432_100, "AUD", 2)));
+        assert_eq!(
+            tx.postings[1].amount,
+            Some(Amount::new(dec!(-4321.00), "AUD"))
+        );
     }
 
     #[test]
@@ -210,9 +186,9 @@ mod tests {
         assert_eq!(tx.description, "Transfer");
         assert_eq!(tx.postings.len(), 2);
         assert_eq!(tx.postings[0].account, "A:B");
-        assert_eq!(tx.postings[0].amount, Some(Amount::new(100, "AUD", 2)));
+        assert_eq!(tx.postings[0].amount, Some(Amount::new(dec!(1.00), "AUD")));
         assert_eq!(tx.postings[1].account, "A:C");
-        assert_eq!(tx.postings[1].amount, Some(Amount::new(-100, "AUD", 2)));
+        assert_eq!(tx.postings[1].amount, Some(Amount::new(dec!(-1.00), "AUD")));
     }
 
     #[test]
@@ -238,9 +214,15 @@ mod tests {
         assert_eq!(tx.description, "FX Purchase");
         assert_eq!(tx.postings.len(), 2);
         assert_eq!(tx.postings[0].account, "Assets:USD");
-        assert_eq!(tx.postings[0].amount, Some(Amount::new(10000, "USD", 2)));
+        assert_eq!(
+            tx.postings[0].amount,
+            Some(Amount::new(dec!(100.00), "USD"))
+        );
         assert_eq!(tx.postings[1].account, "Assets:AUD");
-        assert_eq!(tx.postings[1].amount, Some(Amount::new(-15000, "AUD", 2)));
+        assert_eq!(
+            tx.postings[1].amount,
+            Some(Amount::new(dec!(-150.00), "AUD"))
+        );
     }
 
     #[test]
@@ -256,7 +238,7 @@ mod tests {
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(tx.postings.len(), 2);
         assert_eq!(tx.postings[0].account, "Expenses:Food");
-        assert_eq!(tx.postings[0].amount, Some(Amount::new(5000, "AUD", 2)));
+        assert_eq!(tx.postings[0].amount, Some(Amount::new(dec!(50.00), "AUD")));
         assert_eq!(tx.postings[1].account, "Assets:Bank");
         assert_eq!(tx.postings[1].amount, None);
     }
@@ -289,38 +271,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn decimal_to_amount_round_trips_typical_bank_values() {
-        use rust_decimal_macros::dec;
-        assert_eq!(
-            decimal_to_amount(dec!(50.00), "AUD").expect("no overflow"),
-            Amount::new(5000, "AUD", 2)
-        );
-        assert_eq!(
-            decimal_to_amount(dec!(-1234.56), "AUD").expect("no overflow"),
-            Amount::new(-123_456, "AUD", 2)
-        );
-        assert_eq!(
-            decimal_to_amount(dec!(0.00), "AUD").expect("no overflow"),
-            Amount::new(0, "AUD", 2)
-        );
-        assert_eq!(
-            decimal_to_amount(dec!(1.0), "AUD").expect("no overflow"),
-            Amount::new(10, "AUD", 1)
-        );
-    }
-
-    #[test]
-    fn decimal_to_amount_overflow_returns_error() {
-        use rust_decimal_macros::dec;
-        // A value whose mantissa exceeds i64::MAX should return an error,
-        // not silently saturate to i64::MAX.
-        let huge = dec!(99999999999999999999999999.99);
-        assert!(
-            decimal_to_amount(huge, "AUD").is_err(),
-            "expected error for out-of-range mantissa"
-        );
-    }
     #[test]
     #[expect(
         clippy::indexing_slicing,

@@ -33,15 +33,17 @@ fn wit_date(d: wt::Date) -> Result<jiff::civil::Date, bc_core::ImportError> {
     })
 }
 
-impl From<wt::RawPosting> for bc_core::RawPosting {
-    fn from(p: wt::RawPosting) -> Self {
-        bc_core::RawPosting::builder()
+impl TryFrom<wt::RawPosting> for bc_core::RawPosting {
+    type Error = bc_core::ImportError;
+
+    fn try_from(p: wt::RawPosting) -> Result<Self, Self::Error> {
+        Ok(bc_core::RawPosting::builder()
             .account(p.account)
-            .maybe_amount(p.amount.map(Amount::from))
-            .maybe_balance(p.balance.map(Amount::from))
+            .maybe_amount(p.amount.map(Amount::try_from).transpose()?)
+            .maybe_balance(p.balance.map(Amount::try_from).transpose()?)
             .maybe_note(p.note)
             .tags(p.tags)
-            .build()
+            .build())
     }
 }
 
@@ -80,16 +82,28 @@ impl TryFrom<wt::RawTransaction> for bc_core::RawTransaction {
             .tags(t.tags)
             .extra_dates(extra_dates)
             .maybe_source_location(t.source_location.map(Into::into))
-            .postings(t.postings.into_iter().map(Into::into).collect())
+            .postings(
+                t.postings
+                    .into_iter()
+                    .map(bc_core::RawPosting::try_from)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
             .build())
     }
 }
 
-impl From<wt::Amount> for Amount {
+impl TryFrom<wt::Amount> for Amount {
+    type Error = bc_core::ImportError;
+
     #[inline]
-    fn from(a: wt::Amount) -> Self {
-        let decimal = Decimal::new(a.minor_units, u32::from(a.scale));
-        Amount::new(decimal, CommodityCode::new(a.currency))
+    fn try_from(a: wt::Amount) -> Result<Self, Self::Error> {
+        let value = Decimal::from_str_exact(&a.value).map_err(|e| {
+            bc_core::ImportError::Parse(format!(
+                "plugin returned an unparsable amount {:?}: {e}",
+                a.value
+            ))
+        })?;
+        Ok(Amount::new(value, CommodityCode::new(a.commodity)))
     }
 }
 
@@ -114,6 +128,41 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use crate::host::bindings::borrow_checker::sdk::types as wt;
+
+    #[test]
+    fn wit_amount_parses_a_decimal_string_preserving_scale() {
+        let a = wt::Amount {
+            value: "50.00".to_owned(),
+            commodity: "AUD".to_owned(),
+        };
+        let parsed = bc_models::Amount::try_from(a).expect("valid decimal string");
+        assert_eq!(parsed.value().to_string(), "50.00");
+        assert_eq!(parsed.commodity().as_str(), "AUD");
+    }
+
+    #[test]
+    fn wit_amount_carries_eighteen_decimal_places() {
+        let a = wt::Amount {
+            value: "123.456789012345678".to_owned(),
+            commodity: "ETH".to_owned(),
+        };
+        let parsed = bc_models::Amount::try_from(a).expect("valid decimal string");
+        assert_eq!(parsed.value().to_string(), "123.456789012345678");
+    }
+
+    /// A string wire format admits a failure the old integer one could not.
+    #[test]
+    fn wit_amount_rejects_an_unparsable_string() {
+        let a = wt::Amount {
+            value: "not-a-number".to_owned(),
+            commodity: "AUD".to_owned(),
+        };
+        let err = bc_models::Amount::try_from(a).expect_err("garbage must not parse");
+        assert!(
+            err.to_string().contains("not-a-number"),
+            "the error should quote the offending value: {err}"
+        );
+    }
 
     #[test]
     fn wit_to_raw_transaction_rejects_out_of_range_month() {
@@ -179,9 +228,8 @@ mod tests {
             postings: vec![wt::RawPosting {
                 account: "Assets:Bank:Checking".to_owned(),
                 amount: Some(wt::Amount {
-                    minor_units: -500_i64,
-                    currency: "AUD".to_owned(),
-                    scale: 2_u8,
+                    value: "-5.00".to_owned(),
+                    commodity: "AUD".to_owned(),
                 }),
                 balance: None,
                 note: None,

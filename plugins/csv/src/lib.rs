@@ -183,7 +183,7 @@ impl CsvImporter {
             );
 
             let amount_value = parse_amount(cfg, &record, &col_index)?;
-            let amount = decimal_to_amount(amount_value, commodity, "amount")?;
+            let amount = Amount::new(amount_value, commodity);
 
             let balance = if let Some(column) = cfg.balance_column.as_ref() {
                 let idx = resolve(&col_index, column)?;
@@ -197,7 +197,7 @@ impl CsvImporter {
                             field: column.describe(),
                             detail: e,
                         })?;
-                    Some(decimal_to_amount(val, commodity, &column.describe())?)
+                    Some(Amount::new(val, commodity))
                 }
             } else {
                 None
@@ -232,42 +232,6 @@ impl CsvImporter {
 
         Ok(transactions)
     }
-}
-
-/// Converts a [`Decimal`] value and currency string into a [`bc_sdk::Amount`].
-///
-/// # Arguments
-///
-/// * `value` - The decimal value to convert.
-/// * `currency` - The ISO 4217 currency code (e.g. `"AUD"`).
-/// * `field_name` - The CSV field name, used in error messages.
-///
-/// # Returns
-///
-/// A [`bc_sdk::Amount`] with `minor_units`, `currency`, and `scale` set
-/// from the decimal's mantissa and exponent.
-///
-/// # Errors
-///
-/// Returns [`ImportError::BadValue`] if the value overflows `i64` minor units.
-#[inline]
-fn decimal_to_amount(
-    value: Decimal,
-    currency: impl Into<String>,
-    field_name: &str,
-) -> Result<Amount, ImportError> {
-    let scale = value.scale();
-    // `Decimal::mantissa()` gives the integer backing the decimal: e.g.
-    // `50.00` has mantissa=5000 and scale=2, which is exactly the minor-units
-    // value we want.  No further multiplication is needed.
-    let minor_units = i64::try_from(value.mantissa()).map_err(|_| ImportError::BadValue {
-        field: field_name.to_owned(),
-        detail: format!("amount {value} overflows i64 minor units"),
-    })?;
-    // scale is the number of decimal digits; monetary values have at most
-    // 28 digits of scale so saturating to u8::MAX is safe in practice.
-    let scale_u8 = scale.min(255) as u8;
-    Ok(Amount::new(minor_units, currency, scale_u8))
 }
 
 /// Returns the value of a record field at the given index, or an error if the
@@ -559,26 +523,6 @@ mod tests {
     }
 
     #[test]
-    fn decimal_to_amount_round_trips_typical_bank_values() {
-        assert_eq!(
-            decimal_to_amount(dec!(50.00), "AUD", "amount").expect("50.00 should convert"),
-            Amount::new(5000, "AUD", 2)
-        );
-        assert_eq!(
-            decimal_to_amount(dec!(-1234.56), "AUD", "amount").expect("-1234.56 should convert"),
-            Amount::new(-123_456, "AUD", 2)
-        );
-        assert_eq!(
-            decimal_to_amount(dec!(0.00), "AUD", "amount").expect("0.00 should convert"),
-            Amount::new(0, "AUD", 2)
-        );
-        assert_eq!(
-            decimal_to_amount(dec!(1.0), "AUD", "amount").expect("1.0 should convert"),
-            Amount::new(10, "AUD", 1)
-        );
-    }
-
-    #[test]
     fn import_simple_csv() {
         let dir = std::env::temp_dir().join("bc-csv-import-simple-test");
         let _ = std::fs::remove_dir_all(&dir);
@@ -612,8 +556,7 @@ mod tests {
         assert_eq!(t0.date, Date::new(2025, 3, 15));
         assert_eq!(t0.postings.len(), 1);
         assert_eq!(t0.postings[0].account, "Assets:Bank:Checking");
-        // 50.00 AUD → minor_units=5000, scale=2
-        assert_eq!(t0.postings[0].amount, Some(Amount::new(5000, "AUD", 2)));
+        assert_eq!(t0.postings[0].amount, Some(Amount::new(dec!(50.00), "AUD")));
         assert_eq!(t0.postings[0].balance, None);
         assert_eq!(t0.description, "Coffee shop");
         assert_eq!(t0.payee.as_deref(), Some("Java Hut"));
@@ -622,8 +565,10 @@ mod tests {
         assert_eq!(t1.date, Date::new(2025, 3, 16));
         assert_eq!(t1.postings.len(), 1);
         assert_eq!(t1.postings[0].account, "Assets:Bank:Checking");
-        // -120.00 AUD → minor_units=-12000, scale=2
-        assert_eq!(t1.postings[0].amount, Some(Amount::new(-12000, "AUD", 2)));
+        assert_eq!(
+            t1.postings[0].amount,
+            Some(Amount::new(dec!(-120.00), "AUD"))
+        );
         assert_eq!(t1.description, "Groceries");
         assert_eq!(t1.payee, None);
     }
@@ -806,13 +751,13 @@ mod tests {
         assert_eq!(txns[0].date, Date::new(2025, 2, 1));
         assert_eq!(
             txns[0].postings[0].amount,
-            Some(Amount::new(12000, "AUD", 2))
+            Some(Amount::new(dec!(120.00), "AUD"))
         );
         assert_eq!(txns[0].description, "GENERIC GROCER");
         assert_eq!(txns[1].date, Date::new(2025, 2, 2));
         assert_eq!(
             txns[1].postings[0].amount,
-            Some(Amount::new(-4500, "AUD", 2))
+            Some(Amount::new(dec!(-45.00), "AUD"))
         );
     }
 
@@ -946,16 +891,16 @@ mod tests {
         assert_eq!(txns[0].date, Date::new(2025, 2, 1));
         assert_eq!(
             txns[0].postings[0].amount,
-            Some(Amount::new(12000, "AUD", 2))
+            Some(Amount::new(dec!(120.00), "AUD"))
         );
         assert_eq!(
             txns[0].postings[0].balance,
-            Some(Amount::new(-123_456, "AUD", 2))
+            Some(Amount::new(dec!(-1234.56), "AUD"))
         );
         assert_eq!(txns[0].description, "Repayment/Payment");
         assert_eq!(
             txns[1].postings[0].amount,
-            Some(Amount::new(-4500, "AUD", 2))
+            Some(Amount::new(dec!(-45.00), "AUD"))
         );
     }
 
@@ -992,7 +937,7 @@ mod tests {
         assert_eq!(txns[0].date, Date::new(2025, 2, 3));
         assert_eq!(
             txns[0].postings[0].amount,
-            Some(Amount::new(-3303, "AUD", 2))
+            Some(Amount::new(dec!(-33.03), "AUD"))
         );
         assert_eq!(
             txns[0].description,
@@ -1071,7 +1016,7 @@ mod tests {
         assert_eq!(txns[0].description, "GENERIC GROCER");
         assert_eq!(
             txns[0].postings[0].amount,
-            Some(Amount::new(12000, "AUD", 2))
+            Some(Amount::new(dec!(120.00), "AUD"))
         );
     }
 
@@ -1221,11 +1166,11 @@ mod tests {
         // A positive debit figure is money out, so it is negated.
         assert_eq!(
             txs[0].postings[0].amount,
-            Some(Amount::new(-3303, "AUD", 2))
+            Some(Amount::new(dec!(-33.03), "AUD"))
         );
         assert_eq!(
             txs[1].postings[0].amount,
-            Some(Amount::new(36900, "AUD", 2))
+            Some(Amount::new(dec!(369.00), "AUD"))
         );
     }
 
