@@ -1,5 +1,6 @@
 //! Configuration types for the CSV importer.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 /// How a column is addressed within a CSV row.
@@ -348,18 +349,19 @@ impl Config {
     /// A `Vec` of `(field name, reference)` pairs.
     #[must_use]
     #[inline]
-    pub fn required_column_refs(&self) -> Vec<(&'static str, &ColumnRef)> {
-        let mut refs: Vec<(&'static str, &ColumnRef)> = vec![("date_column", &self.date_column)];
+    pub fn required_column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
+        let mut refs: Vec<(Cow<'static, str>, &ColumnRef)> =
+            vec![(Cow::Borrowed("date_column"), &self.date_column)];
         match self.amount_columns {
             AmountColumns::Single { ref column } => {
-                refs.push(("amount_columns.column", column));
+                refs.push((Cow::Borrowed("amount_columns.column"), column));
             }
             AmountColumns::SplitDebitCredit {
                 ref debit_column,
                 ref credit_column,
             } => {
-                refs.push(("amount_columns.debit_column", debit_column));
-                refs.push(("amount_columns.credit_column", credit_column));
+                refs.push((Cow::Borrowed("amount_columns.debit_column"), debit_column));
+                refs.push((Cow::Borrowed("amount_columns.credit_column"), credit_column));
             }
         }
         refs
@@ -383,7 +385,7 @@ impl Config {
     /// then whichever optional columns are set.
     #[must_use]
     #[inline]
-    pub fn column_refs(&self) -> Vec<(&'static str, &ColumnRef)> {
+    pub fn column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
         let mut refs = self.required_column_refs();
         let optional: [(&'static str, &Option<ColumnRef>); 4] = [
             ("payee_column", &self.payee_column),
@@ -393,7 +395,7 @@ impl Config {
         ];
         for (field, maybe_ref) in optional {
             if let Some(column) = maybe_ref.as_ref() {
-                refs.push((field, column));
+                refs.push((Cow::Borrowed(field), column));
             }
         }
         refs
@@ -444,9 +446,12 @@ impl Config {
     pub fn validate(&self) -> Result<(), bc_sdk::ImportError> {
         let mut problems: Vec<String> = Vec::new();
 
-        let mut by_column: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
+        let mut by_column: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (field, column) in self.column_refs() {
-            by_column.entry(column.dedup_key()).or_default().push(field);
+            by_column
+                .entry(column.dedup_key())
+                .or_default()
+                .push(field.into_owned());
         }
         for (_, fields) in by_column.iter().filter(|&(_, group)| group.len() > 1) {
             problems.push(format!(
@@ -458,11 +463,11 @@ impl Config {
 
         match self.header {
             Header::Absent => {
-                let named: Vec<&str> = self
+                let named: Vec<String> = self
                     .column_refs()
                     .into_iter()
                     .filter(|&(_, column)| column.as_name().is_some())
-                    .map(|(field, _)| field)
+                    .map(|(field, _)| field.into_owned())
                     .collect();
                 if !named.is_empty() {
                     problems.push(format!(
@@ -483,11 +488,11 @@ impl Config {
                     );
                 }
 
-                let positional: Vec<&str> = self
+                let positional: Vec<String> = self
                     .required_column_refs()
                     .into_iter()
                     .filter(|&(_, column)| column.as_name().is_none())
-                    .map(|(field, _)| field)
+                    .map(|(field, _)| field.into_owned())
                     .collect();
                 if !positional.is_empty() {
                     problems.push(format!(
@@ -807,10 +812,10 @@ mod tests {
             description_column: Some(ColumnRef::Index(2)),
             ..Config::default()
         };
-        let fields: Vec<&str> = cfg
+        let fields: Vec<String> = cfg
             .column_refs()
             .into_iter()
-            .map(|(field, _)| field)
+            .map(|(field, _)| field.into_owned())
             .collect();
         assert_eq!(
             fields,
@@ -821,10 +826,10 @@ mod tests {
     #[test]
     fn column_refs_omits_unset_optional_columns() {
         let cfg = Config::default();
-        let fields: Vec<&str> = cfg
+        let fields: Vec<String> = cfg
             .column_refs()
             .into_iter()
-            .map(|(field, _)| field)
+            .map(|(field, _)| field.into_owned())
             .collect();
         assert_eq!(fields, vec!["date_column", "amount_columns.column"]);
     }
@@ -838,10 +843,10 @@ mod tests {
             },
             ..Config::default()
         };
-        let fields: Vec<&str> = cfg
+        let fields: Vec<String> = cfg
             .column_refs()
             .into_iter()
-            .map(|(field, _)| field)
+            .map(|(field, _)| field.into_owned())
             .collect();
         assert_eq!(
             fields,
