@@ -432,21 +432,17 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Returns the column references that must resolve for any import, paired
-    /// with their config field names.
-    ///
-    /// These are the date column, the amount column(s), and — when the
-    /// commodity is column-sourced — the commodity column: the ones without
-    /// which a row cannot become a posting.
+    /// Returns the amount column(s) and, when the commodity is
+    /// column-sourced, the commodity column — the references shared by
+    /// [`Self::required_column_refs`] and [`Self::leg_column_refs`], which
+    /// each prepend or append their own extras around this shared core.
     ///
     /// # Returns
     ///
     /// A `Vec` of `(field name, reference)` pairs.
-    #[must_use]
     #[inline]
-    pub fn required_column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
-        let mut refs: Vec<(Cow<'static, str>, &ColumnRef)> =
-            vec![(Cow::Borrowed("date_column"), &self.date_column)];
+    fn amount_and_commodity_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
+        let mut refs: Vec<(Cow<'static, str>, &ColumnRef)> = Vec::new();
         match self.amount_columns {
             AmountColumns::Single { ref column } => {
                 refs.push((Cow::Borrowed("amount_columns.column"), column));
@@ -462,6 +458,25 @@ impl Config {
         if let Some(CommoditySource::Column { ref column }) = self.commodity {
             refs.push((Cow::Borrowed("commodity.column"), column));
         }
+        refs
+    }
+
+    /// Returns the column references that must resolve for any import, paired
+    /// with their config field names.
+    ///
+    /// These are the date column, the amount column(s), and — when the
+    /// commodity is column-sourced — the commodity column: the ones without
+    /// which a row cannot become a posting.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec` of `(field name, reference)` pairs.
+    #[must_use]
+    #[inline]
+    pub fn required_column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
+        let mut refs: Vec<(Cow<'static, str>, &ColumnRef)> =
+            vec![(Cow::Borrowed("date_column"), &self.date_column)];
+        refs.extend(self.amount_and_commodity_refs());
         refs
     }
 
@@ -504,22 +519,7 @@ impl Config {
     #[must_use]
     #[inline]
     pub fn leg_column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
-        let mut refs: Vec<(Cow<'static, str>, &ColumnRef)> = Vec::new();
-        match self.amount_columns {
-            AmountColumns::Single { ref column } => {
-                refs.push((Cow::Borrowed("amount_columns.column"), column));
-            }
-            AmountColumns::SplitDebitCredit {
-                ref debit_column,
-                ref credit_column,
-            } => {
-                refs.push((Cow::Borrowed("amount_columns.debit_column"), debit_column));
-                refs.push((Cow::Borrowed("amount_columns.credit_column"), credit_column));
-            }
-        }
-        if let Some(CommoditySource::Column { ref column }) = self.commodity {
-            refs.push((Cow::Borrowed("commodity.column"), column));
-        }
+        let mut refs = self.amount_and_commodity_refs();
         if let Some(column) = self.balance_column.as_ref() {
             refs.push((Cow::Borrowed("balance_column"), column));
         }
