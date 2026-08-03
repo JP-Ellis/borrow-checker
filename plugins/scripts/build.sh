@@ -10,7 +10,10 @@ set -euo pipefail
 
 WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PLUGINS_OUT="$WORKSPACE_ROOT/target/plugins"
-PLUGINS=(csv ledger beancount ofx)
+PLUGINS=()
+for manifest in "$WORKSPACE_ROOT"/plugins/*/Cargo.toml; do
+  PLUGINS+=("$(basename "$(dirname "$manifest")")")
+done
 
 mkdir -p "$PLUGINS_OUT"
 
@@ -25,13 +28,11 @@ fi
 for name in "${PLUGINS[@]}"; do
   echo "==> Building plugin: $name"
 
-  manifest="$WORKSPACE_ROOT/plugins/$name/Cargo.toml"
-
-  cargo rustc --release --target wasm32-wasip2 --manifest-path "$manifest" \
+  cargo rustc --release --target wasm32-wasip2 -p "bc-plugin-$name" \
     --crate-type cdylib
 
   # Cargo uses underscores in artifact names: bc-plugin-csv → bc_plugin_csv.wasm
-  wasm_src="$WORKSPACE_ROOT/plugins/$name/target/wasm32-wasip2/release/bc_plugin_${name}.wasm"
+  wasm_src="$WORKSPACE_ROOT/target/wasm32-wasip2/release/bc_plugin_${name}.wasm"
   wasm_dest="$PLUGINS_OUT/${name}.wasm"
 
   if [[ ! -f "$wasm_src" ]]; then

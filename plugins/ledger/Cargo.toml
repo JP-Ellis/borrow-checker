@@ -4,8 +4,6 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-[workspace]
-
 [lib]
 # rlib only: `cdylib` is requested per-invocation by plugins/scripts/build.sh
 # via `cargo rustc --crate-type cdylib`. Declaring it here would make every
