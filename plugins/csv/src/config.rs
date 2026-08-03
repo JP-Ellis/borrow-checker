@@ -422,7 +422,9 @@ impl Default for Config {
             description_column: None,
             reference_column: None,
             balance_column: None,
-            commodity: None,
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
             decimal_separator: default_decimal_separator(),
             thousands_separator: None,
         }
@@ -433,8 +435,9 @@ impl Config {
     /// Returns the column references that must resolve for any import, paired
     /// with their config field names.
     ///
-    /// These are the date column and the amount column(s) — the ones without
-    /// which a row cannot become a transaction.
+    /// These are the date column, the amount column(s), and — when the
+    /// commodity is column-sourced — the commodity column: the ones without
+    /// which a row cannot become a posting.
     ///
     /// # Returns
     ///
@@ -456,40 +459,89 @@ impl Config {
                 refs.push((Cow::Borrowed("amount_columns.credit_column"), credit_column));
             }
         }
+        if let Some(CommoditySource::Column { ref column }) = self.commodity {
+            refs.push((Cow::Borrowed("commodity.column"), column));
+        }
+        refs
+    }
+
+    /// Returns the column references describing the transaction as a whole,
+    /// paired with their config field names.
+    ///
+    /// These name one value per row however many postings the row produces, so
+    /// they form their own distinctness group.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec` of `(field name, reference)` pairs for whichever are configured.
+    #[must_use]
+    #[inline]
+    pub fn transaction_column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
+        let mut refs: Vec<(Cow<'static, str>, &ColumnRef)> =
+            vec![(Cow::Borrowed("date_column"), &self.date_column)];
+        for (field, maybe_ref) in [
+            ("payee_column", &self.payee_column),
+            ("description_column", &self.description_column),
+            ("reference_column", &self.reference_column),
+        ] {
+            if let Some(column) = maybe_ref.as_ref() {
+                refs.push((Cow::Borrowed(field), column));
+            }
+        }
+        refs
+    }
+
+    /// Returns the primary leg's column references, paired with their config
+    /// field names.
+    ///
+    /// A leg's references must be distinct from each other and from the
+    /// transaction-level group, but two *different* legs may share a column —
+    /// a fee leg and a total leg legitimately read one quote-currency column.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec` of `(field name, reference)` pairs.
+    #[must_use]
+    #[inline]
+    pub fn leg_column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
+        let mut refs: Vec<(Cow<'static, str>, &ColumnRef)> = Vec::new();
+        match self.amount_columns {
+            AmountColumns::Single { ref column } => {
+                refs.push((Cow::Borrowed("amount_columns.column"), column));
+            }
+            AmountColumns::SplitDebitCredit {
+                ref debit_column,
+                ref credit_column,
+            } => {
+                refs.push((Cow::Borrowed("amount_columns.debit_column"), debit_column));
+                refs.push((Cow::Borrowed("amount_columns.credit_column"), credit_column));
+            }
+        }
+        if let Some(CommoditySource::Column { ref column }) = self.commodity {
+            refs.push((Cow::Borrowed("commodity.column"), column));
+        }
+        if let Some(column) = self.balance_column.as_ref() {
+            refs.push((Cow::Borrowed("balance_column"), column));
+        }
         refs
     }
 
     /// Returns every configured column reference, paired with its config field
     /// name.
     ///
-    /// Together with [`required_column_refs`] this is the only place that
-    /// enumerates the column fields. A new **optional** column goes in the
-    /// `optional` array below and nowhere else; a new **required** one goes in
-    /// [`required_column_refs`], which this method extends — putting a required
-    /// column here instead would hide it from [`Config::required_column_names`]
-    /// and from the `AutoDetect` arm of [`Config::validate`].
-    ///
-    /// [`required_column_refs`]: Self::required_column_refs
+    /// The union of [`Self::transaction_column_refs`] and
+    /// [`Self::leg_column_refs`], used where the grouping does not matter —
+    /// the headerless check, for instance, which rejects a name wherever it
+    /// appears.
     ///
     /// # Returns
     ///
-    /// A `Vec` of `(field name, reference)` pairs — required columns first,
-    /// then whichever optional columns are set.
+    /// A `Vec` of `(field name, reference)` pairs.
     #[must_use]
     #[inline]
     pub fn column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
-        let mut refs = self.required_column_refs();
-        let optional: [(&'static str, &Option<ColumnRef>); 4] = [
-            ("payee_column", &self.payee_column),
-            ("description_column", &self.description_column),
-            ("reference_column", &self.reference_column),
-            ("balance_column", &self.balance_column),
-        ];
-        for (field, maybe_ref) in optional {
-            if let Some(column) = maybe_ref.as_ref() {
-                refs.push((Cow::Borrowed(field), column));
-            }
-        }
+        let mut refs = self.transaction_column_refs();
+        refs.extend(self.leg_column_refs());
         refs
     }
 
@@ -528,30 +580,52 @@ impl Config {
     /// # Errors
     ///
     /// Returns [`bc_sdk::ImportError::InvalidConfig`] listing every violation:
+    /// - no commodity configured, so rows would have no commodity to post in;
     /// - a name-based column reference when the file has no header row;
-    /// - an index-based date or amount column under [`Header::AutoDetect`],
-    ///   which matches the header line against column names;
+    /// - an index-based required column (including a column-sourced commodity)
+    ///   under [`Header::AutoDetect`], which matches the header line against
+    ///   column names;
     /// - [`Header::AutoDetect`] with `max_scan_lines` of zero, which can never
     ///   find a header;
-    /// - two configuration fields addressing the same column.
+    /// - two configuration fields within the same distinctness group
+    ///   addressing the same column.
     #[inline]
     pub fn validate(&self) -> Result<(), bc_sdk::ImportError> {
         let mut problems: Vec<String> = Vec::new();
 
-        let mut by_column: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (field, column) in self.column_refs() {
-            by_column
-                .entry(column.dedup_key())
-                .or_default()
-                .push(field.into_owned());
+        if self.commodity.is_none() {
+            problems.push(
+                "commodity is not set, so rows have no commodity to post in. Set it to a \
+                 code (\"AUD\"), or to {\"source\":\"column\",\"column\":\"Coin\"} when each \
+                 row names its own."
+                    .to_owned(),
+            );
         }
-        for (_, fields) in by_column.iter().filter(|&(_, group)| group.len() > 1) {
-            problems.push(format!(
-                "these fields all address the same column: {}. \
-                 Each column reference must denote a distinct column.",
-                fields.join(", ")
-            ));
+
+        /// Records the fields sharing a column within one distinctness group.
+        fn collect_duplicates(
+            group: &[(Cow<'static, str>, &ColumnRef)],
+            problems: &mut Vec<String>,
+        ) {
+            let mut by_column: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for &(ref field, column) in group {
+                by_column
+                    .entry(column.dedup_key())
+                    .or_default()
+                    .push(field.clone().into_owned());
+            }
+            for (_, fields) in by_column.iter().filter(|&(_, g)| g.len() > 1) {
+                problems.push(format!(
+                    "these fields all address the same column: {}. \
+                     Each column reference must denote a distinct column.",
+                    fields.join(", ")
+                ));
+            }
         }
+
+        let mut transaction_and_primary = self.transaction_column_refs();
+        transaction_and_primary.extend(self.leg_column_refs());
+        collect_duplicates(&transaction_and_primary, &mut problems);
 
         match self.header {
             Header::Absent => {
@@ -839,6 +913,101 @@ mod tests {
             .expect("a name and an index are not comparable");
     }
 
+    #[test]
+    fn validate_rejects_a_missing_commodity() {
+        let cfg = Config {
+            commodity: None,
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("a profile must say what commodity its rows are in")
+            .to_string();
+        assert!(msg.contains("commodity"), "should name the field: {msg}");
+    }
+
+    #[test]
+    fn validate_rejects_a_named_commodity_column_on_a_headerless_file() {
+        let cfg = Config {
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(1),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Coin".to_owned()),
+            }),
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("a named ref needs a header row")
+            .to_string();
+        assert!(
+            msg.contains("commodity.column"),
+            "should name the commodity column: {msg}"
+        );
+    }
+
+    /// Auto-detection finds the header by matching column *names*, so every
+    /// required column must contribute one — the commodity column included.
+    #[test]
+    fn validate_rejects_an_indexed_commodity_column_under_auto_detect() {
+        let cfg = Config {
+            header: Header::AutoDetect { max_scan_lines: 10 },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Index(4),
+            }),
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("auto-detect needs a name to match on")
+            .to_string();
+        assert!(
+            msg.contains("commodity.column"),
+            "should name the commodity column: {msg}"
+        );
+    }
+
+    #[test]
+    fn required_column_names_includes_a_named_commodity_column() {
+        let cfg = Config {
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Coin".to_owned()),
+            }),
+            ..Config::default()
+        };
+        assert_eq!(cfg.required_column_names(), vec!["Date", "Amount", "Coin"]);
+    }
+
+    #[test]
+    fn required_column_names_omits_a_fixed_commodity() {
+        let cfg = Config::default();
+        assert_eq!(cfg.required_column_names(), vec!["Date", "Amount"]);
+    }
+
+    #[test]
+    fn validate_rejects_a_commodity_column_colliding_with_the_amount_column() {
+        let cfg = Config {
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Amount".to_owned()),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("amount".to_owned()),
+            }),
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("one column cannot be both the amount and the commodity")
+            .to_string();
+        assert!(
+            msg.contains("amount_columns.column") && msg.contains("commodity.column"),
+            "should name both colliding fields: {msg}"
+        );
+    }
+
     /// The old `Preamble::AutoDetect` spelling must fail loudly rather than
     /// deserializing into something with a different meaning.
     #[test]
@@ -875,7 +1044,12 @@ mod tests {
         assert_eq!(cfg.date_format, "%Y-%m-%d");
         assert_eq!(cfg.decimal_separator, '.');
         assert!(cfg.thousands_separator.is_none());
-        assert!(cfg.commodity.is_none());
+        assert_eq!(
+            cfg.commodity,
+            Some(CommoditySource::Fixed {
+                code: "AUD".to_owned()
+            })
+        );
     }
 
     #[test]
