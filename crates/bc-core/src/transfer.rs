@@ -932,6 +932,11 @@ mod db_tests {
         let srcs = crate::SourceService::new(pool.clone());
         let accts = crate::AccountService::new(pool.clone());
         let batches = crate::ImportBatchService::new(pool.clone());
+        let commodities = crate::CommodityService::new(pool.clone());
+        commodities
+            .seed_defaults()
+            .await
+            .expect("seed the default commodities");
         let raw = RawTransaction::builder()
             .date(date(2025, 6, 27))
             .description("TRANSFER")
@@ -945,9 +950,18 @@ mod db_tests {
                     .build(),
             ])
             .build();
-        let outcome = crate::execute_import(&txs, &srcs, &accts, &batches, None, "test", &[raw])
-            .await
-            .expect("reimport");
+        let outcome = crate::execute_import(
+            &txs,
+            &srcs,
+            &accts,
+            &commodities,
+            &batches,
+            None,
+            "test",
+            &[raw],
+        )
+        .await
+        .expect("reimport");
         // Without these two, the assertion below would pass just as well if the
         // account path had failed to resolve and the leg had been silently
         // skipped — proving nothing about the moved reference.

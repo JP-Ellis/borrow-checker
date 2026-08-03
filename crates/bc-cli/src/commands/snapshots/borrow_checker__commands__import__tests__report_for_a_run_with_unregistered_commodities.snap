@@ -1,0 +1,10 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: "report(1, 0, 0, 3, 0, &[], &unregistered).render()"
+---
+Imported 1 transaction, attached 0 postings.
+
+Skipped 3 postings naming 2 unregistered commodities:
+  DOGE
+  XYZ
+Register these commodities and re-run to import those postings.

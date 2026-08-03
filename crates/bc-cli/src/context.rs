@@ -13,6 +13,8 @@ pub struct AppContext {
     pub importers: bc_core::ImporterRegistry,
     /// Account service.
     pub accounts: bc_core::AccountService,
+    /// Commodity registry service.
+    pub commodities: bc_core::CommodityService,
     /// Transaction service.
     pub transactions: bc_core::TransactionService,
     /// Balance computation engine.
@@ -91,6 +93,7 @@ impl AppContext {
             plugin_registry,
             importers,
             accounts: bc_core::AccountService::new(pool.clone()),
+            commodities: bc_core::CommodityService::new(pool.clone()),
             transactions: bc_core::TransactionService::new(pool.clone()),
             balances: bc_core::BalanceEngine::new(pool.clone()),
             profiles: bc_core::ImportProfileService::new(pool.clone()),
