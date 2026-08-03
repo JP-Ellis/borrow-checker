@@ -210,9 +210,22 @@ async fn main() -> anyhow::Result<()> {
         // Checkpoint so the on-disk `.db` file holds the full ledger
         // deterministically; otherwise how much data sits in the `-wal`
         // sidecar depends on async-runtime shutdown timing at process exit.
-        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE);")
-            .execute(&pool)
-            .await?;
+        // `busy != 0` means another connection blocked the checkpoint and
+        // frames were left behind — the pragma itself still reports success
+        // in that case, so the row must be inspected rather than discarded.
+        let (busy, log, checkpointed): (i64, i64, i64) =
+            sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE);")
+                .fetch_one(&pool)
+                .await?;
+        if busy != 0 {
+            anyhow::bail!(
+                "WAL checkpoint for '{}' was blocked by another connection \
+                 (busy={busy}, log={log}, checkpointed={checkpointed}); \
+                 the fixture may have uncheckpointed data left in its -wal file",
+                args.db_path.display()
+            );
+        }
+        pool.close().await;
         println!("Generated ledger written to {}", args.db_path.display());
         return Ok(());
     }
