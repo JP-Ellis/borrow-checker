@@ -607,10 +607,10 @@ impl Config {
     /// Returns every configured column reference, paired with its config field
     /// name.
     ///
-    /// The union of [`Self::transaction_column_refs`] and
-    /// [`Self::leg_column_refs`], used where the grouping does not matter —
-    /// the headerless check, for instance, which rejects a name wherever it
-    /// appears.
+    /// The union of [`Self::transaction_column_refs`], [`Self::leg_column_refs`]
+    /// and every extra leg's [`Self::extra_leg_column_refs`], used where the
+    /// grouping does not matter — the headerless check, for instance, which
+    /// rejects a name wherever it appears.
     ///
     /// # Returns
     ///
@@ -1156,10 +1156,10 @@ mod tests {
     }
 
     /// `column_refs` is the union of `transaction_column_refs` (date and
-    /// whichever of payee/description/reference are set) followed by
-    /// `leg_column_refs` (amount, commodity column, balance) — the grouping
-    /// `Config::validate` relies on to check distinctness per group, not a
-    /// required-then-optional ordering.
+    /// whichever of payee/description/reference are set), `leg_column_refs`
+    /// (amount, commodity column, balance), and every extra leg's
+    /// `extra_leg_column_refs` — the grouping `Config::validate` relies on to
+    /// check distinctness per group, not a required-then-optional ordering.
     #[test]
     fn column_refs_lists_transaction_fields_then_leg_fields() {
         let cfg = Config {
