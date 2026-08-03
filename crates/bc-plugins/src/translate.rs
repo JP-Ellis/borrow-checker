@@ -125,6 +125,8 @@ impl From<wt::ImportError> for bc_core::ImportError {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr as _;
+
     use pretty_assertions::assert_eq;
 
     use crate::host::bindings::borrow_checker::sdk::types as wt;
@@ -148,6 +150,35 @@ mod tests {
         };
         let parsed = bc_models::Amount::try_from(a).expect("valid decimal string");
         assert_eq!(parsed.value().to_string(), "123.456789012345678");
+    }
+
+    /// `Decimal::from_str_exact` must be used rather than `from_str`: the
+    /// latter silently rounds a value with more significant digits than
+    /// `Decimal` can hold, which is exactly the precision loss this task
+    /// exists to eliminate. This value has 33 significant digits — beyond
+    /// `Decimal`'s ~28-29 digit capacity — so `from_str_exact` must reject
+    /// it rather than round it down to a value indistinguishable from `1`.
+    #[test]
+    fn wit_amount_rejects_a_value_with_more_precision_than_decimal_holds() {
+        let raw = "1.00000000000000000000000000000005";
+        assert_eq!(
+            raw.chars().filter(char::is_ascii_digit).count(),
+            33,
+            "test fixture must genuinely exceed Decimal's digit capacity"
+        );
+        assert_eq!(
+            rust_decimal::Decimal::from_str(raw).expect("from_str rounds rather than rejecting"),
+            rust_decimal::Decimal::from_str("1").expect("valid decimal"),
+            "from_str must round this value down to 1, proving the precision \
+             loss from_str_exact is meant to prevent"
+        );
+
+        let a = wt::Amount {
+            value: raw.to_owned(),
+            commodity: "AUD".to_owned(),
+        };
+        bc_models::Amount::try_from(a)
+            .expect_err("a value with more precision than Decimal can hold must be rejected");
     }
 
     /// A string wire format admits a failure the old integer one could not.
