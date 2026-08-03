@@ -435,7 +435,7 @@ fn list_to_json(batches: &[bc_core::ImportBatch]) -> serde_json::Value {
                 "new_transactions": batch.counts.map(|c| c.new_transactions),
                 "attached_postings": batch.counts.map(|c| c.attached_postings),
                 "skipped_postings": batch.counts.map(|c| c.skipped()),
-                "unresolved_path_postings": batch.counts.map(|c| c.unresolved_path_postings),
+                "unresolved_account_postings": batch.counts.map(|c| c.unresolved_account_postings),
                 "other_skipped_postings": batch.counts.map(|c| c.other_skipped_postings),
             }))
             .collect::<Vec<_>>(),
@@ -470,11 +470,11 @@ struct Report<'out> {
     /// Postings appended to transactions an earlier run created.
     attached_postings: usize,
     /// Postings skipped because their account path named no existing account.
-    unresolved_path_postings: usize,
+    unresolved_account_postings: usize,
     /// Postings skipped for any other reason.
     other_skipped_postings: usize,
     /// The distinct account paths naming no account.
-    unresolved_paths: &'out [String],
+    unresolved_accounts: &'out [String],
 }
 
 impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
@@ -483,9 +483,9 @@ impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
         Self {
             new_transactions: outcome.new_transactions,
             attached_postings: outcome.attached_postings,
-            unresolved_path_postings: outcome.unresolved_path_postings,
+            unresolved_account_postings: outcome.unresolved_account_postings,
             other_skipped_postings: outcome.other_skipped_postings,
-            unresolved_paths: &outcome.unresolved_paths,
+            unresolved_accounts: &outcome.unresolved_accounts,
         }
     }
 }
@@ -496,8 +496,8 @@ impl Report<'_> {
     /// Every number is attributed to its cause: legs skipped because their
     /// account path named no account are actionable — create the accounts and
     /// re-run — while legs skipped for any other reason were each warned about
-    /// as they happened. Reporting one total against the unresolved paths would
-    /// misattribute the rest.
+    /// as they happened. Reporting one total against the unresolved accounts
+    /// would misattribute the rest.
     ///
     /// # Returns
     ///
@@ -509,22 +509,26 @@ impl Report<'_> {
             plural(self.attached_postings, "posting"),
         )];
 
-        if !self.unresolved_paths.is_empty() {
+        if !self.unresolved_accounts.is_empty() {
             lines.push(String::new());
             lines.push(format!(
                 "Skipped {} naming {}:",
-                plural(self.unresolved_path_postings, "posting"),
-                plural(self.unresolved_paths.len(), "unknown account"),
+                plural(self.unresolved_account_postings, "posting"),
+                plural(self.unresolved_accounts.len(), "unknown account"),
             ));
-            lines.extend(self.unresolved_paths.iter().map(|path| format!("  {path}")));
+            lines.extend(
+                self.unresolved_accounts
+                    .iter()
+                    .map(|path| format!("  {path}")),
+            );
             lines.push(format!(
                 "Create {} and re-run to import {}.",
-                if self.unresolved_paths.len() == 1 {
+                if self.unresolved_accounts.len() == 1 {
                     "it"
                 } else {
                     "these accounts"
                 },
-                if self.unresolved_path_postings == 1 {
+                if self.unresolved_account_postings == 1 {
                     "that posting"
                 } else {
                     "those postings"
@@ -562,11 +566,11 @@ impl Report<'_> {
             "new_transactions": self.new_transactions,
             "attached_postings": self.attached_postings,
             "skipped_postings": self
-                .unresolved_path_postings
+                .unresolved_account_postings
                 .saturating_add(self.other_skipped_postings),
-            "unresolved_path_postings": self.unresolved_path_postings,
+            "unresolved_account_postings": self.unresolved_account_postings,
             "other_skipped_postings": self.other_skipped_postings,
-            "unresolved_paths": self.unresolved_paths,
+            "unresolved_accounts": self.unresolved_accounts,
         })
     }
 }
@@ -631,20 +635,20 @@ mod tests {
         assert!(rejected.is_err(), "importers source their own files");
     }
 
-    /// A report over the given counts and unresolved paths.
+    /// A report over the given counts and unresolved accounts.
     fn report(
         new_transactions: usize,
         attached_postings: usize,
-        unresolved_path_postings: usize,
+        unresolved_account_postings: usize,
         other_skipped_postings: usize,
-        unresolved_paths: &[String],
+        unresolved_accounts: &[String],
     ) -> Report<'_> {
         Report {
             new_transactions,
             attached_postings,
-            unresolved_path_postings,
+            unresolved_account_postings,
             other_skipped_postings,
-            unresolved_paths,
+            unresolved_accounts,
         }
     }
 
@@ -660,7 +664,7 @@ mod tests {
 
     #[test]
     fn report_for_a_partial_run_with_unknown_accounts() {
-        // Some new, some attached, two unresolved paths accounting for three legs.
+        // Some new, some attached, two unresolved accounts accounting for three legs.
         let unresolved = paths(&["Assets:Brokerage", "Expenses:Fun"]);
         insta::assert_snapshot!(report(2, 1, 3, 0, &unresolved).render());
     }
@@ -688,9 +692,9 @@ mod tests {
                 "new_transactions": 3_usize,
                 "attached_postings": 2_usize,
                 "skipped_postings": 5_usize,
-                "unresolved_path_postings": 4_usize,
+                "unresolved_account_postings": 4_usize,
                 "other_skipped_postings": 1_usize,
-                "unresolved_paths": ["Expenses:Fun", "Expenses:Rent"],
+                "unresolved_accounts": ["Expenses:Fun", "Expenses:Rent"],
             }),
             "a script reads these keys; renaming one or dropping the cause split is a \
              breaking change"
@@ -939,7 +943,7 @@ mod tests {
         let mut done_counts = bc_core::ImportBatchCounts::default();
         done_counts.new_transactions = 12;
         done_counts.attached_postings = 3;
-        done_counts.unresolved_path_postings = 1;
+        done_counts.unresolved_account_postings = 1;
         done_counts.other_skipped_postings = 2;
         batches.close(&done, done_counts).await.expect("close");
 
@@ -967,7 +971,7 @@ mod tests {
         pretty_assertions::assert_eq!(done_entry["attached_postings"], serde_json::json!(3_usize));
         pretty_assertions::assert_eq!(done_entry["skipped_postings"], serde_json::json!(3_usize));
         pretty_assertions::assert_eq!(
-            done_entry["unresolved_path_postings"],
+            done_entry["unresolved_account_postings"],
             serde_json::json!(1_usize)
         );
         pretty_assertions::assert_eq!(

@@ -47,7 +47,7 @@ pub struct Counts {
     /// Postings attached to transactions an earlier run created.
     pub attached_postings: usize,
     /// Postings skipped because their account path named no existing account.
-    pub unresolved_path_postings: usize,
+    pub unresolved_account_postings: usize,
     /// Postings skipped for any other reason.
     pub other_skipped_postings: usize,
 }
@@ -57,12 +57,12 @@ impl Counts {
     ///
     /// # Returns
     ///
-    /// The sum of [`Self::unresolved_path_postings`] and
+    /// The sum of [`Self::unresolved_account_postings`] and
     /// [`Self::other_skipped_postings`], saturating rather than overflowing.
     #[must_use]
     #[inline]
     pub fn skipped(&self) -> usize {
-        self.unresolved_path_postings
+        self.unresolved_account_postings
             .saturating_add(self.other_skipped_postings)
     }
 }
@@ -154,13 +154,13 @@ impl Service {
         let result = sqlx::query(
             "UPDATE import_batches \
              SET finished_at = ?, new_transactions = ?, attached_postings = ?, \
-                 unresolved_path_postings = ?, other_skipped_postings = ? \
+                 unresolved_account_postings = ?, other_skipped_postings = ? \
              WHERE id = ? AND discarded_at IS NULL",
         )
         .bind(finished_at.to_string())
         .bind(to_i64(counts.new_transactions)?)
         .bind(to_i64(counts.attached_postings)?)
-        .bind(to_i64(counts.unresolved_path_postings)?)
+        .bind(to_i64(counts.unresolved_account_postings)?)
         .bind(to_i64(counts.other_skipped_postings)?)
         .bind(id.to_string())
         .execute(&self.pool)
@@ -175,7 +175,7 @@ impl Service {
             new_transactions = counts.new_transactions,
             attached_postings = counts.attached_postings,
             skipped_postings = counts.skipped(),
-            unresolved_path_postings = counts.unresolved_path_postings,
+            unresolved_account_postings = counts.unresolved_account_postings,
             "import batch closed"
         );
         Ok(())
@@ -302,7 +302,7 @@ type Row = (
 /// The `SELECT` column list shared by [`Service::find_by_id`] and
 /// [`Service::list`], in [`Row`] order.
 const COLUMNS: &str = "id, profile_id, importer, started_at, finished_at, discarded_at, \
-                       new_transactions, attached_postings, unresolved_path_postings, \
+                       new_transactions, attached_postings, unresolved_account_postings, \
                        other_skipped_postings";
 
 /// Parses a raw `import_batches` row into an [`ImportBatch`].
@@ -326,7 +326,7 @@ fn parse_row(row: Row) -> BcResult<ImportBatch> {
         raw_discarded_at,
         new_transactions,
         attached_postings,
-        unresolved_path_postings,
+        unresolved_account_postings,
         other_skipped_postings,
     ) = row;
 
@@ -358,13 +358,13 @@ fn parse_row(row: Row) -> BcResult<ImportBatch> {
     let counts = match (
         new_transactions,
         attached_postings,
-        unresolved_path_postings,
+        unresolved_account_postings,
         other_skipped_postings,
     ) {
         (Some(new), Some(attached), Some(unresolved), Some(other)) => Some(Counts {
             new_transactions: to_usize(new)?,
             attached_postings: to_usize(attached)?,
-            unresolved_path_postings: to_usize(unresolved)?,
+            unresolved_account_postings: to_usize(unresolved)?,
             other_skipped_postings: to_usize(other)?,
         }),
         (None, None, None, None) => None,
@@ -417,7 +417,7 @@ mod tests {
             Counts {
                 new_transactions: 12,
                 attached_postings: 3,
-                unresolved_path_postings: 4,
+                unresolved_account_postings: 4,
                 other_skipped_postings: 1,
             },
         )
@@ -428,7 +428,7 @@ mod tests {
         let counts = batch.counts.expect("a closed batch reports its counts");
         assert_eq!(counts.new_transactions, 12);
         assert_eq!(counts.attached_postings, 3);
-        assert_eq!(counts.unresolved_path_postings, 4);
+        assert_eq!(counts.unresolved_account_postings, 4);
         assert_eq!(counts.other_skipped_postings, 1);
         assert_eq!(counts.skipped(), 5, "the total is the sum of the causes");
         assert!(batch.finished_at.is_some());
@@ -473,7 +473,7 @@ mod tests {
         for column in [
             "new_transactions",
             "attached_postings",
-            "unresolved_path_postings",
+            "unresolved_account_postings",
             "other_skipped_postings",
         ] {
             let result = sqlx::query(sqlx::AssertSqlSafe(format!(

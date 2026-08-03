@@ -346,13 +346,13 @@ CREATE TABLE import_batches (
     new_transactions         INTEGER,
     attached_postings        INTEGER,
     -- Legs skipped because their account path named no existing account.
-    unresolved_path_postings INTEGER,
+    unresolved_account_postings INTEGER,
     -- Legs skipped for any other reason; each was warned about individually.
     other_skipped_postings   INTEGER,
     CHECK (
         (finished_at IS NULL) = (new_transactions IS NULL)
         AND (finished_at IS NULL) = (attached_postings IS NULL)
-        AND (finished_at IS NULL) = (unresolved_path_postings IS NULL)
+        AND (finished_at IS NULL) = (unresolved_account_postings IS NULL)
         AND (finished_at IS NULL) = (other_skipped_postings IS NULL)
     )
 );

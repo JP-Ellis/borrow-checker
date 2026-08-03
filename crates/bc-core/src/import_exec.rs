@@ -57,13 +57,13 @@ pub struct ImportOutcome {
     /// transaction's own posting count does not always move with this number.
     pub attached_postings: usize,
     /// Postings that could not be persisted, whatever the cause. The sum of
-    /// [`Self::unresolved_path_postings`] and [`Self::other_skipped_postings`].
+    /// [`Self::unresolved_account_postings`] and [`Self::other_skipped_postings`].
     pub skipped_postings: usize,
     /// Postings skipped because their account path named no existing account.
     ///
-    /// These are the legs [`Self::unresolved_paths`] accounts for; creating
+    /// These are the legs [`Self::unresolved_accounts`] accounts for; creating
     /// those accounts and re-running attaches them.
-    pub unresolved_path_postings: usize,
+    pub unresolved_account_postings: usize,
     /// Postings skipped for any other reason — a malformed account path, an
     /// ambiguous residual, legs owned by several transactions, or a candidate
     /// that failed to corroborate. Each was warned about individually.
@@ -72,7 +72,7 @@ pub struct ImportOutcome {
     ///
     /// This is the actionable output: create these accounts and re-run, and the
     /// next pass attaches the legs this one skipped.
-    pub unresolved_paths: Vec<String>,
+    pub unresolved_accounts: Vec<String>,
 }
 
 /// Running totals for one import run, with skips attributed to their cause.
@@ -83,7 +83,7 @@ struct Counts {
     /// Postings appended to already-existing transactions so far.
     attached_postings: usize,
     /// Postings skipped because their account path named no existing account.
-    unresolved_path_postings: usize,
+    unresolved_account_postings: usize,
     /// Postings skipped for any other reason.
     other_skipped_postings: usize,
 }
@@ -97,7 +97,7 @@ impl Counts {
 
     /// Returns the total skipped, whatever the cause.
     fn skipped(&self) -> usize {
-        self.unresolved_path_postings
+        self.unresolved_account_postings
             .saturating_add(self.other_skipped_postings)
     }
 }
@@ -107,7 +107,7 @@ impl Counts {
 enum SkipCause {
     /// The leg's account path named no existing account. Creating the account
     /// and re-running attaches the leg.
-    UnresolvedPath,
+    UnresolvedAccount,
     /// Anything else: a malformed account path, an ambiguous residual, legs
     /// owned by several transactions, or a failed corroboration.
     Other,
@@ -165,11 +165,11 @@ struct Resolved {
     /// was skipped, and empty when the whole transaction was.
     rows: Vec<Vec<ResolvedLeg>>,
     /// Legs skipped because their account path named no existing account.
-    unresolved_path_postings: usize,
+    unresolved_account_postings: usize,
     /// Legs skipped for any other reason.
     other_skipped_postings: usize,
     /// Distinct account paths naming no account; sorted and unique by construction.
-    unresolved_paths: BTreeSet<String>,
+    unresolved_accounts: BTreeSet<String>,
 }
 
 /// Imports raw transactions, persisting every resolvable posting.
@@ -219,9 +219,9 @@ pub async fn execute_import(
     let batch_id = batches.open(profile_id, importer).await?;
 
     let pass = resolve_legs(&resolver, raws);
-    let unresolved_paths: Vec<String> = pass.unresolved_paths.into_iter().collect();
+    let unresolved_accounts: Vec<String> = pass.unresolved_accounts.into_iter().collect();
     let mut counts = Counts {
-        unresolved_path_postings: pass.unresolved_path_postings,
+        unresolved_account_postings: pass.unresolved_account_postings,
         other_skipped_postings: pass.other_skipped_postings,
         ..Counts::default()
     };
@@ -245,7 +245,7 @@ pub async fn execute_import(
             crate::ImportBatchCounts {
                 new_transactions: counts.new_transactions,
                 attached_postings: counts.attached_postings,
-                unresolved_path_postings: counts.unresolved_path_postings,
+                unresolved_account_postings: counts.unresolved_account_postings,
                 other_skipped_postings: counts.other_skipped_postings,
             },
         )
@@ -256,9 +256,9 @@ pub async fn execute_import(
         new_transactions: counts.new_transactions,
         attached_postings: counts.attached_postings,
         skipped_postings: counts.skipped(),
-        unresolved_path_postings: counts.unresolved_path_postings,
+        unresolved_account_postings: counts.unresolved_account_postings,
         other_skipped_postings: counts.other_skipped_postings,
-        unresolved_paths,
+        unresolved_accounts,
     })
 }
 
@@ -273,17 +273,17 @@ pub async fn execute_import(
 /// # Returns
 ///
 /// The resolved legs per transaction, the skipped-posting tallies attributed to
-/// their causes, and the distinct unresolved paths.
+/// their causes, and the distinct unresolved accounts.
 fn resolve_legs(resolver: &AccountResolver, raws: &[RawTransaction]) -> Resolved {
     let mut out = Resolved {
         rows: Vec::with_capacity(raws.len()),
-        unresolved_path_postings: 0_usize,
+        unresolved_account_postings: 0_usize,
         other_skipped_postings: 0_usize,
-        unresolved_paths: BTreeSet::new(),
+        unresolved_accounts: BTreeSet::new(),
     };
     // Warn-once guard only: which archived accounts have already been reported.
-    // Unlike an unresolved path this is not part of the outcome — importing into
-    // an archived account succeeds.
+    // Unlike an unresolved account this is not part of the outcome — importing
+    // into an archived account succeeds.
     let mut archived: BTreeSet<String> = BTreeSet::new();
 
     for raw in raws {
@@ -306,12 +306,13 @@ fn resolve_legs(resolver: &AccountResolver, raws: &[RawTransaction]) -> Resolved
                 resolver,
                 raw,
                 posting,
-                &mut out.unresolved_paths,
+                &mut out.unresolved_accounts,
                 &mut archived,
             ) {
                 Ok(leg) => legs.push(leg),
-                Err(SkipCause::UnresolvedPath) => {
-                    out.unresolved_path_postings = out.unresolved_path_postings.saturating_add(1);
+                Err(SkipCause::UnresolvedAccount) => {
+                    out.unresolved_account_postings =
+                        out.unresolved_account_postings.saturating_add(1);
                 }
                 Err(SkipCause::Other) => {
                     out.other_skipped_postings = out.other_skipped_postings.saturating_add(1);
@@ -351,7 +352,7 @@ fn has_ambiguous_residual(raw: &RawTransaction) -> bool {
 /// * `resolver` - The account-tree snapshot to resolve against.
 /// * `raw` - The transaction the leg belongs to, for diagnostics.
 /// * `posting` - The leg to resolve.
-/// * `unresolved` - Accumulator of distinct unresolved paths; also the
+/// * `unresolved` - Accumulator of distinct unresolved accounts; also the
 ///   warn-once guard, since inserting a path reports whether it is new.
 /// * `archived` - Warn-once guard for archived accounts already reported.
 ///
@@ -410,7 +411,7 @@ fn resolve_leg(
                      attach the legs skipped now"
                 );
             }
-            return Err(SkipCause::UnresolvedPath);
+            return Err(SkipCause::UnresolvedAccount);
         }
     };
 
@@ -1430,7 +1431,7 @@ mod tests {
 
         assert_eq!(outcome.new_transactions, 1);
         assert_eq!(outcome.skipped_postings, 0);
-        assert!(outcome.unresolved_paths.is_empty());
+        assert!(outcome.unresolved_accounts.is_empty());
         assert_eq!(tx_count(&pool).await, 1);
         assert_eq!(
             posting_count(&pool).await,
@@ -1479,7 +1480,7 @@ mod tests {
         assert_eq!(outcome.new_transactions, 1, "the transaction still imports");
         assert_eq!(outcome.skipped_postings, 1);
         assert_eq!(
-            outcome.unresolved_paths,
+            outcome.unresolved_accounts,
             vec!["Expenses:Food".to_owned()],
             "the report names exactly what the user must create"
         );
@@ -1499,7 +1500,7 @@ mod tests {
         let counts = batch.counts.expect("a closed batch reports its counts");
         assert_eq!(counts.skipped(), 1);
         assert_eq!(
-            counts.unresolved_path_postings, 1,
+            counts.unresolved_account_postings, 1,
             "the skip is attributed to the missing account, not to some other cause"
         );
     }
@@ -1548,7 +1549,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn unresolved_paths_are_deduplicated(pool: SqlitePool) {
+    async fn unresolved_accounts_are_deduplicated(pool: SqlitePool) {
         bank_only_tree(&pool).await;
         let svcs = services(&pool);
 
@@ -1568,7 +1569,7 @@ mod tests {
 
         assert_eq!(outcome.skipped_postings, 50);
         assert_eq!(
-            outcome.unresolved_paths,
+            outcome.unresolved_accounts,
             vec!["Bills:Rent".to_owned(), "Expenses:Food".to_owned()],
             "each missing account is reported once, in sorted order, not 25 times each"
         );
@@ -1670,7 +1671,7 @@ mod tests {
             outcome.skipped_postings, 0,
             "an archived account resolves; it is not a missing one"
         );
-        assert!(outcome.unresolved_paths.is_empty());
+        assert!(outcome.unresolved_accounts.is_empty());
         assert_eq!(postings_of_account(&pool, &food).await, 1);
         assert_eq!(postings_of_account(&pool, &bank).await, 1);
     }
@@ -2026,7 +2027,7 @@ mod tests {
             "only the Expenses:Fun leg is lost; the other two are already stored"
         );
         assert_eq!(outcome.other_skipped_postings, 1);
-        assert_eq!(outcome.unresolved_path_postings, 0);
+        assert_eq!(outcome.unresolved_account_postings, 0);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2144,7 +2145,7 @@ mod tests {
         );
         let first = run(&svcs, core::slice::from_ref(&document)).await;
         assert_eq!(first.new_transactions, 1);
-        assert_eq!(first.unresolved_path_postings, 1);
+        assert_eq!(first.unresolved_account_postings, 1);
 
         // The user creates the account and adds the leg themselves, exactly as
         // the warning invited them to.
