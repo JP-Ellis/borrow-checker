@@ -952,7 +952,7 @@ mod db_tests {
         // account path had failed to resolve and the leg had been silently
         // skipped — proving nothing about the moved reference.
         assert!(
-            outcome.unresolved_paths.is_empty(),
+            outcome.unresolved_accounts.is_empty(),
             "the Mortgage path must resolve, or the dedup claim is vacuous"
         );
         assert_eq!(outcome.skipped_postings, 0, "the leg reached the matcher");
