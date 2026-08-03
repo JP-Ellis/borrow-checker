@@ -4,15 +4,6 @@
 //! value-stability across releases and benchmark fixtures must be reproducible
 //! byte-for-byte across toolchain updates.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed only by generate::plan::build, which is not yet \
-                   wired into main.rs until a later task"
-    )
-)]
-
 /// Multiplier for the xorshift64\* output scrambler.
 const SCRAMBLE: u64 = 0x2545_F491_4F6C_DD1D;
 

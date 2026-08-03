@@ -4,14 +4,23 @@
 //! `bc-core` services so the write path is exercised. Distinct from the
 //! hand-authored E2E fixture in `main.rs`, which must not change.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "not yet wired into main.rs; a later task turns the plan into \
-                   real accounts and transactions via bc-core services"
-    )
-)]
+use bc_core::AccountService;
+use bc_core::CommodityService;
+use bc_core::TransactionService;
+use bc_models::AccountId;
+use bc_models::AccountKind;
+use bc_models::AccountType;
+use bc_models::Amount;
+use bc_models::CommodityCode;
+use bc_models::Posting;
+use bc_models::PostingId;
+use bc_models::Reconciliation;
+use bc_models::Transaction;
+use bc_models::TransactionId;
+use jiff::Timestamp;
+
+use crate::generate::plan::BASE_COMMODITY;
+use crate::generate::plan::SECOND_COMMODITY;
 
 pub mod plan;
 
@@ -54,24 +63,6 @@ impl Config {
     /// this is the opposite requirement.)
     pub const EPOCH: jiff::civil::Date = jiff::civil::date(2000, 1, 1);
 }
-
-use bc_core::AccountService;
-use bc_core::CommodityService;
-use bc_core::TransactionService;
-use bc_models::AccountId;
-use bc_models::AccountKind;
-use bc_models::AccountType;
-use bc_models::Amount;
-use bc_models::CommodityCode;
-use bc_models::Posting;
-use bc_models::PostingId;
-use bc_models::Reconciliation;
-use bc_models::Transaction;
-use bc_models::TransactionId;
-use jiff::Timestamp;
-
-use crate::generate::plan::BASE_COMMODITY;
-use crate::generate::plan::SECOND_COMMODITY;
 
 /// How often to report progress while generating, in transactions.
 const PROGRESS_EVERY: usize = 10_000;

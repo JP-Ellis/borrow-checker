@@ -60,6 +60,76 @@ struct Args {
     /// Overwrite the database file if it already exists.
     #[arg(long)]
     force: bool,
+
+    /// What to seed. Omit for the hand-authored E2E fixture.
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// Seeding modes.
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Generate a synthetic ledger of arbitrary size for benchmarking.
+    Generate(GenerateOpts),
+}
+
+/// Knobs for the synthetic generator.
+///
+/// Defaults are rounded rather than exact: derived statistics from a real
+/// ledger are themselves identifying.
+#[derive(clap::Args)]
+struct GenerateOpts {
+    /// Number of deposit accounts under `Assets`.
+    #[arg(long, default_value_t = 20)]
+    deposit_accounts: usize,
+
+    /// Number of category accounts under `Expenses`.
+    #[arg(long, default_value_t = 80)]
+    category_accounts: usize,
+
+    /// Calendar months to span, starting at the fixed epoch.
+    #[arg(long, default_value_t = 24)]
+    months: u32,
+
+    /// Transactions generated per month.
+    #[arg(long, default_value_t = 200)]
+    tx_per_month: u32,
+
+    /// Share of transactions whose deposit leg is elided.
+    #[arg(long, default_value_t = 0.80)]
+    elided_ratio: f64,
+
+    /// Share of transactions touching the single dominant deposit account.
+    #[arg(long, default_value_t = 0.30)]
+    skew: f64,
+
+    /// Share of transactions denominated in the secondary commodity.
+    #[arg(long, default_value_t = 0.01)]
+    second_commodity_ratio: f64,
+
+    /// PRNG seed. Fixing this fixes the entire ledger.
+    #[arg(long, default_value_t = 42)]
+    seed: u64,
+}
+
+impl GenerateOpts {
+    /// Converts parsed CLI options into a generator [`generate::Config`].
+    ///
+    /// # Returns
+    ///
+    /// The equivalent configuration.
+    fn to_config(&self) -> generate::Config {
+        generate::Config {
+            deposit_accounts: self.deposit_accounts,
+            category_accounts: self.category_accounts,
+            months: self.months,
+            tx_per_month: self.tx_per_month,
+            elided_ratio: self.elided_ratio,
+            skew: self.skew,
+            second_commodity_ratio: self.second_commodity_ratio,
+            seed: self.seed,
+        }
+    }
 }
 
 /// Constructs an AUD [`Amount`] from a decimal value.
@@ -129,6 +199,18 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let pool = bc_core::open_db_at(&args.db_path).await?;
+
+    if let Some(Command::Generate(ref opts)) = args.command {
+        let config = opts.to_config();
+        println!(
+            "Generating {} months x {} transactions/month…",
+            config.months, config.tx_per_month
+        );
+        generate::run(&pool, &config).await?;
+        println!("Generated ledger written to {}", args.db_path.display());
+        return Ok(());
+    }
+
     let accounts = AccountService::new(pool.clone());
     let budgets = BudgetService::new(pool.clone());
     let transactions = TransactionService::new(pool.clone());
@@ -1989,5 +2071,62 @@ mod tests {
             aud(dec!(42.50)),
             Amount::new(dec!(42.50), CommodityCode::new("AUD"))
         );
+    }
+
+    #[test]
+    fn bare_invocation_still_seeds_the_fixture() {
+        // e2e/wdio.conf.ts:111 invokes exactly this form. It must not break.
+        let args = Args::parse_from(["bc-seed", "--db-path", "/tmp/x.db", "--force"]);
+        assert!(args.force);
+        assert!(
+            args.command.is_none(),
+            "no subcommand means the E2E fixture"
+        );
+    }
+
+    #[test]
+    fn generate_subcommand_parses_with_defaults() {
+        let args = Args::parse_from(["bc-seed", "generate"]);
+        let Some(Command::Generate(opts)) = args.command else {
+            panic!("expected the generate subcommand");
+        };
+        assert_eq!(opts.deposit_accounts, 20);
+        assert_eq!(opts.category_accounts, 80);
+        assert_eq!(opts.months, 24);
+        assert_eq!(opts.tx_per_month, 200);
+        assert_eq!(opts.seed, 42);
+    }
+
+    #[test]
+    fn generate_subcommand_accepts_overrides() {
+        let args = Args::parse_from([
+            "bc-seed",
+            "generate",
+            "--months",
+            "120",
+            "--tx-per-month",
+            "2000",
+        ]);
+        let Some(Command::Generate(opts)) = args.command else {
+            panic!("expected the generate subcommand");
+        };
+        assert_eq!(opts.months, 120);
+        assert_eq!(opts.tx_per_month, 2000);
+    }
+
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "values pass through clap parsing and struct construction \
+                   unmodified, so bit-exact equality is the correct check"
+    )]
+    fn generate_options_convert_to_a_config() {
+        let args = Args::parse_from(["bc-seed", "generate", "--skew", "0.5"]);
+        let Some(Command::Generate(opts)) = args.command else {
+            panic!("expected the generate subcommand");
+        };
+        let config = opts.to_config();
+        assert_eq!(config.skew, 0.5_f64);
+        assert_eq!(config.elided_ratio, 0.80_f64);
     }
 }
