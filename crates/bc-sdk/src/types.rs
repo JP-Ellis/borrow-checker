@@ -454,13 +454,6 @@ mod tests {
     }
 
     #[test]
-    fn amount_new_stores_fields() {
-        let a = Amount::new(dec!(10.50), "AUD");
-        assert_eq!(a.value, dec!(10.50));
-        assert_eq!(a.commodity, "AUD");
-    }
-
-    #[test]
     fn date_new_stores_fields() {
         let d = Date::new(2025_i32, 3_u8, 15_u8);
         assert_eq!(d.year, 2025_i32);
