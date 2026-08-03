@@ -182,8 +182,20 @@ impl CsvImporter {
 
             let commodity = row_commodity(commodity_source, &record, &col_index)?;
 
-            let amount_value = parse_amount(cfg, &record, &col_index)?;
-            let amount = Amount::new(amount_value, commodity.clone());
+            let amount_value = parse_amount(&cfg.amount_columns, cfg, &record, &col_index)?
+                .ok_or_else(|| match cfg.amount_columns {
+                    AmountColumns::SplitDebitCredit {
+                        ref debit_column,
+                        ref credit_column,
+                    } => ImportError::MissingField(format!(
+                        "{} or {}",
+                        debit_column.describe(),
+                        credit_column.describe()
+                    )),
+                    AmountColumns::Single { .. } => ImportError::MissingField(format!(
+                        "row {row} has no amount in the configured column(s)"
+                    )),
+                })?;
 
             let balance = if let Some(column) = cfg.balance_column.as_ref() {
                 let idx = resolve(&col_index, column)?;
@@ -208,6 +220,42 @@ impl CsvImporter {
                 .unwrap_or_default();
             let reference = optional_text(&record, &col_index, cfg.reference_column.as_ref())?;
 
+            let mut postings = vec![
+                RawPosting::builder()
+                    .account(cfg.account.clone())
+                    .amount(Amount::new(amount_value, commodity.clone()))
+                    .maybe_balance(balance)
+                    .build(),
+            ];
+
+            for leg in &cfg.extra_legs {
+                let Some(value) = parse_amount(&leg.amount_columns, cfg, &record, &col_index)?
+                else {
+                    // A blank cell means this leg is absent for this row, which
+                    // is the normal shape of a fee column.
+                    continue;
+                };
+                let code = match row_commodity(&leg.commodity, &record, &col_index) {
+                    Ok(code) => code,
+                    Err(e) => {
+                        bc_sdk::warn!(
+                            "extra leg has an amount but no commodity; dropping the leg";
+                            account = leg.account.clone(),
+                            row = row.to_string(),
+                            reason = e.to_string()
+                        );
+                        continue;
+                    }
+                };
+                let value = if leg.negate { -value } else { value };
+                postings.push(
+                    RawPosting::builder()
+                        .account(leg.account.clone())
+                        .amount(Amount::new(value, code))
+                        .build(),
+                );
+            }
+
             transactions.push(
                 RawTransaction::builder()
                     .date(date)
@@ -219,13 +267,7 @@ impl CsvImporter {
                             .display(format!("{file} data row {row}"))
                             .build(),
                     )
-                    .postings(vec![
-                        RawPosting::builder()
-                            .account(cfg.account.clone())
-                            .amount(amount)
-                            .maybe_balance(balance)
-                            .build(),
-                    ])
+                    .postings(postings)
                     .build(),
             );
         }
@@ -368,38 +410,49 @@ fn row_commodity(
     }
 }
 
-/// Parses the monetary amount from a record using the configured amount
-/// column strategy.
+/// Parses the monetary amount for one leg from a record, using the given
+/// amount-column strategy.
 ///
 /// # Arguments
 ///
-/// * `cfg` - The CSV import configuration.
+/// * `columns` - The amount-column strategy to apply — the primary leg's
+///   `cfg.amount_columns` or an extra leg's `LegSpec::amount_columns`.
+/// * `cfg` - The CSV import configuration, for number-formatting settings.
 /// * `record` - The CSV record being processed.
 /// * `col_index` - Case-insensitive column name to index mapping.
 ///
 /// # Returns
 ///
-/// The parsed [`Decimal`] value, with debits negated.
+/// `Ok(Some(value))` with the parsed [`Decimal`] value, debits negated, when
+/// at least one configured cell is populated. `Ok(None)` when every
+/// configured cell for these columns is blank — the normal shape of a leg
+/// that is absent for this row (e.g. an unfee'd trade).
 ///
 /// # Errors
 ///
-/// Returns [`ImportError`] if the column is missing or the value cannot be parsed.
+/// Returns [`ImportError`] if a configured column is missing or a populated
+/// cell cannot be parsed as a number.
 #[inline]
 fn parse_amount(
+    columns: &AmountColumns,
     cfg: &Config,
     record: &csv::StringRecord,
     col_index: &HashMap<String, usize>,
-) -> Result<Decimal, ImportError> {
-    match cfg.amount_columns {
+) -> Result<Option<Decimal>, ImportError> {
+    match *columns {
         AmountColumns::Single { ref column } => {
             let idx = resolve(col_index, column)?;
             let raw = record_field(record, idx, &column.describe())?;
-            parse_number(&raw, cfg.decimal_separator, cfg.thousands_separator).map_err(|e| {
-                ImportError::BadValue {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            parse_number(trimmed, cfg.decimal_separator, cfg.thousands_separator)
+                .map(Some)
+                .map_err(|e| ImportError::BadValue {
                     field: column.describe(),
                     detail: e,
-                }
-            })
+                })
         }
         AmountColumns::SplitDebitCredit {
             ref debit_column,
@@ -427,9 +480,10 @@ fn parse_amount(
                             detail: e,
                         })?;
                     // Negate: a positive debit figure means money going out.
-                    Ok(-val)
+                    Ok(Some(-val))
                 }
                 (None, Some(c)) => parse_number(c, cfg.decimal_separator, cfg.thousands_separator)
+                    .map(Some)
                     .map_err(|e| ImportError::BadValue {
                         field: credit_column.describe(),
                         detail: e,
@@ -439,11 +493,7 @@ fn parse_amount(
                     debit_column.describe(),
                     credit_column.describe()
                 ))),
-                (None, None) => Err(ImportError::MissingField(format!(
-                    "{} or {}",
-                    debit_column.describe(),
-                    credit_column.describe()
-                ))),
+                (None, None) => Ok(None),
             }
         }
     }
@@ -529,6 +579,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::config::LegSpec;
 
     #[test]
     fn parse_number_strips_currency_symbols() {
@@ -1421,5 +1472,158 @@ mod tests {
         let result = importer.parse_bytes(b"Date,Debit\n01/02/2025,33.03\n", &cfg, "statement.csv");
         let err = result.expect_err("the credit column is not in the header");
         assert_eq!(err.to_string(), "missing required field: 'Missing'");
+    }
+
+    /// A trade row: base quantity in, quote total out, fee in the quote asset.
+    #[test]
+    fn import_emits_a_posting_per_configured_leg() {
+        let csv = "Date,Base,Quote,Quantity,Total,Fees\n\
+                   2025-01-02,BTC,AUD,0.50000000,32000.00,25.00\n";
+        let cfg = Config {
+            account: "Assets:Crypto:Exchange".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Quantity".to_owned()),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Base".to_owned()),
+            }),
+            extra_legs: vec![
+                LegSpec {
+                    account: "Assets:Crypto:Exchange".to_owned(),
+                    amount_columns: AmountColumns::Single {
+                        column: ColumnRef::Name("Total".to_owned()),
+                    },
+                    commodity: CommoditySource::Column {
+                        column: ColumnRef::Name("Quote".to_owned()),
+                    },
+                    negate: true,
+                },
+                LegSpec {
+                    account: "Expenses:Fees".to_owned(),
+                    amount_columns: AmountColumns::Single {
+                        column: ColumnRef::Name("Fees".to_owned()),
+                    },
+                    commodity: CommoditySource::Column {
+                        column: ColumnRef::Name("Quote".to_owned()),
+                    },
+                    negate: false,
+                },
+            ],
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        assert_eq!(txs[0].postings.len(), 3);
+        assert_eq!(
+            txs[0].postings[0].amount,
+            Some(Amount::new(dec!(0.50000000), "BTC"))
+        );
+        assert_eq!(
+            txs[0].postings[1].amount,
+            Some(Amount::new(dec!(-32000.00), "AUD"))
+        );
+        assert_eq!(txs[0].postings[1].account, "Assets:Crypto:Exchange");
+        assert_eq!(
+            txs[0].postings[2].amount,
+            Some(Amount::new(dec!(25.00), "AUD"))
+        );
+        assert_eq!(txs[0].postings[2].account, "Expenses:Fees");
+    }
+
+    /// A blank fee cell is the normal shape of a fee column, not an error.
+    #[test]
+    fn import_omits_an_extra_leg_whose_amount_cell_is_blank() {
+        let csv = "Date,Base,Quote,Quantity,Fees\n\
+                   2025-01-02,BTC,AUD,0.50000000,\n";
+        let cfg = Config {
+            account: "Assets:Crypto:Exchange".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Quantity".to_owned()),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Base".to_owned()),
+            }),
+            extra_legs: vec![LegSpec {
+                account: "Expenses:Fees".to_owned(),
+                amount_columns: AmountColumns::Single {
+                    column: ColumnRef::Name("Fees".to_owned()),
+                },
+                commodity: CommoditySource::Column {
+                    column: ColumnRef::Name("Quote".to_owned()),
+                },
+                negate: false,
+            }],
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        assert_eq!(txs[0].postings.len(), 1);
+    }
+
+    #[test]
+    fn import_negates_an_extra_leg_when_configured() {
+        let csv = "Date,Base,Quote,Quantity,Total\n\
+                   2025-01-02,BTC,AUD,0.50000000,32000.00\n";
+        let cfg = Config {
+            account: "Assets:Crypto:Exchange".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Quantity".to_owned()),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Base".to_owned()),
+            }),
+            extra_legs: vec![LegSpec {
+                account: "Assets:Crypto:Exchange".to_owned(),
+                amount_columns: AmountColumns::Single {
+                    column: ColumnRef::Name("Total".to_owned()),
+                },
+                commodity: CommoditySource::Column {
+                    column: ColumnRef::Name("Quote".to_owned()),
+                },
+                negate: true,
+            }],
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        assert_eq!(
+            txs[0].postings[1].amount,
+            Some(Amount::new(dec!(-32000.00), "AUD"))
+        );
+    }
+
+    /// An extra leg with an amount but no commodity is malformed; it costs the
+    /// leg, not the row.
+    #[test]
+    fn import_drops_an_extra_leg_with_a_blank_commodity_cell() {
+        let csv = "Date,Base,Quote,Quantity,Fees\n\
+                   2025-01-02,BTC,,0.50000000,25.00\n";
+        let cfg = Config {
+            account: "Assets:Crypto:Exchange".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Quantity".to_owned()),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Base".to_owned()),
+            }),
+            extra_legs: vec![LegSpec {
+                account: "Expenses:Fees".to_owned(),
+                amount_columns: AmountColumns::Single {
+                    column: ColumnRef::Name("Fees".to_owned()),
+                },
+                commodity: CommoditySource::Column {
+                    column: ColumnRef::Name("Quote".to_owned()),
+                },
+                negate: false,
+            }],
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("the row still parses");
+        assert_eq!(txs[0].postings.len(), 1);
     }
 }
