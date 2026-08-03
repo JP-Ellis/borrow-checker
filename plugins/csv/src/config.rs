@@ -661,7 +661,8 @@ impl Config {
     /// # Errors
     ///
     /// Returns [`bc_sdk::ImportError::InvalidConfig`] listing every violation:
-    /// - no commodity configured, so rows would have no commodity to post in;
+    /// - no commodity configured, or a fixed commodity whose code is blank, so
+    ///   rows would have no commodity to post in;
     /// - a name-based column reference when the file has no header row;
     /// - an index-based required column (including a column-sourced commodity)
     ///   under [`Header::AutoDetect`], which matches the header line against
@@ -674,13 +675,30 @@ impl Config {
     pub fn validate(&self) -> Result<(), bc_sdk::ImportError> {
         let mut problems: Vec<String> = Vec::new();
 
-        if self.commodity.is_none() {
-            problems.push(
+        match self.commodity {
+            None => problems.push(
                 "commodity is not set, so rows have no commodity to post in. Set it to a \
                  code (\"AUD\"), or to {\"source\":\"column\",\"column\":\"Coin\"} when each \
                  row names its own."
                     .to_owned(),
-            );
+            ),
+            Some(CommoditySource::Fixed { ref code }) if code.trim().is_empty() => problems.push(
+                "commodity names an empty code, so every row would post in no commodity. \
+                 Give a code (\"AUD\"), or use {\"source\":\"column\",\"column\":\"Coin\"} \
+                 when each row names its own."
+                    .to_owned(),
+            ),
+            Some(_) => {}
+        }
+
+        for (index, leg) in self.extra_legs.iter().enumerate() {
+            if matches!(leg.commodity, CommoditySource::Fixed { ref code } if code.trim().is_empty())
+            {
+                problems.push(format!(
+                    "extra_legs[{index}].commodity names an empty code, so this leg would \
+                     post in no commodity."
+                ));
+            }
         }
 
         /// Records the fields sharing a column within one distinctness group.
@@ -704,6 +722,11 @@ impl Config {
             }
         }
 
+        // Each leg forms its own distinctness group with the transaction-level
+        // fields; legs are deliberately never compared against each other. Two
+        // legs sharing a column is a real profile shape — a fee leg and a total
+        // leg read one quote-currency column, and a two-sided transfer reads one
+        // amount column with `negate` set on the far side.
         let mut transaction_and_primary = self.transaction_column_refs();
         transaction_and_primary.extend(self.leg_column_refs());
         collect_duplicates(&transaction_and_primary, &mut problems);
@@ -1011,6 +1034,48 @@ mod tests {
             .expect_err("a profile must say what commodity its rows are in")
             .to_string();
         assert!(msg.contains("commodity"), "should name the field: {msg}");
+    }
+
+    /// A blank fixed code is caught at validation time, mirroring the blank
+    /// cell a `Column` source rejects per row.
+    #[test]
+    fn validate_rejects_a_blank_fixed_commodity() {
+        let cfg = Config {
+            commodity: Some(CommoditySource::Fixed {
+                code: "  ".to_owned(),
+            }),
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("an empty code leaves rows in no commodity")
+            .to_string();
+        assert!(msg.contains("empty code"), "should say why: {msg}");
+    }
+
+    #[test]
+    fn validate_rejects_a_blank_fixed_commodity_on_an_extra_leg() {
+        let cfg = Config {
+            extra_legs: vec![LegSpec {
+                account: "Expenses:Fees".to_owned(),
+                amount_columns: AmountColumns::Single {
+                    column: ColumnRef::Name("Fees".to_owned()),
+                },
+                commodity: CommoditySource::Fixed {
+                    code: String::new(),
+                },
+                negate: false,
+            }],
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("an empty code leaves the leg in no commodity")
+            .to_string();
+        assert!(
+            msg.contains("extra_legs[0].commodity"),
+            "should locate the leg: {msg}"
+        );
     }
 
     #[test]
