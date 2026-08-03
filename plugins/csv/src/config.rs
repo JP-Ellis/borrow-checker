@@ -1068,8 +1068,13 @@ mod tests {
         assert_eq!(cfg.required_column_names(), vec!["Amount"]);
     }
 
+    /// `column_refs` is the union of `transaction_column_refs` (date and
+    /// whichever of payee/description/reference are set) followed by
+    /// `leg_column_refs` (amount, commodity column, balance) — the grouping
+    /// `Config::validate` relies on to check distinctness per group, not a
+    /// required-then-optional ordering.
     #[test]
-    fn column_refs_lists_required_then_configured_optionals() {
+    fn column_refs_lists_transaction_fields_then_leg_fields() {
         let cfg = Config {
             date_column: ColumnRef::Index(0),
             amount_columns: AmountColumns::Single {
@@ -1085,7 +1090,7 @@ mod tests {
             .collect();
         assert_eq!(
             fields,
-            vec!["date_column", "amount_columns.column", "description_column"]
+            vec!["date_column", "description_column", "amount_columns.column"]
         );
     }
 

@@ -21,6 +21,7 @@ use rust_decimal::Decimal;
 
 use crate::config::AmountColumns;
 use crate::config::ColumnRef;
+use crate::config::CommoditySource;
 use crate::config::Config;
 use crate::config::Header;
 use crate::preamble::find_csv_start;
@@ -155,13 +156,10 @@ impl CsvImporter {
 
         let date_idx = resolve(&col_index, &cfg.date_column)?;
 
-        let commodity = cfg
-            .commodity
-            .as_deref()
-            .ok_or_else(|| ImportError::BadValue {
-                field: "commodity".to_owned(),
-                detail: "commodity must be set in config when the file does not contain a currency column".to_owned(),
-            })?;
+        let commodity_source = cfg.commodity.as_ref().ok_or_else(|| ImportError::BadValue {
+            field: "commodity".to_owned(),
+            detail: "commodity is not set; give a code or a column".to_owned(),
+        })?;
 
         let mut transactions = Vec::new();
 
@@ -182,8 +180,10 @@ impl CsvImporter {
                 parsed.day() as u8,
             );
 
+            let commodity = row_commodity(commodity_source, &record, &col_index)?;
+
             let amount_value = parse_amount(cfg, &record, &col_index)?;
-            let amount = Amount::new(amount_value, commodity);
+            let amount = Amount::new(amount_value, commodity.clone());
 
             let balance = if let Some(column) = cfg.balance_column.as_ref() {
                 let idx = resolve(&col_index, column)?;
@@ -197,7 +197,7 @@ impl CsvImporter {
                             field: column.describe(),
                             detail: e,
                         })?;
-                    Some(Amount::new(val, commodity))
+                    Some(Amount::new(val, commodity.clone()))
                 }
             } else {
                 None
@@ -324,6 +324,47 @@ fn resolve(col_index: &HashMap<String, usize>, column: &ColumnRef) -> Result<usi
             .copied()
             .ok_or_else(|| ImportError::MissingField(column.describe())),
         ColumnRef::Index(index) => Ok(index),
+    }
+}
+
+/// Resolves the commodity code that applies to one row.
+///
+/// # Arguments
+///
+/// * `source` - Where the code comes from.
+/// * `record` - The CSV record being processed.
+/// * `col_index` - Case-insensitive header-name to index map.
+///
+/// # Returns
+///
+/// The commodity code for this row.
+///
+/// # Errors
+///
+/// Returns [`ImportError::MissingField`] when a column reference does not
+/// resolve, or [`ImportError::BadValue`] when a column-sourced cell is blank —
+/// a `Column` source asserts that every row names its commodity.
+#[inline]
+fn row_commodity(
+    source: &CommoditySource,
+    record: &csv::StringRecord,
+    col_index: &HashMap<String, usize>,
+) -> Result<String, ImportError> {
+    match *source {
+        CommoditySource::Fixed { ref code } => Ok(code.clone()),
+        CommoditySource::Column { ref column } => {
+            let idx = resolve(col_index, column)?;
+            let raw = record_field(record, idx, &column.describe())?;
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err(ImportError::BadValue {
+                    field: column.describe(),
+                    detail: "the commodity cell is blank; every row must name its commodity"
+                        .to_owned(),
+                });
+            }
+            Ok(trimmed.to_owned())
+        }
     }
 }
 
@@ -488,7 +529,6 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::config::CommoditySource;
 
     #[test]
     fn parse_number_strips_currency_symbols() {
@@ -1240,6 +1280,122 @@ mod tests {
             err.to_string(),
             "missing required field: column 1 or column 2"
         );
+    }
+
+    #[test]
+    fn import_takes_the_commodity_from_a_named_column() {
+        let csv = "Date,Coin,Change\n\
+                   2025-01-02,BTC,0.25000000\n\
+                   2025-01-03,ETH,-1.50000000\n";
+        let cfg = Config {
+            account: "Assets:Crypto:Exchange".to_owned(),
+            date_column: ColumnRef::Name("Date".to_owned()),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Change".to_owned()),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Coin".to_owned()),
+            }),
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        assert_eq!(
+            txs[0].postings[0].amount,
+            Some(Amount::new(dec!(0.25000000), "BTC"))
+        );
+        assert_eq!(
+            txs[1].postings[0].amount,
+            Some(Amount::new(dec!(-1.50000000), "ETH"))
+        );
+    }
+
+    #[test]
+    fn import_takes_the_commodity_from_an_indexed_column() {
+        let csv = "2025-01-02,BTC,0.25\n";
+        let cfg = Config {
+            account: "Assets:Crypto:Exchange".to_owned(),
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(2),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Index(1),
+            }),
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        assert_eq!(
+            txs[0].postings[0].amount,
+            Some(Amount::new(dec!(0.25), "BTC"))
+        );
+    }
+
+    /// `Column` asserts every row names a commodity, so a blank cell is
+    /// malformed input rather than a default.
+    #[test]
+    fn import_rejects_a_blank_commodity_cell() {
+        let csv = "Date,Coin,Change\n2025-01-02,,0.25\n";
+        let cfg = Config {
+            account: "Assets:Crypto:Exchange".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Change".to_owned()),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Coin".to_owned()),
+            }),
+            ..Config::default()
+        };
+        let msg = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect_err("a blank commodity cell is malformed")
+            .to_string();
+        assert!(msg.contains("Coin"), "should name the column: {msg}");
+    }
+
+    #[test]
+    fn import_still_applies_a_fixed_commodity_to_every_row() {
+        let csv = "Date,Amount\n2025-01-02,50.00\n2025-01-03,-20.00\n";
+        let cfg = Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        assert_eq!(
+            txs[0].postings[0].amount,
+            Some(Amount::new(dec!(50.00), "AUD"))
+        );
+        assert_eq!(
+            txs[1].postings[0].amount,
+            Some(Amount::new(dec!(-20.00), "AUD"))
+        );
+    }
+
+    /// The old i64 minor-units wire format could not carry this; real exports do.
+    #[test]
+    fn import_carries_an_eighteen_decimal_amount_above_the_old_ceiling() {
+        let csv = "Date,Coin,Change\n2025-01-02,ETH,123.456789012345678\n";
+        let cfg = Config {
+            account: "Assets:Crypto:Exchange".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Change".to_owned()),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Coin".to_owned()),
+            }),
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        let amount = txs[0].postings[0].amount.as_ref().expect("has an amount");
+        assert_eq!(amount.value.to_string(), "123.456789012345678");
     }
 
     /// A split column addressed by a name absent from the header is a
