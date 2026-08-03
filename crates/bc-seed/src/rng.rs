@@ -1,8 +1,14 @@
 //! Deterministic pseudo-random number generation for fixture generation.
 //!
 //! Written inline rather than using `rand`, because `rand` does not guarantee
-//! value-stability across releases and benchmark fixtures must be reproducible
-//! byte-for-byte across toolchain updates.
+//! value-stability across releases and the *shape* of a benchmark fixture — how
+//! many transactions, on which dates, against which accounts, with which legs
+//! elided — must be reproducible across toolchain updates.
+//!
+//! Reproducibility stops at the shape. Generated ledgers are **not** byte-for-byte
+//! identical between runs: posting and transaction IDs are `UUIDv7` and `created_at`
+//! is stamped from the wall clock, so both vary per run. Compare fixtures by shape,
+//! never by hash.
 
 /// Multiplier for the xorshift64\* output scrambler.
 const SCRAMBLE: u64 = 0x2545_F491_4F6C_DD1D;
