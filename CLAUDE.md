@@ -86,10 +86,11 @@ Hoist `use` statements to the top of the enclosing module — including `mod tes
 - Run a single test: `cargo nextest run -p <crate> <test-name>`.
 - **Never use real personal or financial data** in tests, fixtures, or doc examples. Invent obviously-fake values (account `123456789`, generic payees). Real data has leaked into this public repo before and required a history rewrite.
 - `bc-plugins` integration tests load pre-compiled `wasm32-wasip2` artifacts and fail in any checkout where `plugins/` has not been built. That is environmental, not a regression — to verify unrelated work, run `cargo nextest run --workspace -E 'not package(bc-plugins)'`.
+- **Plugin unit tests run natively, not on `wasm32-wasip2`.** `plugins/*` are workspace members, so `cargo nextest run --workspace` compiles their tests for the host, where `usize` is 64-bit — in production it is 32-bit. A native pass is not a `wasip2` pass. Real `wasip2` behaviour is covered by the `bc-plugins` integration tests, which run the staged `.wasm` components under Wasmtime. `mise run lint` does check the plugins on `wasm32-wasip2`, so target-dependent lints are still caught.
 
 ## Gotchas
 
-**The pre-commit hook runs workspace-wide clippy.** A commit that intentionally leaves the workspace non-compiling (a multi-crate migration landing crate by crate) will be blocked. Use `git commit --no-verify` for those intermediate commits and rely on a final full verification as the green gate. Never stub or gut a downstream crate just to satisfy the hook.
+**The pre-commit hook runs workspace-wide clippy.** A commit that intentionally leaves the workspace non-compiling (a multi-crate migration landing crate by crate) will be blocked. Use `git commit --no-verify` for those intermediate commits and rely on a final full verification as the green gate. Never stub or gut a downstream crate just to satisfy the hook. Note the hook is `types = ["rust"]` with `pass_filenames = false`, so *any* staged `.rs` file triggers the full `mise run lint` — including the `wasm32-wasip2` pass over the four plugin crates, which is a cold-cache build the first time.
 
 **`bc-ui` native and wasm clippy catch different lints.** `mod components` and its descendants are `#[cfg(target_arch = "wasm32")]`-gated, so each target sees a different module graph. Both must pass:
 
