@@ -313,6 +313,28 @@ impl Default for AmountColumns {
     }
 }
 
+/// One additional posting emitted per row, beyond the primary leg.
+///
+/// Exchange trade exports put both sides of a trade — and often a fee — in one
+/// row. Each extra leg names its own account, amount column(s), and commodity.
+///
+/// A blank amount cell means the leg is absent for that row, which is the
+/// normal shape of a fee column, and is not reported as a problem.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LegSpec {
+    /// Account path this leg posts to, e.g. `"Expenses:Fees"`.
+    pub account: String,
+    /// Which column(s) hold this leg's amount.
+    pub amount_columns: AmountColumns,
+    /// Where this leg's commodity code comes from.
+    pub commodity: CommoditySource,
+    /// Negate the parsed amount, for exports printing a cost as a positive
+    /// figure on both buys and sells.
+    #[serde(default)]
+    pub negate: bool,
+}
+
 /// Full configuration for the CSV importer.
 ///
 /// Supports configurable delimiters, date formats, amount representations,
@@ -373,6 +395,10 @@ pub struct Config {
     pub decimal_separator: char,
     /// Optional thousands-separator character to strip from numeric fields.
     pub thousands_separator: Option<char>,
+    /// Additional postings emitted per row, beyond the primary leg. Empty for
+    /// single-account statements, which is every bank export.
+    #[serde(default)]
+    pub extra_legs: Vec<LegSpec>,
 }
 
 /// Returns the default field delimiter.
@@ -427,36 +453,58 @@ impl Default for Config {
             }),
             decimal_separator: default_decimal_separator(),
             thousands_separator: None,
+            extra_legs: Vec::new(),
         }
     }
 }
 
 impl Config {
-    /// Returns the amount column(s) and, when the commodity is
-    /// column-sourced, the commodity column — the references shared by
-    /// [`Self::required_column_refs`] and [`Self::leg_column_refs`], which
-    /// each prepend or append their own extras around this shared core.
+    /// Returns an amount-columns-and-commodity reference group, field names
+    /// prefixed for the caller's context.
+    ///
+    /// Shared by [`Self::required_column_refs`], [`Self::leg_column_refs`],
+    /// and [`Self::extra_leg_column_refs`], each of which supplies its own
+    /// `amount_columns` and `commodity` — the primary leg's fields for the
+    /// first two, one extra leg's for the third — and its own field-name
+    /// prefix (empty for the primary leg, `extra_legs[{index}].` for an
+    /// extra one).
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - Prepended to every field name, e.g. `"extra_legs[0]."`.
+    /// * `amount_columns` - The amount column(s) to describe.
+    /// * `commodity` - The commodity source to describe, when column-sourced.
     ///
     /// # Returns
     ///
     /// A `Vec` of `(field name, reference)` pairs.
     #[inline]
-    fn amount_and_commodity_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
+    fn amount_and_commodity_refs<'config>(
+        prefix: &str,
+        amount_columns: &'config AmountColumns,
+        commodity: Option<&'config CommoditySource>,
+    ) -> Vec<(Cow<'static, str>, &'config ColumnRef)> {
         let mut refs: Vec<(Cow<'static, str>, &ColumnRef)> = Vec::new();
-        match self.amount_columns {
+        match *amount_columns {
             AmountColumns::Single { ref column } => {
-                refs.push((Cow::Borrowed("amount_columns.column"), column));
+                refs.push((Cow::Owned(format!("{prefix}amount_columns.column")), column));
             }
             AmountColumns::SplitDebitCredit {
                 ref debit_column,
                 ref credit_column,
             } => {
-                refs.push((Cow::Borrowed("amount_columns.debit_column"), debit_column));
-                refs.push((Cow::Borrowed("amount_columns.credit_column"), credit_column));
+                refs.push((
+                    Cow::Owned(format!("{prefix}amount_columns.debit_column")),
+                    debit_column,
+                ));
+                refs.push((
+                    Cow::Owned(format!("{prefix}amount_columns.credit_column")),
+                    credit_column,
+                ));
             }
         }
-        if let Some(CommoditySource::Column { ref column }) = self.commodity {
-            refs.push((Cow::Borrowed("commodity.column"), column));
+        if let Some(CommoditySource::Column { column }) = commodity {
+            refs.push((Cow::Owned(format!("{prefix}commodity.column")), column));
         }
         refs
     }
@@ -476,7 +524,11 @@ impl Config {
     pub fn required_column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
         let mut refs: Vec<(Cow<'static, str>, &ColumnRef)> =
             vec![(Cow::Borrowed("date_column"), &self.date_column)];
-        refs.extend(self.amount_and_commodity_refs());
+        refs.extend(Self::amount_and_commodity_refs(
+            "",
+            &self.amount_columns,
+            self.commodity.as_ref(),
+        ));
         refs
     }
 
@@ -519,11 +571,37 @@ impl Config {
     #[must_use]
     #[inline]
     pub fn leg_column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
-        let mut refs = self.amount_and_commodity_refs();
+        let mut refs =
+            Self::amount_and_commodity_refs("", &self.amount_columns, self.commodity.as_ref());
         if let Some(column) = self.balance_column.as_ref() {
             refs.push((Cow::Borrowed("balance_column"), column));
         }
         refs
+    }
+
+    /// Returns one extra leg's column references, paired with their config
+    /// field names.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The leg's position in [`Config::extra_legs`], used to build
+    ///   field names a profile author can locate.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec` of `(field name, reference)` pairs, empty when `index` is out
+    /// of range.
+    #[must_use]
+    #[inline]
+    pub fn extra_leg_column_refs(&self, index: usize) -> Vec<(Cow<'static, str>, &ColumnRef)> {
+        let Some(leg) = self.extra_legs.get(index) else {
+            return Vec::new();
+        };
+        Self::amount_and_commodity_refs(
+            &format!("extra_legs[{index}]."),
+            &leg.amount_columns,
+            Some(&leg.commodity),
+        )
     }
 
     /// Returns every configured column reference, paired with its config field
@@ -542,6 +620,9 @@ impl Config {
     pub fn column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
         let mut refs = self.transaction_column_refs();
         refs.extend(self.leg_column_refs());
+        for index in 0..self.extra_legs.len() {
+            refs.extend(self.extra_leg_column_refs(index));
+        }
         refs
     }
 
@@ -626,6 +707,12 @@ impl Config {
         let mut transaction_and_primary = self.transaction_column_refs();
         transaction_and_primary.extend(self.leg_column_refs());
         collect_duplicates(&transaction_and_primary, &mut problems);
+
+        for index in 0..self.extra_legs.len() {
+            let mut group = self.transaction_column_refs();
+            group.extend(self.extra_leg_column_refs(index));
+            collect_duplicates(&group, &mut problems);
+        }
 
         match self.header {
             Header::Absent => {
@@ -1341,6 +1428,125 @@ mod tests {
         assert!(
             msg.contains("missing field") && msg.contains("code"),
             "should name the missing field: {msg}"
+        );
+    }
+
+    #[test]
+    fn extra_legs_default_to_empty() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"account":"Assets:Bank","source_dir":"Bank","commodity":"AUD"}"#,
+        )
+        .expect("valid");
+        assert!(cfg.extra_legs.is_empty());
+    }
+
+    #[test]
+    fn extra_leg_deserializes_with_negate_defaulting_to_false() {
+        let leg: LegSpec = serde_json::from_str(
+            r#"{"account":"Assets:Crypto:Exchange",
+                "amount_columns":{"style":"single","column":"Total"},
+                "commodity":{"source":"column","column":"Quote"}}"#,
+        )
+        .expect("valid");
+        assert_eq!(leg.account, "Assets:Crypto:Exchange");
+        assert!(!leg.negate);
+    }
+
+    /// A trade row's fee leg and total leg legitimately read one quote-currency
+    /// column. The old global dedup rule rejected exactly this profile.
+    #[test]
+    fn validate_allows_two_legs_sharing_a_commodity_column() {
+        let cfg = Config {
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Quantity".to_owned()),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Base".to_owned()),
+            }),
+            extra_legs: vec![
+                LegSpec {
+                    account: "Assets:Crypto:Exchange".to_owned(),
+                    amount_columns: AmountColumns::Single {
+                        column: ColumnRef::Name("Total".to_owned()),
+                    },
+                    commodity: CommoditySource::Column {
+                        column: ColumnRef::Name("Quote".to_owned()),
+                    },
+                    negate: true,
+                },
+                LegSpec {
+                    account: "Expenses:Fees".to_owned(),
+                    amount_columns: AmountColumns::Single {
+                        column: ColumnRef::Name("Fees".to_owned()),
+                    },
+                    commodity: CommoditySource::Column {
+                        column: ColumnRef::Name("Quote".to_owned()),
+                    },
+                    negate: false,
+                },
+            ],
+            ..Config::default()
+        };
+        cfg.validate()
+            .expect("two legs may read the same commodity column");
+    }
+
+    #[test]
+    fn validate_rejects_a_collision_within_one_extra_leg() {
+        let cfg = Config {
+            extra_legs: vec![LegSpec {
+                account: "Expenses:Fees".to_owned(),
+                amount_columns: AmountColumns::Single {
+                    column: ColumnRef::Name("Fees".to_owned()),
+                },
+                commodity: CommoditySource::Column {
+                    column: ColumnRef::Name("fees".to_owned()),
+                },
+                negate: false,
+            }],
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("one column cannot be both a leg's amount and its commodity")
+            .to_string();
+        assert!(
+            msg.contains("extra_legs[0].amount_columns.column")
+                && msg.contains("extra_legs[0].commodity.column"),
+            "should name both colliding fields with their leg index: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_named_extra_leg_column_on_a_headerless_file() {
+        let cfg = Config {
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(1),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Index(2),
+            }),
+            extra_legs: vec![LegSpec {
+                account: "Expenses:Fees".to_owned(),
+                amount_columns: AmountColumns::Single {
+                    column: ColumnRef::Name("Fees".to_owned()),
+                },
+                commodity: CommoditySource::Column {
+                    column: ColumnRef::Index(4),
+                },
+                negate: false,
+            }],
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("named refs need a header row")
+            .to_string();
+        assert!(
+            msg.contains("extra_legs[0].amount_columns.column"),
+            "should name the offending field: {msg}"
         );
     }
 }
