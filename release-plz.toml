@@ -24,6 +24,25 @@ publish = false
 name    = "bc-app"
 publish = false
 
+# Importer plugins: shipped as WASM artifacts bundled inside the app, with no
+# independent consumers. Unlike bc-cli/bc-app they want no GitHub release
+# either, so `release = false` rather than `publish = false`.
+[[package]]
+name    = "bc-plugin-beancount"
+release = false
+
+[[package]]
+name    = "bc-plugin-csv"
+release = false
+
+[[package]]
+name    = "bc-plugin-ledger"
+release = false
+
+[[package]]
+name    = "bc-plugin-ofx"
+release = false
+
 [changelog]
 protect_breaking_commits = true
 tag_pattern              = '^.*/v[0-9]+\.[0-9]+\.[0-9]+$'
