@@ -3,6 +3,8 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use serde::Deserialize as _;
+
 /// How a column is addressed within a CSV row.
 ///
 /// Deserializes from either a bare JSON string (matched case-insensitively
@@ -176,18 +178,50 @@ impl<'de> serde::Deserialize<'de> for CommoditySource {
             Column { column: ColumnRef },
         }
 
-        /// A bare string is the pre-per-row-commodity spelling of `Fixed`.
-        #[derive(serde::Deserialize)]
-        #[serde(untagged)]
-        enum Repr {
-            Bare(String),
-            Tagged(Tagged),
+        impl From<Tagged> for CommoditySource {
+            fn from(tagged: Tagged) -> Self {
+                match tagged {
+                    Tagged::Fixed { code } => Self::Fixed { code },
+                    Tagged::Column { column } => Self::Column { column },
+                }
+            }
         }
 
-        Ok(match Repr::deserialize(deserializer)? {
-            Repr::Bare(code) | Repr::Tagged(Tagged::Fixed { code }) => Self::Fixed { code },
-            Repr::Tagged(Tagged::Column { column }) => Self::Column { column },
-        })
+        /// Accepts a bare string (the pre-per-row-commodity spelling of
+        /// `Fixed`) or the tagged map form, deserializing the latter through
+        /// `Tagged` so a malformed map keeps `Tagged`'s own diagnostic (e.g.
+        /// the unknown-variant or missing-field message) instead of being
+        /// flattened into a generic "did not match any variant" error.
+        struct CommoditySourceVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for CommoditySourceVisitor {
+            type Value = CommoditySource;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str(
+                    "a bare commodity code string, or a map with a \"source\" of \"fixed\" or \"column\"",
+                )
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(CommoditySource::Fixed {
+                    code: value.to_owned(),
+                })
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                Tagged::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(Into::into)
+            }
+        }
+
+        deserializer.deserialize_any(CommoditySourceVisitor)
     }
 }
 
@@ -1102,5 +1136,32 @@ mod tests {
         let cfg: Config = serde_json::from_str(r#"{"account":"Assets:Bank","source_dir":"Bank"}"#)
             .expect("commodity is optional at the serde layer");
         assert!(cfg.commodity.is_none());
+    }
+
+    /// A hand-edited profile with an invalid tag must get a message naming
+    /// the unknown variant, not the generic "did not match any variant" a
+    /// naive untagged fallback would produce.
+    #[test]
+    fn commodity_rejects_an_unknown_source_tag() {
+        let err = serde_json::from_str::<CommoditySource>(r#"{"source":"bogus","column":"Coin"}"#)
+            .expect_err("an unrecognized source tag is not a valid commodity");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown variant") && msg.contains("bogus"),
+            "should name the unknown variant: {msg}"
+        );
+    }
+
+    /// A `fixed` source with no `code` must get a message naming the missing
+    /// field.
+    #[test]
+    fn commodity_rejects_a_fixed_source_missing_code() {
+        let err = serde_json::from_str::<CommoditySource>(r#"{"source":"fixed"}"#)
+            .expect_err("a fixed commodity without a code is malformed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing field") && msg.contains("code"),
+            "should name the missing field: {msg}"
+        );
     }
 }
