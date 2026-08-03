@@ -94,6 +94,22 @@ BC_DB_PATH="$DEV_DB" cargo tauri dev
   depends     = ["//crates/bc-app:gen:icons"]
   run         = "cargo test --doc --workspace"
 
+  [tasks."bench:fixtures"]
+  description = "Generate cached benchmark ledgers (slow; run once)"
+  run         = """
+set -euo pipefail
+mkdir -p target/bench-fixtures
+cargo build --release -p bc-seed
+BIN=target/release/bc-seed
+$BIN --db-path target/bench-fixtures/t0.db --force generate --months 24  --tx-per-month 200
+$BIN --db-path target/bench-fixtures/t1.db --force generate --months 120 --tx-per-month 200
+$BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-per-month 2000
+"""
+
+  [tasks.bench]
+  description = "Run the balance read-path benchmarks"
+  run         = "cargo bench -p bc-core"
+
   [tasks."test:e2e"]
   description = "Run E2E tests (desktop suite; container required on macOS/Windows)"
   usage       = 'flag "--container" help="Run in a locally-built Linux container (needed on macOS/Windows)"'

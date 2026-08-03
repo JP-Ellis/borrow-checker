@@ -10,6 +10,10 @@ rust-version.workspace = true
 repository.workspace   = true
 license.workspace      = true
 
+[[bench]]
+harness = false
+name    = "balance"
+
 [dependencies]
 bc-config    = { workspace = true }
 bc-ipc       = { workspace = true, optional = true }
@@ -25,6 +29,7 @@ thiserror    = { workspace = true }
 tracing      = { workspace = true }
 
 [dev-dependencies]
+criterion           = { workspace = true }
 pretty_assertions   = { workspace = true }
 rstest              = { workspace = true }
 rust_decimal_macros = { workspace = true }
