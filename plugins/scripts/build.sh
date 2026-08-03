@@ -27,7 +27,8 @@ for name in "${PLUGINS[@]}"; do
 
   manifest="$WORKSPACE_ROOT/plugins/$name/Cargo.toml"
 
-  cargo build --release --target wasm32-wasip2 --manifest-path "$manifest"
+  cargo rustc --release --target wasm32-wasip2 --manifest-path "$manifest" \
+    --crate-type cdylib
 
   # Cargo uses underscores in artifact names: bc-plugin-csv → bc_plugin_csv.wasm
   wasm_src="$WORKSPACE_ROOT/plugins/$name/target/wasm32-wasip2/release/bc_plugin_${name}.wasm"
