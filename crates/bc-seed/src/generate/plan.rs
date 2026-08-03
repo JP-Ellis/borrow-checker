@@ -54,6 +54,14 @@ pub struct TxPlan {
 /// case — which puts the elided legs on the dominant account, the worst case for
 /// `Residuals::for_account`.
 ///
+/// `elided` is decided before `commodity`: a transaction only becomes a
+/// second-commodity one if it was already decided not to be elided, keeping
+/// the residual single-commodity by construction. This gates
+/// `config.second_commodity_ratio` on the non-elided subset, so the
+/// unconditional share of second-commodity transactions in the plan is
+/// `(1 - config.elided_ratio) * config.second_commodity_ratio`, not
+/// `config.second_commodity_ratio` itself.
+///
 /// # Arguments
 ///
 /// * `config` - Generator knobs.
@@ -284,16 +292,25 @@ mod tests {
 
     #[test]
     fn a_second_commodity_appears_but_stays_rare() {
-        let plans = build(&config());
+        let cfg = config();
+        let plans = build(&cfg);
         let secondary = plans
             .iter()
             .filter(|p| p.commodity != BASE_COMMODITY)
             .count();
         assert!(secondary > 0, "second commodity must appear at all");
+
+        // A second-commodity leg is only ever drawn for a non-elided
+        // transaction (see `build`'s doc comment), so the unconditional
+        // share is diluted by the non-elided fraction, not
+        // `second_commodity_ratio` alone.
         let share = share(secondary, plans.len());
+        let expected = (1.0_f64 - cfg.elided_ratio) * cfg.second_commodity_ratio;
+        let tolerance = expected * 0.6_f64;
         assert!(
-            share < 0.05_f64,
-            "second commodity should stay rare, got {share}"
+            (expected - tolerance..expected + tolerance).contains(&share),
+            "expected ~{expected} second-commodity share ((1 - elided_ratio) * \
+             second_commodity_ratio), got {share} (tolerance {tolerance})"
         );
     }
 

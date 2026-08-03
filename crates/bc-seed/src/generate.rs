@@ -33,7 +33,14 @@ pub struct Config {
     pub elided_ratio: f64,
     /// Share of transactions touching the single dominant deposit account.
     pub skew: f64,
-    /// Share of transactions denominated in the secondary commodity.
+    /// Share of *non-elided* transactions denominated in the secondary
+    /// commodity.
+    ///
+    /// A second-commodity leg is only ever drawn for a transaction that was
+    /// already decided not to be elided (see [`plan::build`]), so the
+    /// unconditional share across the whole plan is
+    /// `(1 - elided_ratio) * second_commodity_ratio`, not
+    /// `second_commodity_ratio` itself.
     pub second_commodity_ratio: f64,
     /// PRNG seed. Fixing this fixes the entire ledger.
     pub seed: u64,
