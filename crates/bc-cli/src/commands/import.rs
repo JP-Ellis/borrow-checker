@@ -96,6 +96,7 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
         &ctx.transactions,
         &ctx.sources,
         &ctx.accounts,
+        &ctx.commodities,
         &ctx.batches,
         Some(&profile.id),
         &profile.importer,
@@ -436,6 +437,7 @@ fn list_to_json(batches: &[bc_core::ImportBatch]) -> serde_json::Value {
                 "attached_postings": batch.counts.map(|c| c.attached_postings),
                 "skipped_postings": batch.counts.map(|c| c.skipped()),
                 "unresolved_account_postings": batch.counts.map(|c| c.unresolved_account_postings),
+                "unresolved_commodity_postings": batch.counts.map(|c| c.unresolved_commodity_postings),
                 "other_skipped_postings": batch.counts.map(|c| c.other_skipped_postings),
             }))
             .collect::<Vec<_>>(),
@@ -447,16 +449,25 @@ fn list_to_json(batches: &[bc_core::ImportBatch]) -> serde_json::Value {
 /// # Arguments
 ///
 /// * `count` - How many.
-/// * `noun` - The singular noun; an `s` is appended unless `count` is 1.
+/// * `noun` - The singular noun. Unless `count` is 1 it gains an `s`, or `ies`
+///   in place of a consonant-preceded `y` — enough for the nouns this module
+///   reports on (`posting`, `account`, `commodity`), and no more.
 ///
 /// # Returns
 ///
-/// A phrase such as `1 posting` or `4 postings`.
+/// A phrase such as `1 posting`, `4 postings`, or `2 unregistered commodities`.
 fn plural(count: usize, noun: &str) -> String {
     if count == 1 {
-        format!("{count} {noun}")
-    } else {
-        format!("{count} {noun}s")
+        return format!("{count} {noun}");
+    }
+    let consonant_y = noun.strip_suffix('y').filter(|stem| {
+        stem.chars()
+            .next_back()
+            .is_some_and(|last| !matches!(last, 'a' | 'e' | 'i' | 'o' | 'u'))
+    });
+    match consonant_y {
+        Some(stem) => format!("{count} {stem}ies"),
+        None => format!("{count} {noun}s"),
     }
 }
 
@@ -471,10 +482,14 @@ struct Report<'out> {
     attached_postings: usize,
     /// Postings skipped because their account path named no existing account.
     unresolved_account_postings: usize,
+    /// Postings skipped because their commodity code named no registered commodity.
+    unresolved_commodity_postings: usize,
     /// Postings skipped for any other reason.
     other_skipped_postings: usize,
     /// The distinct account paths naming no account.
     unresolved_accounts: &'out [String],
+    /// The distinct codes naming no registered commodity.
+    unresolved_commodities: &'out [String],
 }
 
 impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
@@ -484,8 +499,10 @@ impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
             new_transactions: outcome.new_transactions,
             attached_postings: outcome.attached_postings,
             unresolved_account_postings: outcome.unresolved_account_postings,
+            unresolved_commodity_postings: outcome.unresolved_commodity_postings,
             other_skipped_postings: outcome.other_skipped_postings,
             unresolved_accounts: &outcome.unresolved_accounts,
+            unresolved_commodities: &outcome.unresolved_commodities,
         }
     }
 }
@@ -495,7 +512,8 @@ impl Report<'_> {
     ///
     /// Every number is attributed to its cause: legs skipped because their
     /// account path named no account are actionable — create the accounts and
-    /// re-run — while legs skipped for any other reason were each warned about
+    /// re-run — as are legs whose commodity code named nothing, which need the
+    /// commodity registered; legs skipped for any other reason were each warned about
     /// as they happened. Reporting one total against the unresolved accounts
     /// would misattribute the rest.
     ///
@@ -536,6 +554,33 @@ impl Report<'_> {
             ));
         }
 
+        if !self.unresolved_commodities.is_empty() {
+            lines.push(String::new());
+            lines.push(format!(
+                "Skipped {} naming {}:",
+                plural(self.unresolved_commodity_postings, "posting"),
+                plural(self.unresolved_commodities.len(), "unregistered commodity"),
+            ));
+            lines.extend(
+                self.unresolved_commodities
+                    .iter()
+                    .map(|code| format!("  {code}")),
+            );
+            lines.push(format!(
+                "Register {} and re-run to import {}.",
+                if self.unresolved_commodities.len() == 1 {
+                    "it"
+                } else {
+                    "these commodities"
+                },
+                if self.unresolved_commodity_postings == 1 {
+                    "that posting"
+                } else {
+                    "those postings"
+                },
+            ));
+        }
+
         if self.other_skipped_postings > 0 {
             lines.push(String::new());
             lines.push(format!(
@@ -567,10 +612,13 @@ impl Report<'_> {
             "attached_postings": self.attached_postings,
             "skipped_postings": self
                 .unresolved_account_postings
+                .saturating_add(self.unresolved_commodity_postings)
                 .saturating_add(self.other_skipped_postings),
             "unresolved_account_postings": self.unresolved_account_postings,
+            "unresolved_commodity_postings": self.unresolved_commodity_postings,
             "other_skipped_postings": self.other_skipped_postings,
             "unresolved_accounts": self.unresolved_accounts,
+            "unresolved_commodities": self.unresolved_commodities,
         })
     }
 }
@@ -591,11 +639,13 @@ mod tests {
     use jiff::Timestamp;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal::Decimal;
     use sqlx::SqlitePool;
 
     use super::Command;
     use super::Report;
+    use super::plural;
 
     /// Wrapper needed because `Args` is a subcommand arg group.
     #[derive(clap::Parser)]
@@ -635,55 +685,80 @@ mod tests {
         assert!(rejected.is_err(), "importers source their own files");
     }
 
-    /// A report over the given counts and unresolved accounts.
-    fn report(
+    /// A report over the given counts, unresolved accounts and commodities.
+    fn report<'out>(
         new_transactions: usize,
         attached_postings: usize,
         unresolved_account_postings: usize,
+        unresolved_commodity_postings: usize,
         other_skipped_postings: usize,
-        unresolved_accounts: &[String],
-    ) -> Report<'_> {
+        unresolved_accounts: &'out [String],
+        unresolved_commodities: &'out [String],
+    ) -> Report<'out> {
         Report {
             new_transactions,
             attached_postings,
             unresolved_account_postings,
+            unresolved_commodity_postings,
             other_skipped_postings,
             unresolved_accounts,
+            unresolved_commodities,
         }
     }
 
-    /// Owned paths, so the borrowed slice in [`Report`] has something to point at.
+    /// Owned strings, so the borrowed slices in [`Report`] have something to
+    /// point at.
     fn paths(paths: &[&str]) -> Vec<String> {
         paths.iter().map(|path| (*path).to_owned()).collect()
     }
 
+    #[rstest]
+    #[case::one(1, "posting", "1 posting")]
+    #[case::many(4, "posting", "4 postings")]
+    #[case::consonant_y(2, "unregistered commodity", "2 unregistered commodities")]
+    #[case::vowel_y(2, "day", "2 days")]
+    fn plural_renders_the_noun(#[case] count: usize, #[case] noun: &str, #[case] expected: &str) {
+        assert_eq!(plural(count, noun), expected);
+    }
+
     #[test]
     fn report_for_a_clean_run() {
-        insta::assert_snapshot!(report(3, 0, 0, 0, &[]).render());
+        insta::assert_snapshot!(report(3, 0, 0, 0, 0, &[], &[]).render());
     }
 
     #[test]
     fn report_for_a_partial_run_with_unknown_accounts() {
         // Some new, some attached, two unresolved accounts accounting for three legs.
         let unresolved = paths(&["Assets:Brokerage", "Expenses:Fun"]);
-        insta::assert_snapshot!(report(2, 1, 3, 0, &unresolved).render());
+        insta::assert_snapshot!(report(2, 1, 3, 0, 0, &unresolved, &[]).render());
     }
 
     #[test]
     fn report_for_a_run_skipping_legs_for_other_reasons() {
-        insta::assert_snapshot!(report(1, 0, 0, 2, &[]).render());
+        insta::assert_snapshot!(report(1, 0, 0, 0, 2, &[], &[]).render());
     }
 
     #[test]
-    fn report_attributes_both_causes_separately() {
+    fn report_for_a_run_with_unregistered_commodities() {
+        // Registering the commodity and re-running is the recovery path, so the
+        // report has to name the codes rather than just count the legs.
+        let unregistered = paths(&["DOGE", "XYZ"]);
+        insta::assert_snapshot!(report(1, 0, 0, 3, 0, &[], &unregistered).render());
+    }
+
+    #[test]
+    fn report_attributes_every_cause_separately() {
         let unresolved = paths(&["Expenses:Fun"]);
-        insta::assert_snapshot!(report(1, 1, 1, 1, &unresolved).render());
+        let unregistered = paths(&["DOGE"]);
+        insta::assert_snapshot!(report(1, 1, 1, 1, 1, &unresolved, &unregistered).render());
     }
 
     #[test]
     fn the_json_payload_names_every_number_and_its_cause() {
         let unresolved = paths(&["Expenses:Fun", "Expenses:Rent"]);
-        let payload = report(3, 2, 4, 1, &unresolved).to_json("import_batch_stub");
+        let unregistered = paths(&["DOGE"]);
+        let payload =
+            report(3, 2, 4, 2, 1, &unresolved, &unregistered).to_json("import_batch_stub");
 
         assert_eq!(
             payload,
@@ -691,10 +766,12 @@ mod tests {
                 "batch": "import_batch_stub",
                 "new_transactions": 3_usize,
                 "attached_postings": 2_usize,
-                "skipped_postings": 5_usize,
+                "skipped_postings": 7_usize,
                 "unresolved_account_postings": 4_usize,
+                "unresolved_commodity_postings": 2_usize,
                 "other_skipped_postings": 1_usize,
                 "unresolved_accounts": ["Expenses:Fun", "Expenses:Rent"],
+                "unresolved_commodities": ["DOGE"],
             }),
             "a script reads these keys; renaming one or dropping the cause split is a \
              breaking change"
@@ -784,6 +861,7 @@ mod tests {
                 .expect("empty plugin registry"),
             importers,
             accounts: bc_core::AccountService::new(pool.clone()),
+            commodities: bc_core::CommodityService::new(pool.clone()),
             transactions: bc_core::TransactionService::new(pool.clone()),
             balances: bc_core::BalanceEngine::new(pool.clone()),
             profiles,
@@ -935,7 +1013,7 @@ mod tests {
     async fn list_to_json_covers_each_outcome_state(pool: sqlx::SqlitePool) {
         // Mirrors `list_renders_each_outcome_state`, but on the machine
         // surface: `counts.map(...)` fans a single `Option<Counts>` out to
-        // five independent JSON fields, and a typo'd key or a wrong fanout
+        // six independent JSON fields, and a typo'd key or a wrong fanout
         // would still leave the human-readable table looking fine.
         let batches = bc_core::ImportBatchService::new(pool.clone());
 
@@ -944,6 +1022,7 @@ mod tests {
         done_counts.new_transactions = 12;
         done_counts.attached_postings = 3;
         done_counts.unresolved_account_postings = 1;
+        done_counts.unresolved_commodity_postings = 4;
         done_counts.other_skipped_postings = 2;
         batches.close(&done, done_counts).await.expect("close");
 
@@ -969,10 +1048,14 @@ mod tests {
         let done_entry = find(&done);
         pretty_assertions::assert_eq!(done_entry["new_transactions"], serde_json::json!(12_usize));
         pretty_assertions::assert_eq!(done_entry["attached_postings"], serde_json::json!(3_usize));
-        pretty_assertions::assert_eq!(done_entry["skipped_postings"], serde_json::json!(3_usize));
+        pretty_assertions::assert_eq!(done_entry["skipped_postings"], serde_json::json!(7_usize));
         pretty_assertions::assert_eq!(
             done_entry["unresolved_account_postings"],
             serde_json::json!(1_usize)
+        );
+        pretty_assertions::assert_eq!(
+            done_entry["unresolved_commodity_postings"],
+            serde_json::json!(4_usize)
         );
         pretty_assertions::assert_eq!(
             done_entry["other_skipped_postings"],

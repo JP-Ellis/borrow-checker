@@ -23,6 +23,7 @@ use std::collections::HashSet;
 use bc_models::AccountId;
 use bc_models::Amount;
 use bc_models::Balances;
+use bc_models::CommodityCode;
 use bc_models::ImportBatchId;
 use bc_models::Posting;
 use bc_models::PostingId;
@@ -36,6 +37,7 @@ use jiff::Timestamp;
 use crate::AccountPath;
 use crate::AccountResolver;
 use crate::BcResult;
+use crate::CommodityResolver;
 use crate::RawPosting;
 use crate::RawTransaction;
 use crate::Resolution;
@@ -57,22 +59,33 @@ pub struct ImportOutcome {
     /// transaction's own posting count does not always move with this number.
     pub attached_postings: usize,
     /// Postings that could not be persisted, whatever the cause. The sum of
-    /// [`Self::unresolved_account_postings`] and [`Self::other_skipped_postings`].
+    /// [`Self::unresolved_account_postings`],
+    /// [`Self::unresolved_commodity_postings`] and
+    /// [`Self::other_skipped_postings`].
     pub skipped_postings: usize,
     /// Postings skipped because their account path named no existing account.
     ///
     /// These are the legs [`Self::unresolved_accounts`] accounts for; creating
     /// those accounts and re-running attaches them.
     pub unresolved_account_postings: usize,
-    /// Postings skipped for any other reason — a malformed account path, an
-    /// ambiguous residual, legs owned by several transactions, or a candidate
-    /// that failed to corroborate. Each was warned about individually.
+    /// Postings skipped because their commodity code named no registered commodity.
+    ///
+    /// These are the legs [`Self::unresolved_commodities`] accounts for;
+    /// registering those commodities and re-running attaches them.
+    pub unresolved_commodity_postings: usize,
+    /// Postings skipped for any other reason — a malformed account path, a blank
+    /// commodity code, an ambiguous residual, legs owned by several
+    /// transactions, or a candidate that failed to corroborate. Each was warned
+    /// about individually.
     pub other_skipped_postings: usize,
     /// Account paths that resolved to no account, deduplicated and sorted.
     ///
     /// This is the actionable output: create these accounts and re-run, and the
     /// next pass attaches the legs this one skipped.
     pub unresolved_accounts: Vec<String>,
+    /// The distinct unregistered codes encountered, in sorted order. This is the
+    /// register-these-then-re-run worklist.
+    pub unresolved_commodities: Vec<String>,
 }
 
 /// Running totals for one import run, with skips attributed to their cause.
@@ -84,6 +97,8 @@ struct Counts {
     attached_postings: usize,
     /// Postings skipped because their account path named no existing account.
     unresolved_account_postings: usize,
+    /// Postings skipped because their commodity code named no registered commodity.
+    unresolved_commodity_postings: usize,
     /// Postings skipped for any other reason.
     other_skipped_postings: usize,
 }
@@ -98,6 +113,7 @@ impl Counts {
     /// Returns the total skipped, whatever the cause.
     fn skipped(&self) -> usize {
         self.unresolved_account_postings
+            .saturating_add(self.unresolved_commodity_postings)
             .saturating_add(self.other_skipped_postings)
     }
 }
@@ -108,8 +124,12 @@ enum SkipCause {
     /// The leg's account path named no existing account. Creating the account
     /// and re-running attaches the leg.
     UnresolvedAccount,
-    /// Anything else: a malformed account path, an ambiguous residual, legs
-    /// owned by several transactions, or a failed corroboration.
+    /// The leg's commodity code named no registered commodity. Registering the
+    /// commodity and re-running attaches the leg.
+    UnresolvedCommodity,
+    /// Anything else: a malformed account path, a blank commodity code, an
+    /// ambiguous residual, legs owned by several transactions, or a failed
+    /// corroboration.
     Other,
 }
 
@@ -166,10 +186,15 @@ struct Resolved {
     rows: Vec<Vec<ResolvedLeg>>,
     /// Legs skipped because their account path named no existing account.
     unresolved_account_postings: usize,
+    /// Legs skipped because their commodity code named no registered commodity.
+    unresolved_commodity_postings: usize,
     /// Legs skipped for any other reason.
     other_skipped_postings: usize,
     /// Distinct account paths naming no account; sorted and unique by construction.
     unresolved_accounts: BTreeSet<String>,
+    /// Distinct codes naming no registered commodity; sorted and unique by
+    /// construction.
+    unresolved_commodities: BTreeSet<String>,
 }
 
 /// Imports raw transactions, persisting every resolvable posting.
@@ -178,6 +203,11 @@ struct Resolved {
 /// account is skipped and its path reported, so the user can create the account
 /// and re-run — the next pass attaches the leg to the transaction this pass
 /// created. Provenance is recorded per leg, which is what makes that possible.
+///
+/// A leg's **commodity code** is resolved the same way and for the same reason:
+/// a code naming no registered commodity is skipped and reported, so the user
+/// can register it and re-run. Resolution also canonicalises the code, so `btc`
+/// and `BTC` become the one registered commodity rather than two.
 ///
 /// A transaction is skipped whole when the document does not determine what it
 /// would persist: two or more elided legs leave the residual ambiguous, or the
@@ -193,6 +223,7 @@ struct Resolved {
 /// * `transactions` - Transaction persistence service.
 /// * `sources` - Source-reference persistence service.
 /// * `accounts` - Account service, snapshotted once for path resolution.
+/// * `commodities` - Commodity service, snapshotted once for code resolution.
 /// * `batches` - Import batch provenance service.
 /// * `profile_id` - The driving profile, if the run is profile-driven.
 /// * `importer` - Stable importer name, recorded on the batch.
@@ -205,23 +236,32 @@ struct Resolved {
 /// # Errors
 ///
 /// Returns [`crate::BcError`] on query, insert, or batch-record failure.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per service the run reads or writes; bundling them \
+              into a struct would only move the same list one level out"
+)]
 #[inline]
 pub async fn execute_import(
     transactions: &crate::TransactionService,
     sources: &crate::SourceService,
     accounts: &crate::AccountService,
+    commodities: &crate::CommodityService,
     batches: &crate::ImportBatchService,
     profile_id: Option<&bc_models::ProfileId>,
     importer: &str,
     raws: &[RawTransaction],
 ) -> BcResult<ImportOutcome> {
     let resolver = crate::AccountResolver::load(accounts).await?;
+    let commodity_resolver = CommodityResolver::load(commodities).await?;
     let batch_id = batches.open(profile_id, importer).await?;
 
-    let pass = resolve_legs(&resolver, raws);
+    let pass = resolve_legs(&resolver, &commodity_resolver, raws);
     let unresolved_accounts: Vec<String> = pass.unresolved_accounts.into_iter().collect();
+    let unresolved_commodities: Vec<String> = pass.unresolved_commodities.into_iter().collect();
     let mut counts = Counts {
         unresolved_account_postings: pass.unresolved_account_postings,
+        unresolved_commodity_postings: pass.unresolved_commodity_postings,
         other_skipped_postings: pass.other_skipped_postings,
         ..Counts::default()
     };
@@ -246,6 +286,7 @@ pub async fn execute_import(
                 new_transactions: counts.new_transactions,
                 attached_postings: counts.attached_postings,
                 unresolved_account_postings: counts.unresolved_account_postings,
+                unresolved_commodity_postings: counts.unresolved_commodity_postings,
                 other_skipped_postings: counts.other_skipped_postings,
             },
         )
@@ -257,8 +298,10 @@ pub async fn execute_import(
         attached_postings: counts.attached_postings,
         skipped_postings: counts.skipped(),
         unresolved_account_postings: counts.unresolved_account_postings,
+        unresolved_commodity_postings: counts.unresolved_commodity_postings,
         other_skipped_postings: counts.other_skipped_postings,
         unresolved_accounts,
+        unresolved_commodities,
     })
 }
 
@@ -268,18 +311,25 @@ pub async fn execute_import(
 /// # Arguments
 ///
 /// * `resolver` - The account-tree snapshot to resolve paths against.
+/// * `commodities` - The registry snapshot to resolve commodity codes against.
 /// * `raws` - Parsed transactions in document order.
 ///
 /// # Returns
 ///
 /// The resolved legs per transaction, the skipped-posting tallies attributed to
-/// their causes, and the distinct unresolved accounts.
-fn resolve_legs(resolver: &AccountResolver, raws: &[RawTransaction]) -> Resolved {
+/// their causes, and the distinct unresolved accounts and commodities.
+fn resolve_legs(
+    resolver: &AccountResolver,
+    commodities: &CommodityResolver,
+    raws: &[RawTransaction],
+) -> Resolved {
     let mut out = Resolved {
         rows: Vec::with_capacity(raws.len()),
         unresolved_account_postings: 0_usize,
+        unresolved_commodity_postings: 0_usize,
         other_skipped_postings: 0_usize,
         unresolved_accounts: BTreeSet::new(),
+        unresolved_commodities: BTreeSet::new(),
     };
     // Warn-once guard only: which archived accounts have already been reported.
     // Unlike an unresolved account this is not part of the outcome — importing
@@ -304,15 +354,21 @@ fn resolve_legs(resolver: &AccountResolver, raws: &[RawTransaction]) -> Resolved
         for posting in &raw.postings {
             match resolve_leg(
                 resolver,
+                commodities,
                 raw,
                 posting,
                 &mut out.unresolved_accounts,
+                &mut out.unresolved_commodities,
                 &mut archived,
             ) {
                 Ok(leg) => legs.push(leg),
                 Err(SkipCause::UnresolvedAccount) => {
                     out.unresolved_account_postings =
                         out.unresolved_account_postings.saturating_add(1);
+                }
+                Err(SkipCause::UnresolvedCommodity) => {
+                    out.unresolved_commodity_postings =
+                        out.unresolved_commodity_postings.saturating_add(1);
                 }
                 Err(SkipCause::Other) => {
                     out.other_skipped_postings = out.other_skipped_postings.saturating_add(1);
@@ -350,10 +406,13 @@ fn has_ambiguous_residual(raw: &RawTransaction) -> bool {
 /// # Arguments
 ///
 /// * `resolver` - The account-tree snapshot to resolve against.
+/// * `commodities` - The registry snapshot to resolve commodity codes against.
 /// * `raw` - The transaction the leg belongs to, for diagnostics.
 /// * `posting` - The leg to resolve.
 /// * `unresolved` - Accumulator of distinct unresolved accounts; also the
 ///   warn-once guard, since inserting a path reports whether it is new.
+/// * `unresolved_commodities` - Accumulator of distinct unregistered commodity
+///   codes, and likewise their warn-once guard.
 /// * `archived` - Warn-once guard for archived accounts already reported.
 ///
 /// # Returns
@@ -362,9 +421,11 @@ fn has_ambiguous_residual(raw: &RawTransaction) -> bool {
 /// this run.
 fn resolve_leg(
     resolver: &AccountResolver,
+    commodities: &CommodityResolver,
     raw: &RawTransaction,
     posting: &RawPosting,
     unresolved: &mut BTreeSet<String>,
+    unresolved_commodities: &mut BTreeSet<String>,
     archived_seen: &mut BTreeSet<String>,
 ) -> Result<ResolvedLeg, SkipCause> {
     let path = match AccountPath::parse(&posting.account) {
@@ -415,16 +476,91 @@ fn resolve_leg(
         }
     };
 
+    let amount = match canonicalise(commodities, posting.amount.as_ref()) {
+        Canonical::Resolved(amount) => amount,
+        Canonical::Unregistered(code) => {
+            // Warn once per distinct code, for the same reason an unresolved
+            // account path does: one unregistered commodity named by every row
+            // of a file should log one line, not one per row.
+            if unresolved_commodities.insert(code.clone()) {
+                tracing::warn!(
+                    location = location_of(raw),
+                    commodity = code.as_str(),
+                    "commodity code names no registered commodity; register it and \
+                     re-run to attach the legs skipped now"
+                );
+            }
+            return Err(SkipCause::UnresolvedCommodity);
+        }
+        Canonical::Blank => {
+            tracing::warn!(
+                location = location_of(raw),
+                "posting has a blank commodity code; skipping this leg"
+            );
+            return Err(SkipCause::Other);
+        }
+    };
+
+    // A balance is corroboration, not the posting itself: an unresolved
+    // commodity on it costs the balance, not the leg. Nothing persists the
+    // reported balance yet, so dropping it is exactly the diagnostic below.
+    if let Canonical::Unregistered(code) = canonicalise(commodities, posting.balance.as_ref()) {
+        tracing::warn!(
+            location = location_of(raw),
+            commodity = code.as_str(),
+            "reported balance names an unregistered commodity; dropping the balance"
+        );
+    }
+
     Ok(ResolvedLeg {
+        // Fingerprinted over the *canonical* code, so a file stating `btc` and a
+        // later one stating `BTC` produce one fingerprint, not two, and the
+        // second re-import dedups rather than duplicating the posting.
         fingerprint: SourceRef::compute_fingerprint(
             raw.date,
             &raw.description,
-            posting.amount.as_ref(),
+            amount.as_ref(),
             raw.reference.as_deref(),
         ),
         account_id,
-        amount: posting.amount.clone(),
+        amount,
     })
+}
+
+/// The outcome of canonicalising one optional amount's commodity code.
+enum Canonical {
+    /// Resolved — `None` when the amount was elided to begin with.
+    Resolved(Option<Amount>),
+    /// The code named no registered commodity.
+    Unregistered(String),
+    /// The code was empty.
+    Blank,
+}
+
+/// Rewrites an amount's commodity code to its registered spelling.
+///
+/// # Arguments
+///
+/// * `commodities` - The registry snapshot to resolve against.
+/// * `amount` - The amount to canonicalise; `None` for an elided leg.
+///
+/// # Returns
+///
+/// The canonicalised amount, or why it could not be resolved.
+fn canonicalise(commodities: &CommodityResolver, amount: Option<&Amount>) -> Canonical {
+    let Some(stated) = amount else {
+        return Canonical::Resolved(None);
+    };
+    let raw = stated.commodity().as_str();
+    if raw.trim().is_empty() {
+        return Canonical::Blank;
+    }
+    match commodities.resolve(stated.commodity()) {
+        Some(code) => {
+            Canonical::Resolved(Some(Amount::new(stated.value(), CommodityCode::new(code))))
+        }
+        None => Canonical::Unregistered(raw.to_owned()),
+    }
 }
 
 /// Step 3: claims an occurrence slot for every resolved leg.
@@ -1114,6 +1250,7 @@ mod tests {
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
     use sqlx::SqlitePool;
 
     use super::*;
@@ -1124,15 +1261,24 @@ mod tests {
         transactions: crate::TransactionService,
         sources: crate::SourceService,
         accounts: crate::AccountService,
+        commodities: crate::CommodityService,
         batches: crate::ImportBatchService,
     }
 
-    /// Creates the four services over one pool.
-    fn services(pool: &SqlitePool) -> Services {
+    /// Creates the five services over one pool, with the default commodity set
+    /// seeded — every leg's code is now resolved against the registry, so a run
+    /// over an empty one would skip every leg for want of a commodity.
+    async fn services(pool: &SqlitePool) -> Services {
+        let commodities = crate::CommodityService::new(pool.clone());
+        commodities
+            .seed_defaults()
+            .await
+            .expect("seed the default commodities");
         Services {
             transactions: crate::TransactionService::new(pool.clone()),
             sources: crate::SourceService::new(pool.clone()),
             accounts: crate::AccountService::new(pool.clone()),
+            commodities,
             batches: crate::ImportBatchService::new(pool.clone()),
         }
     }
@@ -1143,6 +1289,7 @@ mod tests {
             &svcs.transactions,
             &svcs.sources,
             &svcs.accounts,
+            &svcs.commodities,
             &svcs.batches,
             None,
             "test",
@@ -1358,7 +1505,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn import_is_idempotent_and_incremental(pool: SqlitePool) {
         two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let batch = vec![raw("COFFEE", -5), raw("LUNCH", -20)];
 
@@ -1387,7 +1534,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn identical_rows_both_import_first_run(pool: SqlitePool) {
         two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         // Two legitimately identical rows (same day, narration, amount, no reference).
         let batch = vec![raw("COFFEE", -5), raw("COFFEE", -5)];
@@ -1405,7 +1552,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn rows_without_a_concrete_amount_are_skipped(pool: SqlitePool) {
         two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let amountless = RawTransaction::builder()
             .date(date(2025, 6, 27))
@@ -1425,7 +1572,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn every_leg_of_a_multi_posting_row_is_persisted(pool: SqlitePool) {
         two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let outcome = run(&svcs, &[split_raw("SPLIT")]).await;
 
@@ -1448,7 +1595,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn the_elided_leg_persists_without_an_amount(pool: SqlitePool) {
         two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
         run(&svcs, &[split_raw("SPLIT")]).await;
 
         let elided_postings: i64 =
@@ -1473,7 +1620,7 @@ mod tests {
     async fn an_unresolvable_leg_is_skipped_and_the_rest_import(pool: SqlitePool) {
         // Only Assets:Bank exists; Expenses:Food does not.
         bank_only_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let outcome = run(&svcs, &[split_raw("SPLIT")]).await;
 
@@ -1508,7 +1655,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn a_second_pass_attaches_the_previously_missing_leg(pool: SqlitePool) {
         bank_only_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
         let batch = vec![split_raw("SPLIT")];
 
         let first = run(&svcs, &batch).await;
@@ -1536,7 +1683,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn a_fully_imported_row_is_a_no_op_on_re_import(pool: SqlitePool) {
         two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
         let batch = vec![split_raw("SPLIT")];
 
         run(&svcs, &batch).await;
@@ -1551,7 +1698,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn unresolved_accounts_are_deduplicated(pool: SqlitePool) {
         bank_only_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let batch: Vec<RawTransaction> = (0_i32..25_i32)
             .map(|i| {
@@ -1578,7 +1725,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn two_elided_legs_skip_the_whole_transaction(pool: SqlitePool) {
         two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let ambiguous = RawTransaction::builder()
             .date(date(2025, 6, 27))
@@ -1602,7 +1749,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn a_malformed_path_skips_only_its_own_leg(pool: SqlitePool) {
         two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let malformed = RawTransaction::builder()
             .date(date(2025, 6, 27))
@@ -1629,7 +1776,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn identical_legs_on_one_account_take_distinct_occurrences(pool: SqlitePool) {
         two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         // Two separate transactions whose Expenses:Food legs are identical.
         let batch = vec![split_raw("SPLIT"), split_raw("SPLIT")];
@@ -1660,7 +1807,7 @@ mod tests {
             .archive(&food)
             .await
             .expect("archive Expenses:Food");
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         // Archiving records that an account is no longer in use; it does not make
         // history unimportable, so the leg persists and is only warned about.
@@ -1680,7 +1827,7 @@ mod tests {
     async fn identical_legs_on_different_accounts_share_occurrence_zero(pool: SqlitePool) {
         let (bank, _food) = two_account_tree(&pool).await;
         sibling_of(&pool, &bank, "Cash", AccountType::Asset).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         // Two legs of one transaction that fingerprint identically — same date,
         // narration, amount and (absent) reference — on different accounts. Slots
@@ -1725,7 +1872,7 @@ mod tests {
         // sibling to derive from, the residual the document states is persisted
         // so the account's balance is right straight away.
         bank_only_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         run(&svcs, &[split_raw("SPLIT")]).await;
 
@@ -1765,7 +1912,7 @@ mod tests {
             .call()
             .await
             .expect("Fun");
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         // The first document transaction imports whole.
         run(&svcs, &[split_raw("SPLIT")]).await;
@@ -1807,7 +1954,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn a_missing_leg_attaches_to_the_transaction_owning_its_siblings(pool: SqlitePool) {
         let (bank, food) = two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         // Two transactions sharing a date and a narration, so their identical
         // Expenses:Food legs collide on fingerprint; only the second names an
@@ -1863,7 +2010,7 @@ mod tests {
     async fn an_elided_leg_does_not_excuse_a_foreign_posting(pool: SqlitePool) {
         let (bank, _food) = two_account_tree(&pool).await;
         sibling_of(&pool, &bank, "Cash", AccountType::Asset).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         // One statement imports whole, leaving Assets:Bank at -50.
         let imported = raw_with(
@@ -1910,7 +2057,7 @@ mod tests {
         let (bank, food) = two_account_tree(&pool).await;
         sibling_of(&pool, &bank, "Cash", AccountType::Asset).await;
         sibling_of(&pool, &food, "Fun", AccountType::Expense).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         // One statement imports whole, leaving Assets:Bank at -50.
         let imported = raw_with(
@@ -1958,7 +2105,7 @@ mod tests {
     async fn legs_owned_by_several_transactions_are_skipped(pool: SqlitePool) {
         let (bank, _food) = two_account_tree(&pool).await;
         sibling_of(&pool, &bank, "Cash", AccountType::Asset).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         // Two single-leg statements import as two separate transactions.
         let separate = vec![
@@ -2001,7 +2148,7 @@ mod tests {
         let (bank, food) = two_account_tree(&pool).await;
         sibling_of(&pool, &bank, "Cash", AccountType::Asset).await;
         sibling_of(&pool, &food, "Fun", AccountType::Expense).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         // Two single-leg statements import as two separate transactions.
         let separate = vec![
@@ -2035,7 +2182,7 @@ mod tests {
         // Only Expenses:Food exists, so the document's elided Assets:Bank leg
         // waits for a later pass.
         let food = add_food(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let document = raw_with(
             "COFFEE",
@@ -2134,7 +2281,7 @@ mod tests {
     async fn a_hand_added_concrete_leg_is_adopted_not_duplicated(pool: SqlitePool) {
         // Only Expenses:Food exists, so the document's Assets:Bank leg waits.
         let food = add_food(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let document = raw_with(
             "COFFEE",
@@ -2205,7 +2352,7 @@ mod tests {
     async fn editing_an_imported_leg_does_not_strand_its_siblings(pool: SqlitePool) {
         // Only Expenses:Food exists, so Assets:Bank waits for a later pass.
         let food = add_food(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let document = raw_with(
             "COFFEE",
@@ -2350,7 +2497,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn a_duplicate_slot_is_row_local_but_a_check_violation_is_not(pool: SqlitePool) {
         let (bank, _food) = two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
         let document = raw("COFFEE", -5);
         run(&svcs, core::slice::from_ref(&document)).await;
 
@@ -2405,7 +2552,7 @@ mod tests {
     async fn recategorising_an_imported_leg_does_not_strand_its_siblings(pool: SqlitePool) {
         // Only Expenses:Food exists, so Assets:Bank waits for a later pass.
         let food = add_food(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let document = raw_with(
             "COFFEE",
@@ -2483,7 +2630,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn a_deleted_leg_is_not_recreated_by_a_re_import(pool: SqlitePool) {
         let (_bank, food) = two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let document = raw_with(
             "COFFEE",
@@ -2545,7 +2692,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn the_outcome_records_a_batch(pool: SqlitePool) {
         two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let outcome = run(&svcs, &[split_raw("SPLIT")]).await;
 
@@ -2630,7 +2777,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn an_inserted_leg_is_recorded_as_owned(pool: SqlitePool) {
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
         two_account_tree(&pool).await;
         let raw = raw_with(
             "ACME",
@@ -2654,7 +2801,7 @@ mod tests {
     async fn an_adopted_leg_is_not_recorded_as_owned(pool: SqlitePool) {
         // Pass one: only Assets:Bank exists, so the food leg is skipped and the
         // transaction lands one-sided.
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
         bank_only_tree(&pool).await;
         let raw = raw_with(
             "ACME",
@@ -2688,7 +2835,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn a_wrong_run_can_be_discarded_and_redone(pool: SqlitePool) {
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
         two_account_tree(&pool).await;
 
         // The wrong run: amounts sign-flipped, as an inverted convention gives.
@@ -2748,7 +2895,7 @@ mod tests {
     async fn re_importing_the_identical_document_lands_after_a_discard(pool: SqlitePool) {
         // The sharper case: the *same* rows, so every fingerprint matches what the
         // discarded run held. Only genuinely freed slots let this import anything.
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
         two_account_tree(&pool).await;
         let rows = vec![raw_with(
             "ACME",
@@ -2783,7 +2930,7 @@ mod tests {
         // the slot, through the real import path rather than the database
         // directly.
         let (_bank, food) = two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         let document = raw_with(
             "COFFEE",
@@ -2866,7 +3013,7 @@ mod tests {
         // batch's discard, so nothing but a genuine hard delete can free the
         // leg's slot.
         let (_bank, food) = two_account_tree(&pool).await;
-        let svcs = services(&pool);
+        let svcs = services(&pool).await;
 
         // Batch 1: COFFEE lands as a lone, unbalanced Assets:Bank leg — not
         // owned by the batch under test.
@@ -2953,5 +3100,241 @@ mod tests {
             2,
             "COFFEE's and RENT's Food legs both landed"
         );
+    }
+
+    // MARK: Commodity resolution
+
+    /// Creates every segment of `path` that does not already exist, returning
+    /// the leaf. Idempotent, so a test may re-run an import over the same tree.
+    async fn ensure_path(pool: &SqlitePool, path: &str) -> AccountId {
+        let svc = crate::AccountService::new(pool.clone());
+        let account_type = match path.split(':').next() {
+            Some("Liabilities") => AccountType::Liability,
+            Some("Income") => AccountType::Income,
+            Some("Expenses") => AccountType::Expense,
+            Some("Equity") => AccountType::Equity,
+            _ => AccountType::Asset,
+        };
+        let mut parent: Option<AccountId> = None;
+        for segment in path.split(':') {
+            let existing: Option<String> =
+                sqlx::query_scalar("SELECT id FROM accounts WHERE name = ? AND parent_id IS ?")
+                    .bind(segment)
+                    .bind(parent.as_ref().map(ToString::to_string))
+                    .fetch_optional(pool)
+                    .await
+                    .expect("look up an account by parent and name");
+            parent = Some(match existing {
+                Some(id) => id.parse::<AccountId>().expect("a stored account id"),
+                None => svc
+                    .create()
+                    .name(segment)
+                    .account_type(account_type)
+                    .kind(AccountKind::DepositAccount)
+                    .maybe_parent_id(parent.as_ref())
+                    .call()
+                    .await
+                    .expect("create the account"),
+            });
+        }
+        parent.expect("a non-empty path names at least one account")
+    }
+
+    /// A one-leg transaction on `account`, stating `amount` in `code`.
+    fn coded_leg(account: &str, amount: Decimal, code: &str) -> RawPosting {
+        RawPosting::builder()
+            .account(account)
+            .maybe_amount(Some(Amount::new(amount, CommodityCode::new(code))))
+            .build()
+    }
+
+    /// Imports one row holding a single leg on `account` for `amount` `code`.
+    async fn import_one_leg(
+        pool: &SqlitePool,
+        account: &str,
+        amount: Decimal,
+        code: &str,
+    ) -> ImportOutcome {
+        ensure_path(pool, account).await;
+        let svcs = services(pool).await;
+        let row = raw_with("PAYMENT", vec![coded_leg(account, amount, code)]);
+        run(&svcs, &[row]).await
+    }
+
+    /// Imports `rows` distinct one-leg rows, every one naming `code`.
+    async fn import_n_legs(
+        pool: &SqlitePool,
+        account: &str,
+        code: &str,
+        rows: usize,
+    ) -> ImportOutcome {
+        ensure_path(pool, account).await;
+        let svcs = services(pool).await;
+        let batch: Vec<RawTransaction> = (0..rows)
+            .map(|i| {
+                raw_with(
+                    &format!("PAYMENT {i}"),
+                    vec![coded_leg(account, Decimal::from(5_i64), code)],
+                )
+            })
+            .collect();
+        run(&svcs, &batch).await
+    }
+
+    /// Imports one row holding a leg on each of `first` and `second`, each
+    /// stated in its own commodity code.
+    async fn import_two_legs(
+        pool: &SqlitePool,
+        first: (&str, &str),
+        second: (&str, &str),
+    ) -> ImportOutcome {
+        ensure_path(pool, first.0).await;
+        ensure_path(pool, second.0).await;
+        let svcs = services(pool).await;
+        let row = raw_with(
+            "SPLIT",
+            vec![
+                coded_leg(first.0, Decimal::from(5_i64), first.1),
+                coded_leg(second.0, Decimal::from(-5_i64), second.1),
+            ],
+        );
+        run(&svcs, &[row]).await
+    }
+
+    /// Imports one row whose single leg states its amount in `codes.0` and the
+    /// running balance the source reported in `codes.1`.
+    async fn import_leg_with_balance(
+        pool: &SqlitePool,
+        account: &str,
+        codes: (&str, &str),
+    ) -> ImportOutcome {
+        ensure_path(pool, account).await;
+        let svcs = services(pool).await;
+        let leg = RawPosting::builder()
+            .account(account)
+            .maybe_amount(Some(Amount::new(
+                Decimal::from(5_i64),
+                CommodityCode::new(codes.0),
+            )))
+            .maybe_balance(Some(Amount::new(
+                Decimal::from(100_i64),
+                CommodityCode::new(codes.1),
+            )))
+            .build();
+        run(&svcs, &[raw_with("PAYMENT", vec![leg])]).await
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unregistered_commodity_skips_the_leg_and_reports_it(pool: sqlx::SqlitePool) {
+        // Registry holds only the seeded defaults; DOGE is not among them.
+        let outcome = import_one_leg(&pool, "Assets:Bank:Checking", dec!(5), "DOGE").await;
+        assert_eq!(outcome.unresolved_commodity_postings, 1);
+        assert_eq!(outcome.unresolved_commodities, vec!["DOGE".to_owned()]);
+        assert_eq!(outcome.new_transactions, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_lower_case_code_resolves_and_stores_the_registered_spelling(pool: sqlx::SqlitePool) {
+        let outcome = import_one_leg(&pool, "Assets:Bank:Checking", dec!(5), "aud").await;
+        assert_eq!(outcome.unresolved_commodity_postings, 0);
+        let stored: String = sqlx::query_scalar("SELECT commodity FROM postings")
+            .fetch_one(&pool)
+            .await
+            .expect("one posting");
+        assert_eq!(stored, "AUD");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_alias_resolves_to_the_canonical_code(pool: sqlx::SqlitePool) {
+        let outcome = import_one_leg(&pool, "Assets:Bank:Checking", dec!(5), "AU$").await;
+        assert_eq!(outcome.unresolved_commodity_postings, 0);
+        let stored: String = sqlx::query_scalar("SELECT commodity FROM postings")
+            .fetch_one(&pool)
+            .await
+            .expect("one posting");
+        assert_eq!(stored, "AUD");
+    }
+
+    /// One unregistered code named by many rows warns once and is listed once,
+    /// exactly as an unknown account path already is.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn one_unregistered_code_is_listed_once_however_many_rows_name_it(
+        pool: sqlx::SqlitePool,
+    ) {
+        let outcome = import_n_legs(&pool, "Assets:Bank:Checking", "DOGE", 5).await;
+        assert_eq!(outcome.unresolved_commodity_postings, 5);
+        assert_eq!(outcome.unresolved_commodities, vec!["DOGE".to_owned()]);
+    }
+
+    /// A sibling leg that resolves still persists; the run is not lost.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_resolvable_sibling_leg_persists(pool: sqlx::SqlitePool) {
+        let outcome = import_two_legs(
+            &pool,
+            ("Assets:Bank:Checking", "AUD"),
+            ("Assets:Crypto:Wallet", "DOGE"),
+        )
+        .await;
+        assert_eq!(outcome.unresolved_commodity_postings, 1);
+        assert_eq!(
+            outcome
+                .attached_postings
+                .saturating_add(outcome.new_transactions),
+            1
+        );
+    }
+
+    /// Registering the commodity and re-running attaches what was skipped —
+    /// the same recovery path an unknown account already has.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_skipped_leg_attaches_after_the_commodity_is_registered(pool: sqlx::SqlitePool) {
+        let first = import_one_leg(&pool, "Assets:Bank:Checking", dec!(5), "DOGE").await;
+        assert_eq!(first.unresolved_commodity_postings, 1);
+
+        crate::CommodityService::new(pool.clone())
+            .create(
+                &bc_models::Commodity::builder()
+                    .code("DOGE")
+                    .decimals(8)
+                    .is_iso(false)
+                    .build(),
+            )
+            .await
+            .expect("register DOGE");
+
+        let second = import_one_leg(&pool, "Assets:Bank:Checking", dec!(5), "DOGE").await;
+        assert_eq!(second.unresolved_commodity_postings, 0);
+        assert_eq!(second.new_transactions, 1);
+    }
+
+    /// The dedup fingerprint is computed over the *canonical* code, so the same
+    /// posting stated `aud` in one file and `AUD` in the next dedups rather
+    /// than importing twice. Fingerprinting the raw code would silently
+    /// duplicate every posting whose file changed the spelling of its currency.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_re_import_spelling_the_code_differently_dedups(pool: sqlx::SqlitePool) {
+        let first = import_one_leg(&pool, "Assets:Bank:Checking", dec!(5), "aud").await;
+        assert_eq!(first.new_transactions, 1);
+
+        let second = import_one_leg(&pool, "Assets:Bank:Checking", dec!(5), "AUD").await;
+        assert_eq!(
+            second.new_transactions, 0,
+            "the same posting spelled AUD rather than aud is not a new transaction"
+        );
+        assert_eq!(second.attached_postings, 0);
+        assert_eq!(
+            posting_count(&pool).await,
+            1,
+            "one posting, not one per spelling"
+        );
+    }
+
+    /// A balance is corroboration, not the posting: an unresolved commodity on
+    /// it costs the balance, not the leg.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_unresolved_balance_commodity_drops_the_balance_not_the_leg(pool: sqlx::SqlitePool) {
+        let outcome = import_leg_with_balance(&pool, "Assets:Bank:Checking", ("AUD", "DOGE")).await;
+        assert_eq!(outcome.unresolved_commodity_postings, 0);
+        assert_eq!(outcome.new_transactions, 1);
     }
 }

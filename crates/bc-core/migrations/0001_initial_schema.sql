@@ -331,8 +331,8 @@ CREATE INDEX idx_budget_revisions_budget ON budget_revisions (budget_id, effecti
 -- distinguishable from one that finished having done nothing. The CHECK ties
 -- them to finished_at, making a half-recorded outcome unrepresentable.
 --
--- The two skip causes are stored side by side rather than as a total plus a
--- subset of that total, so reading them back needs no subtraction.
+-- The skip causes are stored side by side rather than as a total plus subsets
+-- of that total, so reading them back needs no subtraction.
 CREATE TABLE import_batches (
     id                       TEXT NOT NULL PRIMARY KEY,
     profile_id               TEXT REFERENCES import_profiles(id) ON DELETE SET NULL,
@@ -347,12 +347,15 @@ CREATE TABLE import_batches (
     attached_postings        INTEGER,
     -- Legs skipped because their account path named no existing account.
     unresolved_account_postings INTEGER,
+    -- Legs skipped because their commodity code named no registered commodity.
+    unresolved_commodity_postings INTEGER,
     -- Legs skipped for any other reason; each was warned about individually.
     other_skipped_postings   INTEGER,
     CHECK (
         (finished_at IS NULL) = (new_transactions IS NULL)
         AND (finished_at IS NULL) = (attached_postings IS NULL)
         AND (finished_at IS NULL) = (unresolved_account_postings IS NULL)
+        AND (finished_at IS NULL) = (unresolved_commodity_postings IS NULL)
         AND (finished_at IS NULL) = (other_skipped_postings IS NULL)
     )
 );
