@@ -15,6 +15,10 @@ members  = [
   "crates/bc-sdk-macros",
   "crates/bc-seed",
   "crates/bc-ui",
+  "plugins/beancount",
+  "plugins/csv",
+  "plugins/ledger",
+  "plugins/ofx",
 ]
 
   [workspace.package]
