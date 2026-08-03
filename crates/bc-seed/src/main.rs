@@ -103,7 +103,9 @@ struct GenerateOpts {
     #[arg(long, default_value_t = 0.30)]
     skew: f64,
 
-    /// Share of transactions denominated in the secondary commodity.
+    /// Share of *non-elided* transactions denominated in the secondary
+    /// commodity. The unconditional share across the whole ledger is
+    /// `(1 - elided_ratio) * second_commodity_ratio`.
     #[arg(long, default_value_t = 0.01)]
     second_commodity_ratio: f64,
 
