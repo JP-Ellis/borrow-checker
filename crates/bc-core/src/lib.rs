@@ -79,6 +79,7 @@ pub use import::account_path::Resolution;
 pub use import::batch::Counts as ImportBatchCounts;
 pub use import::batch::ImportBatch;
 pub use import::batch::Service as ImportBatchService;
+pub use import::commodity::CommodityResolver;
 pub use import::discard::Outcome as DiscardOutcome;
 pub use import::profile::ImportProfile;
 pub use import::profile::Service as ImportProfileService;
