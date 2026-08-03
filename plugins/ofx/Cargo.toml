@@ -7,9 +7,11 @@ publish = false
 [workspace]
 
 [lib]
-crate-type = ["cdylib", "rlib"]
-# cdylib: wasm32-wasip2 WASM build
-# rlib: native test compilation
+# rlib only: `cdylib` is requested per-invocation by plugins/scripts/build.sh
+# via `cargo rustc --crate-type cdylib`. Declaring it here would make every
+# native build emit a `.so`, which cannot link — wit-bindgen's export symbols
+# contain `:`, `/`, `@` and `#`, all illegal in an ELF version script.
+crate-type = ["rlib"]
 
 [dependencies]
 bc-sdk       = { path = "../../crates/bc-sdk" }
