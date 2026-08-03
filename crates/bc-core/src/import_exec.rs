@@ -271,6 +271,7 @@ pub async fn execute_import(
     let writer = Writer {
         transactions,
         sources,
+        commodities: &commodity_resolver,
         existing: sources.existing_legs(&touched_accounts(&planned)).await?,
         batch_id: batch_id.clone(),
     };
@@ -736,14 +737,20 @@ fn corroborate<'leg>(
 ///
 /// * `raw` - The document transaction, for the residual.
 /// * `legs` - The planned legs to persist.
+/// * `commodities` - The registry snapshot the residual's commodity is
+///   canonicalised against.
 ///
 /// # Returns
 ///
 /// The postings, or `None` when the residual must be materialised but the
 /// document does not determine it.
-fn build_postings(raw: &RawTransaction, legs: &[LegPlan]) -> BcResult<Option<Vec<Posting>>> {
+fn build_postings(
+    raw: &RawTransaction,
+    legs: &[LegPlan],
+    commodities: &CommodityResolver,
+) -> BcResult<Option<Vec<Posting>>> {
     let residual = if legs.iter().all(|leg| leg.amount.is_none()) {
-        match document_residual(raw)? {
+        match document_residual(raw, commodities)? {
             Some(residual) => Some(residual),
             None => return Ok(None),
         }
@@ -762,12 +769,16 @@ fn build_postings(raw: &RawTransaction, legs: &[LegPlan]) -> BcResult<Option<Vec
 /// # Arguments
 ///
 /// * `raw` - The document transaction.
+/// * `commodities` - The registry snapshot each concrete leg's code is
+///   canonicalised against before summing, so two spellings of one commodity
+///   contribute to a single balance rather than two.
 ///
 /// # Returns
 ///
-/// The negated sum of the concrete legs, or `None` when they are absent, net to
-/// zero, or span several commodities — in all three cases the document does not
-/// determine a single residual amount.
+/// The negated sum of the concrete legs' canonical amounts, or `None` when they
+/// are absent, net to zero, name a code that resolves to no registered
+/// commodity, or span several commodities once canonicalised — in all four
+/// cases the document does not determine a single residual amount.
 ///
 /// # Errors
 ///
@@ -775,14 +786,26 @@ fn build_postings(raw: &RawTransaction, legs: &[LegPlan]) -> BcResult<Option<Vec
 /// [`rust_decimal::Decimal`]'s range. That is a defect in the row rather than an
 /// undetermined residual, and reporting it as the latter would name a cause the
 /// document does not have.
-fn document_residual(raw: &RawTransaction) -> BcResult<Option<Amount>> {
+fn document_residual(
+    raw: &RawTransaction,
+    commodities: &CommodityResolver,
+) -> BcResult<Option<Amount>> {
     let mut balances = Balances::new();
-    for amount in raw
+    for posting in raw
         .postings
         .iter()
-        .filter_map(|posting| posting.amount.as_ref())
+        .filter(|posting| posting.amount.is_some())
     {
-        balances.try_sub(amount).map_err(|e| {
+        let amount = match canonicalise(commodities, posting.amount.as_ref()) {
+            Canonical::Resolved(Some(amount)) => amount,
+            // An amount whose commodity does not resolve leaves the document
+            // without a residual it determines, exactly as an absent, net-zero,
+            // or multi-commodity residual does.
+            Canonical::Resolved(None) | Canonical::Unregistered(_) | Canonical::Blank => {
+                return Ok(None);
+            }
+        };
+        balances.try_sub(&amount).map_err(|e| {
             crate::BcError::BadData(format!("summing this row's amounts overflowed: {e}"))
         })?;
     }
@@ -915,6 +938,9 @@ struct Writer<'svc> {
     transactions: &'svc crate::TransactionService,
     /// Source-reference persistence service.
     sources: &'svc crate::SourceService,
+    /// Commodity registry snapshot, for canonicalising a materialised
+    /// residual's commodity code.
+    commodities: &'svc CommodityResolver,
     /// Legs already stored for every account this run touches, keyed by
     /// `(account id string, fingerprint)`.
     existing: HashMap<(String, String), Vec<StoredLeg>>,
@@ -1021,7 +1047,7 @@ impl Writer<'_> {
         // An overflow is this row's own defect, so it warns and skips like any
         // other unpersistable row rather than aborting the run.
         let built = row_local_value(
-            build_postings(raw, legs),
+            build_postings(raw, legs, self.commodities),
             raw,
             "summing the row's amounts",
             legs.len(),
@@ -1032,7 +1058,8 @@ impl Writer<'_> {
                 tracing::warn!(
                     location = location_of(raw),
                     "the elided leg is the only leg that resolved, and the document gives it no \
-                     single amount — its concrete legs are absent, net to zero, or span several \
+                     single amount — its concrete legs are absent, net to zero, name a \
+                     commodity that resolves to nothing registered, or span several \
                      commodities; skipping the transaction"
                 );
                 counts.skip_other(legs.len());
@@ -1462,6 +1489,25 @@ mod tests {
                 RawPosting::builder().account("Assets:Bank").build(),
             ])
             .build()
+    }
+
+    /// A transaction with `concrete` legs — each `(account, amount, code)` —
+    /// plus an elided leg on `Assets:Bank`.
+    fn row_with_elided_bank(description: &str, concrete: &[(&str, i64, &str)]) -> RawTransaction {
+        let mut postings: Vec<RawPosting> = concrete
+            .iter()
+            .map(|(account, amount, code)| {
+                RawPosting::builder()
+                    .account(*account)
+                    .maybe_amount(Some(Amount::new(
+                        Decimal::from(*amount),
+                        CommodityCode::new(*code),
+                    )))
+                    .build()
+            })
+            .collect();
+        postings.push(RawPosting::builder().account("Assets:Bank").build());
+        raw_with(description, postings)
     }
 
     fn raw(desc: &str, amount: i64) -> RawTransaction {
@@ -1896,6 +1942,100 @@ mod tests {
             "provenance still fingerprints the empty amount, so the dedup key does \
              not depend on which siblings resolved"
         );
+    }
+
+    /// The residual is derived from the *raw* concrete legs, so its commodity
+    /// code must be canonicalised exactly as any other leg's is — a
+    /// materialised residual must never carry a non-canonical spelling into
+    /// the database.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_materialised_residual_stores_the_canonical_spelling(pool: SqlitePool) {
+        // Only Assets:Bank exists; Expenses:Food does not, so the elided Bank
+        // leg is the only one that resolves and its residual is materialised.
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+
+        run(
+            &svcs,
+            &[row_with_elided_bank(
+                "SPLIT",
+                &[("Expenses:Food", 50, "aud")],
+            )],
+        )
+        .await;
+
+        let stored: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT amount, commodity FROM postings")
+                .fetch_one(&pool)
+                .await
+                .expect("posting");
+        assert_eq!(stored.0, Some("-50".to_owned()));
+        assert_eq!(
+            stored.1,
+            Some("AUD".to_owned()),
+            "the materialised residual is stored in the registry's canonical spelling, \
+             not the document's own"
+        );
+    }
+
+    /// Two spellings of one commodity among the concrete legs must sum as one
+    /// commodity, not two — summing the raw spellings would leave `Balances`
+    /// holding two entries and `document_residual` would report the row as
+    /// spanning several commodities, when it in fact spans exactly one.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn two_spellings_of_one_commodity_sum_as_one(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+
+        let outcome = run(
+            &svcs,
+            &[row_with_elided_bank(
+                "SPLIT",
+                &[("Expenses:Food", 30, "aud"), ("Expenses:Fun", 20, "AUD")],
+            )],
+        )
+        .await;
+
+        assert_eq!(
+            outcome.new_transactions, 1,
+            "the residual is determined once the two spellings are merged"
+        );
+        let stored: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT amount, commodity FROM postings")
+                .fetch_one(&pool)
+                .await
+                .expect("posting");
+        assert_eq!(
+            stored.0,
+            Some("-50".to_owned()),
+            "the two spellings summed as one commodity, not two"
+        );
+        assert_eq!(stored.1, Some("AUD".to_owned()));
+    }
+
+    /// A residual whose only concrete leg names an unregistered commodity
+    /// must not persist an unregistered code — the row is skipped, exactly as
+    /// an absent, net-zero, or multi-commodity residual already is.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_unresolvable_residual_commodity_skips_the_transaction(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+
+        let outcome = run(
+            &svcs,
+            &[row_with_elided_bank(
+                "SPLIT",
+                &[("Expenses:Food", 50, "DOGE")],
+            )],
+        )
+        .await;
+
+        assert_eq!(
+            outcome.new_transactions, 0,
+            "the document does not determine a persistable residual"
+        );
+        assert_eq!(tx_count(&pool).await, 0);
+        assert_eq!(posting_count(&pool).await, 0);
     }
 
     #[sqlx::test(migrations = "./migrations")]
