@@ -14,6 +14,8 @@
     reason = "test fixture seeding binary; not a public library"
 )]
 
+mod rng;
+
 use std::path::PathBuf;
 
 use bc_core::AccountService;
