@@ -458,8 +458,8 @@ mod tests {
             "account-scoped residual load full-scans postings:\n{joined}"
         );
         assert!(
-            joined.contains("SEARCH e USING INDEX idx_postings_account"),
-            "account-scoped residual load does not use idx_postings_account:\n{joined}"
+            joined.contains("SEARCH e USING INDEX idx_postings_account_date"),
+            "account-scoped residual load does not use idx_postings_account_date:\n{joined}"
         );
     }
 
