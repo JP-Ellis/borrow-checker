@@ -207,7 +207,9 @@ impl Residuals {
     ///
     /// # Arguments
     ///
-    /// * `pool` - Connection pool.
+    /// * `executor` - Connection, pool, or transaction to query on. Callers that
+    ///   also query for the elided posting ids should pass one transaction to both,
+    ///   so the two results describe the same snapshot.
     /// * `account_id` - The account whose elided postings to resolve.
     /// * `from` - Inclusive lower bound on the transaction date.
     /// * `to` - Exclusive upper bound on the transaction date.
@@ -220,18 +222,21 @@ impl Residuals {
     ///
     /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if
     /// a stored amount cannot be parsed or a total overflows.
-    pub(crate) async fn for_account_in_range(
-        pool: &SqlitePool,
+    pub(crate) async fn for_account_in_range<'e, E>(
+        executor: E,
         account_id: &AccountId,
         from: jiff::civil::Date,
         to: jiff::civil::Date,
-    ) -> BcResult<Self> {
+    ) -> BcResult<Self>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         let sql = residual_sql(ELIDED_BY_ACCOUNT_IN_RANGE);
         let rows: Vec<ResidualRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(account_id.to_string())
             .bind(from.to_string())
             .bind(to.to_string())
-            .fetch_all(pool)
+            .fetch_all(executor)
             .await?;
 
         Self::from_rows(rows)
