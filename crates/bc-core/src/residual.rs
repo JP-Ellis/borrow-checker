@@ -117,6 +117,15 @@ pub(crate) struct Residuals {
     seen: HashSet<String>,
 }
 
+/// Elided-leg predicate scoping the load to one account.
+const ELIDED_BY_ACCOUNT: &str = "AND e.account_id = ?1";
+
+/// Elided-leg predicate scoping the load to one account and a half-open date window.
+const ELIDED_BY_ACCOUNT_IN_RANGE: &str = "AND e.account_id = ?1 AND e.date >= ?2 AND e.date < ?3";
+
+/// Elided-leg predicate for the whole-ledger load, which restricts nothing.
+const ELIDED_ALL_ACCOUNTS: &str = "";
+
 /// Builds the residual query, restricting the elided legs with `elided_predicate`.
 ///
 /// `elided_predicate` is appended to the *inner* subquery, which selects which
@@ -217,7 +226,7 @@ impl Residuals {
         from: jiff::civil::Date,
         to: jiff::civil::Date,
     ) -> BcResult<Self> {
-        let sql = residual_sql("AND e.account_id = ?1 AND e.date >= ?2 AND e.date < ?3");
+        let sql = residual_sql(ELIDED_BY_ACCOUNT_IN_RANGE);
         let rows: Vec<ResidualRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(account_id.to_string())
             .bind(from.to_string())
@@ -238,8 +247,8 @@ impl Residuals {
         // disjunction is not sargable, so it full-scans `postings` on every call.
         // The all-accounts arm still scans, correctly — it wants every elided leg.
         let sql = match account_id {
-            Some(_) => residual_sql("AND e.account_id = ?1"),
-            None => residual_sql(""),
+            Some(_) => residual_sql(ELIDED_BY_ACCOUNT),
+            None => residual_sql(ELIDED_ALL_ACCOUNTS),
         };
         let mut query = sqlx::query_as(sqlx::AssertSqlSafe(sql));
         if let Some(id) = account_id {
@@ -450,7 +459,7 @@ mod tests {
     /// query plan catches this regression.
     #[sqlx::test(migrations = "./migrations")]
     async fn account_scoped_residual_load_uses_an_index(pool: sqlx::SqlitePool) {
-        let plan = query_plan(&pool, &residual_sql("AND e.account_id = ?1")).await;
+        let plan = query_plan(&pool, &residual_sql(ELIDED_BY_ACCOUNT)).await;
 
         let joined = plan.join("\n");
         assert!(
@@ -469,11 +478,7 @@ mod tests {
     /// the only thing that pins the ranged predicate as sargable.
     #[sqlx::test(migrations = "./migrations")]
     async fn account_scoped_residual_load_uses_an_index_ranged(pool: sqlx::SqlitePool) {
-        let plan = query_plan(
-            &pool,
-            &residual_sql("AND e.account_id = ?1 AND e.date >= ?2 AND e.date < ?3"),
-        )
-        .await;
+        let plan = query_plan(&pool, &residual_sql(ELIDED_BY_ACCOUNT_IN_RANGE)).await;
 
         let joined = plan.join("\n");
         assert!(
