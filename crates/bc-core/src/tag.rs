@@ -333,15 +333,53 @@ impl Service {
 }
 
 /// Resolves a colon-path against an in-memory tag slice, returning the leaf ID.
+///
+/// # Arguments
+///
+/// * `tags` - Every tag to resolve against, in any order.
+/// * `path` - The hierarchical path to resolve.
+///
+/// # Returns
+///
+/// The leaf tag's ID, or `None` when no tag has this path.
 fn resolve_path_in(tags: &[Tag], path: &TagPath) -> Option<TagId> {
     let mut parent: Option<TagId> = None;
     for segment in path.segments() {
         let found = tags
             .iter()
-            .find(|t| t.name() == segment.as_str() && t.parent_id() == parent.as_ref())?;
+            .find(|t| eq_name(t.name(), segment) && t.parent_id() == parent.as_ref())?;
         parent = Some(found.id().clone());
     }
     parent
+}
+
+/// Reports whether two tag name segments name the same tag.
+///
+/// This is the single definition of tag name equality: every lookup, creation
+/// and rename in this module routes through it. Matching is case-insensitive
+/// because a tag is an identifier the user types ad hoc — into a filter box or
+/// a CLI flag — so `person:Alpha` and `person:alpha` naming two different tags
+/// would be noise. Accounts deliberately differ: [`crate::AccountPath`] matches
+/// exactly, because Beancount capitalises its roots and is itself
+/// case-sensitive, so folding there would invent ambiguity rather than remove
+/// it.
+///
+/// The fold is computed in Rust rather than delegated to SQLite's `NOCASE`,
+/// which folds ASCII only. The `COLLATE NOCASE` on `idx_tags_sibling_unique` is
+/// a database backstop against direct SQL, not the rule.
+///
+/// # Arguments
+///
+/// * `a` - One name segment.
+/// * `b` - The other name segment.
+///
+/// # Returns
+///
+/// `true` when the segments differ only by case.
+fn eq_name(a: &str, b: &str) -> bool {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .eq(b.chars().flat_map(char::to_lowercase))
 }
 
 /// Inserts account↔tag membership rows on the given connection.
@@ -466,6 +504,32 @@ mod tests {
         let path: TagPath = "person:alpha".parse().expect("valid path");
         let id = svc.find_by_path(&path).await.expect("query ok");
         assert_eq!(id, Some(alpha_id));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn find_by_path_matches_case_insensitively(pool: SqlitePool) {
+        let person_id = TagId::new();
+        let alpha_id = TagId::new();
+        insert_tag(&pool, &person_id, "person", None).await;
+        insert_tag(&pool, &alpha_id, "alpha", Some(&person_id)).await;
+        let svc = Service::new(pool);
+
+        let path: TagPath = "Person:ALPHA".parse().expect("valid path");
+        assert_eq!(
+            svc.find_by_path(&path).await.expect("query ok"),
+            Some(alpha_id)
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn find_by_path_folds_non_ascii_case(pool: SqlitePool) {
+        // Proves the fold is the Rust rule, not SQLite's NOCASE, which is ASCII-only.
+        let id = TagId::new();
+        insert_tag(&pool, &id, "\u{e9}p\u{e9}rgne", None).await;
+        let svc = Service::new(pool);
+
+        let path: TagPath = "\u{c9}P\u{c9}RGNE".parse().expect("valid path");
+        assert_eq!(svc.find_by_path(&path).await.expect("query ok"), Some(id));
     }
 
     #[sqlx::test(migrations = "./migrations")]
