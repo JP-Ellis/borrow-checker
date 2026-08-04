@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use bc_models::AccountId;
 use bc_models::Amount;
@@ -109,6 +110,11 @@ pub(crate) struct Residuals {
     entries: HashMap<String, Balances>,
     /// Entries' balances, pre-aggregated by account id.
     by_account: HashMap<String, Balances>,
+    /// Every elided posting id this load covered, attributable or not.
+    ///
+    /// Distinguishes "ambiguous, so no residual" from "outside the loaded scope".
+    /// Without it a scope mismatch silently drops the posting from the balance.
+    seen: HashSet<String>,
 }
 
 /// Builds the residual query, restricting the elided legs with `elided_predicate`.
@@ -226,9 +232,17 @@ impl Residuals {
 
         let mut entries: HashMap<String, Balances> = HashMap::new();
         let mut by_account: HashMap<String, Balances> = HashMap::new();
+        let mut seen: HashSet<String> = HashSet::new();
         for legs in by_transaction.values() {
             let residual = residual_of(legs.iter().map(|(_, _, amount)| amount.as_ref()))
                 .map_err(|e| BcError::BadData(format!("residual overflow: {e}")))?;
+            // Record the scope before branching: an ambiguous transaction's elided
+            // legs were still loaded, and must not read as out-of-scope.
+            for (posting_id, _, amount) in legs {
+                if amount.is_none() {
+                    seen.insert(posting_id.clone());
+                }
+            }
             let Residual::Attributable(balances) = residual else {
                 continue;
             };
@@ -248,6 +262,7 @@ impl Residuals {
         Ok(Self {
             entries,
             by_account,
+            seen,
         })
     }
 
@@ -305,11 +320,21 @@ impl Residuals {
     ///
     /// # Returns
     ///
-    /// The component, or `None` when the posting holds no residual in that
-    /// commodity (including when its transaction was ambiguous).
-    pub(crate) fn component(&self, posting_id: &str, commodity: &str) -> Option<Decimal> {
-        let balances = self.entries.get(posting_id)?;
-        balances.get(commodity)
+    /// `Ok(None)` when the posting holds no residual in that commodity, including
+    /// when its transaction was ambiguous.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if `posting_id` was not covered by this load.
+    /// That means the caller is consulting a `Residuals` outside the scope it was
+    /// loaded for, which would otherwise silently drop the posting from the balance.
+    pub(crate) fn component(&self, posting_id: &str, commodity: &str) -> BcResult<Option<Decimal>> {
+        if !self.seen.contains(posting_id) {
+            return Err(BcError::BadData(format!(
+                "residual scope error: posting '{posting_id}' was not covered by this load"
+            )));
+        }
+        Ok(self.entries.get(posting_id).and_then(|b| b.get(commodity)))
     }
 
     /// Iterates every account holding a residual, with its aggregated balances.
@@ -589,7 +614,10 @@ mod tests {
 
         let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
 
-        assert_eq!(residuals.component("p_bank", "AUD"), Some(dec!(-50.00)));
+        assert_eq!(
+            residuals.component("p_bank", "AUD").expect("in scope"),
+            Some(dec!(-50.00))
+        );
         assert_eq!(residuals.total_in("AUD").expect("total"), dec!(-50.00));
     }
 
@@ -614,8 +642,76 @@ mod tests {
 
         let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
 
-        assert_eq!(residuals.component("p_bank", "AUD"), None);
+        assert_eq!(
+            residuals.component("p_bank", "AUD").expect("in scope"),
+            None
+        );
         assert_eq!(residuals.total_in("AUD").expect("total"), Decimal::ZERO);
+    }
+
+    /// B1: consulting a `Residuals` for a posting it never loaded is an error.
+    ///
+    /// Not `None`. A silent `None` is indistinguishable from "this posting legitimately
+    /// holds no residual", so the caller would drop the posting from the balance without
+    /// any signal.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn component_errors_for_a_posting_that_was_never_loaded(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        insert_tx(&pool, "tx_1", "2026-01-01").await;
+        insert_posting(
+            &pool,
+            "p_food",
+            "tx_1",
+            &food.to_string(),
+            Some("50.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 1).await;
+
+        let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
+
+        let err = residuals
+            .component("p_never_loaded", "AUD")
+            .expect_err("must reject an unloaded posting");
+        assert!(
+            matches!(err, BcError::BadData(_)),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// B2 and B3: an ambiguous posting inside scope answers "no residual", and that answer
+    /// must stay distinguishable from B1's error.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn component_returns_none_for_an_ambiguous_posting_in_scope(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        let fun = make_account(&pool, "Fun", AccountType::Expense).await;
+        insert_tx(&pool, "tx_1", "2026-01-01").await;
+        insert_posting(
+            &pool,
+            "p_food",
+            "tx_1",
+            &food.to_string(),
+            Some("50.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 1).await;
+        insert_posting(&pool, "p_fun", "tx_1", &fun.to_string(), None, None, 2).await;
+
+        let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
+
+        assert_eq!(
+            residuals.component("p_bank", "AUD").expect("in scope"),
+            None
+        );
+        residuals
+            .component("p_absent", "AUD")
+            .expect_err("must reject an out-of-scope posting");
     }
 
     #[sqlx::test(migrations = "./migrations")]
