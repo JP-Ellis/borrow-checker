@@ -491,6 +491,8 @@ struct Report<'out> {
     unresolved_accounts: &'out [String],
     /// The distinct codes naming no registered commodity.
     unresolved_commodities: &'out [String],
+    /// The tag paths the run created.
+    created_tags: &'out [String],
 }
 
 impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
@@ -504,6 +506,7 @@ impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
             other_skipped_postings: outcome.other_skipped_postings,
             unresolved_accounts: &outcome.unresolved_accounts,
             unresolved_commodities: &outcome.unresolved_commodities,
+            created_tags: &outcome.created_tags,
         }
     }
 }
@@ -582,6 +585,20 @@ impl Report<'_> {
             ));
         }
 
+        if !self.created_tags.is_empty() {
+            lines.push(String::new());
+            lines.push(format!(
+                "Created {}:",
+                plural(self.created_tags.len(), "tag"),
+            ));
+            lines.extend(self.created_tags.iter().map(|path| format!("  {path}")));
+            lines.push(
+                "Tags named by the source are created automatically; rename or delete any that \
+                 are typos."
+                    .to_owned(),
+            );
+        }
+
         if self.other_skipped_postings > 0 {
             lines.push(String::new());
             lines.push(format!(
@@ -620,6 +637,7 @@ impl Report<'_> {
             "other_skipped_postings": self.other_skipped_postings,
             "unresolved_accounts": self.unresolved_accounts,
             "unresolved_commodities": self.unresolved_commodities,
+            "created_tags": self.created_tags,
         })
     }
 }
@@ -686,6 +704,27 @@ mod tests {
         assert!(rejected.is_err(), "importers source their own files");
     }
 
+    #[test]
+    fn report_lists_created_tags() {
+        let created = vec!["household".to_owned(), "group:alpha".to_owned()];
+        let report = Report {
+            new_transactions: 1,
+            attached_postings: 0,
+            unresolved_account_postings: 0,
+            unresolved_commodity_postings: 0,
+            other_skipped_postings: 0,
+            unresolved_accounts: &[],
+            unresolved_commodities: &[],
+            created_tags: &created,
+        };
+
+        let rendered = report.render();
+
+        assert!(rendered.contains("Created 2 tags:"), "got {rendered}");
+        assert!(rendered.contains("  household"), "got {rendered}");
+        assert!(rendered.contains("  group:alpha"), "got {rendered}");
+    }
+
     /// A report over the given counts, unresolved accounts and commodities.
     fn report<'out>(
         new_transactions: usize,
@@ -704,6 +743,7 @@ mod tests {
             other_skipped_postings,
             unresolved_accounts,
             unresolved_commodities,
+            created_tags: &[],
         }
     }
 
@@ -773,6 +813,7 @@ mod tests {
                 "other_skipped_postings": 1_usize,
                 "unresolved_accounts": ["Expenses:Fun", "Expenses:Rent"],
                 "unresolved_commodities": ["DOGE"],
+                "created_tags": Vec::<String>::new(),
             }),
             "a script reads these keys; renaming one or dropping the cause split is a \
              breaking change"
