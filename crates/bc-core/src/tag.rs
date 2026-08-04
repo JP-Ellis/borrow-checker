@@ -1,5 +1,7 @@
 //! Tag projection service: hierarchy lifecycle, path resolution, and membership.
 
+use std::collections::HashMap;
+
 use bc_models::Tag;
 use bc_models::TagForest;
 use bc_models::TagId;
@@ -51,6 +53,20 @@ impl TryFrom<TagRow> for Tag {
             .created_at(created_at)
             .build())
     }
+}
+
+/// The outcome of materialising a batch of tag paths.
+///
+/// Re-exported from the crate root as [`crate::CreatedTags`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct Created {
+    /// Leaf tag ID for every requested path, keyed by the path as rendered by
+    /// [`TagPath::to_string`]. Two spellings of one tag map to one ID.
+    pub ids: HashMap<String, TagId>,
+    /// The rendered paths whose leaf did not exist and was created, sorted and
+    /// deduplicated. This is the report a caller shows the user.
+    pub created: Vec<String>,
 }
 
 /// Tag service: owns the `tags` hierarchy and all tag membership join tables.
@@ -128,6 +144,87 @@ impl Service {
         row.map(Tag::try_from).transpose()
     }
 
+    /// Materialises every path in `paths`, creating only what is missing.
+    ///
+    /// Every path is resolved and created in one pass over a single snapshot, so
+    /// a batch of thousands costs one `SELECT` rather than one per path. Paths
+    /// are processed in the order given, and each insert updates the snapshot, so
+    /// two paths sharing an ancestor create it once.
+    ///
+    /// # Arguments
+    ///
+    /// * `paths` - The paths to materialise; duplicates are harmless.
+    ///
+    /// # Returns
+    ///
+    /// A [`Created`] mapping every requested path to its leaf ID, alongside the
+    /// paths this call brought into existence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Database`] on query or insert failure, or
+    /// [`BcError::BadData`] if a stored row cannot be parsed.
+    #[inline]
+    pub async fn create_paths(&self, paths: &[TagPath]) -> BcResult<Created> {
+        let mut known = self.list().await?;
+        let mut out = Created::default();
+        let mut db_tx = self.pool.begin().await?;
+
+        for path in paths {
+            let rendered = path.to_string();
+            let mut parent: Option<TagId> = None;
+            let mut minted = false;
+            for segment in path.segments() {
+                let found = known
+                    .iter()
+                    .find(|t| eq_name(t.name(), segment) && t.parent_id() == parent.as_ref())
+                    .map(|t| t.id().clone());
+
+                let id = if let Some(id) = found {
+                    id
+                } else {
+                    let new_id = TagId::new();
+                    let created_at = Timestamp::now();
+                    sqlx::query(
+                        "INSERT INTO tags (id, name, parent_id, created_at) VALUES (?, ?, ?, ?)",
+                    )
+                    .bind(new_id.to_string())
+                    .bind(segment)
+                    .bind(parent.as_ref().map(TagId::to_string))
+                    .bind(created_at.to_string())
+                    .execute(&mut *db_tx)
+                    .await?;
+                    // Keep the snapshot current so a later segment — or a later
+                    // path in this batch — resolves against what was just
+                    // inserted.
+                    known.push(
+                        Tag::builder()
+                            .id(new_id.clone())
+                            .name(segment.clone())
+                            .maybe_parent_id(parent.clone())
+                            .created_at(created_at)
+                            .build(),
+                    );
+                    minted = true;
+                    new_id
+                };
+                parent = Some(id);
+            }
+
+            if let Some(leaf) = parent {
+                if minted {
+                    out.created.push(rendered.clone());
+                }
+                out.ids.insert(rendered, leaf);
+            }
+        }
+
+        db_tx.commit().await?;
+        out.created.sort_unstable();
+        out.created.dedup();
+        Ok(out)
+    }
+
     /// Creates the tag hierarchy for `path`, reusing existing ancestors and
     /// creating only the missing segments. This is the only tag-creation path.
     ///
@@ -154,44 +251,12 @@ impl Service {
     /// if a stored row cannot be parsed.
     #[inline]
     pub async fn create_path(&self, path: &TagPath) -> BcResult<TagId> {
-        let mut known = self.list().await?;
-        let mut conn = self.pool.acquire().await?;
-        let mut parent: Option<TagId> = None;
-        for segment in path.segments() {
-            let found = known
-                .iter()
-                .find(|t| eq_name(t.name(), segment) && t.parent_id() == parent.as_ref())
-                .map(|t| t.id().clone());
-
-            let id = if let Some(id) = found {
-                id
-            } else {
-                let new_id = TagId::new();
-                let created_at = Timestamp::now();
-                sqlx::query(
-                    "INSERT INTO tags (id, name, parent_id, created_at) VALUES (?, ?, ?, ?)",
-                )
-                .bind(new_id.to_string())
-                .bind(segment)
-                .bind(parent.as_ref().map(TagId::to_string))
-                .bind(created_at.to_string())
-                .execute(&mut *conn)
-                .await?;
-                // Keep the snapshot current so a later segment of this same path
-                // resolves against what this loop just inserted.
-                known.push(
-                    Tag::builder()
-                        .id(new_id.clone())
-                        .name(segment.clone())
-                        .maybe_parent_id(parent.clone())
-                        .created_at(created_at)
-                        .build(),
-                );
-                new_id
-            };
-            parent = Some(id);
-        }
-        parent.ok_or_else(|| BcError::BadData("tag path had no segments".to_owned()))
+        let outcome = self.create_paths(std::slice::from_ref(path)).await?;
+        outcome
+            .ids
+            .get(&path.to_string())
+            .cloned()
+            .ok_or_else(|| BcError::BadData("tag path had no segments".to_owned()))
     }
 
     /// Resolves a full colon-path to an existing tag ID.
@@ -629,6 +694,39 @@ mod tests {
         let second = svc.create_path(&path).await.expect("ok");
         assert_eq!(first, second);
         assert_eq!(svc.list().await.expect("ok").len(), 3);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_paths_reports_only_the_newly_created(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        svc.create_path(&"person:alpha".parse().expect("path"))
+            .await
+            .expect("seed");
+
+        let paths: Vec<TagPath> = vec![
+            "person:alpha".parse().expect("path"),
+            "person:beta".parse().expect("path"),
+        ];
+        let outcome = svc.create_paths(&paths).await.expect("create ok");
+
+        assert_eq!(outcome.created, vec!["person:beta".to_owned()]);
+        assert_eq!(outcome.ids.len(), 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_paths_maps_case_variants_to_one_tag(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let paths: Vec<TagPath> =
+            vec!["alpha".parse().expect("path"), "ALPHA".parse().expect("path")];
+
+        let outcome = svc.create_paths(&paths).await.expect("create ok");
+
+        assert_eq!(outcome.created, vec!["alpha".to_owned()]);
+        assert_eq!(
+            outcome.ids.get("alpha"),
+            outcome.ids.get("ALPHA"),
+            "both spellings must name one tag"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
