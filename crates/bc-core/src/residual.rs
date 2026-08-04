@@ -111,6 +111,38 @@ pub(crate) struct Residuals {
     by_account: HashMap<String, Balances>,
 }
 
+/// Builds the residual query, restricting the elided legs with `elided_predicate`.
+///
+/// `elided_predicate` is appended to the *inner* subquery, which selects which
+/// transactions to resolve. It must never constrain `sib`: the outer query has to
+/// return **every** leg of a selected transaction, because [`residual_of`] needs the
+/// full leg set to detect the ambiguous two-or-more-elided case. Filtering `sib`
+/// would silently reclassify an ambiguous transaction as attributable and inject a
+/// residual that does not exist.
+///
+/// # Arguments
+///
+/// * `elided_predicate` - SQL fragment beginning with `AND`, or empty for no
+///   restriction. Interpolated, so it must be a compile-time constant, never user
+///   input.
+///
+/// # Returns
+///
+/// The complete query text.
+fn residual_sql(elided_predicate: &str) -> String {
+    format!(
+        "SELECT sib.transaction_id, sib.id, sib.account_id, sib.amount, sib.commodity
+         FROM postings sib
+         WHERE sib.transaction_id IN (
+             SELECT e.transaction_id
+             FROM postings e
+             WHERE e.amount IS NULL
+               {elided_predicate}
+         )
+         ORDER BY sib.transaction_id, sib.id"
+    )
+}
+
 impl Residuals {
     /// Loads residuals for every elided posting belonging to `account_id`.
     ///
@@ -155,20 +187,18 @@ impl Residuals {
     /// because [`residual_of`] needs the full leg set to detect the ambiguous
     /// two-or-more-elided case.
     async fn load(pool: &SqlitePool, account_id: Option<String>) -> BcResult<Self> {
-        let rows: Vec<ResidualRow> = sqlx::query_as(
-            "SELECT sib.transaction_id, sib.id, sib.account_id, sib.amount, sib.commodity
-             FROM postings sib
-             WHERE sib.transaction_id IN (
-                 SELECT e.transaction_id
-                 FROM postings e
-                 WHERE e.amount IS NULL
-                   AND (?1 IS NULL OR e.account_id = ?1)
-             )
-             ORDER BY sib.transaction_id, sib.id",
-        )
-        .bind(account_id)
-        .fetch_all(pool)
-        .await?;
+        // Two query strings rather than `(?1 IS NULL OR e.account_id = ?1)`: the
+        // disjunction is not sargable, so it full-scans `postings` on every call.
+        // The all-accounts arm still scans, correctly — it wants every elided leg.
+        let sql = match account_id {
+            Some(_) => residual_sql("AND e.account_id = ?1"),
+            None => residual_sql(""),
+        };
+        let mut query = sqlx::query_as(sqlx::AssertSqlSafe(sql));
+        if let Some(id) = account_id {
+            query = query.bind(id);
+        }
+        let rows: Vec<ResidualRow> = query.fetch_all(pool).await?;
 
         // Group legs by transaction, preserving each leg's identity. A `BTreeMap`
         // keeps iteration order deterministic rather than hash-order dependent.
@@ -310,8 +340,96 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use rust_decimal_macros::dec;
+    use sqlx::Row as _;
 
     use super::*;
+
+    /// Returns the `detail` column of every `EXPLAIN QUERY PLAN` row for `sql`.
+    ///
+    /// Parameters are left unbound; SQLite treats them as NULL, which is what the
+    /// planner sees for a prepared statement. Only `detail` is read, so the number of
+    /// columns SQLite returns is irrelevant.
+    async fn query_plan(pool: &sqlx::SqlitePool, sql: &str) -> Vec<String> {
+        sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
+            .fetch_all(pool)
+            .await
+            .expect("explain query plan")
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect()
+    }
+
+    /// E1: the account-scoped residual load must not scan `postings`.
+    ///
+    /// A non-sargable account predicate still returns correct rows, so nothing but the
+    /// query plan catches this regression.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn account_scoped_residual_load_uses_an_index(pool: sqlx::SqlitePool) {
+        let plan = query_plan(&pool, &residual_sql("AND e.account_id = ?1")).await;
+
+        let joined = plan.join("\n");
+        assert!(
+            !joined.contains("SCAN e"),
+            "account-scoped residual load full-scans postings:\n{joined}"
+        );
+        assert!(
+            joined.contains("SEARCH e USING INDEX idx_postings_account"),
+            "account-scoped residual load does not use idx_postings_account:\n{joined}"
+        );
+    }
+
+    /// C5: the two query strings must agree.
+    ///
+    /// Splitting the disjunction duplicated the SQL. This guards the copies from
+    /// drifting apart.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn all_accounts_load_equals_the_fold_of_per_account_loads(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let card = make_account(&pool, "Card", AccountType::Liability).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        for (n, acct, amount) in [("1", &bank, "50.00"), ("2", &card, "25.00")] {
+            let tx = format!("tx_{n}");
+            insert_tx(&pool, &tx, "2026-01-01").await;
+            insert_posting(
+                &pool,
+                &format!("p_food_{n}"),
+                &tx,
+                &food.to_string(),
+                Some(amount),
+                Some("AUD"),
+                0,
+            )
+            .await;
+            insert_posting(
+                &pool,
+                &format!("p_e_{n}"),
+                &tx,
+                &acct.to_string(),
+                None,
+                None,
+                1,
+            )
+            .await;
+        }
+
+        let all = Residuals::for_all_accounts(&pool)
+            .await
+            .expect("load all")
+            .totals_by_account()
+            .expect("totals");
+
+        let mut folded: HashMap<String, Balances> = HashMap::new();
+        for acct in [&bank, &card, &food] {
+            let per = Residuals::for_account(&pool, acct)
+                .await
+                .expect("load one")
+                .totals_by_account()
+                .expect("totals");
+            folded.extend(per);
+        }
+
+        assert_eq!(all, folded);
+    }
 
     /// Builds a concrete AUD amount.
     fn aud(value: rust_decimal::Decimal) -> Amount {
