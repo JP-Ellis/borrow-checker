@@ -120,10 +120,10 @@ pub struct UpdateArgs {
     /// Place the display symbol before the amount.
     #[arg(long = "no-symbol-after", overrides_with = "symbol_after")]
     pub no_symbol_after: bool,
-    /// Replace the first valid date (YYYY-MM-DD).
+    /// Replace the first valid date (YYYY-MM-DD). Pass an empty string to clear it.
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub active_from: Option<String>,
-    /// Replace the last valid date (YYYY-MM-DD).
+    /// Replace the last valid date (YYYY-MM-DD). Pass an empty string to clear it.
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub active_until: Option<String>,
 }
@@ -305,12 +305,19 @@ async fn find(ctx: &AppContext, marker: &str) -> CliResult<bc_models::Commodity>
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Arg`] if the marker matches nothing, or propagates
+/// Returns [`CliError::Arg`] if the marker matches nothing, propagates
 /// [`CliError::Core`] — notably [`bc_core::BcError::CommodityInUse`], whose
-/// message summarises the remaining references.
+/// message summarises the remaining references — or
+/// [`crate::error::CliError::Json`] from JSON serialisation.
 async fn delete(ctx: &AppContext, marker: &str) -> CliResult<()> {
     let target = find(ctx, marker).await?;
     ctx.commodities.delete(target.id()).await?;
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "id": target.id().to_string(),
+            "code": target.code(),
+        }));
+    }
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         println!("Deleted commodity {}", target.code());
@@ -322,8 +329,11 @@ async fn delete(ctx: &AppContext, marker: &str) -> CliResult<()> {
 ///
 /// Removal is validated: naming an alias the commodity does not hold is an
 /// error rather than a no-op, so a typo in a script surfaces immediately.
-/// Adding an alias already present is likewise rejected, since the resulting
-/// duplicate would be silently collapsed.
+/// Adding an alias the commodity already holds — or naming the same alias
+/// twice in one invocation — is likewise rejected here. The registry would
+/// reject the duplicate anyway, but as a `MarkerConflict` naming the
+/// commodity's own code as the marker's existing holder; catching it here
+/// names the offending flag instead.
 ///
 /// # Arguments
 ///
@@ -345,10 +355,12 @@ fn merge_aliases(stored: &[String], add: &[String], remove: &[String]) -> CliRes
             return Err(CliError::Arg(format!("no alias '{alias}' to remove")));
         }
     }
+    let mut accepted: Vec<&String> = Vec::with_capacity(add.len());
     for alias in add {
-        if stored.contains(alias) {
+        if stored.contains(alias) || accepted.contains(&alias) {
             return Err(CliError::Arg(format!("alias '{alias}' already set")));
         }
+        accepted.push(alias);
     }
     let mut merged: Vec<String> = stored
         .iter()
@@ -390,7 +402,8 @@ fn text_field(flag: Option<String>, stored: Option<&str>) -> Option<String> {
 ///
 /// Returns [`CliError::Arg`] if the marker matches nothing, a date is
 /// malformed, or an alias edit is invalid; propagates [`CliError::Core`] from
-/// the commodity service.
+/// the commodity service or [`crate::error::CliError::Json`] from JSON
+/// serialisation.
 async fn update(ctx: &AppContext, args: UpdateArgs) -> CliResult<()> {
     let stored = find(ctx, &args.marker).await?;
 
@@ -412,10 +425,12 @@ async fn update(ctx: &AppContext, args: UpdateArgs) -> CliResult<()> {
     let aliases = merge_aliases(stored.aliases(), &args.add_alias, &args.remove_alias)?;
 
     let active_from = match args.active_from.as_deref() {
+        Some("") => None,
         Some(v) => parse_optional_date("active-from", Some(v))?,
         None => stored.active_from(),
     };
     let active_until = match args.active_until.as_deref() {
+        Some("") => None,
         Some(v) => parse_optional_date("active-until", Some(v))?,
         None => stored.active_until(),
     };
@@ -436,6 +451,12 @@ async fn update(ctx: &AppContext, args: UpdateArgs) -> CliResult<()> {
         .build();
 
     ctx.commodities.update(&edited).await?;
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "id": stored.id().to_string(),
+            "code": stored.code(),
+        }));
+    }
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         println!("Updated commodity {}", stored.code());
@@ -472,6 +493,13 @@ mod tests {
         let err = merge_aliases(&["US$".to_owned()], &["US$".to_owned()], &[])
             .expect_err("duplicate alias rejected");
         assert_eq!(err.to_string(), "alias 'US$' already set");
+    }
+
+    #[test]
+    fn adding_the_same_alias_twice_is_an_error() {
+        let err = merge_aliases(&[], &["buck".to_owned(), "buck".to_owned()], &[])
+            .expect_err("intra-call duplicate rejected");
+        assert_eq!(err.to_string(), "alias 'buck' already set");
     }
 
     #[test]
