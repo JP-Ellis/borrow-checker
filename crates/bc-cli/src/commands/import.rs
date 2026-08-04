@@ -97,6 +97,7 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
         &ctx.sources,
         &ctx.accounts,
         &ctx.commodities,
+        &ctx.tags,
         &ctx.batches,
         Some(&profile.id),
         &profile.importer,

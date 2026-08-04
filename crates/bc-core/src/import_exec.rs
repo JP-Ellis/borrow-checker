@@ -31,6 +31,8 @@ use bc_models::PostingId;
 use bc_models::Reconciliation;
 use bc_models::SourceRef;
 use bc_models::SourceRefId;
+use bc_models::TagId;
+use bc_models::TagPath;
 use bc_models::Transaction;
 use bc_models::TransactionId;
 use jiff::Timestamp;
@@ -88,6 +90,11 @@ pub struct ImportOutcome {
     /// The distinct unregistered codes encountered, in sorted order. This is the
     /// register-these-then-re-run worklist.
     pub unresolved_commodities: Vec<String>,
+    /// Tag paths this run created, sorted. Tags name no balance, so an unknown
+    /// one is created rather than skipped; this is the list that makes a typo
+    /// visible, since a wrong tag is cheap to rename or delete but an omitted
+    /// one is expensive to reconstruct.
+    pub created_tags: Vec<String>,
 }
 
 /// Running totals for one import run, with skips attributed to their cause.
@@ -146,6 +153,8 @@ struct ResolvedLeg {
     fingerprint: String,
     /// The leg's free-text note, as the document stated it.
     note: Option<String>,
+    /// The leg's tag paths, as the document stated them.
+    tag_paths: Vec<String>,
 }
 
 /// A resolved leg together with the occurrence slot it claims for this run.
@@ -159,6 +168,8 @@ struct LegPlan {
     fingerprint: String,
     /// The leg's free-text note, as the document stated it.
     note: Option<String>,
+    /// The leg's tag paths, as the document stated them.
+    tag_paths: Vec<String>,
     /// The occurrence slot this leg claims within `(account, fingerprint)`.
     occurrence: u32,
 }
@@ -170,18 +181,45 @@ impl LegPlan {
     ///
     /// * `residual` - Amount to give an elided leg whose derived value would
     ///   otherwise be lost; `None` keeps the leg elided.
+    /// * `tags` - Rendered-path → tag-ID map from the run's pre-pass. A path
+    ///   absent from it failed to parse and was already warned about, so it is
+    ///   dropped here rather than costing the leg.
     ///
     /// # Returns
     ///
     /// A freshly-identified [`Posting`] on this leg's account.
-    fn posting(&self, residual: Option<&Amount>) -> Posting {
+    fn posting(&self, residual: Option<&Amount>, tags: &HashMap<String, TagId>) -> Posting {
         Posting::builder()
             .id(PostingId::new())
             .account_id(self.account_id.clone())
             .maybe_amount(self.amount.clone().or_else(|| residual.cloned()))
             .maybe_note(self.note.clone())
+            .tag_ids(resolve_tag_ids(&self.tag_paths, tags))
             .build()
     }
+}
+
+/// Maps stated tag paths onto the IDs the run's pre-pass created.
+///
+/// # Arguments
+///
+/// * `stated` - Tag paths as the document wrote them.
+/// * `tags` - Rendered-path → tag-ID map from the pre-pass.
+///
+/// # Returns
+///
+/// The IDs of the paths that parsed, deduplicated, in first-seen order. A path
+/// the map does not hold failed to parse and was warned about there.
+fn resolve_tag_ids(stated: &[String], tags: &HashMap<String, TagId>) -> Vec<TagId> {
+    let mut out: Vec<TagId> = Vec::new();
+    for path in stated {
+        if let Some(id) = tags.get(path)
+            && !out.contains(id)
+        {
+            out.push(id.clone());
+        }
+    }
+    out
 }
 
 /// The outcome of the resolution pass over every leg of every raw transaction.
@@ -231,6 +269,7 @@ struct Resolved {
 /// * `sources` - Source-reference persistence service.
 /// * `accounts` - Account service, snapshotted once for path resolution.
 /// * `commodities` - Commodity service, snapshotted once for code resolution.
+/// * `tags` - Tag service, used to materialise every path the run names.
 /// * `batches` - Import batch provenance service.
 /// * `profile_id` - The driving profile, if the run is profile-driven.
 /// * `importer` - Stable importer name, recorded on the batch.
@@ -254,6 +293,7 @@ pub async fn execute_import(
     sources: &crate::SourceService,
     accounts: &crate::AccountService,
     commodities: &crate::CommodityService,
+    tags: &crate::TagService,
     batches: &crate::ImportBatchService,
     profile_id: Option<&bc_models::ProfileId>,
     importer: &str,
@@ -262,6 +302,8 @@ pub async fn execute_import(
     let resolver = crate::AccountResolver::load(accounts).await?;
     let commodity_resolver = CommodityResolver::load(commodities).await?;
     let batch_id = batches.open(profile_id, importer).await?;
+
+    let (tag_ids, created_tags) = ensure_tags(tags, raws).await?;
 
     let pass = resolve_legs(&resolver, &commodity_resolver, raws);
     let unresolved_accounts: Vec<String> = pass.unresolved_accounts.into_iter().collect();
@@ -281,6 +323,7 @@ pub async fn execute_import(
         commodities: &commodity_resolver,
         existing: sources.existing_legs(&touched_accounts(&planned)).await?,
         batch_id: batch_id.clone(),
+        tags: tag_ids,
     };
 
     for (raw, legs) in raws.iter().zip(&planned) {
@@ -310,6 +353,7 @@ pub async fn execute_import(
         other_skipped_postings: counts.other_skipped_postings,
         unresolved_accounts,
         unresolved_commodities,
+        created_tags,
     })
 }
 
@@ -387,6 +431,67 @@ fn resolve_legs(
     }
 
     out
+}
+
+/// Materialises every tag path the run names, before any row is written.
+///
+/// Creation is a pre-pass rather than per-row work because a tag created inside
+/// a row's database transaction would vanish if that row hit the row-local skip
+/// path, while the in-memory map still held its ID — every later row naming that
+/// tag would then fail on the `tags` foreign key. The cost of the pre-pass is
+/// that a run whose rows are all skipped still leaves its tags behind; a tag is
+/// cheap to delete, and reconstructing an omitted one by hand across a bulk
+/// import is not.
+///
+/// A path that will not parse warns once and is dropped. It costs the tag, never
+/// the leg: tags are decoration, the amount is the value.
+///
+/// # Arguments
+///
+/// * `tags` - The tag service to create through.
+/// * `raws` - Parsed transactions in document order.
+///
+/// # Returns
+///
+/// The rendered-path → leaf-ID map for every path that parsed, and the sorted
+/// list of paths this run created.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError`] on query or insert failure.
+async fn ensure_tags(
+    tags: &crate::TagService,
+    raws: &[RawTransaction],
+) -> BcResult<(HashMap<String, TagId>, Vec<String>)> {
+    let mut parsed: Vec<TagPath> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut rejected: BTreeSet<String> = BTreeSet::new();
+
+    for raw in raws {
+        let leg_tags = raw.postings.iter().flat_map(|posting| posting.tags.iter());
+        for stated in raw.tags.iter().chain(leg_tags) {
+            if !seen.insert(stated.clone()) {
+                continue;
+            }
+            match stated.parse::<TagPath>() {
+                Ok(path) => parsed.push(path),
+                Err(error) => {
+                    // Warn once per distinct spelling, as unresolved accounts do.
+                    if rejected.insert(stated.clone()) {
+                        tracing::warn!(
+                            location = location_of(raw),
+                            tag = stated.as_str(),
+                            %error,
+                            "malformed tag path; dropping the tag and keeping the leg"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let created = tags.create_paths(&parsed).await?;
+    Ok((created.ids, created.created))
 }
 
 /// Step 2: reports whether `raw` leaves its residual ambiguous.
@@ -533,6 +638,7 @@ fn resolve_leg(
         account_id,
         amount,
         note: posting.note.clone(),
+        tag_paths: posting.tags.clone(),
     })
 }
 
@@ -602,6 +708,7 @@ fn allocate_occurrences(rows: Vec<Vec<ResolvedLeg>>) -> Vec<Vec<LegPlan>> {
                         amount: leg.amount,
                         fingerprint: leg.fingerprint,
                         note: leg.note,
+                        tag_paths: leg.tag_paths,
                         occurrence,
                     }
                 })
@@ -748,6 +855,7 @@ fn corroborate<'leg>(
 /// * `legs` - The planned legs to persist.
 /// * `commodities` - The registry snapshot the residual's commodity is
 ///   canonicalised against.
+/// * `tags` - Rendered-path → tag-ID map from the run's pre-pass.
 ///
 /// # Returns
 ///
@@ -757,6 +865,7 @@ fn build_postings(
     raw: &RawTransaction,
     legs: &[LegPlan],
     commodities: &CommodityResolver,
+    tags: &HashMap<String, TagId>,
 ) -> BcResult<Option<Vec<Posting>>> {
     let residual = if legs.iter().all(|leg| leg.amount.is_none()) {
         match document_residual(raw, commodities)? {
@@ -768,7 +877,7 @@ fn build_postings(
     };
     Ok(Some(
         legs.iter()
-            .map(|leg| leg.posting(residual.as_ref()))
+            .map(|leg| leg.posting(residual.as_ref(), tags))
             .collect(),
     ))
 }
@@ -990,6 +1099,8 @@ struct Writer<'svc> {
     existing: HashMap<(String, String), Vec<StoredLeg>>,
     /// The batch stamped onto every reference this run writes.
     batch_id: ImportBatchId,
+    /// Rendered-path → tag-ID map from the run's pre-pass.
+    tags: HashMap<String, TagId>,
 }
 
 impl Writer<'_> {
@@ -1091,7 +1202,7 @@ impl Writer<'_> {
         // An overflow is this row's own defect, so it warns and skips like any
         // other unpersistable row rather than aborting the run.
         let built = row_local_value(
-            build_postings(raw, legs, self.commodities),
+            build_postings(raw, legs, self.commodities, &self.tags),
             raw,
             "summing the row's amounts",
             legs.len(),
@@ -1122,6 +1233,7 @@ impl Writer<'_> {
             .description(raw.description.clone())
             .maybe_note(raw.note.clone())
             .extra_dates(distinct_extra_dates(raw))
+            .tag_ids(resolve_tag_ids(&raw.tags, &self.tags))
             .postings(postings.clone())
             .reconciliation(Reconciliation::Unreconciled)
             .created_at(Timestamp::now())
@@ -1236,7 +1348,10 @@ impl Writer<'_> {
 
         // The candidate already holds a concrete leg, so an unstored elided leg
         // stays elided here — there is a sibling for it to be derived from.
-        let postings: Vec<Posting> = insertions.iter().map(|leg| leg.posting(None)).collect();
+        let postings: Vec<Posting> = insertions
+            .iter()
+            .map(|leg| leg.posting(None, &self.tags))
+            .collect();
 
         let written: BcResult<()> = async {
             let mut db_tx = self.transactions.pool().begin().await?;
@@ -1339,6 +1454,7 @@ mod tests {
         accounts: crate::AccountService,
         commodities: crate::CommodityService,
         batches: crate::ImportBatchService,
+        tags: crate::TagService,
     }
 
     /// Creates the five services over one pool, with the default commodity set
@@ -1356,6 +1472,7 @@ mod tests {
             accounts: crate::AccountService::new(pool.clone()),
             commodities,
             batches: crate::ImportBatchService::new(pool.clone()),
+            tags: crate::TagService::new(pool.clone()),
         }
     }
 
@@ -1366,6 +1483,7 @@ mod tests {
             &svcs.sources,
             &svcs.accounts,
             &svcs.commodities,
+            &svcs.tags,
             &svcs.batches,
             None,
             "test",
@@ -3688,5 +3806,143 @@ mod tests {
         let outcome = import_leg_with_balance(&pool, "Assets:Bank:Checking", ("AUD", "DOGE")).await;
         assert_eq!(outcome.unresolved_commodity_postings, 0);
         assert_eq!(outcome.new_transactions, 1);
+    }
+
+    /// Reads the rendered paths of every tag attached to the single transaction.
+    async fn tag_names_of_transaction(pool: &SqlitePool) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT t.name FROM transaction_tags tt \
+             JOIN tags t ON t.id = tt.tag_id ORDER BY t.name",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("transaction tag names")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn transaction_tags_are_created_and_attached(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .tags(vec!["household".to_owned()])
+            .postings(vec![leg("Assets:Bank", Some(50_i64))])
+            .build();
+
+        let outcome = run(&svcs, &[raw]).await;
+
+        assert_eq!(outcome.created_tags, vec!["household".to_owned()]);
+        assert_eq!(
+            tag_names_of_transaction(&pool).await,
+            vec!["household".to_owned()]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tags_survive_a_run_whose_rows_all_skip(pool: SqlitePool) {
+        // No accounts exist, so every leg is skipped — but the pre-pass runs first
+        // and its tags must persist, since it sits outside the rows' transactions.
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .tags(vec!["household".to_owned()])
+            .postings(vec![leg("Assets:Bank", Some(50_i64))])
+            .build();
+
+        let outcome = run(&svcs, &[raw]).await;
+
+        assert_eq!(outcome.new_transactions, 0);
+        assert_eq!(outcome.created_tags, vec!["household".to_owned()]);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags")
+            .fetch_one(&pool)
+            .await
+            .expect("count tags");
+        assert_eq!(count, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_malformed_tag_costs_the_tag_not_the_leg(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .tags(vec!["person::alpha".to_owned()])
+            .postings(vec![leg("Assets:Bank", Some(50_i64))])
+            .build();
+
+        let outcome = run(&svcs, &[raw]).await;
+
+        assert_eq!(outcome.new_transactions, 1);
+        assert_eq!(outcome.skipped_postings, 0);
+        assert!(outcome.created_tags.is_empty());
+        assert!(tag_names_of_transaction(&pool).await.is_empty());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_tags_stay_at_the_posting_level(pool: SqlitePool) {
+        // Transaction::effective_tags already unions the two levels, so they are
+        // persisted separately rather than posting tags being flattened upward.
+        let (bank, _food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .tags(vec!["household".to_owned()])
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .maybe_amount(Some(Amount::new(
+                        Decimal::from(50_i64),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .tags(vec!["reimbursable".to_owned()])
+                    .build(),
+            ])
+            .build();
+
+        let outcome = run(&svcs, &[raw]).await;
+
+        assert_eq!(
+            outcome.created_tags,
+            vec!["household".to_owned(), "reimbursable".to_owned()]
+        );
+        // The transaction carries only its own tag...
+        assert_eq!(
+            tag_names_of_transaction(&pool).await,
+            vec!["household".to_owned()]
+        );
+        // ...and the posting only its own.
+        let posting_tags: Vec<String> = sqlx::query_scalar(
+            "SELECT t.name FROM posting_tags pt \
+             JOIN tags t ON t.id = pt.tag_id \
+             JOIN postings p ON p.id = pt.posting_id \
+             WHERE p.account_id = ? ORDER BY t.name",
+        )
+        .bind(bank.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("posting tag names");
+        assert_eq!(posting_tags, vec!["reimbursable".to_owned()]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_re_run_creates_no_further_tags(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .tags(vec!["household".to_owned()])
+            .postings(vec![leg("Assets:Bank", Some(50_i64))])
+            .build();
+        run(&svcs, std::slice::from_ref(&raw)).await;
+
+        let outcome = run(&svcs, &[raw]).await;
+
+        assert!(outcome.created_tags.is_empty());
+        assert_eq!(outcome.new_transactions, 0);
     }
 }
