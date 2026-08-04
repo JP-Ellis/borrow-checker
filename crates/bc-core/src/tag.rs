@@ -742,6 +742,25 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn direct_sql_cannot_fork_a_case_variant_sibling(pool: SqlitePool) {
+        let parent_id = TagId::new();
+        let alpha_id = TagId::new();
+        insert_tag(&pool, &parent_id, "person", None).await;
+        insert_tag(&pool, &alpha_id, "alpha", Some(&parent_id)).await;
+
+        let result =
+            sqlx::query("INSERT INTO tags (id, name, parent_id, created_at) VALUES (?, ?, ?, ?)")
+                .bind(TagId::new().to_string())
+                .bind("ALPHA")
+                .bind(parent_id.to_string())
+                .bind("2026-01-01T00:00:00Z")
+                .execute(&pool)
+                .await;
+
+        assert!(result.is_err(), "the unique index should reject the insert");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn delete_cascades_subtree_and_memberships(pool: SqlitePool) {
         let svc = Service::new(pool.clone());
         let person = svc
