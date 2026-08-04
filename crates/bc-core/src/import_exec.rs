@@ -1872,6 +1872,58 @@ mod tests {
         );
     }
 
+    /// `Writer::attach` deliberately does not apply `raw.tags` to the
+    /// transaction it attaches onto — invariant 2 of the spec, and the sibling
+    /// case to `attaching_a_leg_does_not_revise_transaction_metadata`, which
+    /// pins the same invariant for the note. Naming a brand-new tag on the
+    /// second run's document must not attach it to the existing transaction,
+    /// even though the tag itself is still created and reported: the pre-pass
+    /// that creates it runs before any row decides whether it is creating or
+    /// attaching, so `created_tags` names the path while nothing links to it.
+    /// If `attach` were changed to apply `raw.tags`, this would fail on the
+    /// first assertion below.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn attaching_a_leg_does_not_add_a_new_transaction_tag(pool: SqlitePool) {
+        // First run: only Assets:Bank exists, so the Expenses:Food leg is skipped
+        // and the transaction is created carrying no tags.
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let first = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .postings(vec![
+                leg("Assets:Bank", Some(-50_i64)),
+                leg("Expenses:Food", Some(50_i64)),
+            ])
+            .build();
+        run(&svcs, &[first]).await;
+
+        // Second run: the account now exists and the document names a new
+        // transaction-level tag. The missing leg attaches; the tag must not.
+        add_food(&pool).await;
+        let second = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .tags(vec!["urgent".to_owned()])
+            .postings(vec![
+                leg("Assets:Bank", Some(-50_i64)),
+                leg("Expenses:Food", Some(50_i64)),
+            ])
+            .build();
+        let outcome = run(&svcs, &[second]).await;
+
+        assert_eq!(outcome.attached_postings, 1);
+        assert!(
+            tag_names_of_transaction(&pool).await.is_empty(),
+            "attach must not apply the document's transaction-level tags"
+        );
+        assert_eq!(
+            outcome.created_tags,
+            vec!["urgent".to_owned()],
+            "the pre-pass still creates and reports the tag, even though it links to nothing"
+        );
+    }
+
     /// `Writer::attach` is the one code path that builds a posting outside
     /// `Writer::create` — a leg an earlier run could not persist, joining the
     /// transaction that earlier run did create. It has its own `leg.posting(...)`
