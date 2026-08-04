@@ -227,8 +227,32 @@ problem.
 *inner* elided subquery of `Residuals::load` by `t.date`. That is necessary but
 **not sufficient**: it leaves both defects above untouched, so implementing it
 as written would barely move `posting_buckets`. A complete fix needs all three
-— scope the inner subquery, make the account predicate sargable, and restructure
-`fetch_postings_in_range` so its date bound can actually drive the scan.
+— scope the inner subquery, make the account predicate sargable, and give
+`fetch_postings_in_range` a date bound that can actually drive the scan.
+
+That third piece is **not achievable by restructuring the query**, and an
+earlier draft of this document said otherwise. SQLite chooses join order
+itself: reordering the `FROM` clause produces a byte-identical plan, and
+`INDEXED BY` only pins which index is used on the table it names — neither
+touches drive order. Verified against a schema-only database with `EXPLAIN QUERY PLAN`, the only levers that force `postings` to drive the scan are a
+`CROSS JOIN` (which disables SQLite's reordering for that join) or a
+denormalised date column on `postings` itself, so the `date` predicate can
+sit directly on the driving index. This change took the denormalised-column
+route: a trigger-maintained `postings.date`, backed by
+`idx_postings_account_commodity_date` and `idx_postings_account_date`.
+Restructuring `fetch_postings_in_range`'s SQL without one of those two levers
+would have shipped a no-op.
+
+**A related constraint, independent of the fix above: set-based aggregation
+is not available on SQLite here.** Amounts are stored as `TEXT` decimal
+strings, so SQLite's `SUM` promotes them to `real`
+(`typeof(SUM(amount)) = 'real'`), and floating-point drift is observable
+directly: `SUM('0.1') + SUM('0.2') = 0.3` evaluates false. Summing in SQL
+would trade an exact decimal total for an inexact one, so sums have to stay
+in Rust `rust_decimal`, decoded row by row. This is a SQLite-specific
+constraint, not an architectural one — Postgres `NUMERIC` is exact and
+`rust_decimal` maps to it directly, so a Postgres backend would not carry
+this restriction.
 
 ## Verdicts
 
