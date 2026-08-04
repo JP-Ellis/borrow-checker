@@ -275,12 +275,19 @@ impl Engine {
         from: jiff::civil::Date,
         to: jiff::civil::Date,
     ) -> BcResult<Vec<(jiff::civil::Date, Decimal)>> {
+        // One deferred transaction across all three queries below. The elided-id
+        // query and the residual load must agree on which postings exist: a date
+        // amendment landing between them would leave an id absent from the loaded
+        // `Residuals`, which `component` reports as an out-of-scope error. Under WAL
+        // a read transaction is a consistent snapshot and does not block writers.
+        let mut tx = self.pool.begin().await?;
+
         let rows: Vec<(String, String)> = sqlx::query_as(WINDOW_CONCRETE_SQL)
             .bind(account_id.to_string())
             .bind(commodity)
             .bind(from.to_string())
             .bind(to.to_string())
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
 
         let mut out: Vec<(jiff::civil::Date, Decimal)> = rows
@@ -303,12 +310,12 @@ impl Engine {
             .bind(account_id.to_string())
             .bind(from.to_string())
             .bind(to.to_string())
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
 
         if !elided.is_empty() {
             let residuals =
-                crate::residual::Residuals::for_account_in_range(&self.pool, account_id, from, to)
+                crate::residual::Residuals::for_account_in_range(&mut *tx, account_id, from, to)
                     .await?;
             for (posting_id, date_str) in elided {
                 let Some(value) = residuals.component(&posting_id, commodity)? else {
@@ -320,6 +327,9 @@ impl Engine {
                 out.push((date, value));
             }
         }
+
+        // Nothing was written, so the snapshot is released rather than committed.
+        tx.rollback().await?;
 
         Ok(out)
     }
