@@ -1084,6 +1084,8 @@ impl Writer<'_> {
             .date(raw.date)
             .maybe_payee(raw.payee.clone())
             .description(raw.description.clone())
+            .maybe_note(raw.note.clone())
+            .extra_dates(raw.extra_dates.clone())
             .postings(postings.clone())
             .reconciliation(Reconciliation::Unreconciled)
             .created_at(Timestamp::now())
@@ -1591,6 +1593,90 @@ mod tests {
         assert_eq!(
             note_of_posting(&pool, &bank).await,
             Some("paid by card".to_owned())
+        );
+    }
+
+    /// Reads the `note` column of the single stored transaction.
+    async fn note_of_transaction(pool: &SqlitePool) -> Option<String> {
+        sqlx::query_scalar("SELECT note FROM transactions")
+            .fetch_one(pool)
+            .await
+            .expect("transaction note")
+    }
+
+    /// Reads every `(label, date)` pair stored for the single transaction.
+    async fn dates_of_transaction(pool: &SqlitePool) -> Vec<(String, String)> {
+        sqlx::query_as("SELECT label, date FROM transaction_dates ORDER BY label")
+            .fetch_all(pool)
+            .await
+            .expect("transaction dates")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn transaction_note_and_extra_dates_are_persisted(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .note("split with flatmate")
+            .extra_dates(vec![
+                ("settled".to_owned(), date(2025, 6, 29)),
+                ("posted".to_owned(), date(2025, 6, 28)),
+            ])
+            .postings(vec![leg("Assets:Bank", Some(50_i64))])
+            .build();
+
+        run(&svcs, &[raw]).await;
+
+        assert_eq!(
+            note_of_transaction(&pool).await,
+            Some("split with flatmate".to_owned())
+        );
+        assert_eq!(
+            dates_of_transaction(&pool).await,
+            vec![
+                ("posted".to_owned(), "2025-06-28".to_owned()),
+                ("settled".to_owned(), "2025-06-29".to_owned()),
+            ]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn attaching_a_leg_does_not_revise_transaction_metadata(pool: SqlitePool) {
+        // First run: only Assets:Bank exists, so the Expenses:Food leg is skipped
+        // and the transaction is created carrying the document's note.
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let first = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .note("original note")
+            .postings(vec![
+                leg("Assets:Bank", Some(-50_i64)),
+                leg("Expenses:Food", Some(50_i64)),
+            ])
+            .build();
+        run(&svcs, &[first]).await;
+
+        // Second run: the account now exists and the document's note has changed.
+        // The missing leg attaches; the note must not follow it.
+        add_food(&pool).await;
+        let second = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .note("revised note")
+            .postings(vec![
+                leg("Assets:Bank", Some(-50_i64)),
+                leg("Expenses:Food", Some(50_i64)),
+            ])
+            .build();
+        let outcome = run(&svcs, &[second]).await;
+
+        assert_eq!(outcome.attached_postings, 1);
+        assert_eq!(
+            note_of_transaction(&pool).await,
+            Some("original note".to_owned())
         );
     }
 
