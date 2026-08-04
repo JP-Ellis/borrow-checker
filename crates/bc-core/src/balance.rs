@@ -288,7 +288,9 @@ impl Engine {
         .await?;
 
         if !elided.is_empty() {
-            let residuals = crate::residual::Residuals::for_account(&self.pool, account_id).await?;
+            let residuals =
+                crate::residual::Residuals::for_account_in_range(&self.pool, account_id, from, to)
+                    .await?;
             for (posting_id, date_str) in elided {
                 let Some(value) = residuals.component(&posting_id, commodity)? else {
                     continue;

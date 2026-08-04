@@ -187,6 +187,47 @@ impl Residuals {
         Self::load(pool, None).await
     }
 
+    /// Loads residuals for `account_id`'s elided postings dated in `[from, to)`.
+    ///
+    /// The bound restricts which *transactions* are resolved. Every leg of a resolved
+    /// transaction is still loaded, because [`residual_of`] needs the full leg set to
+    /// detect the ambiguous two-or-more-elided case. This is exact rather than
+    /// approximate: dates live only on `transactions`, so every leg of a transaction
+    /// shares one date and no sibling can fall outside the window of the elided leg
+    /// it funds.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - Connection pool.
+    /// * `account_id` - The account whose elided postings to resolve.
+    /// * `from` - Inclusive lower bound on the transaction date.
+    /// * `to` - Exclusive upper bound on the transaction date.
+    ///
+    /// # Returns
+    ///
+    /// The residuals, empty if the account holds no elided postings in the window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if
+    /// a stored amount cannot be parsed or a total overflows.
+    pub(crate) async fn for_account_in_range(
+        pool: &SqlitePool,
+        account_id: &AccountId,
+        from: jiff::civil::Date,
+        to: jiff::civil::Date,
+    ) -> BcResult<Self> {
+        let sql = residual_sql("AND e.account_id = ?1 AND e.date >= ?2 AND e.date < ?3");
+        let rows: Vec<ResidualRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(account_id.to_string())
+            .bind(from.to_string())
+            .bind(to.to_string())
+            .fetch_all(pool)
+            .await?;
+
+        Self::from_rows(rows)
+    }
+
     /// Loads residuals, optionally scoped to one account.
     ///
     /// Fetches every leg of every transaction owning an in-scope elided posting,
@@ -206,6 +247,25 @@ impl Residuals {
         }
         let rows: Vec<ResidualRow> = query.fetch_all(pool).await?;
 
+        Self::from_rows(rows)
+    }
+
+    /// Groups legs by transaction and resolves each transaction's residual.
+    ///
+    /// # Arguments
+    ///
+    /// * `rows` - Every leg of every in-scope transaction, ordered by
+    ///   `(transaction_id, id)`.
+    ///
+    /// # Returns
+    ///
+    /// The assembled residuals.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if a stored amount cannot be parsed or a total
+    /// overflows.
+    fn from_rows(rows: Vec<ResidualRow>) -> BcResult<Self> {
         // Group legs by transaction, preserving each leg's identity. A `BTreeMap`
         // keeps iteration order deterministic rather than hash-order dependent.
         // The query's `ORDER BY` does the same within a transaction: leg order
@@ -805,6 +865,178 @@ mod tests {
         let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
 
         assert_eq!(residuals.total_in("AUD").expect("total"), dec!(-75.00));
+    }
+
+    /// A1: a ranged load still sees every sibling of an in-window transaction.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn ranged_load_resolves_a_full_sibling_set(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        let tips = make_account(&pool, "Tips", AccountType::Expense).await;
+        insert_tx(&pool, "tx_1", "2026-04-10").await;
+        insert_posting(
+            &pool,
+            "p_food",
+            "tx_1",
+            &food.to_string(),
+            Some("50.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(
+            &pool,
+            "p_tips",
+            "tx_1",
+            &tips.to_string(),
+            Some("5.00"),
+            Some("AUD"),
+            1,
+        )
+        .await;
+        insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 2).await;
+
+        let residuals = Residuals::for_account_in_range(
+            &pool,
+            &bank,
+            jiff::civil::date(2026, 4, 1),
+            jiff::civil::date(2026, 5, 1),
+        )
+        .await
+        .expect("load");
+
+        // -55, not -50: both concrete siblings must be loaded.
+        assert_eq!(
+            residuals.component("p_bank", "AUD").expect("in scope"),
+            Some(dec!(-55.00))
+        );
+    }
+
+    /// A2: a two-elided-leg transaction stays ambiguous under a window.
+    ///
+    /// The highest-value test in this change. If the date predicate ever restricts `sib`
+    /// instead of the inner elided subquery, the second elided leg disappears from the
+    /// leg set, `residual_of` sees exactly one elision, and this transaction is silently
+    /// reclassified as attributable — injecting a residual that does not exist.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn ranged_load_preserves_ambiguity(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let other = make_account(&pool, "Other", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        insert_tx(&pool, "tx_1", "2026-04-10").await;
+        insert_posting(
+            &pool,
+            "p_food",
+            "tx_1",
+            &food.to_string(),
+            Some("50.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 1).await;
+        insert_posting(&pool, "p_other", "tx_1", &other.to_string(), None, None, 2).await;
+
+        let residuals = Residuals::for_account_in_range(
+            &pool,
+            &bank,
+            jiff::civil::date(2026, 4, 1),
+            jiff::civil::date(2026, 5, 1),
+        )
+        .await
+        .expect("load");
+
+        assert_eq!(
+            residuals.component("p_bank", "AUD").expect("in scope"),
+            None
+        );
+        assert_eq!(residuals.total_in("AUD").expect("total"), Decimal::ZERO);
+    }
+
+    /// A4: an out-of-window transaction is never loaded at all.
+    ///
+    /// Asserted against the scope guard rather than the total, so the test distinguishes
+    /// "loaded then ignored" from "correctly never loaded".
+    #[sqlx::test(migrations = "./migrations")]
+    async fn ranged_load_excludes_out_of_window_transactions(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        insert_tx(&pool, "tx_old", "2020-01-01").await;
+        insert_posting(
+            &pool,
+            "p_food",
+            "tx_old",
+            &food.to_string(),
+            Some("50.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(&pool, "p_bank", "tx_old", &bank.to_string(), None, None, 1).await;
+
+        let residuals = Residuals::for_account_in_range(
+            &pool,
+            &bank,
+            jiff::civil::date(2026, 4, 1),
+            jiff::civil::date(2026, 5, 1),
+        )
+        .await
+        .expect("load");
+
+        assert!(
+            residuals.component("p_bank", "AUD").is_err(),
+            "an out-of-window posting must be absent from the load, not merely zero"
+        );
+        assert_eq!(residuals.total_in("AUD").expect("total"), Decimal::ZERO);
+    }
+
+    /// A3 (elided path): the ranged load's window is half-open.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn ranged_load_window_is_half_open(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        for (n, day) in [("lo", "2026-04-01"), ("hi", "2026-05-01")] {
+            let tx = format!("tx_{n}");
+            insert_tx(&pool, &tx, day).await;
+            insert_posting(
+                &pool,
+                &format!("p_food_{n}"),
+                &tx,
+                &food.to_string(),
+                Some("50.00"),
+                Some("AUD"),
+                0,
+            )
+            .await;
+            insert_posting(
+                &pool,
+                &format!("p_bank_{n}"),
+                &tx,
+                &bank.to_string(),
+                None,
+                None,
+                1,
+            )
+            .await;
+        }
+
+        let residuals = Residuals::for_account_in_range(
+            &pool,
+            &bank,
+            jiff::civil::date(2026, 4, 1),
+            jiff::civil::date(2026, 5, 1),
+        )
+        .await
+        .expect("load");
+
+        assert_eq!(
+            residuals.component("p_bank_lo", "AUD").expect("in scope"),
+            Some(dec!(-50.00))
+        );
+        assert!(
+            residuals.component("p_bank_hi", "AUD").is_err(),
+            "the upper bound must be exclusive"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
