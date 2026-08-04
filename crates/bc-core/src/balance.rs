@@ -56,6 +56,45 @@ pub struct Engine {
     pool: SqlitePool,
 }
 
+// MARK: Queries
+//
+// Every query whose *plan* is load-bearing lives here rather than inline, so the
+// `EXPLAIN QUERY PLAN` tests below assert against the text that actually runs. A
+// non-sargable rewrite still returns correct rows, so a test holding its own copy
+// of the SQL would keep passing while the real query regressed.
+
+/// Concrete legs of one account in one commodity, unbounded in date.
+const BALANCE_SQL: &str = "SELECT p.amount
+     FROM postings p
+     WHERE p.account_id = ?
+       AND p.commodity  = ?";
+
+/// Concrete legs of one account in one commodity, over a half-open date window.
+const WINDOW_CONCRETE_SQL: &str = "SELECT p.date, p.amount
+     FROM postings p
+     WHERE p.account_id = ?
+       AND p.commodity  = ?
+       AND p.date      >= ?
+       AND p.date       < ?";
+
+/// Elided legs of one account over a half-open date window.
+///
+/// Commodity-agnostic: an elided leg carries neither amount nor commodity, so its
+/// value comes from the transaction's residual rather than from this row.
+const WINDOW_ELIDED_SQL: &str = "SELECT p.id, p.date
+     FROM postings p
+     WHERE p.account_id = ?
+       AND p.amount IS NULL
+       AND p.date >= ?
+       AND p.date  < ?";
+
+/// Distinct transactions touching one account over a half-open date window.
+const TX_COUNT_SQL: &str = "SELECT COUNT(DISTINCT p.transaction_id)
+     FROM postings p
+     WHERE p.account_id = ?
+       AND p.date >= ?
+       AND p.date  < ?";
+
 /// Builds `count` contiguous period buckets ending with the period containing
 /// `as_of`, oldest-first. Each bucket is a half-open `[start, end)` range one
 /// `period` wide.
@@ -114,16 +153,11 @@ impl Engine {
     /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if a stored amount cannot be parsed.
     #[inline]
     pub async fn balance_for(&self, account_id: &AccountId, commodity: &str) -> BcResult<Amount> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT p.amount
-             FROM postings p
-             WHERE p.account_id = ?
-               AND p.commodity  = ?",
-        )
-        .bind(account_id.to_string())
-        .bind(commodity)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows: Vec<(String,)> = sqlx::query_as(BALANCE_SQL)
+            .bind(account_id.to_string())
+            .bind(commodity)
+            .fetch_all(&self.pool)
+            .await?;
 
         let concrete = rows.into_iter().try_fold(Decimal::ZERO, |acc, (amt,)| {
             let d = amt
@@ -241,20 +275,13 @@ impl Engine {
         from: jiff::civil::Date,
         to: jiff::civil::Date,
     ) -> BcResult<Vec<(jiff::civil::Date, Decimal)>> {
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT p.date, p.amount
-             FROM postings p
-             WHERE p.account_id = ?
-               AND p.commodity  = ?
-               AND p.date      >= ?
-               AND p.date       < ?",
-        )
-        .bind(account_id.to_string())
-        .bind(commodity)
-        .bind(from.to_string())
-        .bind(to.to_string())
-        .fetch_all(&self.pool)
-        .await?;
+        let rows: Vec<(String, String)> = sqlx::query_as(WINDOW_CONCRETE_SQL)
+            .bind(account_id.to_string())
+            .bind(commodity)
+            .bind(from.to_string())
+            .bind(to.to_string())
+            .fetch_all(&self.pool)
+            .await?;
 
         let mut out: Vec<(jiff::civil::Date, Decimal)> = rows
             .into_iter()
@@ -272,19 +299,12 @@ impl Engine {
         // Elided legs have a NULL commodity, so the query above cannot match
         // them. Fetch them separately and resolve each one's residual; a
         // residual carries its transaction's date, so ordering is unaffected.
-        let elided: Vec<(String, String)> = sqlx::query_as(
-            "SELECT p.id, p.date
-             FROM postings p
-             WHERE p.account_id = ?
-               AND p.amount IS NULL
-               AND p.date >= ?
-               AND p.date  < ?",
-        )
-        .bind(account_id.to_string())
-        .bind(from.to_string())
-        .bind(to.to_string())
-        .fetch_all(&self.pool)
-        .await?;
+        let elided: Vec<(String, String)> = sqlx::query_as(WINDOW_ELIDED_SQL)
+            .bind(account_id.to_string())
+            .bind(from.to_string())
+            .bind(to.to_string())
+            .fetch_all(&self.pool)
+            .await?;
 
         if !elided.is_empty() {
             let residuals =
@@ -419,15 +439,12 @@ impl Engine {
         from: jiff::civil::Date,
         until: jiff::civil::Date,
     ) -> BcResult<u32> {
-        let (count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(DISTINCT p.transaction_id) FROM postings p \
-             WHERE p.account_id = ? AND p.date >= ? AND p.date < ?",
-        )
-        .bind(account_id.to_string())
-        .bind(from.to_string())
-        .bind(until.to_string())
-        .fetch_one(&self.pool)
-        .await?;
+        let (count,): (i64,) = sqlx::query_as(TX_COUNT_SQL)
+            .bind(account_id.to_string())
+            .bind(from.to_string())
+            .bind(until.to_string())
+            .fetch_one(&self.pool)
+            .await?;
 
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
@@ -2320,12 +2337,7 @@ mod tests {
     /// The date range has to be a term *inside* the index, not a post-join filter.
     #[sqlx::test(migrations = "./migrations")]
     async fn concrete_window_query_is_index_driven(pool: sqlx::SqlitePool) {
-        let plan = query_plan(
-            &pool,
-            "SELECT p.date, p.amount FROM postings p
-             WHERE p.account_id = ?1 AND p.commodity = ?2 AND p.date >= ?3 AND p.date < ?4",
-        )
-        .await;
+        let plan = query_plan(&pool, WINDOW_CONCRETE_SQL).await;
 
         let joined = plan.join("\n");
         assert!(
@@ -2341,12 +2353,7 @@ mod tests {
     /// E2: the elided-leg window query must be index-driven too.
     #[sqlx::test(migrations = "./migrations")]
     async fn elided_window_query_is_index_driven(pool: sqlx::SqlitePool) {
-        let plan = query_plan(
-            &pool,
-            "SELECT p.id, p.date FROM postings p
-             WHERE p.account_id = ?1 AND p.amount IS NULL AND p.date >= ?2 AND p.date < ?3",
-        )
-        .await;
+        let plan = query_plan(&pool, WINDOW_ELIDED_SQL).await;
 
         let joined = plan.join("\n");
         assert!(
@@ -2360,12 +2367,7 @@ mod tests {
     /// `transactions` by id.
     #[sqlx::test(migrations = "./migrations")]
     async fn transaction_count_query_is_index_driven(pool: sqlx::SqlitePool) {
-        let plan = query_plan(
-            &pool,
-            "SELECT COUNT(DISTINCT p.transaction_id) FROM postings p
-             WHERE p.account_id = ?1 AND p.date >= ?2 AND p.date < ?3",
-        )
-        .await;
+        let plan = query_plan(&pool, TX_COUNT_SQL).await;
 
         let joined = plan.join("\n");
         assert!(
@@ -2463,11 +2465,7 @@ mod tests {
     /// selected or filtered, so the join was a wasted index probe per posting.
     #[sqlx::test(migrations = "./migrations")]
     async fn balance_for_query_does_not_join_transactions(pool: sqlx::SqlitePool) {
-        let plan = query_plan(
-            &pool,
-            "SELECT p.amount FROM postings p WHERE p.account_id = ?1 AND p.commodity = ?2",
-        )
-        .await;
+        let plan = query_plan(&pool, BALANCE_SQL).await;
 
         let joined = plan.join("\n");
         assert_eq!(
