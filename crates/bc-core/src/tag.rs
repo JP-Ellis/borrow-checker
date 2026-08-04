@@ -133,7 +133,7 @@ impl Service {
     ///
     /// # Arguments
     ///
-    /// * `path` - The hierarchical path to materialise (e.g. `person:josh`).
+    /// * `path` - The hierarchical path to materialise (e.g. `person:alpha`).
     ///
     /// # Returns
     ///
@@ -184,7 +184,7 @@ impl Service {
     ///
     /// # Arguments
     ///
-    /// * `path` - The hierarchical path to resolve (e.g. `person:josh`).
+    /// * `path` - The hierarchical path to resolve (e.g. `person:alpha`).
     ///
     /// # Returns
     ///
@@ -445,27 +445,27 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn forest_resolves_nested_path(pool: SqlitePool) {
         let person_id = TagId::new();
-        let josh_id = TagId::new();
+        let alpha_id = TagId::new();
         insert_tag(&pool, &person_id, "person", None).await;
-        insert_tag(&pool, &josh_id, "josh", Some(&person_id)).await;
+        insert_tag(&pool, &alpha_id, "alpha", Some(&person_id)).await;
         let svc = Service::new(pool);
 
         let forest = svc.forest().await.expect("forest loads");
-        let path = forest.path_of(&josh_id).expect("path resolves");
-        assert_eq!(path.to_string(), "person:josh");
+        let path = forest.path_of(&alpha_id).expect("path resolves");
+        assert_eq!(path.to_string(), "person:alpha");
     }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn find_by_path_matches_existing(pool: SqlitePool) {
         let person_id = TagId::new();
-        let josh_id = TagId::new();
+        let alpha_id = TagId::new();
         insert_tag(&pool, &person_id, "person", None).await;
-        insert_tag(&pool, &josh_id, "josh", Some(&person_id)).await;
+        insert_tag(&pool, &alpha_id, "alpha", Some(&person_id)).await;
         let svc = Service::new(pool);
 
-        let path: TagPath = "person:josh".parse().expect("valid path");
+        let path: TagPath = "person:alpha".parse().expect("valid path");
         let id = svc.find_by_path(&path).await.expect("query ok");
-        assert_eq!(id, Some(josh_id));
+        assert_eq!(id, Some(alpha_id));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -474,47 +474,47 @@ mod tests {
         insert_tag(&pool, &person_id, "person", None).await;
         let svc = Service::new(pool);
 
-        let path: TagPath = "person:bec".parse().expect("valid path");
+        let path: TagPath = "person:beta".parse().expect("valid path");
         assert_eq!(svc.find_by_path(&path).await.expect("query ok"), None);
     }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn create_path_creates_full_hierarchy(pool: SqlitePool) {
         let svc = Service::new(pool);
-        let path: TagPath = "person:josh".parse().expect("valid path");
+        let path: TagPath = "person:alpha".parse().expect("valid path");
 
         let leaf = svc.create_path(&path).await.expect("create ok");
 
         let forest = svc.forest().await.expect("forest loads");
         assert_eq!(
             forest.path_of(&leaf).map(|p| p.to_string()),
-            Some("person:josh".to_owned())
+            Some("person:alpha".to_owned())
         );
     }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn create_path_reuses_existing_ancestors(pool: SqlitePool) {
         let svc = Service::new(pool);
-        let josh = svc
-            .create_path(&"person:josh".parse().expect("path"))
+        let alpha = svc
+            .create_path(&"person:alpha".parse().expect("path"))
             .await
             .expect("ok");
-        let bec = svc
-            .create_path(&"person:bec".parse().expect("path"))
+        let beta = svc
+            .create_path(&"person:beta".parse().expect("path"))
             .await
             .expect("ok");
 
-        let josh_tag = svc.find_by_id(&josh).await.expect("ok").expect("exists");
-        let bec_tag = svc.find_by_id(&bec).await.expect("ok").expect("exists");
+        let alpha_tag = svc.find_by_id(&alpha).await.expect("ok").expect("exists");
+        let beta_tag = svc.find_by_id(&beta).await.expect("ok").expect("exists");
         assert_eq!(
-            josh_tag.parent_id(),
-            bec_tag.parent_id(),
+            alpha_tag.parent_id(),
+            beta_tag.parent_id(),
             "shared 'person' parent"
         );
         assert_eq!(
             svc.list().await.expect("ok").len(),
             3,
-            "person + josh + bec"
+            "person + alpha + beta"
         );
     }
 
@@ -532,11 +532,11 @@ mod tests {
     async fn resolve_existing_returns_id(pool: SqlitePool) {
         let svc = Service::new(pool);
         let made = svc
-            .create_path(&"person:josh".parse().expect("path"))
+            .create_path(&"person:alpha".parse().expect("path"))
             .await
             .expect("ok");
         let got = svc
-            .resolve_existing(&"person:josh".parse().expect("path"))
+            .resolve_existing(&"person:alpha".parse().expect("path"))
             .await
             .expect("ok");
         assert_eq!(got, made);
@@ -555,7 +555,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn rename_updates_descendant_paths(pool: SqlitePool) {
         let svc = Service::new(pool);
-        svc.create_path(&"person:josh".parse().expect("path"))
+        svc.create_path(&"person:alpha".parse().expect("path"))
             .await
             .expect("ok");
         let person = svc
@@ -563,8 +563,8 @@ mod tests {
             .await
             .expect("ok")
             .expect("exists");
-        let josh = svc
-            .find_by_path(&"person:josh".parse().expect("path"))
+        let alpha = svc
+            .find_by_path(&"person:alpha".parse().expect("path"))
             .await
             .expect("ok")
             .expect("exists");
@@ -573,24 +573,24 @@ mod tests {
 
         let forest = svc.forest().await.expect("ok");
         assert_eq!(
-            forest.path_of(&josh).map(|p| p.to_string()),
-            Some("people:josh".to_owned())
+            forest.path_of(&alpha).map(|p| p.to_string()),
+            Some("people:alpha".to_owned())
         );
     }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn rename_rejects_sibling_collision(pool: SqlitePool) {
         let svc = Service::new(pool);
-        let josh = svc
-            .create_path(&"person:josh".parse().expect("path"))
+        let alpha = svc
+            .create_path(&"person:alpha".parse().expect("path"))
             .await
             .expect("ok");
-        svc.create_path(&"person:bec".parse().expect("path"))
+        svc.create_path(&"person:beta".parse().expect("path"))
             .await
             .expect("ok");
 
         let err = svc
-            .rename(&josh, "bec")
+            .rename(&alpha, "beta")
             .await
             .expect_err("collision must error");
         assert!(matches!(err, BcError::InvalidInput(_)));
@@ -613,8 +613,8 @@ mod tests {
             .create_path(&"person".parse().expect("path"))
             .await
             .expect("ok");
-        let josh = svc
-            .create_path(&"person:josh".parse().expect("path"))
+        let alpha = svc
+            .create_path(&"person:alpha".parse().expect("path"))
             .await
             .expect("ok");
 
@@ -632,7 +632,7 @@ mod tests {
         .expect("account insert ok");
         sqlx::query("INSERT INTO account_tags (account_id, tag_id) VALUES (?, ?)")
             .bind(account_id.to_string())
-            .bind(josh.to_string())
+            .bind(alpha.to_string())
             .execute(&pool)
             .await
             .expect("membership insert ok");
