@@ -228,25 +228,23 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if the tag does not exist; [`BcError::InvalidInput`]
-    /// if a sibling already has `new_name`; [`BcError::Database`] on update failure.
+    /// if a sibling already has `new_name`, matching case-insensitively (see `eq_name`)
+    /// — renaming never merges into that sibling; [`BcError::Database`] on update
+    /// failure.
     #[inline]
     pub async fn rename(&self, id: &TagId, new_name: &str) -> BcResult<()> {
         let current = self
             .find_by_id(id)
             .await?
             .ok_or_else(|| BcError::NotFound(format!("tag '{id}'")))?;
-        let parent_str = current.parent_id().map(ToString::to_string);
-
-        let clash: Option<(String,)> =
-            sqlx::query_as("SELECT id FROM tags WHERE name = ? AND parent_id IS ? AND id <> ?")
-                .bind(new_name)
-                .bind(parent_str.as_deref())
-                .bind(id.to_string())
-                .fetch_optional(&self.pool)
-                .await?;
-        if clash.is_some() {
+        let known = self.list().await?;
+        let clash = known.iter().any(|t| {
+            t.id() != id && t.parent_id() == current.parent_id() && eq_name(t.name(), new_name)
+        });
+        if clash {
             return Err(BcError::InvalidInput(format!(
-                "a sibling tag named '{new_name}' already exists"
+                "a sibling tag named '{new_name}' already exists; tag names are \
+                 case-insensitive, so it may differ only in case"
             )));
         }
 
@@ -693,6 +691,44 @@ mod tests {
             .await
             .expect_err("collision must error");
         assert!(matches!(err, BcError::InvalidInput(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_rejects_a_case_variant_sibling(pool: SqlitePool) {
+        let parent_id = TagId::new();
+        let alpha_id = TagId::new();
+        let beta_id = TagId::new();
+        insert_tag(&pool, &parent_id, "person", None).await;
+        insert_tag(&pool, &alpha_id, "alpha", Some(&parent_id)).await;
+        insert_tag(&pool, &beta_id, "beta", Some(&parent_id)).await;
+        let svc = Service::new(pool);
+
+        let err = svc
+            .rename(&beta_id, "ALPHA")
+            .await
+            .expect_err("renaming onto a case-variant sibling should fail");
+
+        assert!(matches!(err, BcError::InvalidInput(_)), "got {err:?}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_allows_own_case_variant(pool: SqlitePool) {
+        let parent_id = TagId::new();
+        let alpha_id = TagId::new();
+        insert_tag(&pool, &parent_id, "person", None).await;
+        insert_tag(&pool, &alpha_id, "alpha", Some(&parent_id)).await;
+        let svc = Service::new(pool);
+
+        svc.rename(&alpha_id, "Alpha")
+            .await
+            .expect("renaming a tag to a case-variant of its own name should succeed");
+
+        let renamed = svc
+            .find_by_id(&alpha_id)
+            .await
+            .expect("query ok")
+            .expect("tag still exists");
+        assert_eq!(renamed.name(), "Alpha");
     }
 
     #[sqlx::test(migrations = "./migrations")]
