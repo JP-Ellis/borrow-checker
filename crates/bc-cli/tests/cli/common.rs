@@ -78,6 +78,10 @@ impl TestContext {
                 "[ALLOCATION_ID]".to_owned(),
             ),
             (
+                Regex::new("commodity_[0-9a-z]{26}").expect("valid regex"),
+                "[COMMODITY_ID]".to_owned(),
+            ),
+            (
                 // Windows separates path components with `\`, so a temp-dir path
                 // echoed in an error message does not match the `/` form recorded
                 // on Unix. Normalise the separator directly after the temp dir so

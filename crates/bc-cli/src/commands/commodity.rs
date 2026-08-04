@@ -161,6 +161,11 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 /// [`crate::error::CliError::Json`] from JSON serialisation.
 async fn list(ctx: &AppContext) -> CliResult<()> {
     let all = ctx.commodities.list_all().await?;
+
+    if ctx.json {
+        return crate::output::print_json(&all);
+    }
+
     let rows: Vec<Vec<String>> = all
         .iter()
         .map(|c| {
@@ -175,9 +180,6 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
         })
         .collect();
 
-    if ctx.json {
-        return crate::output::print_json(&rows);
-    }
     if rows.is_empty() {
         #[expect(clippy::print_stdout, reason = "CLI output")]
         {
