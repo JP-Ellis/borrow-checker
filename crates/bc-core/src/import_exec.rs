@@ -464,8 +464,10 @@ async fn ensure_tags(
     raws: &[RawTransaction],
 ) -> BcResult<(HashMap<String, TagId>, Vec<String>)> {
     let mut parsed: Vec<TagPath> = Vec::new();
+    // Also the warn-once guard: a spelling reaches the `Err` arm only the first
+    // time `insert` returns `true` for it, since every later occurrence hits the
+    // `continue` above.
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut rejected: BTreeSet<String> = BTreeSet::new();
 
     for raw in raws {
         let leg_tags = raw.postings.iter().flat_map(|posting| posting.tags.iter());
@@ -476,15 +478,12 @@ async fn ensure_tags(
             match stated.parse::<TagPath>() {
                 Ok(path) => parsed.push(path),
                 Err(error) => {
-                    // Warn once per distinct spelling, as unresolved accounts do.
-                    if rejected.insert(stated.clone()) {
-                        tracing::warn!(
-                            location = location_of(raw),
-                            tag = stated.as_str(),
-                            %error,
-                            "malformed tag path; dropping the tag and keeping the leg"
-                        );
-                    }
+                    tracing::warn!(
+                        location = location_of(raw),
+                        tag = stated.as_str(),
+                        %error,
+                        "malformed tag path; dropping the tag and keeping the leg"
+                    );
                 }
             }
         }
@@ -1265,6 +1264,16 @@ impl Writer<'_> {
     /// Appends the legs an earlier run could not persist to the transaction it
     /// created.
     ///
+    /// Only the inserted postings' own tags are applied — `raw.tags`, the
+    /// document's transaction-level tags, are not, because `owner` already
+    /// exists and a re-import must not revise a transaction's own fields (the
+    /// same invariant that keeps its note from being overwritten, see
+    /// `attaching_a_leg_does_not_revise_transaction_metadata`). The one wrinkle:
+    /// the pre-pass still creates and reports those paths in
+    /// [`ImportOutcome::created_tags`] even when this path ends up linking
+    /// nothing to them, since creation happens before any row decides whether
+    /// it is creating or attaching.
+    ///
     /// # Arguments
     ///
     /// * `raw` - The document transaction.
@@ -1861,6 +1870,60 @@ mod tests {
             note_of_transaction(&pool).await,
             Some("original note".to_owned())
         );
+    }
+
+    /// `Writer::attach` is the one code path that builds a posting outside
+    /// `Writer::create` — a leg an earlier run could not persist, joining the
+    /// transaction that earlier run did create. It has its own `leg.posting(...)`
+    /// call site, so it needs its own coverage that tags survive it.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_attached_leg_carries_its_tags(pool: SqlitePool) {
+        // First run: only Assets:Bank exists, so the Expenses:Food leg is skipped
+        // and the transaction is created with just the Bank posting.
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let first = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .postings(vec![
+                leg("Assets:Bank", Some(-50_i64)),
+                leg("Expenses:Food", Some(50_i64)),
+            ])
+            .build();
+        run(&svcs, &[first]).await;
+
+        // Second run: Food now exists, so its leg attaches to the transaction the
+        // first run created. This leg carries a tag the first run never saw.
+        let food = add_food(&pool).await;
+        let second = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .postings(vec![
+                leg("Assets:Bank", Some(-50_i64)),
+                RawPosting::builder()
+                    .account("Expenses:Food")
+                    .maybe_amount(Some(Amount::new(
+                        Decimal::from(50_i64),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .tags(vec!["reimbursable".to_owned()])
+                    .build(),
+            ])
+            .build();
+        let outcome = run(&svcs, &[second]).await;
+
+        assert_eq!(outcome.attached_postings, 1);
+        let posting_tags: Vec<String> = sqlx::query_scalar(
+            "SELECT t.name FROM posting_tags pt \
+             JOIN tags t ON t.id = pt.tag_id \
+             JOIN postings p ON p.id = pt.posting_id \
+             WHERE p.account_id = ? ORDER BY t.name",
+        )
+        .bind(food.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("posting tag names");
+        assert_eq!(posting_tags, vec!["reimbursable".to_owned()]);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -3819,6 +3882,8 @@ mod tests {
         .expect("transaction tag names")
     }
 
+    /// A tag the document names does not exist yet, so the run creates it and
+    /// attaches it to the transaction it names it on.
     #[sqlx::test(migrations = "./migrations")]
     async fn transaction_tags_are_created_and_attached(pool: SqlitePool) {
         two_account_tree(&pool).await;
@@ -3839,10 +3904,13 @@ mod tests {
         );
     }
 
+    /// No accounts exist, so every leg is skipped — but the pre-pass runs first
+    /// and its tags must persist, since it sits outside the rows' transactions.
+    /// This is the accepted trade of running tag creation before any row is
+    /// written: it is cheap to delete a tag a fully-skipped run leaves behind,
+    /// far cheaper than reconstructing one an in-transaction rollback erased.
     #[sqlx::test(migrations = "./migrations")]
     async fn tags_survive_a_run_whose_rows_all_skip(pool: SqlitePool) {
-        // No accounts exist, so every leg is skipped — but the pre-pass runs first
-        // and its tags must persist, since it sits outside the rows' transactions.
         let svcs = services(&pool).await;
         let raw = RawTransaction::builder()
             .date(date(2025, 6, 27))
@@ -3862,6 +3930,10 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    /// A tag path that will not parse warns once and is dropped; the leg it was
+    /// stated on still persists. Unlike an unresolved account or commodity, a
+    /// bad tag never costs the leg — tags are decoration, the amount is the
+    /// value.
     #[sqlx::test(migrations = "./migrations")]
     async fn a_malformed_tag_costs_the_tag_not_the_leg(pool: SqlitePool) {
         two_account_tree(&pool).await;
@@ -3881,10 +3953,10 @@ mod tests {
         assert!(tag_names_of_transaction(&pool).await.is_empty());
     }
 
+    /// `Transaction::effective_tags` already unions the two levels, so they are
+    /// persisted separately rather than posting tags being flattened upward.
     #[sqlx::test(migrations = "./migrations")]
     async fn posting_tags_stay_at_the_posting_level(pool: SqlitePool) {
-        // Transaction::effective_tags already unions the two levels, so they are
-        // persisted separately rather than posting tags being flattened upward.
         let (bank, _food) = two_account_tree(&pool).await;
         let svcs = services(&pool).await;
         let raw = RawTransaction::builder()
@@ -3928,6 +4000,9 @@ mod tests {
         assert_eq!(posting_tags, vec!["reimbursable".to_owned()]);
     }
 
+    /// A re-import of the same document names the same tag again, but
+    /// `create_paths` reuses the existing tag rather than minting a duplicate,
+    /// so the second run's `created_tags` is empty.
     #[sqlx::test(migrations = "./migrations")]
     async fn a_re_run_creates_no_further_tags(pool: SqlitePool) {
         two_account_tree(&pool).await;
