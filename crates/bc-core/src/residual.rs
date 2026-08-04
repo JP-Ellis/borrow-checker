@@ -192,9 +192,9 @@ impl Residuals {
     /// The bound restricts which *transactions* are resolved. Every leg of a resolved
     /// transaction is still loaded, because [`residual_of`] needs the full leg set to
     /// detect the ambiguous two-or-more-elided case. This is exact rather than
-    /// approximate: dates live only on `transactions`, so every leg of a transaction
-    /// shares one date and no sibling can fall outside the window of the elided leg
-    /// it funds.
+    /// approximate: every leg mirrors its transaction's date, maintained by the
+    /// `postings_date_*` triggers, so no sibling can fall outside the window of the
+    /// elided leg it funds.
     ///
     /// # Arguments
     ///
@@ -460,6 +460,29 @@ mod tests {
         assert!(
             joined.contains("SEARCH e USING INDEX idx_postings_account"),
             "account-scoped residual load does not use idx_postings_account:\n{joined}"
+        );
+    }
+
+    /// E1b: the ranged residual load must not scan `postings` either.
+    ///
+    /// Bounding this scan is the entire point of the date-scoping change; the plan is
+    /// the only thing that pins the ranged predicate as sargable.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn account_scoped_residual_load_uses_an_index_ranged(pool: sqlx::SqlitePool) {
+        let plan = query_plan(
+            &pool,
+            &residual_sql("AND e.account_id = ?1 AND e.date >= ?2 AND e.date < ?3"),
+        )
+        .await;
+
+        let joined = plan.join("\n");
+        assert!(
+            !joined.contains("SCAN e"),
+            "ranged residual load full-scans postings:\n{joined}"
+        );
+        assert!(
+            joined.contains("SEARCH e USING INDEX idx_postings_account_date"),
+            "ranged residual load does not use idx_postings_account_date:\n{joined}"
         );
     }
 
