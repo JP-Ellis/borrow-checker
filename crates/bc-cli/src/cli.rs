@@ -6,6 +6,7 @@ use crate::commands::account;
 use crate::commands::asset;
 use crate::commands::backup;
 use crate::commands::budget;
+use crate::commands::commodity;
 use crate::commands::completions;
 use crate::commands::export;
 use crate::commands::import;
@@ -86,6 +87,8 @@ pub enum Commands {
     Budget(budget::Args),
     /// Manage tags: create, rename, delete, list.
     Tag(tag::Args),
+    /// Manage commodities: list, create, update, delete.
+    Commodity(commodity::Args),
     /// Manage plugins (requires Milestone 6).
     Plugin(plugin::Args),
     /// Manage import profiles (create, list, show, edit, remove).

@@ -87,13 +87,16 @@ impl AppContext {
                 .map_err(|e| bc_core::BcError::InvalidInput(e.to_string()))?;
         let importers = plugin_registry.build_importer_registry();
 
+        let commodities = bc_core::CommodityService::new(pool.clone());
+        commodities.seed_defaults().await?;
+
         Ok(Self {
             json,
             fortnightly_anchor: settings.fortnightly_anchor(),
             plugin_registry,
             importers,
             accounts: bc_core::AccountService::new(pool.clone()),
-            commodities: bc_core::CommodityService::new(pool.clone()),
+            commodities,
             transactions: bc_core::TransactionService::new(pool.clone()),
             balances: bc_core::BalanceEngine::new(pool.clone()),
             profiles: bc_core::ImportProfileService::new(pool.clone()),
