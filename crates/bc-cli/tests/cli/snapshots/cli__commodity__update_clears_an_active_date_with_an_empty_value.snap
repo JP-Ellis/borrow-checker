@@ -1,6 +1,6 @@
 ---
 source: crates/bc-cli/tests/cli/commodity.rs
-assertion_line: 215
+assertion_line: 257
 expression: output
 ---
 success: true
@@ -46,8 +46,8 @@ exit_code: 0
     "symbol": "ETH",
     "aliases": [],
     "decimals": 9,
-    "is_iso": true,
-    "symbol_after": false,
+    "is_iso": false,
+    "symbol_after": true,
     "active_from": null,
     "active_until": null
   },
@@ -135,6 +135,20 @@ exit_code: 0
     "is_iso": true,
     "symbol_after": false,
     "active_from": null,
+    "active_until": null
+  },
+  {
+    "id": "[COMMODITY_ID]",
+    "code": "XPF",
+    "exchange": null,
+    "name": null,
+    "description": null,
+    "symbol": null,
+    "aliases": [],
+    "decimals": 2,
+    "is_iso": true,
+    "symbol_after": false,
+    "active_from": "2020-01-01",
     "active_until": null
   }
 ]

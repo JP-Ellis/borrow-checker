@@ -8,6 +8,21 @@
 use crate::cmd_snapshot;
 use crate::common::TestContext;
 
+/// Runs a command whose output is setup for the assertion that follows.
+///
+/// `Command::output` only fails when the process cannot be spawned, so a
+/// non-zero exit would otherwise pass silently and leave the test asserting
+/// against a registry the setup never modified.
+#[expect(clippy::expect_used, reason = "test helper panics on setup failure")]
+fn setup(ctx: &TestContext, args: &[&str]) {
+    let output = ctx.command().args(args).output().expect("spawn");
+    assert!(
+        output.status.success(),
+        "setup command {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn list_shows_the_seeded_commodities() {
     let ctx = TestContext::new();
@@ -27,8 +42,9 @@ fn list_json() {
 #[test]
 fn create_registers_a_new_commodity() {
     let ctx = TestContext::new();
-    ctx.command()
-        .args([
+    setup(
+        &ctx,
+        &[
             "commodity",
             "create",
             "SOL",
@@ -37,9 +53,8 @@ fn create_registers_a_new_commodity() {
             "--decimals",
             "9",
             "--no-iso",
-        ])
-        .output()
-        .expect("create SOL");
+        ],
+    );
 
     let mut cmd = ctx.command();
     cmd.args(["commodity", "list"]);
@@ -49,10 +64,7 @@ fn create_registers_a_new_commodity() {
 #[test]
 fn create_defaults_to_two_decimals_and_iso() {
     let ctx = TestContext::new();
-    ctx.command()
-        .args(["commodity", "create", "TND"])
-        .output()
-        .expect("create TND");
+    setup(&ctx, &["commodity", "create", "TND"]);
 
     let mut cmd = ctx.command();
     cmd.args(["commodity", "list"]);
@@ -62,14 +74,11 @@ fn create_defaults_to_two_decimals_and_iso() {
 #[test]
 fn delete_removes_an_unreferenced_commodity() {
     let ctx = TestContext::new();
-    ctx.command()
-        .args(["commodity", "create", "DOGE", "--decimals", "8", "--no-iso"])
-        .output()
-        .expect("create DOGE");
-    ctx.command()
-        .args(["commodity", "delete", "DOGE"])
-        .output()
-        .expect("delete DOGE");
+    setup(
+        &ctx,
+        &["commodity", "create", "DOGE", "--decimals", "8", "--no-iso"],
+    );
+    setup(&ctx, &["commodity", "delete", "DOGE"]);
 
     let mut cmd = ctx.command();
     cmd.args(["commodity", "list"]);
@@ -79,10 +88,10 @@ fn delete_removes_an_unreferenced_commodity() {
 #[test]
 fn delete_matches_a_code_case_insensitively() {
     let ctx = TestContext::new();
-    ctx.command()
-        .args(["commodity", "create", "DOGE", "--decimals", "8", "--no-iso"])
-        .output()
-        .expect("create DOGE");
+    setup(
+        &ctx,
+        &["commodity", "create", "DOGE", "--decimals", "8", "--no-iso"],
+    );
 
     let mut cmd = ctx.command();
     cmd.args(["commodity", "delete", "doge"]);
@@ -116,8 +125,9 @@ fn create_rejects_a_conflicting_marker() {
 #[test]
 fn create_accepts_repeated_aliases() {
     let ctx = TestContext::new();
-    ctx.command()
-        .args([
+    setup(
+        &ctx,
+        &[
             "commodity",
             "create",
             "XMR",
@@ -131,9 +141,8 @@ fn create_accepts_repeated_aliases() {
             "Monero",
             "--alias",
             "monero-xmr",
-        ])
-        .output()
-        .expect("create XMR");
+        ],
+    );
 
     let mut cmd = ctx.command();
     cmd.args(["commodity", "list"]);
@@ -143,8 +152,9 @@ fn create_accepts_repeated_aliases() {
 #[test]
 fn update_changes_only_the_flags_given() {
     let ctx = TestContext::new();
-    ctx.command()
-        .args([
+    setup(
+        &ctx,
+        &[
             "commodity",
             "create",
             "SOL",
@@ -153,13 +163,9 @@ fn update_changes_only_the_flags_given() {
             "--decimals",
             "9",
             "--no-iso",
-        ])
-        .output()
-        .expect("create SOL");
-    ctx.command()
-        .args(["commodity", "update", "SOL", "--symbol", "◎"])
-        .output()
-        .expect("update SOL");
+        ],
+    );
+    setup(&ctx, &["commodity", "update", "SOL", "--symbol", "◎"]);
 
     let mut cmd = ctx.command();
     cmd.args(["commodity", "list"]);
@@ -169,8 +175,9 @@ fn update_changes_only_the_flags_given() {
 #[test]
 fn update_adds_and_removes_aliases() {
     let ctx = TestContext::new();
-    ctx.command()
-        .args([
+    setup(
+        &ctx,
+        &[
             "commodity",
             "update",
             "USD",
@@ -178,9 +185,8 @@ fn update_adds_and_removes_aliases() {
             "dollar",
             "--remove-alias",
             "US$",
-        ])
-        .output()
-        .expect("update USD");
+        ],
+    );
 
     let mut cmd = ctx.command();
     cmd.args(["commodity", "list"]);
@@ -198,10 +204,22 @@ fn update_rejects_removing_an_absent_alias() {
 #[test]
 fn update_can_turn_a_boolean_back_off() {
     let ctx = TestContext::new();
-    ctx.command()
-        .args(["commodity", "update", "ETH", "--iso", "--no-symbol-after"])
-        .output()
-        .expect("update ETH");
+    setup(
+        &ctx,
+        &["commodity", "update", "ETH", "--iso", "--no-symbol-after"],
+    );
+
+    // The table form has no `symbol_after` column, so only the JSON form can
+    // show that `--no-symbol-after` took effect. ETH seeds with it set.
+    let mut cmd = ctx.command();
+    cmd.args(["--json", "commodity", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn update_can_turn_iso_back_off() {
+    let ctx = TestContext::new();
+    setup(&ctx, &["commodity", "update", "AUD", "--no-iso"]);
 
     let mut cmd = ctx.command();
     cmd.args(["commodity", "list"]);
@@ -211,12 +229,68 @@ fn update_can_turn_a_boolean_back_off() {
 #[test]
 fn update_clears_a_field_with_an_empty_value() {
     let ctx = TestContext::new();
-    ctx.command()
-        .args(["commodity", "update", "AUD", "--symbol", ""])
-        .output()
-        .expect("update AUD");
+    setup(&ctx, &["commodity", "update", "AUD", "--symbol", ""]);
 
     let mut cmd = ctx.command();
     cmd.args(["commodity", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn update_clears_an_active_date_with_an_empty_value() {
+    let ctx = TestContext::new();
+    setup(
+        &ctx,
+        &[
+            "commodity",
+            "create",
+            "XPF",
+            "--active-from",
+            "2020-01-01",
+            "--active-until",
+            "2030-12-31",
+        ],
+    );
+    setup(&ctx, &["commodity", "update", "XPF", "--active-until", ""]);
+
+    let mut cmd = ctx.command();
+    cmd.args(["--json", "commodity", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn update_json_reports_the_edited_commodity() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["--json", "commodity", "update", "AUD", "--symbol", "$A"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn delete_json_reports_the_removed_commodity() {
+    let ctx = TestContext::new();
+    setup(
+        &ctx,
+        &["commodity", "create", "DOGE", "--decimals", "8", "--no-iso"],
+    );
+
+    let mut cmd = ctx.command();
+    cmd.args(["--json", "commodity", "delete", "DOGE"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn update_rejects_the_same_alias_twice() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args([
+        "commodity",
+        "update",
+        "USD",
+        "--add-alias",
+        "buck",
+        "--add-alias",
+        "buck",
+    ]);
     cmd_snapshot!(ctx, &mut cmd);
 }

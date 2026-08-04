@@ -1,0 +1,13 @@
+---
+source: crates/bc-cli/tests/cli/commodity.rs
+assertion_line: 265
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "code": "AUD",
+  "id": "[COMMODITY_ID]"
+}
+----- stderr -----
