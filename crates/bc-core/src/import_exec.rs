@@ -4072,4 +4072,44 @@ mod tests {
         assert!(outcome.created_tags.is_empty());
         assert_eq!(outcome.new_transactions, 0);
     }
+
+    /// A later import naming a case variant of an already-imported tag resolves
+    /// to the existing tag rather than forking a sibling — `eq_name` exercised
+    /// through the whole import stack, not just at the `TagService` level (see
+    /// `create_paths_maps_case_variants_to_one_tag` in `tag.rs`) or for an
+    /// identical spelling (see `a_re_run_creates_no_further_tags` above).
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_later_import_folds_a_case_variant_tag(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let first = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .tags(vec!["household".to_owned()])
+            .postings(vec![leg("Assets:Bank", Some(50_i64))])
+            .build();
+        run(&svcs, &[first]).await;
+
+        let second = RawTransaction::builder()
+            .date(date(2025, 6, 28))
+            .description("more groceries")
+            .tags(vec!["Household".to_owned()])
+            .postings(vec![leg("Assets:Bank", Some(30_i64))])
+            .build();
+        let outcome = run(&svcs, &[second]).await;
+
+        assert!(
+            outcome.created_tags.is_empty(),
+            "a case variant of an existing tag must not be reported as created"
+        );
+        assert_eq!(outcome.new_transactions, 1);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags")
+            .fetch_one(&pool)
+            .await
+            .expect("count tags");
+        assert_eq!(
+            count, 1,
+            "the case variant must fold onto the one existing tag row"
+        );
+    }
 }
