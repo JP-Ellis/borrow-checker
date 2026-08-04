@@ -163,6 +163,11 @@ CREATE TABLE postings (
     commodity            TEXT,             -- CommodityCode (e.g. "AUD"); NULL iff amount is NULL; not FK
     note                 TEXT,
     position             INTEGER NOT NULL DEFAULT 0,
+    -- Mirror of the owning transaction's date, maintained by the triggers below.
+    -- Denormalised so date predicates can drive the index scan: with the date on
+    -- `transactions`, SQLite applies it post-join and a six-month window costs the
+    -- same as a ten-year one.
+    date                 TEXT,
     -- cost basis fields (all NULL if no commodity conversion)
     cost_total_value     TEXT,             -- decimal string
     cost_total_commodity TEXT,             -- CommodityCode of the cost commodity; not FK
@@ -176,6 +181,34 @@ CREATE TABLE postings (
 CREATE INDEX idx_postings_transaction       ON postings (transaction_id);
 CREATE INDEX idx_postings_account           ON postings (account_id);
 CREATE INDEX idx_postings_account_commodity ON postings (account_id, commodity);
+CREATE INDEX idx_postings_account_commodity_date ON postings (account_id, commodity, date);
+CREATE INDEX idx_postings_account_date           ON postings (account_id, date);
+
+-- These are the first triggers in this schema. `postings_date_on_insert` updates
+-- `postings` from within a `postings` trigger; that is safe because SQLite's
+-- `recursive_triggers` pragma is off by default, and in any case the inner statement
+-- sets only `date`, which cannot fire an `AFTER UPDATE OF transaction_id` trigger.
+CREATE TRIGGER postings_date_on_insert
+AFTER INSERT ON postings
+BEGIN
+    UPDATE postings
+       SET date = (SELECT t.date FROM transactions t WHERE t.id = NEW.transaction_id)
+     WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER postings_date_on_reparent
+AFTER UPDATE OF transaction_id ON postings
+BEGIN
+    UPDATE postings
+       SET date = (SELECT t.date FROM transactions t WHERE t.id = NEW.transaction_id)
+     WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER postings_date_on_transaction_date
+AFTER UPDATE OF date ON transactions
+BEGIN
+    UPDATE postings SET date = NEW.date WHERE transaction_id = NEW.id;
+END;
 
 -- Transaction <-> tag membership.
 CREATE TABLE transaction_tags (

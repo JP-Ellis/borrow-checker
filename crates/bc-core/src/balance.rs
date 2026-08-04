@@ -2113,4 +2113,183 @@ mod tests {
             dec!(50.00)
         );
     }
+
+    /// Inserts a transaction with the given id and date.
+    async fn insert_tx(pool: &sqlx::SqlitePool, id: &str, date: &str) {
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+             VALUES (?, ?, 'Test', 'unreconciled', '2026-01-01T00:00:00Z')",
+        )
+        .bind(id)
+        .bind(date)
+        .execute(pool)
+        .await
+        .expect("insert transaction");
+    }
+
+    /// Inserts a posting; `amount`/`commodity` are `None` for an elided leg.
+    async fn insert_posting(
+        pool: &sqlx::SqlitePool,
+        id: &str,
+        tx_id: &str,
+        account_id: &str,
+        amount: Option<&str>,
+        commodity: Option<&str>,
+        position: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(tx_id)
+        .bind(account_id)
+        .bind(amount)
+        .bind(commodity)
+        .bind(position)
+        .execute(pool)
+        .await
+        .expect("insert posting");
+    }
+
+    /// Creates an account and returns its id.
+    async fn make_account(
+        pool: &sqlx::SqlitePool,
+        name: &str,
+        account_type: AccountType,
+    ) -> bc_models::AccountId {
+        crate::account::Service::new(pool.clone())
+            .create()
+            .name(name)
+            .account_type(account_type)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account")
+    }
+
+    /// D1: inserting a posting copies its transaction's date.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_date_is_populated_on_insert(pool: sqlx::SqlitePool) {
+        let wallet = make_account(&pool, "Wallet", AccountType::Asset).await;
+        insert_tx(&pool, "tx_d1", "2026-01-15").await;
+        insert_posting(
+            &pool,
+            "p_d1",
+            "tx_d1",
+            &wallet.to_string(),
+            Some("10.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+
+        let (date,): (Option<String>,) =
+            sqlx::query_as("SELECT date FROM postings WHERE id = 'p_d1'")
+                .fetch_one(&pool)
+                .await
+                .expect("select date");
+
+        assert_eq!(date, Some("2026-01-15".to_owned()));
+    }
+
+    /// D2: amending a transaction's date moves every one of its postings.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amending_a_transaction_date_moves_its_postings(pool: sqlx::SqlitePool) {
+        let wallet = make_account(&pool, "Wallet", AccountType::Asset).await;
+        insert_tx(&pool, "tx_d2", "2026-01-15").await;
+        insert_posting(
+            &pool,
+            "p_d2",
+            "tx_d2",
+            &wallet.to_string(),
+            Some("10.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+
+        sqlx::query("UPDATE transactions SET date = '2026-03-01' WHERE id = 'tx_d2'")
+            .execute(&pool)
+            .await
+            .expect("amend date");
+
+        let (date,): (Option<String>,) =
+            sqlx::query_as("SELECT date FROM postings WHERE id = 'p_d2'")
+                .fetch_one(&pool)
+                .await
+                .expect("select date");
+
+        assert_eq!(date, Some("2026-03-01".to_owned()));
+    }
+
+    /// D3: re-pointing a posting at another transaction resyncs its date.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reparenting_a_posting_resyncs_its_date(pool: sqlx::SqlitePool) {
+        let wallet = make_account(&pool, "Wallet", AccountType::Asset).await;
+        insert_tx(&pool, "tx_a", "2026-01-15").await;
+        insert_tx(&pool, "tx_b", "2026-06-30").await;
+        insert_posting(
+            &pool,
+            "p_d3",
+            "tx_a",
+            &wallet.to_string(),
+            Some("10.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+
+        sqlx::query("UPDATE postings SET transaction_id = 'tx_b' WHERE id = 'p_d3'")
+            .execute(&pool)
+            .await
+            .expect("reparent");
+
+        let (date,): (Option<String>,) =
+            sqlx::query_as("SELECT date FROM postings WHERE id = 'p_d3'")
+                .fetch_one(&pool)
+                .await
+                .expect("select date");
+
+        assert_eq!(date, Some("2026-06-30".to_owned()));
+    }
+
+    /// D4: no posting's denormalised date may diverge from its transaction's.
+    ///
+    /// `postings.date` cannot be `NOT NULL`, because an `AFTER INSERT` trigger populates
+    /// it after the row already exists. This assertion is the guard in its place: a write
+    /// path the triggers miss leaves a NULL date, which would silently vanish from every
+    /// windowed query rather than failing.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn every_posting_date_matches_its_transaction(pool: sqlx::SqlitePool) {
+        let wallet = make_account(&pool, "Wallet", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        insert_tx(&pool, "tx_i1", "2026-01-15").await;
+        insert_posting(
+            &pool,
+            "p_i1",
+            "tx_i1",
+            &wallet.to_string(),
+            Some("-10.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(&pool, "p_i2", "tx_i1", &food.to_string(), None, None, 1).await;
+        sqlx::query("UPDATE transactions SET date = '2026-02-20' WHERE id = 'tx_i1'")
+            .execute(&pool)
+            .await
+            .expect("amend date");
+
+        let (divergent,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM postings p
+             JOIN transactions t ON t.id = p.transaction_id
+             WHERE p.date IS NOT t.date",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("integrity check");
+
+        assert_eq!(divergent, 0);
+    }
 }
