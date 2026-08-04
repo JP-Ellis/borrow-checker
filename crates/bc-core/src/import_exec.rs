@@ -143,6 +143,8 @@ struct ResolvedLeg {
     amount: Option<Amount>,
     /// The leg's dedup fingerprint, over the document's own values.
     fingerprint: String,
+    /// The leg's free-text note, as the document stated it.
+    note: Option<String>,
 }
 
 /// A resolved leg together with the occurrence slot it claims for this run.
@@ -154,6 +156,8 @@ struct LegPlan {
     amount: Option<Amount>,
     /// The leg's dedup fingerprint, over the document's own values.
     fingerprint: String,
+    /// The leg's free-text note, as the document stated it.
+    note: Option<String>,
     /// The occurrence slot this leg claims within `(account, fingerprint)`.
     occurrence: u32,
 }
@@ -174,6 +178,7 @@ impl LegPlan {
             .id(PostingId::new())
             .account_id(self.account_id.clone())
             .maybe_amount(self.amount.clone().or_else(|| residual.cloned()))
+            .maybe_note(self.note.clone())
             .build()
     }
 }
@@ -526,6 +531,7 @@ fn resolve_leg(
         ),
         account_id,
         amount,
+        note: posting.note.clone(),
     })
 }
 
@@ -594,6 +600,7 @@ fn allocate_occurrences(rows: Vec<Vec<ResolvedLeg>>) -> Vec<Vec<LegPlan>> {
                         account_id: leg.account_id,
                         amount: leg.amount,
                         fingerprint: leg.fingerprint,
+                        note: leg.note,
                         occurrence,
                     }
                 })
@@ -1550,6 +1557,41 @@ mod tests {
             .fetch_one(pool)
             .await
             .expect("count sources")
+    }
+
+    /// Reads the `note` column of the single posting booked to `account`.
+    async fn note_of_posting(pool: &SqlitePool, account: &AccountId) -> Option<String> {
+        sqlx::query_scalar("SELECT note FROM postings WHERE account_id = ?")
+            .bind(account.to_string())
+            .fetch_one(pool)
+            .await
+            .expect("posting note")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_note_is_persisted(pool: SqlitePool) {
+        let (bank, _food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = raw_with(
+            "coffee",
+            vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .maybe_amount(Some(Amount::new(
+                        Decimal::from(50_i64),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .note("paid by card")
+                    .build(),
+            ],
+        );
+
+        run(&svcs, &[raw]).await;
+
+        assert_eq!(
+            note_of_posting(&pool, &bank).await,
+            Some("paid by card".to_owned())
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
