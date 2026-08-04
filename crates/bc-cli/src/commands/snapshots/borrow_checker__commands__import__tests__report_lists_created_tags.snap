@@ -1,0 +1,10 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: report.render()
+---
+Imported 1 transaction, attached 0 postings.
+
+Created 2 tags:
+  household
+  group:alpha
+Tags named by the source are created automatically; rename or delete any that are typos.
