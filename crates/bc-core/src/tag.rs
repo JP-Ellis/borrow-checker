@@ -66,6 +66,11 @@ pub struct Created {
     pub ids: HashMap<String, TagId>,
     /// The rendered paths whose leaf did not exist and was created, sorted and
     /// deduplicated. This is the report a caller shows the user.
+    ///
+    /// Only the *requested* paths are listed here, never their ancestors:
+    /// creating `a:b` in an empty tree brings both `a` and `a:b` into
+    /// existence, but only `a:b` — the path actually asked for — appears in
+    /// this list.
     pub created: Vec<String>,
 }
 
@@ -158,7 +163,9 @@ impl Service {
     /// # Returns
     ///
     /// A [`Created`] mapping every requested path to its leaf ID, alongside the
-    /// paths this call brought into existence.
+    /// paths this call *directly* brought into existence. Only the requested
+    /// paths themselves are listed here: materialising `a:b` may also create the
+    /// intermediate ancestor `a`, which is not separately reported.
     ///
     /// # Errors
     ///
