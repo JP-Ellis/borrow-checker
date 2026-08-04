@@ -2650,7 +2650,10 @@ mod tests {
     /// C4: every account's period net sums to zero, per commodity, for any window.
     ///
     /// Catches a residual dropped for one account but not its counterparty — a shape the
-    /// per-account tests cannot see.
+    /// per-account tests cannot see. Includes a USD leg alongside the AUD ones so the "per
+    /// commodity" claim is actually exercised: with only one commodity in the fixture, a bug
+    /// that crossed commodities (e.g. summing a USD residual into an AUD total) could not
+    /// show up here.
     #[sqlx::test(migrations = "./migrations")]
     #[expect(
         clippy::arithmetic_side_effects,
@@ -2688,17 +2691,46 @@ mod tests {
             .await;
         }
 
-        let engine = Engine::new(pool.clone());
-        let mut total = Decimal::ZERO;
-        for acct in [&bank, &food, &fun] {
-            let stats = engine
-                .account_period_stats(acct, "AUD", date(2026, 1, 1), date(2026, 6, 1))
-                .await
-                .expect("stats");
-            total += stats.net.value();
-        }
+        // A USD-denominated transaction, elided the same way, so the USD total is
+        // exercised independently of the AUD total above.
+        insert_tx(&pool, "tx_usd", "2026-04-10").await;
+        insert_posting(
+            &pool,
+            "p_c_usd",
+            "tx_usd",
+            &fun.to_string(),
+            Some("15.00"),
+            Some("USD"),
+            0,
+        )
+        .await;
+        insert_posting(
+            &pool,
+            "p_bank_usd",
+            "tx_usd",
+            &bank.to_string(),
+            None,
+            None,
+            1,
+        )
+        .await;
 
-        assert_eq!(total, Decimal::ZERO);
+        let engine = Engine::new(pool.clone());
+        for commodity in ["AUD", "USD"] {
+            let mut total = Decimal::ZERO;
+            for acct in [&bank, &food, &fun] {
+                let stats = engine
+                    .account_period_stats(acct, commodity, date(2026, 1, 1), date(2026, 6, 1))
+                    .await
+                    .expect("stats");
+                total += stats.net.value();
+            }
+            assert_eq!(
+                total,
+                Decimal::ZERO,
+                "commodity {commodity} did not net to zero"
+            );
+        }
     }
 
     /// F: the genesis sentinel sorts below every real date.
