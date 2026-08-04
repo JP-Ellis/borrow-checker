@@ -173,6 +173,10 @@ impl Service {
     /// [`BcError::BadData`] if a stored row cannot be parsed.
     #[inline]
     pub async fn create_paths(&self, paths: &[TagPath]) -> BcResult<Created> {
+        if paths.is_empty() {
+            return Ok(Created::default());
+        }
+
         let mut known = self.list().await?;
         let mut out = Created::default();
         let mut db_tx = self.pool.begin().await?;
