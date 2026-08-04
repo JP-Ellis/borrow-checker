@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/commodity.rs
+expression: output
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: no commodity matching 'NOPE'
