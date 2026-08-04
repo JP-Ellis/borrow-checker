@@ -183,6 +183,12 @@ read-only, using bound parameters rather than inlined literals (SQLite's plan
 for `?1 IS NULL OR …` depends on it). Two defects, both wider than the issues
 as filed.
 
+> **Historical.** This section records the plans as measured, before the fix.
+> Both defects are now repaired, and the `idx_postings_account` and
+> `idx_postings_account_commodity` indexes named in the transcripts below no
+> longer exist — they were leading prefixes of the composites that replaced
+> them. Read the plans as evidence of what was wrong, not as current behaviour.
+
 **(a) The "date-bounded" queries are unbounded in execution.** Both queries in
 `fetch_postings_in_range` put the `t.date` predicate on the *joined* table, so
 it cannot restrict the driving index scan:
@@ -234,8 +240,9 @@ That third piece is **not achievable by restructuring the query**, and an
 earlier draft of this document said otherwise. SQLite chooses join order
 itself: reordering the `FROM` clause produces a byte-identical plan, and
 `INDEXED BY` only pins which index is used on the table it names — neither
-touches drive order. Verified against a schema-only database with `EXPLAIN QUERY PLAN`, the only levers that force `postings` to drive the scan are a
-`CROSS JOIN` (which disables SQLite's reordering for that join) or a
+touches drive order. Verified against a schema-only database with
+`EXPLAIN QUERY PLAN`, the only levers that force `postings` to drive the scan
+are a `CROSS JOIN` (which disables SQLite's reordering for that join) or a
 denormalised date column on `postings` itself, so the `date` predicate can
 sit directly on the driving index. This change took the denormalised-column
 route: a trigger-maintained `postings.date`, backed by
