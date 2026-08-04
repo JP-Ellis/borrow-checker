@@ -23,6 +23,12 @@ pub enum Command {
     List,
     /// Register a new commodity.
     Create(CreateArgs),
+    /// Remove a commodity, provided nothing references it.
+    Delete {
+        /// The commodity's code, symbol, or alias.
+        #[arg(value_name = "MARKER")]
+        marker: String,
+    },
 }
 
 /// Arguments for `commodity create`.
@@ -80,6 +86,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
         Command::List => list(ctx).await,
         Command::Create(create_args) => create(ctx, create_args).await,
+        Command::Delete { marker } => delete(ctx, &marker).await,
     }
 }
 
@@ -193,6 +200,59 @@ async fn create(ctx: &AppContext, args: CreateArgs) -> CliResult<()> {
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         println!("Created commodity {} ({})", stored.code(), stored.id());
+    }
+    Ok(())
+}
+
+/// Resolves a user-supplied marker to the commodity it names.
+///
+/// Reuses [`bc_core::CommodityResolver`], the same matcher the importer uses,
+/// so a marker an import accepts is a marker the CLI accepts: **codes match
+/// case-insensitively; symbols and aliases match exactly**.
+///
+/// # Arguments
+///
+/// * `ctx` - The shared application context.
+/// * `marker` - A commodity code, symbol, or alias.
+///
+/// # Returns
+///
+/// The stored commodity the marker names.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] if nothing matches, or propagates
+/// [`CliError::Core`] from the commodity service.
+async fn find(ctx: &AppContext, marker: &str) -> CliResult<bc_models::Commodity> {
+    let all = ctx.commodities.list_all().await?;
+    let resolver = bc_core::CommodityResolver::from_commodities(&all);
+    let code = resolver
+        .resolve(&bc_models::CommodityCode::from(marker))
+        .ok_or_else(|| CliError::Arg(format!("no commodity matching '{marker}'")))?
+        .to_owned();
+    all.into_iter()
+        .find(|c| c.code() == code)
+        .ok_or_else(|| CliError::Arg(format!("no commodity matching '{marker}'")))
+}
+
+/// Deletes the commodity a marker names.
+///
+/// # Arguments
+///
+/// * `ctx` - The shared application context.
+/// * `marker` - A commodity code, symbol, or alias.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] if the marker matches nothing, or propagates
+/// [`CliError::Core`] — notably [`bc_core::BcError::CommodityInUse`], whose
+/// message summarises the remaining references.
+async fn delete(ctx: &AppContext, marker: &str) -> CliResult<()> {
+    let target = find(ctx, marker).await?;
+    ctx.commodities.delete(target.id()).await?;
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("Deleted commodity {}", target.code());
     }
     Ok(())
 }

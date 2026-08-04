@@ -60,6 +60,52 @@ fn create_defaults_to_two_decimals_and_iso() {
 }
 
 #[test]
+fn delete_removes_an_unreferenced_commodity() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args(["commodity", "create", "DOGE", "--decimals", "8", "--no-iso"])
+        .output()
+        .expect("create DOGE");
+    ctx.command()
+        .args(["commodity", "delete", "DOGE"])
+        .output()
+        .expect("delete DOGE");
+
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn delete_matches_a_code_case_insensitively() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args(["commodity", "create", "DOGE", "--decimals", "8", "--no-iso"])
+        .output()
+        .expect("create DOGE");
+
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "delete", "doge"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn delete_matches_an_alias_exactly() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "delete", "AU$"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn delete_reports_an_unknown_marker() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "delete", "NOPE"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
 fn create_rejects_a_conflicting_marker() {
     let ctx = TestContext::new();
     let mut cmd = ctx.command();
