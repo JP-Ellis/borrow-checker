@@ -2413,8 +2413,16 @@ mod tests {
                 left.net.value() + right.net.value(),
                 "net is not additive across {split}"
             );
-            assert_eq!(whole.opening.value(), left.opening.value());
-            assert_eq!(whole.closing.value(), right.closing.value());
+            assert_eq!(
+                right.opening.value(),
+                left.opening.value() + left.net.value(),
+                "opening/net disagree at {split}",
+            );
+            assert_eq!(
+                whole.closing.value(),
+                right.closing.value(),
+                "closing disagrees across {split}"
+            );
         }
     }
 
