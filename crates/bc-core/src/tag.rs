@@ -131,6 +131,12 @@ impl Service {
     /// Creates the tag hierarchy for `path`, reusing existing ancestors and
     /// creating only the missing segments. This is the only tag-creation path.
     ///
+    /// Segment names match case-insensitively (see `eq_name`), so requesting
+    /// `person:Alpha` when `person:alpha` exists returns the existing tag rather
+    /// than forking a second one. This is what guarantees no two siblings ever
+    /// differ only by case, which in turn is what makes case-folded resolution
+    /// unambiguous.
+    ///
     /// # Arguments
     ///
     /// * `path` - The hierarchical path to materialise (e.g. `person:alpha`).
@@ -146,30 +152,38 @@ impl Service {
     #[inline]
     pub async fn create_path(&self, path: &TagPath) -> BcResult<TagId> {
         let mut conn = self.pool.acquire().await?;
+        let mut known = self.list().await?;
         let mut parent: Option<TagId> = None;
         for segment in path.segments() {
-            let parent_str = parent.as_ref().map(TagId::to_string);
-            let existing: Option<(String,)> =
-                sqlx::query_as("SELECT id FROM tags WHERE name = ? AND parent_id IS ?")
-                    .bind(segment)
-                    .bind(parent_str.as_deref())
-                    .fetch_optional(&mut *conn)
-                    .await?;
+            let found = known
+                .iter()
+                .find(|t| eq_name(t.name(), segment) && t.parent_id() == parent.as_ref())
+                .map(|t| t.id().clone());
 
-            let id = if let Some((id,)) = existing {
-                id.parse::<TagId>()
-                    .map_err(|e| BcError::BadData(format!("invalid tag id '{id}': {e}")))?
+            let id = if let Some(id) = found {
+                id
             } else {
                 let new_id = TagId::new();
+                let created_at = Timestamp::now();
                 sqlx::query(
                     "INSERT INTO tags (id, name, parent_id, created_at) VALUES (?, ?, ?, ?)",
                 )
                 .bind(new_id.to_string())
                 .bind(segment)
                 .bind(parent.as_ref().map(TagId::to_string))
-                .bind(Timestamp::now().to_string())
+                .bind(created_at.to_string())
                 .execute(&mut *conn)
                 .await?;
+                // Keep the snapshot current so a later segment of this same path
+                // resolves against what this loop just inserted.
+                known.push(
+                    Tag::builder()
+                        .id(new_id.clone())
+                        .name(segment.clone())
+                        .maybe_parent_id(parent.clone())
+                        .created_at(created_at)
+                        .build(),
+                );
                 new_id
             };
             parent = Some(id);
@@ -580,6 +594,27 @@ mod tests {
             3,
             "person + alpha + beta"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_path_reuses_a_case_variant_sibling(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let first = svc
+            .create_path(&"person:alpha".parse().expect("path"))
+            .await
+            .expect("create ok");
+
+        let second = svc
+            .create_path(&"Person:ALPHA".parse().expect("path"))
+            .await
+            .expect("create ok");
+
+        assert_eq!(first, second);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags")
+            .fetch_one(&pool)
+            .await
+            .expect("count tags");
+        assert_eq!(count, 2);
     }
 
     #[sqlx::test(migrations = "./migrations")]
