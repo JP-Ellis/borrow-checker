@@ -718,11 +718,7 @@ mod tests {
             created_tags: &created,
         };
 
-        let rendered = report.render();
-
-        assert!(rendered.contains("Created 2 tags:"), "got {rendered}");
-        assert!(rendered.contains("  household"), "got {rendered}");
-        assert!(rendered.contains("  group:alpha"), "got {rendered}");
+        insta::assert_snapshot!(report.render());
     }
 
     /// A report over the given counts, unresolved accounts and commodities.
