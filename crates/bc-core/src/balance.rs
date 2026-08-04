@@ -243,13 +243,12 @@ impl Engine {
         to: jiff::civil::Date,
     ) -> BcResult<Vec<(jiff::civil::Date, Decimal)>> {
         let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT t.date, p.amount
+            "SELECT p.date, p.amount
              FROM postings p
-             JOIN transactions t ON t.id = p.transaction_id
              WHERE p.account_id = ?
                AND p.commodity  = ?
-               AND t.date >= ?
-               AND t.date  < ?",
+               AND p.date      >= ?
+               AND p.date       < ?",
         )
         .bind(account_id.to_string())
         .bind(commodity)
@@ -275,13 +274,12 @@ impl Engine {
         // them. Fetch them separately and resolve each one's residual; a
         // residual carries its transaction's date, so ordering is unaffected.
         let elided: Vec<(String, String)> = sqlx::query_as(
-            "SELECT p.id, t.date
+            "SELECT p.id, p.date
              FROM postings p
-             JOIN transactions t ON t.id = p.transaction_id
              WHERE p.account_id = ?
                AND p.amount IS NULL
-               AND t.date >= ?
-               AND t.date  < ?",
+               AND p.date >= ?
+               AND p.date  < ?",
         )
         .bind(account_id.to_string())
         .bind(from.to_string())
@@ -846,8 +844,24 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use rust_decimal_macros::dec;
+    use sqlx::Row as _;
 
     use super::*;
+
+    /// Returns the `detail` column of every `EXPLAIN QUERY PLAN` row for `sql`.
+    ///
+    /// Parameters are left unbound; SQLite treats them as NULL, which is what the
+    /// planner sees for a prepared statement. Only `detail` is read, so the number of
+    /// columns SQLite returns is irrelevant.
+    async fn query_plan(pool: &sqlx::SqlitePool, sql: &str) -> Vec<String> {
+        sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
+            .fetch_all(pool)
+            .await
+            .expect("explain query plan")
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect()
+    }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn balance_reflects_transactions(pool: sqlx::SqlitePool) {
@@ -2291,5 +2305,91 @@ mod tests {
         .expect("integrity check");
 
         assert_eq!(divergent, 0);
+    }
+
+    /// E2: the concrete-leg window query must be fully index-driven.
+    ///
+    /// The date range has to be a term *inside* the index, not a post-join filter.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn concrete_window_query_is_index_driven(pool: sqlx::SqlitePool) {
+        let plan = query_plan(
+            &pool,
+            "SELECT p.date, p.amount FROM postings p
+             WHERE p.account_id = ?1 AND p.commodity = ?2 AND p.date >= ?3 AND p.date < ?4",
+        )
+        .await;
+
+        let joined = plan.join("\n");
+        assert!(
+            joined.contains("idx_postings_account_commodity_date"),
+            "concrete window query does not use the composite index:\n{joined}"
+        );
+        assert!(
+            joined.contains("date>?") && joined.contains("date<?"),
+            "date range is not a term inside the index:\n{joined}"
+        );
+    }
+
+    /// E2: the elided-leg window query must be index-driven too.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn elided_window_query_is_index_driven(pool: sqlx::SqlitePool) {
+        let plan = query_plan(
+            &pool,
+            "SELECT p.id, p.date FROM postings p
+             WHERE p.account_id = ?1 AND p.amount IS NULL AND p.date >= ?2 AND p.date < ?3",
+        )
+        .await;
+
+        let joined = plan.join("\n");
+        assert!(
+            joined.contains("idx_postings_account_date"),
+            "elided window query does not use idx_postings_account_date:\n{joined}"
+        );
+    }
+
+    /// A3: the window is half-open on the elided path as well as the concrete one.
+    ///
+    /// `posting_flows_respects_date_boundary` covers only concrete legs. This is its
+    /// elided twin, and it is what catches `<=` versus `<` drift between the driving
+    /// elided query and the residual subquery.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn elided_legs_respect_the_half_open_boundary(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        // One transaction on the inclusive lower bound, one on the exclusive upper bound.
+        for (n, day) in [("lo", "2026-04-01"), ("hi", "2026-05-01")] {
+            let tx = format!("tx_{n}");
+            insert_tx(&pool, &tx, day).await;
+            insert_posting(
+                &pool,
+                &format!("p_food_{n}"),
+                &tx,
+                &food.to_string(),
+                Some("50.00"),
+                Some("AUD"),
+                0,
+            )
+            .await;
+            insert_posting(
+                &pool,
+                &format!("p_bank_{n}"),
+                &tx,
+                &bank.to_string(),
+                None,
+                None,
+                1,
+            )
+            .await;
+        }
+
+        let engine = Engine::new(pool.clone());
+        let (inflow, outflow) = engine
+            .posting_flows(&bank, "AUD", date(2026, 4, 1), date(2026, 5, 1))
+            .await
+            .expect("posting_flows");
+
+        // Only the 2026-04-01 transaction is in window; its elided bank leg absorbs -50.
+        assert_eq!(inflow.value(), dec!(0));
+        assert_eq!(outflow.value(), dec!(50.00));
     }
 }
