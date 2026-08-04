@@ -139,3 +139,84 @@ fn create_accepts_repeated_aliases() {
     cmd.args(["commodity", "list"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+#[test]
+fn update_changes_only_the_flags_given() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args([
+            "commodity",
+            "create",
+            "SOL",
+            "--name",
+            "Solana",
+            "--decimals",
+            "9",
+            "--no-iso",
+        ])
+        .output()
+        .expect("create SOL");
+    ctx.command()
+        .args(["commodity", "update", "SOL", "--symbol", "◎"])
+        .output()
+        .expect("update SOL");
+
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn update_adds_and_removes_aliases() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args([
+            "commodity",
+            "update",
+            "USD",
+            "--add-alias",
+            "dollar",
+            "--remove-alias",
+            "US$",
+        ])
+        .output()
+        .expect("update USD");
+
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn update_rejects_removing_an_absent_alias() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "update", "USD", "--remove-alias", "nope"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn update_can_turn_a_boolean_back_off() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args(["commodity", "update", "ETH", "--iso", "--no-symbol-after"])
+        .output()
+        .expect("update ETH");
+
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn update_clears_a_field_with_an_empty_value() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args(["commodity", "update", "AUD", "--symbol", ""])
+        .output()
+        .expect("update AUD");
+
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
