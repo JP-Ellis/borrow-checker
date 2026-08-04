@@ -125,12 +125,19 @@ impl Service {
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "UPDATE commodities SET symbol = ?, decimals = ?, is_iso = ?, symbol_after = ? WHERE id = ?",
+            "UPDATE commodities SET exchange = ?, name = ?, description = ?, symbol = ?, \
+             decimals = ?, is_iso = ?, symbol_after = ?, active_from = ?, active_until = ? \
+             WHERE id = ?",
         )
+        .bind(c.exchange())
+        .bind(c.name())
+        .bind(c.description())
         .bind(c.symbol())
         .bind(i64::from(c.decimals()))
         .bind(i64::from(c.is_iso()))
         .bind(i64::from(c.symbol_after()))
+        .bind(c.active_from().map(|d| d.to_string()))
+        .bind(c.active_until().map(|d| d.to_string()))
         .bind(c.id().to_string())
         .execute(&mut *tx)
         .await?;
@@ -584,6 +591,71 @@ mod tests {
             .await
             .expect_err("code change rejected");
         assert!(matches!(err, BcError::InvalidInput(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn update_persists_every_mutable_column(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let initial = bc_models::Commodity::builder()
+            .code("AAPL")
+            .decimals(2)
+            .build();
+        let stored = svc.create(&initial).await.expect("create");
+
+        let edited = bc_models::Commodity::builder()
+            .id(stored.id().clone())
+            .code("AAPL")
+            .name("Apple Inc.")
+            .exchange("NASDAQ")
+            .description("US large-cap technology stock")
+            .decimals(4)
+            .active_from(jiff::civil::date(2020, 1, 1))
+            .active_until(jiff::civil::date(2030, 12, 31))
+            .build();
+        svc.update(&edited).await.expect("update");
+
+        let found = svc
+            .list_all()
+            .await
+            .expect("list")
+            .into_iter()
+            .find(|c| c.code() == "AAPL")
+            .expect("AAPL");
+        assert_eq!(found.name(), Some("Apple Inc."));
+        assert_eq!(found.exchange(), Some("NASDAQ"));
+        assert_eq!(found.description(), Some("US large-cap technology stock"));
+        assert_eq!(found.decimals(), 4);
+        assert_eq!(found.active_from(), Some(jiff::civil::date(2020, 1, 1)));
+        assert_eq!(found.active_until(), Some(jiff::civil::date(2030, 12, 31)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn update_clears_optional_columns_when_unset(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let initial = bc_models::Commodity::builder()
+            .code("TSLA")
+            .name("Tesla, Inc.")
+            .exchange("NASDAQ")
+            .decimals(2)
+            .build();
+        let stored = svc.create(&initial).await.expect("create");
+
+        let cleared = bc_models::Commodity::builder()
+            .id(stored.id().clone())
+            .code("TSLA")
+            .decimals(2)
+            .build();
+        svc.update(&cleared).await.expect("update");
+
+        let found = svc
+            .list_all()
+            .await
+            .expect("list")
+            .into_iter()
+            .find(|c| c.code() == "TSLA")
+            .expect("TSLA");
+        assert_eq!(found.name(), None);
+        assert_eq!(found.exchange(), None);
     }
 
     #[test]
