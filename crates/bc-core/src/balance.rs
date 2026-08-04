@@ -2349,6 +2349,258 @@ mod tests {
         );
     }
 
+    /// C1: splitting a window anywhere must not change the total.
+    ///
+    /// The single strongest invariant here: it fails if the opening query's upper bound
+    /// and the in-window query's lower bound ever disagree.
+    #[sqlx::test(migrations = "./migrations")]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "decimal sums in a test assertion, not production arithmetic"
+    )]
+    async fn period_net_is_additive_across_a_split(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        for (n, day, amount) in [
+            ("1", "2026-01-05", "10.00"),
+            ("2", "2026-02-20", "20.00"),
+            ("3", "2026-04-10", "30.00"),
+            ("4", "2026-05-25", "40.00"),
+        ] {
+            let tx = format!("tx_{n}");
+            insert_tx(&pool, &tx, day).await;
+            insert_posting(
+                &pool,
+                &format!("p_food_{n}"),
+                &tx,
+                &food.to_string(),
+                Some(amount),
+                Some("AUD"),
+                0,
+            )
+            .await;
+            insert_posting(
+                &pool,
+                &format!("p_bank_{n}"),
+                &tx,
+                &bank.to_string(),
+                None,
+                None,
+                1,
+            )
+            .await;
+        }
+
+        let engine = Engine::new(pool.clone());
+        let from = date(2026, 1, 1);
+        let until = date(2026, 6, 1);
+        for split in [date(2026, 1, 1), date(2026, 3, 15), date(2026, 6, 1)] {
+            let whole = engine
+                .account_period_stats(&bank, "AUD", from, until)
+                .await
+                .expect("whole");
+            let left = engine
+                .account_period_stats(&bank, "AUD", from, split)
+                .await
+                .expect("left");
+            let right = engine
+                .account_period_stats(&bank, "AUD", split, until)
+                .await
+                .expect("right");
+
+            assert_eq!(
+                whole.net.value(),
+                left.net.value() + right.net.value(),
+                "net is not additive across {split}"
+            );
+            assert_eq!(whole.opening.value(), left.opening.value());
+            assert_eq!(whole.closing.value(), right.closing.value());
+        }
+    }
+
+    /// C2: opening plus net equals closing.
+    #[sqlx::test(migrations = "./migrations")]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "decimal sum in a test assertion, not production arithmetic"
+    )]
+    async fn opening_plus_net_equals_closing(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        for (n, day, amount) in [("1", "2025-11-01", "100.00"), ("2", "2026-02-20", "20.00")] {
+            let tx = format!("tx_{n}");
+            insert_tx(&pool, &tx, day).await;
+            insert_posting(
+                &pool,
+                &format!("p_food_{n}"),
+                &tx,
+                &food.to_string(),
+                Some(amount),
+                Some("AUD"),
+                0,
+            )
+            .await;
+            insert_posting(
+                &pool,
+                &format!("p_bank_{n}"),
+                &tx,
+                &bank.to_string(),
+                None,
+                None,
+                1,
+            )
+            .await;
+        }
+
+        let stats = Engine::new(pool.clone())
+            .account_period_stats(&bank, "AUD", date(2026, 1, 1), date(2026, 6, 1))
+            .await
+            .expect("stats");
+
+        assert_eq!(stats.opening.value(), dec!(-100.00));
+        assert_eq!(stats.net.value(), dec!(-20.00));
+        assert_eq!(
+            stats.closing.value(),
+            stats.opening.value() + stats.net.value()
+        );
+    }
+
+    /// C3: the windowed path agrees with the unwindowed one.
+    ///
+    /// `balance_for` is untouched by this change, so it is a clean oracle.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn full_span_closing_equals_balance_for(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        for (n, day, amount) in [("1", "2020-03-04", "12.34"), ("2", "2026-02-20", "56.78")] {
+            let tx = format!("tx_{n}");
+            insert_tx(&pool, &tx, day).await;
+            insert_posting(
+                &pool,
+                &format!("p_food_{n}"),
+                &tx,
+                &food.to_string(),
+                Some(amount),
+                Some("AUD"),
+                0,
+            )
+            .await;
+            insert_posting(
+                &pool,
+                &format!("p_bank_{n}"),
+                &tx,
+                &bank.to_string(),
+                None,
+                None,
+                1,
+            )
+            .await;
+        }
+
+        let engine = Engine::new(pool.clone());
+        let stats = engine
+            .account_period_stats(&bank, "AUD", jiff::civil::Date::MIN, jiff::civil::Date::MAX)
+            .await
+            .expect("stats");
+        let direct = engine.balance_for(&bank, "AUD").await.expect("balance_for");
+
+        assert_eq!(stats.closing.value(), direct.value());
+    }
+
+    /// C4: every account's period net sums to zero, per commodity, for any window.
+    ///
+    /// Catches a residual dropped for one account but not its counterparty — a shape the
+    /// per-account tests cannot see.
+    #[sqlx::test(migrations = "./migrations")]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "decimal accumulation in a test assertion, not production arithmetic"
+    )]
+    async fn period_nets_sum_to_zero_across_all_accounts(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        let fun = make_account(&pool, "Fun", AccountType::Expense).await;
+        for (n, acct, day, amount) in [
+            ("1", &food, "2026-02-20", "20.00"),
+            ("2", &fun, "2026-03-05", "35.00"),
+        ] {
+            let tx = format!("tx_{n}");
+            insert_tx(&pool, &tx, day).await;
+            insert_posting(
+                &pool,
+                &format!("p_c_{n}"),
+                &tx,
+                &acct.to_string(),
+                Some(amount),
+                Some("AUD"),
+                0,
+            )
+            .await;
+            insert_posting(
+                &pool,
+                &format!("p_bank_{n}"),
+                &tx,
+                &bank.to_string(),
+                None,
+                None,
+                1,
+            )
+            .await;
+        }
+
+        let engine = Engine::new(pool.clone());
+        let mut total = Decimal::ZERO;
+        for acct in [&bank, &food, &fun] {
+            let stats = engine
+                .account_period_stats(acct, "AUD", date(2026, 1, 1), date(2026, 6, 1))
+                .await
+                .expect("stats");
+            total += stats.net.value();
+        }
+
+        assert_eq!(total, Decimal::ZERO);
+    }
+
+    /// F: the genesis sentinel sorts below every real date.
+    ///
+    /// Dates are TEXT and compared lexicographically, so `Date::MIN` (-9999-01-01) has to
+    /// stringify to something that sorts below a four-digit positive year. The test
+    /// asserts the behaviour rather than pinning the format, so it survives a jiff
+    /// formatting change while still catching a real ordering break.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn opening_balance_includes_the_earliest_transactions(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        insert_tx(&pool, "tx_ancient", "0001-01-01").await;
+        insert_posting(
+            &pool,
+            "p_food",
+            "tx_ancient",
+            &food.to_string(),
+            Some("7.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(
+            &pool,
+            "p_bank",
+            "tx_ancient",
+            &bank.to_string(),
+            None,
+            None,
+            1,
+        )
+        .await;
+
+        let stats = Engine::new(pool.clone())
+            .account_period_stats(&bank, "AUD", date(2026, 1, 1), date(2026, 6, 1))
+            .await
+            .expect("stats");
+
+        assert_eq!(stats.opening.value(), dec!(-7.00));
+    }
+
     /// A3: the window is half-open on the elided path as well as the concrete one.
     ///
     /// `posting_flows_respects_date_boundary` covers only concrete legs. This is its
