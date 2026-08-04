@@ -950,11 +950,13 @@ mod db_tests {
                     .build(),
             ])
             .build();
+        let tags = crate::TagService::new(pool.clone());
         let outcome = crate::execute_import(
             &txs,
             &srcs,
             &accts,
             &commodities,
+            &tags,
             &batches,
             None,
             "test",

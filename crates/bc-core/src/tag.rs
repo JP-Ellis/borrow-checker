@@ -716,8 +716,10 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn create_paths_maps_case_variants_to_one_tag(pool: SqlitePool) {
         let svc = Service::new(pool);
-        let paths: Vec<TagPath> =
-            vec!["alpha".parse().expect("path"), "ALPHA".parse().expect("path")];
+        let paths: Vec<TagPath> = vec![
+            "alpha".parse().expect("path"),
+            "ALPHA".parse().expect("path"),
+        ];
 
         let outcome = svc.create_paths(&paths).await.expect("create ok");
 
