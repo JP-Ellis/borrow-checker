@@ -103,7 +103,7 @@ type ResidualRow = (String, String, String, Option<String>, Option<String>);
 ///
 /// Built by a single query per engine call — never one query per transaction,
 /// which would be N+1 on every balance read.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct Residuals {
     /// Per-commodity residual balances, keyed by elided posting id, one entry
     /// per elided posting whose transaction was attributable.
