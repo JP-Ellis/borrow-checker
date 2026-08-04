@@ -23,3 +23,73 @@ fn list_json() {
     cmd.args(["--json", "commodity", "list"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+#[test]
+fn create_registers_a_new_commodity() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args([
+            "commodity",
+            "create",
+            "SOL",
+            "--name",
+            "Solana",
+            "--decimals",
+            "9",
+            "--no-iso",
+        ])
+        .output()
+        .expect("create SOL");
+
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn create_defaults_to_two_decimals_and_iso() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args(["commodity", "create", "TND"])
+        .output()
+        .expect("create TND");
+
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn create_rejects_a_conflicting_marker() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "create", "btc", "--decimals", "8", "--no-iso"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn create_accepts_repeated_aliases() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args([
+            "commodity",
+            "create",
+            "XMR",
+            "--decimals",
+            "12",
+            "--no-iso",
+            "--symbol",
+            "ɱ",
+            "--symbol-after",
+            "--alias",
+            "Monero",
+            "--alias",
+            "monero-xmr",
+        ])
+        .output()
+        .expect("create XMR");
+
+    let mut cmd = ctx.command();
+    cmd.args(["commodity", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
