@@ -6,77 +6,135 @@ success: true
 exit_code: 0
 ----- stdout -----
 [
-  [
-    "AUD",
-    "Australian Dollar",
-    "A$",
-    "2",
-    "yes",
-    "AU$"
-  ],
-  [
-    "BTC",
-    "Bitcoin",
-    "₿",
-    "8",
-    "no",
-    ""
-  ],
-  [
-    "ETH",
-    "Ethereum",
-    "ETH",
-    "9",
-    "no",
-    ""
-  ],
-  [
-    "EUR",
-    "Euro",
-    "€",
-    "2",
-    "yes",
-    ""
-  ],
-  [
-    "GBP",
-    "British Pound",
-    "£",
-    "2",
-    "yes",
-    ""
-  ],
-  [
-    "INR",
-    "Indian Rupee",
-    "₹",
-    "2",
-    "yes",
-    ""
-  ],
-  [
-    "JPY",
-    "Japanese Yen",
-    "¥",
-    "0",
-    "yes",
-    ""
-  ],
-  [
-    "KRW",
-    "Korean Won",
-    "₩",
-    "0",
-    "yes",
-    ""
-  ],
-  [
-    "USD",
-    "US Dollar",
-    "$",
-    "2",
-    "yes",
-    "US$"
-  ]
+  {
+    "id": "[COMMODITY_ID]",
+    "code": "AUD",
+    "exchange": null,
+    "name": "Australian Dollar",
+    "description": null,
+    "symbol": "A$",
+    "aliases": [
+      "AU$"
+    ],
+    "decimals": 2,
+    "is_iso": true,
+    "symbol_after": false,
+    "active_from": null,
+    "active_until": null
+  },
+  {
+    "id": "[COMMODITY_ID]",
+    "code": "BTC",
+    "exchange": null,
+    "name": "Bitcoin",
+    "description": null,
+    "symbol": "₿",
+    "aliases": [],
+    "decimals": 8,
+    "is_iso": false,
+    "symbol_after": false,
+    "active_from": null,
+    "active_until": null
+  },
+  {
+    "id": "[COMMODITY_ID]",
+    "code": "ETH",
+    "exchange": null,
+    "name": "Ethereum",
+    "description": null,
+    "symbol": "ETH",
+    "aliases": [],
+    "decimals": 9,
+    "is_iso": false,
+    "symbol_after": true,
+    "active_from": null,
+    "active_until": null
+  },
+  {
+    "id": "[COMMODITY_ID]",
+    "code": "EUR",
+    "exchange": null,
+    "name": "Euro",
+    "description": null,
+    "symbol": "€",
+    "aliases": [],
+    "decimals": 2,
+    "is_iso": true,
+    "symbol_after": false,
+    "active_from": null,
+    "active_until": null
+  },
+  {
+    "id": "[COMMODITY_ID]",
+    "code": "GBP",
+    "exchange": null,
+    "name": "British Pound",
+    "description": null,
+    "symbol": "£",
+    "aliases": [],
+    "decimals": 2,
+    "is_iso": true,
+    "symbol_after": false,
+    "active_from": null,
+    "active_until": null
+  },
+  {
+    "id": "[COMMODITY_ID]",
+    "code": "INR",
+    "exchange": null,
+    "name": "Indian Rupee",
+    "description": null,
+    "symbol": "₹",
+    "aliases": [],
+    "decimals": 2,
+    "is_iso": true,
+    "symbol_after": false,
+    "active_from": null,
+    "active_until": null
+  },
+  {
+    "id": "[COMMODITY_ID]",
+    "code": "JPY",
+    "exchange": null,
+    "name": "Japanese Yen",
+    "description": null,
+    "symbol": "¥",
+    "aliases": [],
+    "decimals": 0,
+    "is_iso": true,
+    "symbol_after": false,
+    "active_from": null,
+    "active_until": null
+  },
+  {
+    "id": "[COMMODITY_ID]",
+    "code": "KRW",
+    "exchange": null,
+    "name": "Korean Won",
+    "description": null,
+    "symbol": "₩",
+    "aliases": [],
+    "decimals": 0,
+    "is_iso": true,
+    "symbol_after": false,
+    "active_from": null,
+    "active_until": null
+  },
+  {
+    "id": "[COMMODITY_ID]",
+    "code": "USD",
+    "exchange": null,
+    "name": "US Dollar",
+    "description": null,
+    "symbol": "$",
+    "aliases": [
+      "US$"
+    ],
+    "decimals": 2,
+    "is_iso": true,
+    "symbol_after": false,
+    "active_from": null,
+    "active_until": null
+  }
 ]
 ----- stderr -----
