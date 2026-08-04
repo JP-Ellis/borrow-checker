@@ -178,11 +178,9 @@ CREATE TABLE postings (
     spread_until         TEXT,             -- YYYY-MM-DD
     CHECK ((amount IS NULL) = (commodity IS NULL))
 );
-CREATE INDEX idx_postings_transaction       ON postings (transaction_id);
-CREATE INDEX idx_postings_account           ON postings (account_id);
-CREATE INDEX idx_postings_account_commodity ON postings (account_id, commodity);
-CREATE INDEX idx_postings_account_commodity_date ON postings (account_id, commodity, date);
-CREATE INDEX idx_postings_account_date           ON postings (account_id, date);
+CREATE INDEX idx_postings_transaction             ON postings (transaction_id);
+CREATE INDEX idx_postings_account_commodity_date   ON postings (account_id, commodity, date);
+CREATE INDEX idx_postings_account_date             ON postings (account_id, date);
 
 -- These are the first triggers in this schema. `postings_date_on_insert` updates
 -- `postings` from within a `postings` trigger; that is safe because SQLite's
