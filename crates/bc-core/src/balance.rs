@@ -117,7 +117,6 @@ impl Engine {
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT p.amount
              FROM postings p
-             JOIN transactions t ON t.id = p.transaction_id
              WHERE p.account_id = ?
                AND p.commodity  = ?",
         )
@@ -393,11 +392,19 @@ impl Engine {
     /// agrees with the register even when a transaction has multiple postings to
     /// the account or spans several commodities.
     ///
+    /// Counts distinct `transaction_id`s among the account's own postings in the
+    /// window, rather than joining back to `transactions`: `postings.date` mirrors
+    /// its transaction's date via the `postings_date_*` triggers, and
+    /// `postings.transaction_id` is a NOT NULL foreign key, so this is exactly the
+    /// set of transactions with at least one posting to the account in `[from,
+    /// until)` — identical to the old `transactions`-driven query, but sargable on
+    /// `idx_postings_account_date`.
+    ///
     /// # Arguments
     ///
     /// * `account_id` - The account to query.
-    /// * `from`       - Inclusive lower bound on `t.date`.
-    /// * `until`      - Exclusive upper bound on `t.date`.
+    /// * `from`       - Inclusive lower bound on the posting date.
+    /// * `until`      - Exclusive upper bound on the posting date.
     ///
     /// # Returns
     ///
@@ -413,13 +420,12 @@ impl Engine {
         until: jiff::civil::Date,
     ) -> BcResult<u32> {
         let (count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM transactions t \
-             WHERE t.date >= ? AND t.date < ? \
-               AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?)",
+            "SELECT COUNT(DISTINCT p.transaction_id) FROM postings p \
+             WHERE p.account_id = ? AND p.date >= ? AND p.date < ?",
         )
+        .bind(account_id.to_string())
         .bind(from.to_string())
         .bind(until.to_string())
-        .bind(account_id.to_string())
         .fetch_one(&self.pool)
         .await?;
 
@@ -2346,6 +2352,132 @@ mod tests {
         assert!(
             joined.contains("idx_postings_account_date"),
             "elided window query does not use idx_postings_account_date:\n{joined}"
+        );
+    }
+
+    /// Finding 1: the transaction-count query must be sargable on `postings`, not
+    /// materialise the account's full history into a temp b-tree before probing
+    /// `transactions` by id.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn transaction_count_query_is_index_driven(pool: sqlx::SqlitePool) {
+        let plan = query_plan(
+            &pool,
+            "SELECT COUNT(DISTINCT p.transaction_id) FROM postings p
+             WHERE p.account_id = ?1 AND p.date >= ?2 AND p.date < ?3",
+        )
+        .await;
+
+        let joined = plan.join("\n");
+        assert!(
+            !joined.contains("SCAN"),
+            "transaction count query scans a table instead of seeking an index:\n{joined}"
+        );
+        assert!(
+            joined.contains("idx_postings_account_date"),
+            "transaction count query does not use idx_postings_account_date:\n{joined}"
+        );
+    }
+
+    /// Finding 1: a transaction with multiple postings to the same account must count
+    /// once, and boundary transactions on `from`/`to` must land on the correct side.
+    ///
+    /// A missing `DISTINCT` in the rewritten `count_transactions_in_range` query would
+    /// double-count the multi-posting transaction below; an off-by-one in the boundary
+    /// comparison would place either boundary transaction on the wrong side.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn transaction_count_deduplicates_multi_posting_transactions(pool: sqlx::SqlitePool) {
+        let wallet = make_account(&pool, "Wallet", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+
+        // Two postings to `wallet` in the same transaction, inside the window — a
+        // missing DISTINCT would count this transaction twice.
+        insert_tx(&pool, "tx_multi", "2026-04-15").await;
+        insert_posting(
+            &pool,
+            "p_multi_a",
+            "tx_multi",
+            &wallet.to_string(),
+            Some("-40.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(
+            &pool,
+            "p_multi_b",
+            "tx_multi",
+            &wallet.to_string(),
+            Some("-10.00"),
+            Some("AUD"),
+            1,
+        )
+        .await;
+        insert_posting(
+            &pool,
+            "p_multi_c",
+            "tx_multi",
+            &food.to_string(),
+            Some("50.00"),
+            Some("AUD"),
+            2,
+        )
+        .await;
+
+        // On the inclusive lower boundary.
+        insert_tx(&pool, "tx_lo", "2026-04-01").await;
+        insert_posting(
+            &pool,
+            "p_lo",
+            "tx_lo",
+            &wallet.to_string(),
+            Some("1.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+
+        // On the exclusive upper boundary — must be excluded.
+        insert_tx(&pool, "tx_hi", "2026-05-01").await;
+        insert_posting(
+            &pool,
+            "p_hi",
+            "tx_hi",
+            &wallet.to_string(),
+            Some("1.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+
+        let engine = Engine::new(pool.clone());
+        let stats = engine
+            .account_period_stats(&wallet, "AUD", date(2026, 4, 1), date(2026, 5, 1))
+            .await
+            .expect("stats");
+
+        // tx_multi counts once despite two postings, plus tx_lo; tx_hi is excluded.
+        assert_eq!(stats.tx_count, 2);
+    }
+
+    /// Finding 5: `balance_for` must not join `transactions` — nothing from it is
+    /// selected or filtered, so the join was a wasted index probe per posting.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn balance_for_query_does_not_join_transactions(pool: sqlx::SqlitePool) {
+        let plan = query_plan(
+            &pool,
+            "SELECT p.amount FROM postings p WHERE p.account_id = ?1 AND p.commodity = ?2",
+        )
+        .await;
+
+        let joined = plan.join("\n");
+        assert_eq!(
+            plan.len(),
+            1,
+            "balance_for query should be a single index search, not a join:\n{joined}"
+        );
+        assert!(
+            joined.contains("idx_postings_account_commodity_date"),
+            "balance_for query does not use idx_postings_account_commodity_date:\n{joined}"
         );
     }
 
