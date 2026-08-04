@@ -63,6 +63,7 @@ async fn main() {
         Commands::Restore(args) => commands::restore::execute(args, &ctx).await,
         Commands::Budget(args) => commands::budget::execute(args, &ctx).await,
         Commands::Tag(args) => commands::tag::execute(args, &ctx).await,
+        Commands::Commodity(args) => commands::commodity::execute(args, &ctx).await,
         Commands::Plugin(args) => commands::plugin::execute(args, &ctx).await,
         Commands::Profile(args) => commands::profile::execute(args, &ctx).await,
         Commands::Completions(args) => commands::completions::execute(args),

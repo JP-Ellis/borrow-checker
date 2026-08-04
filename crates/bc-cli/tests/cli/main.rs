@@ -11,6 +11,7 @@ mod account;
 mod asset;
 mod backup;
 mod budget;
+mod commodity;
 mod export;
 mod import;
 mod profile;
