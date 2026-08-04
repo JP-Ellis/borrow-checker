@@ -243,6 +243,10 @@ route: a trigger-maintained `postings.date`, backed by
 Restructuring `fetch_postings_in_range`'s SQL without one of those two levers
 would have shipped a no-op.
 
+That trigger adds a follow-up `UPDATE` to every `postings` insert, so the
+write path now costs more than it did before this change — a cost the
+read-path benchmarks below do not measure and this document does not price.
+
 **A related constraint, independent of the fix above: set-based aggregation
 is not available on SQLite here.** Amounts are stored as `TEXT` decimal
 strings, so SQLite's `SUM` promotes them to `real`
