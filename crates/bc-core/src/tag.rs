@@ -133,9 +133,12 @@ impl Service {
     ///
     /// Segment names match case-insensitively (see `eq_name`), so requesting
     /// `person:Alpha` when `person:alpha` exists returns the existing tag rather
-    /// than forking a second one. This is what guarantees no two siblings ever
-    /// differ only by case, which in turn is what makes case-folded resolution
-    /// unambiguous.
+    /// than forking a second one. This is what keeps two siblings from ever
+    /// differing only by case, which in turn is what makes case-folded
+    /// resolution unambiguous. The reuse decision is made against a snapshot
+    /// taken before the first insert, so two concurrent calls can still race;
+    /// `idx_tags_sibling_unique` rejects the loser, except for names whose
+    /// case-variance is non-ASCII, which `NOCASE` cannot see.
     ///
     /// # Arguments
     ///
@@ -151,8 +154,8 @@ impl Service {
     /// if a stored row cannot be parsed.
     #[inline]
     pub async fn create_path(&self, path: &TagPath) -> BcResult<TagId> {
-        let mut conn = self.pool.acquire().await?;
         let mut known = self.list().await?;
+        let mut conn = self.pool.acquire().await?;
         let mut parent: Option<TagId> = None;
         for segment in path.segments() {
             let found = known
@@ -376,9 +379,12 @@ fn resolve_path_in(tags: &[Tag], path: &TagPath) -> Option<TagId> {
 /// case-sensitive, so folding there would invent ambiguity rather than remove
 /// it.
 ///
-/// The fold is computed in Rust rather than delegated to SQLite's `NOCASE`,
-/// which folds ASCII only. The `COLLATE NOCASE` on `idx_tags_sibling_unique` is
-/// a database backstop against direct SQL, not the rule.
+/// The fold is computed in Rust rather than delegated to SQLite's `NOCASE`, so
+/// it reaches non-ASCII letters that `NOCASE` leaves alone — `ÉPÉRGNE` and
+/// `épérgne` are the same tag. It is Rust's lowercase mapping, not full Unicode
+/// case folding: `STRASSE` and `straße` stay distinct. The `COLLATE NOCASE` on
+/// `idx_tags_sibling_unique` is a database backstop against direct SQL, not the
+/// rule.
 ///
 /// # Arguments
 ///
