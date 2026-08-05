@@ -34,6 +34,7 @@ use bc_models::SourceRefId;
 use bc_models::Transaction;
 use bc_models::TransactionId;
 use jiff::Timestamp;
+use jiff::civil::Date;
 
 use crate::AccountPath;
 use crate::AccountResolver;
@@ -913,6 +914,41 @@ fn row_local_value<T>(
     }
 }
 
+/// Drops the labelled dates a row states more than once, keeping the first.
+///
+/// `transaction_dates` is keyed by `(transaction_id, label)`, so a repeated
+/// label would raise a unique violation and cost the row every one of its
+/// postings. A label stated twice is a defect in the document's metadata, not
+/// grounds to discard the transaction it decorates.
+///
+/// # Arguments
+///
+/// * `raw` - The document transaction, for its dates and for diagnostics.
+///
+/// # Returns
+///
+/// The row's labelled dates in document order, one entry per label.
+fn distinct_extra_dates(raw: &RawTransaction) -> Vec<(String, Date)> {
+    let mut seen = HashSet::new();
+    raw.extra_dates
+        .iter()
+        .filter(|(label, date)| {
+            if seen.insert(label.clone()) {
+                return true;
+            }
+            tracing::warn!(
+                location = location_of(raw),
+                label,
+                %date,
+                "the row states this date label more than once; keeping the first and \
+                 dropping this one"
+            );
+            false
+        })
+        .cloned()
+        .collect()
+}
+
 /// Reports whether `error` describes one row's data rather than a failure of
 /// the run itself.
 ///
@@ -1085,7 +1121,7 @@ impl Writer<'_> {
             .maybe_payee(raw.payee.clone())
             .description(raw.description.clone())
             .maybe_note(raw.note.clone())
-            .extra_dates(raw.extra_dates.clone())
+            .extra_dates(distinct_extra_dates(raw))
             .postings(postings.clone())
             .reconciliation(Reconciliation::Unreconciled)
             .created_at(Timestamp::now())
@@ -1633,6 +1669,35 @@ mod tests {
             note_of_transaction(&pool).await,
             Some("split with flatmate".to_owned())
         );
+        assert_eq!(
+            dates_of_transaction(&pool).await,
+            vec![
+                ("posted".to_owned(), "2025-06-28".to_owned()),
+                ("settled".to_owned(), "2025-06-29".to_owned()),
+            ]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_repeated_date_label_costs_the_date_not_the_row(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .extra_dates(vec![
+                ("posted".to_owned(), date(2025, 6, 28)),
+                ("posted".to_owned(), date(2025, 6, 30)),
+                ("settled".to_owned(), date(2025, 6, 29)),
+            ])
+            .postings(vec![leg("Assets:Bank", Some(50_i64))])
+            .build();
+
+        let outcome = run(&svcs, &[raw]).await;
+
+        // The row still persists: a duplicated label is a defect in the
+        // document's metadata, not grounds to discard the transaction.
+        assert_eq!(outcome.new_transactions, 1);
         assert_eq!(
             dates_of_transaction(&pool).await,
             vec![
