@@ -131,7 +131,8 @@ CREATE INDEX idx_tags_parent ON tags (parent_id);
 -- No two sibling tags share a name, so computed colon-paths are unambiguous.
 -- COALESCE folds NULL parents (root tags) to '' so roots are also de-duplicated.
 -- NOCASE is a backstop against direct SQL: tag names are case-insensitive, and
--- bc-core enforces that in Rust (Unicode-correct) since NOCASE folds ASCII only.
+-- bc-core enforces that in Rust, which reaches non-ASCII letters NOCASE leaves
+-- alone, so this index catches only a subset of what the Rust rule rejects.
 CREATE UNIQUE INDEX idx_tags_sibling_unique
     ON tags (COALESCE(parent_id, ''), name COLLATE NOCASE);
 
