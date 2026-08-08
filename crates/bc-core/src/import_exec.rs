@@ -162,8 +162,18 @@ pub struct ImportPlan {
     /// path and sorted by it. Multi-commodity by construction: an account
     /// touched in two commodities holds a bucket for each.
     ///
+    /// A leg that elides its amount still moves its account, because the
+    /// balance engine derives its value from its siblings; the residual is
+    /// derived here the same way, so this figure tracks the balance a real run
+    /// would leave behind.
+    ///
     /// An account whose legs net to zero still holds a bucket — an empty one —
     /// so the report can say the account was touched rather than omitting it.
+    ///
+    /// One case understates: a leg *appended* to a transaction an earlier run
+    /// created, whose amount is elided. Its residual is fixed by the owning
+    /// transaction's full leg set, which a plan does not read, so it is reported
+    /// as moving nothing rather than as a guess.
     pub account_totals: Vec<(String, Balances)>,
     /// Every leg or row the run would skip, in encounter order, with the cause
     /// and the document location. The counts above are the totals of these.
@@ -1769,29 +1779,87 @@ struct Plan {
 }
 
 impl Plan {
-    /// Folds one leg's amount into its account's running total.
+    /// Folds one leg's value into its account's running total.
     ///
-    /// A posting with no amount is an elided leg the run left elided; it
-    /// contributes nothing, exactly as it would contribute nothing to a
-    /// persisted balance. It still claims a bucket, so an account whose legs
-    /// net to nothing is still reported as touched.
+    /// A posting always claims a bucket, even when it moves nothing, so an
+    /// account whose legs net to zero stays distinguishable from one the run
+    /// never touches.
     ///
     /// # Arguments
     ///
     /// * `posting` - The posting the run would write.
     /// * `leg` - The plan it came from, which carries the rendered path.
-    fn record(&mut self, posting: &Posting, leg: &LegPlan) {
+    /// * `derived` - The per-commodity residual this posting absorbs, when it is
+    ///   the row's one elided leg and the row determines one; `None` when the
+    ///   posting states its own amount or the residual is unavailable.
+    fn record(&mut self, posting: &Posting, leg: &LegPlan, derived: Option<&Balances>) {
         let entry = self.totals.entry(leg.account_path.clone()).or_default();
-        let Some(amount) = posting.amount() else {
-            return;
-        };
         // A total that overflows `Decimal` is a report defect, not a run
         // failure: the legs still post. Keep the bucket at its last good value.
-        if entry.try_add(amount).is_err() {
+        let mut overflowed = false;
+        match (posting.amount(), derived) {
+            (Some(amount), _) => overflowed = entry.try_add(amount).is_err(),
+            (None, Some(balances)) => {
+                // Every commodity is folded, not just those up to the first
+                // failure: one overflowing bucket must not silently drop the
+                // rest of a multi-commodity residual.
+                for (code, value) in balances.iter() {
+                    overflowed |= entry.try_add(&Amount::new(value, code)).is_err();
+                }
+            }
+            (None, None) => {}
+        }
+        if overflowed {
             tracing::warn!(
                 account = leg.account_path.as_str(),
                 "the account's planned total overflowed; the reported figure is short"
             );
+        }
+    }
+
+    /// Folds a whole transaction's postings into their accounts' totals,
+    /// attributing the transaction's residual to its one elided leg.
+    ///
+    /// An elided leg is not weightless: the balance engine derives its value
+    /// from its siblings ([`crate::residual::residual_of`], the very function
+    /// used here), so a report that left the bucket empty would say an account
+    /// nets to zero when the import is about to move it. Deriving it from the
+    /// same function the read path uses is what keeps the two figures from
+    /// drifting apart.
+    ///
+    /// # Arguments
+    ///
+    /// * `postings` - Every posting the transaction will hold, index-aligned
+    ///   with `legs`. A partial set would misattribute the residual, so callers
+    ///   that hold only some of a transaction's legs must use [`Self::record`].
+    /// * `legs` - The plans those postings were built from.
+    fn record_transaction<'leg>(
+        &mut self,
+        postings: &[Posting],
+        legs: impl IntoIterator<Item = &'leg LegPlan>,
+    ) {
+        // Two or more elided legs never reach here — `has_ambiguous_residual`
+        // skips the row whole, and resolution only ever drops legs — but
+        // `residual_of` reports that case as `Ambiguous` regardless, so a future
+        // change to that invariant understates rather than inventing a figure.
+        let residual = match crate::residual::residual_of(postings.iter().map(Posting::amount)) {
+            Ok(crate::residual::Residual::Attributable(balances)) => Some(balances),
+            Ok(crate::residual::Residual::NotElided | crate::residual::Residual::Ambiguous) => None,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "the row's residual overflowed; its elided leg is reported as moving nothing"
+                );
+                None
+            }
+        };
+        for (posting, leg) in postings.iter().zip(legs) {
+            let derived = if posting.amount().is_none() {
+                residual.as_ref()
+            } else {
+                None
+            };
+            self.record(posting, leg, derived);
         }
     }
 }
@@ -1830,14 +1898,19 @@ impl Sink for Plan {
         postings: &[Posting],
         legs: &[LegPlan],
     ) -> BcResult<()> {
-        for (posting, leg) in postings.iter().zip(legs) {
-            self.record(posting, leg);
-        }
+        self.record_transaction(postings, legs);
         Ok(())
     }
 
     /// Records the inserted legs only. An adoption adds no posting — the amount
     /// is already on the user's own posting — so it moves no total.
+    ///
+    /// The residual is *not* derived here, unlike [`Sink::create`]: these
+    /// postings are only the legs this run appends, while the owning
+    /// transaction's residual is fixed by its full leg set, which this sink
+    /// never sees. Deriving one from the partial set would attribute the wrong
+    /// figure, so an appended elided leg claims its bucket and moves nothing —
+    /// an understatement rather than a fabrication.
     async fn attach(
         &mut self,
         _raw: &RawTransaction,
@@ -1847,7 +1920,7 @@ impl Sink for Plan {
         _adoptions: &[(PostingId, &LegPlan)],
     ) -> BcResult<()> {
         for (posting, leg) in postings.iter().zip(insertions) {
-            self.record(posting, leg);
+            self.record(posting, leg, None);
         }
         Ok(())
     }
@@ -5225,5 +5298,129 @@ mod tests {
             .await
             .expect("the count");
         assert_eq!(count, 0);
+    }
+
+    /// Returns the bucket `path` holds in `planned`, or `None` if the plan never
+    /// touched that account.
+    fn bucket<'plan>(planned: &'plan ImportPlan, path: &str) -> Option<&'plan Balances> {
+        planned
+            .account_totals
+            .iter()
+            .find(|(account, _)| account == path)
+            .map(|(_, balances)| balances)
+    }
+
+    /// An elided leg is not weightless: the balance engine derives its value
+    /// from its siblings, so a plan that left the bucket empty would report an
+    /// account as unmoved when the import is about to move it.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_elided_leg_posts_the_rows_residual(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let docs = vec![split_raw("GROCERIES")];
+
+        let planned = plan(&svcs, &docs).await;
+
+        assert_eq!(
+            bucket(&planned, "Expenses:Food").and_then(|b| b.get("AUD")),
+            Some(dec!(50)),
+            "the concrete leg posts what it states"
+        );
+        assert_eq!(
+            bucket(&planned, "Assets:Bank").and_then(|b| b.get("AUD")),
+            Some(dec!(-50)),
+            "the elided leg absorbs the residual of its siblings"
+        );
+    }
+
+    /// The figure the report prints must be the movement the user will actually
+    /// see, so it is pinned against the balance engine's own reading of the
+    /// ledger after the same documents are imported for real.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_planned_total_matches_the_balance_the_run_leaves(pool: SqlitePool) {
+        let (bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let docs = vec![split_raw("GROCERIES")];
+
+        let planned = plan(&svcs, &docs).await;
+        run(&svcs, &docs).await;
+
+        let engine = crate::BalanceEngine::new(pool.clone());
+        for (account, path) in [(&bank, "Assets:Bank"), (&food, "Expenses:Food")] {
+            let actual = engine
+                .balance_for(account, "AUD")
+                .await
+                .expect("the balance");
+            assert_eq!(
+                bucket(&planned, path).and_then(|b| b.get("AUD")),
+                Some(actual.value()),
+                "the plan's figure for {path} must be the balance the run leaves"
+            );
+        }
+    }
+
+    /// The residual is per-commodity, so an elided leg beside siblings in two
+    /// commodities absorbs a bucket in each rather than a single scalar.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_elided_legs_residual_is_per_commodity(pool: SqlitePool) {
+        ensure_path(&pool, "Assets:Bank").await;
+        ensure_path(&pool, "Expenses:Food").await;
+        ensure_path(&pool, "Expenses:Travel").await;
+        let svcs = services(&pool).await;
+        let docs = vec![raw_with(
+            "TRIP",
+            vec![
+                coded_leg("Expenses:Food", dec!(30), "AUD"),
+                coded_leg("Expenses:Travel", dec!(20), "USD"),
+                leg("Assets:Bank", None),
+            ],
+        )];
+
+        let planned = plan(&svcs, &docs).await;
+
+        let bank = bucket(&planned, "Assets:Bank").expect("the elided leg's account");
+        assert_eq!(bank.get("AUD"), Some(dec!(-30)));
+        assert_eq!(bank.get("USD"), Some(dec!(-20)));
+    }
+
+    /// An account touched in two commodities holds a bucket for each rather
+    /// than collapsing them into one figure.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_account_touched_twice_holds_a_bucket_per_commodity(pool: SqlitePool) {
+        ensure_path(&pool, "Assets:Bank").await;
+        let svcs = services(&pool).await;
+        let docs = vec![
+            raw_with("ONE", vec![coded_leg("Assets:Bank", dec!(-5), "AUD")]),
+            raw_with("TWO", vec![coded_leg("Assets:Bank", dec!(-7), "USD")]),
+        ];
+
+        let planned = plan(&svcs, &docs).await;
+
+        let bank = bucket(&planned, "Assets:Bank").expect("the account posts");
+        assert_eq!(bank.get("AUD"), Some(dec!(-5)));
+        assert_eq!(bank.get("USD"), Some(dec!(-7)));
+    }
+
+    /// An account whose legs cancel out was still touched. It must keep an empty
+    /// bucket, so a report can distinguish it from an account the run never
+    /// names at all.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_zero_netting_account_keeps_an_empty_bucket(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let docs = vec![raw("IN", 5_i64), raw("OUT", -5_i64)];
+
+        let planned = plan(&svcs, &docs).await;
+
+        assert_eq!(
+            bucket(&planned, "Assets:Bank"),
+            Some(&Balances::new()),
+            "the account is touched, and nets to nothing"
+        );
+        assert_eq!(
+            bucket(&planned, "Expenses:Food"),
+            None,
+            "an account no leg names holds no bucket at all"
+        );
     }
 }
