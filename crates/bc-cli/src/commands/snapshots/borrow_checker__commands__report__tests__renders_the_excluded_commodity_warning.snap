@@ -1,0 +1,11 @@
+---
+source: crates/bc-cli/src/commands/report.rs
+expression: rendered.render()
+---
+Report: 2025-07-01 – 2026-07-01 (AUD)
+
+ACCOUNT          AMOUNT
+Crypto              0.5
+
+note: 12 posting(s) in other commodities were excluded, not converted
+note: 3 transaction(s) carry more than one elided leg and were partly uncounted

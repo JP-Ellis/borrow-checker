@@ -54,6 +54,41 @@ pub struct TransactionQuery {
     pub reconciliation: Option<Reconciliation>,
 }
 
+impl TransactionQuery {
+    /// Constructs a query scoped to a date window, accounts, and tags.
+    ///
+    /// `#[non_exhaustive]` blocks struct-literal construction outside this
+    /// crate, so callers assembling a query from CLI flags go through this
+    /// constructor instead. Every other filter is left unset.
+    ///
+    /// # Arguments
+    ///
+    /// * `date_from` - Inclusive lower date bound.
+    /// * `date_until` - Exclusive upper date bound.
+    /// * `accounts` - Account ids; each matches its subtree; multiple union.
+    /// * `tags` - Tag ids; multiple union.
+    ///
+    /// # Returns
+    ///
+    /// The constructed [`TransactionQuery`].
+    #[inline]
+    #[must_use]
+    pub fn windowed(
+        date_from: Option<Date>,
+        date_until: Option<Date>,
+        accounts: Vec<AccountId>,
+        tags: Vec<TagId>,
+    ) -> Self {
+        Self {
+            date_from,
+            date_until,
+            accounts,
+            tags,
+            ..Self::default()
+        }
+    }
+}
+
 impl AmountQuery {
     /// Returns whether `amount`'s magnitude falls in `[min, max]` and, if a
     /// commodity is set, matches it. An elided (`None`) amount never matches.

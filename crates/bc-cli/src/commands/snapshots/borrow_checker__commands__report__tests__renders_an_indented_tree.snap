@@ -1,0 +1,12 @@
+---
+source: crates/bc-cli/src/commands/report.rs
+expression: rendered.render()
+---
+Report: 2025-07-01 – 2026-07-01 (AUD)
+
+ACCOUNT             AMOUNT
+Income              -48210
+  Interest        -3120.45
+    Bank-A        -2890.10
+    Bank-B         -230.35
+  Rent              -41000
