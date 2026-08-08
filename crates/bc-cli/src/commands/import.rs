@@ -1,5 +1,7 @@
 //! Import sub-command.
 
+use rust_decimal::Decimal;
+
 use crate::context::AppContext;
 use crate::error::CliResult;
 
@@ -31,6 +33,14 @@ pub struct RunArgs {
     /// Name of the import profile to use.
     #[arg(long, value_name = "NAME")]
     pub profile: String,
+
+    /// Report what the import would do, without writing anything.
+    ///
+    /// Resolves exactly as a real run does and prints the same decisions, but
+    /// opens no batch, creates no tags and persists no postings. Takes no
+    /// pre-import snapshot: there is nothing to snapshot before.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Executes the `import` subcommand.
@@ -74,6 +84,35 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
             ))
         })?;
 
+    // Source and parse the profile's files (the importer reads them itself).
+    // This happens before any snapshot: it reads files and writes nothing, so
+    // a dry run can use it without taking a backup first.
+    let raw_txs = importer
+        .import(&profile.config)
+        .map_err(|e| crate::error::CliError::Arg(format!("import error: {e}")))?;
+
+    if args.dry_run {
+        let plan = bc_core::plan_import(
+            &ctx.transactions,
+            &ctx.sources,
+            &ctx.accounts,
+            &ctx.commodities,
+            &ctx.tags,
+            &ctx.batches,
+            Some(&profile.id),
+            &profile.importer,
+            &raw_txs,
+        )
+        .await?;
+        let report = PlanReport::from(&plan);
+
+        #[expect(clippy::print_stdout, reason = "CLI output")]
+        {
+            print!("{}", render_plan(&report, &profile.name, &profile.importer));
+        }
+        return Ok(());
+    }
+
     // Snapshot before writing: a misconfigured profile (wrong date format, an
     // inverted sign convention) produces plausible-looking wrong data whose
     // source references then suppress a corrected re-import. Restoring is one
@@ -86,11 +125,6 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
             .await?;
         tracing::info!(path = %record.path.display(), "pre-import snapshot taken");
     }
-
-    // Source and parse the profile's files (the importer reads them itself).
-    let raw_txs = importer
-        .import(&profile.config)
-        .map_err(|e| crate::error::CliError::Arg(format!("import error: {e}")))?;
 
     let outcome = bc_core::execute_import(
         &ctx.transactions,
@@ -642,8 +676,269 @@ impl Report<'_> {
     }
 }
 
+/// One leg or row a planned run would skip, and why.
+///
+/// Owned rather than borrowing [`bc_core::Diagnostic`] fields: that type is
+/// `#[non_exhaustive]`, so `bc-cli` cannot construct one, and test fixtures
+/// need to build these directly.
+struct PlanDiagnostic {
+    /// Where the document says this came from.
+    location: String,
+    /// Why it was skipped.
+    cause: bc_core::SkipCause,
+    /// Human-readable detail: the offending path, code, or conflict.
+    #[expect(
+        dead_code,
+        reason = "carried for parity with bc_core::Diagnostic; the JSON surface Task 6 adds \
+                   reads it, the human report does not"
+    )]
+    detail: String,
+}
+
+/// The numbers the dry-run report is built from.
+///
+/// A view over [`bc_core::ImportPlan`], which is `#[non_exhaustive]` and so
+/// cannot be constructed in tests; this can. Unlike [`Report`], this owns its
+/// data rather than borrowing it: the diagnostics are grouped and counted
+/// during rendering, so a borrowing view would tie the grouped form's
+/// lifetime to the plan for no gain.
+struct PlanReport {
+    /// Transactions the run would create.
+    new_transactions: usize,
+    /// Legs it would book onto transactions an earlier run created.
+    attached_postings: usize,
+    /// Postings it could not persist, whatever the cause.
+    skipped_postings: usize,
+    /// Account paths that resolve to no account, deduplicated and sorted.
+    unresolved_accounts: Vec<String>,
+    /// The distinct unregistered codes encountered, sorted.
+    unresolved_commodities: Vec<String>,
+    /// Tag paths the run would create, sorted.
+    would_create_tags: Vec<String>,
+    /// Per-account sums of the legs that would post, keyed by rendered
+    /// account path, each holding one `(commodity, total)` entry per
+    /// commodity touched. An account whose legs net to zero still holds an
+    /// entry, with an empty commodity list — touched, but netting to
+    /// nothing, which is not the same as untouched.
+    account_totals: Vec<(String, Vec<(String, Decimal)>)>,
+    /// Every leg or row the run would skip, with its cause and location.
+    diagnostics: Vec<PlanDiagnostic>,
+}
+
+impl From<&bc_core::ImportPlan> for PlanReport {
+    #[inline]
+    fn from(plan: &bc_core::ImportPlan) -> Self {
+        Self {
+            new_transactions: plan.new_transactions,
+            attached_postings: plan.attached_postings,
+            skipped_postings: plan.skipped_postings,
+            unresolved_accounts: plan.unresolved_accounts.clone(),
+            unresolved_commodities: plan.unresolved_commodities.clone(),
+            would_create_tags: plan.would_create_tags.clone(),
+            account_totals: plan
+                .account_totals
+                .iter()
+                .map(|(path, balances)| {
+                    (
+                        path.clone(),
+                        balances
+                            .iter()
+                            .map(|(code, amount)| (code.to_owned(), amount))
+                            .collect(),
+                    )
+                })
+                .collect(),
+            diagnostics: plan
+                .diagnostics
+                .iter()
+                .map(|diagnostic| PlanDiagnostic {
+                    location: diagnostic.location.clone(),
+                    cause: diagnostic.cause,
+                    detail: diagnostic.detail.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// How many locations a skip-cause group prints before it truncates.
+const MAX_SAMPLE_LOCATIONS: usize = 3;
+
+/// Renders the "skipped" block: a header naming the total, then one line per
+/// [`bc_core::SkipCause`], ordered by descending count.
+///
+/// Every group names its own total (`SkipCause::label` count), and location
+/// samples cap at [`MAX_SAMPLE_LOCATIONS`] with an explicit `… N of M` when
+/// the group holds more than that — a silent cap would read as "that is all
+/// of them".
+///
+/// # Arguments
+///
+/// * `plan` - The report to render the skipped block for.
+///
+/// # Returns
+///
+/// The block's lines, not yet joined with the rest of the report.
+fn render_skips(plan: &PlanReport) -> Vec<String> {
+    let mut groups: std::collections::BTreeMap<&'static str, Vec<&PlanDiagnostic>> =
+        std::collections::BTreeMap::new();
+    for diagnostic in &plan.diagnostics {
+        groups
+            .entry(diagnostic.cause.label())
+            .or_default()
+            .push(diagnostic);
+    }
+    let mut grouped: Vec<(&'static str, Vec<&PlanDiagnostic>)> = groups.into_iter().collect();
+    grouped.sort_by(|left, right| right.1.len().cmp(&left.1.len()).then(left.0.cmp(right.0)));
+
+    let mut lines = vec![format!("skipped {}", plural(plan.skipped_postings, "leg"))];
+    for (label, entries) in grouped {
+        let total = entries.len();
+        let locations: Vec<&str> = entries
+            .iter()
+            .take(MAX_SAMPLE_LOCATIONS)
+            .map(|diagnostic| diagnostic.location.as_str())
+            .collect();
+        let shown = locations.len();
+        let listed = locations.join(", ");
+        let suffix = if total > MAX_SAMPLE_LOCATIONS {
+            format!(" … {shown} of {total}")
+        } else {
+            String::new()
+        };
+        lines.push(format!("  {label:<24}{total:>6}   {listed}{suffix}"));
+    }
+    lines
+}
+
+/// Renders the per-account `WOULD POST` table.
+///
+/// One row per `(account, commodity)`, so an account touched in several
+/// commodities repeats its path once per row rather than cramming every
+/// commodity onto one line. An account whose legs net to zero still gets a
+/// row, reading `nets to zero`, so it is not mistaken for an account the run
+/// never touched.
+///
+/// # Arguments
+///
+/// * `plan` - The report to render the account table for.
+///
+/// # Returns
+///
+/// The block's lines, not yet joined with the rest of the report.
+fn render_account_totals(plan: &PlanReport) -> Vec<String> {
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for (path, entries) in &plan.account_totals {
+        if entries.is_empty() {
+            rows.push((path.clone(), "nets to zero".to_owned()));
+            continue;
+        }
+        for (code, amount) in entries {
+            rows.push((path.clone(), format!("{amount} {code}")));
+        }
+    }
+
+    let account_width = rows
+        .iter()
+        .map(|(path, _)| path.len())
+        .chain(core::iter::once("ACCOUNT".len()))
+        .max()
+        .unwrap_or_default();
+
+    let mut lines = vec![format!("{:<account_width$}  WOULD POST", "ACCOUNT")];
+    lines.extend(
+        rows.iter()
+            .map(|(path, amount)| format!("{path:<account_width$}  {amount:>12}")),
+    );
+    lines
+}
+
+/// Renders the human-readable dry-run report.
+///
+/// Leads with what is broken — the unresolved accounts and commodities, then
+/// the legs skipped and why — because the report exists for profile tuning:
+/// someone iterating on date formats, sign conventions and column indices
+/// needs to see what is wrong before what would otherwise succeed. The
+/// per-account `WOULD POST` table closes the report, so an inverted sign or a
+/// misdirected column shows up immediately.
+///
+/// Every section but the header and the totals line is omitted when its own
+/// count is zero.
+///
+/// # Arguments
+///
+/// * `plan` - What the run would do.
+/// * `profile` - Name of the profile driving the run.
+/// * `importer` - Stable name of the importer the profile uses.
+///
+/// # Returns
+///
+/// The report, newline-terminated.
+fn render_plan(plan: &PlanReport, profile: &str, importer: &str) -> String {
+    let mut blocks: Vec<Vec<String>> = vec![vec![
+        format!("dry run — profile '{profile}', importer '{importer}'"),
+        "nothing was written".to_owned(),
+    ]];
+
+    let mut worklist: Vec<String> = Vec::new();
+    if !plan.unresolved_accounts.is_empty() {
+        worklist.push(format!(
+            "unresolved accounts ({})",
+            plan.unresolved_accounts.len()
+        ));
+        worklist.extend(
+            plan.unresolved_accounts
+                .iter()
+                .map(|path| format!("  {path}")),
+        );
+    }
+    if !plan.unresolved_commodities.is_empty() {
+        worklist.push(format!(
+            "unregistered commodities ({})",
+            plan.unresolved_commodities.len()
+        ));
+        worklist.push(format!("  {}", plan.unresolved_commodities.join(", ")));
+    }
+    if !worklist.is_empty() {
+        blocks.push(worklist);
+    }
+
+    if !plan.diagnostics.is_empty() {
+        blocks.push(render_skips(plan));
+    }
+
+    let mut totals = vec![format!(
+        "would create {}, attach {} to existing",
+        plural(plan.new_transactions, "new transaction"),
+        plural(plan.attached_postings, "posting"),
+    )];
+    if !plan.would_create_tags.is_empty() {
+        totals.push(format!(
+            "would create {}: {}",
+            plural(plan.would_create_tags.len(), "tag"),
+            plan.would_create_tags.join(", "),
+        ));
+    }
+    blocks.push(totals);
+
+    if !plan.account_totals.is_empty() {
+        blocks.push(render_account_totals(plan));
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    for (index, block) in blocks.iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.extend(block.iter().cloned());
+    }
+    lines.push(String::new());
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
+    use bc_core::SkipCause;
     use bc_models::AccountId;
     use bc_models::AccountKind;
     use bc_models::AccountType;
@@ -663,8 +958,11 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::Command;
+    use super::PlanDiagnostic;
+    use super::PlanReport;
     use super::Report;
     use super::plural;
+    use super::render_plan;
 
     /// Wrapper needed because `Args` is a subcommand arg group.
     #[derive(clap::Parser)]
@@ -816,6 +1114,120 @@ mod tests {
         );
     }
 
+    /// A [`PlanReport`] exercising every section: unresolved accounts and
+    /// commodities, two skip causes, tags it would create, and per-account
+    /// totals including one account whose legs net to zero.
+    fn sample_report() -> PlanReport {
+        PlanReport {
+            new_transactions: 2,
+            attached_postings: 1,
+            skipped_postings: 3,
+            unresolved_accounts: vec![
+                "Expenses:Utilities:Gas".to_owned(),
+                "Income:Interest".to_owned(),
+            ],
+            unresolved_commodities: vec!["DOT".to_owned(), "XRP".to_owned()],
+            would_create_tags: vec!["groceries".to_owned(), "holiday".to_owned()],
+            account_totals: vec![
+                (
+                    "Assets:BankA:Checking".to_owned(),
+                    vec![("AUD".to_owned(), Decimal::new(-1_240_518, 2))],
+                ),
+                (
+                    "Assets:Crypto:ExchangeA".to_owned(),
+                    vec![("BTC".to_owned(), Decimal::new(75, 2))],
+                ),
+                ("Expenses:Groceries".to_owned(), Vec::new()),
+            ],
+            diagnostics: vec![
+                PlanDiagnostic {
+                    location: "bank-a-2024-03.csv:14".to_owned(),
+                    cause: SkipCause::UnresolvedAccount,
+                    detail: "Expenses:Utilities:Gas".to_owned(),
+                },
+                PlanDiagnostic {
+                    location: "bank-a-2024-07.csv:88".to_owned(),
+                    cause: SkipCause::AmbiguousResidual,
+                    detail: "2 legs, two or more elided".to_owned(),
+                },
+            ],
+        }
+    }
+
+    /// A [`PlanReport`] whose sole skip cause is charged `count` times, each
+    /// against a distinct location — enough to exercise the truncation rule
+    /// at whatever count the caller wants to probe.
+    fn report_with_many_skips(count: usize) -> PlanReport {
+        PlanReport {
+            new_transactions: 0,
+            attached_postings: 0,
+            skipped_postings: count,
+            unresolved_accounts: vec!["Expenses:Utilities:Gas".to_owned()],
+            unresolved_commodities: Vec::new(),
+            would_create_tags: Vec::new(),
+            account_totals: Vec::new(),
+            diagnostics: (0..count)
+                .map(|index| PlanDiagnostic {
+                    location: format!("bank-a-2024-03.csv:{}", 14_usize.saturating_add(index)),
+                    cause: SkipCause::UnresolvedAccount,
+                    detail: "Expenses:Utilities:Gas".to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn render_plan_leads_with_what_is_missing() {
+        let report = sample_report();
+
+        let rendered = render_plan(&report, "bank-a-checking", "csv");
+
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn render_plan_states_the_denominator_when_it_truncates() {
+        let report = report_with_many_skips(201);
+
+        let rendered = render_plan(&report, "bank-a-checking", "csv");
+
+        assert!(rendered.contains("3 of 201"), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn render_plan_says_nothing_was_written() {
+        let report = sample_report();
+
+        let rendered = render_plan(&report, "bank-a-checking", "csv");
+
+        assert!(rendered.contains("nothing was written"), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn render_plan_marks_a_zero_net_account_as_touched() {
+        let report = sample_report();
+
+        let rendered = render_plan(&report, "bank-a-checking", "csv");
+
+        assert!(
+            rendered.contains("Expenses:Groceries") && rendered.contains("nets to zero"),
+            "an account whose legs net to zero must still show a row, not be omitted: got:\n\
+             {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_plan_does_not_truncate_a_group_at_the_cap() {
+        let report = report_with_many_skips(3);
+
+        let rendered = render_plan(&report, "bank-a-checking", "csv");
+
+        assert!(
+            !rendered.contains('…'),
+            "a group at or under the cap must print in full with no ellipsis: got:\n{rendered}"
+        );
+    }
+
     /// An importer that yields one single-leg transaction, so a run can be
     /// exercised without a compiled WASM plugin.
     struct StubImporter;
@@ -942,6 +1354,7 @@ mod tests {
         super::execute_run(
             super::RunArgs {
                 profile: "nightly".to_owned(),
+                dry_run: false,
             },
             &ctx,
         )
@@ -965,6 +1378,7 @@ mod tests {
         super::execute_run(
             super::RunArgs {
                 profile: "nightly".to_owned(),
+                dry_run: false,
             },
             &ctx,
         )
