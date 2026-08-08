@@ -28,7 +28,8 @@ fn list_empty_json() {
 #[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
 fn parse_account_id(stdout: &[u8]) -> String {
     let json: serde_json::Value = serde_json::from_slice(stdout).expect("valid JSON");
-    json.get("id")
+    json.get("account")
+        .and_then(|account| account.get("id"))
         .and_then(serde_json::Value::as_str)
         .expect("id field")
         .to_owned()
@@ -39,24 +40,14 @@ fn parse_account_id(stdout: &[u8]) -> String {
 fn setup_accounts(ctx: &TestContext) -> (String, String) {
     let checking_out = ctx
         .command()
-        .args([
-            "--json", "account", "create", "--name", "Checking", "--type", "asset",
-        ])
+        .args(["--json", "account", "create", "Assets:Checking"])
         .output()
         .expect("create checking");
     let checking_id = parse_account_id(&checking_out.stdout);
 
     let expenses_out = ctx
         .command()
-        .args([
-            "--json",
-            "account",
-            "create",
-            "--name",
-            "Groceries",
-            "--type",
-            "expense",
-        ])
+        .args(["--json", "account", "create", "Expenses:Groceries"])
         .output()
         .expect("create expenses");
     let expenses_id = parse_account_id(&expenses_out.stdout);

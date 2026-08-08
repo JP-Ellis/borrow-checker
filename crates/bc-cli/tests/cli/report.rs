@@ -73,7 +73,6 @@ fn net_worth_includes_manual_asset_at_market_value() {
             "--json",
             "account",
             "create",
-            "--name",
             "Family Home",
             "--type",
             "asset",
@@ -84,7 +83,8 @@ fn net_worth_includes_manual_asset_at_market_value() {
         .expect("create ManualAsset");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
     let account_id = json
-        .get("id")
+        .get("account")
+        .and_then(|account| account.get("id"))
         .and_then(serde_json::Value::as_str)
         .expect("id field")
         .to_owned();

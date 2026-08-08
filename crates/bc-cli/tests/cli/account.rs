@@ -25,47 +25,98 @@ fn list_empty_json() {
 }
 
 #[test]
-fn create_asset_account() {
+fn create_nested_path() {
     let ctx = TestContext::new();
     let mut cmd = ctx.command();
-    cmd.args([
-        "account",
-        "create",
-        "--name",
-        "Bank Savings",
-        "--type",
-        "asset",
-    ]);
+    cmd.args(["account", "create", "Assets:BankA:Checking"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
 #[test]
-fn create_account_json() {
+fn create_nested_path_json() {
     let ctx = TestContext::new();
     let mut cmd = ctx.command();
-    cmd.args([
-        "--json",
-        "account",
-        "create",
-        "--name",
-        "Bank Savings",
-        "--type",
-        "asset",
-    ]);
+    cmd.args(["--json", "account", "create", "Assets:BankA:Checking"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
 #[test]
-fn create_then_list() {
+fn create_root_account() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["account", "create", "Assets"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn create_then_list_shows_group_ancestors() {
     let ctx = TestContext::new();
 
     ctx.command()
-        .args(["account", "create", "--name", "Savings", "--type", "asset"])
+        .args(["account", "create", "Assets:BankA:Checking"])
         .output()
         .expect("create");
 
     let mut cmd = ctx.command();
     cmd.args(["account", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn re_creating_the_same_path_is_a_no_op() {
+    let ctx = TestContext::new();
+
+    ctx.command()
+        .args(["account", "create", "Assets:BankA:Checking"])
+        .output()
+        .expect("first create");
+
+    let mut cmd = ctx.command();
+    cmd.args(["account", "create", "Assets:BankA:Checking"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn create_with_an_underivable_root_reports_the_known_roots() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["account", "create", "Cash:Wallet"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn create_with_an_underivable_root_and_explicit_type_succeeds() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["account", "create", "Cash:Wallet", "--type", "asset"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn create_with_a_malformed_path_is_rejected() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["account", "create", "Assets::Checking"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn create_with_a_conflicting_kind_is_rejected() {
+    let ctx = TestContext::new();
+
+    ctx.command()
+        .args(["account", "create", "Assets:BankA:Checking"])
+        .output()
+        .expect("first create");
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "account",
+        "create",
+        "Assets:BankA:Checking",
+        "--kind",
+        "manual-asset",
+    ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
@@ -79,7 +130,6 @@ fn archive_existing_account() {
             "--json",
             "account",
             "create",
-            "--name",
             "Old Account",
             "--type",
             "asset",
@@ -88,7 +138,8 @@ fn archive_existing_account() {
         .expect("create");
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
     let id = json
-        .get("id")
+        .get("account")
+        .and_then(|account| account.get("id"))
         .and_then(serde_json::Value::as_str)
         .expect("id field");
 
@@ -110,19 +161,12 @@ fn archive_nonexistent_returns_error() {
 fn create_account(ctx: &TestContext, name: &str, account_type: &str) -> String {
     let output = ctx
         .command()
-        .args([
-            "--json",
-            "account",
-            "create",
-            "--name",
-            name,
-            "--type",
-            account_type,
-        ])
+        .args(["--json", "account", "create", name, "--type", account_type])
         .output()
         .expect("create");
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
-    json.get("id")
+    json.get("account")
+        .and_then(|account| account.get("id"))
         .and_then(serde_json::Value::as_str)
         .expect("id field")
         .to_owned()

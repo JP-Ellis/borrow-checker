@@ -90,14 +90,7 @@ fn restore_reopens_with_backup_content_not_stale_wal() {
 
     // Original, distinguishable state: a single account.
     bc(db_arg, &bk)
-        .args([
-            "account",
-            "create",
-            "--name",
-            "AlphaMarker",
-            "--type",
-            "asset",
-        ])
+        .args(["account", "create", "AlphaMarker", "--type", "asset"])
         .assert()
         .success();
 
@@ -109,14 +102,7 @@ fn restore_reopens_with_backup_content_not_stale_wal() {
 
     // Mutate the live database: add a second account absent from the backup.
     bc(db_arg, &bk)
-        .args([
-            "account",
-            "create",
-            "--name",
-            "BetaMutation",
-            "--type",
-            "asset",
-        ])
+        .args(["account", "create", "BetaMutation", "--type", "asset"])
         .assert()
         .success();
 

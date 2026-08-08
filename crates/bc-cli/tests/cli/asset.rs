@@ -12,7 +12,8 @@ use crate::common::TestContext;
 #[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
 fn parse_account_id(stdout: &[u8]) -> String {
     let json: serde_json::Value = serde_json::from_slice(stdout).expect("valid JSON");
-    json.get("id")
+    json.get("account")
+        .and_then(|account| account.get("id"))
         .and_then(serde_json::Value::as_str)
         .expect("id field")
         .to_owned()
@@ -27,7 +28,6 @@ fn create_manual_asset(ctx: &TestContext, name: &str) -> String {
             "--json",
             "account",
             "create",
-            "--name",
             name,
             "--type",
             "asset",
@@ -56,7 +56,6 @@ fn create_manual_asset_no_policy(ctx: &TestContext, name: &str) -> String {
             "--json",
             "account",
             "create",
-            "--name",
             name,
             "--type",
             "asset",
@@ -81,7 +80,6 @@ fn create_receivable(ctx: &TestContext, name: &str) -> String {
             "--json",
             "account",
             "create",
-            "--name",
             name,
             "--type",
             "asset",
@@ -98,9 +96,7 @@ fn create_receivable(ctx: &TestContext, name: &str) -> String {
 fn create_deposit_account(ctx: &TestContext, name: &str) -> String {
     let out = ctx
         .command()
-        .args([
-            "--json", "account", "create", "--name", name, "--type", "asset",
-        ])
+        .args(["--json", "account", "create", name, "--type", "asset"])
         .output()
         .expect("create DepositAccount");
     parse_account_id(&out.stdout)
@@ -254,7 +250,6 @@ fn depreciate_wrong_account_kind_fails() {
             "--json",
             "account",
             "create",
-            "--name",
             "Depreciation Expense",
             "--type",
             "expense",
@@ -295,7 +290,6 @@ fn depreciate_no_policy_returns_error() {
             "--json",
             "account",
             "create",
-            "--name",
             "Depreciation Expense",
             "--type",
             "expense",
