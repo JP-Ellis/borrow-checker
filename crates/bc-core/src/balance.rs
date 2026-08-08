@@ -182,7 +182,7 @@ impl Engine {
 
     /// Computes total net worth in `commodity` across all asset and liability accounts.
     ///
-    /// - [`DepositAccount`], [`Receivable`], [`VirtualAllocation`]: balance from postings.
+    /// - [`DepositAccount`], [`Receivable`], [`VirtualAllocation`], [`Group`]: balance from postings.
     /// - [`ManualAsset`]: latest recorded market value from `asset_valuations`.
     /// - Accounts with `AccountType` other than `Asset`/`Liability` are excluded.
     ///
@@ -196,6 +196,7 @@ impl Engine {
     /// [`Receivable`]: bc_models::AccountKind::Receivable
     /// [`VirtualAllocation`]: bc_models::AccountKind::VirtualAllocation
     /// [`ManualAsset`]: bc_models::AccountKind::ManualAsset
+    /// [`Group`]: bc_models::AccountKind::Group
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "intentional fallback with warning for future AccountKind variants"
@@ -229,9 +230,8 @@ impl Engine {
                 }
                 AccountKind::DepositAccount
                 | AccountKind::Receivable
-                | AccountKind::VirtualAllocation => {
-                    self.balance_for(account.id(), commodity).await?.value()
-                }
+                | AccountKind::VirtualAllocation
+                | AccountKind::Group => self.balance_for(account.id(), commodity).await?.value(),
                 _ => {
                     tracing::warn!(
                         account_id = %account.id(),
@@ -2825,5 +2825,35 @@ mod tests {
         // Only the 2026-04-01 transaction is in window; its elided bank leg absorbs -50.
         assert_eq!(inflow.value(), dec!(0));
         assert_eq!(outflow.value(), dec!(50.00));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_group_account_contributes_zero_without_warning(pool: SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let group = accounts
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::Group)
+            .call()
+            .await
+            .expect("create the group account");
+
+        let engine = Engine::new(pool.clone());
+        let total = engine.net_worth("AUD").await.expect("net worth");
+
+        assert_eq!(
+            total.value(),
+            Decimal::ZERO,
+            "a Group account holds no postings, so it contributes nothing"
+        );
+        assert_eq!(
+            engine
+                .balance_for(&group, "AUD")
+                .await
+                .expect("balance")
+                .value(),
+            Decimal::ZERO
+        );
     }
 }

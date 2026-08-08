@@ -194,6 +194,7 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
                 bc_models::AccountKind::ManualAsset => "ManualAsset",
                 bc_models::AccountKind::Receivable => "Receivable",
                 bc_models::AccountKind::VirtualAllocation => "VirtualAllocation",
+                bc_models::AccountKind::Group => "Group",
                 _ => "Unknown",
             };
             vec![

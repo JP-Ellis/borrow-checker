@@ -43,6 +43,15 @@ pub enum Kind {
     ///
     /// Examples: earmarked sub-accounts within an offset account.
     VirtualAllocation,
+    /// Organisational node that holds no postings of its own.
+    ///
+    /// Created implicitly as an ancestor when a nested account path is
+    /// materialised (`Assets:BankA` when creating `Assets:BankA:Checking`), or
+    /// explicitly via `--kind group`. It exists to give the tree its shape;
+    /// balances belong to its descendants.
+    ///
+    /// Examples: `Assets`, `Assets:BankA`, `Expenses:Food`.
+    Group,
 }
 
 /// The classification of an account in the chart of accounts.
@@ -532,5 +541,14 @@ mod tests {
             acct.depreciation_policy(),
             Some(DepreciationPolicy::StraightLine { .. })
         ));
+    }
+
+    #[test]
+    fn group_kind_round_trips_through_serde() {
+        let json = serde_json::to_string(&Kind::Group).expect("serialise Kind::Group");
+        assert_eq!(json, "\"group\"");
+
+        let parsed: Kind = serde_json::from_str("\"group\"").expect("deserialise Kind::Group");
+        assert_eq!(parsed, Kind::Group);
     }
 }

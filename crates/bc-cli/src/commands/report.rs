@@ -114,6 +114,7 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
             bc_models::AccountKind::ManualAsset => "manual asset",
             bc_models::AccountKind::Receivable => "receivable",
             bc_models::AccountKind::VirtualAllocation => "virtual",
+            bc_models::AccountKind::Group => "group",
             _ => "unknown",
         }
     }
