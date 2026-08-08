@@ -98,6 +98,13 @@ pub struct ImportOutcome {
     /// Every leg or row this run could not persist, in encounter order, with
     /// the cause and the document location. The counts above are the totals of
     /// these; this is the per-row detail behind them.
+    ///
+    /// Granularity differs by cause. A leg or row diagnostic is recorded per
+    /// occurrence, so two rows naming one missing account yield two entries.
+    /// A [`SkipCause::MalformedTag`] is recorded per distinct spelling, because
+    /// tag paths are deduplicated before they are parsed: one bad tag named by
+    /// two hundred rows yields a single entry, carrying the first row's
+    /// location. Such an entry costs no posting and so appears in no count.
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -149,6 +156,7 @@ impl Counts {
             SkipCause::UnresolvedAccount => &mut self.unresolved_account_postings,
             SkipCause::UnresolvedCommodity => &mut self.unresolved_commodity_postings,
             SkipCause::MalformedPath
+            | SkipCause::MalformedTag
             | SkipCause::BlankCommodity
             | SkipCause::AmbiguousResidual
             | SkipCause::UndeterminedResidual
@@ -179,6 +187,9 @@ pub enum SkipCause {
     UnresolvedCommodity,
     /// The leg's account path could not be parsed.
     MalformedPath,
+    /// A tag path stated by the row or one of its legs could not be parsed. The
+    /// tag is dropped and the leg still persists, so this costs no posting.
+    MalformedTag,
     /// The leg stated an amount with no commodity code.
     BlankCommodity,
     /// Two or more legs elide their amount, so the residual is undetermined.
@@ -210,6 +221,7 @@ impl SkipCause {
             Self::UnresolvedAccount => "unresolved account",
             Self::UnresolvedCommodity => "unregistered commodity",
             Self::MalformedPath => "malformed account path",
+            Self::MalformedTag => "malformed tag path",
             Self::BlankCommodity => "blank commodity code",
             Self::AmbiguousResidual => "ambiguous residual",
             Self::UndeterminedResidual => "undetermined residual",
@@ -547,6 +559,7 @@ fn resolve_legs(
                                 out.unresolved_commodity_postings.saturating_add(1);
                         }
                         SkipCause::MalformedPath
+                        | SkipCause::MalformedTag
                         | SkipCause::BlankCommodity
                         | SkipCause::AmbiguousResidual
                         | SkipCause::UndeterminedResidual
@@ -617,7 +630,7 @@ async fn ensure_tags(tags: &crate::TagService, raws: &[RawTransaction]) -> BcRes
                     );
                     diagnostics.push(Diagnostic {
                         location: location_of(raw).to_owned(),
-                        cause: SkipCause::MalformedPath,
+                        cause: SkipCause::MalformedTag,
                         detail: stated.clone(),
                     });
                 }
@@ -4181,6 +4194,38 @@ mod tests {
         assert_eq!(outcome.skipped_postings, 0);
         assert!(outcome.created_tags.is_empty());
         assert!(tag_names_of_transaction(&pool).await.is_empty());
+    }
+
+    /// A malformed tag is its own cause, not the account-path one: a report
+    /// grouping by cause and printing a count per group would otherwise
+    /// overstate the postings lost to malformed account paths. It is noted but
+    /// never charged, so no count moves.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_malformed_tag_is_diagnosed_without_being_charged(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .tags(vec!["person::alpha".to_owned()])
+            .postings(vec![leg("Assets:Bank", Some(50_i64))])
+            .build();
+
+        let outcome = run(&svcs, &[raw]).await;
+
+        let causes: Vec<SkipCause> = outcome.diagnostics.iter().map(|d| d.cause).collect();
+        assert_eq!(causes, vec![SkipCause::MalformedTag]);
+        let detail = outcome
+            .diagnostics
+            .first()
+            .map(|d| d.detail.clone())
+            .expect("one diagnostic");
+        assert_eq!(detail, "person::alpha");
+        assert_eq!(
+            outcome.other_skipped_postings, 0,
+            "a dropped tag costs the tag, never a posting"
+        );
+        assert_eq!(outcome.skipped_postings, 0);
     }
 
     /// The warn-once guard is keyed on the spelling, not the leg, so the second
