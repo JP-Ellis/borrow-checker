@@ -709,6 +709,27 @@ struct PlanReport {
     attached_postings: usize,
     /// Postings it could not persist, whatever the cause.
     skipped_postings: usize,
+    /// Postings whose account path names no existing account.
+    #[expect(
+        dead_code,
+        reason = "carried for parity with bc_core::ImportPlan so Task 6's JSON surface does \
+                   not need to widen this struct; the human report groups by cause instead"
+    )]
+    unresolved_account_postings: usize,
+    /// Postings whose commodity code names no registered commodity.
+    #[expect(
+        dead_code,
+        reason = "carried for parity with bc_core::ImportPlan so Task 6's JSON surface does \
+                   not need to widen this struct; the human report groups by cause instead"
+    )]
+    unresolved_commodity_postings: usize,
+    /// Postings skipped for any other reason.
+    #[expect(
+        dead_code,
+        reason = "carried for parity with bc_core::ImportPlan so Task 6's JSON surface does \
+                   not need to widen this struct; the human report groups by cause instead"
+    )]
+    other_skipped_postings: usize,
     /// Account paths that resolve to no account, deduplicated and sorted.
     unresolved_accounts: Vec<String>,
     /// The distinct unregistered codes encountered, sorted.
@@ -721,6 +742,11 @@ struct PlanReport {
     /// entry, with an empty commodity list — touched, but netting to
     /// nothing, which is not the same as untouched.
     account_totals: Vec<(String, Vec<(String, Decimal)>)>,
+    /// Postings charged to each cause, in the cause's declaration order.
+    /// This is what the skipped-legs table's count column renders — not the
+    /// same as counting `diagnostics` per cause, since one diagnostic can
+    /// charge several postings (or none at all).
+    charged_by_cause: Vec<(bc_core::SkipCause, usize)>,
     /// Every leg or row the run would skip, with its cause and location.
     diagnostics: Vec<PlanDiagnostic>,
 }
@@ -732,6 +758,9 @@ impl From<&bc_core::ImportPlan> for PlanReport {
             new_transactions: plan.new_transactions,
             attached_postings: plan.attached_postings,
             skipped_postings: plan.skipped_postings,
+            unresolved_account_postings: plan.unresolved_account_postings,
+            unresolved_commodity_postings: plan.unresolved_commodity_postings,
+            other_skipped_postings: plan.other_skipped_postings,
             unresolved_accounts: plan.unresolved_accounts.clone(),
             unresolved_commodities: plan.unresolved_commodities.clone(),
             would_create_tags: plan.would_create_tags.clone(),
@@ -748,6 +777,7 @@ impl From<&bc_core::ImportPlan> for PlanReport {
                     )
                 })
                 .collect(),
+            charged_by_cause: plan.charged_by_cause.clone(),
             diagnostics: plan
                 .diagnostics
                 .iter()
@@ -765,12 +795,15 @@ impl From<&bc_core::ImportPlan> for PlanReport {
 const MAX_SAMPLE_LOCATIONS: usize = 3;
 
 /// Renders the "skipped" block: a header naming the total, then one line per
-/// [`bc_core::SkipCause`], ordered by descending count.
+/// [`bc_core::SkipCause`], ordered by descending charged-leg count.
 ///
-/// Every group names its own total (`SkipCause::label` count), and location
-/// samples cap at [`MAX_SAMPLE_LOCATIONS`] with an explicit `… N of M` when
-/// the group holds more than that — a silent cap would read as "that is all
-/// of them".
+/// The count column renders [`PlanReport::charged_by_cause`], not the number
+/// of diagnostics in the group — a cause charges the postings it costs, and a
+/// single diagnostic can speak for several of them (or, for
+/// `SkipCause::MalformedTag`, for none). Location samples are a separate
+/// concern: they cap at [`MAX_SAMPLE_LOCATIONS`] with an explicit `… N of M`
+/// naming how many diagnostics the group holds, whenever the group holds more
+/// than that — a silent cap would read as "that is all of them".
 ///
 /// # Arguments
 ///
@@ -780,20 +813,27 @@ const MAX_SAMPLE_LOCATIONS: usize = 3;
 ///
 /// The block's lines, not yet joined with the rest of the report.
 fn render_skips(plan: &PlanReport) -> Vec<String> {
-    let mut groups: std::collections::BTreeMap<&'static str, Vec<&PlanDiagnostic>> =
+    let charged: std::collections::BTreeMap<bc_core::SkipCause, usize> =
+        plan.charged_by_cause.iter().copied().collect();
+
+    let mut groups: std::collections::BTreeMap<bc_core::SkipCause, Vec<&PlanDiagnostic>> =
         std::collections::BTreeMap::new();
     for diagnostic in &plan.diagnostics {
-        groups
-            .entry(diagnostic.cause.label())
-            .or_default()
-            .push(diagnostic);
+        groups.entry(diagnostic.cause).or_default().push(diagnostic);
     }
-    let mut grouped: Vec<(&'static str, Vec<&PlanDiagnostic>)> = groups.into_iter().collect();
-    grouped.sort_by(|left, right| right.1.len().cmp(&left.1.len()).then(left.0.cmp(right.0)));
+    let mut grouped: Vec<(bc_core::SkipCause, Vec<&PlanDiagnostic>)> = groups.into_iter().collect();
+    grouped.sort_by(|left, right| {
+        let left_charged = charged.get(&left.0).copied().unwrap_or_default();
+        let right_charged = charged.get(&right.0).copied().unwrap_or_default();
+        right_charged
+            .cmp(&left_charged)
+            .then(left.0.label().cmp(right.0.label()))
+    });
 
     let mut lines = vec![format!("skipped {}", plural(plan.skipped_postings, "leg"))];
-    for (label, entries) in grouped {
-        let total = entries.len();
+    for (cause, entries) in grouped {
+        let charged_count = charged.get(&cause).copied().unwrap_or_default();
+        let location_total = entries.len();
         let locations: Vec<&str> = entries
             .iter()
             .take(MAX_SAMPLE_LOCATIONS)
@@ -801,14 +841,28 @@ fn render_skips(plan: &PlanReport) -> Vec<String> {
             .collect();
         let shown = locations.len();
         let listed = locations.join(", ");
-        let suffix = if total > MAX_SAMPLE_LOCATIONS {
-            format!(" … {shown} of {total}")
+        let suffix = if location_total > MAX_SAMPLE_LOCATIONS {
+            format!(" … {shown} of {location_total}")
         } else {
             String::new()
         };
-        lines.push(format!("  {label:<24}{total:>6}   {listed}{suffix}"));
+        let label = cause.label();
+        lines.push(format!(
+            "  {label:<24}{charged_count:>6}   {listed}{suffix}"
+        ));
     }
     lines
+}
+
+/// One row of the `WOULD POST` table.
+struct AccountRow {
+    /// The account's rendered path.
+    path: String,
+    /// The numeral, or `nets to zero` when the account's legs net to
+    /// nothing — in which case `code` is empty.
+    amount: String,
+    /// The commodity code, or empty for a `nets to zero` row.
+    code: String,
 }
 
 /// Renders the per-account `WOULD POST` table.
@@ -819,6 +873,11 @@ fn render_skips(plan: &PlanReport) -> Vec<String> {
 /// row, reading `nets to zero`, so it is not mistaken for an account the run
 /// never touched.
 ///
+/// The amount is right-aligned in its own column and the commodity code
+/// follows in a second, left-aligned one, so a wrong sign or magnitude is
+/// spottable at a glance regardless of how many digits or which code shares
+/// the row above or below it.
+///
 /// # Arguments
 ///
 /// * `plan` - The report to render the account table for.
@@ -827,29 +886,51 @@ fn render_skips(plan: &PlanReport) -> Vec<String> {
 ///
 /// The block's lines, not yet joined with the rest of the report.
 fn render_account_totals(plan: &PlanReport) -> Vec<String> {
-    let mut rows: Vec<(String, String)> = Vec::new();
+    let mut rows: Vec<AccountRow> = Vec::new();
     for (path, entries) in &plan.account_totals {
         if entries.is_empty() {
-            rows.push((path.clone(), "nets to zero".to_owned()));
+            rows.push(AccountRow {
+                path: path.clone(),
+                amount: "nets to zero".to_owned(),
+                code: String::new(),
+            });
             continue;
         }
         for (code, amount) in entries {
-            rows.push((path.clone(), format!("{amount} {code}")));
+            rows.push(AccountRow {
+                path: path.clone(),
+                amount: amount.to_string(),
+                code: code.clone(),
+            });
         }
     }
 
     let account_width = rows
         .iter()
-        .map(|(path, _)| path.len())
+        .map(|row| row.path.len())
         .chain(core::iter::once("ACCOUNT".len()))
+        .max()
+        .unwrap_or_default();
+    let amount_width = rows
+        .iter()
+        .map(|row| row.amount.len())
         .max()
         .unwrap_or_default();
 
     let mut lines = vec![format!("{:<account_width$}  WOULD POST", "ACCOUNT")];
-    lines.extend(
-        rows.iter()
-            .map(|(path, amount)| format!("{path:<account_width$}  {amount:>12}")),
-    );
+    lines.extend(rows.iter().map(|row| {
+        if row.code.is_empty() {
+            format!(
+                "{:<account_width$}  {:>amount_width$}",
+                row.path, row.amount
+            )
+        } else {
+            format!(
+                "{:<account_width$}  {:>amount_width$}  {}",
+                row.path, row.amount, row.code
+            )
+        }
+    }));
     lines
 }
 
@@ -1122,6 +1203,9 @@ mod tests {
             new_transactions: 2,
             attached_postings: 1,
             skipped_postings: 3,
+            unresolved_account_postings: 1,
+            unresolved_commodity_postings: 0,
+            other_skipped_postings: 2,
             unresolved_accounts: vec![
                 "Expenses:Utilities:Gas".to_owned(),
                 "Income:Interest".to_owned(),
@@ -1138,6 +1222,14 @@ mod tests {
                     vec![("BTC".to_owned(), Decimal::new(75, 2))],
                 ),
                 ("Expenses:Groceries".to_owned(), Vec::new()),
+            ],
+            // AmbiguousResidual is charged 2 (the row's two legs, noted once
+            // for the whole row) against UnresolvedAccount's 1, so the skip
+            // table's descending-count order is exercised, not just its
+            // alphabetical tie-break.
+            charged_by_cause: vec![
+                (SkipCause::UnresolvedAccount, 1),
+                (SkipCause::AmbiguousResidual, 2),
             ],
             diagnostics: vec![
                 PlanDiagnostic {
@@ -1162,10 +1254,14 @@ mod tests {
             new_transactions: 0,
             attached_postings: 0,
             skipped_postings: count,
+            unresolved_account_postings: count,
+            unresolved_commodity_postings: 0,
+            other_skipped_postings: 0,
             unresolved_accounts: vec!["Expenses:Utilities:Gas".to_owned()],
             unresolved_commodities: Vec::new(),
             would_create_tags: Vec::new(),
             account_totals: Vec::new(),
+            charged_by_cause: vec![(SkipCause::UnresolvedAccount, count)],
             diagnostics: (0..count)
                 .map(|index| PlanDiagnostic {
                     location: format!("bank-a-2024-03.csv:{}", 14_usize.saturating_add(index)),
@@ -1192,6 +1288,29 @@ mod tests {
         let rendered = render_plan(&report, "bank-a-checking", "csv");
 
         assert!(rendered.contains("3 of 201"), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn render_plan_orders_skip_causes_by_descending_charged_legs() {
+        // sample_report charges ambiguous residual 2 legs against unresolved
+        // account's 1, so a comparator flipped to ascending — or one that
+        // only ever breaks the alphabetical tie — would still pass a bare
+        // snapshot diff. Pin the order explicitly.
+        let report = sample_report();
+
+        let rendered = render_plan(&report, "bank-a-checking", "csv");
+
+        let ambiguous = rendered
+            .find("\n  ambiguous residual")
+            .expect("an ambiguous residual row");
+        let unresolved = rendered
+            .find("\n  unresolved account ")
+            .expect("an unresolved account row");
+        assert!(
+            ambiguous < unresolved,
+            "ambiguous residual charges 2 legs against unresolved account's 1, so it must sort \
+             first: got:\n{rendered}"
+        );
     }
 
     #[test]
