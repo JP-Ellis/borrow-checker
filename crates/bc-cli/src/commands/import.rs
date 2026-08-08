@@ -1630,6 +1630,8 @@ mod tests {
         let ctx = crate::context::AppContext {
             json: false,
             fortnightly_anchor: None,
+            fy_start_month: 7,
+            fy_start_day: 1,
             plugin_registry: bc_plugins::PluginRegistry::load(&[], None)
                 .expect("empty plugin registry"),
             importers,
