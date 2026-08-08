@@ -6,4 +6,4 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: invalid input: cannot derive an account type from root segment 'Cash'; expected one of Assets, Liabilities, Equity, Income, Expenses; pass an explicit type to set it
+error: cannot derive an account type from root segment 'Cash'; expected one of Assets, Liabilities, Equity, Income, Expenses; pass --type to set it explicitly

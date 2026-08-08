@@ -238,8 +238,13 @@ async fn create(
     depreciation_policy: Option<DepreciationPolicyArg>,
     annual_rate: Option<String>,
 ) -> CliResult<()> {
-    let parsed = bc_core::AccountPath::parse(&path)
-        .map_err(|e| crate::error::CliError::Arg(format!("invalid account path '{path}': {e}")))?;
+    let parsed = bc_core::AccountPath::parse(&path).map_err(|err| {
+        if let bc_core::BcError::BadData(msg) = err {
+            crate::error::CliError::Arg(msg)
+        } else {
+            crate::error::CliError::Arg(format!("invalid account path '{path}': {err}"))
+        }
+    })?;
 
     let bc_type = account_type.map(|arg| match arg {
         TypeArg::Asset => AccountType::Asset,
@@ -302,9 +307,11 @@ async fn create(
         .maybe_depreciation_policy(depr_policy)
         .build();
 
-    // create_paths, not create_path: the CLI reports which ancestors it minted,
-    // which only the batch form returns.
-    let outcome = ctx.accounts.create_paths(&[spec]).await?;
+    let outcome = ctx
+        .accounts
+        .create_paths(&[spec])
+        .await
+        .map_err(reword_underivable_root_error)?;
     let account_id = outcome
         .ids
         .get(&rendered)
@@ -338,6 +345,20 @@ async fn create(
         }
     }
     Ok(())
+}
+
+/// Names the `--type` flag in the core's underivable-root error.
+///
+/// [`bc_core::AccountService::create_paths`] cannot mention CLI flag spellings, so it
+/// tells the caller to "pass an explicit type"; this names the concrete flag
+/// for a CLI user. Any other error passes through unchanged.
+fn reword_underivable_root_error(err: bc_core::BcError) -> crate::error::CliError {
+    if let bc_core::BcError::InvalidInput(msg) = &err
+        && let Some(prefix) = msg.strip_suffix("pass an explicit type to set it")
+    {
+        return crate::error::CliError::Arg(format!("{prefix}pass --type to set it explicitly"));
+    }
+    crate::error::CliError::Core(err)
 }
 
 /// Archives an account by ID.
