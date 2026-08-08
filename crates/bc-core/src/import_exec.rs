@@ -96,6 +96,18 @@ pub struct ImportOutcome {
     /// visible, since a wrong tag is cheap to rename or delete but an omitted
     /// one is expensive to reconstruct.
     pub created_tags: Vec<String>,
+    /// Postings charged to each [`SkipCause`] encountered, in the cause's
+    /// declaration order. The three coarse buckets above group causes into
+    /// `unresolved_account`/`unresolved_commodity`/`other`; this keeps every
+    /// cause distinct.
+    ///
+    /// This is not the same as counting [`Self::diagnostics`] per cause: one
+    /// diagnostic can be noted for a row while charging several of its
+    /// postings (a [`SkipCause::MultiOwnerConflict`] row loses every leg that
+    /// failed to match, noted once), and [`SkipCause::MalformedTag`] is noted
+    /// without charging any posting at all, since the tag is dropped but the
+    /// leg still persists. A cause with no charge does not appear here.
+    pub charged_by_cause: Vec<(SkipCause, usize)>,
     /// Every leg or row this run could not persist, in encounter order, with
     /// the cause and the document location. The counts above are the totals of
     /// these; this is the per-row detail behind them.
@@ -177,9 +189,33 @@ pub struct ImportPlan {
     /// An account whose legs net to zero still holds a bucket — an empty one —
     /// so the report can say the account was touched rather than omitting it.
     pub account_totals: Vec<(String, Balances)>,
+    /// Postings that would be charged to each [`SkipCause`] encountered, in
+    /// the cause's declaration order. Mirrors
+    /// [`ImportOutcome::charged_by_cause`]; see that field for why this is
+    /// not the same as counting [`Self::diagnostics`] per cause.
+    pub charged_by_cause: Vec<(SkipCause, usize)>,
     /// Every leg or row the run would skip, in encounter order, with the cause
     /// and the document location. The counts above are the totals of these.
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Adds `postings` to `tally`'s entry for `cause`, creating it if this is the
+/// first charge against that cause.
+///
+/// Shared between [`Counts::charge`] and [`resolve_legs`], which is the other
+/// place a leg is charged to a cause — account and commodity resolution
+/// charge as they go, before a [`Counts`] even exists.
+///
+/// # Arguments
+///
+/// * `tally` - The per-cause tally to update.
+/// * `cause` - Why the postings were charged.
+/// * `postings` - How many to add.
+fn charge_cause(tally: &mut BTreeMap<SkipCause, usize>, cause: SkipCause, postings: usize) {
+    tally
+        .entry(cause)
+        .and_modify(|charged| *charged = charged.saturating_add(postings))
+        .or_insert(postings);
 }
 
 /// Running totals and diagnostics for one import run, with skips attributed to
@@ -196,6 +232,11 @@ struct Counts {
     unresolved_commodity_postings: usize,
     /// Postings skipped for any other reason.
     other_skipped_postings: usize,
+    /// Postings charged to each cause, keyed by the cause itself rather than
+    /// the three coarse buckets above. `charge` and `note` are independent —
+    /// one note can precede a charge of several postings, or precede none at
+    /// all — so this cannot be recovered by counting diagnostics per cause.
+    charged_by_cause: BTreeMap<SkipCause, usize>,
     /// Every leg or row this run could not persist, in encounter order.
     diagnostics: Vec<Diagnostic>,
 }
@@ -239,6 +280,8 @@ impl Counts {
             | SkipCause::RowLocalFailure => &mut self.other_skipped_postings,
         };
         *bucket = bucket.saturating_add(postings);
+
+        charge_cause(&mut self.charged_by_cause, cause, postings);
     }
 
     /// Returns the total skipped, whatever the cause.
@@ -251,7 +294,7 @@ impl Counts {
 
 /// Why one leg — or one whole transaction — could not be persisted this run.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SkipCause {
     /// The leg's account path named no existing account. Creating the account
     /// and re-running attaches the leg.
@@ -430,6 +473,10 @@ struct Resolved {
     /// Distinct codes naming no registered commodity; sorted and unique by
     /// construction.
     unresolved_commodities: BTreeSet<String>,
+    /// Legs charged to each cause this pass can raise, keyed by the cause
+    /// itself. Folded into the run's [`Counts::charged_by_cause`] once one
+    /// exists.
+    charged_by_cause: BTreeMap<SkipCause, usize>,
     /// Every leg or row the pass could not resolve, in encounter order.
     diagnostics: Vec<Diagnostic>,
 }
@@ -525,6 +572,7 @@ pub async fn execute_import(
         unresolved_accounts: run.unresolved_accounts,
         unresolved_commodities: run.unresolved_commodities,
         created_tags: run.created_tags,
+        charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
     })
 }
@@ -612,6 +660,7 @@ pub async fn plan_import(
         unresolved_commodities: run.unresolved_commodities,
         would_create_tags: run.created_tags,
         account_totals: sink.totals.into_iter().collect(),
+        charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
     })
 }
@@ -694,6 +743,7 @@ where
         unresolved_account_postings: pass.unresolved_account_postings,
         unresolved_commodity_postings: pass.unresolved_commodity_postings,
         other_skipped_postings: pass.other_skipped_postings,
+        charged_by_cause: pass.charged_by_cause,
         diagnostics,
         ..Counts::default()
     };
@@ -749,6 +799,7 @@ fn resolve_legs(
         other_skipped_postings: 0_usize,
         unresolved_accounts: BTreeSet::new(),
         unresolved_commodities: BTreeSet::new(),
+        charged_by_cause: BTreeMap::new(),
         diagnostics: Vec::new(),
     };
     // Warn-once guard only: which archived accounts have already been reported.
@@ -771,6 +822,11 @@ fn resolve_legs(
             out.other_skipped_postings = out
                 .other_skipped_postings
                 .saturating_add(raw.postings.len());
+            charge_cause(
+                &mut out.charged_by_cause,
+                SkipCause::AmbiguousResidual,
+                raw.postings.len(),
+            );
             out.rows.push(Vec::new());
             continue;
         }
@@ -793,6 +849,7 @@ fn resolve_legs(
                         cause,
                         detail,
                     });
+                    charge_cause(&mut out.charged_by_cause, cause, 1);
                     match cause {
                         SkipCause::UnresolvedAccount => {
                             out.unresolved_account_postings =
@@ -5255,6 +5312,7 @@ mod tests {
             outcome.unresolved_commodities
         );
         assert_eq!(planned.would_create_tags, outcome.created_tags);
+        assert_eq!(planned.charged_by_cause, outcome.charged_by_cause);
         assert_eq!(planned.diagnostics, outcome.diagnostics);
 
         assert_eq!(planned.new_transactions, 4, "the fixture must create rows");
@@ -5266,6 +5324,17 @@ mod tests {
             ),
             (1, 1, 3),
             "every skip bucket must be exercised, or the equality above is vacuous"
+        );
+        assert_eq!(
+            planned.charged_by_cause,
+            vec![
+                (SkipCause::UnresolvedAccount, 1),
+                (SkipCause::UnresolvedCommodity, 1),
+                (SkipCause::MalformedPath, 1),
+                (SkipCause::AmbiguousResidual, 2),
+            ],
+            "TWOELIDED charges both of its legs to one diagnostic, so this must diverge from \
+             counting diagnostics per cause, or the equality above is vacuous"
         );
     }
 
