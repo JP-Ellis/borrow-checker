@@ -74,12 +74,13 @@ pub struct Report {
     /// Legs matched by the query but not summed into any row.
     ///
     /// This counts legs excluded for a commodity mismatch (**excluded, never
-    /// converted** — conversion is deferred to the FX work), and elided legs
+    /// converted** — conversion is deferred to the FX work); elided legs
     /// whose transaction had a single-elided residual that carried no entry
-    /// for the requested commodity. It does **not** count legs belonging to a
-    /// transaction with more than one elided leg — those are counted only in
-    /// [`Self::ambiguous_transactions`]. A non-zero count must be surfaced to
-    /// the user.
+    /// for the requested commodity; and elided legs whose residual could not
+    /// be computed at all (e.g. an overflow while summing sibling legs). It
+    /// does **not** count legs belonging to a transaction with more than one
+    /// elided leg — those are counted only in [`Self::ambiguous_transactions`].
+    /// A non-zero count must be surfaced to the user.
     pub excluded_postings: usize,
     /// Transactions carrying more than one elided leg, whose residual cannot
     /// be attributed to any single leg.
