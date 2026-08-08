@@ -95,9 +95,14 @@ pub struct ImportOutcome {
     /// visible, since a wrong tag is cheap to rename or delete but an omitted
     /// one is expensive to reconstruct.
     pub created_tags: Vec<String>,
+    /// Every leg or row this run could not persist, in encounter order, with
+    /// the cause and the document location. The counts above are the totals of
+    /// these; this is the per-row detail behind them.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Running totals for one import run, with skips attributed to their cause.
+/// Running totals and diagnostics for one import run, with skips attributed to
+/// their cause.
 #[derive(Debug, Default)]
 struct Counts {
     /// Transactions created so far.
@@ -110,13 +115,48 @@ struct Counts {
     unresolved_commodity_postings: usize,
     /// Postings skipped for any other reason.
     other_skipped_postings: usize,
+    /// Every leg or row this run could not persist, in encounter order.
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl Counts {
-    /// Records `postings` as unpersistable for a reason other than an
-    /// unresolved account path.
-    fn skip_other(&mut self, postings: usize) {
-        self.other_skipped_postings = self.other_skipped_postings.saturating_add(postings);
+    /// Records one unpersistable leg or row without charging it.
+    ///
+    /// # Arguments
+    ///
+    /// * `location` - Where the document says it came from.
+    /// * `cause` - Why it could not be persisted.
+    /// * `detail` - The offending path, code, or conflict.
+    fn note(&mut self, location: &str, cause: SkipCause, detail: impl Into<String>) {
+        self.diagnostics.push(Diagnostic {
+            location: location.to_owned(),
+            cause,
+            detail: detail.into(),
+        });
+    }
+
+    /// Charges `postings` to the tally `cause` belongs to.
+    ///
+    /// This is the single place attribution is decided, so a new [`SkipCause`]
+    /// cannot silently land in the wrong column.
+    ///
+    /// # Arguments
+    ///
+    /// * `cause` - Why the postings were skipped.
+    /// * `postings` - How many were lost.
+    fn charge(&mut self, cause: SkipCause, postings: usize) {
+        let bucket = match cause {
+            SkipCause::UnresolvedAccount => &mut self.unresolved_account_postings,
+            SkipCause::UnresolvedCommodity => &mut self.unresolved_commodity_postings,
+            SkipCause::MalformedPath
+            | SkipCause::BlankCommodity
+            | SkipCause::AmbiguousResidual
+            | SkipCause::UndeterminedResidual
+            | SkipCause::MultiOwnerConflict
+            | SkipCause::FailedCorroboration
+            | SkipCause::RowLocalFailure => &mut self.other_skipped_postings,
+        };
+        *bucket = bucket.saturating_add(postings);
     }
 
     /// Returns the total skipped, whatever the cause.
@@ -128,18 +168,68 @@ impl Counts {
 }
 
 /// Why one leg — or one whole transaction — could not be persisted this run.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SkipCause {
+pub enum SkipCause {
     /// The leg's account path named no existing account. Creating the account
     /// and re-running attaches the leg.
     UnresolvedAccount,
     /// The leg's commodity code named no registered commodity. Registering the
     /// commodity and re-running attaches the leg.
     UnresolvedCommodity,
-    /// Anything else: a malformed account path, a blank commodity code, an
-    /// ambiguous residual, legs owned by several transactions, or a failed
-    /// corroboration.
-    Other,
+    /// The leg's account path could not be parsed.
+    MalformedPath,
+    /// The leg stated an amount with no commodity code.
+    BlankCommodity,
+    /// Two or more legs elide their amount, so the residual is undetermined.
+    AmbiguousResidual,
+    /// The elided leg is the only one that resolved, and the document fixes no
+    /// single amount for it.
+    UndeterminedResidual,
+    /// The legs of one document transaction already belong to several
+    /// transactions.
+    MultiOwnerConflict,
+    /// A posting of the matched transaction is not explained by this document
+    /// transaction.
+    FailedCorroboration,
+    /// The write itself failed in a way charged to the row rather than the run.
+    /// A dry run never reports this: it predicts decisions, not I/O.
+    RowLocalFailure,
+}
+
+impl SkipCause {
+    /// Returns the stable, lower-case label this cause groups under in a report.
+    ///
+    /// # Returns
+    ///
+    /// A short noun phrase such as `unresolved account`.
+    #[must_use]
+    #[inline]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::UnresolvedAccount => "unresolved account",
+            Self::UnresolvedCommodity => "unregistered commodity",
+            Self::MalformedPath => "malformed account path",
+            Self::BlankCommodity => "blank commodity code",
+            Self::AmbiguousResidual => "ambiguous residual",
+            Self::UndeterminedResidual => "undetermined residual",
+            Self::MultiOwnerConflict => "multi-owner conflict",
+            Self::FailedCorroboration => "failed corroboration",
+            Self::RowLocalFailure => "write failure",
+        }
+    }
+}
+
+/// One leg or row the run could not persist, and why.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    /// Where the document says this came from, as `location_of` renders it.
+    pub location: String,
+    /// Why it was skipped.
+    pub cause: SkipCause,
+    /// Human-readable detail: the offending path, code, or conflict.
+    pub detail: String,
 }
 
 /// One leg whose account path resolved to an existing account.
@@ -147,6 +237,8 @@ enum SkipCause {
 struct ResolvedLeg {
     /// The account the leg's path named.
     account_id: AccountId,
+    /// The rendered account path this leg resolved through.
+    account_path: String,
     /// The leg's amount as the document stated it; `None` for the elided residual.
     amount: Option<Amount>,
     /// The leg's dedup fingerprint, over the document's own values.
@@ -162,6 +254,9 @@ struct ResolvedLeg {
 struct LegPlan {
     /// The account the leg's path named.
     account_id: AccountId,
+    /// The rendered account path this leg resolved through.
+    #[expect(dead_code, reason = "consumed by the plan sink in a following commit")]
+    account_path: String,
     /// The leg's amount as the document stated it; `None` for the elided residual.
     amount: Option<Amount>,
     /// The leg's dedup fingerprint, over the document's own values.
@@ -222,6 +317,16 @@ fn resolve_tag_ids(stated: &[String], tags: &HashMap<String, TagId>) -> Vec<TagI
     out
 }
 
+/// Tag paths materialised for one run, with the paths that failed to parse.
+struct Tags {
+    /// Leaf tag ID for every path that parsed, keyed by its rendered form.
+    ids: HashMap<String, TagId>,
+    /// The rendered paths this run brought into existence, sorted.
+    created: Vec<String>,
+    /// The paths that failed to parse and were dropped.
+    diagnostics: Vec<Diagnostic>,
+}
+
 /// The outcome of the resolution pass over every leg of every raw transaction.
 struct Resolved {
     /// Resolved legs per raw transaction, index-aligned with the input slice.
@@ -240,6 +345,8 @@ struct Resolved {
     /// Distinct codes naming no registered commodity; sorted and unique by
     /// construction.
     unresolved_commodities: BTreeSet<String>,
+    /// Every leg or row the pass could not resolve, in encounter order.
+    diagnostics: Vec<Diagnostic>,
 }
 
 /// Imports raw transactions, persisting every resolvable posting.
@@ -303,15 +410,18 @@ pub async fn execute_import(
     let commodity_resolver = CommodityResolver::load(commodities).await?;
     let batch_id = batches.open(profile_id, importer).await?;
 
-    let (tag_ids, created_tags) = ensure_tags(tags, raws).await?;
+    let tag_pass = ensure_tags(tags, raws).await?;
 
     let pass = resolve_legs(&resolver, &commodity_resolver, raws);
     let unresolved_accounts: Vec<String> = pass.unresolved_accounts.into_iter().collect();
     let unresolved_commodities: Vec<String> = pass.unresolved_commodities.into_iter().collect();
+    let mut diagnostics = tag_pass.diagnostics;
+    diagnostics.extend(pass.diagnostics);
     let mut counts = Counts {
         unresolved_account_postings: pass.unresolved_account_postings,
         unresolved_commodity_postings: pass.unresolved_commodity_postings,
         other_skipped_postings: pass.other_skipped_postings,
+        diagnostics,
         ..Counts::default()
     };
 
@@ -323,7 +433,7 @@ pub async fn execute_import(
         commodities: &commodity_resolver,
         existing: sources.existing_legs(&touched_accounts(&planned)).await?,
         batch_id: batch_id.clone(),
-        tags: tag_ids,
+        tags: tag_pass.ids,
     };
 
     for (raw, legs) in raws.iter().zip(&planned) {
@@ -353,7 +463,8 @@ pub async fn execute_import(
         other_skipped_postings: counts.other_skipped_postings,
         unresolved_accounts,
         unresolved_commodities,
-        created_tags,
+        created_tags: tag_pass.created,
+        diagnostics: counts.diagnostics,
     })
 }
 
@@ -382,6 +493,7 @@ fn resolve_legs(
         other_skipped_postings: 0_usize,
         unresolved_accounts: BTreeSet::new(),
         unresolved_commodities: BTreeSet::new(),
+        diagnostics: Vec::new(),
     };
     // Warn-once guard only: which archived accounts have already been reported.
     // Unlike an unresolved account this is not part of the outcome — importing
@@ -395,6 +507,11 @@ fn resolve_legs(
                 postings = raw.postings.len(),
                 "two or more elided legs leave the residual ambiguous; skipping the transaction"
             );
+            out.diagnostics.push(Diagnostic {
+                location: location_of(raw).to_owned(),
+                cause: SkipCause::AmbiguousResidual,
+                detail: format!("{} legs, two or more elided", raw.postings.len()),
+            });
             out.other_skipped_postings = out
                 .other_skipped_postings
                 .saturating_add(raw.postings.len());
@@ -414,16 +531,32 @@ fn resolve_legs(
                 &mut archived,
             ) {
                 Ok(leg) => legs.push(leg),
-                Err(SkipCause::UnresolvedAccount) => {
-                    out.unresolved_account_postings =
-                        out.unresolved_account_postings.saturating_add(1);
-                }
-                Err(SkipCause::UnresolvedCommodity) => {
-                    out.unresolved_commodity_postings =
-                        out.unresolved_commodity_postings.saturating_add(1);
-                }
-                Err(SkipCause::Other) => {
-                    out.other_skipped_postings = out.other_skipped_postings.saturating_add(1);
+                Err((cause, detail)) => {
+                    out.diagnostics.push(Diagnostic {
+                        location: location_of(raw).to_owned(),
+                        cause,
+                        detail,
+                    });
+                    match cause {
+                        SkipCause::UnresolvedAccount => {
+                            out.unresolved_account_postings =
+                                out.unresolved_account_postings.saturating_add(1);
+                        }
+                        SkipCause::UnresolvedCommodity => {
+                            out.unresolved_commodity_postings =
+                                out.unresolved_commodity_postings.saturating_add(1);
+                        }
+                        SkipCause::MalformedPath
+                        | SkipCause::BlankCommodity
+                        | SkipCause::AmbiguousResidual
+                        | SkipCause::UndeterminedResidual
+                        | SkipCause::MultiOwnerConflict
+                        | SkipCause::FailedCorroboration
+                        | SkipCause::RowLocalFailure => {
+                            out.other_skipped_postings =
+                                out.other_skipped_postings.saturating_add(1);
+                        }
+                    }
                 }
             }
         }
@@ -453,17 +586,15 @@ fn resolve_legs(
 ///
 /// # Returns
 ///
-/// The rendered-path → leaf-ID map for every path that parsed, and the sorted
-/// list of paths this run created.
+/// The rendered-path → leaf-ID map for every path that parsed, the sorted list
+/// of paths this run created, and a diagnostic per path that did not parse.
 ///
 /// # Errors
 ///
 /// Returns [`crate::BcError`] on query or insert failure.
-async fn ensure_tags(
-    tags: &crate::TagService,
-    raws: &[RawTransaction],
-) -> BcResult<(HashMap<String, TagId>, Vec<String>)> {
+async fn ensure_tags(tags: &crate::TagService, raws: &[RawTransaction]) -> BcResult<Tags> {
     let mut parsed: Vec<TagPath> = Vec::new();
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
     // Also the warn-once guard: a spelling reaches the `Err` arm only the first
     // time `insert` returns `true` for it, since every later occurrence hits the
     // `continue` above.
@@ -484,13 +615,22 @@ async fn ensure_tags(
                         %error,
                         "malformed tag path; dropping the tag and keeping the leg"
                     );
+                    diagnostics.push(Diagnostic {
+                        location: location_of(raw).to_owned(),
+                        cause: SkipCause::MalformedPath,
+                        detail: stated.clone(),
+                    });
                 }
             }
         }
     }
 
     let created = tags.create_paths(&parsed).await?;
-    Ok((created.ids, created.created))
+    Ok(Tags {
+        ids: created.ids,
+        created: created.created,
+        diagnostics,
+    })
 }
 
 /// Step 2: reports whether `raw` leaves its residual ambiguous.
@@ -530,7 +670,7 @@ fn has_ambiguous_residual(raw: &RawTransaction) -> bool {
 /// # Returns
 ///
 /// The [`ResolvedLeg`], or the [`SkipCause`] that stopped it being persisted
-/// this run.
+/// this run together with the detail naming what stopped it.
 fn resolve_leg(
     resolver: &AccountResolver,
     commodities: &CommodityResolver,
@@ -539,7 +679,7 @@ fn resolve_leg(
     unresolved: &mut BTreeSet<String>,
     unresolved_commodities: &mut BTreeSet<String>,
     archived_seen: &mut BTreeSet<String>,
-) -> Result<ResolvedLeg, SkipCause> {
+) -> Result<ResolvedLeg, (SkipCause, String)> {
     let path = match AccountPath::parse(&posting.account) {
         Ok(parsed) => parsed,
         Err(error) => {
@@ -549,16 +689,17 @@ fn resolve_leg(
                 %error,
                 "malformed account path; skipping this leg"
             );
-            return Err(SkipCause::Other);
+            return Err((SkipCause::MalformedPath, posting.account.clone()));
         }
     };
+    let rendered = path.to_string();
 
     let account_id = match resolver.resolve(&path) {
         Resolution::Resolved { id, archived } => {
             // Warn once per distinct account, for the same reason the unresolved
             // path below does: one archived account named by every row of a file
             // should log one line, not one per row.
-            if archived && archived_seen.insert(path.to_string()) {
+            if archived && archived_seen.insert(rendered.clone()) {
                 tracing::warn!(
                     location = location_of(raw),
                     account = %path,
@@ -571,7 +712,6 @@ fn resolve_leg(
             resolved_prefix,
             missing_segment,
         } => {
-            let rendered = path.to_string();
             // Warn once per distinct path: a file naming one missing account in
             // every row should log one line, not one per row.
             if unresolved.insert(rendered.clone()) {
@@ -584,7 +724,13 @@ fn resolve_leg(
                      attach the legs skipped now"
                 );
             }
-            return Err(SkipCause::UnresolvedAccount);
+            return Err((
+                SkipCause::UnresolvedAccount,
+                format!(
+                    "{rendered} (resolved as far as '{resolved_prefix}', missing \
+                     '{missing_segment}')"
+                ),
+            ));
         }
     };
 
@@ -602,14 +748,14 @@ fn resolve_leg(
                      re-run to attach the legs skipped now"
                 );
             }
-            return Err(SkipCause::UnresolvedCommodity);
+            return Err((SkipCause::UnresolvedCommodity, code));
         }
         Canonical::Blank => {
             tracing::warn!(
                 location = location_of(raw),
                 "posting has a blank commodity code; skipping this leg"
             );
-            return Err(SkipCause::Other);
+            return Err((SkipCause::BlankCommodity, String::new()));
         }
     };
 
@@ -635,6 +781,7 @@ fn resolve_leg(
             raw.reference.as_deref(),
         ),
         account_id,
+        account_path: rendered,
         amount,
         note: posting.note.clone(),
         tag_paths: posting.tags.clone(),
@@ -704,6 +851,7 @@ fn allocate_occurrences(rows: Vec<Vec<ResolvedLeg>>) -> Vec<Vec<LegPlan>> {
                     *slot = slot.saturating_add(1_u32);
                     LegPlan {
                         account_id: leg.account_id,
+                        account_path: leg.account_path,
                         amount: leg.amount,
                         fingerprint: leg.fingerprint,
                         note: leg.note,
@@ -1015,7 +1163,8 @@ fn row_local_value<T>(
                 "this document transaction cannot be persisted as it stands; skipping the \
                  row and continuing the run"
             );
-            counts.skip_other(postings);
+            counts.note(location_of(raw), SkipCause::RowLocalFailure, action);
+            counts.charge(SkipCause::RowLocalFailure, postings);
             Ok(None)
         }
         Err(error) => Err(error),
@@ -1158,7 +1307,12 @@ impl Writer<'_> {
                     "the legs of one document transaction already belong to several \
                      transactions; skipping rather than guessing which one owns it"
                 );
-                counts.skip_other(unstored);
+                counts.note(
+                    location_of(raw),
+                    SkipCause::MultiOwnerConflict,
+                    format!("{} transactions claim these legs", conflicting.len()),
+                );
+                counts.charge(SkipCause::MultiOwnerConflict, unstored);
                 Ok(())
             }
         }
@@ -1216,7 +1370,12 @@ impl Writer<'_> {
                      commodity that resolves to nothing registered, or span several \
                      commodities; skipping the transaction"
                 );
-                counts.skip_other(legs.len());
+                counts.note(
+                    location_of(raw),
+                    SkipCause::UndeterminedResidual,
+                    "the elided leg is the only leg that resolved".to_owned(),
+                );
+                counts.charge(SkipCause::UndeterminedResidual, legs.len());
             }
             return Ok(());
         };
@@ -1327,7 +1486,12 @@ impl Writer<'_> {
                 "a posting of the matched transaction is not explained by this document \
                  transaction; skipping rather than grafting a leg onto the wrong transaction"
             );
-            counts.skip_other(unstored);
+            counts.note(
+                location_of(raw),
+                SkipCause::FailedCorroboration,
+                format!("transaction {owner}"),
+            );
+            counts.charge(SkipCause::FailedCorroboration, unstored);
             return Ok(());
         };
 
@@ -4164,5 +4328,102 @@ mod tests {
             count, 1,
             "the case variant must fold onto the one existing tag row"
         );
+    }
+
+    /// The warn-once guard collapses two rows naming one missing account into a
+    /// single log line, but the report needs both rows, so the diagnostic must
+    /// be recorded per occurrence rather than per distinct path.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn every_occurrence_of_a_missing_account_is_diagnosed(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let docs = vec![
+            raw_with(
+                "ONE",
+                vec![
+                    leg("Assets:Bank", Some(-5_i64)),
+                    leg("Expenses:Utilities:Gas", Some(5_i64)),
+                ],
+            ),
+            raw_with(
+                "TWO",
+                vec![
+                    leg("Assets:Bank", Some(-7_i64)),
+                    leg("Expenses:Utilities:Gas", Some(7_i64)),
+                ],
+            ),
+        ];
+
+        let outcome = run(&svcs, &docs).await;
+
+        let missing: Vec<&Diagnostic> = outcome
+            .diagnostics
+            .iter()
+            .filter(|d| d.cause == SkipCause::UnresolvedAccount)
+            .collect();
+        assert_eq!(
+            missing.len(),
+            2,
+            "the warn-once guard must not collapse per-row diagnostics"
+        );
+        assert_eq!(outcome.unresolved_accounts, vec!["Expenses:Utilities:Gas"]);
+    }
+
+    /// A path that will not parse is its own cause, distinct from a path that
+    /// parses but names nothing.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_malformed_path_is_diagnosed_as_such(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let doc = raw_with(
+            "BAD",
+            vec![
+                leg("Assets:Bank", Some(-5_i64)),
+                leg("Assets::Checking", Some(5_i64)),
+            ],
+        );
+
+        let outcome = run(&svcs, core::slice::from_ref(&doc)).await;
+
+        let causes: Vec<SkipCause> = outcome.diagnostics.iter().map(|d| d.cause).collect();
+        assert!(causes.contains(&SkipCause::MalformedPath), "got {causes:?}");
+        assert_eq!(outcome.other_skipped_postings, 1);
+    }
+
+    /// A row skipped whole for an ambiguous residual is diagnosed once, for the
+    /// row, rather than once per leg.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_ambiguous_residual_is_diagnosed_as_such(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let doc = raw_with(
+            "TWO ELIDED",
+            vec![leg("Assets:Bank", None), leg("Expenses:Food", None)],
+        );
+
+        let outcome = run(&svcs, core::slice::from_ref(&doc)).await;
+
+        let causes: Vec<SkipCause> = outcome.diagnostics.iter().map(|d| d.cause).collect();
+        assert_eq!(causes, vec![SkipCause::AmbiguousResidual]);
+    }
+
+    /// The diagnostic carries the document location, so a report can point the
+    /// user at the row rather than only at the cause.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_diagnostic_names_the_document_location(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let doc = raw_with(
+            "ONE",
+            vec![
+                leg("Assets:Bank", Some(-5_i64)),
+                leg("Expenses:Utilities:Gas", Some(5_i64)),
+            ],
+        );
+
+        let outcome = run(&svcs, core::slice::from_ref(&doc)).await;
+
+        let first = outcome.diagnostics.first().expect("one diagnostic");
+        assert_eq!(first.location, location_of(&doc));
     }
 }
