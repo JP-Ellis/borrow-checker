@@ -34,6 +34,7 @@ pub(crate) mod tag;
 pub(crate) mod transaction;
 pub(crate) mod transfer;
 
+pub use account::PathSpec;
 pub use account::Service as AccountService;
 pub use asset::Service as AssetService;
 pub use backup::BackupKind;

@@ -11,6 +11,7 @@ use bc_models::TagId;
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
+use crate::AccountPath;
 use crate::BcError;
 use crate::BcResult;
 use crate::db::from_db_str;
@@ -573,11 +574,195 @@ async fn create_in_tx(
     Ok(id)
 }
 
+/// Maps a path's root segment to the account type the whole path takes.
+///
+/// Matching is **case-sensitive**, matching [`crate::AccountPath`]'s
+/// case-sensitive resolution: a creation rule looser than the resolution rule
+/// would mint accounts that later fail to resolve.
+///
+/// # Arguments
+///
+/// * `root` - The first segment of an account path, e.g. `"Assets"`.
+///
+/// # Returns
+///
+/// The derived [`AccountType`], or `None` if `root` is not one of the five
+/// recognised roots — in which case the caller must be given an explicit type.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used by Task 5's create_paths service method")
+)]
+fn derive_account_type(root: &str) -> Option<AccountType> {
+    match root {
+        "Assets" => Some(AccountType::Asset),
+        "Liabilities" => Some(AccountType::Liability),
+        "Equity" => Some(AccountType::Equity),
+        "Income" => Some(AccountType::Income),
+        "Expenses" => Some(AccountType::Expense),
+        _ => None,
+    }
+}
+
+/// One account path to materialise, plus the attributes its **leaf** should carry.
+///
+/// Every attribute is optional, and absence means *not specified* rather than
+/// *use the default*. That distinction is what makes the reuse comparison in
+/// [`Service::create_paths`] well-defined: an omitted attribute is never
+/// compared against an existing account, so re-running a bare
+/// `create_paths` over an existing tree is a clean no-op.
+///
+/// Ancestors are never configured from a `PathSpec` — they are always minted as
+/// [`AccountKind::Group`] with no other attributes.
+///
+/// # Example
+///
+/// ```rust
+/// use bc_core::AccountPath;
+/// use bc_core::PathSpec;
+///
+/// let spec = PathSpec::builder()
+///     .path(AccountPath::parse("Assets:BankA:Checking")?)
+///     .build();
+/// assert_eq!(spec.path().to_string(), "Assets:BankA:Checking");
+/// assert_eq!(spec.kind(), None);
+/// # Ok::<(), bc_core::BcError>(())
+/// ```
+#[derive(bon::Builder, Debug, Clone)]
+#[non_exhaustive]
+pub struct PathSpec {
+    /// The colon-separated path to materialise.
+    path: AccountPath,
+    /// Explicit account type. `None` derives it from the root segment.
+    account_type: Option<AccountType>,
+    /// Leaf kind. `None` means unspecified — [`AccountKind::DepositAccount`] when
+    /// creating, and not compared when reusing.
+    kind: Option<AccountKind>,
+    /// Leaf description.
+    #[builder(into)]
+    description: Option<String>,
+    /// Allowed commodities for the leaf; first entry is the default.
+    #[builder(default)]
+    commodity_ids: Vec<CommodityId>,
+    /// Tags to attach to the leaf.
+    #[builder(default)]
+    tag_ids: Vec<TagId>,
+    /// Acquisition date (only for [`AccountKind::ManualAsset`] leaves).
+    acquisition_date: Option<jiff::civil::Date>,
+    /// Acquisition cost (only for [`AccountKind::ManualAsset`] leaves).
+    acquisition_cost: Option<rust_decimal::Decimal>,
+    /// Depreciation policy (only for [`AccountKind::ManualAsset`] leaves).
+    depreciation_policy: Option<bc_models::DepreciationPolicy>,
+}
+
+impl PathSpec {
+    /// Returns the path to materialise.
+    #[inline]
+    #[must_use]
+    pub fn path(&self) -> &AccountPath {
+        &self.path
+    }
+
+    /// Returns the explicit account type, if one was given.
+    #[inline]
+    #[must_use]
+    pub fn account_type(&self) -> Option<AccountType> {
+        self.account_type
+    }
+
+    /// Returns the requested leaf kind, if one was given.
+    #[inline]
+    #[must_use]
+    pub fn kind(&self) -> Option<AccountKind> {
+        self.kind
+    }
+
+    /// Returns the requested leaf description, if one was given.
+    #[inline]
+    #[must_use]
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    /// Returns the requested leaf commodities; empty means unspecified.
+    #[inline]
+    #[must_use]
+    pub fn commodity_ids(&self) -> &[CommodityId] {
+        &self.commodity_ids
+    }
+
+    /// Returns the requested leaf tags; empty means unspecified.
+    #[inline]
+    #[must_use]
+    pub fn tag_ids(&self) -> &[TagId] {
+        &self.tag_ids
+    }
+
+    /// Returns the requested acquisition date, if one was given.
+    #[inline]
+    #[must_use]
+    pub fn acquisition_date(&self) -> Option<jiff::civil::Date> {
+        self.acquisition_date
+    }
+
+    /// Returns the requested acquisition cost, if one was given.
+    #[inline]
+    #[must_use]
+    pub fn acquisition_cost(&self) -> Option<rust_decimal::Decimal> {
+        self.acquisition_cost
+    }
+
+    /// Returns the requested depreciation policy, if one was given.
+    #[inline]
+    #[must_use]
+    pub fn depreciation_policy(&self) -> Option<&bc_models::DepreciationPolicy> {
+        self.depreciation_policy.as_ref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::*;
+    use crate::AccountPath;
+
+    #[rstest]
+    #[case::assets("Assets", AccountType::Asset)]
+    #[case::liabilities("Liabilities", AccountType::Liability)]
+    #[case::equity("Equity", AccountType::Equity)]
+    #[case::income("Income", AccountType::Income)]
+    #[case::expenses("Expenses", AccountType::Expense)]
+    fn derives_the_type_from_a_known_root(#[case] root: &str, #[case] expected: AccountType) {
+        assert_eq!(derive_account_type(root), Some(expected));
+    }
+
+    #[rstest]
+    #[case::unknown_word("Cash")]
+    #[case::lowercase("assets")]
+    #[case::singular("Asset")]
+    #[case::plural_expense("Expense")]
+    fn refuses_to_derive_a_type_from_an_unknown_root(#[case] root: &str) {
+        // Case-sensitive, matching AccountPath's case-sensitive resolution: a
+        // creation rule looser than the resolution rule would mint accounts that
+        // later fail to resolve.
+        assert_eq!(derive_account_type(root), None, "'{root}' must not derive");
+    }
+
+    #[test]
+    fn a_path_spec_defaults_every_optional_attribute_to_unspecified() {
+        let path = AccountPath::parse("Assets:BankA:Checking").expect("valid path");
+        let spec = PathSpec::builder().path(path).build();
+
+        assert_eq!(spec.account_type(), None);
+        assert_eq!(spec.kind(), None);
+        assert_eq!(spec.description(), None);
+        assert!(spec.commodity_ids().is_empty());
+        assert!(spec.tag_ids().is_empty());
+        assert_eq!(spec.acquisition_date(), None);
+        assert_eq!(spec.acquisition_cost(), None);
+        assert!(spec.depreciation_policy().is_none());
+    }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn create_via_builder_api(pool: sqlx::SqlitePool) {
