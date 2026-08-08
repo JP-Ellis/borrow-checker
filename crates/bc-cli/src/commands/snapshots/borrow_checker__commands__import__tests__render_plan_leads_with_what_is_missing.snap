@@ -1,0 +1,24 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: rendered
+---
+dry run — profile 'bank-a-checking', importer 'csv'
+nothing was written
+
+unresolved accounts (2)
+  Expenses:Utilities:Gas
+  Income:Interest
+unregistered commodities (2)
+  DOT, XRP
+
+skipped 3 legs
+  ambiguous residual           1   bank-a-2024-07.csv:88
+  unresolved account           1   bank-a-2024-03.csv:14
+
+would create 2 new transactions, attach 1 posting to existing
+would create 2 tags: groceries, holiday
+
+ACCOUNT                  WOULD POST
+Assets:BankA:Checking    -12405.18 AUD
+Assets:Crypto:ExchangeA      0.75 BTC
+Expenses:Groceries       nets to zero
