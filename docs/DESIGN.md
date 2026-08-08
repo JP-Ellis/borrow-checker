@@ -154,6 +154,7 @@ No two sibling accounts share a name (`idx_accounts_sibling_unique`, a `UNIQUE` 
 | `ManualAsset` | Manually-maintained real asset with no bank statement. Balance driven by valuation events. Examples: real property, vehicle, private equity stake. |
 | `Receivable` | Money owed to you by a third party. Tracked via ordinary transactions (disbursement + repayments). May carry optional loan terms for amortization assistance. Examples: personal loan to a friend, loan to a trust. |
 | `VirtualAllocation` | No independent existence. Subdivides a parent account's balance. Examples: earmarked sub-accounts within an offset account. |
+| `Group` | Organisational node that holds no postings of its own. Created implicitly as a path ancestor when `account create` materialises a nested path, or explicitly via `--kind group`. Examples: `Assets`, `Assets:BankA`, `Expenses:Food`. |
 
 Only `DepositAccount` accounts may have an import profile — enforced in `bc-core` at creation time.
 
