@@ -2327,9 +2327,29 @@ where
             return Ok(());
         }
 
-        // Both lookups precede any write, and a failure of either is treated as
-        // row-local: one unreadable candidate must not abort a run whose other
-        // rows are fine.
+        // Both lookups precede any write *of this row*, but not of the run: they
+        // read live, inside the write loop, so an earlier row of the same run
+        // could in principle have changed what they return. What stops it is the
+        // occurrence slot. A leg matches an owner through
+        // `(account, fingerprint, occurrence)`, `allocate_occurrences` hands each
+        // leg of the run a distinct slot within that key, and a slot is claimed
+        // by at most one stored leg — so no two rows of one run can match the
+        // same owner, and no row sees this transaction after another row of the
+        // same run has appended to it. Relaxing corroboration, or allocating
+        // slots per row rather than per run, breaks that and makes this a stale
+        // read.
+        //
+        // One hole in the argument, recorded rather than closed. `existing_legs`
+        // does not join `postings`, so a reference whose posting was deleted
+        // still names its owner while contributing no posting for a row to
+        // explain. That construct can leave a real run failing corroboration
+        // where a plan does not, which is the one place the two can part
+        // company. It is the run that is the more conservative of the two, so
+        // the plan over-promises rather than the run over-writing — the safe
+        // direction for a report, and the reason this is a note and not a fix.
+        //
+        // A failure of either lookup is row-local: one unreadable candidate must
+        // not abort a run whose other rows are fine.
         let looked_up: BcResult<(Transaction, HashMap<String, crate::PostingProvenance>)> = async {
             let candidate = self.transactions.find_by_id(owner).await?;
             let provenance = self.sources.provenance_by_posting(owner).await?;
@@ -5326,8 +5346,14 @@ mod tests {
     /// missing account, an unregistered commodity, a malformed path, and two
     /// elided legs.
     fn interesting_documents() -> Vec<RawTransaction> {
+        // Tags are the one thing the two sinks reach different services for —
+        // one creates the paths, the other only resolves them — so a fixture
+        // naming none would leave the field most worth comparing compared as
+        // empty against empty.
+        let mut coffee = raw("COFFEE", -5_i64);
+        coffee.tags = vec!["holiday".to_owned()];
         vec![
-            raw("COFFEE", -5_i64),
+            coffee,
             raw_with(
                 "MISSING",
                 vec![
@@ -5415,6 +5441,12 @@ mod tests {
         assert_eq!(planned.diagnostics, outcome.diagnostics);
 
         assert_eq!(planned.new_transactions, 4, "the fixture must create rows");
+        assert_eq!(
+            planned.would_create_tags,
+            vec!["holiday".to_owned()],
+            "the fixture must name a tag, or the tag equality above is vacuous — and it is \
+             the one field the two sinks reach different services for"
+        );
         assert_eq!(
             (
                 planned.unresolved_account_postings,
@@ -5548,6 +5580,73 @@ mod tests {
             .await
             .expect("the count");
         assert_eq!(count, 0);
+    }
+
+    /// An adoption is the one thing the plan sink is handed and deliberately
+    /// discards: the posting is already the user's own, so the run records
+    /// provenance against it rather than writing anything, and no balance
+    /// moves. It still counts as an attachment, and it still feeds the
+    /// residual, because its posting is among the stored ones.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_adoption_is_counted_but_moves_no_total(pool: SqlitePool) {
+        let food = add_food(&pool).await;
+        let svcs = services(&pool).await;
+        let document = raw_with(
+            "COFFEE",
+            vec![leg("Expenses:Food", Some(50_i64)), leg("Assets:Bank", None)],
+        );
+        run(&svcs, core::slice::from_ref(&document)).await;
+
+        // The user creates the account and hand-writes the missing leg, which
+        // carries no provenance — the obvious response to a partial import.
+        let bank = bank_only_tree(&pool).await;
+        let owner: TransactionId = owner_of_posting(&pool, &food)
+            .await
+            .parse()
+            .expect("owning transaction id");
+        let stored = svcs
+            .transactions
+            .find_by_id(&owner)
+            .await
+            .expect("stored transaction");
+        let mut postings = stored.postings().to_vec();
+        postings.push(
+            Posting::builder()
+                .id(PostingId::new())
+                .account_id(bank)
+                .build(),
+        );
+        svcs.transactions
+            .edit(
+                Transaction::builder()
+                    .id(owner.clone())
+                    .date(stored.date())
+                    .description(stored.description())
+                    .postings(postings)
+                    .reconciliation(stored.reconciliation())
+                    .created_at(*stored.created_at())
+                    .build(),
+            )
+            .await
+            .expect("hand-add an elided leg");
+        let before = table_counts(&pool).await;
+
+        let planned = plan(&svcs, core::slice::from_ref(&document)).await;
+
+        assert_eq!(
+            planned.attached_postings, 1,
+            "the leg is accounted for, by adoption rather than insertion"
+        );
+        assert_eq!(
+            bucket(&planned, "Assets:Bank"),
+            Some(&Balances::new()),
+            "the account is touched, but the user's own posting already holds its value"
+        );
+        assert_eq!(
+            table_counts(&pool).await,
+            before,
+            "planning an adoption still writes nothing"
+        );
     }
 
     /// Returns the bucket `path` holds in `planned`, or `None` if the plan never
