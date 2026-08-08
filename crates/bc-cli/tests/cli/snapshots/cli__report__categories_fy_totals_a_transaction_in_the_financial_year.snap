@@ -1,0 +1,13 @@
+---
+source: crates/bc-cli/tests/cli/report.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Report: 2025-07-01 – 2026-07-01 (AUD)
+
+ACCOUNT           AMOUNT
+Checking          100.00
+Interest         -100.00
+----- stderr -----
