@@ -17,6 +17,7 @@
 //! 6. **Decide and write** per transaction — create, attach, or skip
 //!    ([`Writer::write_row`]).
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -105,6 +106,67 @@ pub struct ImportOutcome {
     /// tag paths are deduplicated before they are parsed: one bad tag named by
     /// two hundred rows yields a single entry, carrying the first row's
     /// location. Such an entry costs no posting and so appears in no count.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// What an import run **would** do, computed without writing anything.
+///
+/// Every field up to [`Self::unresolved_commodities`] mirrors the
+/// [`ImportOutcome`] field of the same name, and [`Self::would_create_tags`]
+/// mirrors [`ImportOutcome::created_tags`]. That correspondence is asserted by
+/// the crate's equivalence tests: a plan and the run it predicts walk identical
+/// branches, because no decision in a run observes a write the run made.
+///
+/// The absent field is the batch: a dry run opens none.
+///
+/// # Limits
+///
+/// A plan predicts decisions, not I/O. If a real run's insert fails, those legs
+/// are charged to [`Self::other_skipped_postings`] under
+/// [`SkipCause::RowLocalFailure`], and no plan will have predicted it. The
+/// report describes what the run would do **absent an I/O failure**.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportPlan {
+    /// Transactions the run would create.
+    pub new_transactions: usize,
+    /// Legs it would book onto transactions an earlier run created.
+    ///
+    /// Counts legs *adopted* as well as legs inserted, exactly as
+    /// [`ImportOutcome::attached_postings`] does.
+    pub attached_postings: usize,
+    /// Postings it could not persist, whatever the cause. The sum of
+    /// [`Self::unresolved_account_postings`],
+    /// [`Self::unresolved_commodity_postings`] and
+    /// [`Self::other_skipped_postings`].
+    pub skipped_postings: usize,
+    /// Postings whose account path names no existing account.
+    pub unresolved_account_postings: usize,
+    /// Postings whose commodity code names no registered commodity.
+    pub unresolved_commodity_postings: usize,
+    /// Postings skipped for any other reason — a malformed account path, a
+    /// blank commodity code, an ambiguous residual, legs owned by several
+    /// transactions, or a candidate that failed to corroborate.
+    pub other_skipped_postings: usize,
+    /// Account paths that resolve to no account, deduplicated and sorted.
+    ///
+    /// This is the actionable output: create these accounts and re-run.
+    pub unresolved_accounts: Vec<String>,
+    /// The distinct unregistered codes encountered, sorted.
+    pub unresolved_commodities: Vec<String>,
+    /// Tag paths the run would create, sorted. A path already in the tag tree
+    /// is not listed, so this is the typo-spotting list rather than the full
+    /// set of tags the document names.
+    pub would_create_tags: Vec<String>,
+    /// Per-account sums of the legs that would post, keyed by rendered account
+    /// path and sorted by it. Multi-commodity by construction: an account
+    /// touched in two commodities holds a bucket for each.
+    ///
+    /// An account whose legs net to zero still holds a bucket — an empty one —
+    /// so the report can say the account was touched rather than omitting it.
+    pub account_totals: Vec<(String, Balances)>,
+    /// Every leg or row the run would skip, in encounter order, with the cause
+    /// and the document location. The counts above are the totals of these.
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -267,7 +329,6 @@ struct LegPlan {
     /// The account the leg's path named.
     account_id: AccountId,
     /// The rendered account path this leg resolved through.
-    #[expect(dead_code, reason = "consumed by the plan sink in a following commit")]
     account_path: String,
     /// The leg's amount as the document stated it; `None` for the elided residual.
     amount: Option<Amount>,
@@ -452,6 +513,93 @@ pub async fn execute_import(
         unresolved_accounts: run.unresolved_accounts,
         unresolved_commodities: run.unresolved_commodities,
         created_tags: run.created_tags,
+        diagnostics: run.counts.diagnostics,
+    })
+}
+
+/// Reports what [`execute_import`] would do, without writing anything.
+///
+/// This is not a separate resolution pass: it is the same run, with the
+/// terminal writes diverted into a sink that only tallies. Every branch —
+/// account and commodity resolution, occurrence allocation, owner matching,
+/// corroboration, residual materialisation — is the code a real run takes, so a
+/// plan cannot disagree with the run it predicts. What makes that safe is that
+/// the stored legs are read once before any write, so no decision in a run
+/// observes a write that run made.
+///
+/// Tag paths are resolved rather than created, so a plan leaves the tag tree
+/// untouched and reports the paths a real run would bring into existence.
+///
+/// # Limits
+///
+/// A plan predicts decisions, not I/O. A real run whose insert fails charges
+/// those legs to [`ImportOutcome::other_skipped_postings`] under
+/// [`SkipCause::RowLocalFailure`]; no plan predicts that. The report describes
+/// what the run would do absent an I/O failure.
+///
+/// # Arguments
+///
+/// * `transactions` - Transaction service, read for the pool the run shares.
+/// * `sources` - Source-reference service, snapshotted for the stored legs.
+/// * `accounts` - Account service, snapshotted once for path resolution.
+/// * `commodities` - Commodity service, snapshotted once for code resolution.
+/// * `tags` - Tag service, used to resolve every path the run names.
+/// * `batches` - Import batch provenance service; a plan opens no batch.
+/// * `profile_id` - The driving profile, if the run is profile-driven.
+/// * `importer` - Stable importer name a real run would record on its batch.
+/// * `raws` - Parsed transactions in document order.
+///
+/// # Returns
+///
+/// An [`ImportPlan`] summarising what would be written and what would be
+/// skipped.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError`] on query failure.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the same parameter list as `execute_import`, which it must mirror \
+              exactly for a caller to swap one for the other"
+)]
+#[inline]
+pub async fn plan_import(
+    transactions: &crate::TransactionService,
+    sources: &crate::SourceService,
+    accounts: &crate::AccountService,
+    commodities: &crate::CommodityService,
+    tags: &crate::TagService,
+    batches: &crate::ImportBatchService,
+    profile_id: Option<&bc_models::ProfileId>,
+    importer: &str,
+    raws: &[RawTransaction],
+) -> BcResult<ImportPlan> {
+    let mut sink = Plan::default();
+    let run = run_with(
+        &mut sink,
+        transactions,
+        sources,
+        accounts,
+        commodities,
+        tags,
+        batches,
+        profile_id,
+        importer,
+        raws,
+    )
+    .await?;
+
+    Ok(ImportPlan {
+        new_transactions: run.counts.new_transactions,
+        attached_postings: run.counts.attached_postings,
+        skipped_postings: run.counts.skipped(),
+        unresolved_account_postings: run.counts.unresolved_account_postings,
+        unresolved_commodity_postings: run.counts.unresolved_commodity_postings,
+        other_skipped_postings: run.counts.other_skipped_postings,
+        unresolved_accounts: run.unresolved_accounts,
+        unresolved_commodities: run.unresolved_commodities,
+        would_create_tags: run.created_tags,
+        account_totals: sink.totals.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
     })
 }
@@ -1607,6 +1755,110 @@ impl Sink for Commit<'_> {
                 },
             )
             .await
+    }
+}
+
+/// A [`Sink`] that records what a run would write and writes nothing.
+///
+/// It holds no service, no pool and no transaction, so it cannot commit: the
+/// guarantee is structural, not a matter of discipline.
+#[derive(Debug, Default)]
+struct Plan {
+    /// Per-account sums of the legs handed to this sink, ordered by path.
+    totals: BTreeMap<String, Balances>,
+}
+
+impl Plan {
+    /// Folds one leg's amount into its account's running total.
+    ///
+    /// A posting with no amount is an elided leg the run left elided; it
+    /// contributes nothing, exactly as it would contribute nothing to a
+    /// persisted balance. It still claims a bucket, so an account whose legs
+    /// net to nothing is still reported as touched.
+    ///
+    /// # Arguments
+    ///
+    /// * `posting` - The posting the run would write.
+    /// * `leg` - The plan it came from, which carries the rendered path.
+    fn record(&mut self, posting: &Posting, leg: &LegPlan) {
+        let entry = self.totals.entry(leg.account_path.clone()).or_default();
+        let Some(amount) = posting.amount() else {
+            return;
+        };
+        // A total that overflows `Decimal` is a report defect, not a run
+        // failure: the legs still post. Keep the bucket at its last good value.
+        if entry.try_add(amount).is_err() {
+            tracing::warn!(
+                account = leg.account_path.as_str(),
+                "the account's planned total overflowed; the reported figure is short"
+            );
+        }
+    }
+}
+
+impl Sink for Plan {
+    /// Resolves the tag paths rather than creating them, so the tag tree is left
+    /// exactly as the plan found it while still reporting what a run would add.
+    async fn ensure_tags(
+        &self,
+        tags: &crate::TagService,
+        raws: &[RawTransaction],
+    ) -> BcResult<Tags> {
+        let (parsed, diagnostics) = parse_tag_paths(raws);
+        let resolved = tags.resolve_paths(&parsed).await?;
+        Ok(Tags {
+            ids: resolved.ids,
+            created: resolved.created,
+            diagnostics,
+        })
+    }
+
+    /// Opens no batch: a dry run records no provenance.
+    async fn open_batch(
+        &mut self,
+        _batches: &crate::ImportBatchService,
+        _profile_id: Option<&bc_models::ProfileId>,
+        _importer: &str,
+    ) -> BcResult<Option<ImportBatchId>> {
+        Ok(None)
+    }
+
+    async fn create(
+        &mut self,
+        _raw: &RawTransaction,
+        _tx: Transaction,
+        postings: &[Posting],
+        legs: &[LegPlan],
+    ) -> BcResult<()> {
+        for (posting, leg) in postings.iter().zip(legs) {
+            self.record(posting, leg);
+        }
+        Ok(())
+    }
+
+    /// Records the inserted legs only. An adoption adds no posting — the amount
+    /// is already on the user's own posting — so it moves no total.
+    async fn attach(
+        &mut self,
+        _raw: &RawTransaction,
+        _owner: &TransactionId,
+        postings: &[Posting],
+        insertions: &[&LegPlan],
+        _adoptions: &[(PostingId, &LegPlan)],
+    ) -> BcResult<()> {
+        for (posting, leg) in postings.iter().zip(insertions) {
+            self.record(posting, leg);
+        }
+        Ok(())
+    }
+
+    /// Closes no batch, because none was opened.
+    async fn close_batch(
+        &self,
+        _batches: &crate::ImportBatchService,
+        _counts: &Counts,
+    ) -> BcResult<()> {
+        Ok(())
     }
 }
 
@@ -4764,5 +5016,214 @@ mod tests {
 
         let first = outcome.diagnostics.first().expect("one diagnostic");
         assert_eq!(first.location, location_of(&doc));
+    }
+
+    // MARK: Dry run
+
+    /// Plans an import with no profile, under the "test" importer name.
+    async fn plan(svcs: &Services, raws: &[RawTransaction]) -> ImportPlan {
+        plan_import(
+            &svcs.transactions,
+            &svcs.sources,
+            &svcs.accounts,
+            &svcs.commodities,
+            &svcs.tags,
+            &svcs.batches,
+            None,
+            "test",
+            raws,
+        )
+        .await
+        .expect("the plan")
+    }
+
+    /// Snapshots every table an import can write, for a writes-nothing assertion.
+    async fn table_counts(pool: &SqlitePool) -> Vec<(&'static str, i64)> {
+        let mut out = Vec::new();
+        for (table, query) in [
+            ("transactions", "SELECT COUNT(*) FROM transactions"),
+            ("postings", "SELECT COUNT(*) FROM postings"),
+            (
+                "transaction_sources",
+                "SELECT COUNT(*) FROM transaction_sources",
+            ),
+            ("tags", "SELECT COUNT(*) FROM tags"),
+            ("import_batches", "SELECT COUNT(*) FROM import_batches"),
+        ] {
+            let count: i64 = sqlx::query_scalar(query)
+                .fetch_one(pool)
+                .await
+                .expect("the count");
+            out.push((table, count));
+        }
+        out
+    }
+
+    /// Documents spanning every branch the plan must predict: a clean create, a
+    /// missing account, an unregistered commodity, a malformed path, and two
+    /// elided legs.
+    fn interesting_documents() -> Vec<RawTransaction> {
+        vec![
+            raw("COFFEE", -5_i64),
+            raw_with(
+                "MISSING",
+                vec![
+                    leg("Assets:Bank", Some(-5_i64)),
+                    leg("Expenses:Utilities:Gas", Some(5_i64)),
+                ],
+            ),
+            raw_with(
+                "UNREGISTERED",
+                vec![
+                    leg("Assets:Bank", Some(-6_i64)),
+                    coded_leg("Expenses:Food", dec!(6), "DOGE"),
+                ],
+            ),
+            raw_with(
+                "BADPATH",
+                vec![
+                    leg("Assets:Bank", Some(-5_i64)),
+                    leg("Assets::Checking", Some(5_i64)),
+                ],
+            ),
+            raw_with(
+                "TWOELIDED",
+                vec![leg("Assets:Bank", None), leg("Expenses:Food", None)],
+            ),
+        ]
+    }
+
+    /// The whole point of a dry run: it touches no table an import writes.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_plan_writes_nothing(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let mut tagged = raw_with(
+            "TAGGED",
+            vec![
+                leg("Assets:Bank", Some(-9_i64)),
+                leg("Expenses:Food", Some(9_i64)),
+            ],
+        );
+        tagged.tags = vec!["holiday".to_owned()];
+        let docs = vec![raw("COFFEE", -5_i64), tagged];
+        let before = table_counts(&pool).await;
+
+        plan(&svcs, &docs).await;
+
+        assert_eq!(table_counts(&pool).await, before);
+    }
+
+    /// The load-bearing claim of the feature: a plan is the run it predicts,
+    /// with the terminal writes diverted. Every count, both worklists, the tag
+    /// list and the diagnostics must agree, because no decision in a run
+    /// observes a write that run made.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_plan_predicts_what_the_run_does(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let docs = interesting_documents();
+
+        let planned = plan(&svcs, &docs).await;
+        let outcome = run(&svcs, &docs).await;
+
+        assert_eq!(planned.new_transactions, outcome.new_transactions);
+        assert_eq!(planned.attached_postings, outcome.attached_postings);
+        assert_eq!(planned.skipped_postings, outcome.skipped_postings);
+        assert_eq!(
+            planned.unresolved_account_postings,
+            outcome.unresolved_account_postings
+        );
+        assert_eq!(
+            planned.unresolved_commodity_postings,
+            outcome.unresolved_commodity_postings
+        );
+        assert_eq!(
+            planned.other_skipped_postings,
+            outcome.other_skipped_postings
+        );
+        assert_eq!(planned.unresolved_accounts, outcome.unresolved_accounts);
+        assert_eq!(
+            planned.unresolved_commodities,
+            outcome.unresolved_commodities
+        );
+        assert_eq!(planned.would_create_tags, outcome.created_tags);
+        assert_eq!(planned.diagnostics, outcome.diagnostics);
+
+        assert_eq!(planned.new_transactions, 4, "the fixture must create rows");
+        assert_eq!(
+            (
+                planned.unresolved_account_postings,
+                planned.unresolved_commodity_postings,
+                planned.other_skipped_postings
+            ),
+            (1, 1, 3),
+            "every skip bucket must be exercised, or the equality above is vacuous"
+        );
+    }
+
+    /// The attach branch is only reachable once an earlier run has left a
+    /// transaction behind, so it needs its own fixture: import with the account
+    /// missing, create it, then plan the same document again.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_plan_predicts_an_attach_against_a_partial_first_run(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let docs = vec![raw_with(
+            "SPLIT",
+            vec![
+                leg("Assets:Bank", Some(-5_i64)),
+                leg("Expenses:Food", Some(5_i64)),
+            ],
+        )];
+        run(&svcs, &docs).await;
+        add_food(&pool).await;
+
+        let planned = plan(&svcs, &docs).await;
+        let outcome = run(&svcs, &docs).await;
+
+        assert_eq!(
+            planned.attached_postings, 1,
+            "the second pass attaches the leg"
+        );
+        assert_eq!(planned.attached_postings, outcome.attached_postings);
+    }
+
+    /// The per-account totals are the report's headline figure, so they must sum
+    /// every leg that would post rather than only the last row's.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn account_totals_sum_the_legs_that_would_post(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let docs = vec![raw("COFFEE", -5_i64), raw("LUNCH", -7_i64)];
+
+        let planned = plan(&svcs, &docs).await;
+
+        let checking = planned
+            .account_totals
+            .iter()
+            .find(|(path, _)| path == "Assets:Bank")
+            .map(|(_, balances)| balances.get("AUD"))
+            .expect("the account posts");
+        assert_eq!(checking, Some(dec!(-12)));
+    }
+
+    /// A real run creates the tags it names before writing a row; a plan must
+    /// report the same list without bringing any of them into existence.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_plan_creates_no_tags(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let mut doc = raw("COFFEE", -5_i64);
+        doc.tags = vec!["holiday".to_owned()];
+
+        let planned = plan(&svcs, core::slice::from_ref(&doc)).await;
+
+        assert_eq!(planned.would_create_tags, vec!["holiday".to_owned()]);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags")
+            .fetch_one(&pool)
+            .await
+            .expect("the count");
+        assert_eq!(count, 0);
     }
 }
