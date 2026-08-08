@@ -164,16 +164,18 @@ pub struct ImportPlan {
     ///
     /// A leg that elides its amount still moves its account, because the
     /// balance engine derives its value from its siblings; the residual is
-    /// derived here the same way, so this figure tracks the balance a real run
-    /// would leave behind.
+    /// derived here through the same function the read path uses, so this
+    /// figure tracks the balance a real run would leave behind. That holds for
+    /// a leg appended to an earlier run's transaction as much as for one on a
+    /// transaction this run would create, since the residual is taken over the
+    /// transaction's whole leg set either way.
+    ///
+    /// Two elided legs on one transaction are the exception, and not one this
+    /// report invents: the balance engine attributes such a residual to neither
+    /// leg, so neither bucket moves here.
     ///
     /// An account whose legs net to zero still holds a bucket — an empty one —
     /// so the report can say the account was touched rather than omitting it.
-    ///
-    /// One case understates: a leg *appended* to a transaction an earlier run
-    /// created, whose amount is elided. Its residual is fixed by the owning
-    /// transaction's full leg set, which a plan does not read, so it is reported
-    /// as moving nothing rather than as a guess.
     pub account_totals: Vec<(String, Balances)>,
     /// Every leg or row the run would skip, in encounter order, with the cause
     /// and the document location. The counts above are the totals of these.
@@ -1550,6 +1552,11 @@ trait Sink {
     ///
     /// * `raw` - The document transaction the legs came from.
     /// * `owner` - The transaction their stored siblings belong to.
+    /// * `stored` - Every posting `owner` already holds, as loaded before this
+    ///   row was decided. Together with `postings` this is the complete leg set
+    ///   the transaction will hold, which is what a residual has to be derived
+    ///   from; the adopted postings are among these, so a sink must not count
+    ///   them again from `adoptions`.
     /// * `postings` - The postings to append, index-aligned with `insertions`.
     /// * `insertions` - The legs those postings were built from.
     /// * `adoptions` - Legs whose posting the user already wrote, paired with
@@ -1562,6 +1569,7 @@ trait Sink {
         &mut self,
         raw: &RawTransaction,
         owner: &TransactionId,
+        stored: &[Posting],
         postings: &[Posting],
         insertions: &[&LegPlan],
         adoptions: &[(PostingId, &LegPlan)],
@@ -1720,10 +1728,14 @@ impl Sink for Commit<'_> {
         Ok(())
     }
 
+    /// The owner's stored postings are of no interest here: this sink appends
+    /// what the run decided and records provenance, and neither depends on what
+    /// the transaction already holds.
     async fn attach(
         &mut self,
         raw: &RawTransaction,
         owner: &TransactionId,
+        _stored: &[Posting],
         postings: &[Posting],
         insertions: &[&LegPlan],
         adoptions: &[(PostingId, &LegPlan)],
@@ -1817,32 +1829,32 @@ impl Plan {
         }
     }
 
-    /// Folds a whole transaction's postings into their accounts' totals,
-    /// attributing the transaction's residual to its one elided leg.
+    /// Derives the residual a transaction's one elided leg absorbs.
     ///
     /// An elided leg is not weightless: the balance engine derives its value
-    /// from its siblings ([`crate::residual::residual_of`], the very function
-    /// used here), so a report that left the bucket empty would say an account
-    /// nets to zero when the import is about to move it. Deriving it from the
-    /// same function the read path uses is what keeps the two figures from
-    /// drifting apart.
+    /// from its siblings, so a report that left the bucket empty would say an
+    /// account nets to zero when the import is about to move it. This is
+    /// [`crate::residual::residual_of`], the very function the balance read path
+    /// derives its own residuals through, so the reported figure and the
+    /// balance the user later reads cannot drift apart.
     ///
     /// # Arguments
     ///
-    /// * `postings` - Every posting the transaction will hold, index-aligned
-    ///   with `legs`. A partial set would misattribute the residual, so callers
-    ///   that hold only some of a transaction's legs must use [`Self::record`].
-    /// * `legs` - The plans those postings were built from.
-    fn record_transaction<'leg>(
-        &mut self,
-        postings: &[Posting],
-        legs: impl IntoIterator<Item = &'leg LegPlan>,
-    ) {
-        // Two or more elided legs never reach here — `has_ambiguous_residual`
-        // skips the row whole, and resolution only ever drops legs — but
-        // `residual_of` reports that case as `Ambiguous` regardless, so a future
-        // change to that invariant understates rather than inventing a figure.
-        let residual = match crate::residual::residual_of(postings.iter().map(Posting::amount)) {
+    /// * `postings` - **Every** posting the transaction will hold once this
+    ///   run's writes land, the ones already stored included. A partial set
+    ///   would name a residual the transaction does not have.
+    ///
+    /// # Returns
+    ///
+    /// The per-commodity residual, or `None` when the transaction has no elided
+    /// leg, has more than one, or overflows.
+    fn residual<'post>(postings: impl IntoIterator<Item = &'post Posting>) -> Option<Balances> {
+        // Two or more elided legs never reach a create — `has_ambiguous_residual`
+        // skips the row whole, and resolution only ever drops legs — but an
+        // attach can still meet one stored beside one appended, and the balance
+        // engine attributes that residual to neither. `residual_of` classifies
+        // it as `Ambiguous` and nothing is folded, exactly as the read path does.
+        match crate::residual::residual_of(postings.into_iter().map(Posting::amount)) {
             Ok(crate::residual::Residual::Attributable(balances)) => Some(balances),
             Ok(crate::residual::Residual::NotElided | crate::residual::Residual::Ambiguous) => None,
             Err(error) => {
@@ -1852,10 +1864,27 @@ impl Plan {
                 );
                 None
             }
-        };
+        }
+    }
+
+    /// Folds the postings this run would write into their accounts' totals.
+    ///
+    /// # Arguments
+    ///
+    /// * `postings` - The postings the run would write, index-aligned with
+    ///   `legs`. Only these move a total: a posting the transaction already
+    ///   holds is already in the user's balances.
+    /// * `legs` - The plans those postings were built from.
+    /// * `residual` - The transaction's residual, from [`Self::residual`].
+    fn record_legs<'leg>(
+        &mut self,
+        postings: &[Posting],
+        legs: impl IntoIterator<Item = &'leg LegPlan>,
+        residual: Option<&Balances>,
+    ) {
         for (posting, leg) in postings.iter().zip(legs) {
             let derived = if posting.amount().is_none() {
-                residual.as_ref()
+                residual
             } else {
                 None
             };
@@ -1898,30 +1927,28 @@ impl Sink for Plan {
         postings: &[Posting],
         legs: &[LegPlan],
     ) -> BcResult<()> {
-        self.record_transaction(postings, legs);
+        // A brand-new transaction holds exactly these postings, so they are the
+        // whole leg set the residual is derived from.
+        let residual = Self::residual(postings);
+        self.record_legs(postings, legs, residual.as_ref());
         Ok(())
     }
 
-    /// Records the inserted legs only. An adoption adds no posting — the amount
-    /// is already on the user's own posting — so it moves no total.
-    ///
-    /// The residual is *not* derived here, unlike [`Sink::create`]: these
-    /// postings are only the legs this run appends, while the owning
-    /// transaction's residual is fixed by its full leg set, which this sink
-    /// never sees. Deriving one from the partial set would attribute the wrong
-    /// figure, so an appended elided leg claims its bucket and moves nothing —
-    /// an understatement rather than a fabrication.
+    /// Records the appended legs only. An adoption adds no posting — the amount
+    /// is already on the user's own posting, and so already in their balances —
+    /// so it moves no total, though it does feed the residual by way of
+    /// `stored`, which is where its posting already sits.
     async fn attach(
         &mut self,
         _raw: &RawTransaction,
         _owner: &TransactionId,
+        stored: &[Posting],
         postings: &[Posting],
         insertions: &[&LegPlan],
         _adoptions: &[(PostingId, &LegPlan)],
     ) -> BcResult<()> {
-        for (posting, leg) in postings.iter().zip(insertions) {
-            self.record(posting, leg, None);
-        }
+        let residual = Self::residual(stored.iter().chain(postings));
+        self.record_legs(postings, insertions.iter().copied(), residual.as_ref());
         Ok(())
     }
 
@@ -2219,7 +2246,14 @@ where
 
         let written = self
             .sink
-            .attach(raw, owner, &postings, &insertions, &adoptions)
+            .attach(
+                raw,
+                owner,
+                candidate.postings(),
+                &postings,
+                &insertions,
+                &adoptions,
+            )
             .await;
 
         if !row_local(
@@ -5357,6 +5391,42 @@ mod tests {
                 "the plan's figure for {path} must be the balance the run leaves"
             );
         }
+    }
+
+    /// The same guarantee on the attach path, where the elided leg is appended
+    /// to a transaction an earlier run created and its residual is fixed by
+    /// siblings this run does not write. Deliberately phrased in balances
+    /// rather than residuals: it asks only whether the figure the user is shown
+    /// is the figure they get.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_planned_total_matches_the_balance_an_attach_leaves(pool: SqlitePool) {
+        ensure_path(&pool, "Expenses:Food").await;
+        let svcs = services(&pool).await;
+        let docs = vec![split_raw("GROCERIES")];
+        run(&svcs, &docs).await;
+        let bank = ensure_path(&pool, "Assets:Bank").await;
+
+        let planned = plan(&svcs, &docs).await;
+        run(&svcs, &docs).await;
+
+        assert_eq!(
+            planned.attached_postings, 1,
+            "the elided leg must reach the attach path, not the create path"
+        );
+        let actual = crate::BalanceEngine::new(pool.clone())
+            .balance_for(&bank, "AUD")
+            .await
+            .expect("the balance");
+        assert_eq!(
+            actual.value(),
+            dec!(-50),
+            "the appended leg moves the account"
+        );
+        assert_eq!(
+            bucket(&planned, "Assets:Bank").and_then(|b| b.get("AUD")),
+            Some(actual.value()),
+            "the plan's figure must be the balance the attach leaves"
+        );
     }
 
     /// The residual is per-commodity, so an elided leg beside siblings in two
