@@ -1,0 +1,12 @@
+---
+source: crates/bc-cli/tests/cli/report.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Report: 2025-07-01 – 2026-07-01 (1 transactions)
+ ID                                     | DATE       | DESCRIPTION
+========================================================================
+ [TRANSACTION_ID] | 2025-08-01 | Interest payment
+----- stderr -----

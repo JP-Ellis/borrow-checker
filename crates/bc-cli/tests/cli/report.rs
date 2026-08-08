@@ -106,6 +106,111 @@ fn net_worth_includes_manual_asset_at_market_value() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
+/// Creates a Checking (asset) and Interest (income) account, and returns
+/// their IDs.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn setup_accounts(ctx: &TestContext) -> (String, String) {
+    let checking_out = ctx
+        .command()
+        .args([
+            "--json", "account", "create", "--name", "Checking", "--type", "asset",
+        ])
+        .output()
+        .expect("create checking");
+    let checking_json: serde_json::Value =
+        serde_json::from_slice(&checking_out.stdout).expect("valid JSON");
+    let checking_id = checking_json
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("id field")
+        .to_owned();
+
+    let interest_out = ctx
+        .command()
+        .args([
+            "--json", "account", "create", "--name", "Interest", "--type", "income",
+        ])
+        .output()
+        .expect("create interest");
+    let interest_json: serde_json::Value =
+        serde_json::from_slice(&interest_out.stdout).expect("valid JSON");
+    let interest_id = interest_json
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("id field")
+        .to_owned();
+
+    (checking_id, interest_id)
+}
+
+#[test]
+fn summary_fy_includes_a_transaction_in_the_financial_year() {
+    let ctx = TestContext::new();
+    let (checking_id, interest_id) = setup_accounts(&ctx);
+
+    ctx.command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2025-08-01",
+            "--description",
+            "Interest payment",
+            "--posting",
+            &format!("{checking_id}:100.00:AUD"),
+            "--posting",
+            &format!("{interest_id}:-100.00:AUD"),
+        ])
+        .output()
+        .expect("add transaction");
+
+    let mut cmd = ctx.command();
+    cmd.args(["report", "summary", "--fy", "2026"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn categories_fy_totals_a_transaction_in_the_financial_year() {
+    let ctx = TestContext::new();
+    let (checking_id, interest_id) = setup_accounts(&ctx);
+
+    ctx.command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2025-08-01",
+            "--description",
+            "Interest payment",
+            "--posting",
+            &format!("{checking_id}:100.00:AUD"),
+            "--posting",
+            &format!("{interest_id}:-100.00:AUD"),
+        ])
+        .output()
+        .expect("add transaction");
+
+    let mut cmd = ctx.command();
+    cmd.args(["report", "categories", "--fy", "2026"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn categories_depth_zero_is_rejected() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["report", "categories", "--depth", "0"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn categories_custom_period_is_rejected() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["report", "categories", "--period", "custom"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
 #[test]
 fn categories_unresolvable_account_errors() {
     let ctx = TestContext::new();

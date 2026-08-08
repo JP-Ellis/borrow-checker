@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/report.rs
+expression: output
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: --period custom is not supported by report commands; they expose no --duration-* flags to configure it
