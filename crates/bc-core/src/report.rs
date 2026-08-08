@@ -71,13 +71,22 @@ impl Row {
 pub struct Report {
     /// Rows in pre-order, so a caller renders the tree by indenting on `depth`.
     pub rows: Vec<Row>,
-    /// Legs skipped because their commodity is not the requested one.
+    /// Legs matched by the query but not summed into any row.
     ///
-    /// These are **excluded, never converted** — conversion is deferred to the
-    /// FX work. A non-zero count must be surfaced to the user.
+    /// This counts legs excluded for a commodity mismatch (**excluded, never
+    /// converted** — conversion is deferred to the FX work), and elided legs
+    /// whose transaction had a single-elided residual that carried no entry
+    /// for the requested commodity. It does **not** count legs belonging to a
+    /// transaction with more than one elided leg — those are counted only in
+    /// [`Self::ambiguous_transactions`]. A non-zero count must be surfaced to
+    /// the user.
     pub excluded_postings: usize,
-    /// Transactions carrying more than one elided leg, whose residual cannot be
-    /// attributed to any single leg.
+    /// Transactions carrying more than one elided leg, whose residual cannot
+    /// be attributed to any single leg.
+    ///
+    /// Every elided leg belonging to such a transaction is dropped without
+    /// incrementing [`Self::excluded_postings`]; this counter is the sole
+    /// signal that money was left out for that reason.
     pub ambiguous_transactions: usize,
 }
 
@@ -137,13 +146,24 @@ pub async fn category_totals(
                 }
                 amount.value()
             } else {
-                let Ok(crate::residual::Residual::Attributable(ref balances)) = residual else {
-                    continue;
-                };
-                let Some(value) = balances.get(commodity) else {
-                    continue;
-                };
-                value
+                match residual.as_ref() {
+                    Ok(crate::residual::Residual::Attributable(balances)) => {
+                        let Some(value) = balances.get(commodity) else {
+                            excluded_postings = excluded_postings.saturating_add(1);
+                            continue;
+                        };
+                        value
+                    }
+                    // Already reflected once per transaction in
+                    // `ambiguous_transactions` above; counting the leg here too
+                    // would double-count a single dropped leg across both
+                    // counters.
+                    Ok(crate::residual::Residual::Ambiguous) => continue,
+                    Ok(crate::residual::Residual::NotElided) | Err(_) => {
+                        excluded_postings = excluded_postings.saturating_add(1);
+                        continue;
+                    }
+                }
             };
 
             let entry = own.entry(posting.account_id().clone()).or_default();
@@ -849,6 +869,112 @@ mod tests {
             interest_row.own.value(),
             dec!(-100),
             "the elided leg must resolve to the residual, not error or vanish"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn two_elided_legs_are_ambiguous_and_contribute_nothing(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let bank = accts
+            .create()
+            .name("Bank-A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("bank");
+        let interest = accts
+            .create()
+            .name("Interest")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("interest");
+        let fees = accts
+            .create()
+            .name("Fees")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("fees");
+
+        // `transaction::Service::create` rejects two-or-more-elided-leg
+        // transactions outright, so the only way to exercise
+        // `Residual::Ambiguous` is to insert the rows directly.
+        let tx_id = TransactionId::new();
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+             VALUES (?, '2025-08-01', 'AMBIGUOUS', 'reconciled', '2025-08-01T00:00:00Z')",
+        )
+        .bind(tx_id.to_string())
+        .execute(&pool)
+        .await
+        .expect("insert transaction");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) \
+             VALUES (?, ?, ?, '100.00', 'AUD', 0)",
+        )
+        .bind(PostingId::new().to_string())
+        .bind(tx_id.to_string())
+        .bind(bank.to_string())
+        .execute(&pool)
+        .await
+        .expect("insert p_bank");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) \
+             VALUES (?, ?, ?, NULL, NULL, 1)",
+        )
+        .bind(PostingId::new().to_string())
+        .bind(tx_id.to_string())
+        .bind(interest.to_string())
+        .execute(&pool)
+        .await
+        .expect("insert p_interest (elided)");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) \
+             VALUES (?, ?, ?, NULL, NULL, 2)",
+        )
+        .bind(PostingId::new().to_string())
+        .bind(tx_id.to_string())
+        .bind(fees.to_string())
+        .execute(&pool)
+        .await
+        .expect("insert p_fees (elided)");
+
+        let txns = crate::transaction::Service::new(pool.clone());
+
+        let report = category_totals(&txns, &accts, &TransactionQuery::default(), "AUD")
+            .await
+            .expect("report");
+
+        assert_eq!(
+            report.ambiguous_transactions, 1,
+            "a transaction with two elided legs must be counted as ambiguous"
+        );
+        assert_eq!(
+            report.excluded_postings, 0,
+            "the ambiguous legs are reflected via ambiguous_transactions, not excluded_postings"
+        );
+        assert!(
+            !report.rows.iter().any(|r| r.account_id == interest),
+            "an elided leg from an ambiguous transaction must not appear in any row"
+        );
+        assert!(
+            !report.rows.iter().any(|r| r.account_id == fees),
+            "an elided leg from an ambiguous transaction must not appear in any row"
+        );
+
+        let bank_row = report
+            .rows
+            .iter()
+            .find(|r| r.account_id == bank)
+            .expect("bank row");
+        assert_eq!(
+            bank_row.own.value(),
+            dec!(100),
+            "the one concrete leg still contributes its own amount"
         );
     }
 }
