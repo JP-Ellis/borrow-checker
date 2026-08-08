@@ -601,7 +601,11 @@ impl Service {
 
                     // Keep the snapshot current so a later segment — or a later
                     // path in this batch — resolves against what was just
-                    // inserted.
+                    // inserted. The pushed record mirrors every attribute
+                    // `create_in_tx` was just given (gated on `is_leaf`, so an
+                    // ancestor still gets nothing extra), so a later spec
+                    // naming this same leaf compares against the real values
+                    // rather than field defaults.
                     known.push(
                         Account::builder()
                             .id(new_id.clone())
@@ -614,6 +618,21 @@ impl Service {
                             })
                             .maybe_description(spec.description().filter(|_| is_leaf))
                             .maybe_parent_id(parent.clone())
+                            .commodities(if is_leaf {
+                                spec.commodity_ids().to_vec()
+                            } else {
+                                Vec::new()
+                            })
+                            .tag_ids(if is_leaf {
+                                spec.tag_ids().to_vec()
+                            } else {
+                                Vec::new()
+                            })
+                            .maybe_acquisition_date(spec.acquisition_date().filter(|_| is_leaf))
+                            .maybe_acquisition_cost(spec.acquisition_cost().filter(|_| is_leaf))
+                            .maybe_depreciation_policy(
+                                spec.depreciation_policy().filter(|_| is_leaf).cloned(),
+                            )
                             .build(),
                     );
                     out.created.push(walked.join(":"));
@@ -1774,5 +1793,137 @@ mod tests {
             .find(|a| a.name() == "Checking")
             .expect("the leaf");
         assert_eq!(&id, leaf.id());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_same_leaf_path_twice_in_one_batch_agrees_with_itself(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let make_spec = || {
+            PathSpec::builder()
+                .path(AccountPath::parse("Assets:BankA:House").expect("valid"))
+                .kind(AccountKind::ManualAsset)
+                .acquisition_date(jiff::civil::Date::new(2024, 1, 1).expect("valid date"))
+                .acquisition_cost(rust_decimal::Decimal::new(100_000, 0))
+                .build()
+        };
+
+        let out = svc
+            .create_paths(&[make_spec(), make_spec()])
+            .await
+            .expect("two identical specs for the same leaf must not conflict with each other");
+
+        assert_eq!(
+            out.created,
+            vec![
+                "Assets".to_owned(),
+                "Assets:BankA".to_owned(),
+                "Assets:BankA:House".to_owned(),
+            ],
+            "the leaf is created once even though it was requested twice"
+        );
+        assert_eq!(svc.list_all().await.expect("list").len(), 3);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn valuation_fields_round_trip_through_create_paths(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let date = jiff::civil::Date::new(2023, 6, 15).expect("valid date");
+        let cost = rust_decimal::Decimal::new(250_000, 2);
+        let policy = bc_models::DepreciationPolicy::StraightLine {
+            annual_rate: rust_decimal::Decimal::new(15, 2),
+        };
+
+        let out = svc
+            .create_paths(&[PathSpec::builder()
+                .path(AccountPath::parse("Assets:BankA:House").expect("valid"))
+                .kind(AccountKind::ManualAsset)
+                .acquisition_date(date)
+                .acquisition_cost(cost)
+                .depreciation_policy(policy.clone())
+                .build()])
+            .await
+            .expect("create a manual asset leaf with valuation fields");
+
+        let leaf_id = out.ids.get("Assets:BankA:House").expect("leaf id");
+        let leaf = svc.find_by_id(leaf_id).await.expect("find leaf");
+
+        assert_eq!(leaf.acquisition_date(), Some(date), "acquisition date");
+        assert_eq!(leaf.acquisition_cost(), Some(cost), "acquisition cost");
+        assert_eq!(
+            leaf.depreciation_policy(),
+            Some(&policy),
+            "depreciation policy"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn ancestors_do_not_inherit_the_leaf_attributes(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let date = jiff::civil::Date::new(2022, 3, 10).expect("valid date");
+        let cost = rust_decimal::Decimal::new(500_000, 2);
+        let policy = bc_models::DepreciationPolicy::StraightLine {
+            annual_rate: rust_decimal::Decimal::new(2, 1),
+        };
+
+        svc.create_paths(&[PathSpec::builder()
+            .path(AccountPath::parse("Assets:BankA:Checking").expect("valid"))
+            .description("Everyday spending account")
+            .build()])
+            .await
+            .expect("create with a description");
+
+        let all = svc.list_all().await.expect("list");
+        let leaf = all.iter().find(|a| a.name() == "Checking").expect("leaf");
+        let ancestors: Vec<_> = all.iter().filter(|a| a.id() != leaf.id()).collect();
+
+        assert_eq!(
+            leaf.description(),
+            Some("Everyday spending account"),
+            "the leaf carries the requested description"
+        );
+        for ancestor in &ancestors {
+            assert_eq!(
+                ancestor.description(),
+                None,
+                "an auto-created ancestor must not inherit the leaf's description"
+            );
+        }
+
+        // Same guard, same risk, for the leaf's valuation fields: a regression
+        // that let an ancestor inherit them would pass every other test.
+        svc.create_paths(&[PathSpec::builder()
+            .path(AccountPath::parse("Assets:BankA:House").expect("valid"))
+            .kind(AccountKind::ManualAsset)
+            .acquisition_date(date)
+            .acquisition_cost(cost)
+            .depreciation_policy(policy)
+            .build()])
+            .await
+            .expect("create a second manual asset leaf");
+
+        let after_house = svc.list_all().await.expect("list");
+        let house = after_house
+            .iter()
+            .find(|a| a.name() == "House")
+            .expect("house");
+        for ancestor in after_house
+            .iter()
+            .filter(|a| a.id() != house.id() && a.id() != leaf.id())
+        {
+            assert_eq!(
+                ancestor.acquisition_date(),
+                None,
+                "an auto-created ancestor must not inherit the leaf's acquisition date"
+            );
+            assert_eq!(
+                ancestor.acquisition_cost(),
+                None,
+                "an auto-created ancestor must not inherit the leaf's acquisition cost"
+            );
+            assert!(
+                ancestor.depreciation_policy().is_none(),
+                "an auto-created ancestor must not inherit the leaf's depreciation policy"
+            );
+        }
     }
 }
