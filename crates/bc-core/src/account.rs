@@ -570,7 +570,7 @@ async fn create_in_tx(
 
     crate::tag::insert_account_tags(conn, &id, tag_ids).await?;
 
-    tracing::info!(account_id = %id, %name, "account created");
+    tracing::info!(account_id = %id, %name, "account creation staged in transaction");
     Ok(id)
 }
 
