@@ -7,6 +7,10 @@ pub struct AppContext {
     pub json: bool,
     /// Fortnightly anchor date from config.
     pub fortnightly_anchor: Option<jiff::civil::Date>,
+    /// 1-based month the financial year starts in, from config.
+    pub fy_start_month: u8,
+    /// 1-based day of `fy_start_month` the financial year starts on, from config.
+    pub fy_start_day: u8,
     /// Raw plugin registry — retains manifest metadata for `plugin list`.
     pub plugin_registry: bc_plugins::PluginRegistry,
     /// Loaded importer plugins (WASM + any native adapters).
@@ -93,6 +97,8 @@ impl AppContext {
         Ok(Self {
             json,
             fortnightly_anchor: settings.fortnightly_anchor(),
+            fy_start_month: settings.financial_year_start_month(),
+            fy_start_day: settings.financial_year_start_day(),
             plugin_registry,
             importers,
             accounts: bc_core::AccountService::new(pool.clone()),
@@ -113,5 +119,20 @@ impl AppContext {
             auto_pre_discard: backup_section.auto_pre_discard(),
             budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    /// The fields `AppContext` copies out of `Settings` must exist and default
+    /// to the Australian financial year, so `--period financial-year` needs no
+    /// flag out of the box.
+    #[test]
+    fn settings_expose_the_australian_financial_year_start() {
+        let settings = bc_config::Settings::default();
+        assert_eq!(settings.financial_year_start_month(), 7);
+        assert_eq!(settings.financial_year_start_day(), 1);
     }
 }

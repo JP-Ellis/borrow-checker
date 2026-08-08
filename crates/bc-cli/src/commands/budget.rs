@@ -60,12 +60,12 @@ pub enum Command {
         /// Months component of a custom period duration.
         #[arg(long)]
         duration_months: Option<u32>,
-        /// Financial year start month (1–12).
+        /// Month the financial year starts in. Overrides the configured value.
         #[arg(long)]
         fy_start_month: Option<u8>,
-        /// Financial year start day (1–28, default 1).
-        #[arg(long, default_value = "1")]
-        fy_start_day: u8,
+        /// Day the financial year starts on. Overrides the configured value.
+        #[arg(long)]
+        fy_start_day: Option<u8>,
         /// Rollover policy.
         #[arg(long, value_enum, default_value = "reset-to-zero")]
         rollover: RolloverArg,
@@ -262,7 +262,7 @@ async fn create(
     duration_weeks: Option<u32>,
     duration_months: Option<u32>,
     fy_start_month: Option<u8>,
-    fy_start_day: u8,
+    fy_start_day: Option<u8>,
     rollover_arg: RolloverArg,
     effective: Option<String>,
 ) -> CliResult<()> {
@@ -284,8 +284,8 @@ async fn create(
             duration_days,
             duration_weeks,
             duration_months,
-            fy_start_month: fy_start_month.unwrap_or(7),
-            fy_start_day,
+            fy_start_month: fy_start_month.unwrap_or(ctx.fy_start_month),
+            fy_start_day: fy_start_day.unwrap_or(ctx.fy_start_day),
         },
     )?;
 
