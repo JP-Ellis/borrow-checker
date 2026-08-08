@@ -9,6 +9,7 @@ mod context;
 mod error;
 mod logging;
 mod output;
+mod period;
 
 use clap::Parser as _;
 

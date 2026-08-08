@@ -13,6 +13,8 @@ use crate::commands::parse_date_or_today;
 use crate::context::AppContext;
 use crate::error::CliError;
 use crate::error::CliResult;
+use crate::period::PeriodArg;
+use crate::period::PeriodInputs;
 
 /// Arguments for the `budget` subcommand.
 #[non_exhaustive]
@@ -106,31 +108,6 @@ pub enum Command {
         #[arg(long, value_enum)]
         rollover: Option<RolloverArg>,
     },
-}
-
-/// CLI representation of budget period types.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum PeriodArg {
-    /// Weekly period.
-    Weekly,
-    /// Fortnightly period (requires --anchor).
-    Fortnightly,
-    /// Calendar month.
-    Monthly,
-    /// Calendar quarter (Jan/Apr/Jul/Oct).
-    Quarterly,
-    /// Financial year (requires --fy-start-month).
-    #[value(name = "financial-year")]
-    FinancialYear,
-    /// Financial quarter aligned to a financial year.
-    #[value(name = "financial-quarter")]
-    FinancialQuarter,
-    /// Calendar year.
-    #[value(name = "calendar-year")]
-    CalendarYear,
-    /// Arbitrary duration (requires at least one of --duration-days, --duration-weeks, --duration-months).
-    Custom,
 }
 
 /// CLI representation of rollover policies.
@@ -300,14 +277,16 @@ async fn create(
         })
         .transpose()?;
 
-    let bc_period = resolve_period(
+    let bc_period = crate::period::resolve(
         period_arg,
-        ctx.fortnightly_anchor,
-        duration_days,
-        duration_weeks,
-        duration_months,
-        fy_start_month,
-        fy_start_day,
+        &PeriodInputs {
+            fortnightly_anchor: ctx.fortnightly_anchor,
+            duration_days,
+            duration_weeks,
+            duration_months,
+            fy_start_month: fy_start_month.unwrap_or(7),
+            fy_start_day,
+        },
     )?;
 
     let rollover_policy = match rollover_arg {
@@ -552,53 +531,6 @@ async fn update_budget(
     }
 
     Ok(())
-}
-
-/// Convert CLI period arguments into a [`bc_models::Period`].
-fn resolve_period(
-    period_arg: PeriodArg,
-    fortnightly_anchor: Option<Date>,
-    duration_days: Option<u32>,
-    duration_weeks: Option<u32>,
-    duration_months: Option<u32>,
-    fy_start_month: Option<u8>,
-    fy_start_day: u8,
-) -> CliResult<bc_models::Period> {
-    match period_arg {
-        PeriodArg::Weekly => Ok(Period::Weekly),
-        PeriodArg::Monthly => Ok(Period::Monthly),
-        PeriodArg::Quarterly => Ok(Period::Quarterly),
-        PeriodArg::CalendarYear => Ok(Period::CalendarYear),
-        PeriodArg::Fortnightly => {
-            let anchor = fortnightly_anchor.ok_or_else(|| {
-                CliError::Arg(
-                    "fortnightly period requires `fortnightly_anchor` to be set in config"
-                        .to_owned(),
-                )
-            })?;
-            Ok(Period::Fortnightly { anchor })
-        }
-        PeriodArg::FinancialYear => {
-            let month = fy_start_month.ok_or_else(|| {
-                CliError::Arg("--fy-start-month is required for financial-year periods".to_owned())
-            })?;
-            bc_models::Period::financial_year(month, fy_start_day)
-                .map_err(|e| CliError::Arg(format!("invalid financial year: {e}")))
-        }
-        PeriodArg::FinancialQuarter => {
-            let month = fy_start_month.ok_or_else(|| {
-                CliError::Arg(
-                    "--fy-start-month is required for financial-quarter periods".to_owned(),
-                )
-            })?;
-            bc_models::Period::financial_quarter(month, fy_start_day)
-                .map_err(|e| CliError::Arg(format!("invalid financial quarter: {e}")))
-        }
-        PeriodArg::Custom => {
-            bc_models::Period::custom(duration_days, duration_weeks, duration_months)
-                .map_err(|e| CliError::Arg(format!("invalid custom period: {e}")))
-        }
-    }
 }
 
 /// Format a [`bc_models::Period`] as a human-readable string for table output.
