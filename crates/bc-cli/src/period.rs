@@ -106,6 +106,72 @@ pub fn resolve(arg: PeriodArg, inputs: &PeriodInputs) -> CliResult<bc_models::Pe
     }
 }
 
+/// Resolves `--fy <YEAR>` into a `[start, end)` date window.
+///
+/// The year names the financial year's **end**, matching ATO usage: under the
+/// default 1 July start, `--fy 2026` is 2025-07-01 to 2026-07-01 exclusive. The
+/// window is derived from the configured start, so a 1 January start makes
+/// `--fy 2026` the 2026 calendar year.
+///
+/// # Arguments
+///
+/// * `ending_year` - The calendar year the financial year ends in.
+/// * `inputs` - Supplies the configured financial-year start.
+///
+/// # Returns
+///
+/// The inclusive start and exclusive end of the financial year.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] if the configured start is out of range or the
+/// resulting dates are not representable.
+#[inline]
+pub fn fy_window(ending_year: i16, inputs: &PeriodInputs) -> CliResult<(Date, Date)> {
+    let period = resolve(PeriodArg::FinancialYear, inputs)?;
+
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "fy_start_month is validated to 1–12 by bc-config and by Period::financial_year"
+    )]
+    #[expect(
+        clippy::as_conversions,
+        reason = "fy_start_month is validated to 1–12; the cast cannot wrap"
+    )]
+    let month = inputs.fy_start_month as i8;
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "fy_start_day is validated to 1–28 by bc-config and by Period::financial_year"
+    )]
+    #[expect(
+        clippy::as_conversions,
+        reason = "fy_start_day is validated to 1–28; the cast cannot wrap"
+    )]
+    let day = inputs.fy_start_day as i8;
+
+    let boundary = |year: i16| {
+        Date::new(year, month, day)
+            .map_err(|e| CliError::Arg(format!("invalid financial year {year}: {e}")))
+    };
+    let last_day = |b: Date| {
+        b.yesterday()
+            .map_err(|e| CliError::Arg(format!("invalid financial year {ending_year}: {e}")))
+    };
+
+    // Anchor on the last day of the financial year that ends *in* `ending_year`.
+    // The boundary falling in `ending_year` usually ends that year, but when the
+    // financial year starts on 1 January its preceding day falls in the year
+    // before, so the next boundary is the correct one.
+    let mut anchor = last_day(boundary(ending_year)?)?;
+    if anchor.year() < ending_year {
+        anchor = last_day(boundary(ending_year.checked_add(1).ok_or_else(|| {
+            CliError::Arg(format!("financial year {ending_year} overflows"))
+        })?)?)?;
+    }
+
+    Ok(period.range_containing(anchor))
+}
+
 #[cfg(test)]
 mod tests {
     use bc_models::Period;
@@ -114,6 +180,7 @@ mod tests {
 
     use super::PeriodArg;
     use super::PeriodInputs;
+    use super::fy_window;
     use super::resolve;
 
     /// Inputs with the Australian defaults and no optional components set.
@@ -200,5 +267,33 @@ mod tests {
             resolve(PeriodArg::CalendarYear, &inputs).expect("calendar"),
             Period::CalendarYear
         ));
+    }
+
+    #[test]
+    fn fy_window_is_named_by_the_year_it_ends() {
+        let window = fy_window(2026, &au_inputs()).expect("window");
+        assert_eq!(window, (date(2025, 7, 1), date(2026, 7, 1)));
+    }
+
+    #[test]
+    fn fy_window_under_a_january_start_is_the_calendar_year() {
+        let inputs = PeriodInputs {
+            fy_start_month: 1,
+            fy_start_day: 1,
+            ..au_inputs()
+        };
+        let window = fy_window(2026, &inputs).expect("window");
+        assert_eq!(window, (date(2026, 1, 1), date(2027, 1, 1)));
+    }
+
+    #[test]
+    fn fy_window_under_a_uk_start_spans_april_to_april() {
+        let inputs = PeriodInputs {
+            fy_start_month: 4,
+            fy_start_day: 6,
+            ..au_inputs()
+        };
+        let window = fy_window(2026, &inputs).expect("window");
+        assert_eq!(window, (date(2025, 4, 6), date(2026, 4, 6)));
     }
 }

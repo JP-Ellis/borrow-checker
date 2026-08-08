@@ -8,6 +8,8 @@ use rust_decimal::Decimal;
 
 use crate::context::AppContext;
 use crate::error::CliResult;
+use crate::period::PeriodArg;
+use crate::period::PeriodInputs;
 
 /// Arguments for the `report` subcommand.
 #[non_exhaustive]
@@ -26,49 +28,16 @@ pub enum Command {
     NetWorth,
     /// Transaction summary for a configurable time period.
     Summary {
-        /// Period granularity.
-        ///
-        /// Determines the date range: the period instance containing `--date`
-        /// is selected. Defaults to `monthly`.
+        /// Period granularity. The period instance containing `--date` is used.
         #[arg(long, value_enum, default_value = "monthly")]
         period: PeriodArg,
         /// A date within the desired period (YYYY-MM-DD). Defaults to today.
-        #[arg(long, value_name = "YYYY-MM-DD")]
+        #[arg(long, value_name = "YYYY-MM-DD", conflicts_with = "fy")]
         date: Option<String>,
+        /// Financial year to report, named by the year it ends in.
+        #[arg(long, value_name = "YEAR", conflicts_with_all = ["period", "date"])]
+        fy: Option<i16>,
     },
-    /// Budget vs actuals (requires Milestone 5).
-    Budget,
-}
-
-/// CLI period selector for the `report summary` command.
-///
-/// Covers the fixed-anchor periods that require no additional configuration.
-/// Financial-year periods (which need a configurable start month/day from the
-/// config file) will be added once config integration is complete.
-#[non_exhaustive]
-#[derive(Debug, Clone, clap::ValueEnum)]
-pub enum PeriodArg {
-    /// Every 7 days (Monday–Sunday).
-    Weekly,
-    /// Calendar month.
-    Monthly,
-    /// Calendar quarter (Jan/Apr/Jul/Oct).
-    Quarterly,
-    /// Full calendar year (1 Jan – 31 Dec).
-    #[value(name = "calendar-year")]
-    CalendarYear,
-}
-
-impl From<PeriodArg> for bc_models::Period {
-    #[inline]
-    fn from(arg: PeriodArg) -> Self {
-        match arg {
-            PeriodArg::Weekly => Self::Weekly,
-            PeriodArg::Monthly => Self::Monthly,
-            PeriodArg::Quarterly => Self::Quarterly,
-            PeriodArg::CalendarYear => Self::CalendarYear,
-        }
-    }
 }
 
 /// Executes the `report` subcommand.
@@ -80,14 +49,7 @@ impl From<PeriodArg> for bc_models::Period {
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
         Command::NetWorth => net_worth(ctx).await,
-        Command::Summary { period, date } => summary(ctx, period, date).await,
-        Command::Budget => {
-            #[expect(clippy::print_stderr, reason = "CLI stub message")]
-            {
-                eprintln!("report budget: requires Milestone 5 — not yet implemented");
-            }
-            Ok(())
-        }
+        Command::Summary { period, date, fy } => summary(ctx, period, date, fy).await,
     }
 }
 
@@ -234,21 +196,38 @@ async fn net_worth(ctx: &AppContext) -> CliResult<()> {
 /// * `ctx` - Shared application context.
 /// * `period` - The period granularity to use.
 /// * `date` - A date within the desired period. Defaults to today.
+/// * `fy` - Financial year to report, named by the year it ends in.
 ///
 /// # Errors
 ///
 /// Propagates [`crate::error::CliError`] from the transaction service or
 /// date parsing.
-async fn summary(ctx: &AppContext, period: PeriodArg, date: Option<String>) -> CliResult<()> {
-    let anchor = if let Some(d) = date {
-        jiff::civil::Date::from_str(&d)
-            .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{d}': {e}")))?
-    } else {
-        jiff::Zoned::now().date()
+async fn summary(
+    ctx: &AppContext,
+    period: PeriodArg,
+    date: Option<String>,
+    fy: Option<i16>,
+) -> CliResult<()> {
+    let inputs = PeriodInputs {
+        fortnightly_anchor: ctx.fortnightly_anchor,
+        duration_days: None,
+        duration_weeks: None,
+        duration_months: None,
+        fy_start_month: ctx.fy_start_month,
+        fy_start_day: ctx.fy_start_day,
     };
 
-    let bc_period = bc_models::Period::from(period);
-    let (start, end) = bc_period.range_containing(anchor);
+    let (start, end) = if let Some(year) = fy {
+        crate::period::fy_window(year, &inputs)?
+    } else {
+        let anchor = if let Some(d) = date {
+            jiff::civil::Date::from_str(&d)
+                .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{d}': {e}")))?
+        } else {
+            jiff::Zoned::now().date()
+        };
+        crate::period::resolve(period, &inputs)?.range_containing(anchor)
+    };
 
     let all_txs = ctx.transactions.list().await?;
     let txs: Vec<_> = all_txs
@@ -281,25 +260,4 @@ async fn summary(ctx: &AppContext, period: PeriodArg, date: Option<String>) -> C
         .collect();
     crate::output::print_table(&["ID", "DATE", "DESCRIPTION"], &rows);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use bc_models::Period;
-
-    use super::PeriodArg;
-
-    #[test]
-    fn period_arg_converts_to_bc_models_period() {
-        assert!(matches!(Period::from(PeriodArg::Weekly), Period::Weekly));
-        assert!(matches!(Period::from(PeriodArg::Monthly), Period::Monthly));
-        assert!(matches!(
-            Period::from(PeriodArg::Quarterly),
-            Period::Quarterly
-        ));
-        assert!(matches!(
-            Period::from(PeriodArg::CalendarYear),
-            Period::CalendarYear
-        ));
-    }
 }
