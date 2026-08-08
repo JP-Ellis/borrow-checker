@@ -257,27 +257,23 @@ impl Counts {
         });
     }
 
-    /// Charges `postings` to the tally `cause` belongs to.
+    /// Charges `postings` to the tally `cause` belongs to, and to the cause's
+    /// own line.
     ///
-    /// This is the single place attribution is decided, so a new [`SkipCause`]
-    /// cannot silently land in the wrong column.
+    /// Every charge in the run passes through here, so the coarse split and the
+    /// per-cause breakdown are incremented together and cannot disagree about
+    /// how much was lost. Which coarse column a cause lands in is
+    /// [`Bucket::of`]'s decision alone.
     ///
     /// # Arguments
     ///
     /// * `cause` - Why the postings were skipped.
     /// * `postings` - How many were lost.
     fn charge(&mut self, cause: SkipCause, postings: usize) {
-        let bucket = match cause {
-            SkipCause::UnresolvedAccount => &mut self.unresolved_account_postings,
-            SkipCause::UnresolvedCommodity => &mut self.unresolved_commodity_postings,
-            SkipCause::MalformedPath
-            | SkipCause::MalformedTag
-            | SkipCause::BlankCommodity
-            | SkipCause::AmbiguousResidual
-            | SkipCause::UndeterminedResidual
-            | SkipCause::MultiOwnerConflict
-            | SkipCause::FailedCorroboration
-            | SkipCause::RowLocalFailure => &mut self.other_skipped_postings,
+        let bucket = match Bucket::of(cause) {
+            Bucket::UnresolvedAccount => &mut self.unresolved_account_postings,
+            Bucket::UnresolvedCommodity => &mut self.unresolved_commodity_postings,
+            Bucket::Other => &mut self.other_skipped_postings,
         };
         *bucket = bucket.saturating_add(postings);
 
@@ -289,6 +285,49 @@ impl Counts {
         self.unresolved_account_postings
             .saturating_add(self.unresolved_commodity_postings)
             .saturating_add(self.other_skipped_postings)
+    }
+}
+
+/// The coarse column a [`SkipCause`] is charged to.
+///
+/// The report leads with this three-way split, so which column a cause lands in
+/// is decided once, here, rather than at each site that keeps a tally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bucket {
+    /// The leg's account path named no existing account.
+    UnresolvedAccount,
+    /// The leg's commodity code named no registered commodity.
+    UnresolvedCommodity,
+    /// Anything else.
+    Other,
+}
+
+impl Bucket {
+    /// Returns the column `cause` is charged to.
+    ///
+    /// Exhaustive by design: a new [`SkipCause`] fails to compile here until
+    /// someone says which column it belongs in.
+    ///
+    /// # Arguments
+    ///
+    /// * `cause` - Why the postings were skipped.
+    ///
+    /// # Returns
+    ///
+    /// The coarse column, which is the only thing that decides it.
+    fn of(cause: SkipCause) -> Self {
+        match cause {
+            SkipCause::UnresolvedAccount => Self::UnresolvedAccount,
+            SkipCause::UnresolvedCommodity => Self::UnresolvedCommodity,
+            SkipCause::MalformedPath
+            | SkipCause::MalformedTag
+            | SkipCause::BlankCommodity
+            | SkipCause::AmbiguousResidual
+            | SkipCause::UndeterminedResidual
+            | SkipCause::MultiOwnerConflict
+            | SkipCause::FailedCorroboration
+            | SkipCause::RowLocalFailure => Self::Other,
+        }
     }
 }
 
@@ -462,23 +501,15 @@ struct Resolved {
     /// An entry is shorter than its raw transaction's posting list when some leg
     /// was skipped, and empty when the whole transaction was.
     rows: Vec<Vec<ResolvedLeg>>,
-    /// Legs skipped because their account path named no existing account.
-    unresolved_account_postings: usize,
-    /// Legs skipped because their commodity code named no registered commodity.
-    unresolved_commodity_postings: usize,
-    /// Legs skipped for any other reason.
-    other_skipped_postings: usize,
     /// Distinct account paths naming no account; sorted and unique by construction.
     unresolved_accounts: BTreeSet<String>,
     /// Distinct codes naming no registered commodity; sorted and unique by
     /// construction.
     unresolved_commodities: BTreeSet<String>,
-    /// Legs charged to each cause this pass can raise, keyed by the cause
-    /// itself. Folded into the run's [`Counts::charged_by_cause`] once one
-    /// exists.
-    charged_by_cause: BTreeMap<SkipCause, usize>,
-    /// Every leg or row the pass could not resolve, in encounter order.
-    diagnostics: Vec<Diagnostic>,
+    /// The pass's charges and diagnostics, kept in the run's own tally type so
+    /// attribution is [`Counts::charge`]'s decision here as everywhere else.
+    /// The run continues accumulating into it rather than copying it out.
+    counts: Counts,
 }
 
 /// Imports raw transactions, persisting every resolvable posting.
@@ -737,16 +768,12 @@ where
     let pass = resolve_legs(&resolver, &commodity_resolver, raws);
     let unresolved_accounts: Vec<String> = pass.unresolved_accounts.into_iter().collect();
     let unresolved_commodities: Vec<String> = pass.unresolved_commodities.into_iter().collect();
+    let mut counts = pass.counts;
+    // The tag pre-pass ran first, so its diagnostics precede the resolution
+    // pass's rather than being appended after them.
     let mut diagnostics = tag_pass.diagnostics;
-    diagnostics.extend(pass.diagnostics);
-    let mut counts = Counts {
-        unresolved_account_postings: pass.unresolved_account_postings,
-        unresolved_commodity_postings: pass.unresolved_commodity_postings,
-        other_skipped_postings: pass.other_skipped_postings,
-        charged_by_cause: pass.charged_by_cause,
-        diagnostics,
-        ..Counts::default()
-    };
+    diagnostics.append(&mut counts.diagnostics);
+    counts.diagnostics = diagnostics;
 
     let planned = allocate_occurrences(pass.rows);
     // One query per touched account for the whole run, not per row.
@@ -794,13 +821,9 @@ fn resolve_legs(
 ) -> Resolved {
     let mut out = Resolved {
         rows: Vec::with_capacity(raws.len()),
-        unresolved_account_postings: 0_usize,
-        unresolved_commodity_postings: 0_usize,
-        other_skipped_postings: 0_usize,
         unresolved_accounts: BTreeSet::new(),
         unresolved_commodities: BTreeSet::new(),
-        charged_by_cause: BTreeMap::new(),
-        diagnostics: Vec::new(),
+        counts: Counts::default(),
     };
     // Warn-once guard only: which archived accounts have already been reported.
     // Unlike an unresolved account this is not part of the outcome — importing
@@ -814,19 +837,13 @@ fn resolve_legs(
                 postings = raw.postings.len(),
                 "two or more elided legs leave the residual ambiguous; skipping the transaction"
             );
-            out.diagnostics.push(Diagnostic {
-                location: location_of(raw).to_owned(),
-                cause: SkipCause::AmbiguousResidual,
-                detail: format!("{} legs, two or more elided", raw.postings.len()),
-            });
-            out.other_skipped_postings = out
-                .other_skipped_postings
-                .saturating_add(raw.postings.len());
-            charge_cause(
-                &mut out.charged_by_cause,
+            out.counts.note(
+                location_of(raw),
                 SkipCause::AmbiguousResidual,
-                raw.postings.len(),
+                format!("{} legs, two or more elided", raw.postings.len()),
             );
+            out.counts
+                .charge(SkipCause::AmbiguousResidual, raw.postings.len());
             out.rows.push(Vec::new());
             continue;
         }
@@ -844,33 +861,8 @@ fn resolve_legs(
             ) {
                 Ok(leg) => legs.push(leg),
                 Err((cause, detail)) => {
-                    out.diagnostics.push(Diagnostic {
-                        location: location_of(raw).to_owned(),
-                        cause,
-                        detail,
-                    });
-                    charge_cause(&mut out.charged_by_cause, cause, 1);
-                    match cause {
-                        SkipCause::UnresolvedAccount => {
-                            out.unresolved_account_postings =
-                                out.unresolved_account_postings.saturating_add(1);
-                        }
-                        SkipCause::UnresolvedCommodity => {
-                            out.unresolved_commodity_postings =
-                                out.unresolved_commodity_postings.saturating_add(1);
-                        }
-                        SkipCause::MalformedPath
-                        | SkipCause::MalformedTag
-                        | SkipCause::BlankCommodity
-                        | SkipCause::AmbiguousResidual
-                        | SkipCause::UndeterminedResidual
-                        | SkipCause::MultiOwnerConflict
-                        | SkipCause::FailedCorroboration
-                        | SkipCause::RowLocalFailure => {
-                            out.other_skipped_postings =
-                                out.other_skipped_postings.saturating_add(1);
-                        }
-                    }
+                    out.counts.note(location_of(raw), cause, detail);
+                    out.counts.charge(cause, 1_usize);
                 }
             }
         }
@@ -5335,6 +5327,54 @@ mod tests {
             ],
             "TWOELIDED charges both of its legs to one diagnostic, so this must diverge from \
              counting diagnostics per cause, or the equality above is vacuous"
+        );
+    }
+
+    /// Every charge passes through `Counts::charge`, which increments the
+    /// coarse column and the cause's own line together. A charge that reached
+    /// only one of the two would leave the report's headline split disagreeing
+    /// with the breakdown beneath it, and this is what notices.
+    ///
+    /// The equality is exact rather than approximate: a
+    /// [`SkipCause::MalformedTag`] is only ever *noted*, never charged, so it
+    /// costs no posting and enters neither tally.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_per_cause_tally_sums_to_the_coarse_total(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let mut docs = interesting_documents();
+        let mut malformed = raw("BADTAG", -3_i64);
+        malformed.tags = vec!["person::alpha".to_owned()];
+        docs.push(malformed);
+
+        let outcome = run(&svcs, &docs).await;
+
+        let per_cause: usize = outcome
+            .charged_by_cause
+            .iter()
+            .map(|&(_, postings)| postings)
+            .sum();
+        assert_eq!(
+            per_cause, outcome.skipped_postings,
+            "the breakdown must account for exactly what the coarse split does"
+        );
+        assert!(
+            outcome.skipped_postings > 0,
+            "the fixture must skip something, or the equality above is vacuous"
+        );
+        assert!(
+            outcome
+                .diagnostics
+                .iter()
+                .any(|entry| entry.cause == SkipCause::MalformedTag),
+            "the fixture must raise a malformed tag, or the exactness is untested"
+        );
+        assert!(
+            !outcome
+                .charged_by_cause
+                .iter()
+                .any(|&(cause, _)| cause == SkipCause::MalformedTag),
+            "a malformed tag is noted, never charged, so it must not enter the tally"
         );
     }
 
