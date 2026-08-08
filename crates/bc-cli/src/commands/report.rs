@@ -446,7 +446,9 @@ async fn categories(
 struct Rendered {
     /// Rows in pre-order.
     rows: Vec<bc_core::CategoryRow>,
-    /// Legs excluded for a commodity mismatch.
+    /// Legs matched by the query but not summed into any row — a commodity
+    /// mismatch, an elided leg whose residual had no entry for the requested
+    /// commodity, or a residual computation failure.
     excluded_postings: usize,
     /// Transactions whose residual could not be attributed.
     ambiguous_transactions: usize,
@@ -499,8 +501,8 @@ impl Rendered {
         if self.excluded_postings > 0 {
             let _ = writeln!(
                 out,
-                "\nnote: {} posting(s) in other commodities were excluded, not converted",
-                self.excluded_postings
+                "\nnote: {} posting(s) could not be counted in {} and were excluded, not converted",
+                self.excluded_postings, self.commodity
             );
         }
         if self.ambiguous_transactions > 0 {
