@@ -1,0 +1,7 @@
+---
+source: crates/bc-cli/src/commands/report.rs
+expression: rendered.render()
+---
+Report: 2025-07-01 – 2026-07-01 (AUD)
+
+No activity in this period.

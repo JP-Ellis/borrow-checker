@@ -28,6 +28,43 @@ pub struct Row {
     pub rolled_up: Amount,
 }
 
+impl Row {
+    /// Constructs a row directly.
+    ///
+    /// `#[non_exhaustive]` blocks struct-literal construction outside this
+    /// crate, so callers that build a [`Row`] by hand — a CLI renderer's
+    /// snapshot tests, say — go through this constructor instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account this row totals.
+    /// * `path` - Colon-separated path from the account's root.
+    /// * `depth` - Number of this row's ancestors that also appear in the report.
+    /// * `own` - Sum of postings directly to this account.
+    /// * `rolled_up` - `own` plus every descendant's `own`.
+    ///
+    /// # Returns
+    ///
+    /// The constructed [`Row`].
+    #[inline]
+    #[must_use]
+    pub fn new(
+        account_id: AccountId,
+        path: String,
+        depth: usize,
+        own: Amount,
+        rolled_up: Amount,
+    ) -> Self {
+        Self {
+            account_id,
+            path,
+            depth,
+            own,
+            rolled_up,
+        }
+    }
+}
+
 /// A category report: per-account totals plus what could not be counted.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
