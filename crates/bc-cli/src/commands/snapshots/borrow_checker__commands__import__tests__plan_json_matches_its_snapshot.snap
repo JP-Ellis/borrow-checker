@@ -1,0 +1,60 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+assertion_line: 1346
+expression: report.to_json()
+---
+{
+  "account_totals": [
+    {
+      "account": "Assets:BankA:Checking",
+      "amount": "-12405.18",
+      "commodity": "AUD"
+    },
+    {
+      "account": "Assets:Crypto:ExchangeA",
+      "amount": "0.75",
+      "commodity": "BTC"
+    }
+  ],
+  "attached_postings": 1,
+  "charged_by_cause": [
+    {
+      "cause": "unresolved account",
+      "charged_postings": 1
+    },
+    {
+      "cause": "ambiguous residual",
+      "charged_postings": 2
+    }
+  ],
+  "diagnostics": [
+    {
+      "cause": "unresolved account",
+      "detail": "Expenses:Utilities:Gas",
+      "location": "bank-a-2024-03.csv:14"
+    },
+    {
+      "cause": "ambiguous residual",
+      "detail": "2 legs, two or more elided",
+      "location": "bank-a-2024-07.csv:88"
+    }
+  ],
+  "dry_run": true,
+  "new_transactions": 2,
+  "other_skipped_postings": 2,
+  "skipped_postings": 3,
+  "unresolved_account_postings": 1,
+  "unresolved_accounts": [
+    "Expenses:Utilities:Gas",
+    "Income:Interest"
+  ],
+  "unresolved_commodities": [
+    "DOT",
+    "XRP"
+  ],
+  "unresolved_commodity_postings": 0,
+  "would_create_tags": [
+    "groceries",
+    "holiday"
+  ]
+}

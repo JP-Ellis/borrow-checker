@@ -106,6 +106,10 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
         .await?;
         let report = PlanReport::from(&plan);
 
+        if ctx.json {
+            return crate::output::print_json(&report.to_json());
+        }
+
         #[expect(clippy::print_stdout, reason = "CLI output")]
         {
             print!("{}", render_plan(&report, &profile.name, &profile.importer));
@@ -687,11 +691,6 @@ struct PlanDiagnostic {
     /// Why it was skipped.
     cause: bc_core::SkipCause,
     /// Human-readable detail: the offending path, code, or conflict.
-    #[expect(
-        dead_code,
-        reason = "carried for parity with bc_core::Diagnostic; the JSON surface Task 6 adds \
-                   reads it, the human report does not"
-    )]
     detail: String,
 }
 
@@ -710,25 +709,10 @@ struct PlanReport {
     /// Postings it could not persist, whatever the cause.
     skipped_postings: usize,
     /// Postings whose account path names no existing account.
-    #[expect(
-        dead_code,
-        reason = "carried for parity with bc_core::ImportPlan so Task 6's JSON surface does \
-                   not need to widen this struct; the human report groups by cause instead"
-    )]
     unresolved_account_postings: usize,
     /// Postings whose commodity code names no registered commodity.
-    #[expect(
-        dead_code,
-        reason = "carried for parity with bc_core::ImportPlan so Task 6's JSON surface does \
-                   not need to widen this struct; the human report groups by cause instead"
-    )]
     unresolved_commodity_postings: usize,
     /// Postings skipped for any other reason.
-    #[expect(
-        dead_code,
-        reason = "carried for parity with bc_core::ImportPlan so Task 6's JSON surface does \
-                   not need to widen this struct; the human report groups by cause instead"
-    )]
     other_skipped_postings: usize,
     /// Account paths that resolve to no account, deduplicated and sorted.
     unresolved_accounts: Vec<String>,
@@ -788,6 +772,65 @@ impl From<&bc_core::ImportPlan> for PlanReport {
                 })
                 .collect(),
         }
+    }
+}
+
+impl PlanReport {
+    /// Renders the machine-readable dry-run report.
+    ///
+    /// Built from the same fields [`render_plan`] draws on, so the two
+    /// surfaces cannot drift apart — but unlike the human report, nothing
+    /// here is truncated: this is the payload a profile-tuning script reads,
+    /// and a silent cap would hide the very rows it is looking for. Carries
+    /// no `batch_id` key at all, because a dry run opens no batch — there is
+    /// no unknown identifier to report, only the absence of one.
+    ///
+    /// # Returns
+    ///
+    /// The payload `--json` prints for a dry run.
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "dry_run": true,
+            "new_transactions": self.new_transactions,
+            "attached_postings": self.attached_postings,
+            "skipped_postings": self.skipped_postings,
+            "unresolved_account_postings": self.unresolved_account_postings,
+            "unresolved_commodity_postings": self.unresolved_commodity_postings,
+            "other_skipped_postings": self.other_skipped_postings,
+            "unresolved_accounts": self.unresolved_accounts,
+            "unresolved_commodities": self.unresolved_commodities,
+            "would_create_tags": self.would_create_tags,
+            "account_totals": self
+                .account_totals
+                .iter()
+                .flat_map(|(account, balances)| {
+                    balances.iter().map(move |(commodity, amount)| {
+                        serde_json::json!({
+                            "account": account,
+                            "commodity": commodity,
+                            "amount": amount.to_string(),
+                        })
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "charged_by_cause": self
+                .charged_by_cause
+                .iter()
+                .map(|(cause, charged)| serde_json::json!({
+                    "cause": cause.label(),
+                    "charged_postings": charged,
+                }))
+                .collect::<Vec<_>>(),
+            "diagnostics": self
+                .diagnostics
+                .iter()
+                .map(|diagnostic| serde_json::json!({
+                    "location": diagnostic.location,
+                    "cause": diagnostic.cause.label(),
+                    "detail": diagnostic.detail,
+                }))
+                .collect::<Vec<_>>(),
+        })
     }
 }
 
@@ -1273,6 +1316,40 @@ mod tests {
     }
 
     #[test]
+    fn plan_json_is_unabridged() {
+        let report = report_with_many_skips(201);
+
+        let json = report.to_json();
+
+        let diagnostics = json
+            .get("diagnostics")
+            .and_then(serde_json::Value::as_array)
+            .expect("a diagnostics array");
+        assert_eq!(
+            diagnostics.len(),
+            201,
+            "the human report truncates; --json must not"
+        );
+    }
+
+    #[test]
+    fn plan_json_carries_no_batch() {
+        let report = sample_report();
+
+        let json = report.to_json();
+
+        assert!(json.get("batch_id").is_none(), "a dry run opens no batch");
+        assert_eq!(json.get("dry_run"), Some(&serde_json::json!(true)));
+    }
+
+    #[test]
+    fn plan_json_matches_its_snapshot() {
+        let report = sample_report();
+
+        insta::assert_json_snapshot!(report.to_json());
+    }
+
+    #[test]
     fn render_plan_leads_with_what_is_missing() {
         let report = sample_report();
 
@@ -1508,6 +1585,33 @@ mod tests {
             pre_import_snapshots(&backup_dir),
             0,
             "the setting must actually suppress the snapshot, not merely exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn dry_run_with_json_runs_the_json_branch() {
+        // Drives `execute_run` itself, not just `PlanReport::to_json` in
+        // isolation, so the `ctx.json` check inside the dry-run branch is
+        // what is actually exercised — a report built and serialised
+        // correctly is no proof the CLI ever reaches that code path.
+        let home = tempfile::tempdir().expect("tempdir");
+        let (mut ctx, backup_dir) = context_in(home.path(), true).await;
+        ctx.json = true;
+
+        super::execute_run(
+            super::RunArgs {
+                profile: "nightly".to_owned(),
+                dry_run: true,
+            },
+            &ctx,
+        )
+        .await
+        .expect("dry run with --json succeeds");
+
+        assert_eq!(
+            pre_import_snapshots(&backup_dir),
+            0,
+            "a dry run takes no snapshot, whether or not --json is set"
         );
     }
 
