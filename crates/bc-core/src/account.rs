@@ -228,72 +228,22 @@ impl Service {
         acquisition_cost: Option<rust_decimal::Decimal>,
         depreciation_policy: Option<&bc_models::DepreciationPolicy>,
     ) -> BcResult<AccountId> {
-        if kind != AccountKind::ManualAsset
-            && (acquisition_date.is_some()
-                || acquisition_cost.is_some()
-                || depreciation_policy.is_some())
-        {
-            return Err(BcError::BadData(
-                "acquisition and depreciation fields are only valid for ManualAsset accounts"
-                    .into(),
-            ));
-        }
-
-        let id = AccountId::new();
-        let now = Timestamp::now();
-        let event = Event::AccountCreated {
-            id: id.clone(),
-            name: name.to_owned(),
+        let mut tx = self.pool.begin().await?;
+        let id = create_in_tx(
+            &mut tx,
+            name,
             account_type,
             kind,
-            description: description.map(str::to_owned),
-        };
-
-        let mut tx = self.pool.begin().await?;
-
-        insert_event(&event, &mut tx).await?;
-
-        sqlx::query(
-            "INSERT INTO accounts (id, name, account_type, kind, description, parent_id, created_at, \
-             acquisition_date, acquisition_cost, depreciation_policy) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            description,
+            parent_id,
+            commodity_ids,
+            tag_ids,
+            acquisition_date,
+            acquisition_cost,
+            depreciation_policy,
         )
-        .bind(id.to_string())
-        .bind(name)
-        .bind(to_db_str(account_type)?)
-        .bind(to_db_str(kind)?)
-        .bind(description)
-        .bind(parent_id.map(AccountId::to_string))
-        .bind(now.to_string())
-        .bind(acquisition_date.map(|d| d.to_string()))
-        .bind(acquisition_cost.map(|c| c.to_string()))
-        .bind(
-            depreciation_policy
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(BcError::Serialisation)?,
-        )
-        .execute(&mut *tx)
         .await?;
-
-        for (position, commodity_id) in commodity_ids.iter().enumerate() {
-            sqlx::query(
-                "INSERT INTO account_commodities (account_id, commodity_id, position) VALUES (?, ?, ?)",
-            )
-            .bind(id.to_string())
-            .bind(commodity_id.to_string())
-            .bind(
-                i64::try_from(position)
-                    .map_err(|e| BcError::BadData(format!("commodity position overflow: {e}")))?,
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        crate::tag::insert_account_tags(&mut tx, &id, tag_ids).await?;
-
         tx.commit().await?;
-        tracing::info!(account_id = %id, %name, "account created");
         Ok(id)
     }
 
@@ -508,6 +458,119 @@ impl Service {
 
         account_rows.into_iter().map(Account::try_from).collect()
     }
+}
+
+/// Creates one account inside a caller-supplied transaction.
+///
+/// This is the single write path for account creation: both
+/// [`Service::create`] and [`Service::create_paths`] call it, so an account
+/// minted as a path ancestor is indistinguishable from a hand-created one —
+/// same `AccountCreated` event, same projection row.
+///
+/// # Arguments
+///
+/// * `conn` - The open transaction to write through.
+/// * `name` - Display name for the new account.
+/// * `account_type` - Classification in the chart of accounts.
+/// * `kind` - Account maintenance kind.
+/// * `description` - Optional free-text description.
+/// * `parent_id` - Optional parent account ID for sub-accounts.
+/// * `commodity_ids` - Ordered list of allowed commodity IDs; first entry is the default.
+/// * `tag_ids` - Tags to attach to the account.
+/// * `acquisition_date` - Date the asset was acquired (only for [`AccountKind::ManualAsset`]).
+/// * `acquisition_cost` - Cost of acquisition (only for [`AccountKind::ManualAsset`]).
+/// * `depreciation_policy` - Depreciation method (only for [`AccountKind::ManualAsset`]).
+///
+/// # Returns
+///
+/// The ID of the newly created account.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `acquisition_date`, `acquisition_cost`, or
+/// `depreciation_policy` is `Some` and `kind` is not [`AccountKind::ManualAsset`];
+/// [`BcError::Database`] on event append or insert failure;
+/// [`BcError::Serialisation`] if the depreciation policy cannot be encoded.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors the public builder's parameter set exactly"
+)]
+async fn create_in_tx(
+    conn: &mut sqlx::SqliteConnection,
+    name: &str,
+    account_type: AccountType,
+    kind: AccountKind,
+    description: Option<&str>,
+    parent_id: Option<&AccountId>,
+    commodity_ids: &[CommodityId],
+    tag_ids: &[TagId],
+    acquisition_date: Option<jiff::civil::Date>,
+    acquisition_cost: Option<rust_decimal::Decimal>,
+    depreciation_policy: Option<&bc_models::DepreciationPolicy>,
+) -> BcResult<AccountId> {
+    if kind != AccountKind::ManualAsset
+        && (acquisition_date.is_some()
+            || acquisition_cost.is_some()
+            || depreciation_policy.is_some())
+    {
+        return Err(BcError::BadData(
+            "acquisition and depreciation fields are only valid for ManualAsset accounts".into(),
+        ));
+    }
+
+    let id = AccountId::new();
+    let now = Timestamp::now();
+    let event = Event::AccountCreated {
+        id: id.clone(),
+        name: name.to_owned(),
+        account_type,
+        kind,
+        description: description.map(str::to_owned),
+    };
+
+    insert_event(&event, conn).await?;
+
+    sqlx::query(
+        "INSERT INTO accounts (id, name, account_type, kind, description, parent_id, created_at, \
+         acquisition_date, acquisition_cost, depreciation_policy) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id.to_string())
+    .bind(name)
+    .bind(to_db_str(account_type)?)
+    .bind(to_db_str(kind)?)
+    .bind(description)
+    .bind(parent_id.map(AccountId::to_string))
+    .bind(now.to_string())
+    .bind(acquisition_date.map(|d| d.to_string()))
+    .bind(acquisition_cost.map(|c| c.to_string()))
+    .bind(
+        depreciation_policy
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(BcError::Serialisation)?,
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    for (position, commodity_id) in commodity_ids.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO account_commodities (account_id, commodity_id, position) VALUES (?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(commodity_id.to_string())
+        .bind(
+            i64::try_from(position)
+                .map_err(|e| BcError::BadData(format!("commodity position overflow: {e}")))?,
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    crate::tag::insert_account_tags(conn, &id, tag_ids).await?;
+
+    tracing::info!(account_id = %id, %name, "account created");
+    Ok(id)
 }
 
 #[cfg(test)]
