@@ -6,4 +6,4 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: invalid account path 'Assets::Checking': data error: malformed account path 'Assets::Checking': segments must be non-empty
+error: malformed account path 'Assets::Checking': segments must be non-empty

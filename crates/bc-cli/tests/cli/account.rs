@@ -121,6 +121,26 @@ fn create_with_a_conflicting_kind_is_rejected() {
 }
 
 #[test]
+fn create_with_kind_group_shows_in_list() {
+    let ctx = TestContext::new();
+
+    ctx.command()
+        .args([
+            "account",
+            "create",
+            "Expenses:Food:Restaurants",
+            "--kind",
+            "group",
+        ])
+        .output()
+        .expect("create");
+
+    let mut cmd = ctx.command();
+    cmd.args(["account", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
 fn archive_existing_account() {
     let ctx = TestContext::new();
 
