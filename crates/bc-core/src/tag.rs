@@ -181,9 +181,72 @@ impl Service {
             return Ok(Created::default());
         }
 
+        let mut db_tx = self.pool.begin().await?;
+        let out = self.materialise(paths, Some(&mut db_tx)).await?;
+        db_tx.commit().await?;
+        Ok(out)
+    }
+
+    /// Resolves every path in `paths` without creating anything.
+    ///
+    /// The read-only counterpart to [`Self::create_paths`], for callers that
+    /// must report what an operation would do before doing it. Shares one
+    /// implementation with it, so the two cannot disagree about which paths are
+    /// missing.
+    ///
+    /// # Arguments
+    ///
+    /// * `paths` - The paths to resolve; duplicates are harmless.
+    ///
+    /// # Returns
+    ///
+    /// A [`Created`] whose `ids` covers every requested path and whose `created`
+    /// names the paths that **would** be created. The IDs of those paths are
+    /// freshly minted and never persisted: they exist so a caller's downstream
+    /// tag handling behaves identically to a real run's, and they are not valid
+    /// keys for any later query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Database`] on query failure, or [`BcError::BadData`]
+    /// if a stored row cannot be parsed.
+    #[inline]
+    pub async fn resolve_paths(&self, paths: &[TagPath]) -> BcResult<Created> {
+        if paths.is_empty() {
+            return Ok(Created::default());
+        }
+        self.materialise(paths, None).await
+    }
+
+    /// Walks `paths` against one snapshot, minting an ID per missing segment.
+    ///
+    /// The single implementation behind [`Self::create_paths`] and
+    /// [`Self::resolve_paths`]: with a writer it persists each minted ID, and
+    /// without one it mints the same IDs and discards them. Both keep the
+    /// snapshot current as they go, so two paths sharing an ancestor mint it
+    /// once either way.
+    ///
+    /// # Arguments
+    ///
+    /// * `paths` - The paths to walk; duplicates are harmless.
+    /// * `writer` - The transaction to insert into, or `None` to write nothing.
+    ///
+    /// # Returns
+    ///
+    /// A [`Created`] mapping every requested path to its leaf ID, alongside the
+    /// paths whose leaf did not already exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Database`] on query or insert failure, or
+    /// [`BcError::BadData`] if a stored row cannot be parsed.
+    async fn materialise(
+        &self,
+        paths: &[TagPath],
+        mut writer: Option<&mut sqlx::Transaction<'_, sqlx::Sqlite>>,
+    ) -> BcResult<Created> {
         let mut known = self.list().await?;
         let mut out = Created::default();
-        let mut db_tx = self.pool.begin().await?;
 
         for path in paths {
             let rendered = path.to_string();
@@ -200,15 +263,18 @@ impl Service {
                 } else {
                     let new_id = TagId::new();
                     let created_at = Timestamp::now();
-                    sqlx::query(
-                        "INSERT INTO tags (id, name, parent_id, created_at) VALUES (?, ?, ?, ?)",
-                    )
-                    .bind(new_id.to_string())
-                    .bind(segment)
-                    .bind(parent.as_ref().map(TagId::to_string))
-                    .bind(created_at.to_string())
-                    .execute(&mut *db_tx)
-                    .await?;
+                    if let Some(db_tx) = writer.as_deref_mut() {
+                        sqlx::query(
+                            "INSERT INTO tags (id, name, parent_id, created_at) \
+                             VALUES (?, ?, ?, ?)",
+                        )
+                        .bind(new_id.to_string())
+                        .bind(segment)
+                        .bind(parent.as_ref().map(TagId::to_string))
+                        .bind(created_at.to_string())
+                        .execute(&mut **db_tx)
+                        .await?;
+                    }
                     // Keep the snapshot current so a later segment — or a later
                     // path in this batch — resolves against what was just
                     // inserted.
@@ -234,7 +300,6 @@ impl Service {
             }
         }
 
-        db_tx.commit().await?;
         out.created.sort_unstable();
         out.created.dedup();
         Ok(out)
@@ -921,6 +986,56 @@ mod tests {
             .await
             .expect("count ok");
         assert_eq!(remaining.0, 0, "memberships removed");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn resolve_paths_reports_what_it_would_create(pool: SqlitePool) {
+        let tags = Service::new(pool.clone());
+        let existing: TagPath = "holiday".parse().expect("a valid path");
+        tags.create_paths(core::slice::from_ref(&existing))
+            .await
+            .expect("the tag is created");
+        let asked: Vec<TagPath> = vec![
+            "holiday".parse().expect("a valid path"),
+            "travel:flights".parse().expect("a valid path"),
+        ];
+
+        let resolved = tags.resolve_paths(&asked).await.expect("resolution");
+
+        assert_eq!(resolved.created, vec!["travel:flights".to_owned()]);
+        assert_eq!(resolved.ids.len(), 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn resolve_paths_writes_nothing(pool: SqlitePool) {
+        let tags = Service::new(pool.clone());
+        let asked: Vec<TagPath> = vec!["travel:flights".parse().expect("a valid path")];
+
+        tags.resolve_paths(&asked).await.expect("resolution");
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags")
+            .fetch_one(&pool)
+            .await
+            .expect("the count");
+        assert_eq!(count, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn resolve_paths_reuses_an_existing_leaf_id(pool: SqlitePool) {
+        let tags = Service::new(pool.clone());
+        let path: TagPath = "holiday".parse().expect("a valid path");
+        let created = tags
+            .create_paths(core::slice::from_ref(&path))
+            .await
+            .expect("the tag is created");
+
+        let resolved = tags
+            .resolve_paths(core::slice::from_ref(&path))
+            .await
+            .expect("resolution");
+
+        assert_eq!(resolved.ids.get("holiday"), created.ids.get("holiday"));
+        assert!(resolved.created.is_empty());
     }
 
     #[sqlx::test(migrations = "./migrations")]
