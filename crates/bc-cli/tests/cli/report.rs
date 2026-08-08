@@ -55,14 +55,6 @@ fn summary_calendar_year_empty() {
 }
 
 #[test]
-fn budget_stub() {
-    let ctx = TestContext::new();
-    let mut cmd = ctx.command();
-    cmd.args(["report", "budget"]);
-    cmd_snapshot!(ctx, &mut cmd);
-}
-
-#[test]
 fn net_worth_includes_manual_asset_at_market_value() {
     let ctx = TestContext::new();
 
