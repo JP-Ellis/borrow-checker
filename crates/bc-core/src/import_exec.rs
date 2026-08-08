@@ -20,6 +20,7 @@
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 use bc_models::AccountId;
 use bc_models::Amount;
@@ -418,11 +419,112 @@ pub async fn execute_import(
     importer: &str,
     raws: &[RawTransaction],
 ) -> BcResult<ImportOutcome> {
+    let mut sink = Commit {
+        transactions,
+        sources,
+        batch_id: OnceLock::new(),
+    };
+    let run = run_with(
+        &mut sink,
+        transactions,
+        sources,
+        accounts,
+        commodities,
+        tags,
+        batches,
+        profile_id,
+        importer,
+        raws,
+    )
+    .await?;
+
+    let batch_id = run
+        .batch_id
+        .ok_or_else(|| crate::BcError::BadData("the commit sink opened no batch".to_owned()))?;
+
+    Ok(ImportOutcome {
+        batch_id,
+        new_transactions: run.counts.new_transactions,
+        attached_postings: run.counts.attached_postings,
+        skipped_postings: run.counts.skipped(),
+        unresolved_account_postings: run.counts.unresolved_account_postings,
+        unresolved_commodity_postings: run.counts.unresolved_commodity_postings,
+        other_skipped_postings: run.counts.other_skipped_postings,
+        unresolved_accounts: run.unresolved_accounts,
+        unresolved_commodities: run.unresolved_commodities,
+        created_tags: run.created_tags,
+        diagnostics: run.counts.diagnostics,
+    })
+}
+
+/// What one import run produced, whatever sink it wrote through.
+struct Run {
+    /// The batch the sink opened, if it opened one at all.
+    batch_id: Option<ImportBatchId>,
+    /// The run's totals and the diagnostics behind them.
+    counts: Counts,
+    /// Tag paths the sink brought into existence, sorted.
+    created_tags: Vec<String>,
+    /// Distinct account paths naming no account, sorted.
+    unresolved_accounts: Vec<String>,
+    /// Distinct codes naming no registered commodity, sorted.
+    unresolved_commodities: Vec<String>,
+}
+
+/// Runs the whole import pipeline, sending every write to `sink`.
+///
+/// Every decision — resolution, occurrence allocation, owner matching,
+/// corroboration, residual materialisation — happens here and is therefore
+/// shared by every sink. The stored legs are loaded once, before the first
+/// write, so no decision this run makes observes a write this run made; that is
+/// what lets a sink that writes nothing walk identical branches.
+///
+/// # Arguments
+///
+/// * `sink` - Where this run's writes go.
+/// * `transactions` - Transaction persistence service.
+/// * `sources` - Source-reference persistence service.
+/// * `accounts` - Account service, snapshotted once for path resolution.
+/// * `commodities` - Commodity service, snapshotted once for code resolution.
+/// * `tags` - Tag service, passed to the sink's tag pre-pass.
+/// * `batches` - Import batch provenance service, passed to the sink.
+/// * `profile_id` - The driving profile, if the run is profile-driven.
+/// * `importer` - Stable importer name, recorded on the batch.
+/// * `raws` - Parsed transactions in document order.
+///
+/// # Returns
+///
+/// The batch the sink opened, the run's totals and diagnostics, and the
+/// resolution worklists.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError`] on query, insert, or batch-record failure.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per service the run reads or writes; bundling them \
+              into a struct would only move the same list one level out"
+)]
+async fn run_with<S>(
+    sink: &mut S,
+    transactions: &crate::TransactionService,
+    sources: &crate::SourceService,
+    accounts: &crate::AccountService,
+    commodities: &crate::CommodityService,
+    tags: &crate::TagService,
+    batches: &crate::ImportBatchService,
+    profile_id: Option<&bc_models::ProfileId>,
+    importer: &str,
+    raws: &[RawTransaction],
+) -> BcResult<Run>
+where
+    S: Sink,
+{
     let resolver = crate::AccountResolver::load(accounts).await?;
     let commodity_resolver = CommodityResolver::load(commodities).await?;
-    let batch_id = batches.open(profile_id, importer).await?;
+    let batch_id = sink.open_batch(batches, profile_id, importer).await?;
 
-    let tag_pass = ensure_tags(tags, raws).await?;
+    let tag_pass = sink.ensure_tags(tags, raws).await?;
 
     let pass = resolve_legs(&resolver, &commodity_resolver, raws);
     let unresolved_accounts: Vec<String> = pass.unresolved_accounts.into_iter().collect();
@@ -439,44 +541,27 @@ pub async fn execute_import(
 
     let planned = allocate_occurrences(pass.rows);
     // One query per touched account for the whole run, not per row.
-    let writer = Writer {
+    let mut writer = Writer {
         transactions,
         sources,
         commodities: &commodity_resolver,
         existing: sources.existing_legs(&touched_accounts(&planned)).await?,
-        batch_id: batch_id.clone(),
         tags: tag_pass.ids,
+        sink: &mut *sink,
     };
 
     for (raw, legs) in raws.iter().zip(&planned) {
         writer.write_row(raw, legs, &mut counts).await?;
     }
 
-    batches
-        .close(
-            &batch_id,
-            crate::ImportBatchCounts {
-                new_transactions: counts.new_transactions,
-                attached_postings: counts.attached_postings,
-                unresolved_account_postings: counts.unresolved_account_postings,
-                unresolved_commodity_postings: counts.unresolved_commodity_postings,
-                other_skipped_postings: counts.other_skipped_postings,
-            },
-        )
-        .await?;
+    sink.close_batch(batches, &counts).await?;
 
-    Ok(ImportOutcome {
+    Ok(Run {
         batch_id,
-        new_transactions: counts.new_transactions,
-        attached_postings: counts.attached_postings,
-        skipped_postings: counts.skipped(),
-        unresolved_account_postings: counts.unresolved_account_postings,
-        unresolved_commodity_postings: counts.unresolved_commodity_postings,
-        other_skipped_postings: counts.other_skipped_postings,
+        counts,
+        created_tags: tag_pass.created,
         unresolved_accounts,
         unresolved_commodities,
-        created_tags: tag_pass.created,
-        diagnostics: counts.diagnostics,
     })
 }
 
@@ -579,33 +664,19 @@ fn resolve_legs(
     out
 }
 
-/// Materialises every tag path the run names, before any row is written.
-///
-/// Creation is a pre-pass rather than per-row work because a tag created inside
-/// a row's database transaction would vanish if that row hit the row-local skip
-/// path, while the in-memory map still held its ID — every later row naming that
-/// tag would then fail on the `tags` foreign key. The cost of the pre-pass is
-/// that a run whose rows are all skipped still leaves its tags behind; a tag is
-/// cheap to delete, and reconstructing an omitted one by hand across a bulk
-/// import is not.
+/// Parses every distinct tag path the document names, in encounter order.
 ///
 /// A path that will not parse warns once and is dropped. It costs the tag, never
 /// the leg: tags are decoration, the amount is the value.
 ///
 /// # Arguments
 ///
-/// * `tags` - The tag service to create through.
 /// * `raws` - Parsed transactions in document order.
 ///
 /// # Returns
 ///
-/// The rendered-path → leaf-ID map for every path that parsed, the sorted list
-/// of paths this run created, and a diagnostic per path that did not parse.
-///
-/// # Errors
-///
-/// Returns [`crate::BcError`] on query or insert failure.
-async fn ensure_tags(tags: &crate::TagService, raws: &[RawTransaction]) -> BcResult<Tags> {
+/// The paths that parsed, and a diagnostic per distinct spelling that did not.
+fn parse_tag_paths(raws: &[RawTransaction]) -> (Vec<TagPath>, Vec<Diagnostic>) {
     let mut parsed: Vec<TagPath> = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     // Also the warn-once guard: a spelling reaches the `Err` arm only the first
@@ -638,12 +709,7 @@ async fn ensure_tags(tags: &crate::TagService, raws: &[RawTransaction]) -> BcRes
         }
     }
 
-    let created = tags.create_paths(&parsed).await?;
-    Ok(Tags {
-        ids: created.ids,
-        created: created.created,
-        diagnostics,
-    })
+    (parsed, diagnostics)
 }
 
 /// Step 2: reports whether `raw` leaves its residual ambiguous.
@@ -1246,8 +1312,280 @@ fn is_row_local(error: &crate::BcError) -> bool {
         )
 }
 
+/// Where an import run's writes go.
+///
+/// Every decision the run makes — resolution, occurrence allocation, owner
+/// matching, corroboration, residual materialisation — happens above this
+/// trait and is shared by all implementations. Only the terminal writes differ.
+/// That is what lets a dry run be the same run: it walks identical branches
+/// because no decision in the run observes a write the run made.
+trait Sink {
+    /// Materialises or merely resolves the tag paths the document names.
+    ///
+    /// # Arguments
+    ///
+    /// * `tags` - The tag service to resolve or create through.
+    /// * `raws` - Parsed transactions in document order.
+    ///
+    /// # Returns
+    ///
+    /// The rendered-path → leaf-ID map, the paths this run brought into
+    /// existence, and a diagnostic per path that would not parse.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on query or insert failure.
+    async fn ensure_tags(
+        &self,
+        tags: &crate::TagService,
+        raws: &[RawTransaction],
+    ) -> BcResult<Tags>;
+
+    /// Opens the batch this run's writes are stamped with, if it writes any.
+    ///
+    /// # Arguments
+    ///
+    /// * `batches` - Import batch provenance service.
+    /// * `profile_id` - The driving profile, if the run is profile-driven.
+    /// * `importer` - Stable importer name, recorded on the batch.
+    ///
+    /// # Returns
+    ///
+    /// The batch opened, or `None` from a sink that records no provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on insert failure.
+    async fn open_batch(
+        &self,
+        batches: &crate::ImportBatchService,
+        profile_id: Option<&bc_models::ProfileId>,
+        importer: &str,
+    ) -> BcResult<Option<ImportBatchId>>;
+
+    /// Persists a new transaction and the provenance of each of its legs.
+    ///
+    /// # Arguments
+    ///
+    /// * `raw` - The document transaction the legs came from.
+    /// * `tx` - The transaction to create, postings included.
+    /// * `postings` - Its postings, index-aligned with `legs`.
+    /// * `legs` - The planned legs those postings were built from.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on insert failure.
+    async fn create(
+        &mut self,
+        raw: &RawTransaction,
+        tx: Transaction,
+        postings: &[Posting],
+        legs: &[LegPlan],
+    ) -> BcResult<()>;
+
+    /// Appends unstored legs to the transaction that owns their siblings.
+    ///
+    /// # Arguments
+    ///
+    /// * `raw` - The document transaction the legs came from.
+    /// * `owner` - The transaction their stored siblings belong to.
+    /// * `postings` - The postings to append, index-aligned with `insertions`.
+    /// * `insertions` - The legs those postings were built from.
+    /// * `adoptions` - Legs whose posting the user already wrote, paired with
+    ///   the posting to record provenance against.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on insert failure.
+    async fn attach(
+        &mut self,
+        raw: &RawTransaction,
+        owner: &TransactionId,
+        postings: &[Posting],
+        insertions: &[&LegPlan],
+        adoptions: &[(PostingId, &LegPlan)],
+    ) -> BcResult<()>;
+
+    /// Records the run's totals against the batch, if it opened one.
+    ///
+    /// # Arguments
+    ///
+    /// * `batches` - Import batch provenance service.
+    /// * `counts` - The run's totals.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on update failure.
+    async fn close_batch(
+        &self,
+        batches: &crate::ImportBatchService,
+        counts: &Counts,
+    ) -> BcResult<()>;
+}
+
+/// The sink that persists what the run decided.
+struct Commit<'svc> {
+    /// Transaction persistence service.
+    transactions: &'svc crate::TransactionService,
+    /// Source-reference persistence service.
+    sources: &'svc crate::SourceService,
+    /// The batch stamped onto every reference this run writes, set by
+    /// [`Sink::open_batch`] before the first row is written.
+    batch_id: OnceLock<ImportBatchId>,
+}
+
+impl Commit<'_> {
+    /// Builds the provenance record for one persisted leg.
+    ///
+    /// The recorded amount is the *canonicalised* amount — the commodity code
+    /// resolved to its registered spelling, elided still included — not the
+    /// document's raw text. This is deliberate: fingerprinting the raw code
+    /// would make a file importing `btc` and a later one importing `BTC`
+    /// produce different fingerprints for the same posting and duplicate it.
+    ///
+    /// # Arguments
+    ///
+    /// * `raw` - The document transaction.
+    /// * `leg` - The planned leg.
+    /// * `transaction_id` - The transaction the posting belongs to.
+    /// * `posting_id` - The posting this leg produced.
+    /// * `owns_posting` - `true` when this run inserted that posting, `false`
+    ///   when it adopted a posting the user had already written.
+    ///
+    /// # Returns
+    ///
+    /// The [`SourceRef`] to persist.
+    fn source_ref(
+        &self,
+        raw: &RawTransaction,
+        leg: &LegPlan,
+        transaction_id: &TransactionId,
+        posting_id: &PostingId,
+        owns_posting: bool,
+    ) -> SourceRef {
+        SourceRef::builder()
+            .id(SourceRefId::new())
+            .transaction_id(transaction_id.clone())
+            .posting_id(Some(posting_id.clone()))
+            .account_id(leg.account_id.clone())
+            .date(raw.date)
+            .narration(raw.description.clone())
+            .amount(leg.amount.clone())
+            .reference(raw.reference.clone())
+            .occurrence(leg.occurrence)
+            .import_batch_id(self.batch_id.get().cloned())
+            .owns_posting(owns_posting)
+            .created_at(Timestamp::now())
+            .build()
+    }
+}
+
+impl Sink for Commit<'_> {
+    /// Creates every tag path the document names, before any row is written.
+    ///
+    /// Creation is a pre-pass rather than per-row work because a tag created
+    /// inside a row's database transaction would vanish if that row hit the
+    /// row-local skip path, while the in-memory map still held its ID — every
+    /// later row naming that tag would then fail on the `tags` foreign key. The
+    /// cost of the pre-pass is that a run whose rows are all skipped still
+    /// leaves its tags behind; a tag is cheap to delete, and reconstructing an
+    /// omitted one by hand across a bulk import is not.
+    async fn ensure_tags(
+        &self,
+        tags: &crate::TagService,
+        raws: &[RawTransaction],
+    ) -> BcResult<Tags> {
+        let (parsed, diagnostics) = parse_tag_paths(raws);
+        let created = tags.create_paths(&parsed).await?;
+        Ok(Tags {
+            ids: created.ids,
+            created: created.created,
+            diagnostics,
+        })
+    }
+
+    async fn open_batch(
+        &self,
+        batches: &crate::ImportBatchService,
+        profile_id: Option<&bc_models::ProfileId>,
+        importer: &str,
+    ) -> BcResult<Option<ImportBatchId>> {
+        let batch_id = batches.open(profile_id, importer).await?;
+        Ok(Some(self.batch_id.get_or_init(|| batch_id).clone()))
+    }
+
+    /// Creates the transaction and attaches its provenance atomically, so a
+    /// failure can never leave a posting without the reference that stops a
+    /// later re-import duplicating it.
+    async fn create(
+        &mut self,
+        raw: &RawTransaction,
+        tx: Transaction,
+        postings: &[Posting],
+        legs: &[LegPlan],
+    ) -> BcResult<()> {
+        let tx_id = tx.id().clone();
+        let mut db_tx = self.transactions.pool().begin().await?;
+        self.transactions.create_in_tx(&mut db_tx, tx).await?;
+        for (posting, leg) in postings.iter().zip(legs) {
+            let source = self.source_ref(raw, leg, &tx_id, posting.id(), true);
+            self.sources.attach_in_tx(&mut db_tx, &source).await?;
+        }
+        db_tx.commit().await?;
+        Ok(())
+    }
+
+    async fn attach(
+        &mut self,
+        raw: &RawTransaction,
+        owner: &TransactionId,
+        postings: &[Posting],
+        insertions: &[&LegPlan],
+        adoptions: &[(PostingId, &LegPlan)],
+    ) -> BcResult<()> {
+        let mut db_tx = self.transactions.pool().begin().await?;
+        if !postings.is_empty() {
+            self.transactions
+                .add_postings_in_tx(&mut db_tx, owner, postings)
+                .await?;
+        }
+        for (posting, leg) in postings.iter().zip(insertions) {
+            let source = self.source_ref(raw, leg, owner, posting.id(), true);
+            self.sources.attach_in_tx(&mut db_tx, &source).await?;
+        }
+        for (posting_id, leg) in adoptions {
+            let source = self.source_ref(raw, leg, owner, posting_id, false);
+            self.sources.attach_in_tx(&mut db_tx, &source).await?;
+        }
+        db_tx.commit().await?;
+        Ok(())
+    }
+
+    async fn close_batch(
+        &self,
+        batches: &crate::ImportBatchService,
+        counts: &Counts,
+    ) -> BcResult<()> {
+        let Some(batch_id) = self.batch_id.get() else {
+            return Ok(());
+        };
+        batches
+            .close(
+                batch_id,
+                crate::ImportBatchCounts {
+                    new_transactions: counts.new_transactions,
+                    attached_postings: counts.attached_postings,
+                    unresolved_account_postings: counts.unresolved_account_postings,
+                    unresolved_commodity_postings: counts.unresolved_commodity_postings,
+                    other_skipped_postings: counts.other_skipped_postings,
+                },
+            )
+            .await
+    }
+}
+
 /// The write half of an import run: everything the per-row decision needs.
-struct Writer<'svc> {
+struct Writer<'svc, S> {
     /// Transaction persistence service.
     transactions: &'svc crate::TransactionService,
     /// Source-reference persistence service.
@@ -1258,13 +1596,16 @@ struct Writer<'svc> {
     /// Legs already stored for every account this run touches, keyed by
     /// `(account id string, fingerprint)`.
     existing: HashMap<(String, String), Vec<StoredLeg>>,
-    /// The batch stamped onto every reference this run writes.
-    batch_id: ImportBatchId,
     /// Rendered-path → tag-ID map from the run's pre-pass.
     tags: HashMap<String, TagId>,
+    /// Where this run's writes go.
+    sink: &'svc mut S,
 }
 
-impl Writer<'_> {
+impl<S> Writer<'_, S>
+where
+    S: Sink,
+{
     /// Step 6: matches one transaction's legs, then creates, attaches, or
     /// skips.
     ///
@@ -1278,7 +1619,7 @@ impl Writer<'_> {
     ///
     /// Returns [`crate::BcError`] on query or insert failure.
     async fn write_row(
-        &self,
+        &mut self,
         raw: &RawTransaction,
         legs: &[LegPlan],
         counts: &mut Counts,
@@ -1360,7 +1701,7 @@ impl Writer<'_> {
     ///
     /// Returns [`crate::BcError`] on insert failure.
     async fn create(
-        &self,
+        &mut self,
         raw: &RawTransaction,
         legs: &[LegPlan],
         counts: &mut Counts,
@@ -1393,12 +1734,11 @@ impl Writer<'_> {
             return Ok(());
         };
 
-        let tx_id = TransactionId::new();
         // A freshly imported transaction may hold fewer legs than the document
         // did, so it can be unbalanced (an accepted state). It stays
         // `Unreconciled` until its remaining legs arrive.
         let tx = Transaction::builder()
-            .id(tx_id.clone())
+            .id(TransactionId::new())
             .date(raw.date)
             .maybe_payee(raw.payee.clone())
             .description(raw.description.clone())
@@ -1410,20 +1750,7 @@ impl Writer<'_> {
             .created_at(Timestamp::now())
             .build();
 
-        // Create the transaction and attach its provenance atomically, so a
-        // failure can never leave a posting without the reference that stops a
-        // later re-import duplicating it.
-        let written: BcResult<()> = async {
-            let mut db_tx = self.transactions.pool().begin().await?;
-            self.transactions.create_in_tx(&mut db_tx, tx).await?;
-            for (posting, leg) in postings.iter().zip(legs) {
-                let source = self.source_ref(raw, leg, &tx_id, posting.id(), true);
-                self.sources.attach_in_tx(&mut db_tx, &source).await?;
-            }
-            db_tx.commit().await?;
-            Ok(())
-        }
-        .await;
+        let written = self.sink.create(raw, tx, &postings, legs).await;
 
         if !row_local(written, raw, "creating the transaction", legs.len(), counts)? {
             return Ok(());
@@ -1457,7 +1784,7 @@ impl Writer<'_> {
     ///
     /// Returns [`crate::BcError`] on query or insert failure.
     async fn attach(
-        &self,
+        &mut self,
         raw: &RawTransaction,
         candidates: &[Candidate<'_>],
         owner: &TransactionId,
@@ -1539,25 +1866,10 @@ impl Writer<'_> {
             .map(|leg| leg.posting(None, &self.tags))
             .collect();
 
-        let written: BcResult<()> = async {
-            let mut db_tx = self.transactions.pool().begin().await?;
-            if !postings.is_empty() {
-                self.transactions
-                    .add_postings_in_tx(&mut db_tx, owner, &postings)
-                    .await?;
-            }
-            for (posting, leg) in postings.iter().zip(&insertions) {
-                let source = self.source_ref(raw, leg, owner, posting.id(), true);
-                self.sources.attach_in_tx(&mut db_tx, &source).await?;
-            }
-            for (posting_id, leg) in &adoptions {
-                let source = self.source_ref(raw, leg, owner, posting_id, false);
-                self.sources.attach_in_tx(&mut db_tx, &source).await?;
-            }
-            db_tx.commit().await?;
-            Ok(())
-        }
-        .await;
+        let written = self
+            .sink
+            .attach(raw, owner, &postings, &insertions, &adoptions)
+            .await;
 
         if !row_local(
             written,
@@ -1571,50 +1883,6 @@ impl Writer<'_> {
 
         counts.attached_postings = counts.attached_postings.saturating_add(unstored);
         Ok(())
-    }
-
-    /// Builds the provenance record for one persisted leg.
-    ///
-    /// The recorded amount is the *canonicalised* amount — the commodity code
-    /// resolved to its registered spelling, elided still included — not the
-    /// document's raw text. This is deliberate: fingerprinting the raw code
-    /// would make a file importing `btc` and a later one importing `BTC`
-    /// produce different fingerprints for the same posting and duplicate it.
-    ///
-    /// # Arguments
-    ///
-    /// * `raw` - The document transaction.
-    /// * `leg` - The planned leg.
-    /// * `transaction_id` - The transaction the posting belongs to.
-    /// * `posting_id` - The posting this leg produced.
-    /// * `owns_posting` - `true` when this run inserted that posting, `false`
-    ///   when it adopted a posting the user had already written.
-    ///
-    /// # Returns
-    ///
-    /// The [`SourceRef`] to persist.
-    fn source_ref(
-        &self,
-        raw: &RawTransaction,
-        leg: &LegPlan,
-        transaction_id: &TransactionId,
-        posting_id: &PostingId,
-        owns_posting: bool,
-    ) -> SourceRef {
-        SourceRef::builder()
-            .id(SourceRefId::new())
-            .transaction_id(transaction_id.clone())
-            .posting_id(Some(posting_id.clone()))
-            .account_id(leg.account_id.clone())
-            .date(raw.date)
-            .narration(raw.description.clone())
-            .amount(leg.amount.clone())
-            .reference(raw.reference.clone())
-            .occurrence(leg.occurrence)
-            .import_batch_id(Some(self.batch_id.clone()))
-            .owns_posting(owns_posting)
-            .created_at(Timestamp::now())
-            .build()
     }
 }
 
