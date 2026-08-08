@@ -96,6 +96,35 @@ pub enum Resolution {
     },
 }
 
+/// Renders one account's path by walking `named` from the account to its root.
+///
+/// # Arguments
+///
+/// * `id` - The account to render, as its id string.
+/// * `named` - Every account's `(name, parent id)`, keyed by id string.
+///
+/// # Returns
+///
+/// The colon-separated path, root first. An account whose parent is absent from
+/// `named` renders from as far as the walk got, which is the same partial answer
+/// [`AccountResolver::resolve`] gives for a path it cannot complete.
+fn render_path(id: &str, named: &HashMap<String, (&str, Option<String>)>) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    let mut current: Option<&str> = Some(id);
+    // Bounded by the account count: a parent cycle would otherwise spin here,
+    // and this renders a path rather than validating the tree.
+    for _ in 0..named.len() {
+        let Some(key) = current else { break };
+        let Some(&(name, ref parent)) = named.get(key) else {
+            break;
+        };
+        segments.push(name);
+        current = parent.as_deref();
+    }
+    segments.reverse();
+    segments.join(":")
+}
+
 /// Resolves colon-separated account paths to [`AccountId`]s.
 ///
 /// Built once per import from a single snapshot of the accounts table, so
@@ -110,6 +139,12 @@ pub enum Resolution {
 pub struct AccountResolver {
     /// `(parent id string or "" for a root, name)` → account, plus its archived flag.
     by_parent_and_name: HashMap<(String, String), (AccountId, bool)>,
+    /// Account id string → the rendered path that resolves to it.
+    ///
+    /// The inverse of [`Self::resolve`], for callers holding an id that came
+    /// from the database rather than from a document, and needing the path a
+    /// human reads.
+    paths_by_id: HashMap<String, String>,
 }
 
 impl AccountResolver {
@@ -142,7 +177,44 @@ impl AccountResolver {
                 )
             })
             .collect();
-        Ok(Self { by_parent_and_name })
+
+        let named: HashMap<String, (&str, Option<String>)> = all
+            .iter()
+            .map(|account| {
+                (
+                    account.id().to_string(),
+                    (account.name(), account.parent_id().map(ToString::to_string)),
+                )
+            })
+            .collect();
+        let paths_by_id = named
+            .keys()
+            .map(|id| (id.clone(), render_path(id, &named)))
+            .collect();
+
+        Ok(Self {
+            by_parent_and_name,
+            paths_by_id,
+        })
+    }
+
+    /// Returns the rendered path of the account `id` names.
+    ///
+    /// The inverse of [`Self::resolve`], over the same snapshot: a path this
+    /// returns resolves back to `id`.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account to render.
+    ///
+    /// # Returns
+    ///
+    /// The colon-separated path, or `None` if the snapshot does not hold the
+    /// account — it was created or deleted after the resolver was loaded.
+    #[inline]
+    #[must_use]
+    pub fn path_of(&self, id: &AccountId) -> Option<&str> {
+        self.paths_by_id.get(&id.to_string()).map(String::as_str)
     }
 
     /// Resolves a path by walking its segments down the account tree.
@@ -321,6 +393,44 @@ mod tests {
                 archived: false
             }
         );
+    }
+
+    /// `path_of` is the inverse of `resolve`, so the round trip must land back
+    /// on the account it started from — a renderer that dropped or reordered a
+    /// segment would produce a path naming a different account, or none.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_rendered_path_resolves_back_to_its_account(pool: SqlitePool) {
+        let assets = account(&pool, "Assets", None).await;
+        let bank = account(&pool, "Bank", Some(&assets)).await;
+        let checking = account(&pool, "Checking", Some(&bank)).await;
+
+        let svc = crate::AccountService::new(pool.clone());
+        let resolver = AccountResolver::load(&svc).await.expect("load resolver");
+
+        let rendered = resolver.path_of(&checking).expect("the account is loaded");
+        assert_eq!(rendered, "Assets:Bank:Checking");
+        assert_eq!(
+            resolver.resolve(&AccountPath::parse(rendered).expect("valid")),
+            Resolution::Resolved {
+                id: checking,
+                archived: false
+            }
+        );
+        assert_eq!(
+            resolver.path_of(&assets),
+            Some("Assets"),
+            "a root is itself"
+        );
+    }
+
+    /// An id the snapshot never held renders nothing rather than an empty path,
+    /// which would otherwise read as a root account.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_unknown_account_renders_no_path(pool: SqlitePool) {
+        let svc = crate::AccountService::new(pool.clone());
+        let resolver = AccountResolver::load(&svc).await.expect("load resolver");
+
+        assert_eq!(resolver.path_of(&AccountId::new()), None);
     }
 
     #[sqlx::test(migrations = "./migrations")]

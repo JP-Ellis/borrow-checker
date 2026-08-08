@@ -182,6 +182,12 @@ pub struct ImportPlan {
     /// transaction this run would create, since the residual is taken over the
     /// transaction's whole leg set either way.
     ///
+    /// An account can therefore appear here having been booked no posting at
+    /// all: appending a leg to a transaction that already holds an elided one
+    /// changes what that elided leg derives, moving its account. Such an entry
+    /// carries the movement, not the resulting balance, exactly as every other
+    /// entry does.
+    ///
     /// Two elided legs on one transaction are the exception, and not one this
     /// report invents: the balance engine attributes such a residual to neither
     /// leg, so neither bucket moves here.
@@ -781,6 +787,7 @@ where
         transactions,
         sources,
         commodities: &commodity_resolver,
+        accounts: &resolver,
         existing: sources.existing_legs(&touched_accounts(&planned)).await?,
         tags: tag_pass.ids,
         sink: &mut *sink,
@@ -1520,6 +1527,37 @@ fn is_row_local(error: &crate::BcError) -> bool {
         )
 }
 
+/// Returns the one posting of `stored` that elides its amount.
+///
+/// # Arguments
+///
+/// * `stored` - The postings the owning transaction already holds.
+///
+/// # Returns
+///
+/// The single elided posting, or `None` when none or several elide — in both of
+/// those cases no one leg absorbs the transaction's residual.
+fn single_elided<'post>(stored: &[StoredPosting<'post>]) -> Option<StoredPosting<'post>> {
+    let mut elided = stored.iter().filter(|held| held.posting.amount().is_none());
+    let first = elided.next()?;
+    elided.next().is_none().then_some(*first)
+}
+
+/// A posting the owning transaction already holds, with the account path it
+/// sits on.
+///
+/// A [`Posting`] carries an [`AccountId`], not a path, and rendering one back
+/// needs the account tree — which the sinks do not hold. The run resolves it
+/// once here so a report can name the account a stored leg moves.
+#[derive(Debug, Clone, Copy)]
+struct StoredPosting<'post> {
+    /// The rendered path of the account this posting is booked to, or `None`
+    /// when the run's account snapshot does not name it.
+    account_path: Option<&'post str>,
+    /// The posting as it is stored.
+    posting: &'post Posting,
+}
+
 /// Where an import run's writes go.
 ///
 /// Every decision the run makes — resolution, occurrence allocation, owner
@@ -1605,7 +1643,8 @@ trait Sink {
     ///   row was decided. Together with `postings` this is the complete leg set
     ///   the transaction will hold, which is what a residual has to be derived
     ///   from; the adopted postings are among these, so a sink must not count
-    ///   them again from `adoptions`.
+    ///   them again from `adoptions`.  Each carries the account path it sits
+    ///   on, which the posting itself cannot supply.
     /// * `postings` - The postings to append, index-aligned with `insertions`.
     /// * `insertions` - The legs those postings were built from.
     /// * `adoptions` - Legs whose posting the user already wrote, paired with
@@ -1618,7 +1657,7 @@ trait Sink {
         &mut self,
         raw: &RawTransaction,
         owner: &TransactionId,
-        stored: &[Posting],
+        stored: &[StoredPosting<'_>],
         postings: &[Posting],
         insertions: &[&LegPlan],
         adoptions: &[(PostingId, &LegPlan)],
@@ -1784,7 +1823,7 @@ impl Sink for Commit<'_> {
         &mut self,
         raw: &RawTransaction,
         owner: &TransactionId,
-        _stored: &[Posting],
+        _stored: &[StoredPosting<'_>],
         postings: &[Posting],
         insertions: &[&LegPlan],
         adoptions: &[(PostingId, &LegPlan)],
@@ -1854,28 +1893,61 @@ impl Plan {
     ///   the row's one elided leg and the row determines one; `None` when the
     ///   posting states its own amount or the residual is unavailable.
     fn record(&mut self, posting: &Posting, leg: &LegPlan, derived: Option<&Balances>) {
-        let entry = self.totals.entry(leg.account_path.clone()).or_default();
-        // A total that overflows `Decimal` is a report defect, not a run
-        // failure: the legs still post. Keep the bucket at its last good value.
-        let mut overflowed = false;
-        match (posting.amount(), derived) {
-            (Some(amount), _) => overflowed = entry.try_add(amount).is_err(),
-            (None, Some(balances)) => {
-                // Every commodity is folded, not just those up to the first
-                // failure: one overflowing bucket must not silently drop the
-                // rest of a multi-commodity residual.
-                for (code, value) in balances.iter() {
-                    overflowed |= entry.try_add(&Amount::new(value, code)).is_err();
+        match posting.amount() {
+            // A stated amount moves its account by itself.
+            Some(amount) => {
+                let entry = self.totals.entry(leg.account_path.clone()).or_default();
+                // A total that overflows `Decimal` is a report defect, not a run
+                // failure: the legs still post. Keep the bucket at its last good
+                // value.
+                if entry.try_add(amount).is_err() {
+                    Self::warn_overflow(&leg.account_path);
                 }
             }
-            (None, None) => {}
+            // An elided leg moves by whatever residual it absorbs, which is
+            // nothing at all when the transaction determines none.
+            None => self.shift(&leg.account_path, derived, None),
+        }
+    }
+
+    /// Moves `path`'s running total by `add` minus `subtract`, per commodity.
+    ///
+    /// The bucket is claimed whatever the movement, so an account the run
+    /// touches stays distinguishable from one it never names — including an
+    /// account whose legs net to zero.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The rendered account path to move.
+    /// * `add` - Per-commodity amounts the account gains.
+    /// * `subtract` - Per-commodity amounts it loses.
+    fn shift(&mut self, path: &str, add: Option<&Balances>, subtract: Option<&Balances>) {
+        let entry = self.totals.entry(path.to_owned()).or_default();
+        // Every commodity is folded, not just those up to the first failure:
+        // one overflowing bucket must not silently drop the rest of a
+        // multi-commodity movement.
+        let mut overflowed = false;
+        for (code, value) in add.into_iter().flat_map(Balances::iter) {
+            overflowed |= entry.try_add(&Amount::new(value, code)).is_err();
+        }
+        for (code, value) in subtract.into_iter().flat_map(Balances::iter) {
+            overflowed |= entry.try_sub(&Amount::new(value, code)).is_err();
         }
         if overflowed {
-            tracing::warn!(
-                account = leg.account_path.as_str(),
-                "the account's planned total overflowed; the reported figure is short"
-            );
+            Self::warn_overflow(path);
         }
+    }
+
+    /// Warns that `path`'s reported figure is short of the truth.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The account whose total could not be kept.
+    fn warn_overflow(path: &str) {
+        tracing::warn!(
+            account = path,
+            "the account's planned total overflowed; the reported figure is short"
+        );
     }
 
     /// Derives the residual a transaction's one elided leg absorbs.
@@ -1983,21 +2055,52 @@ impl Sink for Plan {
         Ok(())
     }
 
-    /// Records the appended legs only. An adoption adds no posting — the amount
-    /// is already on the user's own posting, and so already in their balances —
-    /// so it moves no total, though it does feed the residual by way of
-    /// `stored`, which is where its posting already sits.
+    /// Records the appended legs, and the movement the appending causes
+    /// elsewhere.
+    ///
+    /// Two accounts move here, not one. The appended legs move their own, and
+    /// an elided leg the transaction *already* holds moves too: its value is
+    /// derived from its siblings, and this run is adding siblings. That second
+    /// movement writes no posting, so it is easy to miss, and missing it would
+    /// report an account as untouched in exactly the workflow this feature
+    /// exists for — create the missing account, re-run, watch the rest land.
+    ///
+    /// An adoption is not among either: its posting is already the user's own
+    /// and already in their balances, so it moves no total, though it does feed
+    /// the residual by way of `stored`, which is where its posting sits.
     async fn attach(
         &mut self,
         _raw: &RawTransaction,
         _owner: &TransactionId,
-        stored: &[Posting],
+        stored: &[StoredPosting<'_>],
         postings: &[Posting],
         insertions: &[&LegPlan],
         _adoptions: &[(PostingId, &LegPlan)],
     ) -> BcResult<()> {
-        let residual = Self::residual(stored.iter().chain(postings));
-        self.record_legs(postings, insertions.iter().copied(), residual.as_ref());
+        let before = Self::residual(stored.iter().map(|held| held.posting));
+        let after = Self::residual(stored.iter().map(|held| held.posting).chain(postings));
+
+        // The stored elided leg — if there is exactly one — held `before` and
+        // will hold `after`, so it moves by the difference. Both being `None`
+        // covers the ordinary case of no stored elided leg at all, and the
+        // two-elided case where the balance engine attributes the residual to
+        // neither leg, which is a movement of `-before` and equally right.
+        if let Some(held) = single_elided(stored) {
+            if let Some(path) = held.account_path {
+                self.shift(path, after.as_ref(), before.as_ref());
+            } else {
+                // The run's account snapshot does not name this account, so the
+                // report has nothing to file the movement under — it can only
+                // have been deleted since the snapshot was taken.
+                tracing::warn!(
+                    posting = %held.posting.id(),
+                    "a stored elided posting sits on an account the run cannot name; its \
+                     planned movement is unreported"
+                );
+            }
+        }
+
+        self.record_legs(postings, insertions.iter().copied(), after.as_ref());
         Ok(())
     }
 
@@ -2020,6 +2123,8 @@ struct Writer<'svc, S> {
     /// Commodity registry snapshot, for canonicalising a materialised
     /// residual's commodity code.
     commodities: &'svc CommodityResolver,
+    /// Account tree snapshot, for naming the account a stored posting sits on.
+    accounts: &'svc AccountResolver,
     /// Legs already stored for every account this run touches, keyed by
     /// `(account id string, fingerprint)`.
     existing: HashMap<(String, String), Vec<StoredLeg>>,
@@ -2293,16 +2398,18 @@ where
             .map(|leg| leg.posting(None, &self.tags))
             .collect();
 
+        let stored: Vec<StoredPosting<'_>> = candidate
+            .postings()
+            .iter()
+            .map(|posting| StoredPosting {
+                account_path: self.accounts.path_of(posting.account_id()),
+                posting,
+            })
+            .collect();
+
         let written = self
             .sink
-            .attach(
-                raw,
-                owner,
-                candidate.postings(),
-                &postings,
-                &insertions,
-                &adoptions,
-            )
+            .attach(raw, owner, &stored, &postings, &insertions, &adoptions)
             .await;
 
         if !row_local(
@@ -5535,6 +5642,58 @@ mod tests {
             bucket(&planned, "Assets:Bank").and_then(|b| b.get("AUD")),
             Some(actual.value()),
             "the plan's figure must be the balance the attach leaves"
+        );
+    }
+
+    /// The other orientation of the attach path, and the one that writes no
+    /// posting at all for the account that moves: the elided leg is *already*
+    /// stored, and this run appends a sibling to it. Its derived value shifts,
+    /// so the account moves without this run booking anything to it.
+    ///
+    /// This is the workflow the feature exists for — create the missing
+    /// account, re-run, watch the rest land — so a report that omitted the
+    /// account would omit it exactly when the user is looking for it.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_planned_total_matches_a_shift_in_a_stored_legs_residual(pool: SqlitePool) {
+        ensure_path(&pool, "Expenses:Food").await;
+        let bank = ensure_path(&pool, "Assets:Bank").await;
+        let svcs = services(&pool).await;
+        let docs = vec![raw_with(
+            "TRIP",
+            vec![
+                coded_leg("Expenses:Food", dec!(30), "AUD"),
+                coded_leg("Expenses:Travel", dec!(20), "AUD"),
+                leg("Assets:Bank", None),
+            ],
+        )];
+        run(&svcs, &docs).await;
+        let engine = crate::BalanceEngine::new(pool.clone());
+        let opening = engine
+            .balance_for(&bank, "AUD")
+            .await
+            .expect("the balance")
+            .value();
+        assert_eq!(opening, dec!(-30), "the first pass derives -30 for the leg");
+
+        ensure_path(&pool, "Expenses:Travel").await;
+        let planned = plan(&svcs, &docs).await;
+        run(&svcs, &docs).await;
+
+        let closing = engine
+            .balance_for(&bank, "AUD")
+            .await
+            .expect("the balance")
+            .value();
+        assert_eq!(
+            closing,
+            dec!(-50),
+            "appending the sibling moves the account"
+        );
+        let movement = closing.checked_sub(opening).expect("a small difference");
+        assert_eq!(
+            bucket(&planned, "Assets:Bank").and_then(|held| held.get("AUD")),
+            Some(movement),
+            "the plan must report the movement, not the whole balance"
         );
     }
 
