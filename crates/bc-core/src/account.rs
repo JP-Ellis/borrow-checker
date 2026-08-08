@@ -459,6 +459,209 @@ impl Service {
 
         account_rows.into_iter().map(Account::try_from).collect()
     }
+
+    /// Materialises every path in `specs`, creating only what is missing.
+    ///
+    /// Every path is resolved and created in one pass over a single snapshot, so
+    /// a batch of thousands costs one `SELECT` rather than one per path. Paths
+    /// are processed in the order given, and each insert updates the snapshot, so
+    /// two paths sharing an ancestor create it once. The whole batch is one
+    /// transaction: a failure on any path rolls back every path.
+    ///
+    /// Missing ancestors are minted as [`AccountKind::Group`] with no other
+    /// attributes; only the leaf takes the attributes from its [`PathSpec`].
+    /// Every path takes a single account type, resolved in order: the existing
+    /// root's type, then the spec's explicit type, then the root segment name.
+    ///
+    /// An existing leaf is reused rather than re-created, provided nothing the
+    /// caller explicitly requested contradicts it. Segment matching is
+    /// case-sensitive, matching [`crate::AccountPath`] resolution. The reuse
+    /// decision is made against a snapshot taken before the first insert, so two
+    /// concurrent calls can still race; `idx_accounts_sibling_unique` rejects the
+    /// loser.
+    ///
+    /// # Arguments
+    ///
+    /// * `specs` - The paths to materialise, with their leaf attributes.
+    ///
+    /// # Returns
+    ///
+    /// A [`Created`] mapping every requested path to its leaf ID, alongside every
+    /// path this call brought into existence — auto-created ancestors included.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::InvalidInput`] if a path's root is unrecognised and no
+    /// explicit type was given, if an explicit type contradicts an existing root,
+    /// or if an existing leaf contradicts an explicitly-requested attribute;
+    /// [`BcError::Database`] on query or insert failure; [`BcError::BadData`] if a
+    /// stored row cannot be parsed.
+    #[inline]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one pass over segments; splitting would obscure the snapshot invariant"
+    )]
+    pub async fn create_paths(&self, specs: &[PathSpec]) -> BcResult<Created> {
+        if specs.is_empty() {
+            return Ok(Created::default());
+        }
+
+        let mut known = self.list_all().await?;
+        let mut out = Created::default();
+        let mut db_tx = self.pool.begin().await?;
+
+        for spec in specs {
+            let rendered = spec.path().to_string();
+            let segments = spec.path().segments();
+            let Some(root) = segments.first() else {
+                return Err(BcError::BadData("account path had no segments".to_owned()));
+            };
+
+            // Resolution order: an existing root's type, then the explicit type,
+            // then the root segment name.
+            let existing_root = known
+                .iter()
+                .find(|a| a.name() == root.as_str() && a.parent_id().is_none())
+                .map(Account::account_type);
+            let account_type = match (existing_root, spec.account_type()) {
+                (Some(stored), Some(requested)) if stored != requested => {
+                    return Err(BcError::InvalidInput(format!(
+                        "root account '{root}' already exists with type {stored:?}; \
+                         '{rendered}' cannot be created as {requested:?}"
+                    )));
+                }
+                (Some(stored), _) => stored,
+                (None, Some(requested)) => requested,
+                (None, None) => derive_account_type(root).ok_or_else(|| {
+                    BcError::InvalidInput(format!(
+                        "cannot derive an account type from root segment '{root}'; \
+                         expected one of {KNOWN_ROOTS}; pass an explicit type to set it"
+                    ))
+                })?,
+            };
+
+            let mut parent: Option<AccountId> = None;
+            let mut walked: Vec<&str> = Vec::new();
+
+            for (index, segment) in segments.iter().enumerate() {
+                walked.push(segment.as_str());
+                let is_leaf = index.saturating_add(1) == segments.len();
+
+                let existing = known
+                    .iter()
+                    .find(|a| a.name() == segment.as_str() && a.parent_id() == parent.as_ref())
+                    .cloned();
+
+                let id = if let Some(account) = existing {
+                    if is_leaf {
+                        if let Some(conflict) = conflict_of(&account, spec, account_type, &rendered)
+                        {
+                            return Err(BcError::InvalidInput(conflict));
+                        }
+                        if account.archived_at().is_some() {
+                            tracing::warn!(
+                                account = %rendered,
+                                "reusing an archived account"
+                            );
+                        }
+                    }
+                    account.id().clone()
+                } else {
+                    let new_id = if is_leaf {
+                        create_in_tx(
+                            &mut db_tx,
+                            segment,
+                            account_type,
+                            spec.kind().unwrap_or(AccountKind::DepositAccount),
+                            spec.description(),
+                            parent.as_ref(),
+                            spec.commodity_ids(),
+                            spec.tag_ids(),
+                            spec.acquisition_date(),
+                            spec.acquisition_cost(),
+                            spec.depreciation_policy(),
+                        )
+                        .await?
+                    } else {
+                        create_in_tx(
+                            &mut db_tx,
+                            segment,
+                            account_type,
+                            AccountKind::Group,
+                            None,
+                            parent.as_ref(),
+                            &[],
+                            &[],
+                            None,
+                            None,
+                            None,
+                        )
+                        .await?
+                    };
+
+                    // Keep the snapshot current so a later segment — or a later
+                    // path in this batch — resolves against what was just
+                    // inserted.
+                    known.push(
+                        Account::builder()
+                            .id(new_id.clone())
+                            .name(segment.clone())
+                            .account_type(account_type)
+                            .kind(if is_leaf {
+                                spec.kind().unwrap_or(AccountKind::DepositAccount)
+                            } else {
+                                AccountKind::Group
+                            })
+                            .maybe_description(spec.description().filter(|_| is_leaf))
+                            .maybe_parent_id(parent.clone())
+                            .build(),
+                    );
+                    out.created.push(walked.join(":"));
+                    new_id
+                };
+                parent = Some(id);
+            }
+
+            if let Some(leaf) = parent {
+                out.ids.insert(rendered, leaf);
+            }
+        }
+
+        db_tx.commit().await?;
+        out.created.sort_unstable();
+        out.created.dedup();
+        Ok(out)
+    }
+
+    /// Materialises one path, reusing existing ancestors and creating only the
+    /// missing segments. This is the single-path form of [`Self::create_paths`],
+    /// which does the work.
+    ///
+    /// Callers that need to report which ancestors were minted should call
+    /// [`Self::create_paths`] with a one-element slice instead — this form
+    /// returns only the leaf.
+    ///
+    /// # Arguments
+    ///
+    /// * `spec` - The path to materialise, with its leaf attributes.
+    ///
+    /// # Returns
+    ///
+    /// The ID of the leaf (last-segment) account.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::create_paths`]; additionally [`BcError::BadData`] if the path
+    /// had no segments.
+    #[inline]
+    pub async fn create_path(&self, spec: &PathSpec) -> BcResult<AccountId> {
+        let outcome = self.create_paths(core::slice::from_ref(spec)).await?;
+        outcome
+            .ids
+            .get(&spec.path().to_string())
+            .cloned()
+            .ok_or_else(|| BcError::BadData("account path had no segments".to_owned()))
+    }
 }
 
 /// Creates one account inside a caller-supplied transaction.
@@ -574,6 +777,9 @@ async fn create_in_tx(
     Ok(id)
 }
 
+/// The five root segments [`derive_account_type`] recognises, for error messages.
+const KNOWN_ROOTS: &str = "Assets, Liabilities, Equity, Income, Expenses";
+
 /// Maps a path's root segment to the account type the whole path takes.
 ///
 /// Matching is **case-sensitive**, matching [`crate::AccountPath`]'s
@@ -588,10 +794,6 @@ async fn create_in_tx(
 ///
 /// The derived [`AccountType`], or `None` if `root` is not one of the five
 /// recognised roots — in which case the caller must be given an explicit type.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by Task 5's create_paths service method")
-)]
 fn derive_account_type(root: &str) -> Option<AccountType> {
     match root {
         "Assets" => Some(AccountType::Asset),
@@ -717,6 +919,93 @@ impl PathSpec {
     pub fn depreciation_policy(&self) -> Option<&bc_models::DepreciationPolicy> {
         self.depreciation_policy.as_ref()
     }
+}
+
+/// The outcome of materialising a batch of account paths.
+///
+/// Re-exported from the crate root as [`crate::CreatedAccounts`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct Created {
+    /// Leaf account ID for every requested path, keyed by the path as rendered
+    /// by [`crate::AccountPath::to_string`].
+    pub ids: HashMap<String, AccountId>,
+    /// Every path this call brought into existence, sorted and deduplicated.
+    ///
+    /// Unlike [`crate::CreatedTags`], this **includes auto-created ancestors**.
+    /// A tag ancestor is a bookkeeping artefact, but an account ancestor is a
+    /// real account that appears in `account list` and in every report, so the
+    /// caller must be told it was minted.
+    pub created: Vec<String>,
+}
+
+/// Reports how an existing account contradicts an explicitly-requested attribute.
+///
+/// Only attributes the caller actually specified are compared: an omitted
+/// attribute means *don't care*, which is what makes re-running a bare path a
+/// clean no-op regardless of how the account was originally configured.
+///
+/// # Arguments
+///
+/// * `existing` - The account already stored at this path.
+/// * `spec` - The request, whose `Some`/non-empty fields are the ones compared.
+/// * `account_type` - The type resolved for this path.
+/// * `rendered` - The path, for the error message.
+///
+/// # Returns
+///
+/// `None` if nothing contradicts, or a described conflict.
+fn conflict_of(
+    existing: &Account,
+    spec: &PathSpec,
+    account_type: AccountType,
+    rendered: &str,
+) -> Option<String> {
+    if existing.account_type() != account_type {
+        return Some(format!(
+            "account '{rendered}' already exists with type {:?} (requested {account_type:?})",
+            existing.account_type()
+        ));
+    }
+    if let Some(kind) = spec.kind()
+        && existing.kind() != kind
+    {
+        return Some(format!(
+            "account '{rendered}' already exists with kind {:?} (requested {kind:?})",
+            existing.kind()
+        ));
+    }
+    if let Some(description) = spec.description()
+        && existing.description() != Some(description)
+    {
+        return Some(format!(
+            "account '{rendered}' already exists with a different description"
+        ));
+    }
+    if spec.acquisition_date().is_some() && existing.acquisition_date() != spec.acquisition_date() {
+        return Some(format!(
+            "account '{rendered}' already exists with a different acquisition date"
+        ));
+    }
+    if spec.acquisition_cost().is_some() && existing.acquisition_cost() != spec.acquisition_cost() {
+        return Some(format!(
+            "account '{rendered}' already exists with a different acquisition cost"
+        ));
+    }
+    if spec.depreciation_policy().is_some()
+        && existing.depreciation_policy() != spec.depreciation_policy()
+    {
+        return Some(format!(
+            "account '{rendered}' already exists with a different depreciation policy"
+        ));
+    }
+    if !spec.commodity_ids().is_empty() || !spec.tag_ids().is_empty() {
+        return Some(format!(
+            "account '{rendered}' already exists; commodities and tags cannot be set by \
+             create_paths — use the dedicated commands"
+        ));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1164,5 +1453,326 @@ mod tests {
         let mut expected = vec![live, gone];
         expected.sort_by_key(ToString::to_string);
         assert_eq!(all, expected, "list_all includes archived accounts");
+    }
+
+    /// Builds a bare spec for `path`, with no leaf attributes specified.
+    fn spec(path: &str) -> PathSpec {
+        PathSpec::builder()
+            .path(AccountPath::parse(path).expect("valid path"))
+            .build()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn creates_every_segment_of_a_path_in_an_empty_tree(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let out = svc
+            .create_paths(&[spec("Assets:BankA:Checking")])
+            .await
+            .expect("create the path");
+
+        assert_eq!(
+            out.created,
+            vec![
+                "Assets".to_owned(),
+                "Assets:BankA".to_owned(),
+                "Assets:BankA:Checking".to_owned(),
+            ],
+            "every path brought into existence is reported, ancestors included"
+        );
+
+        let all = svc.list_all().await.expect("list");
+        assert_eq!(all.len(), 3);
+        for account in &all {
+            assert_eq!(
+                account.account_type(),
+                AccountType::Asset,
+                "every segment inherits the root's type"
+            );
+        }
+        let leaf_id = out.ids.get("Assets:BankA:Checking").expect("leaf id");
+        let leaf = all.iter().find(|a| a.id() == leaf_id).expect("leaf");
+        assert_eq!(leaf.kind(), AccountKind::DepositAccount);
+        for ancestor in all.iter().filter(|a| a.id() != leaf_id) {
+            assert_eq!(
+                ancestor.kind(),
+                AccountKind::Group,
+                "auto-created ancestors are Group nodes"
+            );
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reuses_existing_ancestors_and_mints_only_the_gap(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        svc.create_paths(&[spec("Assets:BankA")])
+            .await
+            .expect("seed");
+
+        let out = svc
+            .create_paths(&[spec("Assets:BankA:Checking")])
+            .await
+            .expect("extend");
+
+        assert_eq!(
+            out.created,
+            vec!["Assets:BankA:Checking".to_owned()],
+            "only the missing leaf is new"
+        );
+        assert_eq!(svc.list_all().await.expect("list").len(), 3);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn two_paths_sharing_an_ancestor_mint_it_once(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let out = svc
+            .create_paths(&[
+                spec("Expenses:Food:Restaurants"),
+                spec("Expenses:Food:Groceries"),
+            ])
+            .await
+            .expect("create both");
+
+        assert_eq!(
+            out.created,
+            vec![
+                "Expenses".to_owned(),
+                "Expenses:Food".to_owned(),
+                "Expenses:Food:Groceries".to_owned(),
+                "Expenses:Food:Restaurants".to_owned(),
+            ],
+            "sorted and deduplicated; Expenses:Food appears once"
+        );
+        assert_eq!(svc.list_all().await.expect("list").len(), 4);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_underivable_root_is_rejected_without_an_explicit_type(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let error = svc
+            .create_paths(&[spec("Cash:Wallet")])
+            .await
+            .expect_err("an unrecognised root must not be guessed");
+
+        assert!(
+            matches!(error, BcError::InvalidInput(ref m) if m.contains("Cash") && m.contains("Assets")),
+            "the error must name the offending root and the accepted spellings, got: {error:?}"
+        );
+        assert_eq!(
+            svc.list_all().await.expect("list").len(),
+            0,
+            "a rejected path creates nothing"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_underivable_root_succeeds_with_an_explicit_type(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let out = svc
+            .create_paths(&[PathSpec::builder()
+                .path(AccountPath::parse("Cash:Wallet").expect("valid"))
+                .account_type(AccountType::Asset)
+                .build()])
+            .await
+            .expect("explicit type is accepted");
+
+        assert_eq!(
+            out.created,
+            vec!["Cash".to_owned(), "Cash:Wallet".to_owned()]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_existing_root_type_is_inherited_and_a_conflict_is_rejected(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        svc.create_paths(&[PathSpec::builder()
+            .path(AccountPath::parse("Cash").expect("valid"))
+            .account_type(AccountType::Asset)
+            .build()])
+            .await
+            .expect("seed the root");
+
+        // Inherited: no explicit type needed the second time.
+        svc.create_paths(&[spec("Cash:Wallet")])
+            .await
+            .expect("the existing root's type is inherited");
+
+        let error = svc
+            .create_paths(&[PathSpec::builder()
+                .path(AccountPath::parse("Cash:Card").expect("valid"))
+                .account_type(AccountType::Liability)
+                .build()])
+            .await
+            .expect_err("a type contradicting the existing root must be rejected");
+
+        assert!(matches!(error, BcError::InvalidInput(_)), "got: {error:?}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn re_running_a_bare_path_is_a_no_op(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        svc.create_paths(&[spec("Assets:BankA:Checking")])
+            .await
+            .expect("first run");
+
+        let out = svc
+            .create_paths(&[spec("Assets:BankA:Checking")])
+            .await
+            .expect("second run");
+
+        assert!(
+            out.created.is_empty(),
+            "nothing was brought into existence, so nothing is reported"
+        );
+        assert!(out.ids.contains_key("Assets:BankA:Checking"));
+        assert_eq!(svc.list_all().await.expect("list").len(), 3);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_matching_kind_on_an_existing_leaf_is_a_no_op(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        svc.create_paths(&[spec("Assets:BankA:Checking")])
+            .await
+            .expect("first run");
+
+        let out = svc
+            .create_paths(&[PathSpec::builder()
+                .path(AccountPath::parse("Assets:BankA:Checking").expect("valid"))
+                .kind(AccountKind::DepositAccount)
+                .build()])
+            .await
+            .expect("a matching kind agrees");
+
+        assert!(out.created.is_empty());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_conflicting_kind_on_an_existing_leaf_is_rejected(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        svc.create_paths(&[spec("Assets:BankA:Checking")])
+            .await
+            .expect("first run");
+
+        let error = svc
+            .create_paths(&[PathSpec::builder()
+                .path(AccountPath::parse("Assets:BankA:Checking").expect("valid"))
+                .kind(AccountKind::ManualAsset)
+                .build()])
+            .await
+            .expect_err("a contradicting kind must not be silently dropped");
+
+        assert!(
+            matches!(error, BcError::InvalidInput(ref m) if m.contains("Assets:BankA:Checking")),
+            "the error must name the path, got: {error:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn commodities_against_an_existing_leaf_are_rejected(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        svc.create_paths(&[spec("Assets:BankA:Checking")])
+            .await
+            .expect("first run");
+
+        let error = svc
+            .create_paths(&[PathSpec::builder()
+                .path(AccountPath::parse("Assets:BankA:Checking").expect("valid"))
+                .commodity_ids(vec![CommodityId::new()])
+                .build()])
+            .await
+            .expect_err("silently not applying commodities is the failure we prevent");
+
+        assert!(matches!(error, BcError::InvalidInput(_)), "got: {error:?}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_archived_leaf_is_reused_not_recreated(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let first = svc
+            .create_paths(&[spec("Assets:BankA:OldCard")])
+            .await
+            .expect("first run");
+        let leaf = first.ids.get("Assets:BankA:OldCard").expect("leaf").clone();
+        svc.archive(&leaf).await.expect("archive");
+
+        let out = svc
+            .create_paths(&[spec("Assets:BankA:OldCard")])
+            .await
+            .expect("an archived account exists, so it is reused");
+
+        assert!(out.created.is_empty());
+        assert_eq!(out.ids.get("Assets:BankA:OldCard"), Some(&leaf));
+        assert_eq!(svc.list_all().await.expect("list").len(), 3);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn every_minted_account_gets_an_account_created_event(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        svc.create_paths(&[spec("Assets:BankA:Checking")])
+            .await
+            .expect("create");
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'AccountCreated'")
+                .fetch_one(&pool)
+                .await
+                .expect("count events");
+
+        assert_eq!(
+            count, 3,
+            "ancestors are real accounts, so each gets its own event"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_failure_mid_batch_leaves_no_orphan_ancestors(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let error = svc
+            .create_paths(&[spec("Assets:BankA:Checking"), spec("Cash:Wallet")])
+            .await
+            .expect_err("the second path has an underivable root");
+
+        assert!(matches!(error, BcError::InvalidInput(_)), "got: {error:?}");
+        assert_eq!(
+            svc.list_all().await.expect("list").len(),
+            0,
+            "the whole batch is one transaction, so the first path rolls back too"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn segment_matching_is_case_sensitive(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        svc.create_paths(&[spec("Assets:BankA")])
+            .await
+            .expect("seed");
+
+        let out = svc
+            .create_paths(&[PathSpec::builder()
+                .path(AccountPath::parse("Assets:banka").expect("valid"))
+                .build()])
+            .await
+            .expect("create");
+
+        assert_eq!(
+            out.created,
+            vec!["Assets:banka".to_owned()],
+            "'banka' does not reuse 'BankA' — resolution is case-sensitive"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_path_returns_the_leaf_id(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let id = svc
+            .create_path(&spec("Assets:BankA:Checking"))
+            .await
+            .expect("create");
+
+        let all = svc.list_all().await.expect("list");
+        let leaf = all
+            .iter()
+            .find(|a| a.name() == "Checking")
+            .expect("the leaf");
+        assert_eq!(&id, leaf.id());
     }
 }
