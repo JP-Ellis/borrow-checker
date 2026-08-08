@@ -57,7 +57,8 @@ pub enum Command {
         /// Tag path to filter by. Repeatable; multiple tags union.
         #[arg(long, value_name = "PATH")]
         tag: Vec<String>,
-        /// Collapse rows more than N levels beneath each scoping root.
+        /// Drop rows deeper than N, counted from the account-tree root — not
+        /// from `--account`, so a scoped report may need a higher N.
         #[arg(long, value_name = "N")]
         depth: Option<usize>,
         /// Commodity to report in. Other commodities are excluded, not converted.
