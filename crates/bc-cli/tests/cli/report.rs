@@ -105,3 +105,41 @@ fn net_worth_includes_manual_asset_at_market_value() {
     cmd.args(["--json", "report", "net-worth"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+#[test]
+fn categories_unresolvable_account_errors() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["report", "categories", "--account", "No:Such:Account"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn categories_unresolvable_account_errors_json() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args([
+        "--json",
+        "report",
+        "categories",
+        "--account",
+        "No:Such:Account",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn categories_unresolvable_tag_errors() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["report", "categories", "--tag", "no-such-tag"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn categories_unresolvable_tag_errors_json() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["--json", "report", "categories", "--tag", "no-such-tag"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
