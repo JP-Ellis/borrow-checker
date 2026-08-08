@@ -3934,6 +3934,20 @@ mod tests {
         .expect("transaction tag names")
     }
 
+    /// Reads the rendered paths of every tag attached to `account`'s posting.
+    async fn tag_names_of_posting(pool: &SqlitePool, account: &AccountId) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT t.name FROM posting_tags pt \
+             JOIN tags t ON t.id = pt.tag_id \
+             JOIN postings p ON p.id = pt.posting_id \
+             WHERE p.account_id = ? ORDER BY t.name",
+        )
+        .bind(account.to_string())
+        .fetch_all(pool)
+        .await
+        .expect("posting tag names")
+    }
+
     /// A tag the document names does not exist yet, so the run creates it and
     /// attaches it to the transaction it names it on.
     #[sqlx::test(migrations = "./migrations")]
@@ -4005,6 +4019,52 @@ mod tests {
         assert!(tag_names_of_transaction(&pool).await.is_empty());
     }
 
+    /// The warn-once guard is keyed on the spelling, not the leg, so the second
+    /// occurrence of a bad path takes the `continue` arm rather than the `Err`
+    /// arm. It must still be dropped there: a spelling that warns once has to
+    /// stay dropped everywhere it appears, on postings as much as on the
+    /// transaction.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_repeated_malformed_posting_tag_stays_dropped(pool: SqlitePool) {
+        let (bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .maybe_amount(Some(Amount::new(
+                        Decimal::from(-50_i64),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .tags(vec!["person::alpha".to_owned(), "reimbursable".to_owned()])
+                    .build(),
+                RawPosting::builder()
+                    .account("Expenses:Food")
+                    .maybe_amount(Some(Amount::new(
+                        Decimal::from(50_i64),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .tags(vec!["person::alpha".to_owned()])
+                    .build(),
+            ])
+            .build();
+
+        let outcome = run(&svcs, &[raw]).await;
+
+        // Both legs persist, and only the parsable tag was created.
+        assert_eq!(outcome.new_transactions, 1);
+        assert_eq!(outcome.skipped_postings, 0);
+        assert_eq!(outcome.created_tags, vec!["reimbursable".to_owned()]);
+
+        assert_eq!(
+            tag_names_of_posting(&pool, &bank).await,
+            vec!["reimbursable".to_owned()]
+        );
+        assert!(tag_names_of_posting(&pool, &food).await.is_empty());
+    }
+
     /// `Transaction::effective_tags` already unions the two levels, so they are
     /// persisted separately rather than posting tags being flattened upward.
     #[sqlx::test(migrations = "./migrations")]
@@ -4039,17 +4099,10 @@ mod tests {
             vec!["household".to_owned()]
         );
         // ...and the posting only its own.
-        let posting_tags: Vec<String> = sqlx::query_scalar(
-            "SELECT t.name FROM posting_tags pt \
-             JOIN tags t ON t.id = pt.tag_id \
-             JOIN postings p ON p.id = pt.posting_id \
-             WHERE p.account_id = ? ORDER BY t.name",
-        )
-        .bind(bank.to_string())
-        .fetch_all(&pool)
-        .await
-        .expect("posting tag names");
-        assert_eq!(posting_tags, vec!["reimbursable".to_owned()]);
+        assert_eq!(
+            tag_names_of_posting(&pool, &bank).await,
+            vec!["reimbursable".to_owned()]
+        );
     }
 
     /// A re-import of the same document names the same tag again, but
