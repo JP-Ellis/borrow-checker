@@ -149,12 +149,16 @@ impl Service {
         row.map(Tag::try_from).transpose()
     }
 
-    /// Materialises every path in `paths`, creating only what is missing.
+    /// Materialises every path in `paths`, creating only what is missing. This
+    /// is the only tag-creation path; [`Self::create_path`] delegates here.
     ///
     /// Every path is resolved and created in one pass over a single snapshot, so
     /// a batch of thousands costs one `SELECT` rather than one per path. Paths
     /// are processed in the order given, and each insert updates the snapshot, so
     /// two paths sharing an ancestor create it once.
+    ///
+    /// Segment names match case-insensitively, with the reuse and concurrency
+    /// caveats documented on [`Self::create_path`].
     ///
     /// # Arguments
     ///
@@ -237,7 +241,8 @@ impl Service {
     }
 
     /// Creates the tag hierarchy for `path`, reusing existing ancestors and
-    /// creating only the missing segments. This is the only tag-creation path.
+    /// creating only the missing segments. This is the single-path form of
+    /// [`Self::create_paths`], which does the work.
     ///
     /// Segment names match case-insensitively (see `eq_name`), so requesting
     /// `person:Alpha` when `person:alpha` exists returns the existing tag rather
