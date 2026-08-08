@@ -1,0 +1,30 @@
+---
+source: crates/bc-cli/tests/cli/account.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "account": {
+    "account_type": "asset",
+    "acquisition_cost": null,
+    "acquisition_date": null,
+    "archived_at": null,
+    "commodities": [],
+    "created_at": "[TIMESTAMP]",
+    "depreciation_policy": null,
+    "description": null,
+    "id": "[ACCOUNT_ID]",
+    "kind": "deposit_account",
+    "name": "Checking",
+    "parent_id": "[ACCOUNT_ID]",
+    "tag_ids": []
+  },
+  "also_created": [
+    "Assets",
+    "Assets:BankA"
+  ],
+  "created": true
+}
+----- stderr -----

@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/account.rs
+expression: output
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: invalid input: account 'Assets:BankA:Checking' already exists with kind DepositAccount (requested ManualAsset)

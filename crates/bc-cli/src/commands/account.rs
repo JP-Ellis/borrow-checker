@@ -26,17 +26,22 @@ pub struct Args {
 pub enum Command {
     /// List all active accounts.
     List,
-    /// Create a new account.
+    /// Create an account from a colon-path, minting any missing ancestors.
+    ///
+    /// Ancestors are created as `group` accounts. The account type is derived
+    /// from the root segment (Assets, Liabilities, Equity, Income, Expenses)
+    /// unless `--type` is given.
     Create {
-        /// Display name for the account.
-        #[arg(long)]
-        name: String,
-        /// Account type (asset, liability, equity, income, expense).
+        /// The colon-joined account path to create (e.g. `Assets:BankA:Checking`).
+        path: String,
+        /// Account type. Derived from the root segment when omitted.
         #[arg(long, value_enum)]
-        r#type: TypeArg,
-        /// Account maintenance kind.
-        #[arg(long, value_enum, default_value = "deposit-account")]
-        kind: KindArg,
+        r#type: Option<TypeArg>,
+        /// Account maintenance kind for the leaf. Defaults to `deposit-account`
+        /// when the account is created; when it already exists, an omitted kind
+        /// is not compared.
+        #[arg(long, value_enum)]
+        kind: Option<KindArg>,
         /// Optional free-text description.
         #[arg(long)]
         description: Option<String>,
@@ -102,6 +107,8 @@ pub enum KindArg {
     /// Sub-account that subdivides a parent account's balance.
     #[value(name = "virtual-allocation")]
     VirtualAllocation,
+    /// Organisational node that holds no postings of its own.
+    Group,
 }
 
 /// CLI representation of [`bc_models::DepreciationPolicy`] (without the `annual_rate` field).
@@ -128,7 +135,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
         Command::List => list(ctx).await,
         Command::Create {
-            name,
+            path,
             r#type,
             kind,
             description,
@@ -139,7 +146,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         } => {
             create(
                 ctx,
-                name,
+                path,
                 r#type,
                 kind,
                 description,
@@ -209,41 +216,46 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
     Ok(())
 }
 
-/// Creates a new account.
+/// Creates an account from a colon-path, minting any missing ancestors.
 ///
 /// # Errors
 ///
-/// Propagates [`crate::error::CliError`] from the account service or JSON serialisation.
-/// Returns [`crate::error::CliError::Arg`] if acquisition date/cost/rate cannot be parsed.
+/// Propagates [`crate::error::CliError`] from the account service or JSON
+/// serialisation. Returns [`crate::error::CliError::Arg`] if the path is
+/// malformed or if the acquisition date/cost/rate cannot be parsed.
 #[expect(
     clippy::too_many_arguments,
     reason = "all parameters come from CLI flags"
 )]
 async fn create(
     ctx: &AppContext,
-    name: String,
-    account_type: TypeArg,
-    kind: KindArg,
+    path: String,
+    account_type: Option<TypeArg>,
+    kind: Option<KindArg>,
     description: Option<String>,
     acquisition_date: Option<String>,
     acquisition_cost: Option<String>,
     depreciation_policy: Option<DepreciationPolicyArg>,
     annual_rate: Option<String>,
 ) -> CliResult<()> {
-    let bc_type = match account_type {
+    let parsed = bc_core::AccountPath::parse(&path)
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid account path '{path}': {e}")))?;
+
+    let bc_type = account_type.map(|arg| match arg {
         TypeArg::Asset => AccountType::Asset,
         TypeArg::Liability => AccountType::Liability,
         TypeArg::Equity => AccountType::Equity,
         TypeArg::Income => AccountType::Income,
         TypeArg::Expense => AccountType::Expense,
-    };
+    });
 
-    let bc_kind = match kind {
+    let bc_kind = kind.map(|arg| match arg {
         KindArg::DepositAccount => AccountKind::DepositAccount,
         KindArg::ManualAsset => AccountKind::ManualAsset,
         KindArg::Receivable => AccountKind::Receivable,
         KindArg::VirtualAllocation => AccountKind::VirtualAllocation,
-    };
+        KindArg::Group => AccountKind::Group,
+    });
 
     let acq_date = acquisition_date
         .as_deref()
@@ -279,27 +291,51 @@ async fn create(
         }
     };
 
-    let account_id = ctx
-        .accounts
-        .create()
-        .name(&name)
-        .account_type(bc_type)
-        .kind(bc_kind)
-        .maybe_description(description.as_deref())
+    let rendered = parsed.to_string();
+    let spec = bc_core::PathSpec::builder()
+        .path(parsed)
+        .maybe_account_type(bc_type)
+        .maybe_kind(bc_kind)
+        .maybe_description(description)
         .maybe_acquisition_date(acq_date)
         .maybe_acquisition_cost(acq_cost)
-        .maybe_depreciation_policy(depr_policy.as_ref())
-        .call()
-        .await?;
+        .maybe_depreciation_policy(depr_policy)
+        .build();
+
+    // create_paths, not create_path: the CLI reports which ancestors it minted,
+    // which only the batch form returns.
+    let outcome = ctx.accounts.create_paths(&[spec]).await?;
+    let account_id = outcome
+        .ids
+        .get(&rendered)
+        .ok_or_else(|| crate::error::CliError::Arg(format!("path '{rendered}' had no leaf")))?;
+    let was_created = outcome.created.iter().any(|p| p == &rendered);
+    let ancestors: Vec<&String> = outcome.created.iter().filter(|p| *p != &rendered).collect();
 
     if ctx.json {
-        let account = ctx.accounts.find_by_id(&account_id).await?;
-        return crate::output::print_json(&account);
+        let account = ctx.accounts.find_by_id(account_id).await?;
+        return crate::output::print_json(&serde_json::json!({
+            "account": account,
+            "created": was_created,
+            "also_created": ancestors,
+        }));
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        println!("Created account: {name} ({account_id})");
+        if was_created {
+            println!("Created account: {rendered} ({account_id})");
+        } else {
+            println!("Account already exists: {rendered} ({account_id})");
+        }
+        if !ancestors.is_empty() {
+            let list = ancestors
+                .iter()
+                .map(|p| format!("{p} (Group)"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("  also created: {list}");
+        }
     }
     Ok(())
 }

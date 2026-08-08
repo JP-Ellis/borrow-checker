@@ -38,10 +38,7 @@ fn create_expense_account(ctx: &TestContext) -> String {
             "--json",
             "account",
             "create",
-            "--name",
-            "Groceries",
-            "--type",
-            "expense",
+            "Expenses:Groceries",
             "--kind",
             "deposit-account",
         ])
@@ -53,7 +50,8 @@ fn create_expense_account(ctx: &TestContext) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
-    json.get("id")
+    json.get("account")
+        .and_then(|account| account.get("id"))
         .and_then(serde_json::Value::as_str)
         .expect("account id")
         .to_owned()

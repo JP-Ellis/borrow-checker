@@ -1,0 +1,15 @@
+---
+source: crates/bc-cli/tests/cli/account.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+ ID                                 | NAME     | TYPE  | KIND
+========================================================================
+ [ACCOUNT_ID] | Assets   | Asset | Group
+------------------------------------+----------+-------+----------------
+ [ACCOUNT_ID] | BankA    | Asset | Group
+------------------------------------+----------+-------+----------------
+ [ACCOUNT_ID] | Checking | Asset | DepositAccount
+----- stderr -----
