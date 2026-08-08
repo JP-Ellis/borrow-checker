@@ -672,6 +672,91 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn a_pruned_middle_ancestor_does_not_shrink_descendant_depth(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let bank = accts
+            .create()
+            .name("Bank-A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("bank");
+        let income = accts
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("income");
+        let middle = accts
+            .create()
+            .name("Middle")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&income)
+            .call()
+            .await
+            .expect("middle");
+        let plus = accts
+            .create()
+            .name("Plus")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&middle)
+            .call()
+            .await
+            .expect("plus");
+        let minus = accts
+            .create()
+            .name("Minus")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&middle)
+            .call()
+            .await
+            .expect("minus");
+
+        let txns = crate::transaction::Service::new(pool.clone());
+        txns.create(tx(&bank, &income, date(2025, 8, 1), dec!(100), "AUD"))
+            .await
+            .expect("income activity");
+        txns.create(tx(&bank, &plus, date(2025, 8, 2), dec!(30), "AUD"))
+            .await
+            .expect("plus activity");
+        txns.create(tx(&minus, &bank, date(2025, 8, 3), dec!(30), "AUD"))
+            .await
+            .expect("minus activity");
+
+        let report = category_totals(&txns, &accts, &TransactionQuery::default(), "AUD")
+            .await
+            .expect("report");
+
+        let income_rows: Vec<_> = report
+            .rows
+            .iter()
+            .filter(|r| r.path.starts_with("Income"))
+            .collect();
+
+        let shape: Vec<(&str, usize, Decimal, Decimal)> = income_rows
+            .iter()
+            .map(|r| (r.path.as_str(), r.depth, r.own.value(), r.rolled_up.value()))
+            .collect();
+
+        assert_eq!(
+            shape,
+            vec![
+                ("Income", 0, dec!(-100), dec!(-100)),
+                ("Income:Middle:Minus", 1, dec!(30), dec!(30)),
+                ("Income:Middle:Plus", 1, dec!(-30), dec!(-30)),
+            ],
+            "Middle's zero rollup prunes it, but Plus/Minus keep their full \
+             path and count only emitted ancestors toward depth"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn an_elided_leg_resolves_via_the_residual(pool: sqlx::SqlitePool) {
         let accts = crate::account::Service::new(pool.clone());
         let bank = accts
