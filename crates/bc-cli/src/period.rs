@@ -177,6 +177,7 @@ mod tests {
     use bc_models::Period;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::PeriodArg;
     use super::PeriodInputs;
@@ -269,31 +270,22 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn fy_window_is_named_by_the_year_it_ends() {
-        let window = fy_window(2026, &au_inputs()).expect("window");
-        assert_eq!(window, (date(2025, 7, 1), date(2026, 7, 1)));
-    }
-
-    #[test]
-    fn fy_window_under_a_january_start_is_the_calendar_year() {
+    #[rstest]
+    #[case::australian_default(7, 1, date(2025, 7, 1), date(2026, 7, 1))]
+    #[case::january_start_is_the_calendar_year(1, 1, date(2026, 1, 1), date(2027, 1, 1))]
+    #[case::uk_start_spans_april_to_april(4, 6, date(2025, 4, 6), date(2026, 4, 6))]
+    fn fy_window_is_named_by_the_year_it_ends(
+        #[case] fy_start_month: u8,
+        #[case] fy_start_day: u8,
+        #[case] expected_start: jiff::civil::Date,
+        #[case] expected_end: jiff::civil::Date,
+    ) {
         let inputs = PeriodInputs {
-            fy_start_month: 1,
-            fy_start_day: 1,
+            fy_start_month,
+            fy_start_day,
             ..au_inputs()
         };
         let window = fy_window(2026, &inputs).expect("window");
-        assert_eq!(window, (date(2026, 1, 1), date(2027, 1, 1)));
-    }
-
-    #[test]
-    fn fy_window_under_a_uk_start_spans_april_to_april() {
-        let inputs = PeriodInputs {
-            fy_start_month: 4,
-            fy_start_day: 6,
-            ..au_inputs()
-        };
-        let window = fy_window(2026, &inputs).expect("window");
-        assert_eq!(window, (date(2025, 4, 6), date(2026, 4, 6)));
+        assert_eq!(window, (expected_start, expected_end));
     }
 }
