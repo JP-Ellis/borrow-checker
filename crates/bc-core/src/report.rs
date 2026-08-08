@@ -125,34 +125,120 @@ pub async fn category_totals(
     })
 }
 
-/// Turns per-account totals into report rows.
+/// Maximum ancestor chain length walked when building a path.
 ///
-/// Task 5 replaces this with a tree walk; for now each account with a non-zero
-/// total becomes a flat, depth-zero row named by the account itself.
+/// A malformed `parent_id` cycle would otherwise loop forever. Real charts of
+/// accounts are nowhere near this deep.
+const MAX_ACCOUNT_DEPTH: usize = 64;
+
+/// Builds pre-order report rows with paths, depths and rolled-up totals.
 async fn build_rows(
     accounts: &crate::account::Service,
     own: &HashMap<AccountId, Decimal>,
     commodity: &str,
 ) -> BcResult<Vec<Row>> {
     let all = accounts.list_all().await?;
-    let mut rows: Vec<Row> = all
-        .iter()
-        .filter_map(|account| {
-            let total = own.get(account.id()).copied()?;
-            if total == Decimal::ZERO {
-                return None;
-            }
-            Some(Row {
-                account_id: account.id().clone(),
-                path: account.name().to_owned(),
-                depth: 0,
-                own: Amount::new(total, commodity),
-                rolled_up: Amount::new(total, commodity),
-            })
-        })
-        .collect();
-    rows.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let by_id: HashMap<&AccountId, &bc_models::Account> = all.iter().map(|a| (a.id(), a)).collect();
+
+    let mut children: HashMap<Option<&AccountId>, Vec<&bc_models::Account>> = HashMap::new();
+    for account in &all {
+        children
+            .entry(account.parent_id())
+            .or_default()
+            .push(account);
+    }
+    #[expect(
+        clippy::iter_over_hash_type,
+        reason = "each value's sibling list is sorted independently, so hashmap iteration order does not affect the result"
+    )]
+    for siblings in children.values_mut() {
+        siblings.sort_by(|a, b| a.name().cmp(b.name()));
+    }
+
+    let mut rolled: HashMap<AccountId, Decimal> = HashMap::new();
+    for account in &all {
+        let Some(total) = own.get(account.id()).copied() else {
+            continue;
+        };
+        let mut cursor = Some(account.id());
+        for _ in 0..MAX_ACCOUNT_DEPTH {
+            let Some(id) = cursor else { break };
+            let entry = rolled.entry(id.clone()).or_default();
+            *entry = entry
+                .checked_add(total)
+                .ok_or_else(|| crate::BcError::BadData("rolled-up total overflow".into()))?;
+            cursor = by_id.get(id).and_then(|a| a.parent_id());
+        }
+    }
+
+    let mut rows = Vec::new();
+    let roots = children.get(&None).cloned().unwrap_or_default();
+    for root in roots {
+        emit(root, "", 0, &children, own, &rolled, commodity, &mut rows);
+    }
     Ok(rows)
+}
+
+/// Appends `account`'s row, then its subtree, in pre-order.
+///
+/// Only accounts with a non-zero rolled-up total are emitted; `depth` counts
+/// emitted ancestors, so pruning never leaves a gap in the indentation.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a recursive tree walk threading its accumulators; grouping them would obscure the recursion"
+)]
+fn emit(
+    account: &bc_models::Account,
+    parent_path: &str,
+    depth: usize,
+    children: &HashMap<Option<&AccountId>, Vec<&bc_models::Account>>,
+    own: &HashMap<AccountId, Decimal>,
+    rolled: &HashMap<AccountId, Decimal>,
+    commodity: &str,
+    rows: &mut Vec<Row>,
+) {
+    let path = if parent_path.is_empty() {
+        account.name().to_owned()
+    } else {
+        format!("{parent_path}:{}", account.name())
+    };
+
+    let rolled_up = rolled.get(account.id()).copied().unwrap_or(Decimal::ZERO);
+    let emitted = rolled_up != Decimal::ZERO;
+
+    if emitted {
+        rows.push(Row {
+            account_id: account.id().clone(),
+            path: path.clone(),
+            depth,
+            own: Amount::new(
+                own.get(account.id()).copied().unwrap_or(Decimal::ZERO),
+                commodity,
+            ),
+            rolled_up: Amount::new(rolled_up, commodity),
+        });
+    }
+
+    let child_depth = if emitted {
+        depth.saturating_add(1)
+    } else {
+        depth
+    };
+    if let Some(kids) = children.get(&Some(account.id())) {
+        for kid in kids {
+            emit(
+                kid,
+                &path,
+                child_depth,
+                children,
+                own,
+                rolled,
+                commodity,
+                rows,
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -171,6 +257,7 @@ mod tests {
     use jiff::civil::Date;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
     use super::category_totals;
@@ -379,6 +466,209 @@ mod tests {
 
         assert!(report.rows.is_empty());
         assert_eq!(report.excluded_postings, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn totals_roll_up_the_account_tree_in_pre_order(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let bank = accts
+            .create()
+            .name("Bank-A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("bank");
+        let income = accts
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("income");
+        let interest = accts
+            .create()
+            .name("Interest")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&income)
+            .call()
+            .await
+            .expect("interest");
+        let one = accts
+            .create()
+            .name("Bank-One")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&interest)
+            .call()
+            .await
+            .expect("one");
+        let two = accts
+            .create()
+            .name("Bank-Two")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&interest)
+            .call()
+            .await
+            .expect("two");
+
+        let txns = crate::transaction::Service::new(pool.clone());
+        txns.create(tx(&bank, &one, date(2025, 8, 1), dec!(30), "AUD"))
+            .await
+            .expect("t1");
+        txns.create(tx(&bank, &two, date(2025, 9, 1), dec!(12), "AUD"))
+            .await
+            .expect("t2");
+
+        let report = category_totals(&txns, &accts, &TransactionQuery::default(), "AUD")
+            .await
+            .expect("report");
+
+        let income_rows: Vec<_> = report
+            .rows
+            .iter()
+            .filter(|r| r.path.starts_with("Income"))
+            .collect();
+
+        let shape: Vec<(&str, usize, Decimal, Decimal)> = income_rows
+            .iter()
+            .map(|r| (r.path.as_str(), r.depth, r.own.value(), r.rolled_up.value()))
+            .collect();
+
+        assert_eq!(
+            shape,
+            vec![
+                ("Income", 0, dec!(0), dec!(-42)),
+                ("Income:Interest", 1, dec!(0), dec!(-42)),
+                ("Income:Interest:Bank-One", 2, dec!(-30), dec!(-30)),
+                ("Income:Interest:Bank-Two", 2, dec!(-12), dec!(-12)),
+            ]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_parent_with_no_own_activity_is_still_emitted(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let bank = accts
+            .create()
+            .name("Bank-A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("bank");
+        let income = accts
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("income");
+        let rent = accts
+            .create()
+            .name("Rent")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&income)
+            .call()
+            .await
+            .expect("rent");
+
+        let txns = crate::transaction::Service::new(pool.clone());
+        txns.create(tx(&bank, &rent, date(2025, 8, 1), dec!(500), "AUD"))
+            .await
+            .expect("t1");
+
+        let report = category_totals(&txns, &accts, &TransactionQuery::default(), "AUD")
+            .await
+            .expect("report");
+
+        let parent = report
+            .rows
+            .iter()
+            .find(|r| r.path == "Income")
+            .expect("parent row must be emitted to keep the tree connected");
+        assert_eq!(parent.own.value(), dec!(0));
+        assert_eq!(parent.rolled_up.value(), dec!(-500));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_tag_filter_narrows_the_totals(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let bank = accts
+            .create()
+            .name("Bank-A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("bank");
+        let expenses = accts
+            .create()
+            .name("Expenses")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("expenses");
+
+        let tags = crate::tag::Service::new(pool.clone());
+        let deductible = tags
+            .create_path(&"deductible".parse().expect("path"))
+            .await
+            .expect("tag");
+
+        let txns = crate::transaction::Service::new(pool.clone());
+
+        let tagged = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2025, 8, 1))
+            .payee("Payee".to_owned())
+            .description("desc")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(expenses.clone())
+                    .amount(Amount::new(dec!(200), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(bank.clone())
+                    .amount(Amount::new(dec!(-200), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Reconciled)
+            .tag_ids(vec![deductible.clone()])
+            .created_at(Timestamp::now())
+            .build();
+        txns.create(tagged).await.expect("tagged");
+
+        txns.create(tx(&expenses, &bank, date(2025, 8, 2), dec!(75), "AUD"))
+            .await
+            .expect("untagged");
+
+        let query = TransactionQuery {
+            tags: vec![deductible],
+            ..TransactionQuery::default()
+        };
+        let report = category_totals(&txns, &accts, &query, "AUD")
+            .await
+            .expect("report");
+
+        let row = report
+            .rows
+            .iter()
+            .find(|r| r.path == "Expenses")
+            .expect("expenses row");
+        assert_eq!(
+            row.own.value(),
+            dec!(200),
+            "the untagged transaction must not contribute"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
