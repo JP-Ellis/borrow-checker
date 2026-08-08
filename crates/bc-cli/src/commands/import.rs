@@ -105,14 +105,11 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
         )
         .await?;
         let report = PlanReport::from(&plan);
-
-        if ctx.json {
-            return crate::output::print_json(&report.to_json());
-        }
+        let output = render_dry_run(&report, &profile.name, &profile.importer, ctx.json)?;
 
         #[expect(clippy::print_stdout, reason = "CLI output")]
         {
-            print!("{}", render_plan(&report, &profile.name, &profile.importer));
+            print!("{output}");
         }
         return Ok(());
     }
@@ -804,13 +801,23 @@ impl PlanReport {
                 .account_totals
                 .iter()
                 .flat_map(|(account, balances)| {
-                    balances.iter().map(move |(commodity, amount)| {
-                        serde_json::json!({
+                    if balances.is_empty() {
+                        return vec![serde_json::json!({
                             "account": account,
-                            "commodity": commodity,
-                            "amount": amount.to_string(),
+                            "commodity": null,
+                            "amount": null,
+                        })];
+                    }
+                    balances
+                        .iter()
+                        .map(|(commodity, amount)| {
+                            serde_json::json!({
+                                "account": account,
+                                "commodity": commodity,
+                                "amount": amount.to_string(),
+                            })
                         })
-                    })
+                        .collect()
                 })
                 .collect::<Vec<_>>(),
             "charged_by_cause": self
@@ -1060,6 +1067,44 @@ fn render_plan(plan: &PlanReport, profile: &str, importer: &str) -> String {
     lines.join("\n")
 }
 
+/// Chooses and renders the text [`execute_run`] prints for a dry run.
+///
+/// This is the single point where the `--json` decision is made: both the
+/// production printer and tests for the routing decision itself call
+/// through here, so a test exercising this function is a test of what the
+/// CLI actually emits — not a restatement of [`PlanReport::to_json`]'s own
+/// contract, which is covered separately.
+///
+/// # Arguments
+///
+/// * `report` - What the run would do.
+/// * `profile` - Name of the profile driving the run.
+/// * `importer` - Stable name of the importer the profile uses.
+/// * `json` - Whether the caller asked for machine-readable output.
+///
+/// # Returns
+///
+/// The exact text to print, newline-terminated either way.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError::Json`] if the JSON payload cannot be
+/// serialised.
+fn render_dry_run(
+    report: &PlanReport,
+    profile: &str,
+    importer: &str,
+    json: bool,
+) -> CliResult<String> {
+    if json {
+        return Ok(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&report.to_json())?
+        ));
+    }
+    Ok(render_plan(report, profile, importer))
+}
+
 #[cfg(test)]
 mod tests {
     use bc_core::SkipCause;
@@ -1086,6 +1131,7 @@ mod tests {
     use super::PlanReport;
     use super::Report;
     use super::plural;
+    use super::render_dry_run;
     use super::render_plan;
 
     /// Wrapper needed because `Args` is a subcommand arg group.
@@ -1350,6 +1396,51 @@ mod tests {
     }
 
     #[test]
+    fn plan_json_keeps_a_zero_net_account_as_a_null_row() {
+        // `sample_report`'s `Expenses:Groceries` entry holds no commodity
+        // balances — its legs net to zero, but the account was touched. A
+        // consumer must be able to tell that apart from an account the run
+        // never mentioned, which an absent row cannot express.
+        let report = sample_report();
+
+        let json = report.to_json();
+
+        let account_totals = json
+            .get("account_totals")
+            .and_then(serde_json::Value::as_array)
+            .expect("an account_totals array");
+        let zero_net_row = account_totals
+            .iter()
+            .find(|row| row.get("account") == Some(&serde_json::json!("Expenses:Groceries")))
+            .expect("the zero-net account still gets a row");
+        assert_eq!(
+            zero_net_row.get("commodity"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(zero_net_row.get("amount"), Some(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn render_dry_run_routes_on_json() {
+        let report = sample_report();
+
+        let human = render_dry_run(&report, "bank-a-checking", "csv", false).expect("renders");
+        let json = render_dry_run(&report, "bank-a-checking", "csv", true).expect("renders");
+
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&human).is_err(),
+            "json=false must produce the human report, not a JSON document: got:\n{human}"
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("json=true must produce valid JSON");
+        assert_eq!(
+            parsed.get("dry_run"),
+            Some(&serde_json::json!(true)),
+            "json=true must route through PlanReport::to_json, not the human report"
+        );
+    }
+
+    #[test]
     fn render_plan_leads_with_what_is_missing() {
         let report = sample_report();
 
@@ -1589,11 +1680,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dry_run_with_json_runs_the_json_branch() {
-        // Drives `execute_run` itself, not just `PlanReport::to_json` in
-        // isolation, so the `ctx.json` check inside the dry-run branch is
-        // what is actually exercised — a report built and serialised
-        // correctly is no proof the CLI ever reaches that code path.
+    async fn dry_run_with_json_completes_through_the_full_pipeline() {
+        // Confirms the full `execute_run` → `plan_import` → `render_dry_run`
+        // wiring compiles, runs and stays snapshot-free with `ctx.json` set.
+        // It does not, on its own, prove the `--json` request was honoured
+        // over the human report — `render_dry_run_routes_on_json` covers
+        // that routing decision directly, since neither branch here writes
+        // anything this test could observe.
         let home = tempfile::tempdir().expect("tempdir");
         let (mut ctx, backup_dir) = context_in(home.path(), true).await;
         ctx.json = true;

@@ -1,6 +1,6 @@
 ---
 source: crates/bc-cli/src/commands/import.rs
-assertion_line: 1346
+assertion_line: 1392
 expression: report.to_json()
 ---
 {
@@ -14,6 +14,11 @@ expression: report.to_json()
       "account": "Assets:Crypto:ExchangeA",
       "amount": "0.75",
       "commodity": "BTC"
+    },
+    {
+      "account": "Expenses:Groceries",
+      "amount": null,
+      "commodity": null
     }
   ],
   "attached_postings": 1,
