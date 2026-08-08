@@ -20,7 +20,6 @@
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
 use bc_models::AccountId;
 use bc_models::Amount;
@@ -422,7 +421,7 @@ pub async fn execute_import(
     let mut sink = Commit {
         transactions,
         sources,
-        batch_id: OnceLock::new(),
+        batch_id: None,
     };
     let run = run_with(
         &mut sink,
@@ -1343,6 +1342,10 @@ trait Sink {
 
     /// Opens the batch this run's writes are stamped with, if it writes any.
     ///
+    /// Called once, before the first row, so a sink that stamps the batch onto
+    /// what it writes may record it here rather than reaching for interior
+    /// mutability.
+    ///
     /// # Arguments
     ///
     /// * `batches` - Import batch provenance service.
@@ -1357,7 +1360,7 @@ trait Sink {
     ///
     /// Returns [`crate::BcError`] on insert failure.
     async fn open_batch(
-        &self,
+        &mut self,
         batches: &crate::ImportBatchService,
         profile_id: Option<&bc_models::ProfileId>,
         importer: &str,
@@ -1431,10 +1434,31 @@ struct Commit<'svc> {
     sources: &'svc crate::SourceService,
     /// The batch stamped onto every reference this run writes, set by
     /// [`Sink::open_batch`] before the first row is written.
-    batch_id: OnceLock<ImportBatchId>,
+    batch_id: Option<ImportBatchId>,
 }
 
 impl Commit<'_> {
+    /// Returns the batch every reference this sink writes is stamped with.
+    ///
+    /// # Returns
+    ///
+    /// The batch [`Sink::open_batch`] opened.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::InvalidInput`] if the sink is asked to write
+    /// before its batch is open. Like every other broken invariant this module
+    /// is itself responsible for, that fails the run rather than being absorbed
+    /// into the skip count — a reference written without its batch is
+    /// provenance silently lost.
+    fn batch(&self) -> BcResult<&ImportBatchId> {
+        self.batch_id.as_ref().ok_or_else(|| {
+            crate::BcError::InvalidInput(
+                "the commit sink was asked to write before opening its batch".to_owned(),
+            )
+        })
+    }
+
     /// Builds the provenance record for one persisted leg.
     ///
     /// The recorded amount is the *canonicalised* amount — the commodity code
@@ -1447,6 +1471,7 @@ impl Commit<'_> {
     ///
     /// * `raw` - The document transaction.
     /// * `leg` - The planned leg.
+    /// * `batch_id` - The batch this run stamps onto what it writes.
     /// * `transaction_id` - The transaction the posting belongs to.
     /// * `posting_id` - The posting this leg produced.
     /// * `owns_posting` - `true` when this run inserted that posting, `false`
@@ -1456,9 +1481,9 @@ impl Commit<'_> {
     ///
     /// The [`SourceRef`] to persist.
     fn source_ref(
-        &self,
         raw: &RawTransaction,
         leg: &LegPlan,
+        batch_id: &ImportBatchId,
         transaction_id: &TransactionId,
         posting_id: &PostingId,
         owns_posting: bool,
@@ -1473,7 +1498,7 @@ impl Commit<'_> {
             .amount(leg.amount.clone())
             .reference(raw.reference.clone())
             .occurrence(leg.occurrence)
-            .import_batch_id(self.batch_id.get().cloned())
+            .import_batch_id(Some(batch_id.clone()))
             .owns_posting(owns_posting)
             .created_at(Timestamp::now())
             .build()
@@ -1505,13 +1530,14 @@ impl Sink for Commit<'_> {
     }
 
     async fn open_batch(
-        &self,
+        &mut self,
         batches: &crate::ImportBatchService,
         profile_id: Option<&bc_models::ProfileId>,
         importer: &str,
     ) -> BcResult<Option<ImportBatchId>> {
         let batch_id = batches.open(profile_id, importer).await?;
-        Ok(Some(self.batch_id.get_or_init(|| batch_id).clone()))
+        self.batch_id = Some(batch_id.clone());
+        Ok(Some(batch_id))
     }
 
     /// Creates the transaction and attaches its provenance atomically, so a
@@ -1524,11 +1550,12 @@ impl Sink for Commit<'_> {
         postings: &[Posting],
         legs: &[LegPlan],
     ) -> BcResult<()> {
+        let batch_id = self.batch()?;
         let tx_id = tx.id().clone();
         let mut db_tx = self.transactions.pool().begin().await?;
         self.transactions.create_in_tx(&mut db_tx, tx).await?;
         for (posting, leg) in postings.iter().zip(legs) {
-            let source = self.source_ref(raw, leg, &tx_id, posting.id(), true);
+            let source = Self::source_ref(raw, leg, batch_id, &tx_id, posting.id(), true);
             self.sources.attach_in_tx(&mut db_tx, &source).await?;
         }
         db_tx.commit().await?;
@@ -1543,6 +1570,7 @@ impl Sink for Commit<'_> {
         insertions: &[&LegPlan],
         adoptions: &[(PostingId, &LegPlan)],
     ) -> BcResult<()> {
+        let batch_id = self.batch()?;
         let mut db_tx = self.transactions.pool().begin().await?;
         if !postings.is_empty() {
             self.transactions
@@ -1550,28 +1578,26 @@ impl Sink for Commit<'_> {
                 .await?;
         }
         for (posting, leg) in postings.iter().zip(insertions) {
-            let source = self.source_ref(raw, leg, owner, posting.id(), true);
+            let source = Self::source_ref(raw, leg, batch_id, owner, posting.id(), true);
             self.sources.attach_in_tx(&mut db_tx, &source).await?;
         }
         for (posting_id, leg) in adoptions {
-            let source = self.source_ref(raw, leg, owner, posting_id, false);
+            let source = Self::source_ref(raw, leg, batch_id, owner, posting_id, false);
             self.sources.attach_in_tx(&mut db_tx, &source).await?;
         }
         db_tx.commit().await?;
         Ok(())
     }
 
+    /// Records the run's totals against the batch this sink opened.
     async fn close_batch(
         &self,
         batches: &crate::ImportBatchService,
         counts: &Counts,
     ) -> BcResult<()> {
-        let Some(batch_id) = self.batch_id.get() else {
-            return Ok(());
-        };
         batches
             .close(
-                batch_id,
+                self.batch()?,
                 crate::ImportBatchCounts {
                     new_transactions: counts.new_transactions,
                     attached_postings: counts.attached_postings,
