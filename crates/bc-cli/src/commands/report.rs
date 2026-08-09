@@ -56,11 +56,6 @@ pub enum Command {
         /// Tag path to filter by. Repeatable; multiple tags union.
         #[arg(long, value_name = "PATH")]
         tag: Vec<String>,
-        /// Show at most N levels of emitted rows. `depth` counts only rows that
-        /// survive pruning, not the account-tree root — a scoped report may
-        /// need a higher N. Must be at least 1.
-        #[arg(long, value_name = "N")]
-        depth: Option<usize>,
         /// Commodity to report in. Other commodities are excluded, not converted.
         #[arg(long, default_value = "AUD")]
         commodity: String,
@@ -83,9 +78,8 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             fy,
             account,
             tag,
-            depth,
             commodity,
-        } => categories(ctx, period, date, fy, account, tag, depth, commodity).await,
+        } => categories(ctx, period, date, fy, account, tag, commodity).await,
     }
 }
 
@@ -333,7 +327,6 @@ async fn summary(
 /// * `fy` - Financial year to report, named by the year it ends in.
 /// * `account` - Account paths to scope to, including their subtrees.
 /// * `tag` - Tag paths to filter by.
-/// * `depth` - Maximum row depth to render, if capped.
 /// * `commodity` - Commodity to report in.
 ///
 /// # Errors
@@ -341,7 +334,6 @@ async fn summary(
 /// Returns [`crate::error::CliError::Arg`] if an `--account` or `--tag`
 /// path names nothing. Propagates [`crate::error::CliError`] from the core
 /// engine otherwise.
-#[expect(clippy::too_many_arguments, reason = "mirrors the CLI flag surface")]
 async fn categories(
     ctx: &AppContext,
     period: PeriodArg,
@@ -349,15 +341,8 @@ async fn categories(
     fy: Option<i16>,
     account: Vec<String>,
     tag: Vec<String>,
-    depth: Option<usize>,
     commodity: String,
 ) -> CliResult<()> {
-    if depth == Some(0) {
-        return Err(crate::error::CliError::Arg(
-            "--depth 0 would show no rows; the minimum is 1".to_owned(),
-        ));
-    }
-
     let (start, end) = resolve_window(ctx, period, date.as_deref(), fy)?;
 
     let mut account_ids = Vec::new();
@@ -397,9 +382,8 @@ async fn categories(
 
     let query = TransactionQuery::windowed(Some(start), Some(end), account_ids, tag_ids);
 
-    let mut report =
+    let report =
         bc_core::category_totals(&ctx.transactions, &ctx.accounts, &query, &commodity).await?;
-    apply_depth_filter(&mut report.rows, depth);
 
     let rendered = Rendered {
         rows: report.rows,
@@ -517,17 +501,6 @@ impl Rendered {
     }
 }
 
-/// Drops rows whose `depth` is at or beyond `n`, in place.
-///
-/// `depth` counts only emitted ancestors (see [`bc_core::CategoryRow::depth`]),
-/// so `n` bounds how many levels of *surviving* rows are shown, not the
-/// account tree's absolute depth. A `None` cap leaves `rows` untouched.
-fn apply_depth_filter(rows: &mut Vec<bc_core::CategoryRow>, depth: Option<usize>) {
-    if let Some(n) = depth {
-        rows.retain(|r| r.depth < n);
-    }
-}
-
 /// Returns the last colon-separated segment of an account path.
 fn leaf_name(path: &str) -> &str {
     path.rsplit(':').next().unwrap_or(path)
@@ -536,11 +509,9 @@ fn leaf_name(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use jiff::civil::date;
-    use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
     use super::Rendered;
-    use super::apply_depth_filter;
 
     /// Builds a row at `depth` with equal own and rolled-up totals.
     fn leaf(path: &str, depth: usize, value: rust_decimal::Decimal) -> bc_core::CategoryRow {
@@ -607,33 +578,5 @@ mod tests {
             end: date(2026, 7, 1),
         };
         insta::assert_snapshot!(rendered.render());
-    }
-
-    #[test]
-    fn depth_filter_drops_rows_at_or_beyond_the_cap() {
-        let mut rows = vec![
-            parent("Income", 0, dec!(-3000)),
-            parent("Income:Interest", 1, dec!(-3000)),
-            leaf("Income:Interest:Bank-A", 2, dec!(-2000)),
-            leaf("Income:Interest:Bank-B", 2, dec!(-1000)),
-        ];
-        apply_depth_filter(&mut rows, Some(2));
-
-        let paths: Vec<&str> = rows.iter().map(|r| r.path.as_str()).collect();
-        assert_eq!(
-            paths,
-            vec!["Income", "Income:Interest"],
-            "depth 2 keeps rows at depth 0 and 1, drops rows at depth 2"
-        );
-    }
-
-    #[test]
-    fn depth_filter_none_leaves_rows_untouched() {
-        let mut rows = vec![
-            parent("Income", 0, dec!(-3000)),
-            leaf("Income:Interest", 1, dec!(-3000)),
-        ];
-        apply_depth_filter(&mut rows, None);
-        assert_eq!(rows.len(), 2, "an unset --depth applies no filter");
     }
 }
