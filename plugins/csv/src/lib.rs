@@ -1719,6 +1719,31 @@ mod tests {
     }
 
     #[test]
+    fn a_ragged_first_row_sets_the_expected_width_wrongly() {
+        // Stated limitation: the expected width is learned from the first data
+        // row, so if that row is the outlier the rest of the file warns. The
+        // per-row warnings make this loud rather than silent, and no known
+        // export has this shape. Rows still parse; only the diagnostics suffer.
+        let csv = b"Date,Amount,Payee\n\
+                    2025-03-15,50.00\n\
+                    2025-03-16,-20.00,Java Hut\n";
+
+        let cfg = Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            payee_column: Some(ColumnRef::Name("Payee".to_owned())),
+            ..Config::default()
+        };
+
+        let txns = CsvImporter
+            .parse_bytes(csv, &cfg, "outlier.csv")
+            .expect("rows still parse");
+
+        assert_eq!(txns.len(), 2);
+        assert_eq!(txns[0].payee, None);
+        assert_eq!(txns[1].payee.as_deref(), Some("Java Hut"));
+    }
+
+    #[test]
     fn an_optional_column_beyond_every_row_is_an_error() {
         // Absent from *one* row is a per-row omission; absent from *every* row
         // means the profile does not match the file. Degrading that to None
