@@ -183,6 +183,8 @@ impl Engine {
     /// Computes total net worth in `commodity` across all asset and liability accounts.
     ///
     /// - [`DepositAccount`], [`Receivable`], [`VirtualAllocation`], [`Group`]: balance from postings.
+    ///   A [`Group`] is an organisational node whose postings belong on its
+    ///   descendants, so its own balance is normally zero.
     /// - [`ManualAsset`]: latest recorded market value from `asset_valuations`.
     /// - Accounts with `AccountType` other than `Asset`/`Liability` are excluded.
     ///
