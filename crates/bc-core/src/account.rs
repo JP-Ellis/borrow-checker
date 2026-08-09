@@ -1,6 +1,7 @@
 //! Account projection service.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use bc_models::Account;
 use bc_models::AccountId;
@@ -670,8 +671,9 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// As [`Self::create_paths`]; additionally [`BcError::BadData`] if the path
-    /// had no segments.
+    /// As [`Self::create_paths`]. The [`BcError::BadData`] guard on a segmentless
+    /// path is unreachable — [`crate::AccountPath`] cannot hold one — and exists
+    /// only so the lookup has a total result.
     #[inline]
     pub async fn create_path(&self, spec: &PathSpec) -> BcResult<AccountId> {
         let outcome = self.create_paths(core::slice::from_ref(spec)).await?;
@@ -1018,11 +1020,22 @@ fn conflict_of(
             "account '{rendered}' already exists with a different depreciation policy"
         ));
     }
-    if !spec.commodity_ids().is_empty() || !spec.tag_ids().is_empty() {
+    // Commodity order is significant — the first entry is the account's default
+    // — so this compares as an ordered sequence.
+    if !spec.commodity_ids().is_empty() && existing.commodities() != spec.commodity_ids() {
         return Some(format!(
-            "account '{rendered}' already exists; commodities and tags cannot be set by \
-             create_paths — use the dedicated commands"
+            "account '{rendered}' already exists with different commodities"
         ));
+    }
+    // Tags carry no order, so compare them as sets.
+    if !spec.tag_ids().is_empty() {
+        let stored: HashSet<&TagId> = existing.tag_ids().iter().collect();
+        let requested: HashSet<&TagId> = spec.tag_ids().iter().collect();
+        if stored != requested {
+            return Some(format!(
+                "account '{rendered}' already exists with different tags"
+            ));
+        }
     }
     None
 }
@@ -1701,6 +1714,58 @@ mod tests {
             .expect_err("silently not applying commodities is the failure we prevent");
 
         assert!(matches!(error, BcError::InvalidInput(_)), "got: {error:?}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn replaying_a_spec_with_its_own_commodities_and_tags_is_a_no_op(pool: SqlitePool) {
+        // Insert a commodity and a tag row directly since neither has a service yet.
+        let commodity_id = CommodityId::new();
+        sqlx::query("INSERT INTO commodities (id, code, decimals, is_iso, symbol_after) VALUES (?, ?, 2, 1, 0)")
+            .bind(commodity_id.to_string())
+            .bind("AUD")
+            .execute(&pool)
+            .await
+            .expect("commodity insert");
+
+        let tag_id = TagId::new();
+        sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, ?, ?)")
+            .bind(tag_id.to_string())
+            .bind("savings")
+            .bind(Timestamp::now().to_string())
+            .execute(&pool)
+            .await
+            .expect("tag insert");
+
+        let svc = Service::new(pool.clone());
+        let build = || {
+            PathSpec::builder()
+                .path(AccountPath::parse("Assets:BankA:Checking").expect("valid"))
+                .commodity_ids(vec![commodity_id.clone()])
+                .tag_ids(vec![tag_id.clone()])
+                .build()
+        };
+
+        let first = svc.create_paths(&[build()]).await.expect("first run");
+        let leaf = first
+            .ids
+            .get("Assets:BankA:Checking")
+            .expect("leaf")
+            .clone();
+
+        // Re-running the identical spec must reuse the leaf rather than reject
+        // it: the requested commodities and tags are exactly what it already
+        // carries, so nothing contradicts.
+        let second = svc
+            .create_paths(&[build()])
+            .await
+            .expect("an identical replay contradicts nothing");
+
+        assert!(second.created.is_empty(), "nothing new should be created");
+        assert_eq!(second.ids.get("Assets:BankA:Checking"), Some(&leaf));
+
+        let found = svc.find_by_id(&leaf).await.expect("find");
+        assert_eq!(found.commodities(), &[commodity_id]);
+        assert_eq!(found.tag_ids(), &[tag_id]);
     }
 
     #[sqlx::test(migrations = "./migrations")]
