@@ -537,7 +537,7 @@ Example: a gym posting to `Expenses:Health:Gym`, tagged `person:me`. This counts
 
 **Posting-to-budget matching:**
 
-A posting matches a `Budget` row when `posting.account_id` is the budget's account **or any descendant** in the account tree, and either `budget.tag_filter` is `None` or the posting carries that tag. The implementation uses a recursive CTE (`WITH RECURSIVE acct_tree`) to resolve all descendant accounts at query time. A budget on `Expenses:Health` therefore matches postings to `Expenses:Health:Gym` as well as directly to `Expenses:Health`.
+A posting matches a `Budget` row when `posting.account_id` is the budget's account **or any descendant** in the account tree, and either `budget.tag_filter` is `None` or the posting carries that tag. The implementation uses a recursive CTE (`WITH RECURSIVE acct_tree`) to resolve all descendant accounts at query time. A budget on `Expenses:Health` therefore matches postings to `Expenses:Health:Gym` as well as directly to `Expenses:Health`. The subtree rule is what makes such a budget useful: `account create` materialises every ancestor of a path (§4.3), so an intermediate account like `Expenses:Health` commonly holds no postings of its own and draws its whole actual from its descendants.
 
 Resolution:
 
