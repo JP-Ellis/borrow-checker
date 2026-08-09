@@ -880,7 +880,14 @@ fn render_skips(plan: &PlanReport) -> Vec<String> {
             .then(left.0.label().cmp(right.0.label()))
     });
 
-    let mut lines = vec![format!("skipped {}", plural(plan.skipped_postings, "leg"))];
+    // A cause can be worth reporting and still cost nothing — a malformed tag
+    // is dropped and its leg persists — so the heading must not read
+    // "skipped 0 legs" above a list of real problems.
+    let mut lines = vec![if plan.skipped_postings == 0 {
+        "skipped no legs; the problems below cost none".to_owned()
+    } else {
+        format!("skipped {}", plural(plan.skipped_postings, "leg"))
+    }];
     for (cause, entries) in grouped {
         let charged_count = charged.get(&cause).copied().unwrap_or_default();
         let location_total = entries.len();
@@ -964,10 +971,14 @@ fn render_account_totals(plan: &PlanReport) -> Vec<String> {
     let amount_width = rows
         .iter()
         .map(|row| row.amount.len())
+        .chain(core::iter::once("WOULD POST".len()))
         .max()
         .unwrap_or_default();
 
-    let mut lines = vec![format!("{:<account_width$}  WOULD POST", "ACCOUNT")];
+    let mut lines = vec![format!(
+        "{:<account_width$}  {:>amount_width$}",
+        "ACCOUNT", "WOULD POST"
+    )];
     lines.extend(rows.iter().map(|row| {
         if row.code.is_empty() {
             format!(
@@ -1447,6 +1458,31 @@ mod tests {
         let rendered = render_plan(&report, "bank-a-checking", "csv");
 
         insta::assert_snapshot!(rendered);
+    }
+
+    /// A malformed tag is dropped and its leg still posts, so it is worth
+    /// reporting while costing nothing. The heading must say so rather than
+    /// announcing "skipped 0 legs" above a list of real problems.
+    #[test]
+    fn render_plan_does_not_announce_zero_skipped_legs() {
+        let mut report = sample_report();
+        report.skipped_postings = 0;
+        report.unresolved_account_postings = 0;
+        report.other_skipped_postings = 0;
+        report.charged_by_cause = Vec::new();
+        report.diagnostics = vec![PlanDiagnostic {
+            location: "bank-a-2024-03.csv:14".to_owned(),
+            cause: SkipCause::MalformedTag,
+            detail: "holiday::".to_owned(),
+        }];
+
+        let rendered = render_plan(&report, "bank-a-checking", "csv");
+
+        assert!(!rendered.contains("skipped 0 legs"), "got:\n{rendered}");
+        assert!(
+            rendered.contains("malformed tag"),
+            "the problem is still reported: got:\n{rendered}"
+        );
     }
 
     #[test]
