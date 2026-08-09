@@ -1,0 +1,13 @@
+---
+source: crates/bc-cli/tests/cli/report.rs
+expression: output
+---
+success: false
+exit_code: 2
+----- stdout -----
+----- stderr -----
+error: the argument '--fy <YEAR>' cannot be used with '--period <PERIOD>'
+
+Usage: borrow-checker report summary --fy <YEAR>
+
+For more information, try '--help'.

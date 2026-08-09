@@ -204,6 +204,51 @@ fn categories_custom_period_is_rejected() {
 }
 
 #[test]
+fn categories_fy_conflicts_with_period() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args([
+        "report",
+        "categories",
+        "--fy",
+        "2026",
+        "--period",
+        "calendar-year",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn categories_fy_conflicts_with_date() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args([
+        "report",
+        "categories",
+        "--fy",
+        "2026",
+        "--date",
+        "2025-09-15",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn summary_fy_conflicts_with_period() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args([
+        "report",
+        "summary",
+        "--fy",
+        "2026",
+        "--period",
+        "calendar-year",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
 fn categories_unresolvable_account_errors() {
     let ctx = TestContext::new();
     let mut cmd = ctx.command();
