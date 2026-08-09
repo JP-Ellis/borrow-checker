@@ -131,9 +131,15 @@ fn expand(
     }
 
     if state.stack.len() >= MAX_DEPTH {
+        let head = state
+            .stack
+            .first()
+            .map_or_else(|| display.to_string(), |p| p.display().to_string());
         return Err(ImportError::BadValue {
             field: "source_file".to_owned(),
-            detail: format!("includes nested too deeply (limit {MAX_DEPTH}) at {display}"),
+            detail: format!(
+                "includes nested too deeply (limit {MAX_DEPTH}) at {display}, starting from {head}"
+            ),
         });
     }
 
@@ -428,9 +434,14 @@ mod tests {
         let dir = fixture("deep", &refs);
         let root = dir.join("main.bean");
         let err = load(root.to_str().expect("utf8")).expect_err("excessive nesting must fail");
+        let message = err.to_string();
         assert!(
-            err.to_string().contains("nested too deeply"),
-            "the error explains the limit: {err}"
+            message.contains("nested too deeply"),
+            "the error explains the limit: {message}"
+        );
+        assert!(
+            message.contains("main.bean"),
+            "the error names the chain head, not just where it tripped: {message}"
         );
     }
 
