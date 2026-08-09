@@ -112,19 +112,25 @@ fn include_escaping_the_preopen_names_the_offending_include() {
         .import(&config)
         .expect_err("an include escaping the preopen must fail");
 
-    // `source.rs` reports "include at {file}:{line} cannot read {path}: {os_err}".
+    // `source.rs` reports
+    // `include "{literal}" at {file}:{line} cannot read {resolved}: {os_err}`.
     // Assert file and line together so a reformat that drops the line (e.g.
-    // "include from {file} cannot read {path}") cannot slip past this test.
-    // The reported path is the lexically-folded form (`../etc/passwd`), not the
-    // literal `../../../../etc/passwd` text the fixture wrote — `source.rs`
-    // folds `..` components before this error is raised, and that folding is
-    // out of scope here, so this asserts what the code actually produces.
+    // "include from {file} cannot read {path}") cannot slip past this test,
+    // and assert the literal text so the user can grep the diagnostic against
+    // their own ledger.
     let message = err.to_string();
     assert!(
         message.contains("main.bean:1"),
         "names the including file and its line together: {message}"
     );
-    assert!(message.contains("passwd"), "names the path: {message}");
+    assert!(
+        message.contains(r#"include "../../../../etc/passwd""#),
+        "quotes the include text verbatim as the ledger wrote it: {message}"
+    );
+    assert!(
+        message.contains("cannot read ../../../etc/passwd:"),
+        "names the resolved path, with escaping `..` preserved: {message}"
+    );
 
     drop(fs::remove_dir_all(&root));
 }

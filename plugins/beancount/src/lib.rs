@@ -62,7 +62,7 @@ impl bc_sdk::Importer for BeancountImporter {
         let cfg: Config = config.as_typed()?;
         let loaded = source::load(&cfg.source_file)?;
         for warning in &loaded.warnings {
-            bc_sdk::warn!("beancount ledger warning"; message = warning);
+            bc_sdk::warn!("beancount ledger warning"; detail = warning);
         }
         let mut raw_txs = Vec::new();
 
