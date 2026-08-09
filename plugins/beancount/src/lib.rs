@@ -7,6 +7,7 @@
 mod ast;
 mod config;
 mod parser;
+mod source;
 
 use bc_sdk::Amount;
 use bc_sdk::ImportConfig;
@@ -18,7 +19,7 @@ use bc_sdk::SourceLocation;
 use crate::ast::Directive;
 use crate::ast::PostingAmount;
 use crate::config::Config;
-use crate::parser::parse;
+use crate::source::Sourced;
 
 /// Implements [`bc_sdk::Importer`] for the Beancount plain-text accounting format.
 ///
@@ -52,30 +53,29 @@ impl bc_sdk::Importer for BeancountImporter {
     ///
     /// # Errors
     ///
-    /// Returns [`ImportError::BadValue`] if `source_file` cannot be read, or
-    /// [`ImportError::Parse`] if the file is not valid UTF-8, if a parse
-    /// error is encountered, or if a transaction directive has no postings.
+    /// Returns [`ImportError::BadValue`] if `source_file` or any file it
+    /// includes cannot be read — naming the include that referred to it — or
+    /// [`ImportError::Parse`] if a file is not valid UTF-8, a parse error is
+    /// encountered, or a transaction directive has no postings.
     #[inline]
     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
         let cfg: Config = config.as_typed()?;
-        let bytes = std::fs::read(&cfg.source_file).map_err(|e| ImportError::BadValue {
-            field: "source_file".to_owned(),
-            detail: format!("cannot read {:?}: {e}", cfg.source_file),
-        })?;
-        let text = core::str::from_utf8(&bytes)
-            .map_err(|e| ImportError::Parse(format!("file is not valid UTF-8: {e}")))?;
-
-        let directives = parse(text).map_err(ImportError::Parse)?;
-        let file = &cfg.source_file;
+        let loaded = source::load(&cfg.source_file)?;
+        for warning in &loaded.warnings {
+            bc_sdk::warn!("beancount ledger warning"; message = warning);
+        }
         let mut raw_txs = Vec::new();
 
-        for directive in directives {
+        for Sourced { file, directive } in loaded.directives {
             let Directive::Transaction(tx) = directive else {
                 continue;
             };
 
             if tx.postings.is_empty() {
-                return Err(ImportError::Parse("transaction has no postings".into()));
+                return Err(ImportError::Parse(format!(
+                    "{file}:{}: transaction has no postings",
+                    tx.line
+                )));
             }
 
             let mut postings = Vec::with_capacity(tx.postings.len());
@@ -268,6 +268,45 @@ mod tests {
         assert!(
             result.is_err(),
             "expected error for zero-posting transaction"
+        );
+    }
+
+    #[test]
+    fn root_of_includes_imports_the_included_transactions() {
+        // This is #401: a root file carrying only options and includes used to
+        // import zero transactions and report success.
+        let dir = std::env::temp_dir().join("bc-beancount-include-root");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join("main.bean"),
+            "option \"title\" \"Household\"\n\ninclude \"2025-01.bean\"\n",
+        )
+        .expect("write root");
+        std::fs::write(
+            dir.join("2025-01.bean"),
+            "2025-01-15 * \"Generic Store\" \"Groceries\"\n  Expenses:Food   50.00 AUD\n  Assets:Bank   -50.00 AUD\n",
+        )
+        .expect("write included");
+
+        let source_file = dir.join("main.bean").to_str().expect("utf8").to_owned();
+        let config = ImportConfig::from_json_string(
+            serde_json::json!({ "source_file": source_file }).to_string(),
+        );
+
+        let txs = BeancountImporter.import(config).expect("import");
+        assert_eq!(txs.len(), 1);
+        let tx = txs.first().expect("one transaction");
+        assert_eq!(tx.description, "Groceries");
+        let location = tx
+            .source_location
+            .as_ref()
+            .expect("transactions carry a source location");
+        assert!(
+            location.display.contains("2025-01.bean:1"),
+            "the location names the file the transaction actually came from, \
+             not the root that included it: {}",
+            location.display
         );
     }
 
