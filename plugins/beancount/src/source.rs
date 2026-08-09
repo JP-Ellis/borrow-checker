@@ -4,6 +4,7 @@
 //! touches the filesystem lives here, so include resolution, path handling and
 //! recursion can be tested independently of the grammar.
 
+use std::collections::BTreeMap;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -13,6 +14,13 @@ use bc_sdk::ImportError;
 
 use crate::ast::Directive;
 use crate::parser::parse;
+
+/// Maximum include nesting depth.
+///
+/// A backstop, not a design limit: real ledgers nest two or three deep. It
+/// also catches a symlinked cycle, which [`normalise`] cannot see because it
+/// resolves paths lexically rather than through the filesystem.
+const MAX_DEPTH: usize = 64;
 
 /// A directive together with the file it was read from.
 ///
@@ -38,6 +46,18 @@ pub(crate) struct Loaded {
     pub warnings: Vec<String>,
 }
 
+/// Bookkeeping carried through a recursive expansion.
+#[derive(Debug, Default)]
+struct State {
+    /// Normalised paths currently being expanded, outermost first.
+    ///
+    /// A path reappearing here is a true cycle. Its length is the depth.
+    stack: Vec<PathBuf>,
+    /// Every normalised path already expanded, mapped to the site that first
+    /// pulled it in, so a second inclusion can name both.
+    seen: BTreeMap<PathBuf, String>,
+}
+
 /// Reads `root` and recursively splices in every file it includes.
 ///
 /// # Arguments
@@ -56,7 +76,21 @@ pub(crate) struct Loaded {
 /// valid UTF-8 or fails to parse.
 pub(crate) fn load(root: &str) -> Result<Loaded, ImportError> {
     let mut loaded = Loaded::default();
-    expand(Path::new(root), None, &mut loaded)?;
+    let mut state = State::default();
+    expand(&normalise(Path::new(root)), None, &mut state, &mut loaded)?;
+
+    let transactions = loaded
+        .directives
+        .iter()
+        .filter(|sourced| matches!(sourced.directive, Directive::Transaction(_)))
+        .count();
+    if transactions == 0 {
+        loaded.warnings.push(format!(
+            "visited {} file(s) and found 0 transactions",
+            state.seen.len()
+        ));
+    }
+
     Ok(loaded)
 }
 
@@ -64,16 +98,58 @@ pub(crate) fn load(root: &str) -> Result<Loaded, ImportError> {
 ///
 /// # Arguments
 ///
-/// * `path` - The file to read.
+/// * `path` - The file to read, already lexically normalised.
 /// * `origin` - Where this file was included from, as `file:line`, or `None`
 ///   for the root file.
+/// * `state` - Cycle, depth and duplicate bookkeeping.
 /// * `loaded` - Accumulator for directives and warnings.
 ///
 /// # Errors
 ///
-/// As [`load`].
-fn expand(path: &Path, origin: Option<&str>, loaded: &mut Loaded) -> Result<(), ImportError> {
+/// As [`load`], plus [`ImportError::BadValue`] if the ledger includes itself
+/// cyclically or nests deeper than [`MAX_DEPTH`].
+fn expand(
+    path: &Path,
+    origin: Option<&str>,
+    state: &mut State,
+    loaded: &mut Loaded,
+) -> Result<(), ImportError> {
     let display: Rc<str> = Rc::from(path.display().to_string());
+    let key = path.to_path_buf();
+
+    if state.stack.contains(&key) {
+        let mut chain: Vec<String> = state
+            .stack
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        chain.push(display.to_string());
+        return Err(ImportError::BadValue {
+            field: "source_file".to_owned(),
+            detail: format!("include cycle: {}", chain.join(" -> ")),
+        });
+    }
+
+    if state.stack.len() >= MAX_DEPTH {
+        return Err(ImportError::BadValue {
+            field: "source_file".to_owned(),
+            detail: format!("includes nested too deeply (limit {MAX_DEPTH}) at {display}"),
+        });
+    }
+
+    if let Some(first) = state.seen.get(&key) {
+        if let Some(site) = origin {
+            loaded.warnings.push(format!(
+                "{display} is included twice, first from {first} and again from {site}; \
+                 expanding it once"
+            ));
+        }
+        return Ok(());
+    }
+    state.seen.insert(
+        key.clone(),
+        origin.unwrap_or("the import profile").to_owned(),
+    );
 
     let bytes = std::fs::read(path).map_err(|e| ImportError::BadValue {
         field: "source_file".to_owned(),
@@ -88,18 +164,26 @@ fn expand(path: &Path, origin: Option<&str>, loaded: &mut Loaded) -> Result<(), 
     let directives = parse(text).map_err(|e| ImportError::Parse(format!("{display}: {e}")))?;
     let parent = path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
+    state.stack.push(key);
     for directive in directives {
-        if let Directive::Include { path: rel, line } = directive {
-            let site = format!("{display}:{line}");
-            let target = normalise(&parent.join(&rel));
-            expand(&target, Some(&site), loaded)?;
-        } else {
-            loaded.directives.push(Sourced {
+        match directive {
+            Directive::Include { path: rel, line } => {
+                let site = format!("{display}:{line}");
+                let target = normalise(&parent.join(&rel));
+                expand(&target, Some(&site), state, loaded)?;
+            }
+            Directive::Unknown { keyword, line } => {
+                loaded.warnings.push(format!(
+                    "{display}:{line}: ignoring unrecognised directive '{keyword}'"
+                ));
+            }
+            other => loaded.directives.push(Sourced {
                 file: Rc::clone(&display),
-                directive,
-            });
+                directive: other,
+            }),
         }
     }
+    state.stack.pop();
 
     Ok(())
 }
@@ -270,5 +354,136 @@ mod tests {
             err.to_string().contains("broken.bean"),
             "the error names the included file, not the root: {err}"
         );
+    }
+
+    #[test]
+    fn self_inclusion_errors_with_the_chain() {
+        let dir = fixture(
+            "cycle",
+            &[
+                ("main.bean", "include \"fy2020.bean\"\n"),
+                ("fy2020.bean", "include \"main.bean\"\n"),
+            ],
+        );
+        let root = dir.join("main.bean");
+        let err = load(root.to_str().expect("utf8")).expect_err("a cycle must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("cycle"),
+            "the error says what went wrong: {message}"
+        );
+        assert!(
+            message.contains("main.bean") && message.contains("fy2020.bean"),
+            "the error prints the chain: {message}"
+        );
+    }
+
+    #[test]
+    fn diamond_include_expands_once_and_warns() {
+        // `shared.bean` is reachable via two branches. Expanding it twice
+        // would silently double-import every transaction in it.
+        let dir = fixture(
+            "diamond",
+            &[
+                ("main.bean", "include \"a.bean\"\ninclude \"b.bean\"\n"),
+                ("a.bean", "include \"shared.bean\"\n"),
+                ("b.bean", "include \"shared.bean\"\n"),
+                ("shared.bean", &tx("only once")),
+            ],
+        );
+        let root = dir.join("main.bean");
+        let loaded = load(root.to_str().expect("utf8")).expect("a diamond is not an error");
+        assert_eq!(
+            transactions(&loaded)
+                .into_iter()
+                .map(|(_, narration)| narration)
+                .collect::<Vec<_>>(),
+            vec!["only once".to_owned()],
+            "the shared file is expanded exactly once"
+        );
+        assert_eq!(loaded.warnings.len(), 1);
+        let warning = loaded.warnings.first().expect("one warning");
+        assert!(
+            warning.contains("shared.bean")
+                && warning.contains("a.bean")
+                && warning.contains("b.bean"),
+            "the warning names the file and both including sites: {warning}"
+        );
+    }
+
+    #[test]
+    fn excessive_nesting_errors() {
+        let mut files: Vec<(String, String)> = Vec::new();
+        files.push(("main.bean".to_owned(), "include \"d0.bean\"\n".to_owned()));
+        for depth in 0..70_usize {
+            files.push((
+                format!("d{depth}.bean"),
+                format!("include \"d{}.bean\"\n", depth.saturating_add(1)),
+            ));
+        }
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(name, contents)| (name.as_str(), contents.as_str()))
+            .collect();
+        let dir = fixture("deep", &refs);
+        let root = dir.join("main.bean");
+        let err = load(root.to_str().expect("utf8")).expect_err("excessive nesting must fail");
+        assert!(
+            err.to_string().contains("nested too deeply"),
+            "the error explains the limit: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_directive_produces_a_warning_naming_file_and_line() {
+        let dir = fixture(
+            "unknown",
+            &[("main.bean", "; header\nfrobnicate whatever\n")],
+        );
+        let root = dir.join("main.bean");
+        let loaded = load(root.to_str().expect("utf8")).expect("an unknown directive is not fatal");
+        let warning = loaded
+            .warnings
+            .iter()
+            .find(|w| w.contains("frobnicate"))
+            .expect("the unknown keyword is warned about");
+        assert!(
+            warning.contains("main.bean:2"),
+            "the warning names file and line: {warning}"
+        );
+    }
+
+    #[test]
+    fn zero_transactions_warns_with_the_file_count() {
+        // A genuinely empty ledger is legitimate and must not fail. But
+        // "visited 3 files, found 0 transactions" reads very differently from
+        // "visited 1 file", and that difference is the point of #401.
+        let dir = fixture(
+            "empty",
+            &[
+                ("main.bean", "include \"a.bean\"\ninclude \"b.bean\"\n"),
+                ("a.bean", "2025-01-01 open Assets:Bank AUD\n"),
+                ("b.bean", "option \"title\" \"Household\"\n"),
+            ],
+        );
+        let root = dir.join("main.bean");
+        let loaded = load(root.to_str().expect("utf8")).expect("an empty ledger is not an error");
+        let warning = loaded
+            .warnings
+            .iter()
+            .find(|w| w.contains("0 transactions"))
+            .expect("an empty result warns");
+        assert!(
+            warning.contains('3'),
+            "the warning counts files visited: {warning}"
+        );
+    }
+
+    #[test]
+    fn a_ledger_with_transactions_does_not_warn_about_emptiness() {
+        let dir = fixture("nonempty", &[("main.bean", &tx("something"))]);
+        let root = dir.join("main.bean");
+        let loaded = load(root.to_str().expect("utf8")).expect("load");
+        assert_eq!(loaded.warnings, Vec::<String>::new());
     }
 }
