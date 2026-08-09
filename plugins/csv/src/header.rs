@@ -1,6 +1,7 @@
 //! The header row as read from a file, and the column resolution it supports.
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use bc_sdk::ImportError;
@@ -18,6 +19,8 @@ pub(crate) struct HeaderMap {
     /// ambiguous when its entry holds more than one index. Empty for a
     /// headerless file, where every reference must be positional.
     by_name: BTreeMap<String, Vec<usize>>,
+    /// Number of fields the header row declared. Zero for a headerless file.
+    width: usize,
 }
 
 impl HeaderMap {
@@ -52,6 +55,7 @@ impl HeaderMap {
             return Ok((
                 Self {
                     by_name: BTreeMap::new(),
+                    width: 0,
                 },
                 Vec::new(),
             ));
@@ -103,7 +107,13 @@ impl HeaderMap {
         }
 
         if problems.is_empty() {
-            Ok((Self { by_name }, warnings))
+            Ok((
+                Self {
+                    by_name,
+                    width: record.len(),
+                },
+                warnings,
+            ))
         } else {
             Err(ImportError::InvalidConfig(problems.join("; ")))
         }
@@ -150,6 +160,63 @@ impl HeaderMap {
             }
         }
     }
+
+    /// Returns the number of fields the header row declared.
+    ///
+    /// # Returns
+    ///
+    /// The header's field count, or `0` for a headerless file.
+    pub(crate) const fn width(&self) -> usize {
+        self.width
+    }
+}
+
+/// Returns a warning when the header row's width disagrees with the file's data
+/// rows.
+///
+/// A header wider than the data is the shape produced by unquoted prose glued
+/// onto the last column name; a header narrower than the data means trailing
+/// columns were never named. Neither is fatal: the surplus header names are
+/// simply never resolved to, and unnamed data columns remain reachable by index.
+///
+/// # Arguments
+///
+/// * `header` - The header's declared field count; `0` for a headerless file.
+/// * `data` - The file's data-row width.
+///
+/// # Returns
+///
+/// The warning text, or `None` when the widths agree or there is no header.
+pub(crate) fn header_width_warning(header: usize, data: usize) -> Option<String> {
+    if header == 0 {
+        return None;
+    }
+    match header.cmp(&data) {
+        Ordering::Equal => None,
+        Ordering::Greater => Some(format!(
+            "the header declares {header} fields but data rows carry {data}; the \
+             trailing header field(s) look like prose glued to the last column name"
+        )),
+        Ordering::Less => Some(format!(
+            "the header declares {header} fields but data rows carry {data}; the \
+             trailing data columns are unnamed and reachable only by index"
+        )),
+    }
+}
+
+/// Returns a warning when one data row's width differs from the file's.
+///
+/// # Arguments
+///
+/// * `expected` - The file's data-row width, taken from its first data row.
+/// * `actual` - This row's field count.
+/// * `row` - The one-based data-row number, for the message.
+///
+/// # Returns
+///
+/// The warning text, or `None` when the row is the expected width.
+pub(crate) fn row_width_warning(expected: usize, actual: usize, row: usize) -> Option<String> {
+    (expected != actual).then(|| format!("row {row} has {actual} fields, expected {expected}"))
 }
 
 #[cfg(test)]
@@ -272,5 +339,56 @@ mod tests {
         columns
             .resolve(&ColumnRef::Name("Income".to_owned()))
             .expect_err("an ambiguous name must not resolve");
+    }
+
+    #[rstest::rstest]
+    #[case::agree(4, 4, None)]
+    #[case::header_wider(
+        5,
+        4,
+        Some(
+            "the header declares 5 fields but data rows carry 4; the trailing header field(s) look like prose glued to the last column name"
+        )
+    )]
+    #[case::header_narrower(
+        3,
+        4,
+        Some(
+            "the header declares 3 fields but data rows carry 4; the trailing data columns are unnamed and reachable only by index"
+        )
+    )]
+    #[case::headerless(0, 4, None)]
+    fn header_width_warning_cases(
+        #[case] header: usize,
+        #[case] data: usize,
+        #[case] expected: Option<&str>,
+    ) {
+        assert_eq!(header_width_warning(header, data).as_deref(), expected);
+    }
+
+    #[rstest::rstest]
+    #[case::agree(5, 5, 3, None)]
+    #[case::short(5, 4, 12, Some("row 12 has 4 fields, expected 5"))]
+    #[case::long(5, 6, 12, Some("row 12 has 6 fields, expected 5"))]
+    fn row_width_warning_cases(
+        #[case] expected_width: usize,
+        #[case] actual: usize,
+        #[case] row: usize,
+        #[case] expected: Option<&str>,
+    ) {
+        assert_eq!(
+            row_width_warning(expected_width, actual, row).as_deref(),
+            expected
+        );
+    }
+
+    #[test]
+    fn width_reports_the_header_field_count() {
+        let (columns, _) = HeaderMap::build(Some(&header(&["Date", "Amount", "Payee"])), &[])
+            .expect("a clean header builds");
+        assert_eq!(columns.width(), 3);
+
+        let (headerless, _) = HeaderMap::build(None, &[]).expect("no header builds");
+        assert_eq!(headerless.width(), 0);
     }
 }

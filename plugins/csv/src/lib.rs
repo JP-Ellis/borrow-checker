@@ -137,6 +137,7 @@ impl CsvImporter {
         let mut reader = csv::ReaderBuilder::new()
             .delimiter(delimiter_byte)
             .has_headers(has_header_row)
+            .flexible(true)
             .trim(csv::Trim::All)
             .from_reader(csv_bytes);
 
@@ -170,9 +171,33 @@ impl CsvImporter {
 
         let mut transactions = Vec::new();
 
+        // The file's data-row width, learned from its first data row rather
+        // than from the header: a header carrying trailing prose is wider than
+        // every row, and trusting it would flag the whole file instead of the
+        // one malformed line.
+        let mut expected_width: Option<usize> = None;
+
         for (row_idx, result) in reader.records().enumerate() {
             let row = row_idx.saturating_add(1);
             let record = result.map_err(|e| ImportError::Parse(e.to_string()))?;
+
+            match expected_width {
+                None => {
+                    expected_width = Some(record.len());
+                    if let Some(detail) =
+                        crate::header::header_width_warning(columns.width(), record.len())
+                    {
+                        bc_sdk::warn!("csv header width differs from data rows"; path = file, detail = detail);
+                    }
+                }
+                Some(expected) => {
+                    if let Some(detail) =
+                        crate::header::row_width_warning(expected, record.len(), row)
+                    {
+                        bc_sdk::warn!("ragged csv row"; path = file, detail = detail);
+                    }
+                }
+            }
 
             let date_str = record_field(&record, date_idx, &cfg.date_column.describe())?;
             let parsed = jiff::civil::Date::strptime(&cfg.date_format, &date_str).map_err(|e| {
@@ -1609,6 +1634,50 @@ mod tests {
             .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
             .expect("the row still parses");
         assert_eq!(txs[0].postings.len(), 1);
+    }
+
+    #[test]
+    fn parses_a_header_carrying_trailing_prose() {
+        // Broker A's export glues explanatory prose onto the last column name,
+        // and the prose contains an unquoted comma: the header parses as 5
+        // fields where every data row has 4. The last real column name is
+        // corrupted too ("Balance <as at settlement date"), so the balance must
+        // be addressed by index — mixed addressing, legal under Header::Present.
+        let csv =
+            b"Date,Description,Amount,Balance <as at settlement date, includes pending items>\n\
+                    2025-03-15,Alpha Holdings purchase,-500.00,1234.56\n\
+                    2025-03-16,Delta Corp dividend,25.00,1259.56\n";
+
+        let cfg = Config {
+            account: "Assets:BrokerA:123456789".to_owned(),
+            date_column: ColumnRef::Name("Date".to_owned()),
+            description_column: Some(ColumnRef::Name("Description".to_owned())),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Amount".to_owned()),
+            },
+            balance_column: Some(ColumnRef::Index(3)),
+            ..Config::default()
+        };
+
+        let txns = CsvImporter
+            .parse_bytes(csv, &cfg, "brokera.csv")
+            .expect("a ragged header must not fail the file");
+
+        assert_eq!(txns.len(), 2);
+        assert_eq!(txns[0].date, Date::new(2025, 3, 15));
+        assert_eq!(
+            txns[0].postings[0].amount,
+            Some(Amount::new(dec!(-500.00), "AUD"))
+        );
+        assert_eq!(
+            txns[0].postings[0].balance,
+            Some(Amount::new(dec!(1234.56), "AUD"))
+        );
+        assert_eq!(txns[1].description, "Delta Corp dividend");
+        assert_eq!(
+            txns[1].postings[0].balance,
+            Some(Amount::new(dec!(1259.56), "AUD"))
+        );
     }
 
     /// A blank cell omits one leg on one row, but a commodity column the file
