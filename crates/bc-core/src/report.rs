@@ -2,6 +2,7 @@
 //! up the account tree.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use bc_models::AccountId;
 use bc_models::Amount;
@@ -20,7 +21,10 @@ pub struct Row {
     pub account_id: AccountId,
     /// Colon-separated path from the account's root, e.g. `Income:Interest`.
     pub path: String,
-    /// Number of this row's ancestors that also appear in the report.
+    /// Depth in the account tree, counting from a root at zero.
+    ///
+    /// Every ancestor of a reported account is itself reported, so indenting on
+    /// this never leaves a gap.
     pub depth: usize,
     /// Sum of postings directly to this account.
     pub own: Amount,
@@ -39,7 +43,7 @@ impl Row {
     ///
     /// * `account_id` - The account this row totals.
     /// * `path` - Colon-separated path from the account's root.
-    /// * `depth` - Number of this row's ancestors that also appear in the report.
+    /// * `depth` - Depth in the account tree, counting from a root at zero.
     /// * `own` - Sum of postings directly to this account.
     /// * `rolled_up` - `own` plus every descendant's `own`.
     ///
@@ -183,11 +187,41 @@ pub async fn category_totals(
     })
 }
 
-/// Maximum ancestor chain length walked when building a path.
+/// Maximum ancestor chain length walked when rolling totals up the tree.
 ///
 /// A malformed `parent_id` cycle would otherwise loop forever. Real charts of
-/// accounts are nowhere near this deep.
+/// accounts are nowhere near this deep, so exceeding it means the account graph
+/// is corrupt rather than merely deep.
 const MAX_ACCOUNT_DEPTH: usize = 64;
+
+/// Calls `visit` on `start` and then each of its ancestors, root-most last.
+///
+/// # Arguments
+///
+/// * `start` - The account to walk up from, visited first.
+/// * `by_id` - Every account in the tree, keyed by id.
+/// * `visit` - Called once per account in the chain.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError::BadData`] if the chain exceeds
+/// [`MAX_ACCOUNT_DEPTH`], which a `parent_id` cycle would do forever, or
+/// whatever `visit` returns.
+fn walk_ancestors<'a>(
+    start: &'a AccountId,
+    by_id: &HashMap<&'a AccountId, &'a bc_models::Account>,
+    mut visit: impl FnMut(&'a AccountId) -> BcResult<()>,
+) -> BcResult<()> {
+    let mut cursor = Some(start);
+    for _ in 0..MAX_ACCOUNT_DEPTH {
+        let Some(id) = cursor else { return Ok(()) };
+        visit(id)?;
+        cursor = by_id.get(id).and_then(|a| a.parent_id());
+    }
+    Err(crate::BcError::BadData(format!(
+        "account ancestry deeper than {MAX_ACCOUNT_DEPTH}; the parent chain is probably a cycle"
+    )))
+}
 
 /// Builds pre-order report rows with paths, depths and rolled-up totals.
 async fn build_rows(
@@ -219,29 +253,43 @@ async fn build_rows(
         let Some(total) = own.get(account.id()).copied() else {
             continue;
         };
-        let mut cursor = Some(account.id());
-        for _ in 0..MAX_ACCOUNT_DEPTH {
-            let Some(id) = cursor else { break };
+        walk_ancestors(account.id(), &by_id, |id| {
             let entry = rolled.entry(id.clone()).or_default();
             *entry = entry
                 .checked_add(total)
                 .ok_or_else(|| crate::BcError::BadData("rolled-up total overflow".into()))?;
-            cursor = by_id.get(id).and_then(|a| a.parent_id());
+            Ok(())
+        })?;
+    }
+
+    // An account earns a row by having a non-zero rolled-up total, and so does
+    // every one of its ancestors — including any whose own descendants cancel
+    // out — so that a rendered subtree is never severed from its root.
+    let mut visible: HashSet<AccountId> = HashSet::new();
+    for account in &all {
+        if rolled.get(account.id()).copied().unwrap_or(Decimal::ZERO) == Decimal::ZERO {
+            continue;
         }
+        walk_ancestors(account.id(), &by_id, |id| {
+            visible.insert(id.clone());
+            Ok(())
+        })?;
     }
 
     let mut rows = Vec::new();
     let roots = children.get(&None).cloned().unwrap_or_default();
     for root in roots {
-        emit(root, "", 0, &children, own, &rolled, commodity, &mut rows);
+        emit(
+            root, "", 0, &children, own, &rolled, &visible, commodity, &mut rows,
+        );
     }
     Ok(rows)
 }
 
 /// Appends `account`'s row, then its subtree, in pre-order.
 ///
-/// Only accounts with a non-zero rolled-up total are emitted; `depth` counts
-/// emitted ancestors, so pruning never leaves a gap in the indentation.
+/// `visible` is closed under ancestry, so an account outside it can have no
+/// visible descendant and its whole subtree is skipped.
 #[expect(
     clippy::too_many_arguments,
     reason = "a recursive tree walk threading its accumulators; grouping them would obscure the recursion"
@@ -253,36 +301,35 @@ fn emit(
     children: &HashMap<Option<&AccountId>, Vec<&bc_models::Account>>,
     own: &HashMap<AccountId, Decimal>,
     rolled: &HashMap<AccountId, Decimal>,
+    visible: &HashSet<AccountId>,
     commodity: &str,
     rows: &mut Vec<Row>,
 ) {
+    if !visible.contains(account.id()) {
+        return;
+    }
+
     let path = if parent_path.is_empty() {
         account.name().to_owned()
     } else {
         format!("{parent_path}:{}", account.name())
     };
 
-    let rolled_up = rolled.get(account.id()).copied().unwrap_or(Decimal::ZERO);
-    let emitted = rolled_up != Decimal::ZERO;
+    rows.push(Row {
+        account_id: account.id().clone(),
+        path: path.clone(),
+        depth,
+        own: Amount::new(
+            own.get(account.id()).copied().unwrap_or(Decimal::ZERO),
+            commodity,
+        ),
+        rolled_up: Amount::new(
+            rolled.get(account.id()).copied().unwrap_or(Decimal::ZERO),
+            commodity,
+        ),
+    });
 
-    if emitted {
-        rows.push(Row {
-            account_id: account.id().clone(),
-            path: path.clone(),
-            depth,
-            own: Amount::new(
-                own.get(account.id()).copied().unwrap_or(Decimal::ZERO),
-                commodity,
-            ),
-            rolled_up: Amount::new(rolled_up, commodity),
-        });
-    }
-
-    let child_depth = if emitted {
-        depth.saturating_add(1)
-    } else {
-        depth
-    };
+    let child_depth = depth.saturating_add(1);
     if let Some(kids) = children.get(&Some(account.id())) {
         for kid in kids {
             emit(
@@ -292,6 +339,7 @@ fn emit(
                 children,
                 own,
                 rolled,
+                visible,
                 commodity,
                 rows,
             );
@@ -655,6 +703,73 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn a_parent_whose_children_cancel_is_still_emitted(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let bank = accts
+            .create()
+            .name("Bank-A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("bank");
+        let income = accts
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("income");
+        let rent = accts
+            .create()
+            .name("Rent")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&income)
+            .call()
+            .await
+            .expect("rent");
+        let refunds = accts
+            .create()
+            .name("Refunds")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&income)
+            .call()
+            .await
+            .expect("refunds");
+
+        let txns = crate::transaction::Service::new(pool.clone());
+        txns.create(tx(&bank, &rent, date(2025, 8, 1), dec!(500), "AUD"))
+            .await
+            .expect("t1");
+        txns.create(tx(&refunds, &bank, date(2025, 8, 2), dec!(500), "AUD"))
+            .await
+            .expect("t2");
+
+        let report = category_totals(&txns, &accts, &TransactionQuery::default(), "AUD")
+            .await
+            .expect("report");
+
+        let shape: Vec<(&str, usize, Decimal)> = report
+            .rows
+            .iter()
+            .map(|r| (r.path.as_str(), r.depth, r.rolled_up.value()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("Income", 0, dec!(0)),
+                ("Income:Refunds", 1, dec!(500)),
+                ("Income:Rent", 1, dec!(-500)),
+            ],
+            "a parent whose children cancel to zero still anchors them at depth 0, \
+             while a childless account that nets to zero stays pruned"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn a_tag_filter_narrows_the_totals(pool: sqlx::SqlitePool) {
         let accts = crate::account::Service::new(pool.clone());
         let bank = accts
@@ -730,7 +845,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn a_pruned_middle_ancestor_does_not_shrink_descendant_depth(pool: sqlx::SqlitePool) {
+    async fn a_middle_ancestor_whose_children_cancel_is_emitted(pool: sqlx::SqlitePool) {
         let accts = crate::account::Service::new(pool.clone());
         let bank = accts
             .create()
@@ -806,11 +921,12 @@ mod tests {
             shape,
             vec![
                 ("Income", 0, dec!(-100), dec!(-100)),
-                ("Income:Middle:Minus", 1, dec!(30), dec!(30)),
-                ("Income:Middle:Plus", 1, dec!(-30), dec!(-30)),
+                ("Income:Middle", 1, dec!(0), dec!(0)),
+                ("Income:Middle:Minus", 2, dec!(30), dec!(30)),
+                ("Income:Middle:Plus", 2, dec!(-30), dec!(-30)),
             ],
-            "Middle's zero rollup prunes it, but Plus/Minus keep their full \
-             path and count only emitted ancestors toward depth"
+            "Middle rolls up to zero but still anchors Plus and Minus, which \
+             would otherwise be rendered as children of Income"
         );
     }
 
