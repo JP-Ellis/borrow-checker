@@ -42,6 +42,23 @@ pub(crate) enum Directive {
         /// The commodity code of the asserted balance.
         currency: String,
     },
+    /// An `include "path"` directive naming another file to splice in.
+    Include {
+        /// The path exactly as written in the source, still unresolved.
+        path: String,
+        /// 1-based source line number of the directive.
+        line: usize,
+    },
+    /// A directive whose leading keyword the parser does not recognise.
+    ///
+    /// Carried rather than discarded so the importer can warn about it: a
+    /// silently dropped directive is indistinguishable from an absent one.
+    Unknown {
+        /// The unrecognised keyword as written.
+        keyword: String,
+        /// 1-based source line number of the directive.
+        line: usize,
+    },
     /// Any other directive or comment (skipped by the importer).
     Other,
 }
