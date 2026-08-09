@@ -589,7 +589,7 @@ borrow-checker account [list|create|archive]
 borrow-checker transaction [list|add|amend|void]
 borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|book-value]
 borrow-checker profile [create|list|show|edit|remove]
-borrow-checker import run --profile <name>
+borrow-checker import run --profile <name> [--dry-run]
 borrow-checker import list
 borrow-checker import discard <batch-id>
 borrow-checker export --format <ledger|beancount> --output <file>
@@ -600,6 +600,8 @@ borrow-checker completions <bash|elvish|fish|powershell|zsh>
 ```
 
 Importers source their own files from the profile config (see §5.2), so `import run` takes no file argument and no account argument: each `RawPosting` names its own account path, resolved to an id in `bc-core` at persistence time (see §5.2, §5.3). `import` is a subcommand group: `run` executes a profile, `list` shows every run newest first with its outcome, and `discard <batch-id>` undoes one (see §5.3) — reported the same way `run` is, with `--json` covering all three.
+
+`run --dry-run` resolves the profile and reports what it would do without writing: the account paths that would not resolve, the commodity codes that are not registered, the rows that would be skipped and why, the tags that would be created, and the per-account totals that would post. It is the same run with its writes diverted, not a second implementation, so it cannot drift from what `run` does. The report leads with what is broken rather than what would succeed, because it exists for profile tuning; `--json` covers it as it does the other three, minus the `batch_id` key, since a dry run opens no batch and so leaves nothing to `list` or `discard`.
 
 Import profiles are created and edited from the CLI. `profile create` takes the
 importer's opaque config as a TOML or JSON file (`--config <FILE>`, or `-` for
