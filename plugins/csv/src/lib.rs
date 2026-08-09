@@ -181,7 +181,7 @@ impl CsvImporter {
             let row = row_idx.saturating_add(1);
             let record = result.map_err(|e| ImportError::Parse(e.to_string()))?;
 
-            match expected_width {
+            let expected = match expected_width {
                 None => {
                     expected_width = Some(record.len());
                     if let Some(detail) =
@@ -189,6 +189,7 @@ impl CsvImporter {
                     {
                         bc_sdk::warn!("csv header width differs from data rows"; path = file, detail = detail);
                     }
+                    record.len()
                 }
                 Some(expected) => {
                     if let Some(detail) =
@@ -196,8 +197,9 @@ impl CsvImporter {
                     {
                         bc_sdk::warn!("ragged csv row"; path = file, detail = detail);
                     }
+                    expected
                 }
-            }
+            };
 
             let date_str = record_field(&record, date_idx, &cfg.date_column.describe())?;
             let parsed = jiff::civil::Date::strptime(&cfg.date_format, &date_str).map_err(|e| {
@@ -230,27 +232,28 @@ impl CsvImporter {
                 })?;
 
             let balance = if let Some(column) = cfg.balance_column.as_ref() {
-                let idx = columns.resolve(column)?;
-                let raw_owned = record_field(&record, idx, &column.describe())?;
-                let raw = raw_owned.trim();
-                if raw.is_empty() {
-                    None
-                } else {
-                    let val = parse_number(raw, cfg.decimal_separator, cfg.thousands_separator)
-                        .map_err(|e| ImportError::BadValue {
-                            field: column.describe(),
-                            detail: e,
-                        })?;
-                    Some(Amount::new(val, commodity.clone()))
+                match optional_text(&record, &columns, Some(column), expected)? {
+                    None => None,
+                    Some(raw) => {
+                        let val =
+                            parse_number(&raw, cfg.decimal_separator, cfg.thousands_separator)
+                                .map_err(|e| ImportError::BadValue {
+                                    field: column.describe(),
+                                    detail: e,
+                                })?;
+                        Some(Amount::new(val, commodity.clone()))
+                    }
                 }
             } else {
                 None
             };
 
-            let payee = optional_text(&record, &columns, cfg.payee_column.as_ref())?;
-            let description = optional_text(&record, &columns, cfg.description_column.as_ref())?
-                .unwrap_or_default();
-            let reference = optional_text(&record, &columns, cfg.reference_column.as_ref())?;
+            let payee = optional_text(&record, &columns, cfg.payee_column.as_ref(), expected)?;
+            let description =
+                optional_text(&record, &columns, cfg.description_column.as_ref(), expected)?
+                    .unwrap_or_default();
+            let reference =
+                optional_text(&record, &columns, cfg.reference_column.as_ref(), expected)?;
 
             let mut postings = vec![
                 RawPosting::builder()
@@ -340,40 +343,46 @@ fn record_field(
         .ok_or_else(|| ImportError::MissingField(column_name.to_owned()))
 }
 
-/// Reads an optional free-text column from a record.
+/// Returns the trimmed text of an optional column, or `None` when it is absent
+/// or blank.
 ///
-/// A column that is not configured yields `None`. A column that *is*
-/// configured must resolve and must be present in the row: an unresolvable
-/// name or an index past the end of the row is a configuration error, not an
-/// empty value. This matches `balance_column` and the required columns, so
-/// that a mistyped column reference cannot import as silently blank text.
+/// A column absent from *this* row because the row is short is a per-row
+/// omission and yields `None`. A column whose index lies beyond the file's
+/// data-row width is absent from *every* row, which means the profile does not
+/// match the file, and is an error.
 ///
 /// # Arguments
 ///
-/// * `record` - The CSV record being processed.
-/// * `columns` - The header map, for resolving column references.
-/// * `column` - The configured reference, if any.
+/// * `record` - The CSV record to read from.
+/// * `columns` - The file's header map.
+/// * `column` - The column reference, or `None` when the field is unconfigured.
+/// * `expected` - The file's data-row width.
 ///
 /// # Returns
 ///
-/// The trimmed field value, or `None` when the column is unconfigured or the
-/// cell is empty.
+/// The trimmed cell text, or `None` when unconfigured, absent, or blank.
 ///
 /// # Errors
 ///
-/// Returns [`ImportError::MissingField`] when a configured column cannot be
-/// resolved or the row is too short to contain it.
+/// Returns [`ImportError::MissingField`] when the reference does not resolve,
+/// or resolves beyond the file's data-row width.
 #[inline]
 fn optional_text(
     record: &csv::StringRecord,
     columns: &HeaderMap,
     column: Option<&ColumnRef>,
+    expected: usize,
 ) -> Result<Option<String>, ImportError> {
     let Some(column) = column else {
         return Ok(None);
     };
     let idx = columns.resolve(column)?;
-    let raw = record_field(record, idx, &column.describe())?;
+    if idx >= expected {
+        return Err(ImportError::MissingField(column.describe()));
+    }
+    let Some(raw) = record.get(idx) else {
+        return Ok(None);
+    };
     let trimmed = raw.trim();
     Ok((!trimmed.is_empty()).then(|| trimmed.to_owned()))
 }
@@ -1678,6 +1687,67 @@ mod tests {
             txns[1].postings[0].balance,
             Some(Amount::new(dec!(1259.56), "AUD"))
         );
+    }
+
+    #[test]
+    fn an_optional_column_absent_from_a_short_row_is_none() {
+        // Under strict parsing a row could never be short, so this is new
+        // territory rather than a regression. Warn, don't block.
+        let csv = b"Date,Amount,Payee\n\
+                    2025-03-15,50.00,Java Hut\n\
+                    2025-03-16,-20.00\n";
+
+        let cfg = Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            payee_column: Some(ColumnRef::Name("Payee".to_owned())),
+            ..Config::default()
+        };
+
+        let txns = CsvImporter
+            .parse_bytes(csv, &cfg, "short.csv")
+            .expect("a short row must not fail the file");
+
+        assert_eq!(txns.len(), 2);
+        assert_eq!(txns[0].payee.as_deref(), Some("Java Hut"));
+        assert_eq!(txns[1].payee, None);
+    }
+
+    #[test]
+    fn an_optional_column_beyond_every_row_is_an_error() {
+        // Absent from *one* row is a per-row omission; absent from *every* row
+        // means the profile does not match the file. Degrading that to None
+        // would resurrect the silent-wrong-data failure #397 is about.
+        let csv = b"Date,Amount\n\
+                    2025-03-15,50.00\n";
+
+        let cfg = Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            payee_column: Some(ColumnRef::Index(5)),
+            ..Config::default()
+        };
+
+        let err = CsvImporter
+            .parse_bytes(csv, &cfg, "narrow.csv")
+            .expect_err("a column present in no row must fail");
+
+        assert_eq!(err.to_string(), "missing required field: column 5");
+    }
+
+    #[test]
+    fn a_required_column_absent_from_a_short_row_is_an_error() {
+        // A row that cannot yield an amount cannot become a posting.
+        let csv = b"Date,Amount\n\
+                    2025-03-15,50.00\n\
+                    2025-03-16\n";
+
+        let cfg = Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            ..Config::default()
+        };
+
+        CsvImporter
+            .parse_bytes(csv, &cfg, "short.csv")
+            .expect_err("a row with no amount must fail");
     }
 
     /// A blank cell omits one leg on one row, but a commodity column the file
