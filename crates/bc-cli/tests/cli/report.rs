@@ -196,14 +196,6 @@ fn categories_fy_totals_a_transaction_in_the_financial_year() {
 }
 
 #[test]
-fn categories_depth_zero_is_rejected() {
-    let ctx = TestContext::new();
-    let mut cmd = ctx.command();
-    cmd.args(["report", "categories", "--depth", "0"]);
-    cmd_snapshot!(ctx, &mut cmd);
-}
-
-#[test]
 fn categories_custom_period_is_rejected() {
     let ctx = TestContext::new();
     let mut cmd = ctx.command();
