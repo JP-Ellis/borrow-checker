@@ -77,11 +77,7 @@ impl HeaderMap {
                 .first()
                 .and_then(|&i| record.get(i))
                 .unwrap_or(name.as_str());
-            let columns = indices
-                .iter()
-                .map(usize::to_string)
-                .collect::<Vec<_>>()
-                .join(" and ");
+            let columns = join_columns(indices);
             let fields: Vec<&str> = refs
                 .iter()
                 .filter(|&(_, column)| {
@@ -98,8 +94,9 @@ impl HeaderMap {
                      addresses it, so the duplication is harmless here"
                 ));
             } else {
+                let verb = if fields.len() == 1 { "names" } else { "name" };
                 problems.push(format!(
-                    "{} names '{display}', which appears at columns {columns}; \
+                    "{} {verb} '{display}', which appears at columns {columns}; \
                      address it by zero-based index instead",
                     fields.join(", ")
                 ));
@@ -149,11 +146,7 @@ impl HeaderMap {
                     Some(indices) if indices.len() > 1 => Err(ImportError::InvalidConfig(format!(
                         "{} is ambiguous: the header names it at columns {}",
                         column.describe(),
-                        indices
-                            .iter()
-                            .map(usize::to_string)
-                            .collect::<Vec<_>>()
-                            .join(" and ")
+                        join_columns(indices)
                     ))),
                     Some(_) | None => Err(ImportError::MissingField(column.describe())),
                 }
@@ -171,6 +164,32 @@ impl HeaderMap {
     }
 }
 
+/// Renders column indices as an English list.
+///
+/// One index renders bare, two join with "and", and three or more become a
+/// comma-separated list with "and" before the last.
+///
+/// # Arguments
+///
+/// * `indices` - The zero-based column indices, in the order to render them.
+///
+/// # Returns
+///
+/// The rendered list, or an empty string when there are no indices.
+fn join_columns(indices: &[usize]) -> String {
+    match *indices {
+        [] => String::new(),
+        [only] => only.to_string(),
+        [ref rest @ .., last] => format!(
+            "{} and {last}",
+            rest.iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 /// Returns a warning when the header row's width disagrees with the file's data
 /// rows.
 ///
@@ -182,7 +201,9 @@ impl HeaderMap {
 /// # Arguments
 ///
 /// * `header` - The header's declared field count; `0` for a headerless file.
-/// * `data` - The file's data-row width.
+/// * `data` - The file's data-row width, taken from its *first* data row rather
+///   than from the header, so a header carrying trailing prose flags itself
+///   instead of flagging every row.
 ///
 /// # Returns
 ///
@@ -221,9 +242,8 @@ pub(crate) fn row_width_warning(expected: usize, actual: usize, row: usize) -> O
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::*;
 
@@ -271,8 +291,45 @@ mod tests {
         let ImportError::InvalidConfig(message) = err else {
             unreachable!("expected InvalidConfig, got {err:?}")
         };
-        assert!(message.contains("date_column"), "{message}");
-        assert!(message.contains("balance_column"), "{message}");
+        assert_eq!(
+            message,
+            "date_column names 'Income', which appears at columns 0 and 2; address it \
+             by zero-based index instead; balance_column names 'Value', which appears \
+             at columns 1 and 3; address it by zero-based index instead"
+        );
+    }
+
+    #[test]
+    fn build_agrees_the_verb_with_the_field_count() {
+        // Two fields addressing the same duplicated name share one problem, so
+        // the subject is plural and the verb must follow.
+        let income = ColumnRef::Name("Income".to_owned());
+        let refs = vec![
+            (Cow::Borrowed("date_column"), &income),
+            (Cow::Borrowed("balance_column"), &income),
+        ];
+
+        let err = HeaderMap::build(Some(&header(&["Income", "Value", "Income"])), &refs)
+            .expect_err("a referenced duplicate must be fatal");
+
+        let ImportError::InvalidConfig(message) = err else {
+            unreachable!("expected InvalidConfig, got {err:?}")
+        };
+        assert_eq!(
+            message,
+            "date_column, balance_column name 'Income', which appears at columns 0 \
+             and 2; address it by zero-based index instead"
+        );
+    }
+
+    #[rstest]
+    #[case::none(&[], "")]
+    #[case::one(&[2], "2")]
+    #[case::two(&[2, 3], "2 and 3")]
+    #[case::three(&[2, 3, 4], "2, 3 and 4")]
+    #[case::four(&[0, 2, 3, 4], "0, 2, 3 and 4")]
+    fn join_columns_cases(#[case] indices: &[usize], #[case] expected: &str) {
+        assert_eq!(join_columns(indices), expected);
     }
 
     #[test]
@@ -341,7 +398,7 @@ mod tests {
             .expect_err("an ambiguous name must not resolve");
     }
 
-    #[rstest::rstest]
+    #[rstest]
     #[case::agree(4, 4, None)]
     #[case::header_wider(
         5,
@@ -366,7 +423,7 @@ mod tests {
         assert_eq!(header_width_warning(header, data).as_deref(), expected);
     }
 
-    #[rstest::rstest]
+    #[rstest]
     #[case::agree(5, 5, 3, None)]
     #[case::short(5, 4, 12, Some("row 12 has 4 fields, expected 5"))]
     #[case::long(5, 6, 12, Some("row 12 has 6 fields, expected 5"))]
