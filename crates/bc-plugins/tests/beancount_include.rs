@@ -100,7 +100,7 @@ fn multi_file_ledger_imports_through_the_preopen() {
 }
 
 #[test]
-fn include_escaping_the_preopen_is_reported_as_a_bad_value() {
+fn include_escaping_the_preopen_names_the_offending_include() {
     let root = fixture(
         "escape",
         &[("ledger/main.bean", "include \"../../../../etc/passwd\"\n")],
@@ -112,11 +112,19 @@ fn include_escaping_the_preopen_is_reported_as_a_bad_value() {
         .import(&config)
         .expect_err("an include escaping the preopen must fail");
 
+    // `source.rs` reports "include at {file}:{line} cannot read {path}: {os_err}".
+    // Assert file and line together so a reformat that drops the line (e.g.
+    // "include from {file} cannot read {path}") cannot slip past this test.
+    // The reported path is the lexically-folded form (`../etc/passwd`), not the
+    // literal `../../../../etc/passwd` text the fixture wrote — `source.rs`
+    // folds `..` components before this error is raised, and that folding is
+    // out of scope here, so this asserts what the code actually produces.
     let message = err.to_string();
     assert!(
-        message.contains("main.bean") && message.contains("passwd"),
-        "the error names the include that caused it, not just a read failure: {message}"
+        message.contains("main.bean:1"),
+        "names the including file and its line together: {message}"
     );
+    assert!(message.contains("passwd"), "names the path: {message}");
 
     drop(fs::remove_dir_all(&root));
 }
