@@ -133,10 +133,17 @@ pub struct ImportOutcome {
 ///
 /// # Limits
 ///
-/// A plan predicts decisions, not I/O. If a real run's insert fails, those legs
-/// are charged to [`Self::other_skipped_postings`] under
-/// [`SkipCause::RowLocalFailure`], and no plan will have predicted it. The
-/// report describes what the run would do **absent an I/O failure**.
+/// A plan predicts decisions, not writes. If a real run's *insert* fails, those
+/// legs are charged to [`Self::other_skipped_postings`] under
+/// [`SkipCause::RowLocalFailure`], and no plan will have predicted it: the sink
+/// is the one step a plan does not perform. The report therefore describes what
+/// the run would do **absent a write failure**.
+///
+/// [`SkipCause::RowLocalFailure`] can still appear here, because the steps
+/// *above* the sink are shared and two of them raise it: a row whose amounts
+/// overflow when summed, and an unreadable stored transaction met while
+/// matching an owner. Both are decisions a real run would reach the same way,
+/// so a plan reporting one is predicting the run rather than diverging from it.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportPlan {
@@ -365,8 +372,13 @@ pub enum SkipCause {
     /// A posting of the matched transaction is not explained by this document
     /// transaction.
     FailedCorroboration,
-    /// The write itself failed in a way charged to the row rather than the run.
-    /// A dry run never reports this: it predicts decisions, not I/O.
+    /// A step failed in a way charged to the row rather than the run — the
+    /// write itself, the summing of the row's amounts, or reading the
+    /// transaction a leg would attach to.
+    ///
+    /// A dry run cannot report the write, which is the one step it does not
+    /// perform, but it reports the other two: they sit above the sink and a
+    /// real run reaches them identically.
     RowLocalFailure,
 }
 
@@ -629,10 +641,12 @@ pub async fn execute_import(
 ///
 /// # Limits
 ///
-/// A plan predicts decisions, not I/O. A real run whose insert fails charges
+/// A plan predicts decisions, not writes. A real run whose insert fails charges
 /// those legs to [`ImportOutcome::other_skipped_postings`] under
-/// [`SkipCause::RowLocalFailure`]; no plan predicts that. The report describes
-/// what the run would do absent an I/O failure.
+/// [`SkipCause::RowLocalFailure`]; no plan predicts that, the sink being the one
+/// step it does not perform. The report describes what the run would do absent a
+/// write failure. See [`ImportPlan`] for the row-local failures a plan *does*
+/// report, which arise above the sink and so are shared with a real run.
 ///
 /// # Arguments
 ///
@@ -5561,6 +5575,48 @@ mod tests {
             .map(|(_, balances)| balances.get("AUD"))
             .expect("the account posts");
         assert_eq!(checking, Some(dec!(-12)));
+    }
+
+    /// `RowLocalFailure` covers the write, which a plan skips, but also the
+    /// steps above the sink, which it does not. Summing a row's amounts is one
+    /// of those, so an overflow there is a skip the plan is obliged to predict —
+    /// the run reaches it before the sink is ever consulted.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_plan_predicts_a_row_local_failure_raised_above_the_sink(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        // The two concrete legs resolve to nothing, so the elided leg is the
+        // only one left and the residual is taken from the document — where the
+        // two amounts sum past `Decimal`'s range.
+        let doc = raw_with(
+            "OVERFLOW",
+            vec![
+                leg("Assets:Bank", None),
+                RawPosting::builder()
+                    .account("Nowhere:One")
+                    .maybe_amount(Some(Amount::new(Decimal::MAX, CommodityCode::new("AUD"))))
+                    .build(),
+                RawPosting::builder()
+                    .account("Nowhere:Two")
+                    .maybe_amount(Some(Amount::new(Decimal::MAX, CommodityCode::new("AUD"))))
+                    .build(),
+            ],
+        );
+
+        let planned = plan(&svcs, core::slice::from_ref(&doc)).await;
+        let outcome = run(&svcs, core::slice::from_ref(&doc)).await;
+
+        assert!(
+            planned
+                .charged_by_cause
+                .iter()
+                .any(|(cause, _)| *cause == SkipCause::RowLocalFailure),
+            "the plan reports the overflow, which happens above the sink"
+        );
+        assert_eq!(
+            planned.charged_by_cause, outcome.charged_by_cause,
+            "and charges it exactly as the run does"
+        );
     }
 
     /// A real run creates the tags it names before writing a row; a plan must
