@@ -582,6 +582,65 @@ mod tests {
     }
 
     #[test]
+    fn escaping_include_stays_distinct_from_a_same_named_sibling() {
+        // Regression for #401. `normalise()` folds `..` lexically, and it is
+        // the key used for both diamond and cycle detection. Before 1df8da7,
+        // consecutive `..` past what a preceding named component could
+        // cancel folded away in pairs: an include with two unmatched `..`
+        // beyond its real nesting silently normalised to the same *bare*
+        // filename as a shallower, unrelated sibling — so the escaping
+        // include was misclassified as an already-seen diamond and its file
+        // was never read, without any error.
+        //
+        // The include's relative-path arithmetic only reproduces this
+        // against a *relative* root: joined onto an absolute temp-dir
+        // prefix, folding always bottoms out at the real filesystem root,
+        // where old and fixed code agree. So this test `chdir`s into a
+        // directory nested inside the fixture and loads a relative root,
+        // matching how the bug actually manifested in a real repository
+        // tree. `cargo-nextest` runs each test in its own process, so
+        // mutating the process's working directory here cannot race another
+        // test.
+        let dir = fixture(
+            "escape",
+            &[
+                (
+                    "w/x/top/ledger/main.bean",
+                    "include \"../../shared.bean\"\ninclude \"../../../../shared.bean\"\n",
+                ),
+                ("w/x/shared.bean", &tx("sibling")),
+                ("shared.bean", &tx("escaped")),
+            ],
+        );
+        let original_dir = std::env::current_dir().expect("current dir");
+        std::env::set_current_dir(dir.join("w").join("x")).expect("chdir into fixture");
+        let loaded = load("top/ledger/main.bean");
+        std::env::set_current_dir(original_dir).expect("restore original dir");
+        let loaded = loaded.expect("load");
+
+        let narrations: Vec<String> = transactions(&loaded)
+            .into_iter()
+            .map(|(_, narration)| narration)
+            .collect();
+        assert_eq!(
+            narrations,
+            vec!["sibling".to_owned(), "escaped".to_owned()],
+            "the doubly-escaping include must reach the distinct file two \
+             real directories up, not be folded onto the sibling already \
+             read via the singly-escaping include: {narrations:?}"
+        );
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("included twice")),
+            "two genuinely different files must not be reported as a \
+             diamond: {:?}",
+            loaded.warnings
+        );
+    }
+
+    #[test]
     fn a_ledger_with_transactions_does_not_warn_about_emptiness() {
         let dir = fixture("nonempty", &[("main.bean", &tx("something"))]);
         let root = dir.join("main.bean");
