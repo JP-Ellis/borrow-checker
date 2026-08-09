@@ -15,6 +15,22 @@ use crate::ast::PostingAmount;
 use crate::ast::Transaction;
 use crate::ast::TxFlag;
 
+/// Undated directive keywords the importer knowingly ignores.
+///
+/// Listing them explicitly means an unrecognised keyword can be warned about
+/// without also warning about every legitimate non-transaction line.
+const TOLERATED_UNDATED: [&str; 6] = [
+    "option", "plugin", "pushtag", "poptag", "pushmeta", "popmeta",
+];
+
+/// Dated directive keywords the importer knowingly ignores.
+///
+/// `open`, `close`, `commodity` and `balance` are parsed into their own
+/// variants and so are absent here.
+const TOLERATED_DATED: [&str; 7] = [
+    "note", "price", "event", "document", "pad", "query", "custom",
+];
+
 /// Parses a complete Beancount file and returns its directives.
 ///
 /// # Arguments
@@ -44,7 +60,15 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
             continue;
         }
 
+        // An indented line belongs to the directive above it — a posting leg
+        // or a metadata key — and is never a top-level directive. Postings are
+        // consumed by `collect_postings`; anything else here is metadata.
+        if line.starts_with([' ', '\t']) {
+            continue;
+        }
+
         if !trimmed.starts_with(|c: char| c.is_ascii_digit()) {
+            directives.push(undated_directive(trimmed, line_no)?);
             continue;
         }
 
@@ -113,11 +137,73 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
                 currency,
             });
         } else {
-            directives.push(Directive::Other);
+            directives.push(dated_directive(rest, line_no));
         }
     }
 
     Ok(directives)
+}
+
+/// Classifies a top-level line that does not begin with a date.
+///
+/// # Arguments
+///
+/// * `trimmed` - The line with surrounding whitespace removed.
+/// * `line` - The 1-based source line number.
+///
+/// # Returns
+///
+/// [`Directive::Include`] for an `include`, [`Directive::Other`] for a
+/// tolerated keyword, and [`Directive::Unknown`] otherwise.
+///
+/// # Errors
+///
+/// Returns an error if an `include` directive has no quoted path argument.
+fn undated_directive(trimmed: &str, line: usize) -> Result<Directive, String> {
+    let keyword = trimmed.split_whitespace().next().unwrap_or_default();
+
+    if keyword == "include" {
+        let rest = trimmed
+            .get(keyword.len()..)
+            .unwrap_or_default()
+            .trim_start();
+        let mut input = rest;
+        let path = quoted_string(&mut input)
+            .map_err(|_| format!("line {line}: include directive has no quoted path"))?;
+        return Ok(Directive::Include { path, line });
+    }
+
+    if TOLERATED_UNDATED.contains(&keyword) {
+        Ok(Directive::Other)
+    } else {
+        Ok(Directive::Unknown {
+            keyword: keyword.to_owned(),
+            line,
+        })
+    }
+}
+
+/// Classifies a dated line whose keyword has no dedicated AST variant.
+///
+/// # Arguments
+///
+/// * `rest` - The portion of the line following the date, left-trimmed.
+/// * `line` - The 1-based source line number.
+///
+/// # Returns
+///
+/// [`Directive::Other`] for a tolerated keyword, [`Directive::Unknown`]
+/// otherwise.
+fn dated_directive(rest: &str, line: usize) -> Directive {
+    let keyword = rest.split_whitespace().next().unwrap_or_default();
+    if TOLERATED_DATED.contains(&keyword) {
+        Directive::Other
+    } else {
+        Directive::Unknown {
+            keyword: keyword.to_owned(),
+            line,
+        }
+    }
 }
 
 /// Parses the payee/narration/tags portion of a transaction header.
@@ -577,5 +663,101 @@ mod tests {
             panic!("expected Transaction directive")
         };
         assert_eq!(tx.tags, vec!["josh".to_owned()]);
+    }
+
+    #[test]
+    fn parses_include_directive() {
+        let directives = parse("include \"ledger/2025-01.bean\"\n").expect("parse");
+        assert_eq!(
+            directives,
+            vec![Directive::Include {
+                path: "ledger/2025-01.bean".to_owned(),
+                line: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_include_path_containing_spaces_and_colons() {
+        // The path is a quoted string, so neither a space nor the account
+        // separator terminates it.
+        let directives = parse("include \"my ledger/a:b.bean\"\n").expect("parse");
+        assert_eq!(
+            directives,
+            vec![Directive::Include {
+                path: "my ledger/a:b.bean".to_owned(),
+                line: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn include_without_a_quoted_path_is_a_parse_error() {
+        // An include the parser cannot read is not a warning: the importer would
+        // have no way to know what it failed to pull in.
+        let err = parse("include ledger.bean\n").expect_err("malformed include must fail");
+        assert!(
+            err.contains("include") && err.contains("1"),
+            "the error names the directive and its line: {err}"
+        );
+    }
+
+    #[test]
+    fn tolerated_undated_directives_are_other() {
+        let directives =
+            parse("option \"title\" \"Household\"\nplugin \"beancount.plugins.auto\"\n")
+                .expect("parse");
+        assert_eq!(directives, vec![Directive::Other, Directive::Other]);
+    }
+
+    #[test]
+    fn tolerated_dated_directives_are_other() {
+        let directives = parse(
+            "2025-01-01 custom \"budget\" Expenses:Food\n2025-01-02 note Assets:Bank \"hi\"\n",
+        )
+        .expect("parse");
+        assert_eq!(directives, vec![Directive::Other, Directive::Other]);
+    }
+
+    #[test]
+    fn unrecognised_undated_keyword_is_unknown() {
+        let directives = parse("; a comment\nfrobnicate whatever\n").expect("parse");
+        assert_eq!(
+            directives,
+            vec![Directive::Unknown {
+                keyword: "frobnicate".to_owned(),
+                line: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn unrecognised_dated_keyword_is_unknown() {
+        // `txn` is a real Beancount transaction form this parser does not handle.
+        // It must announce itself rather than vanish.
+        let directives = parse("2025-01-01 txn \"Payee\" \"Narration\"\n").expect("parse");
+        assert_eq!(
+            directives,
+            vec![Directive::Unknown {
+                keyword: "txn".to_owned(),
+                line: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn indented_lines_are_never_top_level_directives() {
+        // Metadata hanging off a directive is indented. Treating it as a
+        // top-level directive would warn about every metadata key in the ledger.
+        let directives =
+            parse("2025-01-01 open Assets:Bank AUD\n  export: \"schwab\"\n").expect("parse");
+        assert_eq!(
+            directives,
+            vec![Directive::Open {
+                date: bc_sdk::Date::new(2025, 1, 1),
+                account: "Assets:Bank".to_owned(),
+                currency: Some("AUD".to_owned()),
+            }]
+        );
     }
 }
