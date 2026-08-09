@@ -26,7 +26,7 @@ const MAX_DEPTH: usize = 64;
 ///
 /// The path is shared rather than cloned: one file contributes many
 /// directives, and each needs its own source location.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct Sourced {
     /// Display path of the file this directive was read from.
     pub file: Rc<str>,
@@ -56,6 +56,21 @@ struct State {
     /// Every normalised path already expanded, mapped to the site that first
     /// pulled it in, so a second inclusion can name both.
     seen: BTreeMap<PathBuf, String>,
+    /// How many directives the parser produced across every file visited,
+    /// including includes and unrecognised keywords.
+    directives_seen: usize,
+}
+
+/// The `include` directive that pulled a file in.
+///
+/// Both halves are needed for diagnostics: the site locates the directive, and
+/// the literal text is what the user can actually grep for in their ledger.
+#[derive(Debug, Clone, Copy)]
+struct Origin<'a> {
+    /// Where the include was written, as `file:line`.
+    site: &'a str,
+    /// The path text exactly as it appears in the ledger.
+    literal: &'a str,
 }
 
 /// Reads `root` and recursively splices in every file it includes.
@@ -77,7 +92,8 @@ struct State {
 pub(crate) fn load(root: &str) -> Result<Loaded, ImportError> {
     let mut loaded = Loaded::default();
     let mut state = State::default();
-    expand(&normalise(Path::new(root)), None, &mut state, &mut loaded)?;
+    let root_path = normalise(Path::new(root));
+    expand(&root_path, None, &mut state, &mut loaded)?;
 
     let transactions = loaded
         .directives
@@ -86,8 +102,10 @@ pub(crate) fn load(root: &str) -> Result<Loaded, ImportError> {
         .count();
     if transactions == 0 {
         loaded.warnings.push(format!(
-            "visited {} file(s) and found 0 transactions",
-            state.seen.len()
+            "{}: visited {} file(s), saw {} directive(s) and found 0 transactions",
+            root_path.display(),
+            state.seen.len(),
+            state.directives_seen
         ));
     }
 
@@ -99,8 +117,8 @@ pub(crate) fn load(root: &str) -> Result<Loaded, ImportError> {
 /// # Arguments
 ///
 /// * `path` - The file to read, already lexically normalised.
-/// * `origin` - Where this file was included from, as `file:line`, or `None`
-///   for the root file.
+/// * `origin` - The `include` that pulled this file in, or `None` for the root
+///   file.
 /// * `state` - Cycle, depth and duplicate bookkeeping.
 /// * `loaded` - Accumulator for directives and warnings.
 ///
@@ -110,7 +128,7 @@ pub(crate) fn load(root: &str) -> Result<Loaded, ImportError> {
 /// cyclically or nests deeper than [`MAX_DEPTH`].
 fn expand(
     path: &Path,
-    origin: Option<&str>,
+    origin: Option<Origin<'_>>,
     state: &mut State,
     loaded: &mut Loaded,
 ) -> Result<(), ImportError> {
@@ -144,7 +162,7 @@ fn expand(
     }
 
     if let Some(first) = state.seen.get(&key) {
-        if let Some(site) = origin {
+        if let Some(Origin { site, .. }) = origin {
             loaded.warnings.push(format!(
                 "{display} is included twice, first from {first} and again from {site}; \
                  expanding it once"
@@ -154,13 +172,15 @@ fn expand(
     }
     state.seen.insert(
         key.clone(),
-        origin.unwrap_or("the import profile").to_owned(),
+        origin.map_or("the import profile", |o| o.site).to_owned(),
     );
 
     let bytes = std::fs::read(path).map_err(|e| ImportError::BadValue {
         field: "source_file".to_owned(),
         detail: match origin {
-            Some(site) => format!("include at {site} cannot read {display}: {e}"),
+            Some(Origin { site, literal }) => {
+                format!("include \"{literal}\" at {site} cannot read {display}: {e}")
+            }
             None => format!("cannot read {display}: {e}"),
         },
     })?;
@@ -171,12 +191,17 @@ fn expand(
     let parent = path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
     state.stack.push(key);
+    state.directives_seen = state.directives_seen.saturating_add(directives.len());
     for directive in directives {
         match directive {
             Directive::Include { path: rel, line } => {
                 let site = format!("{display}:{line}");
                 let target = normalise(&parent.join(&rel));
-                expand(&target, Some(&site), state, loaded)?;
+                let origin = Origin {
+                    site: &site,
+                    literal: &rel,
+                };
+                expand(&target, Some(origin), state, loaded)?;
             }
             Directive::Unknown { keyword, line } => {
                 loaded.warnings.push(format!(
@@ -200,6 +225,11 @@ fn expand(
 /// unreliable under a wasip2 preopen, and this path is only ever used for
 /// opening files and for comparing them.
 ///
+/// A `..` that cannot be cancelled against a preceding named component is
+/// kept, so an escaping path stays distinct from the file it would otherwise
+/// be folded onto — the normalised path doubles as the cycle and diamond key.
+/// Rooted paths clamp at the root instead, as POSIX resolution does.
+///
 /// # Arguments
 ///
 /// * `path` - The path to normalise.
@@ -212,11 +242,13 @@ fn normalise(path: &Path) -> PathBuf {
     for component in path.components() {
         match component {
             Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
                 }
-            }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => out.push(".."),
+            },
             other => out.push(other.as_os_str()),
         }
     }
@@ -485,8 +517,67 @@ mod tests {
             .find(|w| w.contains("0 transactions"))
             .expect("an empty result warns");
         assert!(
-            warning.contains('3'),
+            warning.contains("3 file(s)"),
             "the warning counts files visited: {warning}"
+        );
+        assert!(
+            warning.contains("4 directive(s)"),
+            "the warning counts directives seen, so 'parsed nothing' and \
+             'parsed plenty, none of them transactions' read differently: {warning}"
+        );
+        assert!(
+            warning.contains(root.to_str().expect("utf8")),
+            "the warning names the root ledger, so a user importing several \
+             profiles knows which one warned: {warning}"
+        );
+    }
+
+    #[test]
+    fn normalise_folds_dot_and_parent_components() {
+        // A `..` that escapes must survive folding: the normalised path is the
+        // cycle and diamond key, so collapsing `../../shared.bean` onto
+        // `shared.bean` would misreport two different files as one and skip
+        // the second as a diamond.
+        let cases = [
+            ("ledger/2025-01.bean", "ledger/2025-01.bean"),
+            ("./ledger/./2025-01.bean", "ledger/2025-01.bean"),
+            ("ledger/sub/../2025-01.bean", "ledger/2025-01.bean"),
+            ("ledger/../2025-01.bean", "2025-01.bean"),
+            ("../x.bean", "../x.bean"),
+            ("../../x.bean", "../../x.bean"),
+            ("ledger/../../x.bean", "../x.bean"),
+            ("a/b/../../../../c", "../../c"),
+            ("ledger/../../../../etc/passwd", "../../../etc/passwd"),
+            ("/a/b/../c", "/a/c"),
+            ("/x/../../../etc", "/etc"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                normalise(Path::new(input)),
+                PathBuf::from(expected),
+                "normalising {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn unreadable_include_error_quotes_the_literal_include_text() {
+        // The user can only grep for what they typed, so the diagnostic must
+        // carry the literal text as well as the path it resolved to.
+        let dir = fixture(
+            "literal",
+            &[("ledger/main.bean", "include \"../../nope/fy2019.bean\"\n")],
+        );
+        let root = dir.join("ledger").join("main.bean");
+        let err = load(root.to_str().expect("utf8")).expect_err("missing include must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("include \"../../nope/fy2019.bean\""),
+            "quotes the literal include text verbatim: {message}"
+        );
+        assert!(
+            message.contains("main.bean:1"),
+            "names the including file and its line: {message}"
         );
     }
 
