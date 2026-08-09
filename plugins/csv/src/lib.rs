@@ -347,9 +347,12 @@ fn record_field(
 /// or blank.
 ///
 /// A column absent from *this* row because the row is short is a per-row
-/// omission and yields `None`. A column whose index lies beyond the file's
-/// data-row width is absent from *every* row, which means the profile does not
-/// match the file, and is an error.
+/// omission and yields `None`. A positional reference whose index lies beyond
+/// the file's data-row width is absent from *every* row, which means the
+/// profile does not match the file, and is an error. A name reference is
+/// exempt from that check: resolving it against the header at all is already
+/// proof the profile matches the file, so a stale width learned from a ragged
+/// first row cannot make it wrong.
 ///
 /// # Arguments
 ///
@@ -365,7 +368,7 @@ fn record_field(
 /// # Errors
 ///
 /// Returns [`ImportError::MissingField`] when the reference does not resolve,
-/// or resolves beyond the file's data-row width.
+/// or when a positional reference resolves beyond the file's data-row width.
 #[inline]
 fn optional_text(
     record: &csv::StringRecord,
@@ -377,7 +380,10 @@ fn optional_text(
         return Ok(None);
     };
     let idx = columns.resolve(column)?;
-    if idx >= expected {
+    // A name that resolved came from the header, which is itself proof the
+    // profile matches the file. Only a positional reference needs the width
+    // guard.
+    if column.as_name().is_none() && idx >= expected {
         return Err(ImportError::MissingField(column.describe()));
     }
     let Some(raw) = record.get(idx) else {
