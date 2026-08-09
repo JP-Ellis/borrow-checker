@@ -181,8 +181,12 @@ impl Service {
             return Ok(Created::default());
         }
 
+        // Snapshot before opening the transaction, not inside it: `list` goes to
+        // the pool for its own connection, and holding one here while asking for
+        // a second stalls a pool that has only one to give.
+        let known = self.list().await?;
         let mut db_tx = self.pool.begin().await?;
-        let out = self.materialise(paths, Some(&mut db_tx)).await?;
+        let out = Self::materialise(paths, known, Some(&mut db_tx)).await?;
         db_tx.commit().await?;
         Ok(out)
     }
@@ -215,7 +219,8 @@ impl Service {
         if paths.is_empty() {
             return Ok(Created::default());
         }
-        self.materialise(paths, None).await
+        let known = self.list().await?;
+        Self::materialise(paths, known, None).await
     }
 
     /// Walks `paths` against one snapshot, minting an ID per missing segment.
@@ -229,6 +234,8 @@ impl Service {
     /// # Arguments
     ///
     /// * `paths` - The paths to walk; duplicates are harmless.
+    /// * `known` - Every tag that already exists, loaded by the caller before it
+    ///   opened any transaction.
     /// * `writer` - The transaction to insert into, or `None` to write nothing.
     ///
     /// # Returns
@@ -238,14 +245,12 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::Database`] on query or insert failure, or
-    /// [`BcError::BadData`] if a stored row cannot be parsed.
+    /// Returns [`BcError::Database`] on insert failure.
     async fn materialise(
-        &self,
         paths: &[TagPath],
+        mut known: Vec<Tag>,
         mut writer: Option<&mut sqlx::Transaction<'_, sqlx::Sqlite>>,
     ) -> BcResult<Created> {
-        let mut known = self.list().await?;
         let mut out = Created::default();
 
         for path in paths {
