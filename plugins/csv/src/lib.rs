@@ -6,9 +6,8 @@
 
 mod config;
 mod glob;
+mod header;
 mod preamble;
-
-use std::collections::HashMap;
 
 use bc_sdk::Amount;
 use bc_sdk::Date;
@@ -24,6 +23,7 @@ use crate::config::ColumnRef;
 use crate::config::CommoditySource;
 use crate::config::Config;
 use crate::config::Header;
+use crate::header::HeaderMap;
 use crate::preamble::find_csv_start;
 
 /// Imports transactions from delimited text (CSV) files.
@@ -140,21 +140,25 @@ impl CsvImporter {
             .trim(csv::Trim::All)
             .from_reader(csv_bytes);
 
-        // Case-insensitive column-name → zero-based index map. Empty when the
-        // file has no header row, in which case every reference is positional.
-        let col_index: HashMap<String, usize> = if has_header_row {
-            reader
-                .headers()
-                .map_err(|e| ImportError::Parse(e.to_string()))?
-                .iter()
-                .enumerate()
-                .map(|(i, h)| (h.to_ascii_lowercase(), i))
-                .collect()
+        // The header row's own record, cloned because `Reader::headers`
+        // borrows the reader mutably and the row loop needs it afterwards.
+        let header_record = if has_header_row {
+            Some(
+                reader
+                    .headers()
+                    .map_err(|e| ImportError::Parse(e.to_string()))?
+                    .clone(),
+            )
         } else {
-            HashMap::new()
+            None
         };
 
-        let date_idx = resolve(&col_index, &cfg.date_column)?;
+        let (columns, warnings) = HeaderMap::build(header_record.as_ref(), &cfg.column_refs())?;
+        for detail in warnings {
+            bc_sdk::warn!("duplicate column name in header"; path = file, detail = detail);
+        }
+
+        let date_idx = columns.resolve(&cfg.date_column)?;
 
         let commodity_source = cfg
             .commodity
@@ -183,9 +187,9 @@ impl CsvImporter {
                 parsed.day() as u8,
             );
 
-            let commodity = row_commodity(commodity_source, &record, &col_index)?;
+            let commodity = row_commodity(commodity_source, &record, &columns)?;
 
-            let amount_value = parse_amount(&cfg.amount_columns, cfg, &record, &col_index)?
+            let amount_value = parse_amount(&cfg.amount_columns, cfg, &record, &columns)?
                 .ok_or_else(|| match cfg.amount_columns {
                     AmountColumns::SplitDebitCredit {
                         ref debit_column,
@@ -201,7 +205,7 @@ impl CsvImporter {
                 })?;
 
             let balance = if let Some(column) = cfg.balance_column.as_ref() {
-                let idx = resolve(&col_index, column)?;
+                let idx = columns.resolve(column)?;
                 let raw_owned = record_field(&record, idx, &column.describe())?;
                 let raw = raw_owned.trim();
                 if raw.is_empty() {
@@ -218,10 +222,10 @@ impl CsvImporter {
                 None
             };
 
-            let payee = optional_text(&record, &col_index, cfg.payee_column.as_ref())?;
-            let description = optional_text(&record, &col_index, cfg.description_column.as_ref())?
+            let payee = optional_text(&record, &columns, cfg.payee_column.as_ref())?;
+            let description = optional_text(&record, &columns, cfg.description_column.as_ref())?
                 .unwrap_or_default();
-            let reference = optional_text(&record, &col_index, cfg.reference_column.as_ref())?;
+            let reference = optional_text(&record, &columns, cfg.reference_column.as_ref())?;
 
             let mut postings = vec![
                 RawPosting::builder()
@@ -232,13 +236,12 @@ impl CsvImporter {
             ];
 
             for leg in &cfg.extra_legs {
-                let Some(value) = parse_amount(&leg.amount_columns, cfg, &record, &col_index)?
-                else {
+                let Some(value) = parse_amount(&leg.amount_columns, cfg, &record, &columns)? else {
                     // A blank cell means this leg is absent for this row, which
                     // is the normal shape of a fee column.
                     continue;
                 };
-                let code = match row_commodity(&leg.commodity, &record, &col_index) {
+                let code = match row_commodity(&leg.commodity, &record, &columns) {
                     Ok(code) => code,
                     // A blank cell means this row does not name the leg's
                     // commodity, which is a per-row omission. An unresolvable
@@ -323,7 +326,7 @@ fn record_field(
 /// # Arguments
 ///
 /// * `record` - The CSV record being processed.
-/// * `col_index` - Case-insensitive header-name to index map.
+/// * `columns` - The header map, for resolving column references.
 /// * `column` - The configured reference, if any.
 ///
 /// # Returns
@@ -338,43 +341,16 @@ fn record_field(
 #[inline]
 fn optional_text(
     record: &csv::StringRecord,
-    col_index: &HashMap<String, usize>,
+    columns: &HeaderMap,
     column: Option<&ColumnRef>,
 ) -> Result<Option<String>, ImportError> {
     let Some(column) = column else {
         return Ok(None);
     };
-    let idx = resolve(col_index, column)?;
+    let idx = columns.resolve(column)?;
     let raw = record_field(record, idx, &column.describe())?;
     let trimmed = raw.trim();
     Ok((!trimmed.is_empty()).then(|| trimmed.to_owned()))
-}
-
-/// Resolves a column reference to a zero-based index within a row.
-///
-/// # Arguments
-///
-/// * `col_index` - Case-insensitive header-name to index map. Empty when the
-///   file has no header row.
-/// * `column` - The reference to resolve.
-///
-/// # Returns
-///
-/// The zero-based column index.
-///
-/// # Errors
-///
-/// Returns [`ImportError::MissingField`] when a name-based reference does not
-/// appear in the header.
-#[inline]
-fn resolve(col_index: &HashMap<String, usize>, column: &ColumnRef) -> Result<usize, ImportError> {
-    match *column {
-        ColumnRef::Name(ref name) => col_index
-            .get(&name.to_ascii_lowercase())
-            .copied()
-            .ok_or_else(|| ImportError::MissingField(column.describe())),
-        ColumnRef::Index(index) => Ok(index),
-    }
 }
 
 /// Resolves the commodity code that applies to one row.
@@ -383,7 +359,7 @@ fn resolve(col_index: &HashMap<String, usize>, column: &ColumnRef) -> Result<usi
 ///
 /// * `source` - Where the code comes from.
 /// * `record` - The CSV record being processed.
-/// * `col_index` - Case-insensitive header-name to index map.
+/// * `columns` - The header map, for resolving column references.
 ///
 /// # Returns
 ///
@@ -398,12 +374,12 @@ fn resolve(col_index: &HashMap<String, usize>, column: &ColumnRef) -> Result<usi
 fn row_commodity(
     source: &CommoditySource,
     record: &csv::StringRecord,
-    col_index: &HashMap<String, usize>,
+    columns: &HeaderMap,
 ) -> Result<String, ImportError> {
     match *source {
         CommoditySource::Fixed { ref code } => Ok(code.clone()),
         CommoditySource::Column { ref column } => {
-            let idx = resolve(col_index, column)?;
+            let idx = columns.resolve(column)?;
             let raw = record_field(record, idx, &column.describe())?;
             let trimmed = raw.trim();
             if trimmed.is_empty() {
@@ -423,11 +399,11 @@ fn row_commodity(
 ///
 /// # Arguments
 ///
-/// * `columns` - The amount-column strategy to apply — the primary leg's
-///   `cfg.amount_columns` or an extra leg's `LegSpec::amount_columns`.
+/// * `amount_columns` - The amount-column strategy to apply — the primary
+///   leg's `cfg.amount_columns` or an extra leg's `LegSpec::amount_columns`.
 /// * `cfg` - The CSV import configuration, for number-formatting settings.
 /// * `record` - The CSV record being processed.
-/// * `col_index` - Case-insensitive column name to index mapping.
+/// * `columns` - The header map, for resolving column references.
 ///
 /// # Returns
 ///
@@ -442,14 +418,14 @@ fn row_commodity(
 /// cell cannot be parsed as a number.
 #[inline]
 fn parse_amount(
-    columns: &AmountColumns,
+    amount_columns: &AmountColumns,
     cfg: &Config,
     record: &csv::StringRecord,
-    col_index: &HashMap<String, usize>,
+    columns: &HeaderMap,
 ) -> Result<Option<Decimal>, ImportError> {
-    match *columns {
+    match *amount_columns {
         AmountColumns::Single { ref column } => {
-            let idx = resolve(col_index, column)?;
+            let idx = columns.resolve(column)?;
             let raw = record_field(record, idx, &column.describe())?;
             let trimmed = raw.trim();
             if trimmed.is_empty() {
@@ -468,8 +444,8 @@ fn parse_amount(
         } => {
             // Both references must resolve; only the *cells* may be empty,
             // since exactly one of the pair is populated per row.
-            let debit_idx = resolve(col_index, debit_column)?;
-            let credit_idx = resolve(col_index, credit_column)?;
+            let debit_idx = columns.resolve(debit_column)?;
+            let credit_idx = columns.resolve(credit_column)?;
 
             let debit_raw = record
                 .get(debit_idx)
