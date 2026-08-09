@@ -593,7 +593,7 @@ borrow-checker import run --profile <name>
 borrow-checker import list
 borrow-checker import discard <batch-id>
 borrow-checker export --format <ledger|beancount> --output <file>
-borrow-checker report [net-worth|summary|budget]
+borrow-checker report [net-worth|summary|categories]
 borrow-checker budget [status|allocate|list]
 borrow-checker plugin [install|list|remove]
 borrow-checker completions <bash|elvish|fish|powershell|zsh>
