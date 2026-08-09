@@ -112,15 +112,14 @@ fn net_worth_includes_manual_asset_at_market_value() {
 fn setup_accounts(ctx: &TestContext) -> (String, String) {
     let checking_out = ctx
         .command()
-        .args([
-            "--json", "account", "create", "--name", "Checking", "--type", "asset",
-        ])
+        .args(["--json", "account", "create", "Checking", "--type", "asset"])
         .output()
         .expect("create checking");
     let checking_json: serde_json::Value =
         serde_json::from_slice(&checking_out.stdout).expect("valid JSON");
     let checking_id = checking_json
-        .get("id")
+        .get("account")
+        .and_then(|account| account.get("id"))
         .and_then(serde_json::Value::as_str)
         .expect("id field")
         .to_owned();
@@ -128,14 +127,15 @@ fn setup_accounts(ctx: &TestContext) -> (String, String) {
     let interest_out = ctx
         .command()
         .args([
-            "--json", "account", "create", "--name", "Interest", "--type", "income",
+            "--json", "account", "create", "Interest", "--type", "income",
         ])
         .output()
         .expect("create interest");
     let interest_json: serde_json::Value =
         serde_json::from_slice(&interest_out.stdout).expect("valid JSON");
     let interest_id = interest_json
-        .get("id")
+        .get("account")
+        .and_then(|account| account.get("id"))
         .and_then(serde_json::Value::as_str)
         .expect("id field")
         .to_owned();
