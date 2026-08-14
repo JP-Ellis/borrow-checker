@@ -3,6 +3,13 @@
 use core::fmt;
 use core::str::FromStr;
 
+use jiff::Timestamp;
+use jiff::civil::Date;
+use rust_decimal::Decimal;
+
+use crate::AccountId;
+use crate::money::Amount;
+
 /// Maximum length of a metadata key, in bytes.
 ///
 /// Keys are restricted to ASCII, so this is also a character count.
@@ -143,14 +150,110 @@ impl From<MetaKey> for String {
     }
 }
 
+/// The type of a metadata value, without the value.
+///
+/// Every registered key carries one of these; [`MetaValue::ty`] projects a
+/// value onto its type. The serde representation (`text`, `number`, …) is the
+/// form stored in the key registry.
+///
+/// Re-exported from the crate root as [`crate::MetaType`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the seven metadata types are closed by design, deviating from the \
+              #[non_exhaustive] convention elsewhere in this crate. \
+              #[non_exhaustive] buys semver-compatible variant addition for \
+              consumers outside the crate; bc-models is unpublished and every \
+              consumer is in this workspace, so that buys nothing. It would cost \
+              the coercion matrix in bc-core its exhaustiveness check, where a \
+              wildcard arm would turn an eighth type into a silent mismatch \
+              instead of a build failure."
+)]
+pub enum MetaType {
+    /// Free text.
+    Text,
+    /// An arbitrary-precision decimal number.
+    Number,
+    /// A boolean flag.
+    Boolean,
+    /// A calendar date with no time-of-day component.
+    Date,
+    /// An instant in time.
+    Timestamp,
+    /// A monetary amount: a value paired with a commodity code.
+    Amount,
+    /// A reference to an account.
+    Account,
+}
+
+/// A typed metadata value.
+///
+/// Re-exported from the crate root as [`crate::MetaValue`].
+///
+/// # Example
+///
+/// ```
+/// use bc_models::{MetaType, MetaValue};
+///
+/// let value = MetaValue::Boolean(true);
+/// assert_eq!(value.ty(), MetaType::Boolean);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the seven metadata types are closed by design; see MetaType for the \
+              full reasoning"
+)]
+pub enum MetaValue {
+    /// Free text.
+    Text(String),
+    /// An arbitrary-precision decimal number.
+    Number(Decimal),
+    /// A boolean flag.
+    Boolean(bool),
+    /// A calendar date with no time-of-day component.
+    Date(Date),
+    /// An instant in time.
+    Timestamp(Timestamp),
+    /// A monetary amount: a value paired with a commodity code.
+    Amount(Amount),
+    /// A reference to an account.
+    Account(AccountId),
+}
+
+impl MetaValue {
+    /// Returns the type of this value.
+    #[inline]
+    #[must_use]
+    pub fn ty(&self) -> MetaType {
+        match *self {
+            Self::Text(_) => MetaType::Text,
+            Self::Number(_) => MetaType::Number,
+            Self::Boolean(_) => MetaType::Boolean,
+            Self::Date(_) => MetaType::Date,
+            Self::Timestamp(_) => MetaType::Timestamp,
+            Self::Amount(_) => MetaType::Amount,
+            Self::Account(_) => MetaType::Account,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::str::FromStr as _;
 
+    use jiff::Timestamp;
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
+    use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::AccountId;
+    use crate::money::Amount;
+    use crate::money::CommodityCode;
 
     #[rstest]
     #[case("payee")]
@@ -246,5 +349,63 @@ mod tests {
         assert_eq!(key.as_str(), "payee");
         let bad = serde_json::from_str::<MetaKey>("\"1bad\"").ok();
         assert_eq!(bad, None);
+    }
+
+    fn sample_values() -> Vec<MetaValue> {
+        vec![
+            MetaValue::Text("hello".to_owned()),
+            MetaValue::Number(dec!(1502.50)),
+            MetaValue::Boolean(true),
+            MetaValue::Date(date(2026, 1, 15)),
+            MetaValue::Timestamp(Timestamp::from_second(1_700_000_000).expect("valid timestamp")),
+            MetaValue::Amount(Amount::new(dec!(42.00), CommodityCode::new("AUD"))),
+            MetaValue::Account(AccountId::new()),
+        ]
+    }
+
+    #[test]
+    fn meta_value_ty_projects_every_variant() {
+        let expected = vec![
+            MetaType::Text,
+            MetaType::Number,
+            MetaType::Boolean,
+            MetaType::Date,
+            MetaType::Timestamp,
+            MetaType::Amount,
+            MetaType::Account,
+        ];
+        let actual: Vec<MetaType> = sample_values().iter().map(MetaValue::ty).collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn meta_value_round_trips_through_json() {
+        for value in sample_values() {
+            let json = serde_json::to_string(&value).expect("serialize should succeed");
+            let back: MetaValue = serde_json::from_str(&json).expect("deserialize should succeed");
+            assert_eq!(value, back);
+        }
+    }
+
+    #[test]
+    fn meta_value_is_externally_tagged_snake_case() {
+        let json = serde_json::to_string(&MetaValue::Text("hi".to_owned()))
+            .expect("serialize should succeed");
+        assert_eq!(json, "{\"text\":\"hi\"}");
+    }
+
+    #[rstest]
+    #[case(MetaType::Text, "\"text\"")]
+    #[case(MetaType::Number, "\"number\"")]
+    #[case(MetaType::Boolean, "\"boolean\"")]
+    #[case(MetaType::Date, "\"date\"")]
+    #[case(MetaType::Timestamp, "\"timestamp\"")]
+    #[case(MetaType::Amount, "\"amount\"")]
+    #[case(MetaType::Account, "\"account\"")]
+    fn meta_type_serialises_to_registry_name(#[case] ty: MetaType, #[case] expected: &str) {
+        let json = serde_json::to_string(&ty).expect("serialize should succeed");
+        assert_eq!(json, expected);
+        let back: MetaType = serde_json::from_str(&json).expect("deserialize should succeed");
+        assert_eq!(ty, back);
     }
 }

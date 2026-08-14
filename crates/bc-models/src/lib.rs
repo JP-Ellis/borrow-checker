@@ -140,6 +140,8 @@ pub use loan::LoanTerms;
 pub use loan::LoanTermsBuilder;
 pub use metadata::KeyError as MetaKeyError;
 pub use metadata::MetaKey;
+pub use metadata::MetaType;
+pub use metadata::MetaValue;
 pub use money::Amount;
 pub use money::AmountError;
 pub use money::CommodityCode;
