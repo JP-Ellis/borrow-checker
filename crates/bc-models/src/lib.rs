@@ -147,6 +147,7 @@ pub use metadata::MetaKeyDefBuilder;
 pub use metadata::MetaType;
 pub use metadata::MetaValue;
 pub use metadata::Metadata;
+pub use metadata::ValueError as MetaValueError;
 pub use money::Amount;
 pub use money::AmountError;
 pub use money::CommodityCode;

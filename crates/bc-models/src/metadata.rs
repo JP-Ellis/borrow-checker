@@ -9,6 +9,7 @@ use rust_decimal::Decimal;
 
 use crate::AccountId;
 use crate::money::Amount;
+use crate::money::CommodityCode;
 
 /// Maximum length of a metadata key, in bytes.
 ///
@@ -193,6 +194,130 @@ pub enum MetaType {
     Account,
 }
 
+impl MetaType {
+    /// Parses `text` as a value of this type.
+    ///
+    /// The inverse of [`MetaValue::canonical`]. [`MetaType::Text`] accepts
+    /// anything; every other type accepts exactly the form `canonical`
+    /// produces.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - The canonical string form to read.
+    ///
+    /// # Returns
+    ///
+    /// The parsed value.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`ValueError`] variant naming this type when `text` does
+    /// not carry it.
+    #[inline]
+    pub fn parse_value(self, text: &str) -> Result<MetaValue, ValueError> {
+        match self {
+            Self::Text => Ok(MetaValue::Text(text.to_owned())),
+            Self::Number => text
+                .parse::<Decimal>()
+                .map(MetaValue::Number)
+                .map_err(|_err| ValueError::Number {
+                    text: text.to_owned(),
+                }),
+            Self::Boolean => match text {
+                "true" => Ok(MetaValue::Boolean(true)),
+                "false" => Ok(MetaValue::Boolean(false)),
+                _other => Err(ValueError::Boolean {
+                    text: text.to_owned(),
+                }),
+            },
+            Self::Date => {
+                text.parse::<Date>()
+                    .map(MetaValue::Date)
+                    .map_err(|_err| ValueError::Date {
+                        text: text.to_owned(),
+                    })
+            }
+            Self::Timestamp => {
+                text.parse::<Timestamp>()
+                    .map(MetaValue::Timestamp)
+                    .map_err(|_err| ValueError::Timestamp {
+                        text: text.to_owned(),
+                    })
+            }
+            Self::Amount => {
+                let (value, commodity) =
+                    text.rsplit_once(' ').ok_or_else(|| ValueError::Amount {
+                        text: text.to_owned(),
+                    })?;
+                if commodity.is_empty() {
+                    return Err(ValueError::Amount {
+                        text: text.to_owned(),
+                    });
+                }
+                let parsed = value
+                    .parse::<Decimal>()
+                    .map_err(|_err| ValueError::Amount {
+                        text: text.to_owned(),
+                    })?;
+                Ok(MetaValue::Amount(Amount::new(
+                    parsed,
+                    CommodityCode::new(commodity),
+                )))
+            }
+            Self::Account => text
+                .parse::<AccountId>()
+                .map(MetaValue::Account)
+                .map_err(|_err| ValueError::Account {
+                    text: text.to_owned(),
+                }),
+        }
+    }
+}
+
+/// Error returned when a string cannot be read as a given [`MetaType`].
+///
+/// Re-exported from the crate root as [`crate::MetaValueError`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ValueError {
+    /// The text was not a decimal number.
+    #[error("'{text}' is not a number")]
+    Number {
+        /// The text that failed to parse.
+        text: String,
+    },
+    /// The text was neither `true` nor `false`.
+    #[error("'{text}' is not a boolean; expected 'true' or 'false'")]
+    Boolean {
+        /// The text that failed to parse.
+        text: String,
+    },
+    /// The text was not a `YYYY-MM-DD` date.
+    #[error("'{text}' is not a date")]
+    Date {
+        /// The text that failed to parse.
+        text: String,
+    },
+    /// The text was not an RFC 3339 timestamp.
+    #[error("'{text}' is not a timestamp")]
+    Timestamp {
+        /// The text that failed to parse.
+        text: String,
+    },
+    /// The text was not a decimal value followed by a commodity code.
+    #[error("'{text}' is not an amount; expected a value and a commodity, e.g. '42.00 AUD'")]
+    Amount {
+        /// The text that failed to parse.
+        text: String,
+    },
+    /// The text was not an account id.
+    #[error("'{text}' is not an account id")]
+    Account {
+        /// The text that failed to parse.
+        text: String,
+    },
+}
+
 /// A typed metadata value.
 ///
 /// Re-exported from the crate root as [`crate::MetaValue`].
@@ -242,6 +367,41 @@ impl MetaValue {
             Self::Timestamp(_) => MetaType::Timestamp,
             Self::Amount(_) => MetaType::Amount,
             Self::Account(_) => MetaType::Account,
+        }
+    }
+
+    /// Returns this value's canonical string form.
+    ///
+    /// Every value has one, because both metadata tables store `value_text`
+    /// `NOT NULL`. The form is exactly what [`MetaType::parse_value`] reads
+    /// back, so the two are inverses for all seven types. It is a storage
+    /// contract, not presentation: nothing here may be reshaped to look better
+    /// on screen.
+    ///
+    /// [`MetaValue::Account`] yields the account's id. Rendering the account's
+    /// path instead needs the account tree, which this crate cannot see; the
+    /// storage layer substitutes the path where it has one.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bc_models::{MetaType, MetaValue};
+    ///
+    /// let value = MetaValue::Boolean(true);
+    /// assert_eq!(value.canonical(), "true");
+    /// assert_eq!(MetaType::Boolean.parse_value("true"), Ok(value));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn canonical(&self) -> String {
+        match *self {
+            Self::Text(ref text) => text.clone(),
+            Self::Number(number) => number.to_string(),
+            Self::Boolean(flag) => flag.to_string(),
+            Self::Date(day) => day.to_string(),
+            Self::Timestamp(stamp) => stamp.to_string(),
+            Self::Amount(ref amount) => format!("{} {}", amount.value(), amount.commodity()),
+            Self::Account(ref id) => id.to_string(),
         }
     }
 }
@@ -967,5 +1127,99 @@ mod tests {
         let json = serde_json::to_string(&def).expect("serialize should succeed");
         let back: MetaKeyDef = serde_json::from_str(&json).expect("deserialize should succeed");
         assert_eq!(def, back);
+    }
+
+    #[rstest]
+    #[case(MetaValue::Text("Generic Grocer".to_owned()), "Generic Grocer")]
+    #[case(MetaValue::Number(dec!(1502.50)), "1502.50")]
+    #[case(MetaValue::Boolean(true), "true")]
+    #[case(MetaValue::Boolean(false), "false")]
+    #[case(MetaValue::Date(date(2026, 1, 15)), "2026-01-15")]
+    #[case(
+        MetaValue::Amount(Amount::new(dec!(42.00), CommodityCode::new("AUD"))),
+        "42.00 AUD"
+    )]
+    fn meta_value_canonical_form_is_stable(#[case] value: MetaValue, #[case] expected: &str) {
+        assert_eq!(value.canonical(), expected);
+    }
+
+    #[test]
+    fn meta_value_canonical_number_keeps_trailing_zeros() {
+        assert_eq!(MetaValue::Number(dec!(1.500)).canonical(), "1.500");
+    }
+
+    #[test]
+    fn meta_value_canonical_timestamp_is_rfc_3339() {
+        let stamp = Timestamp::from_second(1_700_000_000).expect("valid timestamp");
+        assert_eq!(
+            MetaValue::Timestamp(stamp).canonical(),
+            "2023-11-14T22:13:20Z"
+        );
+    }
+
+    #[test]
+    fn meta_value_canonical_account_is_the_id() {
+        let id = AccountId::new();
+        assert_eq!(MetaValue::Account(id.clone()).canonical(), id.to_string());
+    }
+
+    #[test]
+    fn canonical_and_parse_value_are_inverses() {
+        for value in sample_values() {
+            let text = value.canonical();
+            let back = value
+                .ty()
+                .parse_value(&text)
+                .expect("canonical form must parse back");
+            assert_eq!(value, back);
+        }
+    }
+
+    #[test]
+    fn parse_value_accepts_any_text_as_text() {
+        assert_eq!(
+            MetaType::Text.parse_value("not a number at all"),
+            Ok(MetaValue::Text("not a number at all".to_owned()))
+        );
+    }
+
+    #[rstest]
+    #[case(MetaType::Number, "not-a-number")]
+    #[case(MetaType::Boolean, "yes")]
+    #[case(MetaType::Date, "2026-13-99")]
+    #[case(MetaType::Timestamp, "yesterday")]
+    #[case(MetaType::Amount, "42.00")]
+    #[case(MetaType::Amount, "42.00 ")]
+    #[case(MetaType::Account, "not an id")]
+    // An account *path* is what a tombstoned entry's `value_text` retains. It
+    // is deliberately not an id, so such an entry reads back as flagged text.
+    #[case(MetaType::Account, "Assets:Bank:Savings")]
+    fn parse_value_rejects_text_that_is_not_the_type(#[case] ty: MetaType, #[case] text: &str) {
+        assert_eq!(ty.parse_value(text).ok(), None);
+    }
+
+    #[test]
+    fn parse_value_boolean_is_exact() {
+        assert_eq!(
+            MetaType::Boolean.parse_value("true"),
+            Ok(MetaValue::Boolean(true))
+        );
+        assert_eq!(
+            MetaType::Boolean.parse_value("false"),
+            Ok(MetaValue::Boolean(false))
+        );
+        assert_eq!(MetaType::Boolean.parse_value("True").ok(), None);
+        assert_eq!(MetaType::Boolean.parse_value("1").ok(), None);
+    }
+
+    #[test]
+    fn parse_value_amount_splits_on_the_last_space() {
+        assert_eq!(
+            MetaType::Amount.parse_value("42.00 AUD"),
+            Ok(MetaValue::Amount(Amount::new(
+                dec!(42.00),
+                CommodityCode::new("AUD")
+            )))
+        );
     }
 }
