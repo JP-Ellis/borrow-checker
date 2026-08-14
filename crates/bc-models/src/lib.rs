@@ -142,6 +142,8 @@ pub use metadata::KeyError as MetaKeyError;
 pub use metadata::MetaEntry;
 pub use metadata::MetaEntryBuilder;
 pub use metadata::MetaKey;
+pub use metadata::MetaKeyDef;
+pub use metadata::MetaKeyDefBuilder;
 pub use metadata::Metadata;
 pub use metadata::MetaType;
 pub use metadata::MetaValue;

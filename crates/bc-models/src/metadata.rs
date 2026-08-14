@@ -451,6 +451,68 @@ impl FromIterator<MetaEntry> for Metadata {
     }
 }
 
+/// A registry entry binding a metadata key to its value type.
+///
+/// Every key is a user key: there are no reserved or built-in keys, and every
+/// key can be renamed and retyped. A key enters the registry on first write,
+/// with its type inferred from the value.
+///
+/// Re-exported from the crate root as [`crate::MetaKeyDef`].
+///
+/// # Example
+///
+/// ```
+/// use bc_models::{MetaKey, MetaKeyDef, MetaType};
+/// use jiff::Timestamp;
+///
+/// let def = MetaKeyDef::builder()
+///     .key(MetaKey::new("invoice").expect("valid key"))
+///     .ty(MetaType::Number)
+///     .created_at(Timestamp::now())
+///     .build();
+///
+/// assert_eq!(def.ty(), MetaType::Number);
+/// ```
+// NOTE: the field docstrings propagate to the setter methods on the builder, so
+// keep them accurate and self-contained.
+#[derive(bon::Builder, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct MetaKeyDef {
+    /// The registered key, normalised to lowercase.
+    key: MetaKey,
+
+    /// The type every value under this key is coerced towards. A value that
+    /// will not coerce is stored as text and flagged, never rejected.
+    ty: MetaType,
+
+    /// Timestamp recorded when this key was first registered. Callers
+    /// registering a new key should pass [`jiff::Timestamp::now()`].
+    created_at: Timestamp,
+}
+
+impl MetaKeyDef {
+    /// Returns the registered key.
+    #[inline]
+    #[must_use]
+    pub fn key(&self) -> &MetaKey {
+        &self.key
+    }
+
+    /// Returns the registered value type.
+    #[inline]
+    #[must_use]
+    pub fn ty(&self) -> MetaType {
+        self.ty
+    }
+
+    /// Returns the registration timestamp.
+    #[inline]
+    #[must_use]
+    pub fn created_at(&self) -> &Timestamp {
+        &self.created_at
+    }
+}
+
 impl<'meta> IntoIterator for &'meta Metadata {
     type IntoIter = core::slice::Iter<'meta, MetaEntry>;
     type Item = &'meta MetaEntry;
@@ -784,5 +846,31 @@ mod tests {
         .collect();
         let keys: Vec<&str> = meta.iter().map(|e| e.key().as_str()).collect();
         assert_eq!(keys, vec!["payee", "note"]);
+    }
+
+    #[test]
+    fn meta_key_def_carries_key_type_and_creation_time() {
+        let created_at = Timestamp::from_second(1_700_000_000).expect("valid timestamp");
+        let def = MetaKeyDef::builder()
+            .key(key("invoice"))
+            .ty(MetaType::Number)
+            .created_at(created_at)
+            .build();
+
+        assert_eq!(def.key(), &key("invoice"));
+        assert_eq!(def.ty(), MetaType::Number);
+        assert_eq!(def.created_at(), &created_at);
+    }
+
+    #[test]
+    fn meta_key_def_round_trips_through_json() {
+        let def = MetaKeyDef::builder()
+            .key(key("payee"))
+            .ty(MetaType::Text)
+            .created_at(Timestamp::from_second(1_700_000_000).expect("valid timestamp"))
+            .build();
+        let json = serde_json::to_string(&def).expect("serialize should succeed");
+        let back: MetaKeyDef = serde_json::from_str(&json).expect("deserialize should succeed");
+        assert_eq!(def, back);
     }
 }
