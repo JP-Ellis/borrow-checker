@@ -4,6 +4,7 @@ use jiff::Timestamp;
 use jiff::civil::Date;
 
 use crate::TagId;
+use crate::metadata::Metadata;
 use crate::money::Amount;
 
 crate::define_id!(TransactionId, "transaction");
@@ -128,10 +129,10 @@ pub struct Posting {
     /// currency or asset conversions.
     cost: Option<Cost>,
 
-    /// Optional free-text note for this individual posting leg. `None` means
-    /// no note has been recorded.
-    #[builder(into)]
-    note: Option<String>,
+    /// Free-form typed key-value metadata for this posting leg, in display
+    /// order. Repeated keys are permitted. Defaults to empty.
+    #[builder(default)]
+    metadata: Metadata,
 
     /// Tags applied specifically to this posting leg, in addition to any
     /// transaction-level tags. Defaults to empty.
@@ -178,11 +179,11 @@ impl Posting {
         self.cost.as_ref()
     }
 
-    /// Returns the optional free-text note for this posting leg.
+    /// Returns this posting's metadata entries.
     #[inline]
     #[must_use]
-    pub fn note(&self) -> Option<&str> {
-        self.note.as_deref()
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
     }
 
     /// Returns the posting-level tag IDs.
@@ -251,21 +252,15 @@ pub struct Transaction {
     /// This is the *value date*, not the date the record was created in the system.
     date: Date,
 
-    /// Name of the counterparty (e.g. a merchant or payee). `None` if the payee is
-    /// unknown or not applicable for this transaction type.
-    #[builder(into)]
-    payee: Option<String>,
-
-    /// Free-text description or narration summarising the purpose of this transaction.
+    /// Description of this transaction as it appeared at its source: the
+    /// imported statement narration, or the text a user typed when entering it
+    /// by hand.
+    ///
+    /// Always present, never edited after creation, and part of the
+    /// deduplication key — importers rely on it to recognise a transaction they
+    /// have already seen. User annotation belongs in [`Self::metadata`].
     #[builder(into)]
     description: String,
-
-    /// Optional user-supplied annotation for this transaction.
-    ///
-    /// Distinct from [`Self::description`], which holds the raw imported narration.
-    /// `None` means no note has been recorded.
-    #[builder(into)]
-    note: Option<String>,
 
     /// All posting legs of this transaction. Must sum to zero per commodity —
     /// `bc-core` enforces this invariant before persistence. Defaults to empty.
@@ -281,11 +276,10 @@ pub struct Transaction {
     #[builder(default)]
     tag_ids: Vec<TagId>,
 
-    /// Free-form labeled dates attached to this transaction (e.g. `("cleared", …)`).
-    /// The canonical [`Self::date`] is always separate and privileged; these are
-    /// supplementary domain dates supplied by importers or users. Defaults to empty.
+    /// Free-form typed key-value metadata for this transaction, in display
+    /// order. Repeated keys are permitted. Defaults to empty.
     #[builder(default)]
-    extra_dates: Vec<(String, Date)>,
+    metadata: Metadata,
 
     /// Timestamp recorded when this transaction was first persisted. Callers
     /// constructing a new transaction should pass [`jiff::Timestamp::now()`].
@@ -307,13 +301,6 @@ impl Transaction {
         self.date
     }
 
-    /// Returns the payee, if any.
-    #[inline]
-    #[must_use]
-    pub fn payee(&self) -> Option<&str> {
-        self.payee.as_deref()
-    }
-
     /// Returns the description.
     #[inline]
     #[must_use]
@@ -321,11 +308,11 @@ impl Transaction {
         &self.description
     }
 
-    /// Returns the user's free-text note, distinct from the imported `description`.
-    #[must_use]
+    /// Returns this transaction's metadata entries.
     #[inline]
-    pub fn note(&self) -> Option<&str> {
-        self.note.as_deref()
+    #[must_use]
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
     }
 
     /// Returns the postings.
@@ -347,14 +334,6 @@ impl Transaction {
     #[must_use]
     pub fn tag_ids(&self) -> &[TagId] {
         &self.tag_ids
-    }
-
-    /// Returns additional user-labeled dates (e.g. `("cleared", …)`).
-    /// The canonical [`Transaction::date`] is separate and always present.
-    #[must_use]
-    #[inline]
-    pub fn extra_dates(&self) -> &[(String, Date)] {
-        &self.extra_dates
     }
 
     /// Returns the creation timestamp.
@@ -430,6 +409,10 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::TagId;
+    use crate::metadata::MetaEntry;
+    use crate::metadata::MetaKey;
+    use crate::metadata::MetaValue;
     use crate::money::Amount;
     use crate::money::CommodityCode;
 
@@ -492,8 +475,6 @@ mod tests {
 
     #[test]
     fn reconciliation_default_builds() {
-        use jiff::Timestamp;
-
         let tx = Transaction::builder()
             .id(TransactionId::new())
             .date(date(2026, 1, 1))
@@ -542,8 +523,6 @@ mod tests {
 
     #[test]
     fn transaction_has_tag_ids() {
-        use jiff::Timestamp;
-
         let tx = Transaction::builder()
             .id(TransactionId::new())
             .date(date(2026, 1, 1))
@@ -615,7 +594,6 @@ mod tests {
     }
 
     fn balanced_fixture() -> Transaction {
-        use jiff::Timestamp;
         Transaction::builder()
             .id(TransactionId::new())
             .date(date(2026, 1, 15))
@@ -630,7 +608,6 @@ mod tests {
     }
 
     fn one_elided_fixture() -> Transaction {
-        use jiff::Timestamp;
         Transaction::builder()
             .id(TransactionId::new())
             .date(date(2026, 1, 15))
@@ -645,7 +622,6 @@ mod tests {
     }
 
     fn two_elided_fixture() -> Transaction {
-        use jiff::Timestamp;
         Transaction::builder()
             .id(TransactionId::new())
             .date(date(2026, 1, 15))
@@ -660,7 +636,6 @@ mod tests {
     }
 
     fn one_sided_fixture() -> Transaction {
-        use jiff::Timestamp;
         Transaction::builder()
             .id(TransactionId::new())
             .date(date(2026, 1, 15))
@@ -676,7 +651,6 @@ mod tests {
     }
 
     fn lone_elided_fixture() -> Transaction {
-        use jiff::Timestamp;
         Transaction::builder()
             .id(TransactionId::new())
             .date(date(2026, 1, 15))
@@ -743,10 +717,64 @@ mod tests {
         assert_eq!(tx.effective_tag_ids(&p), vec![shared, only_posting]);
     }
 
-    #[test]
-    fn posting_with_note_cost_and_tag_ids_round_trips() {
-        use crate::TagId;
+    fn meta(name: &str, text: &str) -> MetaEntry {
+        MetaEntry::new(
+            MetaKey::new(name).expect("key should be valid"),
+            MetaValue::Text(text.to_owned()),
+        )
+    }
 
+    #[test]
+    fn transaction_metadata_defaults_to_empty() {
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Groceries")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        assert!(tx.metadata().is_empty());
+    }
+
+    #[test]
+    fn transaction_metadata_preserves_order_through_serde() {
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Groceries")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .metadata(Metadata::new(vec![
+                meta("payee", "Generic Grocer"),
+                meta("note", "weekly shop"),
+                meta("note", "paid in cash"),
+            ]))
+            .build();
+
+        let json = serde_json::to_string(&tx).expect("serialize should succeed");
+        let back: Transaction = serde_json::from_str(&json).expect("deserialize should succeed");
+
+        let keys: Vec<&str> = back.metadata().iter().map(|e| e.key().as_str()).collect();
+        assert_eq!(keys, vec!["payee", "note", "note"]);
+        assert_eq!(
+            back.metadata()
+                .get_first_text(&MetaKey::new("payee").expect("key should be valid")),
+            Some("Generic Grocer")
+        );
+    }
+
+    #[test]
+    fn posting_metadata_defaults_to_empty() {
+        let posting = Posting::builder()
+            .id(PostingId::new())
+            .account_id(crate::AccountId::new())
+            .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+            .build();
+        assert!(posting.metadata().is_empty());
+    }
+
+    #[test]
+    fn posting_with_metadata_cost_and_tag_ids_round_trips() {
         let tag_id = TagId::new();
         let cost_basis = Cost::builder()
             .total(Amount::new(dec!(500), CommodityCode::new("USD")))
@@ -755,12 +783,17 @@ mod tests {
             .id(PostingId::new())
             .account_id(crate::AccountId::new())
             .amount(Amount::new(dec!(10), CommodityCode::new("AAPL")))
-            .note("lot purchase memo")
+            .metadata(Metadata::new(vec![meta("note", "lot purchase memo")]))
             .cost(cost_basis)
             .tag_ids(vec![tag_id.clone()])
             .build();
 
-        assert_eq!(posting.note(), Some("lot purchase memo"));
+        assert_eq!(
+            posting
+                .metadata()
+                .get_first_text(&MetaKey::new("note").expect("key should be valid")),
+            Some("lot purchase memo")
+        );
         let cost = posting.cost().expect("cost should be set");
         assert_eq!(cost.total().value(), dec!(500));
         assert_eq!(cost.total().commodity().to_string(), "USD");
@@ -769,5 +802,9 @@ mod tests {
             posting.tag_ids().first().expect("tag should exist"),
             &tag_id
         );
+
+        let json = serde_json::to_string(&posting).expect("serialize should succeed");
+        let back: Posting = serde_json::from_str(&json).expect("deserialize should succeed");
+        assert_eq!(posting, back);
     }
 }
