@@ -240,6 +240,227 @@ impl MetaValue {
     }
 }
 
+/// One metadata key-value pair attached to a transaction or posting.
+///
+/// Re-exported from the crate root as [`crate::MetaEntry`].
+///
+/// # Example
+///
+/// ```
+/// use bc_models::{MetaEntry, MetaKey, MetaValue};
+///
+/// let entry = MetaEntry::new(
+///     MetaKey::new("payee").expect("valid key"),
+///     MetaValue::Text("Generic Grocer".to_owned()),
+/// );
+///
+/// assert_eq!(entry.key().as_str(), "payee");
+/// assert!(!entry.mismatched());
+/// ```
+// NOTE: the field docstrings propagate to the setter methods on the builder, so
+// keep them accurate and self-contained.
+#[derive(bon::Builder, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct MetaEntry {
+    /// The key this value is filed under. Normalised to lowercase.
+    key: MetaKey,
+
+    /// The value. When `mismatched` is set this is always
+    /// [`MetaValue::Text`], holding the value's canonical string form.
+    value: MetaValue,
+
+    /// `true` when the incoming value could not be represented in the key's
+    /// registered type. The value is kept as text and flagged rather than
+    /// rejected, so nothing is lost and no import blocks. Defaults to `false`.
+    #[builder(default)]
+    mismatched: bool,
+}
+
+impl MetaEntry {
+    /// Creates an entry whose value fits its key's registered type.
+    ///
+    /// Use [`MetaEntry::builder`] to construct an entry flagged as
+    /// `mismatched`.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to file the value under.
+    /// * `value` - The value.
+    #[inline]
+    #[must_use]
+    pub fn new(key: MetaKey, value: MetaValue) -> Self {
+        Self {
+            key,
+            value,
+            mismatched: false,
+        }
+    }
+
+    /// Returns the key.
+    #[inline]
+    #[must_use]
+    pub fn key(&self) -> &MetaKey {
+        &self.key
+    }
+
+    /// Returns the value.
+    #[inline]
+    #[must_use]
+    pub fn value(&self) -> &MetaValue {
+        &self.value
+    }
+
+    /// Returns `true` when the value did not fit its key's registered type.
+    #[inline]
+    #[must_use]
+    pub fn mismatched(&self) -> bool {
+        self.mismatched
+    }
+}
+
+/// An ordered list of metadata entries.
+///
+/// Repeated keys are permitted; insertion order is preserved and is the
+/// display order. No uniqueness constraint applies anywhere.
+///
+/// Re-exported from the crate root as [`crate::Metadata`].
+///
+/// # Example
+///
+/// ```
+/// use bc_models::{MetaEntry, MetaKey, MetaValue, Metadata};
+///
+/// let note = MetaKey::new("note").expect("valid key");
+/// let mut meta = Metadata::default();
+/// meta.push(MetaEntry::new(note.clone(), MetaValue::Text("first".to_owned())));
+/// meta.push(MetaEntry::new(note.clone(), MetaValue::Text("second".to_owned())));
+///
+/// assert_eq!(meta.get_all(&note).count(), 2);
+/// assert_eq!(meta.get_first_text(&note), Some("first"));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+#[non_exhaustive]
+pub struct Metadata(Vec<MetaEntry>);
+
+impl Metadata {
+    /// Wraps a list of entries, preserving their order.
+    #[inline]
+    #[must_use]
+    pub fn new(entries: Vec<MetaEntry>) -> Self {
+        Self(entries)
+    }
+
+    /// Returns every entry in display order.
+    #[inline]
+    #[must_use]
+    pub fn entries(&self) -> &[MetaEntry] {
+        &self.0
+    }
+
+    /// Returns the number of entries, counting repeated keys separately.
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns `true` when there are no entries.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Iterates over the entries in display order.
+    ///
+    /// This is the only view that reaches [`MetaEntry::mismatched`]; the
+    /// value-level accessors below drop it.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &MetaEntry> {
+        self.0.iter()
+    }
+
+    /// Iterates over every value filed under `key`, in display order.
+    #[inline]
+    pub fn get_all<'meta>(&'meta self, key: &MetaKey) -> impl Iterator<Item = &'meta MetaValue> {
+        self.0
+            .iter()
+            .filter(move |e| e.key() == key)
+            .map(MetaEntry::value)
+    }
+
+    /// Returns the first value filed under `key`, if any.
+    #[inline]
+    #[must_use]
+    pub fn get_first(&self, key: &MetaKey) -> Option<&MetaValue> {
+        self.0.iter().find(|e| e.key() == key).map(MetaEntry::value)
+    }
+
+    /// Returns the first value filed under `key` when it is
+    /// [`MetaValue::Text`], and `None` when the key is absent or its first
+    /// value carries another type.
+    #[inline]
+    #[must_use]
+    pub fn get_first_text(&self, key: &MetaKey) -> Option<&str> {
+        match self.get_first(key) {
+            Some(MetaValue::Text(text)) => Some(text),
+            Some(
+                MetaValue::Number(_)
+                | MetaValue::Boolean(_)
+                | MetaValue::Date(_)
+                | MetaValue::Timestamp(_)
+                | MetaValue::Amount(_)
+                | MetaValue::Account(_),
+            )
+            | None => None,
+        }
+    }
+
+    /// Appends `entry` after every existing entry.
+    #[inline]
+    pub fn push(&mut self, entry: MetaEntry) {
+        self.0.push(entry);
+    }
+
+    /// Removes every entry filed under `key` and returns them in display
+    /// order. The surviving entries keep their relative order.
+    #[inline]
+    pub fn remove_all(&mut self, key: &MetaKey) -> Vec<MetaEntry> {
+        let mut removed = Vec::new();
+        let mut kept = Vec::with_capacity(self.0.len());
+        for entry in self.0.drain(..) {
+            if entry.key() == key {
+                removed.push(entry);
+            } else {
+                kept.push(entry);
+            }
+        }
+        self.0 = kept;
+        removed
+    }
+}
+
+impl FromIterator<MetaEntry> for Metadata {
+    #[inline]
+    fn from_iter<I>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = MetaEntry>,
+    {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl<'meta> IntoIterator for &'meta Metadata {
+    type IntoIter = core::slice::Iter<'meta, MetaEntry>;
+    type Item = &'meta MetaEntry;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::str::FromStr as _;
@@ -407,5 +628,161 @@ mod tests {
         assert_eq!(json, expected);
         let back: MetaType = serde_json::from_str(&json).expect("deserialize should succeed");
         assert_eq!(ty, back);
+    }
+
+    fn key(name: &str) -> MetaKey {
+        MetaKey::new(name).expect("key should be valid")
+    }
+
+    fn text_entry(name: &str, text: &str) -> MetaEntry {
+        MetaEntry::new(key(name), MetaValue::Text(text.to_owned()))
+    }
+
+    #[test]
+    fn meta_entry_new_is_not_mismatched() {
+        let entry = text_entry("payee", "Generic Grocer");
+        assert_eq!(entry.key(), &key("payee"));
+        assert_eq!(entry.value(), &MetaValue::Text("Generic Grocer".to_owned()));
+        assert!(!entry.mismatched());
+    }
+
+    #[test]
+    fn meta_entry_builder_defaults_to_not_mismatched() {
+        let entry = MetaEntry::builder()
+            .key(key("payee"))
+            .value(MetaValue::Text("Generic Grocer".to_owned()))
+            .build();
+        assert!(!entry.mismatched());
+        assert_eq!(entry, text_entry("payee", "Generic Grocer"));
+    }
+
+    #[test]
+    fn meta_entry_records_a_mismatch() {
+        let entry = MetaEntry::builder()
+            .key(key("invoice"))
+            .value(MetaValue::Text("not-a-number".to_owned()))
+            .mismatched(true)
+            .build();
+        assert!(entry.mismatched());
+    }
+
+    #[test]
+    fn meta_entry_round_trips_through_json() {
+        let entry = text_entry("note", "docter's appointment");
+        let json = serde_json::to_string(&entry).expect("serialize should succeed");
+        let back: MetaEntry = serde_json::from_str(&json).expect("deserialize should succeed");
+        assert_eq!(entry, back);
+    }
+
+    #[test]
+    fn metadata_default_is_empty() {
+        let meta = Metadata::default();
+        assert!(meta.is_empty());
+        assert_eq!(meta.len(), 0);
+        assert_eq!(meta.get_first(&key("payee")), None);
+        assert_eq!(meta.get_all(&key("payee")).count(), 0);
+    }
+
+    #[test]
+    fn metadata_preserves_insertion_order_across_keys() {
+        let mut meta = Metadata::default();
+        meta.push(text_entry("payee", "Generic Grocer"));
+        meta.push(text_entry("note", "weekly shop"));
+        meta.push(text_entry("channel", "card"));
+        let keys: Vec<&str> = meta.iter().map(|e| e.key().as_str()).collect();
+        assert_eq!(keys, vec!["payee", "note", "channel"]);
+    }
+
+    #[test]
+    fn metadata_permits_repeated_keys() {
+        let mut meta = Metadata::default();
+        meta.push(text_entry("note", "first"));
+        meta.push(text_entry("payee", "Generic Grocer"));
+        meta.push(text_entry("note", "second"));
+
+        let notes: Vec<&MetaValue> = meta.get_all(&key("note")).collect();
+        assert_eq!(
+            notes,
+            vec![
+                &MetaValue::Text("first".to_owned()),
+                &MetaValue::Text("second".to_owned()),
+            ]
+        );
+        assert_eq!(
+            meta.get_first(&key("note")),
+            Some(&MetaValue::Text("first".to_owned()))
+        );
+    }
+
+    #[test]
+    fn metadata_iter_reaches_the_mismatched_flag() {
+        let mut meta = Metadata::default();
+        meta.push(text_entry("payee", "Generic Grocer"));
+        meta.push(
+            MetaEntry::builder()
+                .key(key("invoice"))
+                .value(MetaValue::Text("not-a-number".to_owned()))
+                .mismatched(true)
+                .build(),
+        );
+        let flagged: Vec<&str> = meta
+            .iter()
+            .filter(|e| e.mismatched())
+            .map(|e| e.key().as_str())
+            .collect();
+        assert_eq!(flagged, vec!["invoice"]);
+    }
+
+    #[test]
+    fn metadata_remove_all_returns_entries_and_keeps_the_rest_ordered() {
+        let mut meta = Metadata::default();
+        meta.push(text_entry("note", "first"));
+        meta.push(text_entry("payee", "Generic Grocer"));
+        meta.push(text_entry("note", "second"));
+        meta.push(text_entry("channel", "card"));
+
+        let removed = meta.remove_all(&key("note"));
+        assert_eq!(
+            removed,
+            vec![text_entry("note", "first"), text_entry("note", "second")]
+        );
+
+        let keys: Vec<&str> = meta.iter().map(|e| e.key().as_str()).collect();
+        assert_eq!(keys, vec!["payee", "channel"]);
+        assert_eq!(meta.remove_all(&key("absent")), vec![]);
+    }
+
+    #[test]
+    fn metadata_get_first_text_reads_only_text_values() {
+        let mut meta = Metadata::default();
+        meta.push(text_entry("payee", "Generic Grocer"));
+        meta.push(MetaEntry::new(
+            key("invoice"),
+            MetaValue::Number(dec!(1502)),
+        ));
+        assert_eq!(meta.get_first_text(&key("payee")), Some("Generic Grocer"));
+        assert_eq!(meta.get_first_text(&key("invoice")), None);
+        assert_eq!(meta.get_first_text(&key("absent")), None);
+    }
+
+    #[test]
+    fn metadata_serialises_as_a_bare_array() {
+        let meta = Metadata::new(vec![text_entry("payee", "Generic Grocer")]);
+        let json = serde_json::to_string(&meta).expect("serialize should succeed");
+        assert!(json.starts_with('['));
+        let back: Metadata = serde_json::from_str(&json).expect("deserialize should succeed");
+        assert_eq!(meta, back);
+    }
+
+    #[test]
+    fn metadata_collects_from_an_iterator_in_order() {
+        let meta: Metadata = vec![
+            text_entry("payee", "Generic Grocer"),
+            text_entry("note", "n"),
+        ]
+        .into_iter()
+        .collect();
+        let keys: Vec<&str> = meta.iter().map(|e| e.key().as_str()).collect();
+        assert_eq!(keys, vec!["payee", "note"]);
     }
 }
