@@ -23,7 +23,7 @@ where
 
 /// Prints a formatted table with column headers and rows to stdout.
 ///
-/// Uses [`comfy_table`] with an ASCII preset for clean, portable terminal
+/// Uses [`comfy_table`] with an ASCII style for clean, portable terminal
 /// output without box-drawing characters.
 ///
 /// # Arguments
@@ -34,7 +34,7 @@ where
 pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     let mut table = comfy_table::Table::new();
     table
-        .load_preset(comfy_table::presets::ASCII_NO_BORDERS)
+        .load_style(comfy_table::presets::ASCII_NO_BORDERS)
         .set_header(headers.to_vec());
     for row in rows {
         table.add_row(row.clone());
