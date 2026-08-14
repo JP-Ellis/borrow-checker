@@ -177,9 +177,14 @@ impl CsvImporter {
         // one malformed line.
         let mut expected_width: Option<usize> = None;
 
+        // The widest data row in the file, which is the only exact evidence
+        // that a column index is beyond *every* row.
+        let mut widest_row = 0_usize;
+
         for (row_idx, result) in reader.records().enumerate() {
             let row = row_idx.saturating_add(1);
             let record = result.map_err(|e| ImportError::Parse(e.to_string()))?;
+            widest_row = widest_row.max(record.len());
 
             let expected = match expected_width {
                 None => {
@@ -315,8 +320,61 @@ impl CsvImporter {
             );
         }
 
+        // A file with no data rows says nothing about which columns it carries,
+        // so there is nothing to hold the profile against.
+        if expected_width.is_some() {
+            unreachable_names(cfg, &columns, widest_row)?;
+        }
+
         Ok(transactions)
     }
+}
+
+/// Rejects name-addressed columns that no data row in the file reaches.
+///
+/// A name resolves against the header, which a trailing-prose line makes wider
+/// than every data row, so a name can denote a column the data never carries.
+/// [`cell`] cannot catch that per row — a short row is a per-row omission — and
+/// the width it works from is learned from one possibly-unrepresentative row.
+/// The widest row in the file is exact, so the check [`cell`] applies eagerly to
+/// a positional reference lands here for a name.
+///
+/// # Arguments
+///
+/// * `cfg` - The CSV import configuration, for its column references.
+/// * `columns` - The file's header map.
+/// * `widest_row` - The field count of the widest data row in the file.
+///
+/// # Returns
+///
+/// `Ok(())` when every name-addressed column is within the widest row.
+///
+/// # Errors
+///
+/// Returns [`ImportError::BadValue`] naming the first configuration field whose
+/// column no row reaches, because the profile does not match the file.
+fn unreachable_names(
+    cfg: &Config,
+    columns: &HeaderMap,
+    widest_row: usize,
+) -> Result<(), ImportError> {
+    for (field, column) in cfg.column_refs() {
+        if column.as_name().is_none() {
+            continue;
+        }
+        let idx = columns.resolve(column)?;
+        if idx >= widest_row {
+            return Err(ImportError::BadValue {
+                field: field.into_owned(),
+                detail: format!(
+                    "the header names {} at column {idx}, but no data row is that \
+                     wide; the profile does not match the file",
+                    column.describe()
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Returns the value of a record field at the given index, or an error if the
@@ -350,17 +408,20 @@ fn record_field(
 /// Returns the trimmed text of a configured column, or `None` when it is absent
 /// from this row or blank.
 ///
-/// This is the single short-row policy every configured column obeys, so that
-/// "absent from this row" and "absent from every row" mean the same thing
-/// wherever a cell is read.
+/// This is the single short-row policy every column whose absence is tolerable
+/// obeys, so that "absent from this row" and "absent from every row" mean the
+/// same thing wherever such a cell is read. The date column reads through
+/// [`record_field`] instead, because a row that names no date cannot become a
+/// transaction at all.
 ///
 /// A column absent from *this* row because the row is short is a per-row
 /// omission and yields `None`, indistinguishable from a blank cell. A
 /// positional reference whose index lies beyond the file's data-row width is
 /// absent from *every* row, which means the profile does not match the file,
-/// and is an error. A name reference is exempt from that check: resolving it
-/// against the header at all is already proof the profile matches the file, so
-/// a stale width learned from a ragged first row cannot make it wrong.
+/// and is an error. A name reference is exempt from that check, because the
+/// width comes from one possibly-unrepresentative row and a name that resolved
+/// against the header is evidence against overruling it; the exact form of the
+/// same check runs over the whole file in [`unreachable_names`].
 ///
 /// # Arguments
 ///
@@ -464,7 +525,9 @@ fn row_commodity(
             .map(str::to_owned)
             .ok_or_else(|| ImportError::BadValue {
                 field: column.describe(),
-                detail: "the commodity cell is blank; every row must name its commodity".to_owned(),
+                detail: "the commodity cell is blank or missing from this row; every row \
+                         must name its commodity"
+                    .to_owned(),
             }),
     }
 }
@@ -1817,6 +1880,125 @@ mod tests {
             .expect_err("a column present in no row must fail");
 
         assert_eq!(err.to_string(), "missing required field: column 5");
+    }
+
+    #[test]
+    fn a_named_column_beyond_every_row_is_an_error() {
+        // The positional half of this is `an_optional_column_beyond_every_row_is_an_error`.
+        // A name resolves against the header, which trailing prose makes wider
+        // than the data, so a name can denote a column no row carries. Reading
+        // it as a per-row omission would leave `payee` silently None for the
+        // whole file — the silent-wrong-data failure #397 is about.
+        let csv = b"Date,Amount,Notes prose, more prose\n\
+                    2025-03-15,50.00,ok\n\
+                    2025-03-16,-20.00,ok\n";
+
+        let cfg = Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            payee_column: Some(ColumnRef::Name("more prose".to_owned())),
+            ..Config::default()
+        };
+
+        let err = CsvImporter
+            .parse_bytes(csv, &cfg, "prose.csv")
+            .expect_err("a named column present in no row must fail");
+
+        assert_eq!(
+            err.to_string(),
+            "bad value for field 'payee_column': the header names 'more prose' at \
+             column 3, but no data row is that wide; the profile does not match the file"
+        );
+    }
+
+    #[test]
+    fn a_named_extra_leg_column_beyond_every_row_is_an_error() {
+        // The same guard reaching an extra leg, where a silent None is worse
+        // still: `parse_amount` returning None drops the leg from every row
+        // without a diagnostic. Mirrors
+        // `import_fails_when_extra_leg_split_columns_are_beyond_every_row` for
+        // names.
+        let csv = b"Date,Quantity,Fees prose, more prose\n\
+                    2025-01-02,0.50000000,ok\n";
+
+        let cfg = Config {
+            account: "Assets:Crypto:Exchange".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Quantity".to_owned()),
+            },
+            extra_legs: vec![LegSpec {
+                account: "Expenses:Fees".to_owned(),
+                amount_columns: AmountColumns::Single {
+                    column: ColumnRef::Name("more prose".to_owned()),
+                },
+                commodity: CommoditySource::Fixed {
+                    code: "AUD".to_owned(),
+                },
+                negate: false,
+            }],
+            ..Config::default()
+        };
+
+        let err = CsvImporter
+            .parse_bytes(csv, &cfg, "prose.csv")
+            .expect_err("a named leg column present in no row must fail");
+
+        assert!(
+            err.to_string()
+                .contains("extra_legs[0].amount_columns.column"),
+            "the error must name the leg's field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_header_name_a_field_addresses_fails_the_import() {
+        // #397's shape, end to end: the unit tests pin HeaderMap::build, this
+        // pins the wiring that carries its error out of parse_bytes.
+        let csv = b"Date,Balance,Income,Value,Income\n\
+                    2025-03-15,1000.00,50.00,10.00,25.00\n";
+
+        let cfg = Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Income".to_owned()),
+            },
+            ..Config::default()
+        };
+
+        let err = CsvImporter
+            .parse_bytes(csv, &cfg, "duplicate.csv")
+            .expect_err("an addressed duplicate must fail the file");
+
+        assert_eq!(
+            err.to_string(),
+            "invalid import configuration: amount_columns.column names 'Income', which \
+             appears at columns 2 and 4; address it by zero-based index instead"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_header_name_no_field_addresses_still_imports() {
+        // The other half of the wiring: an unaddressed duplicate only warns, so
+        // a header carrying unnamed empty columns cannot reject a file.
+        let csv = b"Date,,Amount,\n\
+                    2025-03-15,,50.00,\n";
+
+        let cfg = Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Amount".to_owned()),
+            },
+            ..Config::default()
+        };
+
+        let txns = CsvImporter
+            .parse_bytes(csv, &cfg, "duplicate.csv")
+            .expect("an unaddressed duplicate must not fail the file");
+
+        assert_eq!(txns.len(), 1);
+        assert_eq!(
+            txns[0].postings[0].amount,
+            Some(Amount::new(dec!(50.00), "AUD"))
+        );
     }
 
     #[test]
