@@ -54,9 +54,10 @@ impl bc_sdk::Importer for BeancountImporter {
     /// # Errors
     ///
     /// Returns [`ImportError::BadValue`] if `source_file` or any file it
-    /// includes cannot be read — naming the include that referred to it — or
-    /// [`ImportError::Parse`] if a file is not valid UTF-8, a parse error is
-    /// encountered, or a transaction directive has no postings.
+    /// includes cannot be read — naming the include that referred to it — if
+    /// the includes form a cycle, or if they nest deeper than the loader's
+    /// limit. Returns [`ImportError::Parse`] if a file is not valid UTF-8, a
+    /// parse error is encountered, or a transaction directive has no postings.
     #[inline]
     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
         let cfg: Config = config.as_typed()?;
