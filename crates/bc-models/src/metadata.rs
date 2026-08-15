@@ -245,8 +245,10 @@ impl MetaType {
                     })
             }
             Self::Amount => {
+                // Split on the *first* space: a decimal never contains one, and
+                // a commodity code is unvalidated free text that may.
                 let (value, commodity) =
-                    text.rsplit_once(' ').ok_or_else(|| ValueError::Amount {
+                    text.split_once(' ').ok_or_else(|| ValueError::Amount {
                         text: text.to_owned(),
                     })?;
                 if commodity.is_empty() {
@@ -1213,13 +1215,30 @@ mod tests {
     }
 
     #[test]
-    fn parse_value_amount_splits_on_the_last_space() {
+    fn parse_value_amount_splits_on_the_first_space() {
         assert_eq!(
             MetaType::Amount.parse_value("42.00 AUD"),
             Ok(MetaValue::Amount(Amount::new(
                 dec!(42.00),
                 CommodityCode::new("AUD")
             )))
+        );
+    }
+
+    #[test]
+    fn amount_round_trips_a_commodity_holding_a_space() {
+        let value = MetaValue::Amount(Amount::new(
+            dec!(42.00),
+            CommodityCode::new("SHARE CLASS A"),
+        ));
+
+        let text = value.canonical();
+
+        assert_eq!(text, "42.00 SHARE CLASS A");
+        assert_eq!(
+            MetaType::Amount.parse_value(&text),
+            Ok(value),
+            "a commodity code is unvalidated free text, so the split must not depend on it"
         );
     }
 }
