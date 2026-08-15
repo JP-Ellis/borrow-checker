@@ -1805,6 +1805,15 @@ impl Service {
     /// * `updated` - The new transaction state. Must carry the same [`TransactionId`]
     ///   as the existing transaction. All postings are replaced.
     ///
+    /// # Events
+    ///
+    /// Appends [`Event::TransactionAmended`] for the scalar fields, and
+    /// [`Event::TransactionMetadataChanged`] when the metadata list differs
+    /// from the stored one — this call replaces that list, so leaving the
+    /// change unrecorded would put a stored edit outside the log. Postings and
+    /// tags are replaced without an event of their own;
+    /// [`Service::edit`] is the path that decomposes those.
+    ///
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if the posting list is empty, contains two
@@ -1816,14 +1825,27 @@ impl Service {
         validate_postings(updated.postings())?;
 
         let tx_id = updated.id().clone();
-        let event = Event::TransactionAmended {
+        let current = self.find_by_id(&tx_id).await?;
+        let mut events = vec![Event::TransactionAmended {
             id: tx_id.clone(),
             date: updated.date(),
             description: updated.description().to_owned(),
-        };
+        }];
+        if !current
+            .metadata()
+            .eq_ignoring_mismatched(updated.metadata())
+        {
+            events.push(Event::TransactionMetadataChanged {
+                id: tx_id.clone(),
+                before: current.metadata().clone(),
+                after: updated.metadata().clone(),
+            });
+        }
 
         let mut db_tx = self.pool.begin().await?;
-        insert_event(&event, &mut db_tx).await?;
+        for event in &events {
+            insert_event(event, &mut db_tx).await?;
+        }
         self.apply_transaction_projection(&mut db_tx, &updated)
             .await?;
         db_tx.commit().await?;
@@ -4511,6 +4533,50 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn amend_records_a_transaction_metadata_event(pool: sqlx::SqlitePool) {
+        let (svc, id) = seeded_transaction(&pool, text_meta(&[("note", "old note")])).await;
+        let original = svc.find_by_id(&id).await.expect("load");
+
+        svc.amend(original.with_metadata(text_meta(&[("note", "new note")])))
+            .await
+            .expect("amend should succeed");
+
+        assert!(
+            event_kinds(&pool, &id)
+                .await
+                .contains(&"TransactionMetadataChanged".to_owned()),
+            "amend persists metadata through the projection, so it has to record it too"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amend_that_leaves_metadata_alone_records_no_metadata_event(pool: sqlx::SqlitePool) {
+        let (svc, id) = seeded_transaction(&pool, text_meta(&[("note", "old note")])).await;
+        let original = svc.find_by_id(&id).await.expect("load");
+
+        let updated = Transaction::builder()
+            .id(id.clone())
+            .date(original.date())
+            .description("Groceries, amended")
+            .metadata(original.metadata().clone())
+            .postings(original.postings().to_vec())
+            .reconciliation(original.reconciliation())
+            .created_at(*original.created_at())
+            .build();
+        svc.amend(updated).await.expect("amend should succeed");
+
+        let kinds = event_kinds(&pool, &id).await;
+        assert!(
+            kinds.contains(&"TransactionAmended".to_owned()),
+            "the amend itself is still recorded, got {kinds:?}"
+        );
+        assert!(
+            !kinds.contains(&"TransactionMetadataChanged".to_owned()),
+            "an amend that carries the stored list back unchanged changed nothing, got {kinds:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn edit_records_a_transaction_metadata_event(pool: sqlx::SqlitePool) {
         let (svc, id) = seeded_transaction(&pool, text_meta(&[("note", "old note")])).await;
 
@@ -4519,16 +4585,20 @@ mod tests {
             .await
             .expect("edit");
 
-        let kinds: Vec<String> =
-            sqlx::query_scalar("SELECT kind FROM events WHERE aggregate_id = ? ORDER BY rowid ASC")
-                .bind(id.to_string())
-                .fetch_all(&pool)
-                .await
-                .expect("kinds");
+        let kinds = event_kinds(&pool, &id).await;
         assert!(
             kinds.contains(&"TransactionMetadataChanged".to_owned()),
             "editing metadata through the service reaches the log, got {kinds:?}"
         );
+    }
+
+    /// Reads the kinds of every event logged against `id`, oldest first.
+    async fn event_kinds(pool: &sqlx::SqlitePool, id: &TransactionId) -> Vec<String> {
+        sqlx::query_scalar("SELECT kind FROM events WHERE aggregate_id = ? ORDER BY rowid ASC")
+            .bind(id.to_string())
+            .fetch_all(pool)
+            .await
+            .expect("kinds")
     }
 
     #[sqlx::test(migrations = "./migrations")]
