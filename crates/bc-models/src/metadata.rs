@@ -436,9 +436,14 @@ pub struct MetaEntry {
     /// [`MetaValue::Text`], holding the value's canonical string form.
     value: MetaValue,
 
-    /// `true` when the incoming value could not be represented in the key's
-    /// registered type. The value is kept as text and flagged rather than
-    /// rejected, so nothing is lost and no import blocks.
+    /// `true` when the value could not be represented in the key's registered
+    /// type. The value is kept as text and flagged rather than rejected, so
+    /// nothing is lost and no import blocks.
+    ///
+    /// This is an output, read on entries that came out of storage. A write
+    /// derives the stored flag from the value against the key's registered
+    /// type and discards whatever the incoming entry claims, so an entry whose
+    /// value has since been repaired stops being flagged.
     mismatched: bool,
 }
 
@@ -494,7 +499,9 @@ impl TryFrom<Repr> for MetaEntry {
 impl MetaEntry {
     /// Creates an entry whose value fits its key's registered type.
     ///
-    /// Use [`MetaEntry::mismatch`] for a value that did not fit.
+    /// Use [`MetaEntry::mismatch`] for a value that did not fit. A write
+    /// derives the stored flag afresh, so neither constructor can force an
+    /// entry to store as mismatched.
     ///
     /// # Arguments
     ///
