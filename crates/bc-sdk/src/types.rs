@@ -186,6 +186,25 @@ pub struct MetaEntry {
 }
 
 impl MetaEntry {
+    /// Files an already-typed value under `key`.
+    ///
+    /// The per-type constructors below are shorter wherever the type is known
+    /// at the call site. Reach for this one when the type comes from a
+    /// profile or from the source rather than from the code.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The metadata key.
+    /// * `value` - The value.
+    #[inline]
+    #[must_use]
+    pub fn new(key: impl Into<String>, value: MetaValue) -> Self {
+        Self {
+            key: key.into(),
+            value,
+        }
+    }
+
     /// Files a free-text value under `key`.
     ///
     /// # Arguments

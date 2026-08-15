@@ -335,6 +335,51 @@ pub struct LegSpec {
     pub negate: bool,
 }
 
+/// The type a metadata column's cells are read as.
+///
+/// The host holds the authoritative type for a key. A profile states what the
+/// column contains; a cell that does not carry it is filed as text and the
+/// host flags it against the key's registered type.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetaColumnType {
+    /// Free text. The default, and where every unparsable cell lands.
+    #[default]
+    Text,
+    /// A decimal number, read with the profile's separators.
+    Number,
+    /// `true` or `false`, matched case-insensitively.
+    Boolean,
+    /// A calendar date, read with the profile's `date_format`.
+    Date,
+    /// An RFC 3339 instant.
+    Timestamp,
+    /// A decimal paired with the row's commodity.
+    Amount,
+    /// An account path, e.g. `"Assets:Bank:Savings"`.
+    Account,
+}
+
+/// One column mapped onto a metadata key.
+///
+/// ```json
+/// { "key": "payee",   "column": "Description" }
+/// { "key": "invoice", "column": 7, "type": "number" }
+/// ```
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MetadataColumn {
+    /// The metadata key the cell is filed under. The host normalises it to
+    /// lowercase and drops an entry whose key is not `[a-z][a-z0-9_-]*`.
+    pub key: String,
+    /// The column to read.
+    pub column: ColumnRef,
+    /// What the column contains. Defaults to text.
+    #[serde(rename = "type", default)]
+    pub ty: MetaColumnType,
+}
+
 /// Full configuration for the CSV importer.
 ///
 /// Supports configurable delimiters, date formats, amount representations,
@@ -378,8 +423,20 @@ pub struct Config {
     /// Which column(s) hold the monetary amount.
     #[serde(default)]
     pub amount_columns: AmountColumns,
-    /// Optional column for the payee or merchant.
+    /// Retired. Set `metadata_columns` instead.
+    ///
+    /// The field survives only so that a profile still setting it is rejected
+    /// by [`Config::validate`] with an error naming the replacement. Removing
+    /// it would leave serde ignoring the key, and the profile would import
+    /// with no payee at all.
+    #[serde(default)]
     pub payee_column: Option<ColumnRef>,
+    /// Columns mapped onto metadata keys, in the order stated.
+    ///
+    /// Any column can carry any key: the payee is one entry among others
+    /// rather than a field of its own.
+    #[serde(default)]
+    pub metadata_columns: Vec<MetadataColumn>,
     /// Optional column for the free-text description.
     pub description_column: Option<ColumnRef>,
     /// Optional column for an institution-supplied reference number.
@@ -445,6 +502,7 @@ impl Default for Config {
             date_format: default_date_format(),
             amount_columns: AmountColumns::default(),
             payee_column: None,
+            metadata_columns: Vec::new(),
             description_column: None,
             reference_column: None,
             balance_column: None,
@@ -547,13 +605,18 @@ impl Config {
         let mut refs: Vec<(Cow<'static, str>, &ColumnRef)> =
             vec![(Cow::Borrowed("date_column"), &self.date_column)];
         for (field, maybe_ref) in [
-            ("payee_column", &self.payee_column),
             ("description_column", &self.description_column),
             ("reference_column", &self.reference_column),
         ] {
             if let Some(column) = maybe_ref.as_ref() {
                 refs.push((Cow::Borrowed(field), column));
             }
+        }
+        for (index, mapping) in self.metadata_columns.iter().enumerate() {
+            refs.push((
+                Cow::Owned(format!("metadata_columns[{index}].column")),
+                &mapping.column,
+            ));
         }
         refs
     }
@@ -691,6 +754,24 @@ impl Config {
             Some(_) => {}
         }
 
+        if self.payee_column.is_some() {
+            problems.push(
+                "payee_column is retired. The payee is now one metadata key among others: \
+                 replace it with {\"metadata_columns\":[{\"key\":\"payee\",\"column\":\"Payee\"}]}, \
+                 naming the same column."
+                    .to_owned(),
+            );
+        }
+
+        for (index, mapping) in self.metadata_columns.iter().enumerate() {
+            if mapping.key.trim().is_empty() {
+                problems.push(format!(
+                    "metadata_columns[{index}].key is empty, so the column has nothing to \
+                     be filed under."
+                ));
+            }
+        }
+
         for (index, leg) in self.extra_legs.iter().enumerate() {
             if matches!(leg.commodity, CommoditySource::Fixed { ref code } if code.trim().is_empty())
             {
@@ -796,6 +877,62 @@ mod tests {
 
     use super::*;
 
+    /// Serde has no `deny_unknown_fields` here, so deleting the field would
+    /// leave a profile still setting it importing silently with no payee. It
+    /// survives to be rejected by name.
+    #[test]
+    fn validate_rejects_the_retired_payee_column_and_names_its_replacement() {
+        let cfg = Config {
+            payee_column: Some(ColumnRef::Name("Payee".to_owned())),
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("a retired field must not import silently")
+            .to_string();
+        assert!(
+            msg.contains("payee_column is retired") && msg.contains("metadata_columns"),
+            "should name the replacement: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_metadata_column_with_no_key() {
+        let cfg = Config {
+            metadata_columns: vec![MetadataColumn {
+                key: String::new(),
+                column: ColumnRef::Name("Payee".to_owned()),
+                ty: MetaColumnType::Text,
+            }],
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("a column with no key is filed nowhere")
+            .to_string();
+        assert!(
+            msg.contains("metadata_columns[0].key"),
+            "should name the offending mapping: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_metadata_column_defaults_to_text() {
+        let mapping: MetadataColumn =
+            serde_json::from_str(r#"{"key":"payee","column":"Payee"}"#).expect("valid mapping");
+        assert_eq!(mapping.ty, MetaColumnType::Text);
+        assert_eq!(mapping.column, ColumnRef::Name("Payee".to_owned()));
+    }
+
+    #[test]
+    fn a_metadata_column_reads_its_stated_type() {
+        let mapping: MetadataColumn =
+            serde_json::from_str(r#"{"key":"invoice","column":7,"type":"number"}"#)
+                .expect("valid mapping");
+        assert_eq!(mapping.ty, MetaColumnType::Number);
+        assert_eq!(mapping.column, ColumnRef::Index(7));
+    }
+
     #[test]
     fn validate_accepts_a_default_config() {
         Config::default()
@@ -840,7 +977,11 @@ mod tests {
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Index(1),
             },
-            payee_column: Some(ColumnRef::Name("Merchant".to_owned())),
+            metadata_columns: vec![MetadataColumn {
+                key: "payee".to_owned(),
+                column: ColumnRef::Name("Merchant".to_owned()),
+                ty: MetaColumnType::Text,
+            }],
             ..Config::default()
         };
         let err = cfg.validate().expect_err("named refs need a header row");
@@ -850,8 +991,8 @@ mod tests {
             "should name date_column: {msg}"
         );
         assert!(
-            msg.contains("payee_column"),
-            "should name payee_column: {msg}"
+            msg.contains("metadata_columns[0].column"),
+            "should name the mapped column: {msg}"
         );
         assert!(
             !msg.contains("amount_columns"),
@@ -994,7 +1135,11 @@ mod tests {
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Name("Amount".to_owned()),
             },
-            payee_column: Some(ColumnRef::Name("amount".to_owned())),
+            metadata_columns: vec![MetadataColumn {
+                key: "payee".to_owned(),
+                column: ColumnRef::Name("amount".to_owned()),
+                ty: MetaColumnType::Text,
+            }],
             ..Config::default()
         };
         let msg = cfg
@@ -1002,7 +1147,7 @@ mod tests {
             .expect_err("'Amount' and 'amount' resolve to the same column")
             .to_string();
         assert!(
-            msg.contains("amount_columns.column") && msg.contains("payee_column"),
+            msg.contains("amount_columns.column") && msg.contains("metadata_columns[0].column"),
             "should name both colliding fields: {msg}"
         );
     }
