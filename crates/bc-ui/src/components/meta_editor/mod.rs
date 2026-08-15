@@ -114,6 +114,13 @@ fn val_id(instance: u64, uid: u64) -> String {
     format!("meta-{instance}-val-{uid}")
 }
 
+/// The element id of a row's key cell, which wraps the key input and the
+/// suggestion menu.
+#[cfg(target_arch = "wasm32")]
+fn cell_id(instance: u64, uid: u64) -> String {
+    format!("meta-{instance}-cell-{uid}")
+}
+
 /// A repeatable, type-aware metadata editor over one owner's entries.
 ///
 /// # Arguments
@@ -675,6 +682,23 @@ fn MetaEditorRow(
         RowKind::Tombstone => MetaTypeDto::Account.label().to_owned(),
     };
 
+    /* The create row's type selector is a focusable control inside the menu, so
+    focus leaving the key input is not enough to close it. The menu closes only
+    once focus lands outside the whole key cell. */
+    let cell_selector = format!("#{}", cell_id(instance, uid));
+    let on_cell_focusout = move |ev: web_sys::FocusEvent| {
+        let staying = ev
+            .related_target()
+            .and_then(|target| {
+                web_sys::wasm_bindgen::JsCast::dyn_into::<web_sys::Element>(target).ok()
+            })
+            .and_then(|element| element.closest(&cell_selector).ok().flatten())
+            .is_some();
+        if !staying {
+            open.set(false);
+        }
+    };
+
     let needs_key = move || {
         row_now()
             .and_then(|row| row.draft.map(|draft| draft.key.trim().is_empty()))
@@ -683,7 +707,7 @@ fn MetaEditorRow(
 
     view! {
         <div class=style::row>
-            <div class=style::key_cell>
+            <div id=cell_id(instance, uid) class=style::key_cell on:focusout=on_cell_focusout>
                 <input
                     id=key_id(instance, uid)
                     data-testid=key_testid
@@ -706,7 +730,6 @@ fn MetaEditorRow(
                         open.set(true);
                     }
                     on:focus=move |_| open.set(true)
-                    on:blur=move |_| open.set(false)
                     on:keydown=on_key_keydown
                     placeholder="key"
                 />
@@ -757,7 +780,6 @@ fn MetaEditorRow(
                                                         }>{format!("+ create key \"{query}\" as")}</span>
                                                         <select
                                                             class=style::create_ty
-                                                            on:mousedown=|ev| ev.stop_propagation()
                                                             on:change=move |ev| {
                                                                 let label = event_target_value(&ev);
                                                                 if let Some(ty) = ALL_TYPES
