@@ -15,6 +15,8 @@ use crate::BcError;
 use crate::BcResult;
 use crate::db::from_db_str;
 use crate::db::to_db_str;
+use crate::events::Event;
+use crate::events::insert_event;
 use crate::metadata::Owner;
 use crate::metadata::ValueColumns;
 use crate::metadata::coerce::Coerced;
@@ -156,6 +158,12 @@ impl Service {
     ///
     /// The type the key held before this call.
     ///
+    /// # Events
+    ///
+    /// Appends [`Event::MetadataKeyRetyped`] in the same transaction as the
+    /// refit, so the type change and the entries it rewrote commit or roll
+    /// back together. A retype to the type already held appends nothing.
+    ///
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] when `key` is not registered, and
@@ -184,6 +192,15 @@ impl Service {
         for owner in [Owner::Transaction, Owner::Posting] {
             replay(&mut db_tx, owner, key, from, to).await?;
         }
+        insert_event(
+            &Event::MetadataKeyRetyped {
+                key: key.clone(),
+                from,
+                to,
+            },
+            &mut db_tx,
+        )
+        .await?;
         db_tx.commit().await?;
         Ok(from)
     }
@@ -672,6 +689,53 @@ mod tests {
             matches!(outcome, Err(BcError::NotFound(ref what)) if what.contains("absent")),
             "retyping a key that was never registered names it"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_records_both_types(pool: SqlitePool) {
+        let registry = Service::new(pool.clone());
+        registry
+            .register(&key("invoice"), MetaType::Text)
+            .await
+            .expect("register");
+        registry
+            .retype(&key("invoice"), MetaType::Number)
+            .await
+            .expect("retype");
+
+        assert_eq!(
+            payloads_of_kind(&pool, "MetadataKeyRetyped").await,
+            vec![crate::events::Event::MetadataKeyRetyped {
+                key: key("invoice"),
+                from: MetaType::Text,
+                to: MetaType::Number,
+            }]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_to_the_same_type_records_nothing(pool: SqlitePool) {
+        let registry = Service::new(pool.clone());
+        registry
+            .register(&key("invoice"), MetaType::Number)
+            .await
+            .expect("register");
+        registry
+            .retype(&key("invoice"), MetaType::Number)
+            .await
+            .expect("retype");
+
+        assert_eq!(payloads_of_kind(&pool, "MetadataKeyRetyped").await, vec![]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_rejected_retype_records_nothing(pool: SqlitePool) {
+        let outcome = Service::new(pool.clone())
+            .retype(&key("absent"), MetaType::Number)
+            .await;
+        assert!(matches!(outcome, Err(BcError::NotFound(_))));
+
+        assert_eq!(payloads_of_kind(&pool, "MetadataKeyRetyped").await, vec![]);
     }
 
     #[sqlx::test(migrations = "./migrations")]
