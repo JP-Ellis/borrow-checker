@@ -1365,8 +1365,9 @@ mod tests {
         assert_eq!(cfg.required_column_names(), vec!["Amount"]);
     }
 
-    /// `column_refs` is the union of `transaction_column_refs` (date and
-    /// whichever of payee/description/reference are set), `leg_column_refs`
+    /// `column_refs` is the union of `transaction_column_refs` (date,
+    /// whichever of description/reference are set, and every mapped metadata
+    /// column), `leg_column_refs`
     /// (amount, commodity column, balance), and every extra leg's
     /// `extra_leg_column_refs` — the grouping `Config::validate` relies on to
     /// check distinctness per group, not a required-then-optional ordering.
