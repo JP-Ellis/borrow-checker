@@ -266,9 +266,13 @@ computed, not materialised.
 ### 4.5 Query & Filtering (global filter)
 
 One structured, Fava-style filter is shared app-wide: date range, account
-subtree, tags, payee/narration text, amount magnitude, and reconciliation.
+subtree, tags, description text, amount magnitude, and reconciliation.
 Dimensions combine with AND; values *within* the account and tag dimensions
 combine with OR. Every view recomputes against it.
+
+Free text matches a transaction's description alone. Payee lives in metadata,
+which the text dimension does not reach; searching metadata keys is its own
+syntax, tracked in #429.
 
 **The query never prunes.** `Service::search` returns whole transactions
 annotated with which legs matched (`MatchedTransaction { transaction, matched_postings }`),

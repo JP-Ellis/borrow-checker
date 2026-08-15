@@ -4388,7 +4388,7 @@ mod tests {
             Metadata::default(),
             Metadata::new(vec![MetaEntry::new(
                 key("note"),
-                MetaValue::Text("docter's appointment".to_owned()),
+                MetaValue::Text("doctor's appointment".to_owned()),
             )]),
         ))
         .await
@@ -4402,7 +4402,7 @@ mod tests {
             .expect("the annotated leg");
         assert_eq!(
             leg.metadata().get_first_text(&key("note")),
-            Some("docter's appointment")
+            Some("doctor's appointment")
         );
         assert!(
             found
