@@ -14,7 +14,14 @@ use sqlx::SqlitePool;
 use crate::BcError;
 use crate::BcResult;
 use crate::db::from_db_str;
+use crate::db::to_db_str;
+use crate::metadata::Owner;
+use crate::metadata::ValueColumns;
+use crate::metadata::coerce::Coerced;
+use crate::metadata::coerce::coerce;
+use crate::metadata::read_value;
 use crate::metadata::register_key_if_absent;
+use crate::metadata::value_columns;
 
 /// One row of `metadata_keys`.
 #[derive(sqlx::FromRow)]
@@ -126,13 +133,157 @@ impl Service {
         db_tx.commit().await?;
         Ok(registered)
     }
+
+    /// Changes `key`'s registered type and replays coercion over every entry
+    /// stored under it, in both owner tables.
+    ///
+    /// A stored row is re-asserted with the type it currently reads back as —
+    /// a flagged row reads back as text — and then fitted to `to`. Widening to
+    /// [`MetaType::Text`] is a pure relabel: every row keeps its stored string,
+    /// sheds its typed columns, and clears its flag, because a text key cannot
+    /// mismatch. Narrowing parses each row and flags whatever will not.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The registered key to retype.
+    /// * `to` - The type it should hold from now on.
+    ///
+    /// # Returns
+    ///
+    /// The type the key held before this call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] when `key` is not registered, and
+    /// [`BcError`] on database failure.
+    #[inline]
+    pub async fn retype(&self, key: &MetaKey, to: MetaType) -> BcResult<MetaType> {
+        let mut db_tx = self.pool.begin().await?;
+        let registered: Option<String> =
+            sqlx::query_scalar("SELECT value_type FROM metadata_keys WHERE key = ?")
+                .bind(key.as_str())
+                .fetch_optional(&mut *db_tx)
+                .await?;
+        let Some(stored) = registered else {
+            return Err(BcError::NotFound(format!("metadata key '{key}'")));
+        };
+        let from = from_db_str::<MetaType>(&stored)?;
+        if from == to {
+            return Ok(from);
+        }
+
+        sqlx::query("UPDATE metadata_keys SET value_type = ? WHERE key = ?")
+            .bind(to_db_str(to)?)
+            .bind(key.as_str())
+            .execute(&mut *db_tx)
+            .await?;
+        for owner in [Owner::Transaction, Owner::Posting] {
+            replay(&mut db_tx, owner, key, from, to).await?;
+        }
+        db_tx.commit().await?;
+        Ok(from)
+    }
+}
+
+/// Refits every entry under `key` in one owner table from `from` to `to`.
+///
+/// # Arguments
+///
+/// * `db_tx` - An open SQLite transaction to write within.
+/// * `owner` - Which metadata table to replay.
+/// * `key` - The key whose entries are refitted.
+/// * `from` - The type the entries currently read back as.
+/// * `to` - The type they should read back as.
+///
+/// # Errors
+///
+/// Returns [`BcError`] on database failure.
+async fn replay(
+    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    owner: Owner,
+    key: &MetaKey,
+    from: MetaType,
+    to: MetaType,
+) -> BcResult<()> {
+    if to == MetaType::Text {
+        // A pure relabel. `value_text` already holds the canonical string of
+        // every row — including the resolved path of an account value, which
+        // recomputing from the value would replace with a bare id — so the row
+        // keeps it and only sheds what a text key has no use for.
+        let relabel = format!(
+            "UPDATE {} SET value_num = NULL, value_commodity = NULL, \
+             value_account = NULL, mismatched = 0 WHERE key = ?",
+            owner.table()
+        );
+        sqlx::query(sqlx::AssertSqlSafe(relabel))
+            .bind(key.as_str())
+            .execute(&mut **db_tx)
+            .await?;
+        return Ok(());
+    }
+
+    let select = format!(
+        "SELECT rowid, value_text, value_account, mismatched FROM {} WHERE key = ?",
+        owner.table()
+    );
+    // Fetched whole rather than streamed: `value_columns` borrows the
+    // transaction mutably inside the loop below.
+    let rows: Vec<(i64, String, Option<String>, i64)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(select))
+            .bind(key.as_str())
+            .fetch_all(&mut **db_tx)
+            .await?;
+
+    let update = format!(
+        "UPDATE {} SET value_text = ?, value_num = ?, value_commodity = ?, \
+         value_account = ?, mismatched = ? WHERE rowid = ?",
+        owner.table()
+    );
+    for (rowid, stored_text, stored_account, flag) in rows {
+        // A flagged row reads back as text whatever `from` says, which is
+        // exactly the asserted-text case of the coercion rule. Its old flag is
+        // discarded, as on the write path: `mismatched` is derived from the
+        // value against the registered type, never carried forward.
+        let (current, _was_flagged) =
+            read_value(from, stored_text.clone(), stored_account, flag != 0);
+        let (columns, mismatched) = match coerce(&current, to) {
+            Coerced::Fits(ref fitted) => (value_columns(db_tx, fitted).await?, 0_i64),
+            // A row that will not narrow keeps the exact string it stored,
+            // rather than the value's canonical form — again so an account
+            // path is not replaced with an id.
+            Coerced::Mismatch => (
+                ValueColumns {
+                    text: stored_text,
+                    num: None,
+                    commodity: None,
+                    account: None,
+                },
+                1_i64,
+            ),
+        };
+        sqlx::query(sqlx::AssertSqlSafe(update.clone()))
+            .bind(columns.text)
+            .bind(columns.num)
+            .bind(columns.commodity)
+            .bind(columns.account)
+            .bind(mismatched)
+            .bind(rowid)
+            .execute(&mut **db_tx)
+            .await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use bc_models::AccountKind;
+    use bc_models::AccountType;
+    use bc_models::Amount;
+    use bc_models::CommodityCode;
     use bc_models::MetaEntry;
     use bc_models::MetaValue;
     use bc_models::Metadata;
+    use bc_models::PostingId;
     use bc_models::TransactionId;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
@@ -161,11 +312,45 @@ mod tests {
         id
     }
 
+    /// Inserts a bare `postings` row on `transaction_id` so posting metadata
+    /// can reference it.
+    async fn seed_posting(pool: &SqlitePool, transaction_id: &str) -> String {
+        let account = crate::AccountService::new(pool.clone())
+            .create()
+            .name("Cash")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+        let id = PostingId::new().to_string();
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) \
+             VALUES (?, ?, ?, '10.00', 'AUD', 0)",
+        )
+        .bind(&id)
+        .bind(transaction_id)
+        .bind(account.to_string())
+        .execute(pool)
+        .await
+        .expect("seed posting");
+        id
+    }
+
     /// Writes entries against a transaction through the storage layer, so keys
     /// register exactly as they do in production.
     async fn write_transaction_meta(pool: &SqlitePool, owner_id: &str, metadata: &Metadata) {
         let mut db_tx = pool.begin().await.expect("begin");
         insert(&mut db_tx, Owner::Transaction, owner_id, metadata)
+            .await
+            .expect("insert metadata");
+        db_tx.commit().await.expect("commit");
+    }
+
+    /// Writes entries against a posting through the storage layer.
+    async fn write_posting_meta(pool: &SqlitePool, owner_id: &str, metadata: &Metadata) {
+        let mut db_tx = pool.begin().await.expect("begin");
+        insert(&mut db_tx, Owner::Posting, owner_id, metadata)
             .await
             .expect("insert metadata");
         db_tx.commit().await.expect("commit");
@@ -267,6 +452,301 @@ mod tests {
         assert!(
             *def.created_at() >= before,
             "created_at is stamped at registration"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_returns_the_previous_type(pool: SqlitePool) {
+        let registry = Service::new(pool);
+        registry
+            .register(&key("invoice"), MetaType::Text)
+            .await
+            .expect("register");
+        assert_eq!(
+            registry
+                .retype(&key("invoice"), MetaType::Number)
+                .await
+                .expect("retype"),
+            MetaType::Text,
+            "the previous type is what phase 4's event records as `from`"
+        );
+        assert_eq!(
+            registry
+                .get(&key("invoice"))
+                .await
+                .expect("get")
+                .map(|def| def.ty()),
+            Some(MetaType::Number)
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_to_the_same_type_is_a_no_op(pool: SqlitePool) {
+        let registry = Service::new(pool);
+        registry
+            .register(&key("invoice"), MetaType::Number)
+            .await
+            .expect("register");
+        assert_eq!(
+            registry
+                .retype(&key("invoice"), MetaType::Number)
+                .await
+                .expect("retype"),
+            MetaType::Number
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_an_unregistered_key_is_not_found(pool: SqlitePool) {
+        let outcome = Service::new(pool)
+            .retype(&key("absent"), MetaType::Number)
+            .await;
+        assert!(
+            matches!(outcome, Err(BcError::NotFound(ref what)) if what.contains("absent")),
+            "retyping a key that was never registered names it"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_narrowing_flags_what_will_not_parse(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![
+                MetaEntry::new(key("invoice"), MetaValue::Text("1502".to_owned())),
+                MetaEntry::new(key("invoice"), MetaValue::Text("A-77".to_owned())),
+            ]),
+        )
+        .await;
+
+        Service::new(pool.clone())
+            .retype(&key("invoice"), MetaType::Number)
+            .await
+            .expect("retype");
+
+        let rows: Vec<(String, Option<f64>, i64)> = sqlx::query_as(
+            "SELECT value_text, value_num, mismatched FROM transaction_metadata \
+             WHERE transaction_id = ? ORDER BY position",
+        )
+        .bind(&tx)
+        .fetch_all(&pool)
+        .await
+        .expect("rows");
+        assert_eq!(
+            rows,
+            vec![
+                ("1502".to_owned(), Some(1502.0_f64), 0),
+                ("A-77".to_owned(), None, 1),
+            ],
+            "narrowing parses what it can and flags the rest, and a rescued \
+             row earns its sortable shadow"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_narrowing_rescues_a_previously_flagged_entry(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        // `invoice` registers as number, so "1502-B" is flagged on write.
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![
+                MetaEntry::new(key("invoice"), MetaValue::Number(dec!(1))),
+                MetaEntry::new(key("invoice"), MetaValue::Text("1502-B".to_owned())),
+            ]),
+        )
+        .await;
+        let flags: Vec<i64> = sqlx::query_scalar(
+            "SELECT mismatched FROM transaction_metadata WHERE transaction_id = ? \
+             ORDER BY position",
+        )
+        .bind(&tx)
+        .fetch_all(&pool)
+        .await
+        .expect("flags");
+        assert_eq!(flags, vec![0, 1], "the second entry starts out flagged");
+
+        Service::new(pool.clone())
+            .retype(&key("invoice"), MetaType::Text)
+            .await
+            .expect("retype");
+
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT value_text, mismatched FROM transaction_metadata \
+             WHERE transaction_id = ? ORDER BY position",
+        )
+        .bind(&tx)
+        .fetch_all(&pool)
+        .await
+        .expect("rows");
+        assert_eq!(
+            rows,
+            vec![("1".to_owned(), 0), ("1502-B".to_owned(), 0)],
+            "widening to text is a pure relabel: a text key cannot mismatch, \
+             so every flag clears"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_to_text_drops_the_typed_columns(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("fee"),
+                MetaValue::Amount(Amount::new(dec!(1.50), CommodityCode::new("AUD"))),
+            )]),
+        )
+        .await;
+
+        Service::new(pool.clone())
+            .retype(&key("fee"), MetaType::Text)
+            .await
+            .expect("retype");
+
+        let row: (String, Option<f64>, Option<String>, Option<String>, i64) = sqlx::query_as(
+            "SELECT value_text, value_num, value_commodity, value_account, mismatched \
+             FROM transaction_metadata WHERE transaction_id = ?",
+        )
+        .bind(&tx)
+        .fetch_one(&pool)
+        .await
+        .expect("row");
+        assert_eq!(
+            row,
+            ("1.50 AUD".to_owned(), None, None, None, 0),
+            "the canonical string is what a text key holds; the typed columns \
+             would index it under a type nothing queries it by"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_to_text_keeps_an_account_path(pool: SqlitePool) {
+        let accounts = crate::AccountService::new(pool.clone());
+        let parent = accounts
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create parent");
+        let account = accounts
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&parent)
+            .call()
+            .await
+            .expect("create account");
+
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("offset"),
+                MetaValue::Account(account),
+            )]),
+        )
+        .await;
+
+        Service::new(pool.clone())
+            .retype(&key("offset"), MetaType::Text)
+            .await
+            .expect("retype");
+
+        let row: (String, Option<String>) = sqlx::query_as(
+            "SELECT value_text, value_account FROM transaction_metadata WHERE transaction_id = ?",
+        )
+        .bind(&tx)
+        .fetch_one(&pool)
+        .await
+        .expect("row");
+        assert_eq!(
+            row,
+            ("Assets:Savings".to_owned(), None),
+            "the relabel leaves value_text alone, so the path survives rather \
+             than being rewritten as a bare id"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_replays_posting_metadata_too(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        let posting = seed_posting(&pool, &tx).await;
+        write_posting_meta(
+            &pool,
+            &posting,
+            &Metadata::new(vec![MetaEntry::new(
+                key("weight"),
+                MetaValue::Text("2.5".to_owned()),
+            )]),
+        )
+        .await;
+
+        Service::new(pool.clone())
+            .retype(&key("weight"), MetaType::Number)
+            .await
+            .expect("retype");
+
+        let row: (String, Option<f64>, i64) = sqlx::query_as(
+            "SELECT value_text, value_num, mismatched FROM posting_metadata WHERE posting_id = ?",
+        )
+        .bind(&posting)
+        .fetch_one(&pool)
+        .await
+        .expect("row");
+        assert_eq!(
+            row,
+            ("2.5".to_owned(), Some(2.5_f64), 0),
+            "both owner tables are replayed, not just transactions"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_away_from_account_clears_the_link_and_keeps_the_path(pool: SqlitePool) {
+        let account = crate::AccountService::new(pool.clone())
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("offset"),
+                MetaValue::Account(account),
+            )]),
+        )
+        .await;
+
+        Service::new(pool.clone())
+            .retype(&key("offset"), MetaType::Number)
+            .await
+            .expect("retype");
+
+        let row: (String, Option<String>, i64) = sqlx::query_as(
+            "SELECT value_text, value_account, mismatched FROM transaction_metadata \
+             WHERE transaction_id = ?",
+        )
+        .bind(&tx)
+        .fetch_one(&pool)
+        .await
+        .expect("row");
+        assert_eq!(
+            row,
+            ("Savings".to_owned(), None, 1),
+            "an account does not narrow to a number, so the row is flagged, \
+             keeps the text it stored, and loses its link for good"
         );
     }
 }
