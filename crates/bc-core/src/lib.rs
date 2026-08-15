@@ -96,6 +96,7 @@ pub use import_exec::SkipCause;
 pub use import_exec::execute_import;
 pub use import_exec::plan_import;
 pub use loan::Service as LoanService;
+pub use metadata::registry::Service as MetadataService;
 pub use period_overlap::PeriodOverlap;
 pub use report::Report as CategoryReport;
 pub use report::Row as CategoryRow;
