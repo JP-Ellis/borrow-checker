@@ -137,6 +137,28 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                     after.len()
                 ),
             ),
+            // The three registry events aggregate on the metadata key, and
+            // `TransactionService::audit_trail` selects on a transaction id, so
+            // no query returns one today. The copy exists so the first reader
+            // of a key's history finds a sentence rather than a variant name.
+            Event::MetadataKeyRegistered { key, ty } => (
+                "key",
+                format!(
+                    "metadata key '{key}' registered as {}",
+                    bc_ipc::MetaTypeDto::from(*ty).label()
+                ),
+            ),
+            Event::MetadataKeyRetyped { key, from, to } => (
+                "key",
+                format!(
+                    "metadata key '{key}' retyped {} → {}",
+                    bc_ipc::MetaTypeDto::from(*from).label(),
+                    bc_ipc::MetaTypeDto::from(*to).label()
+                ),
+            ),
+            Event::MetadataKeyRenamed { from, to } => {
+                ("key", format!("metadata key '{from}' renamed to '{to}'"))
+            }
             Event::PostingSpreadChanged { to, .. } => (
                 "spread",
                 match to {
@@ -686,6 +708,41 @@ mod tests {
             !entry.message.contains(&account.to_string()),
             "message must not leak the raw account id"
         );
+    }
+
+    #[test]
+    fn registry_events_render_readable_audit_entries() {
+        let key = bc_models::MetaKey::new("invoice").expect("valid key");
+        let cases = [
+            (
+                crate::Event::MetadataKeyRegistered {
+                    key: key.clone(),
+                    ty: bc_models::MetaType::Number,
+                },
+                "metadata key 'invoice' registered as number",
+            ),
+            (
+                crate::Event::MetadataKeyRetyped {
+                    key: key.clone(),
+                    from: bc_models::MetaType::Number,
+                    to: bc_models::MetaType::Text,
+                },
+                "metadata key 'invoice' retyped number → text",
+            ),
+            (
+                crate::Event::MetadataKeyRenamed {
+                    from: key.clone(),
+                    to: bc_models::MetaKey::new("reference").expect("valid key"),
+                },
+                "metadata key 'invoice' renamed to 'reference'",
+            ),
+        ];
+        for (event, expected) in cases {
+            let entry =
+                bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &HashMap::new());
+            assert_eq!(entry.kind, "key");
+            assert_eq!(entry.message, expected);
+        }
     }
 
     #[test]
