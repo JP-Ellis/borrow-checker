@@ -10,6 +10,8 @@ use bc_models::DepreciationId;
 use bc_models::EventId;
 use bc_models::ImportBatchId;
 use bc_models::LoanId;
+use bc_models::MetaKey;
+use bc_models::MetaType;
 use bc_models::Metadata;
 use bc_models::Period;
 use bc_models::PostingId;
@@ -416,6 +418,22 @@ pub enum Event {
         /// The transaction restored by the unmerge.
         absorbed_id: TransactionId,
     },
+    /// A metadata key entered the registry.
+    ///
+    /// Emitted when a key is first written, whether by an explicit
+    /// registration or by the auto-registration every metadata write performs.
+    /// Both paths go through the same insert, so both are recorded and neither
+    /// double-records. Without the write path emitting, a log replayed from
+    /// empty would hold retypes and renames of keys it never saw registered.
+    ///
+    /// `ty` is the type the registry ended up holding. A key already present
+    /// keeps its own type and emits nothing at all.
+    MetadataKeyRegistered {
+        /// The newly registered key.
+        key: MetaKey,
+        /// The type it registered with.
+        ty: MetaType,
+    },
     /// An import batch was discarded, undoing the run that produced it.
     ///
     /// One event covers the whole discard. Emitting a `PostingRemoved` per row
@@ -516,6 +534,7 @@ impl Event {
             Self::TransactionSourceDetached { .. } => "TransactionSourceDetached",
             Self::TransactionsMerged { .. } => "TransactionsMerged",
             Self::TransactionUnmerged { .. } => "TransactionUnmerged",
+            Self::MetadataKeyRegistered { .. } => "MetadataKeyRegistered",
             Self::ImportBatchDiscarded { .. } => "ImportBatchDiscarded",
         }
     }
@@ -562,6 +581,10 @@ impl Event {
             | Self::TransactionSourceDetached { transaction_id, .. } => transaction_id.to_string(),
             Self::TransactionsMerged { survivor_id, .. }
             | Self::TransactionUnmerged { survivor_id, .. } => survivor_id.to_string(),
+            // The registry has no entity ID: a key is its own aggregate. Every
+            // other aggregate ID is a prefixed `define_id!` string, so a bare
+            // key can never collide with one.
+            Self::MetadataKeyRegistered { key, .. } => key.as_str().to_owned(),
             Self::ImportBatchDiscarded { batch_id, .. } => batch_id.to_string(),
         }
     }

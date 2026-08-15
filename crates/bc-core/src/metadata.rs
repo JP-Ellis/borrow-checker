@@ -19,6 +19,8 @@ use crate::BcError;
 use crate::BcResult;
 use crate::db::from_db_str;
 use crate::db::to_db_str;
+use crate::events::Event;
+use crate::events::insert_event;
 use crate::metadata::coerce::Coerced;
 use crate::metadata::coerce::coerce;
 use crate::transaction::sql_placeholders;
@@ -220,6 +222,13 @@ async fn value_columns(
 ///
 /// The registered type: `ty` for a new key, the existing type otherwise.
 ///
+/// # Events
+///
+/// Appends [`Event::MetadataKeyRegistered`] in the caller's transaction when
+/// the key was absent, and nothing when it was already present. Every metadata
+/// write funnels through here, so this is the single point at which a key's
+/// arrival is recorded, whatever path brought it.
+///
 /// # Errors
 ///
 /// Returns [`BcError::BadData`] if the stored type is unreadable, and
@@ -229,20 +238,34 @@ pub(crate) async fn register_key_if_absent(
     key: &MetaKey,
     ty: MetaType,
 ) -> BcResult<MetaType> {
-    sqlx::query(
+    let inserted = sqlx::query(
         "INSERT OR IGNORE INTO metadata_keys (key, value_type, created_at) VALUES (?, ?, ?)",
     )
     .bind(key.as_str())
     .bind(to_db_str(ty)?)
     .bind(Timestamp::now().to_string())
     .execute(&mut **db_tx)
-    .await?;
+    .await?
+    .rows_affected()
+        > 0;
 
     let stored: String = sqlx::query_scalar("SELECT value_type FROM metadata_keys WHERE key = ?")
         .bind(key.as_str())
         .fetch_one(&mut **db_tx)
         .await?;
-    from_db_str::<MetaType>(&stored)
+    let registered = from_db_str::<MetaType>(&stored)?;
+
+    if inserted {
+        insert_event(
+            &Event::MetadataKeyRegistered {
+                key: key.clone(),
+                ty: registered,
+            },
+            db_tx,
+        )
+        .await?;
+    }
+    Ok(registered)
 }
 
 /// Writes every entry of `metadata` against `owner_id`, registering any key the
