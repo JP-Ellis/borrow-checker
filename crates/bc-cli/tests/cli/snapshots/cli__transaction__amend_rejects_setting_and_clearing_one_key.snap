@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/transaction.rs
+expression: output
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: --meta and --clear-meta both name 'note': one sets the key, the other removes it

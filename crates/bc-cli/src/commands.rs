@@ -11,6 +11,7 @@ pub mod commodity;
 pub mod completions;
 pub mod export;
 pub mod import;
+pub mod meta;
 pub mod plugin;
 pub mod profile;
 pub mod report;

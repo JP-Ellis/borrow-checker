@@ -30,9 +30,11 @@ pub enum Command {
         /// Transaction description.
         #[arg(long)]
         description: String,
-        /// Optional payee name.
-        #[arg(long)]
-        payee: Option<String>,
+        /// Metadata entry `KEY=VALUE`. Repeat for each entry, including
+        /// repeats of one key. The value's type comes from the key registry,
+        /// and is inferred from the value for a key not yet registered.
+        #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
+        meta: Vec<String>,
         /// Posting in `ACCOUNT_ID:AMOUNT:COMMODITY` format. Repeat for each posting.
         /// Must include at least two postings that balance to zero.
         #[arg(
@@ -42,7 +44,7 @@ pub enum Command {
         )]
         postings: Vec<String>,
     },
-    /// Amend the metadata of an existing transaction.
+    /// Amend the date, description or metadata of an existing transaction.
     Amend {
         /// Transaction ID to amend.
         id: String,
@@ -52,12 +54,14 @@ pub enum Command {
         /// New description.
         #[arg(long)]
         description: Option<String>,
-        /// New payee. To remove an existing payee, use `--clear-payee` instead.
-        #[arg(long, conflicts_with = "clear_payee")]
-        payee: Option<String>,
-        /// Remove the payee from this transaction.
-        #[arg(long)]
-        clear_payee: bool,
+        /// Metadata entry `KEY=VALUE`, replacing every stored entry under that
+        /// key. Repeat the key to store several entries under it. To remove a
+        /// key's entries, use `--clear-meta` instead.
+        #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
+        meta: Vec<String>,
+        /// Remove every metadata entry under this key. Repeat for each key.
+        #[arg(long = "clear-meta", value_name = "KEY", num_args = 1)]
+        clear_meta: Vec<String>,
     },
     /// Reverse a transaction by creating a new transaction with negated postings.
     Reverse {
@@ -112,16 +116,16 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         Command::Add {
             date,
             description,
-            payee,
+            meta: meta_specs,
             postings,
-        } => add(ctx, date, description, payee, postings).await,
+        } => add(ctx, date, description, &meta_specs, postings).await,
         Command::Amend {
             id,
             date,
             description,
-            payee,
-            clear_payee,
-        } => amend(ctx, id, date, description, payee, clear_payee).await,
+            meta: meta_specs,
+            clear_meta,
+        } => amend(ctx, id, date, description, &meta_specs, &clear_meta).await,
         Command::Reverse { id } => reverse(ctx, id).await,
     }
 }
@@ -142,6 +146,19 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
         return Ok(());
     }
 
+    // Only worth a query when an account-valued entry is actually on screen.
+    let resolver = if transactions.iter().any(|tx| {
+        tx.metadata()
+            .iter()
+            .any(|e| matches!(*e.value(), bc_models::MetaValue::Account(_)))
+    }) {
+        Some(bc_core::AccountResolver::load(&ctx.accounts).await?)
+    } else {
+        None
+    };
+    let payee_key = bc_models::MetaKey::new("payee")
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid metadata key 'payee': {e}")))?;
+
     let rows: Vec<Vec<String>> = transactions
         .iter()
         .map(|tx| {
@@ -155,19 +172,39 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
                 })
                 .collect();
             let amounts_str = amounts.join(", ");
-            let description = tx.payee().map_or_else(
-                || tx.description().to_owned(),
-                |payee| format!("{payee}: {}", tx.description()),
-            );
+            // Read the payee through `iter()`: `get_first_text` answers `None`
+            // both for an absent payee and for one stored under another type,
+            // and a flagged entry is exactly the second case.
+            let description = tx
+                .metadata()
+                .iter()
+                .find(|e| e.key() == &payee_key)
+                .map_or_else(
+                    || tx.description().to_owned(),
+                    |entry| {
+                        let flag = if entry.mismatched() { "!" } else { "" };
+                        format!(
+                            "{flag}{}: {}",
+                            entry.value().canonical(),
+                            tx.description()
+                        )
+                    },
+                );
+            let metadata: Vec<String> = tx
+                .metadata()
+                .iter()
+                .map(|e| super::meta::render_entry(e, resolver.as_ref()))
+                .collect();
             vec![
                 tx.id().to_string(),
                 tx.date().to_string(),
                 description,
                 amounts_str,
+                metadata.join(", "),
             ]
         })
         .collect();
-    crate::output::print_table(&["ID", "DATE", "DESCRIPTION", "AMOUNTS"], &rows);
+    crate::output::print_table(&["ID", "DATE", "DESCRIPTION", "AMOUNTS", "META"], &rows);
     Ok(())
 }
 
@@ -176,7 +213,7 @@ async fn add(
     ctx: &AppContext,
     date: String,
     description: String,
-    payee: Option<String>,
+    meta_specs: &[String],
     posting_specs: Vec<String>,
 ) -> CliResult<()> {
     if posting_specs.len() < 2 {
@@ -193,11 +230,16 @@ async fn add(
     let parsed_date = jiff::civil::Date::from_str(&date)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{date}': {e}")))?;
 
+    let metadata: bc_models::Metadata = super::meta::entries_for(ctx, meta_specs)
+        .await?
+        .into_iter()
+        .collect();
+
     let tx = bc_models::Transaction::builder()
         .id(bc_models::TransactionId::new())
         .date(parsed_date)
         .description(description)
-        .maybe_payee(payee)
+        .metadata(metadata)
         .postings(postings)
         .reconciliation(bc_models::Reconciliation::Reconciled)
         .created_at(jiff::Timestamp::now())
@@ -217,14 +259,14 @@ async fn add(
     Ok(())
 }
 
-/// Amends the metadata of an existing transaction.
+/// Amends the date, description or metadata of an existing transaction.
 async fn amend(
     ctx: &AppContext,
     id: String,
     date: Option<String>,
     description: Option<String>,
-    payee: Option<String>,
-    clear_payee: bool,
+    meta_specs: &[String],
+    clear_meta: &[String],
 ) -> CliResult<()> {
     let tx_id = bc_models::TransactionId::from_str(&id)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid transaction ID '{id}': {e}")))?;
@@ -238,23 +280,27 @@ async fn amend(
         original.date()
     };
     let new_description = description.unwrap_or_else(|| original.description().to_owned());
-    // `--clear-payee` sets payee to None; `--payee <value>` sets a new payee;
-    // omitting both preserves the original payee.
-    let new_payee = if clear_payee {
-        None
-    } else {
-        payee.or_else(|| original.payee().map(str::to_owned))
-    };
+
+    let cleared: Vec<bc_models::MetaKey> = clear_meta
+        .iter()
+        .map(|key| super::meta::parse_meta_key(key))
+        .collect::<CliResult<_>>()?;
+    let entries = super::meta::entries_for(ctx, meta_specs).await?;
+    if let Some(entry) = entries.iter().find(|e| cleared.contains(e.key())) {
+        return Err(crate::error::CliError::Arg(format!(
+            "--meta and --clear-meta both name '{}': one sets the key, the other removes it",
+            entry.key()
+        )));
+    }
+    let new_metadata = super::meta::apply_changes(original.metadata(), &entries, &cleared);
 
     let updated = bc_models::Transaction::builder()
         .id(tx_id.clone())
         .date(new_date)
         .description(new_description)
-        .maybe_payee(new_payee)
-        .maybe_note(original.note().map(str::to_owned))
+        .metadata(new_metadata)
         .postings(original.postings().to_vec())
         .tag_ids(original.tag_ids().to_vec())
-        .extra_dates(original.extra_dates().to_vec())
         .reconciliation(original.reconciliation())
         .created_at(*original.created_at())
         .build();
