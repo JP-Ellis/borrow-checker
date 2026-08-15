@@ -6,7 +6,6 @@ use bc_models::AccountId;
 use bc_models::Amount;
 use bc_models::CommodityCode;
 use bc_models::Cost;
-use bc_models::Metadata;
 use bc_models::Posting;
 use bc_models::PostingId;
 use bc_models::Reconciliation;
@@ -146,30 +145,6 @@ fn merge_preserving(current: &Transaction, updated: &Transaction) -> Transaction
         .build()
 }
 
-/// Reports whether an edit moved `before` to `after`.
-///
-/// Entries are compared by key, by value, and by position.
-/// [`bc_models::MetaEntry::mismatched`] is excluded: the write path derives that
-/// flag from the value against the key's registered type and overwrites
-/// whatever an incoming entry claims, so two lists differing in it alone
-/// describe the same edit and must not produce an event.
-///
-/// # Arguments
-///
-/// * `before` - The stored list.
-/// * `after` - The desired list.
-///
-/// # Returns
-///
-/// `true` when the two lists differ in anything an edit can express.
-fn metadata_changed(before: &Metadata, after: &Metadata) -> bool {
-    before.len() != after.len()
-        || before
-            .iter()
-            .zip(after.iter())
-            .any(|(old, new)| old.key() != new.key() || old.value() != new.value())
-}
-
 /// Computes the events that turn `prev` into `posting`, both being the same
 /// leg of transaction `id` before and after an edit.
 ///
@@ -211,7 +186,7 @@ fn diff_posting(id: &TransactionId, prev: &Posting, posting: &Posting) -> Vec<Ev
             to: new_spread,
         });
     }
-    if metadata_changed(prev.metadata(), posting.metadata()) {
+    if !prev.metadata().eq_ignoring_mismatched(posting.metadata()) {
         events.push(Event::PostingMetadataChanged {
             id: id.clone(),
             posting_id: posting.id().clone(),
@@ -275,7 +250,10 @@ pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> 
         });
     }
 
-    if metadata_changed(current.metadata(), updated.metadata()) {
+    if !current
+        .metadata()
+        .eq_ignoring_mismatched(updated.metadata())
+    {
         events.push(Event::TransactionMetadataChanged {
             id: id.clone(),
             before: current.metadata().clone(),

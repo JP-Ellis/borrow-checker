@@ -658,6 +658,49 @@ impl Metadata {
         }
     }
 
+    /// Compares two lists by key, by value and by position, ignoring
+    /// [`MetaEntry::mismatched`].
+    ///
+    /// The derived [`PartialEq`] includes the flag, which is rarely what a
+    /// caller wants: the flag is the store's verdict at load time, derived by
+    /// the write path from the value against the key's registered type and
+    /// overwritten on every write. Two lists differing in it alone therefore
+    /// describe the same edit.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The list to compare against.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the two lists agree in everything an edit can express.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bc_models::{MetaEntry, MetaKey, MetaValue, Metadata};
+    ///
+    /// let invoice = MetaKey::new("invoice").expect("valid key");
+    /// let flagged = Metadata::new(vec![MetaEntry::mismatch(invoice.clone(), "1502")]);
+    /// let plain = Metadata::new(vec![MetaEntry::new(
+    ///     invoice,
+    ///     MetaValue::Text("1502".to_owned()),
+    /// )]);
+    ///
+    /// assert!(flagged.eq_ignoring_mismatched(&plain));
+    /// assert!(flagged != plain);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn eq_ignoring_mismatched(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len()
+            && self
+                .0
+                .iter()
+                .zip(other.0.iter())
+                .all(|(mine, theirs)| mine.key() == theirs.key() && mine.value() == theirs.value())
+    }
+
     /// Appends `entry` after every existing entry.
     #[inline]
     pub fn push(&mut self, entry: MetaEntry) {
@@ -1089,6 +1132,32 @@ mod tests {
         assert_eq!(meta.get_first_text(&key("payee")), Some("Generic Grocer"));
         assert_eq!(meta.get_first_text(&key("invoice")), None);
         assert_eq!(meta.get_first_text(&key("absent")), None);
+    }
+
+    #[test]
+    fn eq_ignoring_mismatched_ignores_only_the_flag() {
+        let flagged = Metadata::new(vec![MetaEntry::mismatch(key("invoice"), "1502")]);
+        let plain = Metadata::new(vec![text_entry("invoice", "1502")]);
+
+        assert!(flagged.eq_ignoring_mismatched(&plain));
+        pretty_assertions::assert_ne!(
+            flagged,
+            plain,
+            "the derived PartialEq still sees the flag; the method is the only way past it"
+        );
+    }
+
+    #[rstest]
+    #[case::value(vec![text_entry("note", "second"), text_entry("payee", "Generic Grocer")])]
+    #[case::key(vec![text_entry("memo", "first"), text_entry("payee", "Generic Grocer")])]
+    #[case::length(vec![text_entry("note", "first")])]
+    #[case::order_across_keys(vec![text_entry("payee", "Generic Grocer"), text_entry("note", "first")])]
+    fn eq_ignoring_mismatched_sees_every_other_difference(#[case] other: Vec<MetaEntry>) {
+        let base = Metadata::new(vec![
+            text_entry("note", "first"),
+            text_entry("payee", "Generic Grocer"),
+        ]);
+        assert!(!base.eq_ignoring_mismatched(&Metadata::new(other)));
     }
 
     #[test]
