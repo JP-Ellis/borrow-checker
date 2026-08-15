@@ -6,6 +6,7 @@
 use bc_sdk::Amount;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
+use bc_sdk::MetaEntry;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
 use bc_sdk::SourceLocation;
@@ -107,8 +108,13 @@ impl bc_sdk::Importer for LedgerImporter {
             raw_txs.push(
                 RawTransaction::builder()
                     .date(tx.date)
-                    .maybe_payee(payee)
                     .description(description)
+                    .metadata(
+                        payee
+                            .into_iter()
+                            .map(|name| MetaEntry::text("payee", name))
+                            .collect(),
+                    )
                     .source_location(
                         SourceLocation::builder()
                             .display(format!("{file}:{}", tx.line))
@@ -134,6 +140,14 @@ impl bc_sdk::Importer for LedgerImporter {
 
 #[cfg(test)]
 mod tests {
+    /// Reads the first `payee` metadata entry, when the row states one.
+    fn payee_of(tx: &RawTransaction) -> Option<&str> {
+        tx.metadata.iter().find_map(|entry| match entry.value {
+            bc_sdk::MetaValue::Text(ref text) if entry.key == "payee" => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
     use std::io::Write as _;
 
     use bc_sdk::Importer as _;
@@ -168,7 +182,7 @@ mod tests {
             .import(test_config("imports_simple_transaction", input))
             .expect("import");
         assert_eq!(txs.len(), 1);
-        assert_eq!(txs[0].payee.as_deref(), Some("Woolworths"));
+        assert_eq!(payee_of(&txs[0]), Some("Woolworths"));
         assert_eq!(txs[0].date, bc_sdk::Date::new(2025_i32, 1_u8, 15_u8));
         assert_eq!(txs[0].postings.len(), 2);
         assert_eq!(txs[0].postings[0].account, "Expenses:Food");

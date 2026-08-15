@@ -13,6 +13,7 @@ use bc_sdk::Amount;
 use bc_sdk::Date;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
+use bc_sdk::MetaEntry;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
 use bc_sdk::SourceLocation;
@@ -307,8 +308,13 @@ impl CsvImporter {
             transactions.push(
                 RawTransaction::builder()
                     .date(date)
-                    .maybe_payee(payee)
                     .description(description)
+                    .metadata(
+                        payee
+                            .into_iter()
+                            .map(|name| MetaEntry::text("payee", name))
+                            .collect(),
+                    )
                     .maybe_reference(reference)
                     .source_location(
                         SourceLocation::builder()
@@ -687,6 +693,14 @@ fn parse_number(
 
 #[cfg(test)]
 mod tests {
+    /// Reads the first `payee` metadata entry, when the row states one.
+    fn payee_of(tx: &RawTransaction) -> Option<&str> {
+        tx.metadata.iter().find_map(|entry| match entry.value {
+            bc_sdk::MetaValue::Text(ref text) if entry.key == "payee" => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
     use std::io::Write as _;
 
     use bc_sdk::Importer as _;
@@ -766,7 +780,7 @@ mod tests {
         assert_eq!(t0.postings[0].amount, Some(Amount::new(dec!(50.00), "AUD")));
         assert_eq!(t0.postings[0].balance, None);
         assert_eq!(t0.description, "Coffee shop");
-        assert_eq!(t0.payee.as_deref(), Some("Java Hut"));
+        assert_eq!(payee_of(t0), Some("Java Hut"));
 
         let t1 = &txns[1];
         assert_eq!(t1.date, Date::new(2025, 3, 16));
@@ -777,7 +791,7 @@ mod tests {
             Some(Amount::new(dec!(-120.00), "AUD"))
         );
         assert_eq!(t1.description, "Groceries");
-        assert_eq!(t1.payee, None);
+        assert_eq!(payee_of(t1), None);
     }
 
     #[test]
@@ -1354,7 +1368,7 @@ mod tests {
             .parse_bytes(b"01/02/2025,120.00,\n", &cfg, "statement.csv")
             .expect("an empty payee cell is not an error");
         assert_eq!(txs.len(), 1);
-        assert_eq!(txs[0].payee, None);
+        assert_eq!(payee_of(&txs[0]), None);
     }
 
     /// Split debit/credit columns must work under positional addressing.
@@ -1805,8 +1819,8 @@ mod tests {
             .expect("a short row must not fail the file");
 
         assert_eq!(txns.len(), 2);
-        assert_eq!(txns[0].payee.as_deref(), Some("Java Hut"));
-        assert_eq!(txns[1].payee, None);
+        assert_eq!(payee_of(&txns[0]), Some("Java Hut"));
+        assert_eq!(payee_of(&txns[1]), None);
     }
 
     #[test]
@@ -1830,8 +1844,8 @@ mod tests {
             .expect("rows still parse");
 
         assert_eq!(txns.len(), 2);
-        assert_eq!(txns[0].payee, None);
-        assert_eq!(txns[1].payee.as_deref(), Some("Java Hut"));
+        assert_eq!(payee_of(&txns[0]), None);
+        assert_eq!(payee_of(&txns[1]), Some("Java Hut"));
     }
 
     #[test]

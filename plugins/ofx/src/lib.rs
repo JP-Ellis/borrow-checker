@@ -10,6 +10,7 @@ mod sgml;
 use bc_sdk::Amount;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
+use bc_sdk::MetaEntry;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
 use bc_sdk::SourceLocation;
@@ -85,8 +86,13 @@ impl bc_sdk::Importer for OfxImporter {
                 let reference = Some(tx.fitid).filter(|s| !s.is_empty());
                 Ok(RawTransaction::builder()
                     .date(tx.date)
-                    .maybe_payee(tx.name)
                     .description(description)
+                    .metadata(
+                        tx.name
+                            .into_iter()
+                            .map(|name| MetaEntry::text("payee", name))
+                            .collect(),
+                    )
                     .maybe_reference(reference)
                     .source_location(
                         SourceLocation::builder()
@@ -116,6 +122,14 @@ impl bc_sdk::Importer for OfxImporter {
 
 #[cfg(test)]
 mod tests {
+    /// Reads the first `payee` metadata entry, when the row states one.
+    fn payee_of(tx: &RawTransaction) -> Option<&str> {
+        tx.metadata.iter().find_map(|entry| match entry.value {
+            bc_sdk::MetaValue::Text(ref text) if entry.key == "payee" => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
     use std::io::Write as _;
 
     use bc_sdk::Amount;
@@ -173,7 +187,7 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
         assert_eq!(txs.len(), 2);
         assert_eq!(txs[0].date, Date::new(2025, 1, 15));
         assert_eq!(txs[0].reference.as_deref(), Some("REF001"));
-        assert_eq!(txs[0].payee.as_deref(), Some("Woolworths"));
+        assert_eq!(payee_of(&txs[0]), Some("Woolworths"));
         assert_eq!(txs[0].description, "Groceries");
         assert_eq!(txs[0].postings.len(), 1);
         assert_eq!(txs[0].postings[0].account, "Assets:Bank:Checking");
