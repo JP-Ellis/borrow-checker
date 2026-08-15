@@ -20,7 +20,7 @@
 import { resolve }          from 'node:path';
 import Database             from 'better-sqlite3';
 import { browser, $, $$ }  from '@wdio/globals';
-import { DB_PATH } from '../support/db.js';
+import { DB_PATH, dbTransactionMetadata } from '../support/db.js';
 
 // ── DB helpers ──────────────────────────────────────────────────────────────
 
@@ -43,17 +43,15 @@ function dbFindMultiPostingTx(): string | undefined {
     }
 }
 
-/** Returns the payee for a given transaction id. */
+/**
+ * Returns the payee for a given transaction id.
+ *
+ * A payee is an ordinary metadata entry under an ordinary key, so it lives in
+ * `transaction_metadata` and there is no payee column to select. Repeated keys
+ * are legal; the register's name cell shows the first entry, so this does too.
+ */
 function dbTxPayee(txId: string): string | undefined {
-    const db = new Database(DB_PATH, { readonly: true });
-    try {
-        const row = db
-            .prepare('SELECT payee FROM transactions WHERE id = ?')
-            .get(txId) as { payee: string } | undefined;
-        return row?.payee;
-    } finally {
-        db.close();
-    }
+    return dbTransactionMetadata(txId).find(row => row.key === 'payee')?.value_text;
 }
 
 /** Returns all posting (id, account_id) pairs for a transaction, in display order. */
