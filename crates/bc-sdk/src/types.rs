@@ -734,7 +734,9 @@ mod tests {
             .date(Date::new(2026, 1, 15))
             .description("Coffee")
             .postings(vec![
-                RawPosting::builder().account("Assets:Bank:Checking").build(),
+                RawPosting::builder()
+                    .account("Assets:Bank:Checking")
+                    .build(),
             ])
             .build();
         assert_eq!(tx.metadata, vec![]);
@@ -752,7 +754,9 @@ mod tests {
                 MetaEntry::text("note", "second"),
             ])
             .postings(vec![
-                RawPosting::builder().account("Assets:Bank:Checking").build(),
+                RawPosting::builder()
+                    .account("Assets:Bank:Checking")
+                    .build(),
             ])
             .build();
 

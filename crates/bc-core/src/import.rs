@@ -14,7 +14,75 @@ pub(crate) mod profile;
 pub(crate) mod registry;
 
 use bc_models::Amount;
+use bc_models::MetaKey;
+use bc_models::MetaValue;
 use jiff::civil::Date;
+
+/// A metadata value an importer stated, prior to account resolution.
+///
+/// Six of the seven metadata types are self-contained, so an importer states
+/// them in full. The seventh names an account, and only by path: a plugin has
+/// no account tree, and neither does the translation boundary that reads it.
+/// The path travels as far as [`crate::import_exec`], which holds the same
+/// [`crate::AccountResolver`] that binds `RawPosting::account`.
+///
+/// Re-exported from the crate root as [`crate::RawMetaValue`].
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawMetaValue {
+    /// A value the importer stated in full.
+    Resolved(MetaValue),
+    /// An account named by path, e.g. `"Assets:Bank:Checking"`. A path naming
+    /// no account is kept as text, so the entry survives to be repaired.
+    AccountPath(String),
+}
+
+/// One metadata key-value pair an importer stated.
+///
+/// The key is already validated: a syntactically invalid key is dropped at the
+/// translation boundary, so nothing downstream has to consider one.
+///
+/// Re-exported from the crate root as [`crate::RawMetaEntry`].
+#[non_exhaustive]
+#[derive(bon::Builder, Debug, Clone, PartialEq)]
+pub struct RawMetaEntry {
+    /// The key this value is filed under, normalised to lowercase.
+    pub key: MetaKey,
+    /// The value.
+    pub value: RawMetaValue,
+}
+
+impl RawMetaEntry {
+    /// Pairs a key with a value the importer stated in full.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to file the value under.
+    /// * `value` - The value.
+    #[inline]
+    #[must_use]
+    pub fn resolved(key: MetaKey, value: MetaValue) -> Self {
+        Self {
+            key,
+            value: RawMetaValue::Resolved(value),
+        }
+    }
+
+    /// Pairs a key with an account named by path.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to file the account under.
+    /// * `path` - The account path, e.g. `"Assets:Bank:Checking"`.
+    #[inline]
+    #[must_use]
+    pub fn account_path(key: MetaKey, path: impl Into<String>) -> Self {
+        Self {
+            key,
+            value: RawMetaValue::AccountPath(path.into()),
+        }
+    }
+}
 
 /// A single posting leg of a raw transaction, prior to account-id resolution.
 ///
@@ -31,12 +99,12 @@ pub struct RawPosting {
     pub amount: Option<Amount>,
     /// Per-account running balance after this leg, if the source reports it.
     pub balance: Option<Amount>,
-    /// Optional free-text note for this leg.
-    #[builder(into)]
-    pub note: Option<String>,
     /// Tag names applied to this leg.
     #[builder(default)]
     pub tags: Vec<String>,
+    /// Typed key-value metadata for this leg, in display order.
+    #[builder(default)]
+    pub metadata: Vec<RawMetaEntry>,
 }
 
 /// Where a [`RawTransaction`] came from, for diagnostics.
@@ -64,24 +132,22 @@ pub struct SourceLocation {
 pub struct RawTransaction {
     /// The transaction date.
     pub date: Date,
-    /// The payee or merchant name, if available.
-    #[builder(into)]
-    pub payee: Option<String>,
     /// A free-text description or memo for the transaction.
     #[builder(into)]
     pub description: String,
-    /// Optional user annotation, distinct from `description`.
-    #[builder(into)]
-    pub note: Option<String>,
     /// An institution-provided reference or check number, if available.
     #[builder(into)]
     pub reference: Option<String>,
     /// Transaction-level tag names (e.g. Beancount `#josh`).
     #[builder(default)]
     pub tags: Vec<String>,
-    /// Free-form labelled dates (e.g. `("cleared", …)`).
+    /// Typed key-value metadata for this transaction, in display order.
+    ///
+    /// Everything an importer knows beyond the structural fields arrives here:
+    /// a payee under `payee`, a memo under `note`, a settlement date under a
+    /// key of its own.
     #[builder(default)]
-    pub extra_dates: Vec<(String, Date)>,
+    pub metadata: Vec<RawMetaEntry>,
     /// Where this transaction came from, if the importer reported it.
     pub source_location: Option<SourceLocation>,
     /// One or more posting legs. Single-account importers emit exactly one.
@@ -374,8 +440,11 @@ mod tests {
     fn make_raw_transaction() -> RawTransaction {
         RawTransaction::builder()
             .date(date(2024, 3, 15))
-            .payee("Coffee Shop")
             .description("Morning coffee")
+            .metadata(vec![RawMetaEntry::resolved(
+                MetaKey::new("payee").expect("valid key"),
+                MetaValue::Text("Coffee Shop".to_owned()),
+            )])
             .reference("REF001")
             .postings(vec![
                 RawPosting::builder()
@@ -402,7 +471,13 @@ mod tests {
             posting.balance,
             Some(Amount::new(dec!(1_000.00), CommodityCode::new("USD")))
         );
-        assert_eq!(tx.payee.as_deref(), Some("Coffee Shop"));
+        assert_eq!(
+            tx.metadata,
+            vec![RawMetaEntry::resolved(
+                MetaKey::new("payee").expect("valid key"),
+                MetaValue::Text("Coffee Shop".to_owned()),
+            )]
+        );
         assert_eq!(tx.description, "Morning coffee");
         assert_eq!(tx.reference.as_deref(), Some("REF001"));
     }
@@ -420,7 +495,7 @@ mod tests {
             ])
             .build();
 
-        assert!(tx.payee.is_none());
+        assert_eq!(tx.metadata, vec![]);
         assert!(tx.reference.is_none());
         assert!(tx.postings.first().expect("one posting").balance.is_none());
     }
