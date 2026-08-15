@@ -219,6 +219,12 @@ impl Service {
     /// * `from` - The registered key to rename.
     /// * `to` - Its new name.
     ///
+    /// # Events
+    ///
+    /// Appends [`Event::MetadataKeyRenamed`] in the same transaction as the
+    /// repoint. A rename to the same name, a rename onto a registered key, and
+    /// a rename of an unregistered key all append nothing.
+    ///
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] when `from` is not registered,
@@ -271,6 +277,14 @@ impl Service {
             .bind(from.as_str())
             .execute(&mut *db_tx)
             .await?;
+        insert_event(
+            &Event::MetadataKeyRenamed {
+                from: from.clone(),
+                to: to.clone(),
+            },
+            &mut db_tx,
+        )
+        .await?;
 
         db_tx.commit().await?;
         Ok(())
@@ -1155,6 +1169,130 @@ mod tests {
         assert_eq!(
             registered,
             vec!["counterparty".to_owned(), "note".to_owned()]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_records_both_names(pool: SqlitePool) {
+        let registry = Service::new(pool.clone());
+        registry
+            .register(&key("payee"), MetaType::Text)
+            .await
+            .expect("register");
+        registry
+            .rename(&key("payee"), &key("counterparty"))
+            .await
+            .expect("rename");
+
+        assert_eq!(
+            payloads_of_kind(&pool, "MetadataKeyRenamed").await,
+            vec![crate::events::Event::MetadataKeyRenamed {
+                from: key("payee"),
+                to: key("counterparty"),
+            }]
+        );
+
+        let aggregate: String =
+            sqlx::query_scalar("SELECT aggregate_id FROM events WHERE kind = 'MetadataKeyRenamed'")
+                .fetch_one(&pool)
+                .await
+                .expect("aggregate");
+        assert_eq!(
+            aggregate, "payee",
+            "the rename is the last event of the old name's aggregate, so a \
+             reader starting from the new name follows the chain backwards"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_rename_that_changes_nothing_records_nothing(pool: SqlitePool) {
+        let registry = Service::new(pool.clone());
+        registry
+            .register(&key("payee"), MetaType::Text)
+            .await
+            .expect("register");
+        registry
+            .register(&key("counterparty"), MetaType::Number)
+            .await
+            .expect("register");
+
+        registry
+            .rename(&key("payee"), &key("payee"))
+            .await
+            .expect("renaming a key to its own name is accepted");
+        let collision = registry.rename(&key("payee"), &key("counterparty")).await;
+        assert!(matches!(collision, Err(BcError::InvalidInput(_))));
+        let missing = registry.rename(&key("absent"), &key("fresh")).await;
+        assert!(matches!(missing, Err(BcError::NotFound(_))));
+
+        assert_eq!(payloads_of_kind(&pool, "MetadataKeyRenamed").await, vec![]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_registry_replays_out_of_an_empty_log(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![
+                MetaEntry::new(key("payee"), MetaValue::Text("Generic Grocer".to_owned())),
+                MetaEntry::new(key("invoice"), MetaValue::Text("1502".to_owned())),
+                MetaEntry::new(key("cleared"), MetaValue::Boolean(true)),
+            ]),
+        )
+        .await;
+        let registry = Service::new(pool.clone());
+        registry
+            .retype(&key("invoice"), MetaType::Number)
+            .await
+            .expect("retype");
+        registry
+            .rename(&key("payee"), &key("counterparty"))
+            .await
+            .expect("rename");
+
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT payload FROM events WHERE kind LIKE 'MetadataKey%' ORDER BY rowid ASC",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("registry events");
+        let mut replayed: std::collections::BTreeMap<MetaKey, MetaType> =
+            std::collections::BTreeMap::new();
+        for payload in rows {
+            let event: crate::events::Event =
+                serde_json::from_str(&payload).expect("deserialise");
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "Event is #[non_exhaustive]; only the registry variants are replayed here"
+            )]
+            match event {
+                crate::events::Event::MetadataKeyRegistered { key: name, ty } => {
+                    replayed.insert(name, ty);
+                }
+                crate::events::Event::MetadataKeyRetyped { key: name, to, .. } => {
+                    replayed.insert(name, to);
+                }
+                crate::events::Event::MetadataKeyRenamed { from, to } => {
+                    if let Some(ty) = replayed.remove(&from) {
+                        replayed.insert(to, ty);
+                    }
+                }
+                other => panic!("unexpected registry event {other:?}"),
+            }
+        }
+
+        let stored: std::collections::BTreeMap<MetaKey, MetaType> = registry
+            .list()
+            .await
+            .expect("list")
+            .into_iter()
+            .map(|def| (def.key().clone(), def.ty()))
+            .collect();
+        assert_eq!(
+            replayed, stored,
+            "the three registry events, folded over an empty registry, \
+             reconstruct exactly what the projection holds"
         );
     }
 

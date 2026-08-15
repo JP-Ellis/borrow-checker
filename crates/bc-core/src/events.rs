@@ -448,6 +448,24 @@ pub enum Event {
         /// The type it holds now.
         to: MetaType,
     },
+    /// A metadata key was renamed, carrying every entry under it across.
+    ///
+    /// The key keeps its registered type and its original registration time: a
+    /// rename is the same key under a new name. Renaming onto a key that
+    /// already exists is rejected rather than merged, because a merge would
+    /// lose which entries came from which key and no event could record it
+    /// faithfully enough to replay.
+    ///
+    /// The event aggregates on `from`, so it is the old name's last event and a
+    /// reader starting from the new name follows the chain backwards. The new
+    /// name's registration time lives on the original
+    /// [`Self::MetadataKeyRegistered`] row, reached the same way.
+    MetadataKeyRenamed {
+        /// The name the key held before.
+        from: MetaKey,
+        /// The name it holds now.
+        to: MetaKey,
+    },
     /// An import batch was discarded, undoing the run that produced it.
     ///
     /// One event covers the whole discard. Emitting a `PostingRemoved` per row
@@ -550,6 +568,7 @@ impl Event {
             Self::TransactionUnmerged { .. } => "TransactionUnmerged",
             Self::MetadataKeyRegistered { .. } => "MetadataKeyRegistered",
             Self::MetadataKeyRetyped { .. } => "MetadataKeyRetyped",
+            Self::MetadataKeyRenamed { .. } => "MetadataKeyRenamed",
             Self::ImportBatchDiscarded { .. } => "ImportBatchDiscarded",
         }
     }
@@ -602,6 +621,7 @@ impl Event {
             Self::MetadataKeyRegistered { key, .. } | Self::MetadataKeyRetyped { key, .. } => {
                 key.as_str().to_owned()
             }
+            Self::MetadataKeyRenamed { from, .. } => from.as_str().to_owned(),
             Self::ImportBatchDiscarded { batch_id, .. } => batch_id.to_string(),
         }
     }
