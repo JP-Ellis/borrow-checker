@@ -129,9 +129,10 @@ pub async fn list_tags() -> Result<Vec<TagInfo>, BcError> {
 
 /// Lists every registered metadata key with its type.
 ///
-/// The response is a whole-registry snapshot. Key counts stay small and keys
-/// change only through the two commands below, so a caller may hold it for the
-/// session and append to it locally rather than re-fetching after every save.
+/// The response is a whole-registry snapshot. A key enters the registry on the
+/// first write of a value under it, so an ordinary transaction save adds keys
+/// too — a caller holding this snapshot for the session goes stale as soon as
+/// the user names a key the registry has not seen.
 ///
 /// # Errors
 ///
@@ -153,8 +154,9 @@ pub async fn list_metadata_keys() -> Result<Vec<MetaKeyDefDto>, BcError> {
 ///
 /// # Errors
 ///
-/// Returns [`BcError::Validation`] for an invalid or unregistered key, or
-/// [`BcError::Internal`] if the invoke fails.
+/// Returns [`BcError::Validation`] for a key that breaks the charset, leading
+/// character or length rules, [`BcError::NotFound`] for a key that is not
+/// registered, or [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn retype_metadata_key(key: &str, ty: MetaTypeDto) -> Result<MetaTypeDto, BcError> {
     tauri_sys::core::invoke_result::<MetaTypeDto, BcError>(
@@ -168,9 +170,9 @@ pub async fn retype_metadata_key(key: &str, ty: MetaTypeDto) -> Result<MetaTypeD
 ///
 /// # Errors
 ///
-/// Returns [`BcError::Validation`] for an invalid name, an unregistered
-/// source, or a target that is already registered; [`BcError::Internal`] if the
-/// invoke fails.
+/// Returns [`BcError::Validation`] for a malformed name or a target that is
+/// already registered, [`BcError::NotFound`] when the source key is not
+/// registered, or [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn rename_metadata_key(from: &str, to: &str) -> Result<(), BcError> {
     tauri_sys::core::invoke_result::<(), BcError>(

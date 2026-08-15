@@ -37,8 +37,9 @@ fn parse_key(key: &str) -> Result<bc_models::MetaKey, bc_ipc::BcError> {
 
 /// Lists every registered metadata key with its type, ordered by key.
 ///
-/// The response is a whole-registry snapshot: key counts stay small, and the
-/// registry changes only through a first write or the two commands below.
+/// The response is a whole-registry snapshot: key counts stay small. A key
+/// enters on the first write of a value under it, so an ordinary transaction
+/// save adds keys as readily as the two commands below.
 ///
 /// # Errors
 ///
@@ -67,8 +68,10 @@ pub async fn list_metadata_keys(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] for an invalid or unregistered key,
-/// or [`bc_ipc::BcError::Internal`] on a service failure.
+/// Returns [`bc_ipc::BcError::Validation`] for a key that breaks the charset,
+/// leading-character or length rules, [`bc_ipc::BcError::NotFound`] for a key
+/// that is not registered, or [`bc_ipc::BcError::Internal`] on a service
+/// failure.
 #[expect(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
@@ -91,9 +94,10 @@ pub async fn retype_metadata_key(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] for an invalid name, an unregistered
-/// source, or a target that is already registered; [`bc_ipc::BcError::Internal`]
-/// on a service failure.
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed name or a target
+/// that is already registered, [`bc_ipc::BcError::NotFound`] when the source
+/// key is not registered, or [`bc_ipc::BcError::Internal`] on a service
+/// failure.
 #[expect(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
