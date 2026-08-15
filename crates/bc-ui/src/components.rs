@@ -11,6 +11,7 @@ pub use chip::Variant as ChipVariant;
 pub mod error_banner;
 #[cfg(target_arch = "wasm32")]
 pub mod filter_chips;
+pub mod meta_editor;
 #[cfg(target_arch = "wasm32")]
 pub mod num;
 pub mod period_nav;

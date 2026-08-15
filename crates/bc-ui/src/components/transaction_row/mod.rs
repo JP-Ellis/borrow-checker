@@ -24,6 +24,8 @@ use rust_decimal::Decimal;
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
+use crate::components::meta_editor::MetaEditor;
+#[cfg(target_arch = "wasm32")]
 use crate::components::tag_picker::TagPicker;
 #[cfg(target_arch = "wasm32")]
 use crate::components::tag_token::TagToken;
@@ -566,16 +568,14 @@ pub fn TransactionRow(
     };
 
     let date = format_date_display(tx.date);
-    let has_payee = !tx.payee.is_empty();
+    // `payee` is an ordinary metadata key with no privileged position; it is read
+    // like any other, and a flagged entry still reads as the text the user typed.
+    let payee = crate::components::meta_editor::model::first_text_by_key(&tx.metadata, "payee")
+        .filter(|text| !text.is_empty());
     let has_desc = !tx.description.is_empty();
-    let initial = payee_initial(if has_payee {
-        &tx.payee
-    } else {
-        &tx.description
-    })
-    .to_string();
-    let (display_name, name_class) = if has_payee {
-        (tx.payee.clone(), style::payee.to_owned())
+    let initial = payee_initial(payee.unwrap_or(&tx.description)).to_string();
+    let (display_name, name_class) = if let Some(name) = payee {
+        (name.to_owned(), style::payee.to_owned())
     } else if has_desc {
         (
             tx.description.clone(),
@@ -758,6 +758,7 @@ fn TransactionDetail(
     let editable = EditableTransaction::from(&tx);
     let ctx = TxEditCtx::new(editable, accounts, matched_postings);
     provide_context(ctx.clone());
+    let editor_accounts = ctx.accounts;
 
     if !all_tags.is_empty() {
         ctx.all_tags.set(all_tags);
@@ -799,20 +800,15 @@ fn TransactionDetail(
     });
 
     let f_date = RwSignal::new(ctx.working.with(|w| w.date.clone()));
-    let f_payee = RwSignal::new(ctx.working.with(|w| w.payee.clone()));
     let f_desc = RwSignal::new(ctx.working.with(|w| w.description.clone()));
-    let f_note = RwSignal::new(ctx.working.with(|w| w.note.clone()));
 
     {
         let working = ctx.working;
         Effect::new(move |_| {
-            let (date, payee, desc, note) =
-                (f_date.get(), f_payee.get(), f_desc.get(), f_note.get());
+            let (date, desc) = (f_date.get(), f_desc.get());
             working.update(|w| {
                 w.date = date;
-                w.payee = payee;
                 w.description = desc;
-                w.note = note;
             });
         });
     }
@@ -848,9 +844,7 @@ fn TransactionDetail(
         ctx_discard.discard();
         original.with_value(|o| {
             f_date.set(o.date.clone());
-            f_payee.set(o.payee.clone());
             f_desc.set(o.description.clone());
-            f_note.set(o.note.clone());
         });
         error.set(None);
     });
@@ -999,15 +993,6 @@ fn TransactionDetail(
             <div class=style::metamix>
                 <div class=style::mm_main>
                     <div class=style::mm_fields>
-                        <span class=style::metamix_lbl>"Payee"</span>
-                        <div class=style::mm_val>
-                            <input
-                                class=format!("{} {}", style::f, style::textfield)
-                                prop:value=move || f_payee.get()
-                                on:input=move |ev| f_payee.set(event_target_value(&ev))
-                                placeholder="payee"
-                            />
-                        </div>
                         <span class=style::metamix_lbl>"Description"</span>
                         <div class=style::mm_val>
                             <input
@@ -1062,13 +1047,17 @@ fn TransactionDetail(
                                 compact=true
                             />
                         </div>
-                        <span class=style::metamix_lbl>"Note"</span>
+                        <span class=style::metamix_lbl>"Fields"</span>
                         <div class=style::mm_val>
-                            <input
-                                class=format!("{} {}", style::f, style::note_input)
-                                prop:value=move || f_note.get()
-                                on:input=move |ev| f_note.set(event_target_value(&ev))
-                                placeholder="add note…"
+                            <MetaEditor
+                                rows=Signal::derive(move || working.with(|w| w.metadata.clone()))
+                                on_change=Callback::new(move |rows| {
+                                    working.update(|w| w.metadata = rows);
+                                })
+                                accounts=editor_accounts.get_value()
+                                default_commodity=Signal::derive(move || {
+                                    working.with(EditableTransaction::default_currency)
+                                })
                             />
                         </div>
                     </div>
@@ -1080,88 +1069,6 @@ fn TransactionDetail(
                             on:input=move |ev| f_date.set(event_target_value(&ev))
                             placeholder="YYYY-MM-DD"
                         />
-                        <span></span>
-                        // Positional index key is safe here: each row reads/writes
-                        // directly into `working.extra_dates[i]` with no per-row local
-                        // signal that could go stale on reorder (unlike the postings
-                        // list fixed in #210).
-                        <For
-                            each=move || {
-                                working.with(|w| (0..w.extra_dates.len()).collect::<Vec<_>>())
-                            }
-                            key=|i| *i
-                            children=move |i| {
-                                view! {
-                                    <input
-                                        class=style::f
-                                        prop:value=move || {
-                                            working
-                                                .with(|w| {
-                                                    w.extra_dates
-                                                        .get(i)
-                                                        .map(|(l, _)| l.clone())
-                                                        .unwrap_or_default()
-                                                })
-                                        }
-                                        on:input=move |ev| {
-                                            working
-                                                .update(|w| {
-                                                    if let Some(e) = w.extra_dates.get_mut(i) {
-                                                        e.0 = event_target_value(&ev);
-                                                    }
-                                                });
-                                        }
-                                        placeholder="label"
-                                    />
-                                    <input
-                                        class=format!("{} {}", style::f, style::f_num)
-                                        prop:value=move || {
-                                            working
-                                                .with(|w| {
-                                                    w.extra_dates
-                                                        .get(i)
-                                                        .map(|(_, d)| d.clone())
-                                                        .unwrap_or_default()
-                                                })
-                                        }
-                                        on:input=move |ev| {
-                                            working
-                                                .update(|w| {
-                                                    if let Some(e) = w.extra_dates.get_mut(i) {
-                                                        e.1 = event_target_value(&ev);
-                                                    }
-                                                });
-                                        }
-                                        placeholder="YYYY-MM-DD"
-                                    />
-                                    <span
-                                        class=style::date_x
-                                        role="button"
-                                        tabindex="0"
-                                        on:click=move |_| {
-                                            working
-                                                .update(|w| {
-                                                    if i < w.extra_dates.len() {
-                                                        w.extra_dates.remove(i);
-                                                    }
-                                                });
-                                        }
-                                    >
-                                        "×"
-                                    </span>
-                                }
-                            }
-                        />
-                        <button
-                            class=style::add_date
-                            type="button"
-                            on:click=move |_| {
-                                working
-                                    .update(|w| w.extra_dates.push((String::new(), String::new())));
-                            }
-                        >
-                            "+ date"
-                        </button>
                     </div>
                 </div>
             </div>
@@ -1296,7 +1203,7 @@ mod tests {
             id,
             AccountRef::new(acct, acct),
             amount,
-            None::<&str>,
+            vec![],
             vec![],
             None,
             None,
@@ -1310,7 +1217,7 @@ mod tests {
             id,
             AccountRef::new(acct, acct),
             PostingAmount::Derived(vec![Amount::new(Decimal::new(minor, 2), "AUD")]),
-            None::<&str>,
+            vec![],
             vec![],
             None,
             None,
@@ -1321,9 +1228,7 @@ mod tests {
         Transaction::new(
             "tx-1",
             Date::constant(2026, 4, 30),
-            "Coles",
             "",
-            None::<&str>,
             vec![],
             Reconciliation::Unreconciled,
             vec![],

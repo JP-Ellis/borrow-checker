@@ -27,7 +27,7 @@ fn leg(id: &str, acct_id: &str, acct_name: &str, minor: i64) -> Posting {
         id,
         AccountRef::new(acct_id, acct_name),
         PostingAmount::Stored(Amount::new(Decimal::new(minor, 2), "AUD")),
-        None::<&str>,
+        vec![],
         vec![],
         None,
         None,
@@ -41,7 +41,7 @@ fn elided(id: &str, acct_id: &str, acct_name: &str, residual_minor: i64) -> Post
         id,
         AccountRef::new(acct_id, acct_name),
         PostingAmount::Derived(vec![Amount::new(Decimal::new(residual_minor, 2), "AUD")]),
-        None::<&str>,
+        vec![],
         vec![],
         None,
         None,
@@ -57,13 +57,19 @@ fn tx(
     tags: Vec<String>,
     postings: Vec<Posting>,
 ) -> Transaction {
+    let metadata = if payee.is_empty() {
+        vec![]
+    } else {
+        vec![bc_ipc::MetaEntryDto::new(
+            "payee",
+            bc_ipc::MetaValueDto::Text(payee.to_owned()),
+        )]
+    };
     Transaction::new(
         id,
         jiff::civil::Date::constant(2026, 6, 1),
-        payee,
         description,
-        None::<&str>,
-        vec![],
+        metadata,
         reconciliation,
         tags,
         postings,
@@ -172,7 +178,10 @@ fn spread_same_tx() -> Transaction {
     let mut spread = leg("p-1", "insurance", "Expenses :: Insurance", 30_000);
     spread.spread_from = Some(jiff::civil::Date::constant(2026, 6, 1));
     spread.spread_until = Some(jiff::civil::Date::constant(2026, 6, 30));
-    spread.note = Some("annual premium spread monthly".to_owned());
+    spread.metadata = vec![bc_ipc::MetaEntryDto::new(
+        "note",
+        bc_ipc::MetaValueDto::Text("annual premium spread monthly".to_owned()),
+    )];
     tx(
         "tx-spread-same",
         "ACME Insurance",
@@ -193,7 +202,10 @@ fn spread_diff_tx() -> Transaction {
     let mut spread = leg("p-1", "insurance", "Expenses :: Insurance", 30_000);
     spread.spread_from = Some(jiff::civil::Date::constant(2026, 7, 1));
     spread.spread_until = Some(jiff::civil::Date::constant(2026, 12, 31));
-    spread.note = Some("deferred accrual from next month".to_owned());
+    spread.metadata = vec![bc_ipc::MetaEntryDto::new(
+        "note",
+        bc_ipc::MetaValueDto::Text("deferred accrual from next month".to_owned()),
+    )];
     tx(
         "tx-spread-diff",
         "ACME Insurance",
@@ -210,7 +222,10 @@ fn spread_diff_tx() -> Transaction {
 /// A transaction where the first posting has a plain note (no spread).
 fn note_tx() -> Transaction {
     let mut noted = leg("p-1", "groceries", "Expenses :: Groceries", 4_200);
-    noted.note = Some("organic produce only".to_owned());
+    noted.metadata = vec![bc_ipc::MetaEntryDto::new(
+        "note",
+        bc_ipc::MetaValueDto::Text("organic produce only".to_owned()),
+    )];
     tx(
         "tx-note",
         "Harris Farm",
@@ -259,12 +274,15 @@ pub fn PostingsListEditQa() -> impl IntoView {
     let seed = EditableTransaction {
         id: "tx-qa".to_owned(),
         date: "2026-06-01".to_owned(),
-        payee: "QA Merchant".to_owned(),
         description: "Editor showcase".to_owned(),
-        note: String::new(),
+        metadata: crate::components::meta_editor::model::rows_from_entries(&[
+            bc_ipc::MetaEntryDto::new(
+                "payee",
+                bc_ipc::MetaValueDto::Text("QA Merchant".to_owned()),
+            ),
+        ]),
         reconciliation: Reconciliation::Unreconciled,
         tags: vec![],
-        extra_dates: vec![],
         postings: vec![
             EditablePosting {
                 id: Some("p-1".to_owned()),
@@ -274,7 +292,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
                 amount: "-42.00".to_owned(),
                 currency: "AUD".to_owned(),
                 derived_residual: vec![],
-                note: String::new(),
+                metadata: vec![],
                 tags: vec![],
                 spread_from: None,
                 spread_until: None,
@@ -287,7 +305,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
                 amount: "42.00".to_owned(),
                 currency: "AUD".to_owned(),
                 derived_residual: vec![],
-                note: String::new(),
+                metadata: vec![],
                 tags: vec![],
                 spread_from: None,
                 spread_until: None,

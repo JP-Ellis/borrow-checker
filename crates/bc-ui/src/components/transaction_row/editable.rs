@@ -20,6 +20,9 @@ use bc_ipc::Reconciliation;
 use bc_ipc::Transaction;
 use rust_decimal::Decimal;
 
+use crate::components::meta_editor::model::MetaRow;
+use crate::components::meta_editor::model::emit_rows;
+use crate::components::meta_editor::model::rows_from_entries;
 use crate::components::transaction_row::currency::MarkerError;
 use crate::components::transaction_row::currency::split_marked_amount;
 
@@ -48,8 +51,8 @@ pub struct EditablePosting {
     /// to seed the pristine ghost display in [`ghost_amounts`]; superseded by
     /// client-side derivation via [`derive_balance`] once the buffer is dirty.
     pub derived_residual: Vec<Amount>,
-    /// Free-text note; empty means none.
-    pub note: String,
+    /// Typed key-value metadata rows in display order.
+    pub metadata: Vec<MetaRow>,
     /// Resolved tag colon-paths attached to this posting (e.g. `"person:josh"`).
     pub tags: Vec<String>,
     /// Accrual spread start date, if set.
@@ -98,7 +101,7 @@ impl EditablePosting {
                     Vec::new()
                 }
             },
-            note: p.note.clone().unwrap_or_default(),
+            metadata: rows_from_entries(&p.metadata),
             tags: p.tags.clone(),
             spread_from: p.spread_from,
             spread_until: p.spread_until,
@@ -124,18 +127,18 @@ pub struct EditableTransaction {
     pub id: String,
     /// Raw date text (`YYYY-MM-DD`).
     pub date: String,
-    /// Payee display name.
-    pub payee: String,
     /// Free-text description.
     pub description: String,
-    /// User's free-text note; empty means none.
-    pub note: String,
+    /// Typed key-value metadata rows in display order.
+    ///
+    /// Absorbs what were the payee, note and extra-date fields. A row the editor
+    /// has no control for still round-trips: it re-emits the entry it loaded
+    /// with, untouched.
+    pub metadata: Vec<MetaRow>,
     /// Reconciliation status (immutable in this view; echoed back unchanged).
     pub reconciliation: Reconciliation,
     /// Transaction-level tags.
     pub tags: Vec<String>,
-    /// Extra named dates as (label, raw `YYYY-MM-DD` text) pairs; empty labels allowed.
-    pub extra_dates: Vec<(String, String)>,
     /// All postings in display order.
     pub postings: Vec<EditablePosting>,
 }
@@ -154,16 +157,10 @@ impl From<&Transaction> for EditableTransaction {
         Self {
             id: tx.id.clone(),
             date: tx.date.to_string(),
-            payee: tx.payee.clone(),
             description: tx.description.clone(),
-            note: tx.note.clone().unwrap_or_default(),
+            metadata: rows_from_entries(&tx.metadata),
             reconciliation: tx.reconciliation,
             tags: tx.tags.clone(),
-            extra_dates: tx
-                .extra_dates
-                .iter()
-                .map(|(label, d)| (label.clone(), d.to_string()))
-                .collect(),
             postings: tx
                 .postings
                 .iter()
@@ -215,7 +212,7 @@ impl EditableTransaction {
             amount: String::new(),
             currency,
             derived_residual: Vec::new(),
-            note: String::new(),
+            metadata: Vec::new(),
             tags: vec![],
             spread_from: None,
             spread_until: None,
@@ -267,7 +264,7 @@ impl EditableTransaction {
                 p.id.clone(),
                 p.account_id.clone(),
                 amount,
-                non_empty(&p.note),
+                emit_rows(&p.metadata),
                 p.tags.clone(),
                 p.spread_from,
                 p.spread_until,
@@ -277,35 +274,14 @@ impl EditableTransaction {
             return Err(EditError::Ambiguous);
         }
 
-        let mut extra_dates = Vec::with_capacity(self.extra_dates.len());
-        for (index, (label, raw)) in self.extra_dates.iter().enumerate() {
-            let trimmed = raw.trim();
-            // Prune not-yet-filled rows: clicking "+ date" inserts a blank row,
-            // and saving without filling it must not block the save. A non-empty
-            // but unparsable date still errors below.
-            if trimmed.is_empty() {
-                continue;
-            }
-            let parsed =
-                trimmed
-                    .parse::<jiff::civil::Date>()
-                    .map_err(|e| EditError::ExtraDate {
-                        index,
-                        message: e.to_string(),
-                    })?;
-            extra_dates.push((label.clone(), parsed));
-        }
-
         Ok(EditTransaction::new(
             self.id.clone(),
             date,
-            self.payee.clone(),
             self.description.clone(),
-            non_empty(&self.note),
+            emit_rows(&self.metadata),
             self.reconciliation,
             self.tags.clone(),
             postings,
-            extra_dates,
         ))
     }
 }
@@ -396,13 +372,6 @@ pub enum EditError {
     },
     /// More than one elided leg — the balancing remainder is ambiguous.
     Ambiguous,
-    /// An extra date does not parse.
-    ExtraDate {
-        /// Index of the offending extra date.
-        index: usize,
-        /// Parser message.
-        message: String,
-    },
 }
 
 impl fmt::Display for EditError {
@@ -423,21 +392,8 @@ impl fmt::Display for EditError {
                 write!(f, "posting {} has no currency", index.saturating_add(1))
             }
             Self::Ambiguous => write!(f, "more than one leg has a blank amount"),
-            Self::ExtraDate { index, message } => {
-                write!(
-                    f,
-                    "invalid extra date {}: {message}",
-                    index.saturating_add(1)
-                )
-            }
         }
     }
-}
-
-/// Converts an empty-or-whitespace string to `None`, else `Some(trimmed-owned)`.
-fn non_empty(s: &str) -> Option<String> {
-    let t = s.trim();
-    (!t.is_empty()).then(|| t.to_owned())
 }
 
 /// The balance state of a working buffer, for the live balance indicator.
@@ -603,6 +559,41 @@ pub mod tests {
     use super::ghost_amounts;
     use super::parse_amount;
     use super::parse_tags;
+    use crate::components::meta_editor::model::MetaDraft;
+    use crate::components::meta_editor::model::emit_rows;
+    use crate::components::meta_editor::model::push_blank_row;
+    use crate::components::meta_editor::model::rows_from_entries;
+
+    /// A fake account id in the backend's shape; not a real account.
+    const ACCOUNT_ID: &str = "account_00000000000000000000000000";
+
+    /// A metadata list holding one entry of each of the seven types, one entry
+    /// the store flagged, one under a key no registry snapshot would know, and a
+    /// repeated key. Nothing here is real data.
+    fn exotic_metadata() -> Vec<bc_ipc::MetaEntryDto> {
+        use bc_ipc::MetaEntryDto;
+        use bc_ipc::MetaValueDto;
+        vec![
+            MetaEntryDto::new("payee", MetaValueDto::Text("Generic Grocer".to_owned())),
+            MetaEntryDto::new("invoice", MetaValueDto::Number(Decimal::new(150_250, 2))),
+            MetaEntryDto::new("reimbursed", MetaValueDto::Boolean(true)),
+            MetaEntryDto::new("cleared", MetaValueDto::Date(Date::constant(2026, 5, 2))),
+            MetaEntryDto::new(
+                "seen-at",
+                MetaValueDto::Timestamp(
+                    jiff::Timestamp::from_second(1_700_000_000).expect("valid timestamp"),
+                ),
+            ),
+            MetaEntryDto::new(
+                "budgeted",
+                MetaValueDto::Amount(Amount::new(Decimal::new(4_200, 2), "AUD")),
+            ),
+            MetaEntryDto::new("offset", MetaValueDto::Account(ACCOUNT_ID.to_owned())),
+            MetaEntryDto::flagged("cleared", "not-a-date"),
+            MetaEntryDto::new("shipment", MetaValueDto::Text("in transit".to_owned())),
+            MetaEntryDto::new("shipment", MetaValueDto::Text("delivered".to_owned())),
+        ]
+    }
 
     fn two_balanced_postings() -> Vec<Posting> {
         vec![
@@ -610,7 +601,7 @@ pub mod tests {
                 "p1",
                 AccountRef::new("checking", "Checking"),
                 PostingAmount::Stored(Amount::new(Decimal::new(-8_420, 2), "AUD")),
-                None::<&str>,
+                vec![],
                 vec![],
                 None,
                 None,
@@ -619,7 +610,7 @@ pub mod tests {
                 "p2",
                 AccountRef::new("groceries", "Groceries"),
                 PostingAmount::Stored(Amount::new(Decimal::new(8_420, 2), "AUD")),
-                None::<&str>,
+                vec![],
                 vec![],
                 None,
                 None,
@@ -659,10 +650,8 @@ pub mod tests {
         Transaction::new(
             "tx-1",
             Date::constant(2026, 4, 30),
-            "Coles",
             "weekly shop",
-            Some("remember"),
-            vec![("cleared".to_owned(), Date::constant(2026, 5, 1))],
+            exotic_metadata(),
             Reconciliation::Unreconciled,
             vec!["work".to_owned()],
             vec![
@@ -670,7 +659,7 @@ pub mod tests {
                     "p-1",
                     AccountRef::new("acct-checking", "Assets :: Checking"),
                     PostingAmount::Stored(Amount::new(Decimal::new(-8_420, 2), "AUD")),
-                    None::<&str>,
+                    vec![],
                     vec![],
                     None,
                     None,
@@ -679,7 +668,7 @@ pub mod tests {
                     "p-2",
                     AccountRef::new("acct-groceries", "Expenses :: Groceries"),
                     PostingAmount::Derived(vec![]),
-                    Some("split"),
+                    exotic_metadata(),
                     vec!["tag-x".to_owned()],
                     None,
                     None,
@@ -694,9 +683,7 @@ pub mod tests {
         Transaction::new(
             "tx-2",
             Date::constant(2026, 4, 30),
-            "Coles",
             "weekly shop",
-            None::<&str>,
             vec![],
             Reconciliation::Unreconciled,
             vec![],
@@ -705,7 +692,7 @@ pub mod tests {
                     "p-1",
                     AccountRef::new("acct-checking", "Assets :: Checking"),
                     PostingAmount::Stored(Amount::new(Decimal::new(-8_420, 2), "AUD")),
-                    None::<&str>,
+                    vec![],
                     vec![],
                     None,
                     None,
@@ -714,7 +701,7 @@ pub mod tests {
                     "p-2",
                     AccountRef::new("acct-groceries", "Expenses :: Groceries"),
                     PostingAmount::Stored(Amount::new(Decimal::new(8_420, 2), "AUD")),
-                    None::<&str>,
+                    vec![],
                     vec![],
                     None,
                     None,
@@ -729,9 +716,8 @@ pub mod tests {
         let e = EditableTransaction::from(&sample_tx());
         assert_eq!(e.id, "tx-1");
         assert_eq!(e.date, "2026-04-30");
-        assert_eq!(e.payee, "Coles");
         assert_eq!(e.description, "weekly shop");
-        assert_eq!(e.note, "remember");
+        assert_eq!(emit_rows(&e.metadata), exotic_metadata());
         assert_eq!(e.tags, vec!["work".to_owned()]);
         assert_eq!(e.postings.len(), 2);
     }
@@ -756,7 +742,7 @@ pub mod tests {
         let p = &e.postings[1];
         assert_eq!(p.amount, "");
         assert!(p.is_elided());
-        assert_eq!(p.note, "split");
+        assert_eq!(emit_rows(&p.metadata), exotic_metadata());
         assert_eq!(p.tags, vec!["tag-x".to_owned()]);
     }
 
@@ -772,7 +758,7 @@ pub mod tests {
             "p-9",
             AccountRef::new("a", "A :: B"),
             PostingAmount::Stored(Amount::new(Decimal::new(1_250, 2), "USD")),
-            None::<&str>,
+            vec![],
             vec![],
             Some(Date::constant(2026, 1, 1)),
             Some(Date::constant(2026, 1, 31)),
@@ -793,7 +779,7 @@ pub mod tests {
             amount: amount.to_owned(),
             currency: currency.to_owned(),
             derived_residual: vec![],
-            note: String::new(),
+            metadata: vec![],
             tags: vec![],
             spread_from: None,
             spread_until: None,
@@ -813,12 +799,10 @@ pub mod tests {
         EditableTransaction {
             id: "tx".to_owned(),
             date: "2026-04-30".to_owned(),
-            payee: "P".to_owned(),
             description: String::new(),
-            note: String::new(),
+            metadata: vec![],
             reconciliation: Reconciliation::Unreconciled,
             tags: vec![],
-            extra_dates: vec![],
             postings,
         }
     }
@@ -1059,7 +1043,7 @@ pub mod tests {
             "p-1",
             AccountRef::new("a", "A"),
             PostingAmount::Ambiguous,
-            None::<&str>,
+            vec![],
             vec![],
             None,
             None,
@@ -1132,9 +1116,7 @@ pub mod tests {
         let tx = Transaction::new(
             "tx-1",
             Date::constant(2026, 4, 30),
-            "Coles",
             "",
-            None::<&str>,
             vec![],
             Reconciliation::Unreconciled,
             vec![],
@@ -1143,7 +1125,7 @@ pub mod tests {
                     "p-1",
                     AccountRef::new("checking", "Checking"),
                     PostingAmount::Stored(Amount::new(Decimal::new(-8_420, 2), "AUD")),
-                    None::<&str>,
+                    vec![],
                     vec![],
                     None,
                     None,
@@ -1152,7 +1134,7 @@ pub mod tests {
                     "p-2",
                     AccountRef::new("groceries", "Groceries"),
                     PostingAmount::Derived(vec![Amount::new(Decimal::new(8_420, 2), "AUD")]),
-                    None::<&str>,
+                    vec![],
                     vec![],
                     None,
                     None,
@@ -1270,88 +1252,111 @@ pub mod tests {
     }
 
     #[test]
-    fn extra_dates_round_trip() {
-        // extra_dates is the 6th arg of Transaction::new (before reconciliation/tags/postings/audit)
+    fn untouched_metadata_survives_a_save_byte_identically() {
+        // The guarantee this whole design rests on: `to_edit_transaction`
+        // rebuilds a transaction from this struct, so anything metadata does not
+        // carry through is silently deleted on save. An untouched row re-emits
+        // its source verbatim, which makes the guarantee independent of whether
+        // the editor has a control for the value's type.
         let t = Transaction::new(
             "tx-1",
             Date::constant(2026, 4, 30),
-            "Coles",
             "",
-            None::<&str>,
-            vec![("cleared".to_owned(), Date::constant(2026, 5, 2))], // extra_dates
+            exotic_metadata(),
             Reconciliation::Unreconciled,
             vec![],
             two_balanced_postings(),
             vec![],
         );
         let e = EditableTransaction::from(&t);
-        assert_eq!(
-            e.extra_dates,
-            vec![("cleared".to_owned(), "2026-05-02".to_owned())]
-        );
         let edit = e.to_edit_transaction(&registry()).expect("valid");
         assert_eq!(
-            edit.extra_dates,
-            vec![("cleared".to_owned(), Date::constant(2026, 5, 2))]
+            edit.metadata,
+            exotic_metadata(),
+            "every entry survives, including the flagged one, the unregistered key, \
+             the repeated key and the types the editor renders read-only"
         );
     }
 
     #[test]
     #[expect(clippy::indexing_slicing, reason = "test code with known length")]
-    fn malformed_extra_date_is_rejected() {
+    fn untouched_posting_metadata_survives_a_save_byte_identically() {
+        let e = EditableTransaction::from(&sample_tx());
+        let edit = e.to_edit_transaction(&registry()).expect("valid");
+        assert_eq!(edit.postings[1].metadata, exotic_metadata());
+        assert_eq!(
+            edit.postings[0].metadata,
+            Vec::new(),
+            "a leg that carried nothing still carries nothing"
+        );
+    }
+
+    #[test]
+    fn editing_one_row_leaves_its_neighbours_verbatim() {
         let t = Transaction::new(
             "tx-1",
             Date::constant(2026, 4, 30),
-            "Coles",
             "",
-            None::<&str>,
-            vec![("cleared".to_owned(), Date::constant(2026, 5, 2))], // extra_dates
+            exotic_metadata(),
             Reconciliation::Unreconciled,
             vec![],
             two_balanced_postings(),
             vec![],
         );
         let mut e = EditableTransaction::from(&t);
-        e.extra_dates[0].1 = "not-a-date".to_owned();
-        assert!(matches!(
-            e.to_edit_transaction(&registry()),
-            Err(EditError::ExtraDate { index: 0, .. })
-        ));
+        let row = e.metadata.first_mut().expect("a payee row");
+        row.draft = Some(MetaDraft::seed(row.source.as_ref(), &[], "AUD"));
+        if let Some(ref mut draft) = row.draft {
+            draft.text = "Other Merchant".to_owned();
+        }
+        let edit = e.to_edit_transaction(&registry()).expect("valid");
+        let mut expected = exotic_metadata();
+        if let Some(first) = expected.first_mut() {
+            *first = bc_ipc::MetaEntryDto::new(
+                "payee",
+                bc_ipc::MetaValueDto::Text("Other Merchant".to_owned()),
+            );
+        }
+        assert_eq!(edit.metadata, expected);
     }
 
     #[test]
-    fn empty_extra_date_row_is_dropped_not_blocking() {
+    fn a_blank_metadata_row_is_pruned_not_blocking() {
         let mut e = et(vec![ep("AUD -1.00", "AUD"), ep("AUD 1.00", "AUD")]);
-        e.extra_dates = vec![(String::new(), String::new())];
+        push_blank_row(&mut e.metadata, "AUD");
         let edit = e
             .to_edit_transaction(&registry())
-            .expect("blank extra-date row is pruned");
-        assert!(edit.extra_dates.is_empty());
+            .expect("a blank metadata row never blocks a save");
+        assert_eq!(edit.metadata, Vec::new());
     }
 
     #[test]
-    fn filled_extra_date_row_is_kept_among_blanks() {
+    fn unparsable_metadata_never_blocks_a_save() {
+        // Metadata adds nothing to `EditError`. A value that will not parse goes
+        // out as text for the backend to flag, exactly as a repair does.
         let mut e = et(vec![ep("AUD -1.00", "AUD"), ep("AUD 1.00", "AUD")]);
-        e.extra_dates = vec![
-            ("cleared".to_owned(), "2026-05-02".to_owned()),
-            (String::new(), "  ".to_owned()),
-        ];
+        e.metadata = rows_from_entries(&[bc_ipc::MetaEntryDto::new(
+            "cleared",
+            bc_ipc::MetaValueDto::Date(Date::constant(2026, 5, 2)),
+        )]);
+        let row = e.metadata.first_mut().expect("one row");
+        row.draft = Some(MetaDraft {
+            key: "cleared".to_owned(),
+            ty: bc_ipc::MetaTypeDto::Date,
+            text: "not-a-date".to_owned(),
+            boolean: false,
+            commodity: String::new(),
+            account_id: String::new(),
+        });
         let edit = e
             .to_edit_transaction(&registry())
-            .expect("blank row pruned, filled kept");
+            .expect("metadata can never block a save");
         assert_eq!(
-            edit.extra_dates,
-            vec![("cleared".to_owned(), Date::constant(2026, 5, 2))]
+            edit.metadata,
+            vec![bc_ipc::MetaEntryDto::new(
+                "cleared",
+                bc_ipc::MetaValueDto::Text("not-a-date".to_owned())
+            )]
         );
-    }
-
-    #[test]
-    fn nonempty_malformed_extra_date_still_errors() {
-        let mut e = et(vec![ep("AUD -1.00", "AUD"), ep("AUD 1.00", "AUD")]);
-        e.extra_dates = vec![("cleared".to_owned(), "not-a-date".to_owned())];
-        assert!(matches!(
-            e.to_edit_transaction(&registry()),
-            Err(EditError::ExtraDate { index: 0, .. })
-        ));
     }
 }

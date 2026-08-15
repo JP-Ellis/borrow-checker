@@ -9,6 +9,8 @@ use super::style;
 use crate::components::ChipVariant;
 use crate::components::account_picker::AccountPicker;
 use crate::components::chip::Chip;
+use crate::components::meta_editor::MetaEditor;
+use crate::components::meta_editor::model::MetaRow;
 use crate::components::num::format_amount;
 use crate::components::tag_picker::TagPicker;
 use crate::components::transaction_row::edit_ctx::TxEditCtx;
@@ -127,29 +129,6 @@ pub fn PostingLine(
         });
     });
 
-    // MARK: Note signal — synced into working via Effect.
-    let note_sig = RwSignal::new(working.with_untracked(|w| {
-        w.postings
-            .iter()
-            .find(|p| p.uid == uid)
-            .map(|p| p.note.clone())
-            .unwrap_or_default()
-    }));
-    Effect::new(move |_| {
-        let n = note_sig.get();
-        let Some(i) = working.with_untracked(|w| w.postings.iter().position(|p| p.uid == uid))
-        else {
-            return;
-        };
-        working.update(|w| {
-            if let Some(p) = w.postings.get_mut(i)
-                && p.note != n
-            {
-                p.note.clone_from(&n);
-            }
-        });
-    });
-
     // MARK: Re-seed local inputs after an external reset (discard / escape).
     // Tracks only `reset_epoch`, never `working`, so in-progress typing is never
     // clobbered; each set is guarded so it cannot feed back into the forward
@@ -174,14 +153,11 @@ pub fn PostingLine(
             if until_str.get_untracked() != u {
                 until_str.set(u);
             }
-            if note_sig.get_untracked() != p.note {
-                note_sig.set(p.note.clone());
-            }
         });
     });
 
     // MARK: Local UI state.
-    let show_note = RwSignal::new(false);
+    let show_fields = RwSignal::new(false);
     let editing_spread = RwSignal::new(false);
 
     // MARK: Delete handler.
@@ -339,15 +315,24 @@ pub fn PostingLine(
         }
     };
 
-    // MARK: Note visibility.
-    let note_visible = move || show_note.get() || !note_sig.with(|n: &String| n.trim().is_empty());
+    // MARK: Metadata visibility.
+    let posting_rows = move || {
+        working.with(|w| {
+            w.postings
+                .iter()
+                .find(|p| p.uid == uid)
+                .map(|p| p.metadata.clone())
+                .unwrap_or_default()
+        })
+    };
+    let fields_visible = move || show_fields.get() || !posting_rows().is_empty();
 
-    // MARK: "+ note" affordance, shared by the spread / no-spread tool rows.
-    let add_note_btn = move || {
-        (!note_visible()).then(|| {
+    // MARK: "+ field" affordance, shared by the spread / no-spread tool rows.
+    let add_field_btn = move || {
+        (!fields_visible()).then(|| {
             view! {
-                <button class=style::tinytool on:click=move |_| show_note.set(true) type="button">
-                    "+ note"
+                <button class=style::tinytool on:click=move |_| show_fields.set(true) type="button">
+                    "+ field"
                 </button>
             }
         })
@@ -407,14 +392,27 @@ pub fn PostingLine(
                     />
 
                     {move || {
-                        note_visible()
+                        fields_visible()
                             .then(|| {
                                 view! {
-                                    <input
-                                        class=format!("{} {}", style::f, style::pnote_input)
-                                        prop:value=move || note_sig.get()
-                                        on:input=move |ev| note_sig.set(event_target_value(&ev))
-                                        placeholder="add note…"
+                                    <MetaEditor
+                                        rows=Signal::derive(posting_rows)
+                                        on_change=Callback::new(move |rows: Vec<MetaRow>| {
+                                            working
+                                                .update(|w| {
+                                                    if let Some(p) = w
+                                                        .postings
+                                                        .iter_mut()
+                                                        .find(|p| p.uid == uid)
+                                                    {
+                                                        p.metadata = rows;
+                                                    }
+                                                });
+                                        })
+                                        accounts=ctx_accounts.get_value()
+                                        default_commodity=Signal::derive(move || {
+                                            working.with(EditableTransaction::default_currency)
+                                        })
                                     />
                                 }
                             })
@@ -425,7 +423,7 @@ pub fn PostingLine(
                             .then(|| {
                                 view! {
                                     <div class=style::posting_tools>
-                                        {add_note_btn}
+                                        {add_field_btn}
                                         <button
                                             class=style::tinytool
                                             on:click=open_spread
@@ -442,7 +440,7 @@ pub fn PostingLine(
                         (has_spread() && !editing_spread.get())
                             .then(|| {
                                 view! {
-                                    <div class=style::posting_tools>{add_note_btn}</div>
+                                    <div class=style::posting_tools>{add_field_btn}</div>
                                     <Chip
                                         variant=ChipVariant::Accent
                                         on_remove=clear_spread

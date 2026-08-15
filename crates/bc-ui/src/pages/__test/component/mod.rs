@@ -3,6 +3,7 @@
 pub mod account_picker;
 pub mod chip;
 pub mod filter_chips;
+pub mod meta_editor;
 pub mod num;
 pub mod period_nav;
 pub mod sparkline;
@@ -32,6 +33,7 @@ pub fn ComponentRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
             <Route path=path!("/account-picker") view=account_picker::AccountPickerQa />
             <Route path=path!("/chip") view=chip::ChipQa />
             <Route path=path!("/filter-chips") view=filter_chips::FilterChipsQa />
+            <Route path=path!("/meta-editor") view=meta_editor::MetaEditorQa />
             <Route path=path!("/sparkline") view=sparkline::SparklineQa />
             <Route path=path!("/stat-card") view=stat_card::StatCardQa />
             <Route path=path!("/num") view=num::NumQa />
@@ -66,6 +68,11 @@ pub fn ComponentIndex() -> impl IntoView {
                     title=filter_chips::TITLE
                     path=filter_chips::PATH
                     description=filter_chips::DESCRIPTION
+                />
+                <QaCard
+                    title=meta_editor::TITLE
+                    path=meta_editor::PATH
+                    description=meta_editor::DESCRIPTION
                 />
                 <QaCard
                     title=sparkline::TITLE

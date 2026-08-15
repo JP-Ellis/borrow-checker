@@ -48,6 +48,8 @@ mod components;
 mod currency_ctx;
 #[cfg(any(target_arch = "wasm32", test))]
 mod filter_ctx;
+#[cfg(target_arch = "wasm32")]
+mod meta_keys_ctx;
 #[cfg(any(target_arch = "wasm32", test))]
 mod pages;
 #[cfg(any(target_arch = "wasm32", test))]
@@ -94,6 +96,11 @@ mod components_tests {
     pub mod num {
         pub mod meta {
             include!("components/num/meta.rs");
+        }
+    }
+    pub mod meta_editor {
+        pub mod model {
+            include!("components/meta_editor/model.rs");
         }
     }
 }

@@ -96,10 +96,11 @@ fn coles_transaction() -> Transaction {
     Transaction::new(
         "tx-coles-2026-04-30",
         jiff::civil::Date::constant(2026, 4, 30),
-        "Coles Carlton",
         "",
-        None::<&str>,
-        vec![],
+        vec![bc_ipc::MetaEntryDto::new(
+            "payee",
+            bc_ipc::MetaValueDto::Text("Generic Grocer".to_owned()),
+        )],
         Reconciliation::Reconciled,
         vec!["shared".to_owned()],
         vec![
@@ -107,7 +108,7 @@ fn coles_transaction() -> Transaction {
                 "posting-coles-debit",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                 PostingAmount::Stored(Amount::new(Decimal::new(-8_420, 2), "AUD")),
-                None::<&str>,
+                vec![],
                 vec![],
                 None,
                 None,
@@ -116,7 +117,7 @@ fn coles_transaction() -> Transaction {
                 "posting-coles-groceries",
                 AccountRef::new("groceries", "Expenses :: Groceries"),
                 PostingAmount::Stored(Amount::new(Decimal::new(8_420, 2), "AUD")),
-                None::<&str>,
+                vec![],
                 vec![],
                 None,
                 None,
@@ -137,10 +138,11 @@ fn salary_transaction() -> Transaction {
     Transaction::new(
         "tx-salary-2026-04-30",
         jiff::civil::Date::constant(2026, 4, 30),
-        "Salary — Atlassian",
         "",
-        None::<&str>,
-        vec![],
+        vec![bc_ipc::MetaEntryDto::new(
+            "payee",
+            bc_ipc::MetaValueDto::Text("Generic Employer".to_owned()),
+        )],
         Reconciliation::Reconciled,
         vec!["work".to_owned()],
         vec![
@@ -148,7 +150,10 @@ fn salary_transaction() -> Transaction {
                 "posting-salary-income",
                 AccountRef::new("income-salary", "Income :: Salary"),
                 PostingAmount::Stored(Amount::new(Decimal::new(-846_154, 2), "AUD")),
-                Some("gross pay"),
+                vec![bc_ipc::MetaEntryDto::new(
+                    "note",
+                    bc_ipc::MetaValueDto::Text("gross pay".to_owned()),
+                )],
                 vec![],
                 None,
                 None,
@@ -157,7 +162,10 @@ fn salary_transaction() -> Transaction {
                 "posting-salary-takehome",
                 AccountRef::new("cb-smart-access", "Assets :: Smart Access"),
                 PostingAmount::Stored(Amount::new(Decimal::new(428_055, 2), "AUD")),
-                Some("take-home"),
+                vec![bc_ipc::MetaEntryDto::new(
+                    "note",
+                    bc_ipc::MetaValueDto::Text("take-home".to_owned()),
+                )],
                 vec![],
                 None,
                 None,
