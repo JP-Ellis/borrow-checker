@@ -594,7 +594,8 @@ impl Config {
     /// paired with their config field names.
     ///
     /// These name one value per row however many postings the row produces, so
-    /// they form their own distinctness group.
+    /// they form their own distinctness group. Metadata mappings are not among
+    /// them — see [`Self::metadata_column_refs`].
     ///
     /// # Returns
     ///
@@ -612,13 +613,39 @@ impl Config {
                 refs.push((Cow::Borrowed(field), column));
             }
         }
-        for (index, mapping) in self.metadata_columns.iter().enumerate() {
-            refs.push((
-                Cow::Owned(format!("metadata_columns[{index}].column")),
-                &mapping.column,
-            ));
-        }
         refs
+    }
+
+    /// Returns the column references of the metadata mappings, paired with
+    /// their config field names.
+    ///
+    /// These belong to no distinctness group. A structural field reading the
+    /// same cell as another structural field means one of the two is
+    /// misconfigured; a metadata mapping only annotates, so any number of keys
+    /// may quote one cell, and a key may quote the cell a structural field
+    /// already reads — a bank statement carrying one narrative column wants it
+    /// as both the description and the payee.
+    ///
+    /// They still take part in header resolution through
+    /// [`Self::column_refs`], because a mapping naming a header the file does
+    /// not carry is a profile that does not match the file.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec` of `(field name, reference)` pairs, one per mapping.
+    #[must_use]
+    #[inline]
+    pub fn metadata_column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
+        self.metadata_columns
+            .iter()
+            .enumerate()
+            .map(|(index, mapping)| {
+                (
+                    Cow::Owned(format!("metadata_columns[{index}].column")),
+                    &mapping.column,
+                )
+            })
+            .collect()
     }
 
     /// Returns the primary leg's column references, paired with their config
@@ -670,10 +697,11 @@ impl Config {
     /// Returns every configured column reference, paired with its config field
     /// name.
     ///
-    /// The union of [`Self::transaction_column_refs`], [`Self::leg_column_refs`]
-    /// and every extra leg's [`Self::extra_leg_column_refs`], used where the
-    /// grouping does not matter — the headerless check, for instance, which
-    /// rejects a name wherever it appears.
+    /// The union of [`Self::transaction_column_refs`],
+    /// [`Self::metadata_column_refs`], [`Self::leg_column_refs`] and every
+    /// extra leg's [`Self::extra_leg_column_refs`], used where the grouping
+    /// does not matter — the headerless check, for instance, which rejects a
+    /// name wherever it appears.
     ///
     /// # Returns
     ///
@@ -682,6 +710,7 @@ impl Config {
     #[inline]
     pub fn column_refs(&self) -> Vec<(Cow<'static, str>, &ColumnRef)> {
         let mut refs = self.transaction_column_refs();
+        refs.extend(self.metadata_column_refs());
         refs.extend(self.leg_column_refs());
         for index in 0..self.extra_legs.len() {
             refs.extend(self.extra_leg_column_refs(index));
@@ -1135,11 +1164,7 @@ mod tests {
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Name("Amount".to_owned()),
             },
-            metadata_columns: vec![MetadataColumn {
-                key: "payee".to_owned(),
-                column: ColumnRef::Name("amount".to_owned()),
-                ty: MetaColumnType::Text,
-            }],
+            description_column: Some(ColumnRef::Name("amount".to_owned())),
             ..Config::default()
         };
         let msg = cfg
@@ -1147,8 +1172,66 @@ mod tests {
             .expect_err("'Amount' and 'amount' resolve to the same column")
             .to_string();
         assert!(
-            msg.contains("amount_columns.column") && msg.contains("metadata_columns[0].column"),
+            msg.contains("amount_columns.column") && msg.contains("description_column"),
             "should name both colliding fields: {msg}"
+        );
+    }
+
+    /// A metadata mapping only annotates, so nothing stops two keys quoting
+    /// one cell, or a key quoting the cell a structural field already reads —
+    /// the design's own example maps `payee` onto a column named
+    /// `Description`.
+    #[test]
+    fn validate_lets_metadata_mappings_share_a_column() {
+        let cfg = Config {
+            header: Header::Present,
+            date_column: ColumnRef::Name("Date".to_owned()),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Amount".to_owned()),
+            },
+            description_column: Some(ColumnRef::Name("Description".to_owned())),
+            metadata_columns: vec![
+                MetadataColumn {
+                    key: "payee".to_owned(),
+                    column: ColumnRef::Name("Description".to_owned()),
+                    ty: MetaColumnType::Text,
+                },
+                MetadataColumn {
+                    key: "merchant".to_owned(),
+                    column: ColumnRef::Name("Description".to_owned()),
+                    ty: MetaColumnType::Text,
+                },
+            ],
+            ..Config::default()
+        };
+        cfg.validate()
+            .expect("annotating one column twice is a profile, not a mistake");
+    }
+
+    /// Sharing a column is legal; naming one the file does not carry is not,
+    /// so a mapping still takes part in header resolution.
+    #[test]
+    fn validate_still_rejects_a_metadata_column_named_on_a_headerless_file() {
+        let cfg = Config {
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(1),
+            },
+            metadata_columns: vec![MetadataColumn {
+                key: "payee".to_owned(),
+                column: ColumnRef::Name("Merchant".to_owned()),
+                ty: MetaColumnType::Text,
+            }],
+            ..Config::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("a named ref needs a header row")
+            .to_string();
+        assert!(
+            msg.contains("metadata_columns[0].column"),
+            "should name the mapped column: {msg}"
         );
     }
 

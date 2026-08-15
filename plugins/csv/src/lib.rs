@@ -1531,6 +1531,40 @@ mod tests {
         assert_eq!(keys, vec!["payee", "note"]);
     }
 
+    /// One cell can be filed under two keys: a mapping annotates rather than
+    /// claiming a column, so the second mapping is not redundant.
+    #[test]
+    fn one_column_can_be_filed_under_two_keys() {
+        let cfg = Config {
+            metadata_columns: vec![
+                payee_map(ColumnRef::Index(2)),
+                crate::config::MetadataColumn {
+                    key: "merchant".to_owned(),
+                    column: ColumnRef::Index(2),
+                    ty: crate::config::MetaColumnType::Text,
+                },
+            ],
+            ..headerless_two_column_config()
+        };
+        let txs = CsvImporter
+            .parse_bytes(b"01/02/2025,120.00,Java Hut\n", &cfg, "statement.csv")
+            .expect("the row should import");
+        let entries: Vec<(&str, &str)> = txs
+            .first()
+            .expect("one transaction")
+            .metadata
+            .iter()
+            .filter_map(|entry| match entry.value {
+                MetaValue::Text(ref text) => Some((entry.key.as_str(), text.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            entries,
+            vec![("payee", "Java Hut"), ("merchant", "Java Hut")]
+        );
+    }
+
     #[test]
     fn parse_bytes_errors_on_out_of_range_payee_index() {
         let cfg = Config {
