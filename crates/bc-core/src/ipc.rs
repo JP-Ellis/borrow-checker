@@ -505,7 +505,10 @@ impl TransactionExt for bc_ipc::Transaction {
                     p.id().to_string(),
                     bc_ipc::AccountRef::new(account_id, account_name),
                     amount,
-                    p.note(),
+                    p.metadata()
+                        .iter()
+                        .map(bc_ipc::MetaEntryDto::from)
+                        .collect(),
                     resolve_tag_paths(forest, &tx.effective_tag_ids(p)),
                     p.spread_from(),
                     p.spread_until(),
@@ -513,19 +516,14 @@ impl TransactionExt for bc_ipc::Transaction {
             })
             .collect();
 
-        let extra_dates = tx
-            .extra_dates()
-            .iter()
-            .map(|(label, date)| (label.clone(), *date))
-            .collect();
-
         Self::new(
             tx.id().to_string(),
             tx.date(),
-            tx.payee().unwrap_or_default(),
             tx.description(),
-            tx.note(),
-            extra_dates,
+            tx.metadata()
+                .iter()
+                .map(bc_ipc::MetaEntryDto::from)
+                .collect(),
             tx.reconciliation().into(),
             resolve_tag_paths(forest, tx_tag_ids),
             postings,
@@ -889,6 +887,10 @@ mod tests {
                     .id(bc_models::PostingId::new())
                     .account_id(food)
                     .amount(Amount::new(dec!(50), "AUD"))
+                    .metadata(bc_models::Metadata::new(vec![bc_models::MetaEntry::new(
+                        bc_models::MetaKey::new("note").expect("valid key"),
+                        bc_models::MetaValue::Text("doctor's appointment".to_owned()),
+                    )]))
                     .build(),
                 bc_models::Posting::builder()
                     .id(bc_models::PostingId::new())
@@ -915,6 +917,14 @@ mod tests {
             dto.postings[0].amount,
             bc_ipc::PostingAmount::Stored(_)
         ));
+        assert_eq!(
+            dto.postings[0].metadata,
+            vec![bc_ipc::MetaEntryDto::new(
+                "note",
+                bc_ipc::MetaValueDto::Text("doctor's appointment".to_owned())
+            )],
+            "a posting's metadata crosses the boundary in display order"
+        );
     }
 
     #[test]

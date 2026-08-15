@@ -150,7 +150,7 @@ pub async fn create_transaction(
             .id(bc_models::PostingId::new())
             .account_id(account_id)
             .maybe_amount(p.amount.as_ref().map(bc_models::Amount::from))
-            .maybe_note(p.note.clone())
+            .metadata(metadata_from(&p.metadata)?)
             .tag_ids(tag_ids)
             .maybe_spread_from(p.spread_from)
             .maybe_spread_until(p.spread_until)
@@ -163,9 +163,8 @@ pub async fn create_transaction(
     let model_tx = bc_models::Transaction::builder()
         .id(bc_models::TransactionId::new())
         .date(tx.date)
-        .maybe_payee(Some(tx.payee))
         .description(tx.description)
-        .maybe_note(tx.note)
+        .metadata(metadata_from(&tx.metadata)?)
         .postings(postings)
         .tag_ids(tx_tag_ids)
         .reconciliation(reconciliation)
@@ -225,7 +224,7 @@ pub async fn edit_transaction(
             .id(posting_id)
             .account_id(account_id)
             .maybe_amount(p.amount.as_ref().map(bc_models::Amount::from))
-            .maybe_note(p.note.clone())
+            .metadata(metadata_from(&p.metadata)?)
             .tag_ids(tag_ids)
             .maybe_spread_from(p.spread_from)
             .maybe_spread_until(p.spread_until)
@@ -238,13 +237,11 @@ pub async fn edit_transaction(
     let model_tx = bc_models::Transaction::builder()
         .id(tx_id)
         .date(tx.date)
-        .maybe_payee(Some(tx.payee))
         .description(tx.description)
-        .maybe_note(tx.note)
+        .metadata(metadata_from(&tx.metadata)?)
         .postings(postings)
         .reconciliation(reconciliation)
         .tag_ids(tag_ids)
-        .extra_dates(tx.extra_dates)
         .created_at(jiff::Timestamp::now())
         .build();
 
@@ -486,6 +483,28 @@ pub async fn search_transactions(
 }
 
 // MARK: Tag helpers
+
+/// Converts a list of metadata entry DTOs into a domain metadata list.
+///
+/// The order is the display order and is preserved. Each entry's `mismatched`
+/// flag is discarded: the write path derives it against the key's registered
+/// type, so an incoming entry does not get to assert it.
+///
+/// # Arguments
+///
+/// * `entries` - The entries as they arrived over IPC.
+///
+/// # Returns
+///
+/// The domain list, in input order.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] if a key fails validation or an
+/// account-valued entry carries an unparsable account id.
+fn metadata_from(entries: &[bc_ipc::MetaEntryDto]) -> Result<bc_models::Metadata, bc_ipc::BcError> {
+    entries.iter().map(bc_models::MetaEntry::try_from).collect()
+}
 
 /// Resolves a list of tag path strings to existing tag IDs.
 ///
