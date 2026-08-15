@@ -218,8 +218,8 @@ impl Service {
 
             sqlx::query(
                 "INSERT INTO transactions \
-                     (id, date, payee, description, reconciliation, created_at) \
-                     VALUES (?, ?, NULL, ?, ?, ?)",
+                     (id, date, description, reconciliation, created_at) \
+                     VALUES (?, ?, ?, ?, ?)",
             )
             .bind(tx_id.to_string())
             .bind(recorded_at.to_string())
@@ -233,9 +233,9 @@ impl Service {
             let asset_posting_id = PostingId::new();
             sqlx::query(
                 "INSERT INTO postings \
-                (id, transaction_id, account_id, amount, commodity, note, position, \
+                (id, transaction_id, account_id, amount, commodity, position, \
                 cost_total_value, cost_total_commodity, cost_date, cost_label) \
-                VALUES (?, ?, ?, ?, ?, NULL, 0, NULL, NULL, NULL, NULL)",
+                VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL)",
             )
             .bind(asset_posting_id.to_string())
             .bind(tx_id.to_string())
@@ -254,9 +254,9 @@ impl Service {
             let neg_change = -change;
             sqlx::query(
                 "INSERT INTO postings \
-                (id, transaction_id, account_id, amount, commodity, note, position, \
+                (id, transaction_id, account_id, amount, commodity, position, \
                 cost_total_value, cost_total_commodity, cost_date, cost_label) \
-                VALUES (?, ?, ?, ?, ?, NULL, 1, NULL, NULL, NULL, NULL)",
+                VALUES (?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL)",
             )
             .bind(counterpart_posting_id.to_string())
             .bind(tx_id.to_string())
@@ -612,8 +612,8 @@ impl Service {
 
         sqlx::query(
             "INSERT INTO transactions \
-             (id, date, payee, description, reconciliation, created_at) \
-             VALUES (?, ?, NULL, ?, ?, ?)",
+             (id, date, description, reconciliation, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(tx_id.to_string())
         .bind(as_of.to_string())
@@ -627,9 +627,9 @@ impl Service {
         let expense_posting_id = PostingId::new();
         sqlx::query(
             "INSERT INTO postings \
-             (id, transaction_id, account_id, amount, commodity, note, position, \
+             (id, transaction_id, account_id, amount, commodity, position, \
               cost_total_value, cost_total_commodity, cost_date, cost_label) \
-             VALUES (?, ?, ?, ?, ?, NULL, 0, NULL, NULL, NULL, NULL)",
+             VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL)",
         )
         .bind(expense_posting_id.to_string())
         .bind(tx_id.to_string())
@@ -648,9 +648,9 @@ impl Service {
         let neg_amount = -amount_clamped;
         sqlx::query(
             "INSERT INTO postings \
-             (id, transaction_id, account_id, amount, commodity, note, position, \
+             (id, transaction_id, account_id, amount, commodity, position, \
               cost_total_value, cost_total_commodity, cost_date, cost_label) \
-             VALUES (?, ?, ?, ?, ?, NULL, 1, NULL, NULL, NULL, NULL)",
+             VALUES (?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL)",
         )
         .bind(asset_posting_id.to_string())
         .bind(tx_id.to_string())

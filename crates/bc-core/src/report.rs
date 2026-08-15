@@ -386,7 +386,6 @@ mod tests {
         Transaction::builder()
             .id(TransactionId::new())
             .date(d)
-            .payee("Payee".to_owned())
             .description("desc")
             .postings(vec![
                 Posting::builder()
@@ -800,7 +799,6 @@ mod tests {
         let tagged = Transaction::builder()
             .id(TransactionId::new())
             .date(date(2025, 8, 1))
-            .payee("Payee".to_owned())
             .description("desc")
             .postings(vec![
                 Posting::builder()
@@ -953,7 +951,6 @@ mod tests {
         let elided = Transaction::builder()
             .id(TransactionId::new())
             .date(date(2025, 8, 1))
-            .payee("Payee".to_owned())
             .description("desc")
             .postings(vec![
                 Posting::builder()

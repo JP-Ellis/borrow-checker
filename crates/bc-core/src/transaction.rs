@@ -39,8 +39,6 @@ struct ListPostingRow {
     amount: Option<String>,
     /// Commodity code string; `None` iff `amount` is `None`.
     commodity: Option<String>,
-    /// Optional free-text note.
-    note: Option<String>,
     /// Decimal string for the cost basis total value; NULL if no cost basis.
     cost_total_value: Option<String>,
     /// Commodity code for the cost basis total; NULL when `cost_total_value` is NULL.
@@ -57,16 +55,8 @@ struct ListPostingRow {
 
 /// Row type for a transaction fetched from the `transactions` table.
 ///
-/// Fields: `(id, date, payee, description, note, reconciliation, created_at)`.
-pub(crate) type TxRow = (
-    String,
-    String,
-    Option<String>,
-    String,
-    Option<String>,
-    String,
-    String,
-);
+/// Fields: `(id, date, description, reconciliation, created_at)`.
+pub(crate) type TxRow = (String, String, String, String, String);
 
 /// Builds a comma-separated list of `n` SQL bind placeholders, e.g. `?,?,?`.
 ///
@@ -101,9 +91,9 @@ pub(crate) fn spread_pair(posting: &Posting) -> Option<(Date, Date)> {
 /// cost columns.
 ///
 /// This function returns a new `Transaction` that carries all of `updated`'s
-/// editable fields (payee, date, description, note, `tag_ids`, `extra_dates`,
-/// posting account/amount/note/tags/spread) while carrying forward from `current`:
-/// - `extra_dates`: taken from `updated` (the DTO is authoritative).
+/// editable fields (date, description, `metadata`, `tag_ids`, posting
+/// account/amount/metadata/tags/spread) while carrying forward from `current`:
+/// - `metadata`: taken from `updated` (the DTO is authoritative).
 /// - `reconciliation`: always taken from `current`; the edit path never changes it
 ///   (reconciliation is owned by `Service::reconcile`, which enforces the balance
 ///   guard). The DTO's `reconciliation` field is echoed but ignored here.
@@ -135,7 +125,7 @@ fn merge_preserving(current: &Transaction, updated: &Transaction) -> Transaction
                 .account_id(p.account_id().clone())
                 .maybe_amount(p.amount().cloned())
                 .maybe_cost(carried_cost)
-                .maybe_note(p.note().map(str::to_owned))
+                .metadata(p.metadata().clone())
                 .tag_ids(p.tag_ids().to_vec())
                 .maybe_spread_from(p.spread_from())
                 .maybe_spread_until(p.spread_until())
@@ -146,13 +136,11 @@ fn merge_preserving(current: &Transaction, updated: &Transaction) -> Transaction
     Transaction::builder()
         .id(updated.id().clone())
         .date(updated.date())
-        .maybe_payee(updated.payee().map(str::to_owned))
         .description(updated.description().to_owned())
-        .maybe_note(updated.note().map(str::to_owned))
         .postings(merged_postings)
         .reconciliation(current.reconciliation())
         .tag_ids(updated.tag_ids().to_vec())
-        .extra_dates(updated.extra_dates().to_vec())
+        .metadata(updated.metadata().clone())
         .created_at(*updated.created_at())
         .build()
 }
@@ -170,21 +158,10 @@ fn merge_preserving(current: &Transaction, updated: &Transaction) -> Transaction
 /// # Returns
 ///
 /// The list of events; empty if the two states are equal.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the diff covers all scalar and posting-level fields; extraction would obscure the sequential check logic"
-)]
 pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> Vec<Event> {
     let id = updated.id().clone();
     let mut events = Vec::new();
 
-    if current.payee() != updated.payee() {
-        events.push(Event::TransactionPayeeChanged {
-            id: id.clone(),
-            from: current.payee().map(str::to_owned),
-            to: updated.payee().map(str::to_owned),
-        });
-    }
     if current.date() != updated.date() {
         events.push(Event::TransactionDateChanged {
             id: id.clone(),
@@ -197,13 +174,6 @@ pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> 
             id: id.clone(),
             from: current.description().to_owned(),
             to: updated.description().to_owned(),
-        });
-    }
-    if current.note() != updated.note() {
-        events.push(Event::TransactionNoteChanged {
-            id: id.clone(),
-            from: current.note().map(str::to_owned),
-            to: updated.note().map(str::to_owned),
         });
     }
 
@@ -224,14 +194,6 @@ pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> 
             id: id.clone(),
             added,
             removed,
-        });
-    }
-
-    if current.extra_dates() != updated.extra_dates() {
-        events.push(Event::TransactionExtraDatesChanged {
-            id: id.clone(),
-            from: current.extra_dates().to_vec(),
-            to: updated.extra_dates().to_vec(),
         });
     }
 
@@ -261,14 +223,6 @@ pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> 
                         posting_id: posting.id().clone(),
                         from: prev.amount().cloned(),
                         to: posting.amount().cloned(),
-                    });
-                }
-                if prev.note() != posting.note() {
-                    events.push(Event::PostingNoteChanged {
-                        id: id.clone(),
-                        posting_id: posting.id().clone(),
-                        from: prev.note().map(str::to_owned),
-                        to: posting.note().map(str::to_owned),
                     });
                 }
                 let prev_spread = spread_pair(prev);
@@ -352,7 +306,8 @@ fn budget_leg_carries_tag(
 /// transaction whose budget leg does not.
 ///
 /// Transaction-level dimensions:
-/// * `text` — case-insensitive substring on payee OR description.
+/// * `text` — case-insensitive substring on description. Metadata is
+///   deliberately out of reach until the query language lands (issue #429).
 /// * `reconciliation` — exact equality.
 ///
 /// Per-posting dimensions, all evaluated on the same budget-subtree posting `p`:
@@ -374,11 +329,7 @@ fn transaction_matches_query(
 ) -> bool {
     if let Some(text) = &query.text {
         let needle = text.to_ascii_lowercase();
-        let payee_hit = tx
-            .payee()
-            .is_some_and(|p| p.to_ascii_lowercase().contains(&needle));
-        let desc_hit = tx.description().to_ascii_lowercase().contains(&needle);
-        if !payee_hit && !desc_hit {
+        if !tx.description().to_ascii_lowercase().contains(&needle) {
             return false;
         }
     }
@@ -484,8 +435,6 @@ struct PostingRow {
     amount: Option<String>,
     /// Commodity code string; `None` iff `amount` is `None`.
     commodity: Option<String>,
-    /// Optional free-text note.
-    note: Option<String>,
     /// Decimal string for the cost basis total value; NULL if no cost basis.
     cost_total_value: Option<String>,
     /// Commodity code for the cost basis total; NULL when `cost_total_value` is NULL.
@@ -639,13 +588,12 @@ impl Service {
         insert_event(&event, db_tx).await?;
 
         sqlx::query(
-            "INSERT INTO transactions (id, date, payee, description, note, reconciliation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(tx_id.to_string())
         .bind(&date_str)
-        .bind(tx.payee())
         .bind(tx.description())
-        .bind(tx.note())
         .bind(to_db_str(tx.reconciliation())?)
         .bind(&created_at_str)
         .execute(&mut **db_tx)
@@ -653,16 +601,13 @@ impl Service {
 
         crate::tag::insert_transaction_tags(&mut *db_tx, &tx_id, tx.tag_ids()).await?;
 
-        for (label, date) in tx.extra_dates() {
-            sqlx::query(
-                "INSERT INTO transaction_dates (transaction_id, label, date) VALUES (?, ?, ?)",
-            )
-            .bind(tx_id.to_string())
-            .bind(label)
-            .bind(date.to_string())
-            .execute(&mut **db_tx)
-            .await?;
-        }
+        crate::metadata::insert(
+            db_tx,
+            crate::metadata::Owner::Transaction,
+            &tx_id.to_string(),
+            tx.metadata(),
+        )
+        .await?;
 
         for (index, posting) in tx.postings().iter().enumerate() {
             let position = i64::try_from(index)
@@ -758,7 +703,7 @@ impl Service {
     )]
     pub async fn find_by_id(&self, id: &TransactionId) -> BcResult<Transaction> {
         let tx_row = sqlx::query_as::<_, TxRow>(
-            "SELECT id, date, payee, description, note, reconciliation, created_at \
+            "SELECT id, date, description, reconciliation, created_at \
              FROM transactions WHERE id = ?",
         )
         .bind(id.to_string())
@@ -776,12 +721,12 @@ impl Service {
             .parse::<Date>()
             .map_err(|e| BcError::BadData(format!("invalid date '{}': {e}", tx_row.1)))?;
 
-        let reconciliation = from_db_str::<Reconciliation>(&tx_row.5)?;
+        let reconciliation = from_db_str::<Reconciliation>(&tx_row.3)?;
 
         let created_at = tx_row
-            .6
+            .4
             .parse::<Timestamp>()
-            .map_err(|e| BcError::BadData(format!("invalid created_at '{}': {e}", tx_row.6)))?;
+            .map_err(|e| BcError::BadData(format!("invalid created_at '{}': {e}", tx_row.4)))?;
 
         // Load transaction-level tag IDs.
         let tx_tag_rows: Vec<(String,)> =
@@ -798,27 +743,19 @@ impl Service {
             })
             .collect::<BcResult<_>>()?;
 
-        // Load extra labeled dates.
-        let extra_date_rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT label, date FROM transaction_dates WHERE transaction_id = ? ORDER BY rowid",
+        let id_str = id.to_string();
+        let metadata = crate::metadata::load_for(
+            &self.pool,
+            crate::metadata::Owner::Transaction,
+            &[id_str.as_str()],
         )
-        .bind(id.to_string())
-        .fetch_all(&self.pool)
-        .await?;
-
-        let extra_dates: Vec<(String, Date)> = extra_date_rows
-            .into_iter()
-            .map(|(label, date_str)| {
-                date_str
-                    .parse::<Date>()
-                    .map(|d| (label, d))
-                    .map_err(|e| BcError::BadData(format!("invalid extra date '{date_str}': {e}")))
-            })
-            .collect::<BcResult<_>>()?;
+        .await?
+        .remove(&id_str)
+        .unwrap_or_default();
 
         // Load postings with cost and spread columns.
         let posting_rows: Vec<PostingRow> = sqlx::query_as(
-            "SELECT id, account_id, amount, commodity, note, \
+            "SELECT id, account_id, amount, commodity, \
                     cost_total_value, cost_total_commodity, cost_date, cost_label, \
                     spread_from, spread_until \
              FROM postings WHERE transaction_id = ? ORDER BY position ASC",
@@ -845,6 +782,11 @@ impl Service {
                 .map_err(|e| BcError::BadData(format!("invalid tag_id '{tag_id_str}': {e}")))?;
             posting_tags_map.entry(posting_id).or_default().push(tid);
         }
+
+        let posting_ids: Vec<&str> = posting_rows.iter().map(|row| row.id.as_str()).collect();
+        let mut posting_metadata =
+            crate::metadata::load_for(&self.pool, crate::metadata::Owner::Posting, &posting_ids)
+                .await?;
 
         let postings = posting_rows
             .into_iter()
@@ -890,12 +832,13 @@ impl Service {
                     })
                     .transpose()?;
                 let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
+                let p_metadata = posting_metadata.remove(&pid).unwrap_or_default();
                 Ok(Posting::builder()
                     .id(posting_id)
                     .account_id(acc_id)
                     .maybe_amount(amount)
                     .maybe_cost(cost)
-                    .maybe_note(row.note)
+                    .metadata(p_metadata)
                     .maybe_spread_from(spread_from)
                     .maybe_spread_until(spread_until)
                     .tag_ids(p_tag_ids)
@@ -906,13 +849,11 @@ impl Service {
         Ok(Transaction::builder()
             .id(tx_id)
             .date(date)
-            .maybe_payee(tx_row.2)
-            .description(tx_row.3)
-            .maybe_note(tx_row.4)
+            .description(tx_row.2)
             .postings(postings)
             .reconciliation(reconciliation)
             .tag_ids(tag_ids)
-            .extra_dates(extra_dates)
+            .metadata(metadata)
             .created_at(created_at)
             .build())
     }
@@ -948,69 +889,54 @@ impl Service {
 
         // Insert the reversal transaction row.
         sqlx::query(
-            "INSERT INTO transactions (id, date, payee, description, reconciliation, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(reversal_id.to_string())
         .bind(original.date().to_string())
-        .bind(original.payee())
         .bind(&description)
         .bind(&unreconciled_str)
         .bind(&created_at_str)
         .execute(&mut *db_tx)
         .await?;
 
-        // Insert negated postings for the reversal.
-        for (position, posting) in original.postings().iter().enumerate() {
-            let (negated_amount_str, commodity_str) = if let Some(amount) = posting.amount() {
-                let negated = amount
-                    .value()
-                    .checked_mul(Decimal::NEGATIVE_ONE)
-                    .ok_or_else(|| BcError::BadData("posting amount negation overflow".into()))?;
-                (
-                    Some(negated.to_string()),
-                    Some(amount.commodity().as_str().to_owned()),
-                )
-            } else {
-                (None, None)
-            };
-            let (cost_value, cost_commodity, cost_date, cost_label) =
-                if let Some(cost) = posting.cost() {
-                    (
-                        Some(cost.total().value().to_string()),
-                        Some(cost.total().commodity().as_str().to_owned()),
-                        cost.date().map(|d| d.to_string()),
-                        cost.label().map(str::to_owned),
-                    )
-                } else {
-                    (None, None, None, None)
-                };
+        crate::metadata::insert(
+            &mut db_tx,
+            crate::metadata::Owner::Transaction,
+            &reversal_id.to_string(),
+            original.metadata(),
+        )
+        .await?;
 
-            sqlx::query(
-                "INSERT INTO postings \
-                 (id, transaction_id, account_id, amount, commodity, note, position, \
-                  cost_total_value, cost_total_commodity, cost_date, cost_label, \
-                  spread_from, spread_until) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(PostingId::new().to_string())
-            .bind(reversal_id.to_string())
-            .bind(posting.account_id().to_string())
-            .bind(negated_amount_str)
-            .bind(commodity_str)
-            .bind(posting.note())
-            .bind(
-                i64::try_from(position)
-                    .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?,
-            )
-            .bind(cost_value)
-            .bind(cost_commodity)
-            .bind(cost_date)
-            .bind(cost_label)
-            .bind(posting.spread_from().map(|d| d.to_string()))
-            .bind(posting.spread_until().map(|d| d.to_string()))
-            .execute(&mut *db_tx)
-            .await?;
+        // Insert negated postings for the reversal. Each is a fresh leg with a
+        // new id carrying the original's cost, spread and metadata: a reversal
+        // describes the same real-world event, so its annotations travel with
+        // it.
+        for (index, posting) in original.postings().iter().enumerate() {
+            let negated = posting
+                .amount()
+                .map(|amount| {
+                    amount
+                        .value()
+                        .checked_mul(Decimal::NEGATIVE_ONE)
+                        .map(|value| Amount::new(value, amount.commodity().clone()))
+                        .ok_or_else(|| BcError::BadData("posting amount negation overflow".into()))
+                })
+                .transpose()?;
+
+            let reversed = Posting::builder()
+                .id(PostingId::new())
+                .account_id(posting.account_id().clone())
+                .maybe_amount(negated)
+                .maybe_cost(posting.cost().cloned())
+                .metadata(posting.metadata().clone())
+                .maybe_spread_from(posting.spread_from())
+                .maybe_spread_until(posting.spread_until())
+                .build();
+
+            let position = i64::try_from(index)
+                .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?;
+            insert_posting_row(&mut db_tx, &reversal_id, &reversed, position).await?;
         }
 
         db_tx.commit().await?;
@@ -1033,7 +959,7 @@ impl Service {
     )]
     pub async fn list(&self) -> BcResult<Vec<Transaction>> {
         let tx_rows: Vec<TxRow> = sqlx::query_as(
-            "SELECT id, date, payee, description, note, reconciliation, created_at \
+            "SELECT id, date, description, reconciliation, created_at \
                  FROM transactions ORDER BY date DESC",
         )
         .fetch_all(&self.pool)
@@ -1059,28 +985,15 @@ impl Service {
             tx_tags_map.entry(tx_id_str).or_default().push(tid);
         }
 
-        // Load all extra labeled dates in one query.
-        let extra_date_rows: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT td.transaction_id, td.label, td.date \
-             FROM transaction_dates td",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut tx_extra_dates_map: HashMap<String, Vec<(String, Date)>> = HashMap::new();
-        for (tx_id_str, label, date_str) in extra_date_rows {
-            let d = date_str
-                .parse::<Date>()
-                .map_err(|e| BcError::BadData(format!("invalid extra date '{date_str}': {e}")))?;
-            tx_extra_dates_map
-                .entry(tx_id_str)
-                .or_default()
-                .push((label, d));
-        }
+        // Load metadata for the matching transactions in one query.
+        let tx_id_strs: Vec<&str> = tx_rows.iter().map(|row| row.0.as_str()).collect();
+        let mut tx_metadata_map =
+            crate::metadata::load_for(&self.pool, crate::metadata::Owner::Transaction, &tx_id_strs)
+                .await?;
 
         // Load all postings in one query.
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
-            "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.note, \
+            "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, \
                     p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
@@ -1106,6 +1019,14 @@ impl Service {
         }
 
         // Group postings by transaction_id.
+        let posting_id_strs: Vec<&str> = posting_rows.iter().map(|row| row.id.as_str()).collect();
+        let mut posting_metadata_map = crate::metadata::load_for(
+            &self.pool,
+            crate::metadata::Owner::Posting,
+            &posting_id_strs,
+        )
+        .await?;
+
         let mut postings_by_tx: HashMap<String, Vec<Posting>> = HashMap::new();
         for row in posting_rows {
             let pid = row.id;
@@ -1148,12 +1069,13 @@ impl Service {
                 })
                 .transpose()?;
             let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
+            let p_metadata = posting_metadata_map.remove(&pid).unwrap_or_default();
             let posting = Posting::builder()
                 .id(posting_id)
                 .account_id(acc_id)
                 .maybe_amount(amount)
                 .maybe_cost(cost)
-                .maybe_note(row.note)
+                .metadata(p_metadata)
                 .maybe_spread_from(spread_from)
                 .maybe_spread_until(spread_until)
                 .tag_ids(p_tag_ids)
@@ -1164,15 +1086,7 @@ impl Service {
         tx_rows
             .into_iter()
             .map(
-                |(
-                    id_str,
-                    date_str,
-                    payee,
-                    description,
-                    note,
-                    reconciliation_str,
-                    created_at_str,
-                )| {
+                |(id_str, date_str, description, reconciliation_str, created_at_str)| {
                     let tx_id = id_str
                         .parse::<TransactionId>()
                         .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
@@ -1184,18 +1098,16 @@ impl Service {
                         BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
                     })?;
                     let tag_ids = tx_tags_map.remove(&id_str).unwrap_or_default();
-                    let extra_dates = tx_extra_dates_map.remove(&id_str).unwrap_or_default();
+                    let metadata = tx_metadata_map.remove(&id_str).unwrap_or_default();
                     let postings = postings_by_tx.remove(&id_str).unwrap_or_default();
                     Ok(Transaction::builder()
                         .id(tx_id)
                         .date(date)
-                        .maybe_payee(payee)
                         .description(description)
-                        .maybe_note(note)
                         .postings(postings)
                         .reconciliation(reconciliation)
                         .tag_ids(tag_ids)
-                        .extra_dates(extra_dates)
+                        .metadata(metadata)
                         .created_at(created_at)
                         .build())
                 },
@@ -1226,7 +1138,7 @@ impl Service {
         let account_id_str = account_id.to_string();
 
         let tx_rows: Vec<TxRow> = sqlx::query_as(
-            "SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
+            "SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
                  FROM transactions t \
                  WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
                  ORDER BY t.date DESC",
@@ -1263,7 +1175,7 @@ impl Service {
         let until_str = until.to_string();
 
         let tx_rows: Vec<TxRow> = sqlx::query_as(
-            "SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
+            "SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
                  FROM transactions t \
                  WHERE t.date >= ? AND t.date < ? \
                    AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
@@ -1322,32 +1234,13 @@ impl Service {
             tx_tags_map.entry(tx_id_str).or_default().push(tid);
         }
 
-        // Load extra labeled dates for the matching transactions.
-        let extra_date_query = format!(
-            "SELECT td.transaction_id, td.label, td.date \
-             FROM transaction_dates td \
-             WHERE td.transaction_id IN ({placeholders})"
-        );
-        let mut extra_date_stmt = sqlx::query_as(sqlx::AssertSqlSafe(extra_date_query));
-        for id in &tx_ids {
-            extra_date_stmt = extra_date_stmt.bind(*id);
-        }
-        let extra_date_rows: Vec<(String, String, String)> =
-            extra_date_stmt.fetch_all(&self.pool).await?;
-
-        let mut tx_extra_dates_map: HashMap<String, Vec<(String, Date)>> = HashMap::new();
-        for (tx_id_str, label, date_str) in extra_date_rows {
-            let d = date_str
-                .parse::<Date>()
-                .map_err(|e| BcError::BadData(format!("invalid extra date '{date_str}': {e}")))?;
-            tx_extra_dates_map
-                .entry(tx_id_str)
-                .or_default()
-                .push((label, d));
-        }
+        // Load metadata for the matching transactions in one query.
+        let mut tx_metadata_map =
+            crate::metadata::load_for(&self.pool, crate::metadata::Owner::Transaction, &tx_ids)
+                .await?;
 
         let posting_query = format!(
-            "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.note, \
+            "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, \
                     p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
@@ -1380,6 +1273,14 @@ impl Service {
                 .map_err(|e| BcError::BadData(format!("invalid tag_id '{tag_id_str}': {e}")))?;
             posting_tags_map.entry(posting_id).or_default().push(tid);
         }
+
+        let posting_id_strs: Vec<&str> = posting_rows.iter().map(|row| row.id.as_str()).collect();
+        let mut posting_metadata_map = crate::metadata::load_for(
+            &self.pool,
+            crate::metadata::Owner::Posting,
+            &posting_id_strs,
+        )
+        .await?;
 
         let mut postings_by_tx: HashMap<String, Vec<Posting>> = HashMap::new();
         for row in posting_rows {
@@ -1423,12 +1324,13 @@ impl Service {
                 })
                 .transpose()?;
             let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
+            let p_metadata = posting_metadata_map.remove(&pid).unwrap_or_default();
             let posting = Posting::builder()
                 .id(posting_id)
                 .account_id(acc_id)
                 .maybe_amount(amount)
                 .maybe_cost(cost)
-                .maybe_note(row.note)
+                .metadata(p_metadata)
                 .maybe_spread_from(spread_from)
                 .maybe_spread_until(spread_until)
                 .tag_ids(p_tag_ids)
@@ -1439,15 +1341,7 @@ impl Service {
         tx_rows
             .into_iter()
             .map(
-                |(
-                    id_str,
-                    date_str,
-                    payee,
-                    description,
-                    note,
-                    reconciliation_str,
-                    created_at_str,
-                )| {
+                |(id_str, date_str, description, reconciliation_str, created_at_str)| {
                     let tx_id = id_str
                         .parse::<TransactionId>()
                         .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
@@ -1459,18 +1353,16 @@ impl Service {
                         BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
                     })?;
                     let tag_ids = tx_tags_map.remove(&id_str).unwrap_or_default();
-                    let extra_dates = tx_extra_dates_map.remove(&id_str).unwrap_or_default();
+                    let metadata = tx_metadata_map.remove(&id_str).unwrap_or_default();
                     let postings = postings_by_tx.remove(&id_str).unwrap_or_default();
                     Ok(Transaction::builder()
                         .id(tx_id)
                         .date(date)
-                        .maybe_payee(payee)
                         .description(description)
-                        .maybe_note(note)
                         .postings(postings)
                         .reconciliation(reconciliation)
                         .tag_ids(tag_ids)
-                        .extra_dates(extra_dates)
+                        .metadata(metadata)
                         .created_at(created_at)
                         .build())
                 },
@@ -1537,7 +1429,7 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
+                     SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
                      FROM transactions t \
                      WHERE t.date >= ? AND t.date < ? \
                      AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
@@ -1554,7 +1446,7 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
+                     SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
                      FROM transactions t \
                      WHERE t.date >= ? \
                      AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
@@ -1570,7 +1462,7 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
+                     SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
                      FROM transactions t \
                      WHERE t.date < ? \
                      AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
@@ -1586,7 +1478,7 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
+                     SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
                      FROM transactions t \
                      WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
                      ORDER BY t.date DESC",
@@ -1623,32 +1515,11 @@ impl Service {
             tx_tags_map.entry(tx_id_str).or_default().push(tid);
         }
 
-        // Load extra labeled dates for the matching transactions.
-        let extra_date_rows: Vec<(String, String, String)> = sqlx::query_as(
-            "WITH RECURSIVE subtree(id) AS ( \
-                 VALUES(?) \
-                 UNION ALL \
-                 SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
-             ) \
-             SELECT td.transaction_id, td.label, td.date \
-             FROM transaction_dates td \
-             JOIN transactions t ON td.transaction_id = t.id \
-             WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree))",
-        )
-        .bind(&account_id_str)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut tx_extra_dates_map: HashMap<String, Vec<(String, Date)>> = HashMap::new();
-        for (tx_id_str, label, date_str) in extra_date_rows {
-            let d = date_str
-                .parse::<Date>()
-                .map_err(|e| BcError::BadData(format!("invalid extra date '{date_str}': {e}")))?;
-            tx_extra_dates_map
-                .entry(tx_id_str)
-                .or_default()
-                .push((label, d));
-        }
+        // Load metadata for the matching transactions in one query.
+        let tx_id_strs: Vec<&str> = tx_rows.iter().map(|row| row.0.as_str()).collect();
+        let mut tx_metadata_map =
+            crate::metadata::load_for(&self.pool, crate::metadata::Owner::Transaction, &tx_id_strs)
+                .await?;
 
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
             "WITH RECURSIVE subtree(id) AS ( \
@@ -1656,7 +1527,7 @@ impl Service {
                  UNION ALL \
                  SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
              ) \
-             SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, p.note, \
+             SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, \
                     p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
@@ -1691,6 +1562,14 @@ impl Service {
                 .map_err(|e| BcError::BadData(format!("invalid tag_id '{tag_id_str}': {e}")))?;
             posting_tags_map.entry(posting_id).or_default().push(tid);
         }
+
+        let posting_id_strs: Vec<&str> = posting_rows.iter().map(|row| row.id.as_str()).collect();
+        let mut posting_metadata_map = crate::metadata::load_for(
+            &self.pool,
+            crate::metadata::Owner::Posting,
+            &posting_id_strs,
+        )
+        .await?;
 
         let mut postings_by_tx: HashMap<String, Vec<Posting>> = HashMap::new();
         for row in posting_rows {
@@ -1734,12 +1613,13 @@ impl Service {
                 })
                 .transpose()?;
             let p_tag_ids = posting_tags_map.remove(&pid).unwrap_or_default();
+            let p_metadata = posting_metadata_map.remove(&pid).unwrap_or_default();
             let posting = Posting::builder()
                 .id(posting_id)
                 .account_id(acc_id)
                 .maybe_amount(amount)
                 .maybe_cost(cost)
-                .maybe_note(row.note)
+                .metadata(p_metadata)
                 .maybe_spread_from(spread_from)
                 .maybe_spread_until(spread_until)
                 .tag_ids(p_tag_ids)
@@ -1750,15 +1630,7 @@ impl Service {
         tx_rows
             .into_iter()
             .map(
-                |(
-                    id_str,
-                    date_str,
-                    payee,
-                    description,
-                    note,
-                    reconciliation_str,
-                    created_at_str,
-                )| {
+                |(id_str, date_str, description, reconciliation_str, created_at_str)| {
                     let tx_id = id_str
                         .parse::<TransactionId>()
                         .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
@@ -1770,18 +1642,16 @@ impl Service {
                         BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
                     })?;
                     let tag_ids = tx_tags_map.remove(&id_str).unwrap_or_default();
-                    let extra_dates = tx_extra_dates_map.remove(&id_str).unwrap_or_default();
+                    let metadata = tx_metadata_map.remove(&id_str).unwrap_or_default();
                     let postings = postings_by_tx.remove(&id_str).unwrap_or_default();
                     Ok(Transaction::builder()
                         .id(tx_id)
                         .date(date)
-                        .maybe_payee(payee)
                         .description(description)
-                        .maybe_note(note)
                         .postings(postings)
                         .reconciliation(reconciliation)
                         .tag_ids(tag_ids)
-                        .extra_dates(extra_dates)
+                        .metadata(metadata)
                         .created_at(created_at)
                         .build())
                 },
@@ -1793,7 +1663,7 @@ impl Service {
     /// Rewrites the projection tables for `updated` within an open DB transaction.
     ///
     /// Updates the `transactions` row and fully replaces the transaction's
-    /// postings, posting tags, transaction tags, and extra dates.
+    /// postings, posting tags, transaction tags, and metadata.
     ///
     /// # Arguments
     ///
@@ -1812,16 +1682,12 @@ impl Service {
         let tx_id_str = updated.id().to_string();
         let date_str = updated.date().to_string();
 
-        let result = sqlx::query(
-            "UPDATE transactions SET date = ?, payee = ?, description = ?, note = ? WHERE id = ?",
-        )
-        .bind(&date_str)
-        .bind(updated.payee())
-        .bind(updated.description())
-        .bind(updated.note())
-        .bind(&tx_id_str)
-        .execute(&mut **db_tx)
-        .await?;
+        let result = sqlx::query("UPDATE transactions SET date = ?, description = ? WHERE id = ?")
+            .bind(&date_str)
+            .bind(updated.description())
+            .bind(&tx_id_str)
+            .execute(&mut **db_tx)
+            .await?;
 
         if result.rows_affected() == 0 {
             return Err(BcError::NotFound(tx_id_str));
@@ -1848,6 +1714,10 @@ impl Service {
         .fetch_all(&mut **db_tx)
         .await?;
 
+        // `posting_metadata.posting_id` is a plain foreign key, so the entries
+        // go before the postings that own them.
+        crate::metadata::delete_for_transaction_postings(db_tx, &tx_id_str).await?;
+
         sqlx::query("DELETE FROM postings WHERE transaction_id = ?")
             .bind(&tx_id_str)
             .execute(&mut **db_tx)
@@ -1858,23 +1728,17 @@ impl Service {
             .execute(&mut **db_tx)
             .await?;
 
-        sqlx::query("DELETE FROM transaction_dates WHERE transaction_id = ?")
-            .bind(&tx_id_str)
-            .execute(&mut **db_tx)
-            .await?;
+        crate::metadata::delete_for(db_tx, crate::metadata::Owner::Transaction, &tx_id_str).await?;
 
         crate::tag::insert_transaction_tags(&mut *db_tx, updated.id(), updated.tag_ids()).await?;
 
-        for (label, date) in updated.extra_dates() {
-            sqlx::query(
-                "INSERT INTO transaction_dates (transaction_id, label, date) VALUES (?, ?, ?)",
-            )
-            .bind(&tx_id_str)
-            .bind(label)
-            .bind(date.to_string())
-            .execute(&mut **db_tx)
-            .await?;
-        }
+        crate::metadata::insert(
+            db_tx,
+            crate::metadata::Owner::Transaction,
+            &tx_id_str,
+            updated.metadata(),
+        )
+        .await?;
 
         for (index, posting) in updated.postings().iter().enumerate() {
             let position = i64::try_from(index)
@@ -1919,7 +1783,7 @@ impl Service {
             id: tx_id.clone(),
             date: updated.date(),
             description: updated.description().to_owned(),
-            payee: updated.payee().map(str::to_owned),
+            payee: None,
         };
 
         let mut db_tx = self.pool.begin().await?;
@@ -2292,25 +2156,32 @@ async fn insert_posting_row(
 
     sqlx::query(
         "INSERT INTO postings \
-         (id, transaction_id, account_id, amount, commodity, note, position, \
+         (id, transaction_id, account_id, amount, commodity, position, \
           cost_total_value, cost_total_commodity, cost_date, cost_label, \
           spread_from, spread_until) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(posting.id().to_string()) //  1. id
     .bind(transaction_id.to_string()) //  2. transaction_id
     .bind(posting.account_id().to_string()) //  3. account_id
     .bind(posting.amount().map(|a| a.value().to_string())) //  4. amount
     .bind(posting.amount().map(|a| a.commodity().as_str().to_owned())) //  5. commodity
-    .bind(posting.note()) //  6. note
-    .bind(position) //  7. position
-    .bind(cost_value) //  8. cost_total_value
-    .bind(cost_commodity) //  9. cost_total_commodity
-    .bind(cost_date) // 10. cost_date
-    .bind(cost_label) // 11. cost_label
-    .bind(posting.spread_from().map(|d| d.to_string())) // 12. spread_from
-    .bind(posting.spread_until().map(|d| d.to_string())) // 13. spread_until
+    .bind(position) //  6. position
+    .bind(cost_value) //  7. cost_total_value
+    .bind(cost_commodity) //  8. cost_total_commodity
+    .bind(cost_date) //  9. cost_date
+    .bind(cost_label) // 10. cost_label
+    .bind(posting.spread_from().map(|d| d.to_string())) // 11. spread_from
+    .bind(posting.spread_until().map(|d| d.to_string())) // 12. spread_until
     .execute(&mut **db_tx)
+    .await?;
+
+    crate::metadata::insert(
+        db_tx,
+        crate::metadata::Owner::Posting,
+        &posting.id().to_string(),
+        posting.metadata(),
+    )
     .await?;
 
     Ok(())
@@ -2324,6 +2195,9 @@ mod tests {
     use bc_models::Amount;
     use bc_models::CommodityCode;
     use bc_models::Cost;
+    use bc_models::MetaEntry;
+    use bc_models::MetaValue;
+    use bc_models::Metadata;
     use bc_models::Posting;
     use bc_models::PostingId;
     use bc_models::Reconciliation;
@@ -2339,6 +2213,11 @@ mod tests {
     use super::diff_transaction;
     use super::*;
     use crate::events::Event;
+
+    /// Builds a metadata key, for tests that know their literal is valid.
+    fn key(name: &str) -> bc_models::MetaKey {
+        bc_models::MetaKey::new(name).expect("key should be valid")
+    }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn posting_spread_persists_and_loads(pool: sqlx::SqlitePool) {
@@ -3102,7 +2981,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn transaction_note_roundtrips(pool: sqlx::SqlitePool) {
+    async fn transaction_metadata_roundtrips(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let a = acct_svc
             .create()
@@ -3126,7 +3005,10 @@ mod tests {
             .id(base.id().clone())
             .date(base.date())
             .description("raw")
-            .note("my annotation")
+            .metadata(Metadata::new(vec![MetaEntry::new(
+                key("note"),
+                MetaValue::Text("my annotation".to_owned()),
+            )]))
             .postings(base.postings().to_vec())
             .reconciliation(Reconciliation::Reconciled)
             .created_at(Timestamp::now())
@@ -3134,11 +3016,14 @@ mod tests {
         let id = tx.id().clone();
         svc.create(tx).await.expect("create");
         let found = svc.find_by_id(&id).await.expect("find");
-        assert_eq!(found.note(), Some("my annotation"));
+        assert_eq!(
+            found.metadata().get_first_text(&key("note")),
+            Some("my annotation")
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn extra_dates_roundtrip(pool: sqlx::SqlitePool) {
+    async fn date_valued_metadata_roundtrips(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let a = acct_svc
             .create()
@@ -3162,7 +3047,10 @@ mod tests {
             .id(base.id().clone())
             .date(base.date())
             .description("d")
-            .extra_dates(vec![("cleared".to_owned(), date(2026, 1, 17))])
+            .metadata(Metadata::new(vec![MetaEntry::new(
+                key("cleared"),
+                MetaValue::Date(date(2026, 1, 17)),
+            )]))
             .postings(base.postings().to_vec())
             .reconciliation(Reconciliation::Reconciled)
             .created_at(Timestamp::now())
@@ -3171,8 +3059,9 @@ mod tests {
         svc.create(tx).await.expect("create");
         let found = svc.find_by_id(&id).await.expect("find");
         assert_eq!(
-            found.extra_dates(),
-            &[("cleared".to_owned(), date(2026, 1, 17))]
+            found.metadata().get_first(&key("cleared")),
+            Some(&MetaValue::Date(date(2026, 1, 17))),
+            "a date-typed entry comes back typed, not as text"
         );
     }
 
@@ -3548,7 +3437,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn amend_preserves_note_and_extra_dates(pool: sqlx::SqlitePool) {
+    async fn amend_preserves_metadata(pool: sqlx::SqlitePool) {
         let acct_svc = crate::AccountService::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -3571,9 +3460,11 @@ mod tests {
         let original = Transaction::builder()
             .id(bc_models::TransactionId::new())
             .date(date(2026, 1, 10))
-            .description("Original payee")
-            .maybe_note(Some("keep this note".to_owned()))
-            .extra_dates(vec![("cleared".to_owned(), date(2026, 1, 12))])
+            .description("Original description")
+            .metadata(Metadata::new(vec![
+                MetaEntry::new(key("note"), MetaValue::Text("keep this note".to_owned())),
+                MetaEntry::new(key("cleared"), MetaValue::Date(date(2026, 1, 12))),
+            ]))
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
@@ -3595,9 +3486,8 @@ mod tests {
         let updated = Transaction::builder()
             .id(id.clone())
             .date(date(2026, 1, 10))
-            .description("Amended payee")
-            .maybe_note(original.note().map(str::to_owned))
-            .extra_dates(original.extra_dates().to_vec())
+            .description("Amended description")
+            .metadata(original.metadata().clone())
             .postings(original.postings().to_vec())
             .reconciliation(Reconciliation::Unreconciled)
             .created_at(*original.created_at())
@@ -3606,16 +3496,16 @@ mod tests {
         svc.amend(updated).await.expect("amend should succeed");
 
         let found = svc.find_by_id(&id).await.expect("find after amend");
-        assert_eq!(found.description(), "Amended payee");
+        assert_eq!(found.description(), "Amended description");
         assert_eq!(
-            found.note(),
+            found.metadata().get_first_text(&key("note")),
             Some("keep this note"),
-            "note must survive amend"
+            "metadata must survive amend"
         );
         assert_eq!(
-            found.extra_dates(),
-            &[("cleared".to_owned(), date(2026, 1, 12))],
-            "extra_dates must survive amend"
+            found.metadata().get_first(&key("cleared")),
+            Some(&MetaValue::Date(date(2026, 1, 12))),
+            "and keep its types"
         );
     }
 
@@ -3971,8 +3861,11 @@ mod tests {
         Transaction::builder()
             .id(TransactionId::new())
             .date("2026-04-30".parse::<Date>().expect("valid date"))
-            .maybe_payee(Some("Old Payee".to_owned()))
             .description("desc".to_owned())
+            .metadata(Metadata::new(vec![MetaEntry::new(
+                key("payee"),
+                MetaValue::Text("Generic Grocer".to_owned()),
+            )]))
             .postings(vec![p1, p2])
             .reconciliation(Reconciliation::Unreconciled)
             .created_at(Timestamp::now())
@@ -3980,20 +3873,19 @@ mod tests {
     }
 
     trait TxTestExt {
-        fn with_payee(self, payee: Option<String>) -> Self;
+        fn with_metadata(self, metadata: Metadata) -> Self;
         fn recategorise_first(self, account: AccountId) -> Self;
         fn push_leg(self) -> Self;
         fn recategorise_posting(self, target: &PostingId, account: AccountId) -> Self;
     }
 
     impl TxTestExt for Transaction {
-        fn with_payee(self, payee: Option<String>) -> Self {
+        fn with_metadata(self, metadata: Metadata) -> Self {
             Transaction::builder()
                 .id(self.id().clone())
                 .date(self.date())
-                .maybe_payee(payee)
                 .description(self.description().to_owned())
-                .maybe_note(self.note().map(str::to_owned))
+                .metadata(metadata)
                 .postings(self.postings().to_vec())
                 .reconciliation(self.reconciliation())
                 .tag_ids(self.tag_ids().to_vec())
@@ -4017,8 +3909,8 @@ mod tests {
             Transaction::builder()
                 .id(self.id().clone())
                 .date(self.date())
-                .maybe_payee(self.payee().map(str::to_owned))
                 .description(self.description().to_owned())
+                .metadata(self.metadata().clone())
                 .postings(postings)
                 .reconciliation(self.reconciliation())
                 .created_at(Timestamp::now())
@@ -4041,8 +3933,8 @@ mod tests {
             Transaction::builder()
                 .id(self.id().clone())
                 .date(self.date())
-                .maybe_payee(self.payee().map(str::to_owned))
                 .description(self.description().to_owned())
+                .metadata(self.metadata().clone())
                 .postings(postings)
                 .reconciliation(self.reconciliation())
                 .created_at(Timestamp::now())
@@ -4059,7 +3951,7 @@ mod tests {
                             .id(p.id().clone())
                             .account_id(account.clone())
                             .maybe_amount(p.amount().cloned())
-                            .maybe_note(p.note().map(str::to_owned))
+                            .metadata(p.metadata().clone())
                             .tag_ids(p.tag_ids().to_vec())
                             .build()
                     } else {
@@ -4070,8 +3962,8 @@ mod tests {
             Transaction::builder()
                 .id(self.id().clone())
                 .date(self.date())
-                .maybe_payee(self.payee().map(str::to_owned))
                 .description(self.description().to_owned())
+                .metadata(self.metadata().clone())
                 .postings(postings)
                 .reconciliation(self.reconciliation())
                 .created_at(Timestamp::now())
@@ -4151,7 +4043,10 @@ mod tests {
         let current = service.find_by_id(&tx_id).await.expect("load tx");
         let updated = current
             .clone()
-            .with_payee(Some("Edited Payee".to_owned()))
+            .with_metadata(Metadata::new(vec![MetaEntry::new(
+                key("payee"),
+                MetaValue::Text("Other Grocer".to_owned()),
+            )]))
             .recategorise_posting(&posting_id, new_account_id.clone());
         service.edit(updated).await.expect("edit ok");
 
@@ -4161,11 +4056,13 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .expect("query events");
-        assert!(kinds.contains(&"TransactionPayeeChanged".to_owned()));
         assert!(kinds.contains(&"PostingRecategorised".to_owned()));
 
         let reloaded = service.find_by_id(&tx_id).await.expect("reload");
-        assert_eq!(reloaded.payee(), Some("Edited Payee"));
+        assert_eq!(
+            reloaded.metadata().get_first_text(&key("payee")),
+            Some("Other Grocer")
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -4199,7 +4096,10 @@ mod tests {
             .id(TransactionId::new())
             .date(date(2026, 3, 1))
             .description("Buy shares")
-            .extra_dates(vec![("cleared".to_owned(), date(2026, 3, 3))])
+            .metadata(Metadata::new(vec![MetaEntry::new(
+                key("cleared"),
+                MetaValue::Date(date(2026, 3, 3)),
+            )]))
             .postings(vec![
                 Posting::builder()
                     .id(posting_with_cost_id.clone())
@@ -4219,18 +4119,17 @@ mod tests {
 
         let tx_id = svc.create(original.clone()).await.expect("create");
 
-        // Edit: only change the payee — extra_dates echoed from current, posting cost must survive.
+        // Edit: only change the description — metadata echoed from current,
+        // posting cost must survive.
         let current = svc.find_by_id(&tx_id).await.expect("load current");
         let edited = Transaction::builder()
             .id(tx_id.clone())
             .date(current.date())
-            .maybe_payee(Some("New Payee".to_owned()))
-            .description(current.description().to_owned())
-            .maybe_note(current.note().map(str::to_owned))
+            .description("Buy more shares")
+            .metadata(current.metadata().clone())
             .postings(current.postings().to_vec())
             .reconciliation(current.reconciliation())
             .tag_ids(current.tag_ids().to_vec())
-            .extra_dates(current.extra_dates().to_vec())
             .created_at(*current.created_at())
             .build();
 
@@ -4248,7 +4147,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn edit_can_change_extra_dates(pool: sqlx::SqlitePool) {
+    async fn edit_can_change_metadata(pool: sqlx::SqlitePool) {
         let acct_svc = crate::AccountService::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -4273,7 +4172,10 @@ mod tests {
             .id(TransactionId::new())
             .date(date(2026, 3, 1))
             .description("Buy shares")
-            .extra_dates(vec![("cleared".to_owned(), date(2026, 3, 3))])
+            .metadata(Metadata::new(vec![MetaEntry::new(
+                key("cleared"),
+                MetaValue::Date(date(2026, 3, 3)),
+            )]))
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
@@ -4296,21 +4198,27 @@ mod tests {
         let edited = Transaction::builder()
             .id(tx_id.clone())
             .date(current.date())
-            .maybe_payee(current.payee().map(str::to_owned))
             .description(current.description().to_owned())
-            .maybe_note(current.note().map(str::to_owned))
+            .metadata(Metadata::new(vec![MetaEntry::new(
+                key("effective"),
+                MetaValue::Date(date(2026, 3, 10)),
+            )]))
             .postings(current.postings().to_vec())
             .reconciliation(current.reconciliation())
             .tag_ids(current.tag_ids().to_vec())
-            .extra_dates(vec![("effective".to_owned(), date(2026, 3, 10))])
             .created_at(*current.created_at())
             .build();
         svc.edit(edited).await.expect("edit ok");
 
         let reloaded = svc.find_by_id(&tx_id).await.expect("reload");
         assert_eq!(
-            reloaded.extra_dates(),
-            &[("effective".to_owned(), date(2026, 3, 10))]
+            reloaded.metadata().len(),
+            1,
+            "the edit replaced, not appended"
+        );
+        assert_eq!(
+            reloaded.metadata().get_first(&key("effective")),
+            Some(&MetaValue::Date(date(2026, 3, 10)))
         );
     }
 
@@ -4328,7 +4236,10 @@ mod tests {
         let current = service.find_by_id(&tx_id).await.expect("load");
         let updated = current
             .clone()
-            .with_payee(Some("Still Editable".to_owned()));
+            .with_metadata(Metadata::new(vec![MetaEntry::new(
+                key("payee"),
+                MetaValue::Text("Other Grocer".to_owned()),
+            )]));
         service.edit(updated).await.expect("reconciled edit ok");
     }
 
@@ -4339,19 +4250,6 @@ mod tests {
             diff_transaction(&tx, &tx).is_empty(),
             "identical inputs must produce no events"
         );
-    }
-
-    #[test]
-    fn diff_detects_payee_change() {
-        let current = sample_tx();
-        let updated = current.clone().with_payee(Some("New Payee".to_owned()));
-        let events = diff_transaction(&current, &updated);
-        assert_eq!(events.len(), 1);
-        let first = events.first().expect("one event expected");
-        assert!(matches!(
-            first,
-            Event::TransactionPayeeChanged { to, .. } if to.as_deref() == Some("New Payee")
-        ));
     }
 
     #[test]
@@ -4373,43 +4271,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn diff_emits_extra_dates_changed() {
-        let current = sample_tx();
-        let updated = Transaction::builder()
-            .id(current.id().clone())
-            .date(current.date())
-            .maybe_payee(current.payee().map(str::to_owned))
-            .description(current.description().to_owned())
-            .maybe_note(current.note().map(str::to_owned))
-            .postings(current.postings().to_vec())
-            .reconciliation(current.reconciliation())
-            .tag_ids(current.tag_ids().to_vec())
-            .extra_dates(vec![("cleared".to_owned(), date(2026, 3, 3))])
-            .created_at(*current.created_at())
-            .build();
-        let events = diff_transaction(&current, &updated);
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::TransactionExtraDatesChanged { .. })),
-            "changing extra_dates must emit TransactionExtraDatesChanged"
-        );
-    }
-
-    #[test]
-    fn diff_no_extra_dates_change_emits_nothing() {
-        let tx = sample_tx();
-        let events = diff_transaction(&tx, &tx);
-        assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e, Event::TransactionExtraDatesChanged { .. }))
-        );
-    }
-
     #[sqlx::test(migrations = "./migrations")]
-    async fn amend_updates_note(pool: sqlx::SqlitePool) {
+    async fn amend_updates_metadata(pool: sqlx::SqlitePool) {
         let acct_svc = crate::AccountService::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -4433,7 +4296,10 @@ mod tests {
             .id(bc_models::TransactionId::new())
             .date(date(2026, 2, 1))
             .description("Groceries")
-            .maybe_note(Some("old note".to_owned()))
+            .metadata(Metadata::new(vec![MetaEntry::new(
+                key("note"),
+                MetaValue::Text("old note".to_owned()),
+            )]))
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
@@ -4456,7 +4322,10 @@ mod tests {
             .id(id.clone())
             .date(date(2026, 2, 1))
             .description("Groceries")
-            .maybe_note(Some("new note".to_owned()))
+            .metadata(Metadata::new(vec![MetaEntry::new(
+                key("note"),
+                MetaValue::Text("new note".to_owned()),
+            )]))
             .postings(original.postings().to_vec())
             .reconciliation(Reconciliation::Unreconciled)
             .created_at(*original.created_at())
@@ -4465,7 +4334,260 @@ mod tests {
         svc.amend(updated).await.expect("amend should succeed");
 
         let found = svc.find_by_id(&id).await.expect("find after amend");
-        assert_eq!(found.note(), Some("new note"), "amended note must persist");
+        assert_eq!(
+            found.metadata().get_first_text(&key("note")),
+            Some("new note"),
+            "amended metadata must persist"
+        );
+    }
+
+    // MARK: metadata round-trip tests
+
+    /// Builds a one-leg transaction carrying `metadata`, with a second bare leg
+    /// so the posting set is structurally valid.
+    fn tx_with_metadata(
+        id: &TransactionId,
+        posting_id: &PostingId,
+        account: &AccountId,
+        metadata: Metadata,
+        posting_metadata: Metadata,
+    ) -> Transaction {
+        Transaction::builder()
+            .id(id.clone())
+            .date(date(2026, 1, 15))
+            .description("Groceries")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .metadata(metadata)
+            .postings(vec![
+                Posting::builder()
+                    .id(posting_id.clone())
+                    .account_id(account.clone())
+                    .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
+                    .metadata(posting_metadata)
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(account.clone())
+                    .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .build()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_metadata_round_trips(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let account = test_account(&pool, "Checking").await;
+        let tx_id = TransactionId::new();
+        let posting_id = PostingId::new();
+        svc.create(tx_with_metadata(
+            &tx_id,
+            &posting_id,
+            &account,
+            Metadata::default(),
+            Metadata::new(vec![MetaEntry::new(
+                key("note"),
+                MetaValue::Text("docter's appointment".to_owned()),
+            )]),
+        ))
+        .await
+        .expect("create");
+
+        let found = svc.find_by_id(&tx_id).await.expect("find");
+        let leg = found
+            .postings()
+            .iter()
+            .find(|p| p.id() == &posting_id)
+            .expect("the annotated leg");
+        assert_eq!(
+            leg.metadata().get_first_text(&key("note")),
+            Some("docter's appointment")
+        );
+        assert!(
+            found
+                .postings()
+                .iter()
+                .any(|p| p.id() != &posting_id && p.metadata().is_empty()),
+            "the other leg carries no metadata"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn repeated_metadata_keys_survive_a_round_trip(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let account = test_account(&pool, "Checking").await;
+        let tx_id = TransactionId::new();
+        svc.create(tx_with_metadata(
+            &tx_id,
+            &PostingId::new(),
+            &account,
+            Metadata::new(vec![
+                MetaEntry::new(key("note"), MetaValue::Text("first".to_owned())),
+                MetaEntry::new(key("payee"), MetaValue::Text("Generic Grocer".to_owned())),
+                MetaEntry::new(key("note"), MetaValue::Text("second".to_owned())),
+            ]),
+            Metadata::default(),
+        ))
+        .await
+        .expect("create");
+
+        let found = svc.find_by_id(&tx_id).await.expect("find");
+        let keys: Vec<&str> = found.metadata().iter().map(|e| e.key().as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["note", "payee", "note"],
+            "repeats and their position survive the round trip"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn every_load_path_reads_metadata(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let account = test_account(&pool, "Checking").await;
+        let tx_id = TransactionId::new();
+        svc.create(tx_with_metadata(
+            &tx_id,
+            &PostingId::new(),
+            &account,
+            Metadata::new(vec![MetaEntry::new(
+                key("payee"),
+                MetaValue::Text("Generic Grocer".to_owned()),
+            )]),
+            Metadata::new(vec![MetaEntry::new(
+                key("channel"),
+                MetaValue::Text("card".to_owned()),
+            )]),
+        ))
+        .await
+        .expect("create");
+
+        // Each loader assembles postings on its own path, so one missed call
+        // costs exactly one of them and nothing else.
+        let expect_loaded = |tx: &Transaction, via: &str| {
+            assert_eq!(
+                tx.metadata().get_first_text(&key("payee")),
+                Some("Generic Grocer"),
+                "{via} must load transaction metadata"
+            );
+            assert!(
+                tx.postings()
+                    .iter()
+                    .any(|p| p.metadata().get_first_text(&key("channel")) == Some("card")),
+                "{via} must load posting metadata"
+            );
+        };
+
+        expect_loaded(&svc.find_by_id(&tx_id).await.expect("find"), "find_by_id");
+        expect_loaded(
+            svc.list().await.expect("list").first().expect("one"),
+            "list",
+        );
+        expect_loaded(
+            &svc.list_for_account(&account)
+                .await
+                .expect("list_for_account")
+                .next()
+                .expect("one"),
+            "list_for_account",
+        );
+        expect_loaded(
+            &svc.list_for_account_tree(&account)
+                .await
+                .expect("list_for_account_tree")
+                .next()
+                .expect("one"),
+            "list_for_account_tree",
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_reversal_copies_the_original_metadata(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let account = test_account(&pool, "Checking").await;
+        let tx_id = TransactionId::new();
+        svc.create(tx_with_metadata(
+            &tx_id,
+            &PostingId::new(),
+            &account,
+            Metadata::new(vec![MetaEntry::new(
+                key("payee"),
+                MetaValue::Text("Generic Grocer".to_owned()),
+            )]),
+            Metadata::new(vec![MetaEntry::new(
+                key("channel"),
+                MetaValue::Text("card".to_owned()),
+            )]),
+        ))
+        .await
+        .expect("create");
+
+        let reversal_id = svc.reverse(&tx_id).await.expect("reverse");
+        let reversal = svc.find_by_id(&reversal_id).await.expect("find reversal");
+
+        assert_eq!(
+            reversal.metadata().get_first_text(&key("payee")),
+            Some("Generic Grocer")
+        );
+        assert!(
+            reversal
+                .postings()
+                .iter()
+                .any(|p| p.metadata().get_first_text(&key("channel")) == Some("card")),
+            "the reversed leg carries the original leg's metadata"
+        );
+        assert_eq!(
+            svc.find_by_id(&tx_id)
+                .await
+                .expect("original still loads")
+                .metadata()
+                .get_first_text(&key("payee")),
+            Some("Generic Grocer"),
+            "the original keeps its own entries"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_edit_replaces_metadata_rather_than_appending(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let account = test_account(&pool, "Checking").await;
+        let tx_id = TransactionId::new();
+        let posting_id = PostingId::new();
+
+        svc.create(tx_with_metadata(
+            &tx_id,
+            &posting_id,
+            &account,
+            Metadata::new(vec![MetaEntry::new(
+                key("payee"),
+                MetaValue::Text("Generic Grocer".to_owned()),
+            )]),
+            Metadata::default(),
+        ))
+        .await
+        .expect("create");
+
+        let current = svc.find_by_id(&tx_id).await.expect("load");
+        let edited = Transaction::builder()
+            .id(tx_id.clone())
+            .date(current.date())
+            .description(current.description().to_owned())
+            .reconciliation(current.reconciliation())
+            .created_at(*current.created_at())
+            .metadata(Metadata::new(vec![MetaEntry::new(
+                key("payee"),
+                MetaValue::Text("Other Grocer".to_owned()),
+            )]))
+            .postings(current.postings().to_vec())
+            .build();
+        svc.edit(edited).await.expect("edit");
+
+        let found = svc.find_by_id(&tx_id).await.expect("reload");
+        assert_eq!(found.metadata().len(), 1, "the edit replaced, not appended");
+        assert_eq!(
+            found.metadata().get_first_text(&key("payee")),
+            Some("Other Grocer")
+        );
     }
 
     // MARK: Service::reconcile tests
