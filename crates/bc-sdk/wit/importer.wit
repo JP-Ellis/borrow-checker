@@ -21,6 +21,41 @@ interface types {
         commodity: string,
     }
 
+    /// A typed metadata value.
+    ///
+    /// A plugin asserts a type here; the host decides what the key's type
+    /// actually is, coercing or flagging the value at persist time.
+    variant meta-value {
+        /// Free text.
+        text(string),
+        /// A decimal number in canonical string form. Trailing zeros are
+        /// significant: they are the source's stated precision.
+        number(string),
+        /// A boolean flag.
+        boolean(bool),
+        /// A calendar date.
+        date(date),
+        /// An instant in time, in RFC 3339 form.
+        timestamp(string),
+        /// A value paired with a commodity code.
+        amount(amount),
+        /// An account path, e.g. "Assets:Bank:Checking". Resolved to an id at
+        /// persist time; a path naming no account is kept as text.
+        account(string),
+    }
+
+    /// One metadata key-value pair.
+    ///
+    /// Keys are normalised to lowercase and must match `[a-z][a-z0-9_-]*`, at
+    /// most 64 bytes. The host drops an entry whose key does not, and keeps the
+    /// rest of the row. Repeated keys are permitted and ordered as stated.
+    record meta-entry {
+        /// The key this value is filed under.
+        key: string,
+        /// The value.
+        value: meta-value,
+    }
+
     /// A single posting leg of a raw transaction, prior to account-id resolution.
     record raw-posting {
         /// Account path, e.g. "Assets:Bank:Checking". Resolved to an id at persist time.
@@ -29,10 +64,10 @@ interface types {
         amount: option<amount>,
         /// Per-account running balance after this posting, if reported.
         balance: option<amount>,
-        /// Optional free-text note for this leg.
-        note: option<string>,
         /// Tag names for this leg, resolved to ids at persist time.
         tags: list<string>,
+        /// Typed key-value metadata for this leg, in display order.
+        metadata: list<meta-entry>,
     }
 
     /// Where a raw transaction came from, for diagnostics.
@@ -51,12 +86,10 @@ interface types {
     /// A parsed transaction prior to account binding. One or more postings.
     record raw-transaction {
         date: date,
-        payee: option<string>,
         description: string,
-        note: option<string>,
         reference: option<string>,
         tags: list<string>,
-        extra-dates: list<tuple<string, date>>,
+        metadata: list<meta-entry>,
         source-location: option<source-location>,
         postings: list<raw-posting>,
     }

@@ -130,6 +130,167 @@ impl Amount {
     }
 }
 
+/// A typed metadata value an importer states.
+///
+/// The host decides what a key's type actually is. A value whose type differs
+/// from the key's registered type is coerced where it can be and kept as
+/// flagged text where it cannot, so nothing an importer states is lost.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetaValue {
+    /// Free text.
+    Text(String),
+    /// An exact decimal number.
+    Number(Decimal),
+    /// A boolean flag.
+    Boolean(bool),
+    /// A calendar date.
+    Date(Date),
+    /// An instant in time, in RFC 3339 form.
+    ///
+    /// Carried as text because `jiff` is not a plugin dependency, and the wire
+    /// format is RFC 3339 either way.
+    Timestamp(String),
+    /// A value paired with a commodity code.
+    Amount(Amount),
+    /// An account path, e.g. `"Assets:Bank:Checking"`.
+    ///
+    /// The host resolves it against the account tree at persist time. A path
+    /// naming no account is kept as text.
+    Account(String),
+}
+
+/// One metadata key-value pair on a raw transaction or posting.
+///
+/// Keys are normalised to lowercase and must match `[a-z][a-z0-9_-]*`, at most
+/// 64 bytes. The host drops an entry whose key does not, and keeps the rest of
+/// the row. Repeated keys are permitted, and entries stay in the order stated.
+///
+/// # Example
+///
+/// ```rust
+/// use bc_sdk::MetaEntry;
+///
+/// let entry = MetaEntry::text("payee", "Generic Grocer");
+/// assert_eq!(entry.key, "payee");
+/// ```
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetaEntry {
+    /// The key this value is filed under.
+    pub key: String,
+    /// The value.
+    pub value: MetaValue,
+}
+
+impl MetaEntry {
+    /// Files a free-text value under `key`.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The metadata key.
+    /// * `text` - The value.
+    #[inline]
+    #[must_use]
+    pub fn text(key: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: MetaValue::Text(text.into()),
+        }
+    }
+
+    /// Files a decimal number under `key`.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The metadata key.
+    /// * `number` - The value. Trailing zeros survive to the host.
+    #[inline]
+    #[must_use]
+    pub fn number(key: impl Into<String>, number: Decimal) -> Self {
+        Self {
+            key: key.into(),
+            value: MetaValue::Number(number),
+        }
+    }
+
+    /// Files a boolean flag under `key`.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The metadata key.
+    /// * `flag` - The value.
+    #[inline]
+    #[must_use]
+    pub fn boolean(key: impl Into<String>, flag: bool) -> Self {
+        Self {
+            key: key.into(),
+            value: MetaValue::Boolean(flag),
+        }
+    }
+
+    /// Files a calendar date under `key`.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The metadata key.
+    /// * `date` - The value.
+    #[inline]
+    #[must_use]
+    pub fn date(key: impl Into<String>, date: Date) -> Self {
+        Self {
+            key: key.into(),
+            value: MetaValue::Date(date),
+        }
+    }
+
+    /// Files an RFC 3339 timestamp under `key`.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The metadata key.
+    /// * `timestamp` - The value, e.g. `"2026-01-15T09:30:00Z"`. The host
+    ///   rejects text it cannot read as RFC 3339.
+    #[inline]
+    #[must_use]
+    pub fn timestamp(key: impl Into<String>, timestamp: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: MetaValue::Timestamp(timestamp.into()),
+        }
+    }
+
+    /// Files a monetary amount under `key`.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The metadata key.
+    /// * `amount` - The value.
+    #[inline]
+    #[must_use]
+    pub fn amount(key: impl Into<String>, amount: Amount) -> Self {
+        Self {
+            key: key.into(),
+            value: MetaValue::Amount(amount),
+        }
+    }
+
+    /// Files an account path under `key`.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The metadata key.
+    /// * `path` - The account path, e.g. `"Assets:Bank:Checking"`.
+    #[inline]
+    #[must_use]
+    pub fn account(key: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: MetaValue::Account(path.into()),
+        }
+    }
+}
+
 /// A single posting leg of a raw transaction, prior to account-id resolution.
 #[derive(bon::Builder, Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -141,12 +302,12 @@ pub struct RawPosting {
     pub amount: Option<Amount>,
     /// Per-account running balance after this leg, if the source reports it.
     pub balance: Option<Amount>,
-    /// Optional free-text note for this leg.
-    #[builder(into)]
-    pub note: Option<String>,
     /// Tag names applied to this leg.
     #[builder(default)]
     pub tags: Vec<String>,
+    /// Typed key-value metadata for this leg, in display order.
+    #[builder(default)]
+    pub metadata: Vec<MetaEntry>,
 }
 
 /// Where a [`RawTransaction`] came from, for diagnostics.
@@ -171,24 +332,22 @@ pub struct SourceLocation {
 pub struct RawTransaction {
     /// The transaction date.
     pub date: Date,
-    /// The payee or merchant name, if available.
-    #[builder(into)]
-    pub payee: Option<String>,
     /// A free-text description or memo.
     #[builder(into)]
     pub description: String,
-    /// Optional user annotation, distinct from `description`.
-    #[builder(into)]
-    pub note: Option<String>,
     /// An institution-provided reference, if available (a dedup input).
     #[builder(into)]
     pub reference: Option<String>,
     /// Transaction-level tag names (e.g. Beancount `#josh`).
     #[builder(default)]
     pub tags: Vec<String>,
-    /// Free-form labelled dates (e.g. `("cleared", …)`).
+    /// Typed key-value metadata for this transaction, in display order.
+    ///
+    /// Everything an importer knows beyond the structural fields belongs here:
+    /// a payee under `payee`, a memo under `note`, a settlement date under a
+    /// key of its own.
     #[builder(default)]
-    pub extra_dates: Vec<(String, Date)>,
+    pub metadata: Vec<MetaEntry>,
     /// Where this transaction came from, if the importer can report it.
     pub source_location: Option<SourceLocation>,
     /// One or more posting legs. Single-account importers emit exactly one.
@@ -306,10 +465,43 @@ impl From<serde_json::Error> for ImportError {
 // Bring generated types into scope to avoid absolute paths (clippy::absolute_paths).
 use crate::__bindings::borrow_checker::sdk::types::Amount as WitAmount;
 use crate::__bindings::borrow_checker::sdk::types::Date as WitDate;
+use crate::__bindings::borrow_checker::sdk::types::MetaEntry as WitMetaEntry;
+use crate::__bindings::borrow_checker::sdk::types::MetaValue as WitMetaValue;
 use crate::__bindings::borrow_checker::sdk::types::RawPosting as WitRawPosting;
 use crate::__bindings::borrow_checker::sdk::types::SourceLocation as WitSourceLocation;
 use crate::__bindings::exports::borrow_checker::sdk::importer::ImportError as WitImportError;
 use crate::__bindings::exports::borrow_checker::sdk::importer::RawTransaction as WitRawTransaction;
+
+#[doc(hidden)]
+impl From<MetaValue> for WitMetaValue {
+    #[inline]
+    fn from(v: MetaValue) -> Self {
+        match v {
+            MetaValue::Text(text) => Self::Text(text),
+            MetaValue::Number(number) => Self::Number(number.to_string()),
+            MetaValue::Boolean(flag) => Self::Boolean(flag),
+            MetaValue::Date(date) => Self::Date(WitDate {
+                year: date.year,
+                month: date.month,
+                day: date.day,
+            }),
+            MetaValue::Timestamp(stamp) => Self::Timestamp(stamp),
+            MetaValue::Amount(amount) => Self::Amount(amount.into()),
+            MetaValue::Account(path) => Self::Account(path),
+        }
+    }
+}
+
+#[doc(hidden)]
+impl From<MetaEntry> for WitMetaEntry {
+    #[inline]
+    fn from(e: MetaEntry) -> Self {
+        Self {
+            key: e.key,
+            value: e.value.into(),
+        }
+    }
+}
 
 #[doc(hidden)]
 impl From<RawPosting> for WitRawPosting {
@@ -319,8 +511,8 @@ impl From<RawPosting> for WitRawPosting {
             account: p.account,
             amount: p.amount.map(Into::into),
             balance: p.balance.map(Into::into),
-            note: p.note,
             tags: p.tags,
+            metadata: p.metadata.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -346,25 +538,10 @@ impl From<RawTransaction> for WitRawTransaction {
                 month: t.date.month,
                 day: t.date.day,
             },
-            payee: t.payee,
             description: t.description,
-            note: t.note,
             reference: t.reference,
             tags: t.tags,
-            extra_dates: t
-                .extra_dates
-                .into_iter()
-                .map(|(k, d)| {
-                    (
-                        k,
-                        WitDate {
-                            year: d.year,
-                            month: d.month,
-                            day: d.day,
-                        },
-                    )
-                })
-                .collect(),
+            metadata: t.metadata.into_iter().map(Into::into).collect(),
             source_location: t.source_location.map(Into::into),
             postings: t.postings.into_iter().map(Into::into).collect(),
         }
@@ -498,5 +675,89 @@ mod tests {
         let posting = tx.postings.first().expect("one posting");
         assert_eq!(posting.account, "Assets:Bank:Checking");
         assert_eq!(posting.amount, Some(Amount::new(dec!(-5.00), "AUD")));
+    }
+
+    #[test]
+    fn meta_entry_constructors_cover_every_type() {
+        let built = [
+            MetaEntry::text("payee", "Generic Grocer"),
+            MetaEntry::number("invoice", dec!(1502)),
+            MetaEntry::boolean("reimbursable", true),
+            MetaEntry::date("settled", Date::new(2026, 1, 15)),
+            MetaEntry::timestamp("posted-at", "2026-01-15T09:30:00Z"),
+            MetaEntry::amount("fee", Amount::new(dec!(1.50), "AUD")),
+            MetaEntry::account("counterparty", "Assets:Bank:Savings"),
+        ];
+
+        let values: Vec<MetaValue> = built.iter().map(|e| e.value.clone()).collect();
+        assert_eq!(
+            values,
+            vec![
+                MetaValue::Text("Generic Grocer".to_owned()),
+                MetaValue::Number(dec!(1502)),
+                MetaValue::Boolean(true),
+                MetaValue::Date(Date::new(2026, 1, 15)),
+                MetaValue::Timestamp("2026-01-15T09:30:00Z".to_owned()),
+                MetaValue::Amount(Amount::new(dec!(1.50), "AUD")),
+                MetaValue::Account("Assets:Bank:Savings".to_owned()),
+            ]
+        );
+        let keys: Vec<&str> = built.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "payee",
+                "invoice",
+                "reimbursable",
+                "settled",
+                "posted-at",
+                "fee",
+                "counterparty"
+            ]
+        );
+    }
+
+    /// A number crosses the boundary as text, so the scale the source stated
+    /// must survive the conversion the same way an amount's does.
+    #[test]
+    fn meta_number_keeps_trailing_zeros_on_the_wire() {
+        let wit: WitMetaValue = MetaValue::Number(dec!(1.500)).into();
+        let WitMetaValue::Number(text) = wit else {
+            panic!("a number must reach the wire as a number");
+        };
+        assert_eq!(text, "1.500");
+    }
+
+    #[test]
+    fn a_transaction_states_no_metadata_by_default() {
+        let tx = RawTransaction::builder()
+            .date(Date::new(2026, 1, 15))
+            .description("Coffee")
+            .postings(vec![
+                RawPosting::builder().account("Assets:Bank:Checking").build(),
+            ])
+            .build();
+        assert_eq!(tx.metadata, vec![]);
+        assert_eq!(tx.postings.first().expect("one posting").metadata, vec![]);
+    }
+
+    #[test]
+    fn metadata_reaches_the_wire_in_the_stated_order() {
+        let tx = RawTransaction::builder()
+            .date(Date::new(2026, 1, 15))
+            .description("Coffee")
+            .metadata(vec![
+                MetaEntry::text("note", "first"),
+                MetaEntry::text("payee", "Generic Grocer"),
+                MetaEntry::text("note", "second"),
+            ])
+            .postings(vec![
+                RawPosting::builder().account("Assets:Bank:Checking").build(),
+            ])
+            .build();
+
+        let wit: WitRawTransaction = tx.into();
+        let keys: Vec<&str> = wit.metadata.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, vec!["note", "payee", "note"]);
     }
 }

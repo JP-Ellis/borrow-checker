@@ -65,6 +65,8 @@ pub use types::Amount;
 pub use types::Date;
 pub use types::ImportConfig;
 pub use types::ImportError;
+pub use types::MetaEntry;
+pub use types::MetaValue;
 pub use types::RawPosting;
 pub use types::RawTransaction;
 pub use types::SourceLocation;
