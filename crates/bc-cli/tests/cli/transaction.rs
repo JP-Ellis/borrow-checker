@@ -614,3 +614,151 @@ fn amend_rejects_setting_and_clearing_one_key() {
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+/// Registers `reimburse-to` as an account key and returns a transaction
+/// written under it.
+///
+/// `MetaType::Account` is never inferred, so the only route to an account key
+/// is a write followed by `meta retype`.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn account_key_transaction(ctx: &TestContext, checking: &str, expenses: &str) -> String {
+    let tx_id = add_with(
+        ctx,
+        checking,
+        expenses,
+        &["--meta", "reimburse-to=placeholder"],
+    );
+    ctx.command()
+        .args(["meta", "retype", "reimburse-to", "account"])
+        .output()
+        .expect("retype");
+    tx_id
+}
+
+#[test]
+fn an_account_key_resolves_a_path_to_the_account_it_names() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = account_key_transaction(&ctx, &checking_id, &expenses_id);
+
+    ctx.command()
+        .args([
+            "transaction",
+            "amend",
+            &tx_id,
+            "--meta",
+            "reimburse-to=Assets:Checking",
+        ])
+        .output()
+        .expect("amend");
+
+    assert_eq!(
+        metadata_of(&reload(&ctx, &tx_id)),
+        vec![(
+            "reimburse-to".to_owned(),
+            serde_json::json!({ "account": checking_id })
+        )],
+        "coercion holds no database, so the CLI is what turns a path into an id"
+    );
+}
+
+#[test]
+fn an_account_key_flags_a_path_naming_no_account() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = account_key_transaction(&ctx, &checking_id, &expenses_id);
+
+    ctx.command()
+        .args([
+            "transaction",
+            "amend",
+            &tx_id,
+            "--meta",
+            "reimburse-to=Assets:NoSuchAccount",
+        ])
+        .output()
+        .expect("amend");
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&reload(&ctx, &tx_id)).expect("valid JSON");
+    let entry = json
+        .get("metadata")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|entries| entries.first())
+        .expect("one entry");
+    assert_eq!(
+        entry.get("value"),
+        Some(&serde_json::json!({ "text": "Assets:NoSuchAccount" })),
+        "a path naming nothing is kept verbatim rather than rejected"
+    );
+    assert_eq!(
+        entry.get("mismatched"),
+        Some(&serde_json::Value::Bool(true)),
+        "and the store flags it, so the CLI can mark it for repair"
+    );
+}
+
+#[test]
+fn list_renders_an_account_entry_as_its_path() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = account_key_transaction(&ctx, &checking_id, &expenses_id);
+
+    ctx.command()
+        .args([
+            "transaction",
+            "amend",
+            &tx_id,
+            "--meta",
+            "reimburse-to=Assets:Checking",
+        ])
+        .output()
+        .expect("amend");
+
+    let out = ctx
+        .command()
+        .args(["transaction", "list"])
+        .output()
+        .expect("list");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("reimburse-to=Assets:Checking"),
+        "an account entry reads as the path, not the opaque id, got {stdout}"
+    );
+    assert!(
+        !stdout.contains(&checking_id),
+        "the id is what the store holds, not what a person reads, got {stdout}"
+    );
+}
+
+#[test]
+fn amend_appends_a_key_the_transaction_did_not_carry() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &["--meta", "payee=Generic Grocer"],
+    );
+
+    ctx.command()
+        .args(["transaction", "amend", &tx_id, "--meta", "invoice=1502"])
+        .output()
+        .expect("amend");
+
+    assert_eq!(
+        metadata_of(&reload(&ctx, &tx_id)),
+        vec![
+            (
+                "payee".to_owned(),
+                serde_json::json!({ "text": "Generic Grocer" })
+            ),
+            (
+                "invoice".to_owned(),
+                serde_json::json!({ "number": "1502" })
+            ),
+        ],
+        "a key the transaction did not hold goes after the ones it did"
+    );
+}
