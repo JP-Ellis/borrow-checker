@@ -145,6 +145,59 @@ fn merge_preserving(current: &Transaction, updated: &Transaction) -> Transaction
         .build()
 }
 
+/// Computes the events that turn `prev` into `posting`, both being the same
+/// leg of transaction `id` before and after an edit.
+///
+/// # Arguments
+///
+/// * `id` - The transaction both postings belong to.
+/// * `prev` - The stored posting state.
+/// * `posting` - The desired posting state, carrying the same [`PostingId`].
+///
+/// # Returns
+///
+/// The list of events; empty if the two states are equal.
+fn diff_posting(id: &TransactionId, prev: &Posting, posting: &Posting) -> Vec<Event> {
+    let mut events = Vec::new();
+
+    if prev.account_id() != posting.account_id() {
+        events.push(Event::PostingRecategorised {
+            id: id.clone(),
+            posting_id: posting.id().clone(),
+            from_account: prev.account_id().clone(),
+            to_account: posting.account_id().clone(),
+        });
+    }
+    if prev.amount() != posting.amount() {
+        events.push(Event::PostingAmountChanged {
+            id: id.clone(),
+            posting_id: posting.id().clone(),
+            from: prev.amount().cloned(),
+            to: posting.amount().cloned(),
+        });
+    }
+    let prev_spread = spread_pair(prev);
+    let new_spread = spread_pair(posting);
+    if prev_spread != new_spread {
+        events.push(Event::PostingSpreadChanged {
+            id: id.clone(),
+            posting_id: posting.id().clone(),
+            from: prev_spread,
+            to: new_spread,
+        });
+    }
+    if prev.metadata() != posting.metadata() {
+        events.push(Event::PostingMetadataChanged {
+            id: id.clone(),
+            posting_id: posting.id().clone(),
+            before: prev.metadata().clone(),
+            after: posting.metadata().clone(),
+        });
+    }
+
+    events
+}
+
 /// Computes the decomposed semantic events that turn `current` into `updated`.
 ///
 /// Postings are matched by [`PostingId`]. Transaction-scalar changes are emitted
@@ -216,34 +269,7 @@ pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> 
                 account: posting.account_id().clone(),
                 amount: posting.amount().cloned(),
             }),
-            Some(prev) => {
-                if prev.account_id() != posting.account_id() {
-                    events.push(Event::PostingRecategorised {
-                        id: id.clone(),
-                        posting_id: posting.id().clone(),
-                        from_account: prev.account_id().clone(),
-                        to_account: posting.account_id().clone(),
-                    });
-                }
-                if prev.amount() != posting.amount() {
-                    events.push(Event::PostingAmountChanged {
-                        id: id.clone(),
-                        posting_id: posting.id().clone(),
-                        from: prev.amount().cloned(),
-                        to: posting.amount().cloned(),
-                    });
-                }
-                let prev_spread = spread_pair(prev);
-                let new_spread = spread_pair(posting);
-                if prev_spread != new_spread {
-                    events.push(Event::PostingSpreadChanged {
-                        id: id.clone(),
-                        posting_id: posting.id().clone(),
-                        from: prev_spread,
-                        to: new_spread,
-                    });
-                }
-            }
+            Some(prev) => events.extend(diff_posting(&id, prev, posting)),
         }
     }
 
@@ -3882,6 +3908,7 @@ mod tests {
 
     trait TxTestExt {
         fn with_metadata(self, metadata: Metadata) -> Self;
+        fn with_first_posting_metadata(self, metadata: Metadata) -> Self;
         fn recategorise_first(self, account: AccountId) -> Self;
         fn push_leg(self) -> Self;
         fn recategorise_posting(self, target: &PostingId, account: AccountId) -> Self;
@@ -3898,6 +3925,33 @@ mod tests {
                 .reconciliation(self.reconciliation())
                 .tag_ids(self.tag_ids().to_vec())
                 .created_at(Timestamp::now())
+                .build()
+        }
+
+        fn with_first_posting_metadata(self, metadata: Metadata) -> Self {
+            let mut carried = Some(metadata);
+            let postings = self
+                .postings()
+                .iter()
+                .map(|p| {
+                    Posting::builder()
+                        .id(p.id().clone())
+                        .account_id(p.account_id().clone())
+                        .maybe_amount(p.amount().cloned())
+                        .metadata(carried.take().unwrap_or_default())
+                        .tag_ids(p.tag_ids().to_vec())
+                        .build()
+                })
+                .collect();
+            Transaction::builder()
+                .id(self.id().clone())
+                .date(self.date())
+                .description(self.description().to_owned())
+                .metadata(self.metadata().clone())
+                .postings(postings)
+                .reconciliation(self.reconciliation())
+                .tag_ids(self.tag_ids().to_vec())
+                .created_at(*self.created_at())
                 .build()
         }
 
@@ -4311,6 +4365,24 @@ mod tests {
     }
 
     #[test]
+    fn diff_emits_a_posting_metadata_event() {
+        let current =
+            sample_tx().with_first_posting_metadata(text_meta(&[("note", "new medication")]));
+        let updated = current
+            .clone()
+            .with_first_posting_metadata(text_meta(&[("note", "repeat script")]));
+
+        assert_eq!(
+            diff_transaction(&current, &updated)
+                .iter()
+                .filter(|e| matches!(**e, Event::PostingMetadataChanged { .. }))
+                .count(),
+            1,
+            "one leg changed, so one posting event"
+        );
+    }
+
+    #[test]
     fn diff_emits_nothing_when_metadata_is_unchanged() {
         let tx = sample_tx().with_metadata(text_meta(&[("payee", "Generic Grocer")]));
         assert_eq!(diff_transaction(&tx, &tx), vec![]);
@@ -4428,6 +4500,26 @@ mod tests {
         assert!(
             kinds.contains(&"TransactionMetadataChanged".to_owned()),
             "editing metadata through the service reaches the log, got {kinds:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_posting_metadata_change_reaches_the_audit_trail(pool: sqlx::SqlitePool) {
+        let (svc, id) = seeded_transaction(&pool, Metadata::default()).await;
+
+        let current = svc.find_by_id(&id).await.expect("load");
+        svc.edit(current.with_first_posting_metadata(text_meta(&[("note", "new medication")])))
+            .await
+            .expect("edit");
+
+        let trail = svc.audit_trail(&id).await.expect("audit trail");
+        assert!(
+            trail
+                .iter()
+                .any(|(_ts, e)| matches!(*e, Event::PostingMetadataChanged { .. })),
+            "audit_trail queries by transaction aggregate id, so a posting \
+             metadata event must carry the transaction it belongs to or it \
+             disappears from the trail entirely"
         );
     }
 

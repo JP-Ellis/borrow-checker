@@ -194,6 +194,23 @@ pub enum Event {
         /// Amount after the change, or `None` if now elided.
         to: Option<Amount>,
     },
+    /// A posting's metadata list was replaced.
+    ///
+    /// Whole-list, with the same semantics as
+    /// [`Self::TransactionMetadataChanged`]. `id` is the owning transaction:
+    /// posting events aggregate on their transaction so they reach
+    /// [`crate::TransactionService::audit_trail`], which queries by transaction
+    /// ID.
+    PostingMetadataChanged {
+        /// The owning transaction's ID.
+        id: TransactionId,
+        /// The posting whose entries were replaced.
+        posting_id: PostingId,
+        /// The full metadata list before the change.
+        before: Metadata,
+        /// The full metadata list after the change.
+        after: Metadata,
+    },
     /// A posting's note was changed.
     PostingNoteChanged {
         /// The owning transaction's ID.
@@ -483,6 +500,7 @@ impl Event {
             Self::TransactionReconciled { .. } => "TransactionReconciled",
             Self::PostingRecategorised { .. } => "PostingRecategorised",
             Self::PostingAmountChanged { .. } => "PostingAmountChanged",
+            Self::PostingMetadataChanged { .. } => "PostingMetadataChanged",
             Self::PostingNoteChanged { .. } => "PostingNoteChanged",
             Self::PostingSpreadChanged { .. } => "PostingSpreadChanged",
             Self::PostingAdded { .. } => "PostingAdded",
@@ -523,6 +541,7 @@ impl Event {
             | Self::TransactionReconciled { id, .. }
             | Self::PostingRecategorised { id, .. }
             | Self::PostingAmountChanged { id, .. }
+            | Self::PostingMetadataChanged { id, .. }
             | Self::PostingNoteChanged { id, .. }
             | Self::PostingSpreadChanged { id, .. }
             | Self::PostingAdded { id, .. }
@@ -877,6 +896,42 @@ mod tests {
             replayed, event,
             "the whole list survives a JSON round-trip through the log, order included"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_metadata_changed_aggregates_on_its_transaction(pool: sqlx::SqlitePool) {
+        use bc_models::MetaEntry;
+        use bc_models::MetaKey;
+        use bc_models::MetaValue;
+        use bc_models::Metadata;
+        use bc_models::PostingId;
+        use bc_models::TransactionId;
+
+        let store = SqliteStore::new(pool.clone());
+        let id = TransactionId::new();
+        let event = Event::PostingMetadataChanged {
+            id: id.clone(),
+            posting_id: PostingId::new(),
+            before: Metadata::default(),
+            after: Metadata::new(vec![MetaEntry::new(
+                MetaKey::new("note").expect("valid key"),
+                MetaValue::Text("new medication".to_owned()),
+            )]),
+        };
+
+        assert_eq!(
+            event.aggregate_id(),
+            id.to_string(),
+            "the aggregate is the transaction, not the posting, so the event \
+             reaches the transaction's audit trail"
+        );
+        store.append(&event).await.expect("append");
+        let records = store.replay_for(&id.to_string()).await.expect("replay");
+        let record = records.first().expect("one record");
+        assert_eq!(record.kind, "PostingMetadataChanged");
+        let replayed: Event =
+            serde_json::from_str(&record.payload).expect("payload should deserialise");
+        assert_eq!(replayed, event);
     }
 
     #[sqlx::test(migrations = "./migrations")]
