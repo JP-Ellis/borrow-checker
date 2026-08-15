@@ -369,12 +369,18 @@ fn add_takes_a_new_keys_type_from_its_value() {
                 "payee".to_owned(),
                 serde_json::json!({ "text": "Generic Grocer" })
             ),
-            ("invoice".to_owned(), serde_json::json!({ "number": "1502" })),
+            (
+                "invoice".to_owned(),
+                serde_json::json!({ "number": "1502" })
+            ),
             (
                 "reimbursed".to_owned(),
                 serde_json::json!({ "boolean": false })
             ),
-            ("due".to_owned(), serde_json::json!({ "date": "2026-04-15" })),
+            (
+                "due".to_owned(),
+                serde_json::json!({ "date": "2026-04-15" })
+            ),
         ],
         "a key the registry has not seen takes the type its value reads as"
     );
@@ -400,7 +406,10 @@ fn add_takes_a_registered_keys_type_over_its_value() {
 
     assert_eq!(
         metadata_of(&reload(&ctx, &second)),
-        vec![("invoice".to_owned(), serde_json::json!({ "number": "1600" }))],
+        vec![(
+            "invoice".to_owned(),
+            serde_json::json!({ "number": "1600" })
+        )],
         "the registry decides the type, so the second write is a number too"
     );
 }
@@ -591,12 +600,7 @@ fn list_renders_metadata_and_marks_what_did_not_fit() {
 fn amend_rejects_setting_and_clearing_one_key() {
     let ctx = TestContext::new();
     let (checking_id, expenses_id) = setup_accounts(&ctx);
-    let tx_id = add_with(
-        &ctx,
-        &checking_id,
-        &expenses_id,
-        &["--meta", "note=first"],
-    );
+    let tx_id = add_with(&ctx, &checking_id, &expenses_id, &["--meta", "note=first"]);
 
     let mut cmd = ctx.command();
     cmd.args([

@@ -177,11 +177,7 @@ async fn retype(ctx: &AppContext, raw_key: &str, ty: MetaType) -> CliResult<()> 
         if from == ty {
             println!("Key '{key}' is already {}", type_name(ty));
         } else {
-            println!(
-                "Retyped '{key}': {} -> {}",
-                type_name(from),
-                type_name(ty)
-            );
+            println!("Retyped '{key}': {} -> {}", type_name(from), type_name(ty));
         }
     }
     Ok(())
@@ -366,11 +362,7 @@ async fn resolve_account(ctx: &AppContext, key: &MetaKey, raw: &str) -> CliResul
 ///
 /// Returns [`CliError::Core`] when the registry or the account tree cannot be
 /// read.
-pub(crate) async fn entry_for(
-    ctx: &AppContext,
-    key: MetaKey,
-    raw: &str,
-) -> CliResult<MetaEntry> {
+pub(crate) async fn entry_for(ctx: &AppContext, key: MetaKey, raw: &str) -> CliResult<MetaEntry> {
     let ty = match ctx.metadata.get(&key).await? {
         Some(def) => def.ty(),
         None => infer_type(raw),
@@ -444,12 +436,7 @@ pub(crate) fn apply_changes(
         }
         if replaced.contains(entry.key()) {
             if spliced.insert(entry.key().clone()) {
-                out.extend(
-                    entries
-                        .iter()
-                        .filter(|e| e.key() == entry.key())
-                        .cloned(),
-                );
+                out.extend(entries.iter().filter(|e| e.key() == entry.key()).cloned());
             }
             continue;
         }
@@ -554,10 +541,7 @@ mod tests {
     #[case("Generic Grocer", MetaType::Text)]
     #[case("", MetaType::Text)]
     #[case("True", MetaType::Text)]
-    fn a_new_key_takes_the_type_its_value_reads_as(
-        #[case] raw: &str,
-        #[case] expected: MetaType,
-    ) {
+    fn a_new_key_takes_the_type_its_value_reads_as(#[case] raw: &str, #[case] expected: MetaType) {
         assert_eq!(infer_type(raw), expected);
     }
 
@@ -601,7 +585,10 @@ mod tests {
     #[test]
     fn an_entry_renders_as_its_canonical_form() {
         let key = MetaKey::new("invoice").expect("valid key");
-        let entry = MetaEntry::new(key, MetaValue::Number(rust_decimal::Decimal::new(150_250, 2)));
+        let entry = MetaEntry::new(
+            key,
+            MetaValue::Number(rust_decimal::Decimal::new(150_250, 2)),
+        );
         assert_eq!(render_entry(&entry, None), "invoice=1502.50");
     }
 }

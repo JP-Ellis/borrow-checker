@@ -183,11 +183,7 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
                     || tx.description().to_owned(),
                     |entry| {
                         let flag = if entry.mismatched() { "!" } else { "" };
-                        format!(
-                            "{flag}{}: {}",
-                            entry.value().canonical(),
-                            tx.description()
-                        )
+                        format!("{flag}{}: {}", entry.value().canonical(), tx.description())
                     },
                 );
             let metadata: Vec<String> = tx
