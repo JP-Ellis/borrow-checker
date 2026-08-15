@@ -73,6 +73,16 @@ pub const SET_RECONCILIATION: &str = "set_reconciliation";
 /// Command: load the audit trail for a transaction.
 pub const GET_TRANSACTION_AUDIT: &str = "get_transaction_audit";
 
+/// Command: list every registered metadata key with its type.
+pub const LIST_METADATA_KEYS: &str = "list_metadata_keys";
+
+/// Command: change a metadata key's registered type, re-asserting every stored
+/// value against it.
+pub const RETYPE_METADATA_KEY: &str = "retype_metadata_key";
+
+/// Command: rename a metadata key, carrying its entries with it.
+pub const RENAME_METADATA_KEY: &str = "rename_metadata_key";
+
 /// Command: list all tags as id/path pairs.
 pub const LIST_TAGS: &str = "list_tags";
 
@@ -124,6 +134,26 @@ pub(crate) struct ReverseTransactionArgs<'a> {
     pub id: &'a str,
 }
 
+/// Argument struct for the `retype_metadata_key` command.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(serde::Serialize)]
+pub(crate) struct RetypeMetadataKeyArgs<'a> {
+    /// The key to retype.
+    pub key: &'a str,
+    /// The type to give it.
+    pub ty: crate::MetaTypeDto,
+}
+
+/// Argument struct for the `rename_metadata_key` command.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(serde::Serialize)]
+pub(crate) struct RenameMetadataKeyArgs<'a> {
+    /// The key's current name.
+    pub from: &'a str,
+    /// The name to give it.
+    pub to: &'a str,
+}
+
 /// Argument struct for the `search_transactions` command.
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(serde::Serialize)]
@@ -136,14 +166,43 @@ pub(crate) struct SearchTransactionsArgs<'a> {
 mod tests {
     use pretty_assertions::assert_eq;
 
+    use super::RenameMetadataKeyArgs;
+    use super::RetypeMetadataKeyArgs;
     use super::ReverseTransactionArgs;
     use super::SearchTransactionsArgs;
+    use crate::MetaTypeDto;
 
     #[test]
     fn reverse_transaction_args_serialize() {
         let args = ReverseTransactionArgs { id: "tx-123" };
         let json = serde_json::to_value(&args).expect("serialize");
         assert_eq!(json, serde_json::json!({ "id": "tx-123" }));
+    }
+
+    #[test]
+    fn retype_metadata_key_args_serialize() {
+        let args = RetypeMetadataKeyArgs {
+            key: "invoice",
+            ty: MetaTypeDto::Number,
+        };
+        let json = serde_json::to_value(&args).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({ "key": "invoice", "ty": "number" })
+        );
+    }
+
+    #[test]
+    fn rename_metadata_key_args_serialize() {
+        let args = RenameMetadataKeyArgs {
+            from: "invoice",
+            to: "reference",
+        };
+        let json = serde_json::to_value(&args).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({ "from": "invoice", "to": "reference" })
+        );
     }
 
     #[test]
