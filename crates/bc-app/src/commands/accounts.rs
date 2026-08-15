@@ -790,12 +790,14 @@ mod tests {
     #[test]
     fn metadata_from_preserves_order_and_drops_the_flag() {
         let entries = vec![
-            bc_ipc::MetaEntryDto::new(
-                "payee",
-                bc_ipc::MetaValueDto::Text("Generic Grocer".to_owned()),
-            ),
+            bc_ipc::MetaEntryDto::flagged("payee", "Generic Grocer"),
             bc_ipc::MetaEntryDto::new("note", bc_ipc::MetaValueDto::Text("weekly shop".to_owned())),
         ];
+        assert!(
+            entries.first().is_some_and(|e| e.mismatched),
+            "the first entry arrives claiming to be flagged"
+        );
+
         let meta = super::metadata_from(&entries).expect("valid entries convert");
         assert_eq!(
             meta.iter().map(|e| e.key().as_str()).collect::<Vec<_>>(),
