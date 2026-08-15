@@ -176,7 +176,8 @@ fn month_day(months_ago: i64, day: i8) -> Date {
 ///
 /// # Errors
 ///
-/// Returns an error if `payee` is not a valid metadata key name.
+/// Returns an error if the literal key `payee` fails validation. `payee` itself
+/// is the entry's value and carries no syntax the key rules reach.
 fn payee_metadata(payee: &str) -> anyhow::Result<Metadata> {
     Ok(Metadata::new(vec![MetaEntry::new(
         MetaKey::new("payee")?,
