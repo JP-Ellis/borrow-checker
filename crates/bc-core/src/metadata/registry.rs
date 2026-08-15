@@ -347,6 +347,7 @@ async fn replay(
 
 #[cfg(test)]
 mod tests {
+    use bc_models::AccountId;
     use bc_models::AccountKind;
     use bc_models::AccountType;
     use bc_models::Amount;
@@ -818,6 +819,135 @@ mod tests {
             ("Savings".to_owned(), None, 1),
             "an account does not narrow to a number, so the row is flagged, \
              keeps the text it stored, and loses its link for good"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_to_account_rescues_a_bare_id(pool: SqlitePool) {
+        let account = crate::AccountService::new(pool.clone())
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("offset"),
+                MetaValue::Text(account.to_string()),
+            )]),
+        )
+        .await;
+
+        Service::new(pool.clone())
+            .retype(&key("offset"), MetaType::Account)
+            .await
+            .expect("retype");
+
+        let row: (String, Option<String>, i64) = sqlx::query_as(
+            "SELECT value_text, value_account, mismatched FROM transaction_metadata \
+             WHERE transaction_id = ?",
+        )
+        .bind(&tx)
+        .fetch_one(&pool)
+        .await
+        .expect("row");
+        assert_eq!(
+            row,
+            ("Savings".to_owned(), Some(account.to_string()), 0),
+            "text holding a bare id narrows to an account, gains the link, and \
+             swaps the id for the resolved path"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_to_account_tombstones_an_id_naming_no_account(pool: SqlitePool) {
+        let absent = AccountId::new();
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("offset"),
+                MetaValue::Text(absent.to_string()),
+            )]),
+        )
+        .await;
+
+        // `coerce` reads no database, so a well-formed id fits whether or not
+        // an account carries it. Binding it into `value_account` would trip
+        // the foreign key and abort every other row's replay with it.
+        Service::new(pool.clone())
+            .retype(&key("offset"), MetaType::Account)
+            .await
+            .expect("retype does not fail on an id naming no account");
+
+        let row: (String, Option<String>, i64) = sqlx::query_as(
+            "SELECT value_text, value_account, mismatched FROM transaction_metadata \
+             WHERE transaction_id = ?",
+        )
+        .bind(&tx)
+        .fetch_one(&pool)
+        .await
+        .expect("row");
+        assert_eq!(
+            row,
+            (absent.to_string(), None, 0),
+            "the row keeps the id it stored and carries no link, which is the \
+             same tombstone a deleted account leaves behind"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn account_to_text_to_account_does_not_round_trip(pool: SqlitePool) {
+        let account = crate::AccountService::new(pool.clone())
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("offset"),
+                MetaValue::Account(account),
+            )]),
+        )
+        .await;
+
+        let registry = Service::new(pool.clone());
+        registry
+            .retype(&key("offset"), MetaType::Text)
+            .await
+            .expect("retype to text");
+        registry
+            .retype(&key("offset"), MetaType::Account)
+            .await
+            .expect("retype back to account");
+
+        let row: (String, Option<String>, i64) = sqlx::query_as(
+            "SELECT value_text, value_account, mismatched FROM transaction_metadata \
+             WHERE transaction_id = ?",
+        )
+        .bind(&tx)
+        .fetch_one(&pool)
+        .await
+        .expect("row");
+        assert_eq!(
+            row,
+            ("Savings".to_owned(), None, 1),
+            "the trip through text leaves a path where the id was, and a path \
+             does not parse as an id, so the return trip flags the entry"
         );
     }
 
