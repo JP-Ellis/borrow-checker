@@ -32,6 +32,10 @@ use bc_models::BudgetRevisionId;
 use bc_models::BudgetWindow;
 use bc_models::CommodityCode;
 use bc_models::Decimal;
+use bc_models::MetaEntry;
+use bc_models::MetaKey;
+use bc_models::MetaValue;
+use bc_models::Metadata;
 use bc_models::Period;
 use bc_models::Posting;
 use bc_models::PostingId;
@@ -163,6 +167,21 @@ fn month_start(months_ago: i64) -> Date {
 /// `day` is 1-based.
 fn month_day(months_ago: i64, day: i8) -> Date {
     month_start(months_ago).saturating_add(jiff::Span::new().days(i64::from(day) - 1))
+}
+
+/// Constructs the metadata a seeded transaction carries: one `payee` entry.
+///
+/// `payee` is an ordinary user key holding no privileged position, so a seeded
+/// payee is one text entry like any other.
+///
+/// # Errors
+///
+/// Returns an error if `payee` is not a valid metadata key name.
+fn payee_metadata(payee: &str) -> anyhow::Result<Metadata> {
+    Ok(Metadata::new(vec![MetaEntry::new(
+        MetaKey::new("payee")?,
+        MetaValue::Text(payee.to_owned()),
+    )]))
 }
 
 /// Constructs a [`Posting`] with a new random ID.
@@ -683,7 +702,7 @@ async fn main() -> anyhow::Result<()> {
                     Transaction::builder()
                         .id(TransactionId::new())
                         .date($date)
-                        .payee($payee)
+                        .metadata(payee_metadata($payee)?)
                         .description($desc)
                         .reconciliation($reconciliation)
                         .created_at(Timestamp::now())
@@ -707,7 +726,7 @@ async fn main() -> anyhow::Result<()> {
                     Transaction::builder()
                         .id(TransactionId::new())
                         .date($date)
-                        .payee($payee)
+                        .metadata(payee_metadata($payee)?)
                         .description($desc)
                         .reconciliation($reconciliation)
                         .created_at(Timestamp::now())
@@ -886,7 +905,7 @@ async fn main() -> anyhow::Result<()> {
             Transaction::builder()
                 .id(TransactionId::new())
                 .date(month_day(6, 8))
-                .payee("The Local Bistro")
+                .metadata(payee_metadata("The Local Bistro")?)
                 .description("November dinner")
                 .reconciliation(Reconciliation::Reconciled)
                 .created_at(Timestamp::now())
@@ -1387,7 +1406,7 @@ async fn main() -> anyhow::Result<()> {
             Transaction::builder()
                 .id(TransactionId::new())
                 .date(month_day(4, 15))
-                .payee("Employer Ltd")
+                .metadata(payee_metadata("Employer Ltd")?)
                 .description("January paycheck — duplicate (to be voided)")
                 .reconciliation(Reconciliation::Unreconciled)
                 .created_at(Timestamp::now())
@@ -1590,7 +1609,7 @@ async fn main() -> anyhow::Result<()> {
             Transaction::builder()
                 .id(TransactionId::new())
                 .date(month_day(3, 3))
-                .payee("Woolworths")
+                .metadata(payee_metadata("Woolworths")?)
                 .description("February groceries — duplicate (to be voided)")
                 .reconciliation(Reconciliation::Unreconciled)
                 .created_at(Timestamp::now())
