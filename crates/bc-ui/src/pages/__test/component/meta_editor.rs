@@ -8,5 +8,5 @@ pub const TITLE: &str = "MetaEditor";
 pub const PATH: &str = "/__test/component/meta-editor";
 /// One-line description for the index card.
 pub const DESCRIPTION: &str = "Typed key-value metadata rows: all seven value types, plus \
-                               mismatched, tombstoned, unknown-account, untyped and keyless \
-                               states.";
+                               mismatched, tombstoned, unknown-account, untyped, keyless and \
+                               rejected-key states.";

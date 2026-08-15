@@ -30,11 +30,17 @@ use core::sync::atomic::Ordering;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::AccountRef;
 #[cfg(target_arch = "wasm32")]
+use bc_ipc::META_KEY_MAX_BYTES;
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::MetaKeyDefDto;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::MetaTypeDto;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::MetaValueDto;
+#[cfg(target_arch = "wasm32")]
+use bc_ipc::normalise_meta_key;
+#[cfg(target_arch = "wasm32")]
+use bc_ipc::validate_meta_key;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
@@ -54,6 +60,8 @@ use crate::components::meta_editor::model::canonical_text;
 use crate::components::meta_editor::model::classify;
 #[cfg(target_arch = "wasm32")]
 use crate::components::meta_editor::model::insert_row_below;
+#[cfg(target_arch = "wasm32")]
+use crate::components::meta_editor::model::key_problem;
 #[cfg(target_arch = "wasm32")]
 use crate::components::meta_editor::model::move_row;
 #[cfg(target_arch = "wasm32")]
@@ -392,11 +400,17 @@ fn MetaEditorRow(
             .filter(|def| def.key.contains(&query) && def.key != query)
             .collect::<Vec<_>>()
     };
+    /* The create row must not offer a name the save cannot honour, so it appears
+    only for a key the backend would accept. Why a rejected one was rejected is
+    the hint's job, beside the value. */
     let create_query = move || {
-        let query = row_now()
+        let raw = row_now()
             .map(|row| row.key().trim().to_owned())
             .unwrap_or_default();
-        (!query.is_empty() && registered_type(&meta_keys.get(), &query).is_none()).then_some(query)
+        let key = validate_meta_key(&raw).ok()?;
+        registered_type(&meta_keys.get(), &key)
+            .is_none()
+            .then_some(key)
     };
     let create_ty = RwSignal::new(MetaTypeDto::Text);
 
@@ -722,10 +736,12 @@ fn MetaEditorRow(
         }
     };
 
-    let needs_key = move || {
+    /* Why the key as typed cannot be used, rendered as the sentence the problem
+    writes for itself. */
+    let key_hint = move || {
         row_now()
-            .and_then(|row| row.draft.map(|draft| draft.key.trim().is_empty()))
-            .unwrap_or(false)
+            .and_then(|row| key_problem(&row))
+            .map(|problem| problem.to_string())
     };
 
     view! {
@@ -739,7 +755,7 @@ fn MetaEditorRow(
                         row_now().map(|row| row.key().to_owned()).unwrap_or_default()
                     }
                     on:input=move |ev| {
-                        let key = event_target_value(&ev);
+                        let key = normalise_meta_key(&event_target_value(&ev));
                         let keys = meta_keys.get_untracked();
                         with_draft(
                             Box::new(move |draft| {
@@ -754,6 +770,7 @@ fn MetaEditorRow(
                     }
                     on:focus=move |_| open.set(true)
                     on:keydown=on_key_keydown
+                    maxlength=META_KEY_MAX_BYTES
                     placeholder="key"
                 />
                 {move || {
@@ -841,7 +858,7 @@ fn MetaEditorRow(
             <div class=style::val_cell>
                 {value_control}
                 {move || {
-                    needs_key().then(|| view! { <span class=style::hint>"needs a key"</span> })
+                    key_hint().map(|reason| view! { <span class=style::hint>{reason}</span> })
                 }}
             </div>
             <button

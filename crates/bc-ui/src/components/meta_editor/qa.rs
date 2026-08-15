@@ -1,8 +1,9 @@
 //! QA showcase for [`MetaEditor`](super::MetaEditor).
 //!
-//! Every value type plus the five states a row can be in that are not simply
-//! "typed and fine": mismatched, unknown account, tombstone, untyped key, and a
-//! value with no key. All data here is invented.
+//! Every value type plus the six states a row can be in that are not simply
+//! "typed and fine": mismatched, unknown account, tombstone, untyped key, a
+//! value with no key, and a key the backend would reject. All data here is
+//! invented.
 
 use bc_ipc::AccountRef;
 use bc_ipc::Amount;
@@ -94,6 +95,20 @@ fn qa_rows() -> Vec<MetaRow> {
             key: String::new(),
             ty: MetaTypeDto::Text,
             text: "orphaned value".to_owned(),
+            boolean: false,
+            commodity: "AUD".to_owned(),
+            account_id: String::new(),
+        }),
+    });
+    // A key the backend would reject: hinted with the rule it broke, offered no
+    // create row, and pruned on save.
+    rows.push(MetaRow {
+        uid: 100,
+        source: None,
+        draft: Some(MetaDraft {
+            key: "due date".to_owned(),
+            ty: MetaTypeDto::Text,
+            text: "next tuesday".to_owned(),
             boolean: false,
             commodity: "AUD".to_owned(),
             account_id: String::new(),
