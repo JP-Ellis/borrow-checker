@@ -14,6 +14,7 @@ use bc_sdk::Date;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
 use bc_sdk::MetaEntry;
+use bc_sdk::MetaValue;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
 use bc_sdk::SourceLocation;
@@ -24,6 +25,7 @@ use crate::config::ColumnRef;
 use crate::config::CommoditySource;
 use crate::config::Config;
 use crate::config::Header;
+use crate::config::MetaColumnType;
 use crate::header::HeaderMap;
 use crate::preamble::find_csv_start;
 
@@ -254,7 +256,7 @@ impl CsvImporter {
                 None
             };
 
-            let payee = optional_text(&record, &columns, cfg.payee_column.as_ref(), expected)?;
+            let metadata = row_metadata(cfg, &record, &columns, expected, &commodity, row)?;
             let description =
                 optional_text(&record, &columns, cfg.description_column.as_ref(), expected)?
                     .unwrap_or_default();
@@ -309,12 +311,7 @@ impl CsvImporter {
                 RawTransaction::builder()
                     .date(date)
                     .description(description)
-                    .metadata(
-                        payee
-                            .into_iter()
-                            .map(|name| MetaEntry::text("payee", name))
-                            .collect(),
-                    )
+                    .metadata(metadata)
                     .maybe_reference(reference)
                     .source_location(
                         SourceLocation::builder()
@@ -496,6 +493,114 @@ fn optional_text(
         return Ok(None);
     };
     Ok(cell(record, columns, column, expected)?.map(str::to_owned))
+}
+
+/// Builds one row's metadata from the profile's column mappings.
+///
+/// A blank or absent cell states nothing, so it yields no entry. A populated
+/// cell that will not carry the type the profile claims for it is filed as
+/// text and warned about: an annotation is worth less than the row, so a
+/// malformed one must not cost the row its amount. The host then reads that
+/// text against the key's registered type and flags it for repair.
+///
+/// # Arguments
+///
+/// * `cfg` - The profile, for its mappings and numeric and date formats.
+/// * `record` - The CSV record being read.
+/// * `columns` - The file's header map.
+/// * `expected` - The file's data-row width.
+/// * `commodity` - The row's commodity, which an `amount` column posts in.
+/// * `row` - The 1-based data-row number, for diagnostics.
+///
+/// # Returns
+///
+/// One entry per populated mapped column, in the order the profile states
+/// them.
+///
+/// # Errors
+///
+/// Returns [`ImportError::MissingField`] when a mapped column does not resolve
+/// or lies beyond every row. That is a profile that does not match the file,
+/// not one row's omission.
+fn row_metadata(
+    cfg: &Config,
+    record: &csv::StringRecord,
+    columns: &HeaderMap,
+    expected: usize,
+    commodity: &str,
+    row: usize,
+) -> Result<Vec<MetaEntry>, ImportError> {
+    let mut entries = Vec::with_capacity(cfg.metadata_columns.len());
+    for mapping in &cfg.metadata_columns {
+        let Some(raw) = cell(record, columns, &mapping.column, expected)? else {
+            continue;
+        };
+        let value = match meta_value(mapping.ty, raw, cfg, commodity) {
+            Ok(value) => value,
+            Err(detail) => {
+                bc_sdk::warn!(
+                    "metadata cell does not carry the type the profile states; filing it as text";
+                    key = mapping.key.clone(),
+                    row = row.to_string(),
+                    detail = detail
+                );
+                MetaValue::Text(raw.to_owned())
+            }
+        };
+        entries.push(MetaEntry::new(mapping.key.clone(), value));
+    }
+    Ok(entries)
+}
+
+/// Reads one cell as the type a profile states for its column.
+///
+/// # Arguments
+///
+/// * `ty` - The stated type.
+/// * `raw` - The trimmed cell text, known to be non-empty.
+/// * `cfg` - The profile, for its numeric separators and date format.
+/// * `commodity` - The row's commodity, which an `amount` cell posts in.
+///
+/// # Returns
+///
+/// The typed value.
+///
+/// # Errors
+///
+/// Returns the reason the cell does not carry `ty`, for the caller to log.
+fn meta_value(
+    ty: MetaColumnType,
+    raw: &str,
+    cfg: &Config,
+    commodity: &str,
+) -> Result<MetaValue, String> {
+    match ty {
+        MetaColumnType::Text => Ok(MetaValue::Text(raw.to_owned())),
+        MetaColumnType::Account => Ok(MetaValue::Account(raw.to_owned())),
+        MetaColumnType::Number => {
+            parse_number(raw, cfg.decimal_separator, cfg.thousands_separator).map(MetaValue::Number)
+        }
+        MetaColumnType::Amount => parse_number(raw, cfg.decimal_separator, cfg.thousands_separator)
+            .map(|value| MetaValue::Amount(Amount::new(value, commodity.to_owned()))),
+        MetaColumnType::Boolean => match raw.to_ascii_lowercase().as_str() {
+            "true" => Ok(MetaValue::Boolean(true)),
+            "false" => Ok(MetaValue::Boolean(false)),
+            _other => Err(format!("'{raw}' is neither 'true' nor 'false'")),
+        },
+        MetaColumnType::Date => jiff::civil::Date::strptime(&cfg.date_format, raw)
+            .map(|parsed| {
+                MetaValue::Date(Date::new(
+                    i32::from(parsed.year()),
+                    parsed.month().unsigned_abs(),
+                    parsed.day().unsigned_abs(),
+                ))
+            })
+            .map_err(|e| e.to_string()),
+        // Handed on as text: the host reads RFC 3339 and says so precisely,
+        // and duplicating that reading here would give two verdicts on one
+        // string.
+        MetaColumnType::Timestamp => Ok(MetaValue::Timestamp(raw.to_owned())),
+    }
 }
 
 /// Resolves the commodity code that applies to one row.
@@ -702,6 +807,8 @@ mod tests {
 
     use super::*;
     use crate::config::LegSpec;
+    use crate::config::MetaColumnType;
+    use crate::config::MetadataColumn;
 
     /// Reads the first `payee` metadata entry, when the row states one.
     fn payee_of(tx: &RawTransaction) -> Option<&str> {
@@ -709,6 +816,16 @@ mod tests {
             MetaValue::Text(ref text) if entry.key == "payee" => Some(text.as_str()),
             _ => None,
         })
+    }
+
+    /// Maps `column` onto the `payee` key, as most of these tests once did
+    /// through the retired `payee_column` field.
+    fn payee_map(column: ColumnRef) -> MetadataColumn {
+        MetadataColumn {
+            key: "payee".to_owned(),
+            column,
+            ty: MetaColumnType::Text,
+        }
     }
 
     #[test]
@@ -765,7 +882,7 @@ mod tests {
             "date_format": "%Y-%m-%d",
             "amount_columns": {"style": "single", "column": "Amount"},
             "description_column": "Description",
-            "payee_column": "Payee"
+            "metadata_columns": [{"key": "payee", "column": "Payee"}]
         });
         let config = ImportConfig::from_json_string(config_json.to_string());
 
@@ -823,7 +940,7 @@ mod tests {
             "date_format": "%Y-%m-%d",
             "amount_columns": {"style": "single", "column": "Amount"},
             "description_column": "Description",
-            "payee_column": "Payee"
+            "metadata_columns": [{"key": "payee", "column": "Payee"}]
         });
         let config = ImportConfig::from_json_string(config_json.to_string());
 
@@ -1288,10 +1405,122 @@ mod tests {
         }
     }
 
+    /// A three-column headerless profile whose third column carries `ty`
+    /// under the key `thing`.
+    fn typed_third_column_config(ty: crate::config::MetaColumnType) -> Config {
+        Config {
+            metadata_columns: vec![crate::config::MetadataColumn {
+                key: "thing".to_owned(),
+                column: ColumnRef::Index(2),
+                ty,
+            }],
+            ..headerless_two_column_config()
+        }
+    }
+
+    /// Imports one row and returns the value filed under `thing`.
+    fn typed_cell(ty: crate::config::MetaColumnType, cell: &str) -> bc_sdk::MetaValue {
+        let cfg = typed_third_column_config(ty);
+        let row = format!("01/02/2025,120.00,{cell}\n");
+        let txs = CsvImporter
+            .parse_bytes(row.as_bytes(), &cfg, "statement.csv")
+            .expect("the row should import");
+        let tx = txs.first().expect("one transaction");
+        tx.metadata
+            .first()
+            .expect("one metadata entry")
+            .value
+            .clone()
+    }
+
+    #[test]
+    fn a_column_is_read_as_the_type_the_profile_states() {
+        use crate::config::MetaColumnType as T;
+
+        assert_eq!(
+            typed_cell(T::Text, "Java Hut"),
+            bc_sdk::MetaValue::Text("Java Hut".to_owned())
+        );
+        assert_eq!(
+            typed_cell(T::Number, "1502.50"),
+            bc_sdk::MetaValue::Number(dec!(1502.50))
+        );
+        assert_eq!(
+            typed_cell(T::Boolean, "TRUE"),
+            bc_sdk::MetaValue::Boolean(true)
+        );
+        assert_eq!(
+            typed_cell(T::Date, "15/01/2026"),
+            bc_sdk::MetaValue::Date(Date::new(2026, 1, 15))
+        );
+        assert_eq!(
+            typed_cell(T::Timestamp, "2026-01-15T09:30:00Z"),
+            bc_sdk::MetaValue::Timestamp("2026-01-15T09:30:00Z".to_owned())
+        );
+        assert_eq!(
+            typed_cell(T::Amount, "42.00"),
+            bc_sdk::MetaValue::Amount(Amount::new(dec!(42.00), "AUD"))
+        );
+        assert_eq!(
+            typed_cell(T::Account, "Assets:Bank:Savings"),
+            bc_sdk::MetaValue::Account("Assets:Bank:Savings".to_owned())
+        );
+    }
+
+    /// An annotation is worth less than the row it annotates, so a cell that
+    /// will not carry its stated type is filed as text. The host then reads
+    /// that text against the key's registered type and flags it for repair.
+    #[test]
+    fn a_cell_that_will_not_carry_its_stated_type_is_filed_as_text() {
+        assert_eq!(
+            typed_cell(crate::config::MetaColumnType::Number, "not-a-number"),
+            bc_sdk::MetaValue::Text("not-a-number".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_blank_mapped_cell_states_nothing() {
+        let cfg = typed_third_column_config(crate::config::MetaColumnType::Text);
+        let txs = CsvImporter
+            .parse_bytes(b"01/02/2025,120.00,\n", &cfg, "statement.csv")
+            .expect("the row should import");
+        assert_eq!(txs.first().expect("one transaction").metadata, vec![]);
+    }
+
+    #[test]
+    fn mapped_columns_keep_the_order_the_profile_states() {
+        let cfg = Config {
+            metadata_columns: vec![
+                payee_map(ColumnRef::Index(2)),
+                crate::config::MetadataColumn {
+                    key: "note".to_owned(),
+                    column: ColumnRef::Index(3),
+                    ty: crate::config::MetaColumnType::Text,
+                },
+            ],
+            ..headerless_two_column_config()
+        };
+        let txs = CsvImporter
+            .parse_bytes(
+                b"01/02/2025,120.00,Java Hut,paid by card\n",
+                &cfg,
+                "statement.csv",
+            )
+            .expect("the row should import");
+        let keys: Vec<&str> = txs
+            .first()
+            .expect("one transaction")
+            .metadata
+            .iter()
+            .map(|e| e.key.as_str())
+            .collect();
+        assert_eq!(keys, vec!["payee", "note"]);
+    }
+
     #[test]
     fn parse_bytes_errors_on_out_of_range_payee_index() {
         let cfg = Config {
-            payee_column: Some(ColumnRef::Index(9)),
+            metadata_columns: vec![payee_map(ColumnRef::Index(9))],
             ..headerless_two_column_config()
         };
         let result = CsvImporter.parse_bytes(b"01/02/2025,120.00\n", &cfg, "statement.csv");
@@ -1358,7 +1587,7 @@ mod tests {
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Index(1),
             },
-            payee_column: Some(ColumnRef::Index(2)),
+            metadata_columns: vec![payee_map(ColumnRef::Index(2))],
             commodity: Some(CommoditySource::Fixed {
                 code: "AUD".to_owned(),
             }),
@@ -1811,7 +2040,7 @@ mod tests {
 
         let cfg = Config {
             account: "Assets:Bank:Checking".to_owned(),
-            payee_column: Some(ColumnRef::Name("Payee".to_owned())),
+            metadata_columns: vec![payee_map(ColumnRef::Name("Payee".to_owned()))],
             ..Config::default()
         };
 
@@ -1836,7 +2065,7 @@ mod tests {
 
         let cfg = Config {
             account: "Assets:Bank:Checking".to_owned(),
-            payee_column: Some(ColumnRef::Name("Payee".to_owned())),
+            metadata_columns: vec![payee_map(ColumnRef::Name("Payee".to_owned()))],
             ..Config::default()
         };
 
@@ -1865,7 +2094,7 @@ mod tests {
 
         let cfg = Config {
             account: "Assets:Bank:Checking".to_owned(),
-            payee_column: Some(ColumnRef::Index(2)),
+            metadata_columns: vec![payee_map(ColumnRef::Index(2))],
             ..Config::default()
         };
 
@@ -1886,7 +2115,7 @@ mod tests {
 
         let cfg = Config {
             account: "Assets:Bank:Checking".to_owned(),
-            payee_column: Some(ColumnRef::Index(5)),
+            metadata_columns: vec![payee_map(ColumnRef::Index(5))],
             ..Config::default()
         };
 
@@ -1910,7 +2139,7 @@ mod tests {
 
         let cfg = Config {
             account: "Assets:Bank:Checking".to_owned(),
-            payee_column: Some(ColumnRef::Name("more prose".to_owned())),
+            metadata_columns: vec![payee_map(ColumnRef::Name("more prose".to_owned()))],
             ..Config::default()
         };
 
@@ -1920,7 +2149,7 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            "bad value for field 'payee_column': the header names 'more prose' at \
+            "bad value for field 'metadata_columns[0].column': the header names 'more prose' at \
              column 3, but no data row is that wide; the profile does not match the file"
         );
     }
