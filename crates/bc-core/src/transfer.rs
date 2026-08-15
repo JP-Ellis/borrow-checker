@@ -232,9 +232,9 @@ impl Service {
     ///
     /// Recreates the absorbed transaction with its original ID and moves its
     /// posting and source references back. The survivor is reverted only where the
-    /// merge changed it: the tags and dates the merge added are removed (edits made
-    /// while merged are preserved), and its date/reconciliation are restored only
-    /// if they still hold the values the merge wrote. Records a
+    /// merge changed it: the tags and metadata entries the merge added are removed
+    /// (edits made while merged are preserved), and its date/reconciliation are
+    /// restored only if they still hold the values the merge wrote. Records a
     /// [`crate::Event::TransactionUnmerged`].
     ///
     /// # Arguments
@@ -298,6 +298,15 @@ impl Service {
         let absorbed_str = absorbed.id.to_string();
         let posting_position = i64::from(absorbed.posting_position);
 
+        let survivor_metadata_now = crate::metadata::load_for(
+            &self.pool,
+            crate::metadata::Owner::Transaction,
+            &[survivor_str.as_str()],
+        )
+        .await?
+        .remove(&survivor_str)
+        .unwrap_or_default();
+
         let unmerged = crate::Event::TransactionUnmerged {
             survivor_id: survivor_id.clone(),
             absorbed_id: absorbed.id.clone(),
@@ -340,9 +349,9 @@ impl Service {
         .await?;
 
         // Reverse only what the merge added to the survivor, so edits made while
-        // merged survive. The merge unioned the absorbed leg's tags/dates onto the
+        // merged survive. The merge unioned the absorbed leg's tags onto the
         // survivor (`INSERT OR IGNORE`), so the rows it introduced are exactly the
-        // absorbed keys that were absent from the survivor's pre-merge snapshot;
+        // absorbed tags that were absent from the survivor's pre-merge snapshot;
         // remove those and leave everything else (original + intervening edits).
         for tag_id in &absorbed.tag_ids {
             if snapshot.tags.contains(tag_id) {
@@ -354,15 +363,20 @@ impl Service {
                 .execute(&mut *db_tx)
                 .await?;
         }
-        // Metadata is restored by rewriting the survivor's list rather than by
-        // deleting the rows the merge added. A repeated key gives "the row the
-        // merge added" no unambiguous target, and the pre-merge snapshot is an
-        // exact statement of what the list should be.
+        // Metadata is rewritten wholesale rather than deleted row by row: a
+        // repeated key gives a single `DELETE` no unambiguous target, and
+        // `position` has to stay contiguous across what remains. The list
+        // written back is the current one minus the merge's contribution, so an
+        // entry added while merged is kept.
         crate::metadata::replace(
             &mut db_tx,
             crate::metadata::Owner::Transaction,
             &survivor_str,
-            &snapshot.metadata,
+            &crate::metadata::subtract_merged(
+                &survivor_metadata_now,
+                &snapshot.metadata,
+                &absorbed.metadata,
+            ),
         )
         .await?;
 
@@ -1389,6 +1403,82 @@ mod db_tests {
         assert_eq!(
             survivor_date, "2025-07-01",
             "unmerge preserves a date the user changed while merged"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unmerge_preserves_metadata_added_while_merged(pool: SqlitePool) {
+        let savings = account(&pool, "Savings").await;
+        let mortgage = account(&pool, "Mortgage").await;
+
+        let debit = leg_with(
+            &pool,
+            &savings,
+            -100,
+            date(2025, 6, 26),
+            Reconciliation::Unreconciled,
+            vec![],
+            Metadata::new(vec![MetaEntry::new(
+                meta_key("value_date"),
+                MetaValue::Date(date(2025, 6, 20)),
+            )]),
+        )
+        .await;
+        let credit = leg_with(
+            &pool,
+            &mortgage,
+            100,
+            date(2025, 6, 27),
+            Reconciliation::Unreconciled,
+            vec![],
+            Metadata::new(vec![MetaEntry::new(
+                meta_key("invoice"),
+                MetaValue::Text("INV-001".to_owned()),
+            )]),
+        )
+        .await;
+
+        let svc = Service::new(pool.clone());
+        svc.merge(&debit, &credit).await.expect("merge");
+
+        // Simulate the user annotating the survivor while it is merged.
+        sqlx::query("INSERT INTO metadata_keys (key, value_type, created_at) VALUES (?, ?, ?)")
+            .bind("note")
+            .bind("text")
+            .bind("2025-06-28T00:00:00Z")
+            .execute(&pool)
+            .await
+            .expect("register key");
+        sqlx::query(
+            "INSERT INTO transaction_metadata (transaction_id, key, position, value_text) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(debit.to_string())
+        .bind("note")
+        .bind(2_i64)
+        .bind("checked against the statement")
+        .execute(&pool)
+        .await
+        .expect("add intervening metadata");
+
+        svc.unmerge(&debit).await.expect("unmerge");
+
+        assert_eq!(
+            survivor_metadata(&pool, &debit).await,
+            vec![
+                ("value_date".to_owned(), "2025-06-20".to_owned()),
+                (
+                    "note".to_owned(),
+                    "checked against the statement".to_owned()
+                ),
+            ],
+            "unmerge drops the entry the merge added but keeps the survivor's own \
+             entry and the one added while merged"
+        );
+        assert_eq!(
+            survivor_metadata(&pool, &credit).await,
+            vec![("invoice".to_owned(), "INV-001".to_owned())],
+            "the absorbed transaction gets its own entry back"
         );
     }
 
