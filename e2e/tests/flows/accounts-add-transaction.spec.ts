@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { browser, $, $$, expect as wdioExpect } from '@wdio/globals';
-import { DB_PATH as TEST_DB_PATH } from '../support/db.js';
+import { DB_PATH as TEST_DB_PATH, dbTransactionIdByPayee } from '../support/db.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -78,7 +78,6 @@ async function waitForForm(): Promise<WebdriverIO.Element> {
 
 interface TxRow {
     id: string;
-    payee: string | null;
     date: string;
     reconciliation: string;
 }
@@ -89,12 +88,18 @@ interface PostingRow {
     commodity: string;
 }
 
+/**
+ * Finds a transaction by its `payee` metadata entry. A payee is an ordinary
+ * metadata entry under an ordinary key, so there is no payee column to select.
+ */
 function dbQueryTransaction(payee: string): TxRow | undefined {
+    const id = dbTransactionIdByPayee(payee);
+    if (id === undefined) return undefined;
     const db = new Database(TEST_DB_PATH, { readonly: true });
     try {
         return db
-            .prepare('SELECT id, payee, date, reconciliation FROM transactions WHERE payee = ?')
-            .get(payee) as TxRow | undefined;
+            .prepare('SELECT id, date, reconciliation FROM transactions WHERE id = ?')
+            .get(id) as TxRow | undefined;
     } finally {
         db.close();
     }
@@ -135,7 +140,10 @@ describe('Accounts — add transaction', () => {
         const expectedDate: string = await browser.execute(
             () => new Date().toISOString().slice(0, 10),
         );
-        await $('#atf-payee').setValue('E2E Test Payee');
+        // The payee is an ordinary metadata row on the form, not an input of
+        // its own.
+        await $('[data-testid="atf-meta-key-0"]').setValue('payee');
+        await $('[data-testid="atf-meta-value-0"]').setValue('E2E Test Payee');
 
         // Primary posting amount (Checking account debited).
         await $('#atf-primary-amount').setValue('-42.00');
@@ -199,7 +207,8 @@ describe('Accounts — add transaction', () => {
         const expectedDate: string = await browser.execute(
             () => new Date().toISOString().slice(0, 10),
         );
-        await $('#atf-payee').setValue('E2E Split Payee');
+        await $('[data-testid="atf-meta-key-0"]').setValue('payee');
+        await $('[data-testid="atf-meta-value-0"]').setValue('E2E Split Payee');
 
         // Primary posting: Checking debited -50.00.
         await $('#atf-primary-amount').setValue('-50.00');

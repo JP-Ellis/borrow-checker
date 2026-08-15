@@ -18,37 +18,18 @@
  */
 import Database             from 'better-sqlite3';
 import { browser, $, $$ }  from '@wdio/globals';
-import { DB_PATH } from '../support/db.js';
+import {
+    DB_PATH,
+    dbMetadataKeyType,
+    dbTransactionIdByPayee,
+    dbTransactionMetadata,
+} from '../support/db.js';
 
 // ── DB helpers ──────────────────────────────────────────────────────────────
 
 interface TxRow {
     id:             string;
-    payee:          string | null;
     reconciliation: string;
-}
-
-interface ExtraDateRow {
-    transaction_id: string;
-    label:          string;
-    date:           string;
-}
-
-function dbFetchSupermarketTx(): TxRow | undefined {
-    const db = new Database(DB_PATH, { readonly: true });
-    try {
-        return db
-            .prepare(
-                `SELECT id, payee, reconciliation
-                   FROM transactions
-                  WHERE payee = 'Supermarket'
-                  ORDER BY date DESC
-                  LIMIT 1`,
-            )
-            .get() as TxRow | undefined;
-    } finally {
-        db.close();
-    }
 }
 
 function dbReconciliation(txId: string): string | undefined {
@@ -63,17 +44,16 @@ function dbReconciliation(txId: string): string | undefined {
     }
 }
 
-function dbExtraDates(txId: string): ExtraDateRow[] {
-    const db = new Database(DB_PATH, { readonly: true });
-    try {
-        return db
-            .prepare(
-                'SELECT transaction_id, label, date FROM transaction_dates WHERE transaction_id = ?',
-            )
-            .all(txId) as ExtraDateRow[];
-    } finally {
-        db.close();
-    }
+/**
+ * The seed's "Supermarket" transaction, found through its `payee` metadata
+ * entry — a payee is an ordinary key, not a column.
+ */
+function dbFetchSupermarketTx(): TxRow | undefined {
+    const id = dbTransactionIdByPayee('Supermarket');
+    if (id === undefined) return undefined;
+    const reconciliation = dbReconciliation(id);
+    if (reconciliation === undefined) return undefined;
+    return { id, reconciliation };
 }
 
 // ── Navigation helpers ──────────────────────────────────────────────────────
@@ -220,68 +200,97 @@ describe('Accounts — edit transaction detail', () => {
         expect(visible).toBe(false);
     });
 
-    it('can add an extra date via "+ date" and persist it on save', async function () {
+    it('can add a metadata entry and persist it on save', async function () {
         const seedTx = dbFetchSupermarketTx();
         if (!seedTx) {
-            console.warn('No Supermarket tx found in DB — skipping extra-date test');
+            console.warn('No Supermarket tx found in DB — skipping metadata add test');
             this.skip();
         }
 
         await openGroceriesAccount();
         await expandSupermarketRow();
 
-        // The "+ date" button must be visible in the metamix bar.
-        const addDateBtn = await $('button=+ date');
-        await addDateBtn.waitForDisplayed({ timeoutMsg: '"+ date" button did not appear in the metamix bar',
+        // Add an empty metadata row to the editor.
+        const addMetaBtn = await $('[data-testid="meta-add"]');
+        await addMetaBtn.waitForDisplayed({
+            timeoutMsg: 'metadata "+" button did not appear in the transaction detail',
         });
+        await addMetaBtn.click();
 
-        // Click "+ date" to insert a new extra-date row.
-        await addDateBtn.click();
+        // The new row is the last one, and both of its inputs start empty.
+        const keyInputs = await $$('[data-testid="meta-key"]');
+        const valueInputs = await $$('[data-testid="meta-value"]');
+        const keyCount = await keyInputs.length;
+        const valueCount = await valueInputs.length;
+        expect(keyCount).toBeGreaterThan(0);
+        expect(valueCount).toBe(keyCount);
 
-        // A "×" remove span must now be visible.
-        const xSpan = await $('span=×');
-        await xSpan.waitForDisplayed({ timeoutMsg: '"×" remove button did not appear after adding extra date',
-        });
+        await keyInputs[keyCount - 1].setValue('invoice');
+        await valueInputs[valueCount - 1].setValue('1502');
 
-        // Fill the label and date fields of the newly added row.
-        const labelInput = await $('input[placeholder="label"]');
-        await labelInput.waitForDisplayed();
-        await labelInput.setValue('settlement');
-
-        // The last YYYY-MM-DD input is the extra-date one; pick it via JS.
-        await browser.execute(() => {
-            const inputs = Array.from(
-                document.querySelectorAll<HTMLInputElement>('input[placeholder="YYYY-MM-DD"]'),
-            );
-            const last = inputs[inputs.length - 1];
-            if (last) {
-                last.focus();
-                /* Dispatch input event so the Leptos signal updates. */
-                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                    HTMLInputElement.prototype,
-                    'value',
-                )?.set;
-                nativeInputValueSetter?.call(last, '2025-02-01');
-                last.dispatchEvent(new Event('input', { bubbles: true }));
-            }
-        });
-
-        // Save bar must appear.
         const saveBtn = await $('[aria-label="save transaction"]');
-        await saveBtn.waitForDisplayed({ timeoutMsg: 'Save button did not appear after adding extra date',
+        await saveBtn.waitForDisplayed({
+            timeoutMsg: 'Save button did not appear after adding a metadata entry',
         });
-
-        // Save.
         await saveBtn.click();
         await browser.waitUntil(
             async () => !(await saveBtn.isDisplayed().catch(() => false)),
-            { timeoutMsg: 'Save bar did not disappear after saving extra date' },
+            { timeoutMsg: 'Save bar did not disappear after saving the metadata entry' },
         );
 
-        // Verify the extra date persisted in SQLite.
         await browser.pause(300);
-        const extraDates = dbExtraDates(seedTx.id);
-        const persisted  = extraDates.find(r => r.label === 'settlement');
-        expect(persisted).toBeDefined();
+
+        const entries = dbTransactionMetadata(seedTx.id);
+        const added = entries.find(row => row.key === 'invoice');
+        expect(added).toBeDefined();
+        expect(added!.value_text).toBe('1502');
+        // Nothing about `1502` fails to read as a number, so it stores unflagged.
+        expect(added!.mismatched).toBe(0);
+        // A key enters the registry on first write, typed by its first value.
+        expect(dbMetadataKeyType('invoice')).toBe('number');
+    });
+
+    it('can edit an existing metadata entry and persist it on save', async function () {
+        const seedTx = dbFetchSupermarketTx();
+        if (!seedTx) {
+            console.warn('No Supermarket tx found in DB — skipping metadata edit test');
+            this.skip();
+        }
+
+        await openGroceriesAccount();
+        await expandSupermarketRow();
+
+        // The seeded transaction carries one `payee` entry; find its row by the
+        // key input holding that key, and rewrite the value beside it.
+        const keyInputs = await $$('[data-testid="meta-key"]');
+        const valueInputs = await $$('[data-testid="meta-value"]');
+        const keyCount = await keyInputs.length;
+        let payeeIndex = -1;
+        for (let i = 0; i < keyCount; i++) {
+            if ((await keyInputs[i].getValue()) === 'payee') {
+                payeeIndex = i;
+                break;
+            }
+        }
+        expect(payeeIndex).toBeGreaterThan(-1);
+
+        await valueInputs[payeeIndex].setValue('Corner Store');
+
+        const saveBtn = await $('[aria-label="save transaction"]');
+        await saveBtn.waitForDisplayed({
+            timeoutMsg: 'Save button did not appear after editing a metadata entry',
+        });
+        await saveBtn.click();
+        await browser.waitUntil(
+            async () => !(await saveBtn.isDisplayed().catch(() => false)),
+            { timeoutMsg: 'Save bar did not disappear after saving the metadata edit' },
+        );
+
+        await browser.pause(300);
+
+        const entries = dbTransactionMetadata(seedTx.id);
+        const payees = entries.filter(row => row.key === 'payee');
+        expect(payees.length).toBe(1);
+        expect(payees[0]!.value_text).toBe('Corner Store');
     });
 });
