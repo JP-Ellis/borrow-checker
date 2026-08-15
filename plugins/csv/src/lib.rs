@@ -596,10 +596,13 @@ fn meta_value(
                 ))
             })
             .map_err(|e| e.to_string()),
-        // Handed on as text: the host reads RFC 3339 and says so precisely,
-        // and duplicating that reading here would give two verdicts on one
-        // string.
-        MetaColumnType::Timestamp => Ok(MetaValue::Timestamp(raw.to_owned())),
+        // The host takes an unparsable timestamp as the plugin's own defect
+        // and fails the whole file, so a cell that is not RFC 3339 has to be
+        // caught here, where it costs one annotation instead of the import.
+        MetaColumnType::Timestamp => raw
+            .parse::<jiff::Timestamp>()
+            .map(|_parsed| MetaValue::Timestamp(raw.to_owned()))
+            .map_err(|e| e.to_string()),
     }
 }
 
@@ -1475,6 +1478,17 @@ mod tests {
         assert_eq!(
             typed_cell(crate::config::MetaColumnType::Number, "not-a-number"),
             bc_sdk::MetaValue::Text("not-a-number".to_owned())
+        );
+    }
+
+    /// The host reads a stated timestamp strictly and takes an unparsable one
+    /// as the plugin's own defect, failing the whole file. The cell has to be
+    /// read here so that one bad annotation costs only itself.
+    #[test]
+    fn a_timestamp_cell_that_is_not_rfc_3339_is_filed_as_text() {
+        assert_eq!(
+            typed_cell(crate::config::MetaColumnType::Timestamp, "15/01/2026"),
+            bc_sdk::MetaValue::Text("15/01/2026".to_owned())
         );
     }
 
