@@ -364,13 +364,15 @@ fn MetaEditorRow(
 
     /* MARK: Key combobox. */
     let suggestions = move || {
+        // Registered keys are lowercase, so the query is folded to match one
+        // whatever case it was typed in.
         let query = row_now()
-            .map(|row| row.key().to_owned())
+            .map(|row| row.key().trim().to_ascii_lowercase())
             .unwrap_or_default();
         meta_keys
             .get()
             .into_iter()
-            .filter(|def| def.key.contains(query.trim()) && def.key != query.trim())
+            .filter(|def| def.key.contains(&query) && def.key != query)
             .collect::<Vec<_>>()
     };
     let create_query = move || {

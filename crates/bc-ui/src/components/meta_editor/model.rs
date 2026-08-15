@@ -182,13 +182,19 @@ impl MetaDraft {
 
 /// Returns the type the registry snapshot holds for `key`.
 ///
+/// The backend normalises a key to ASCII lowercase, so the lookup ignores case:
+/// a key typed `Payee` is the registered `payee` and must not read as an
+/// unregistered key needing creation.
+///
 /// # Arguments
 ///
 /// * `keys` - The registry snapshot.
 /// * `key` - The key to look up.
 #[must_use]
 pub fn registered_type(keys: &[MetaKeyDefDto], key: &str) -> Option<MetaTypeDto> {
-    keys.iter().find(|def| def.key == key).map(|def| def.ty)
+    keys.iter()
+        .find(|def| def.key.eq_ignore_ascii_case(key))
+        .map(|def| def.ty)
 }
 
 /// Renders a value in the canonical string form the backend parses back.
@@ -748,6 +754,21 @@ mod tests {
         )]);
         let row = rows.first().expect("one row");
         assert_eq!(classify(row, &registry()), RowKind::Untyped);
+    }
+
+    #[test]
+    fn a_key_typed_in_another_case_is_the_registered_key() {
+        let row = MetaRow {
+            uid: 0,
+            source: None,
+            draft: Some(draft(MetaTypeDto::Text, "Invoice", "7")),
+        };
+        assert_eq!(
+            classify(&row, &registry()),
+            RowKind::Typed(MetaTypeDto::Number),
+            "the backend lowercases a key, so `Invoice` is the registered `invoice` \
+             rather than a new key waiting to be created"
+        );
     }
 
     #[test]
