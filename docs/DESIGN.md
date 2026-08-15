@@ -176,15 +176,26 @@ Cross-cutting expense views are handled via tags on postings and accounts, enabl
 
 ### 4.4 Transaction Model
 
-A `Transaction` carries a canonical `date` (the sort key) plus free-form
-`extra_dates: Vec<(String, Date)>` for secondary dates a source supplies
-(posted, value, settlement). Its narrative fields are deliberately three:
+A `Transaction` carries a canonical `date` (the sort key) and one narrative
+field, `description`: the raw imported narration, usually the only text a bank
+export provides. It is never edited after creation and is part of the
+deduplication key, so importers can recognise a transaction they have already
+seen.
 
-| Field | Meaning |
-| ------------- | ---------------------------------------------------------------------- |
-| `description` | Raw imported narration — usually the only text a bank export provides |
-| `payee` | Cleaned or derived counterparty; often `None`, falls back to `description` in the UI |
-| `note` | User annotation. Postings carry their own `note` |
+**Everything else annotating a transaction is metadata.** `metadata: Metadata`
+holds an ordered list of typed key-value entries, and `Posting` carries the
+same field for leg-level annotation. Secondary dates a source supplies
+(posted, value, settlement), a cleaned counterparty, a user's note — each is an
+ordinary key, none holds a privileged position, and repeated keys are permitted
+with insertion order as display order. Every key is registered globally against
+one of seven value types (`text`, `number`, `boolean`, `date`, `timestamp`,
+`amount`, `account`); a value that will not coerce to its key's type is stored
+as text and flagged rather than rejected.
+
+The line between a field and a key is what business logic reads: `date`,
+`description`, `reconciliation`, `Posting::amount` and `cost` stay structural
+because they carry invariants or drive computation. Beancount draws the same
+line — `cost` and `price` are syntax, metadata is the escape hatch.
 
 **Reconciliation is the only status axis.** `enum Reconciliation { Unreconciled, Flagged, Reconciled }`.
 An earlier `Pending / Cleared / Voided` conflated three separate concerns:
