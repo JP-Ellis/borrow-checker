@@ -183,6 +183,77 @@ impl Service {
         db_tx.commit().await?;
         Ok(from)
     }
+
+    /// Renames `from` to `to`, carrying every entry under it across.
+    ///
+    /// The renamed key keeps its registered type and its original registration
+    /// time: a rename is the same key under a new name, not a fresh
+    /// registration. Renaming a key onto one that already exists is rejected
+    /// rather than merged — a merge would lose which entries came from which
+    /// key, and the source key's type with them, and no event could record it
+    /// faithfully enough to replay.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - The registered key to rename.
+    /// * `to` - Its new name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] when `from` is not registered,
+    /// [`BcError::InvalidInput`] when `to` already is, and [`BcError`] on
+    /// database failure.
+    #[inline]
+    pub async fn rename(&self, from: &MetaKey, to: &MetaKey) -> BcResult<()> {
+        if from == to {
+            return Ok(());
+        }
+        let mut db_tx = self.pool.begin().await?;
+        let source: Option<(String, String)> =
+            sqlx::query_as("SELECT value_type, created_at FROM metadata_keys WHERE key = ?")
+                .bind(from.as_str())
+                .fetch_optional(&mut *db_tx)
+                .await?;
+        let Some((value_type, created_at)) = source else {
+            return Err(BcError::NotFound(format!("metadata key '{from}'")));
+        };
+        let taken: Option<String> =
+            sqlx::query_scalar("SELECT key FROM metadata_keys WHERE key = ?")
+                .bind(to.as_str())
+                .fetch_optional(&mut *db_tx)
+                .await?;
+        if taken.is_some() {
+            return Err(BcError::InvalidInput(format!(
+                "cannot rename metadata key '{from}' to '{to}': '{to}' is already registered"
+            )));
+        }
+
+        // Both metadata tables reference `metadata_keys(key)` with no
+        // ON UPDATE CASCADE, and every connection sets PRAGMA foreign_keys =
+        // ON. The destination must therefore exist before any entry points at
+        // it, and the source must outlive the last entry that did.
+        sqlx::query("INSERT INTO metadata_keys (key, value_type, created_at) VALUES (?, ?, ?)")
+            .bind(to.as_str())
+            .bind(&value_type)
+            .bind(&created_at)
+            .execute(&mut *db_tx)
+            .await?;
+        for owner in [Owner::Transaction, Owner::Posting] {
+            let repoint = format!("UPDATE {} SET key = ? WHERE key = ?", owner.table());
+            sqlx::query(sqlx::AssertSqlSafe(repoint))
+                .bind(to.as_str())
+                .bind(from.as_str())
+                .execute(&mut *db_tx)
+                .await?;
+        }
+        sqlx::query("DELETE FROM metadata_keys WHERE key = ?")
+            .bind(from.as_str())
+            .execute(&mut *db_tx)
+            .await?;
+
+        db_tx.commit().await?;
+        Ok(())
+    }
 }
 
 /// Refits every entry under `key` in one owner table from `from` to `to`.
@@ -748,5 +819,193 @@ mod tests {
             "an account does not narrow to a number, so the row is flagged, \
              keeps the text it stored, and loses its link for good"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_moves_every_entry_and_retires_the_old_key(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![
+                MetaEntry::new(key("payee"), MetaValue::Text("Generic Grocer".to_owned())),
+                MetaEntry::new(key("payee"), MetaValue::Text("Other Grocer".to_owned())),
+                MetaEntry::new(key("note"), MetaValue::Text("weekly shop".to_owned())),
+            ]),
+        )
+        .await;
+
+        Service::new(pool.clone())
+            .rename(&key("payee"), &key("counterparty"))
+            .await
+            .expect("rename");
+
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT key, value_text FROM transaction_metadata WHERE transaction_id = ? \
+             ORDER BY position",
+        )
+        .bind(&tx)
+        .fetch_all(&pool)
+        .await
+        .expect("rows");
+        assert_eq!(
+            rows,
+            vec![
+                ("counterparty".to_owned(), "Generic Grocer".to_owned()),
+                ("counterparty".to_owned(), "Other Grocer".to_owned()),
+                ("note".to_owned(), "weekly shop".to_owned()),
+            ],
+            "every entry moves, repeats included, and other keys are untouched"
+        );
+
+        let registered: Vec<String> =
+            sqlx::query_scalar("SELECT key FROM metadata_keys ORDER BY key")
+                .fetch_all(&pool)
+                .await
+                .expect("keys");
+        assert_eq!(
+            registered,
+            vec!["counterparty".to_owned(), "note".to_owned()]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_leaves_no_dangling_foreign_key(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("payee"),
+                MetaValue::Text("Generic Grocer".to_owned()),
+            )]),
+        )
+        .await;
+
+        Service::new(pool.clone())
+            .rename(&key("payee"), &key("counterparty"))
+            .await
+            .expect("rename");
+
+        let violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&pool)
+            .await
+            .expect("foreign_key_check");
+        assert!(
+            violations.is_empty(),
+            "the destination key exists before any entry points at it, and the \
+             source outlives the last entry that did"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_keeps_the_registered_type_and_creation_time(pool: SqlitePool) {
+        let registry = Service::new(pool);
+        registry
+            .register(&key("invoice"), MetaType::Number)
+            .await
+            .expect("register");
+        let before = registry
+            .get(&key("invoice"))
+            .await
+            .expect("get")
+            .expect("registered");
+
+        registry
+            .rename(&key("invoice"), &key("bill-number"))
+            .await
+            .expect("rename");
+
+        let after = registry
+            .get(&key("bill-number"))
+            .await
+            .expect("get")
+            .expect("registered");
+        assert_eq!(after.ty(), MetaType::Number);
+        assert_eq!(
+            after.created_at(),
+            before.created_at(),
+            "a rename is the same key under a new name, not a fresh registration"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_renames_posting_entries_too(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        let posting = seed_posting(&pool, &tx).await;
+        write_posting_meta(
+            &pool,
+            &posting,
+            &Metadata::new(vec![MetaEntry::new(
+                key("note"),
+                MetaValue::Text("new medication".to_owned()),
+            )]),
+        )
+        .await;
+
+        Service::new(pool.clone())
+            .rename(&key("note"), &key("memo"))
+            .await
+            .expect("rename");
+
+        let stored: String =
+            sqlx::query_scalar("SELECT key FROM posting_metadata WHERE posting_id = ?")
+                .bind(&posting)
+                .fetch_one(&pool)
+                .await
+                .expect("row");
+        assert_eq!(stored, "memo");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_onto_an_existing_key_is_rejected(pool: SqlitePool) {
+        let registry = Service::new(pool.clone());
+        registry
+            .register(&key("payee"), MetaType::Text)
+            .await
+            .expect("register");
+        registry
+            .register(&key("counterparty"), MetaType::Number)
+            .await
+            .expect("register");
+
+        let outcome = registry.rename(&key("payee"), &key("counterparty")).await;
+        assert!(
+            matches!(outcome, Err(BcError::InvalidInput(ref why)) if why.contains("counterparty")),
+            "a rename that would merge two keys names the collision instead"
+        );
+
+        let registered: Vec<String> =
+            sqlx::query_scalar("SELECT key FROM metadata_keys ORDER BY key")
+                .fetch_all(&pool)
+                .await
+                .expect("keys");
+        assert_eq!(
+            registered,
+            vec!["counterparty".to_owned(), "payee".to_owned()],
+            "the rejected rename changes nothing"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_to_itself_is_a_no_op(pool: SqlitePool) {
+        let registry = Service::new(pool);
+        registry
+            .register(&key("payee"), MetaType::Text)
+            .await
+            .expect("register");
+        registry
+            .rename(&key("payee"), &key("payee"))
+            .await
+            .expect("renaming a key to its own name is accepted and does nothing");
+        assert_eq!(registry.list().await.expect("list").len(), 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_an_unregistered_key_is_not_found(pool: SqlitePool) {
+        let outcome = Service::new(pool)
+            .rename(&key("absent"), &key("present"))
+            .await;
+        assert!(matches!(outcome, Err(BcError::NotFound(ref what)) if what.contains("absent")));
     }
 }
