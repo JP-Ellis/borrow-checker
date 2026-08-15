@@ -10,6 +10,7 @@ use crate::commands::commodity;
 use crate::commands::completions;
 use crate::commands::export;
 use crate::commands::import;
+use crate::commands::meta;
 use crate::commands::plugin;
 use crate::commands::profile;
 use crate::commands::report;
@@ -87,6 +88,8 @@ pub enum Commands {
     Budget(budget::Args),
     /// Manage tags: create, rename, delete, list.
     Tag(tag::Args),
+    /// Manage the metadata key registry: list, retype, rename.
+    Meta(meta::Args),
     /// Manage commodities: list, create, update, delete.
     Commodity(commodity::Args),
     /// Manage plugins (requires Milestone 6).

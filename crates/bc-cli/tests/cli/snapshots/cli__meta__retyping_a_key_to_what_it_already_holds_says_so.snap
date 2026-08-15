@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/meta.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Key 'invoice' is already number
+----- stderr -----

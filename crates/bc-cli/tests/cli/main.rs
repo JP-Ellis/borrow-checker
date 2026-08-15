@@ -14,6 +14,7 @@ mod budget;
 mod commodity;
 mod export;
 mod import;
+mod meta;
 mod profile;
 mod report;
 mod restore;

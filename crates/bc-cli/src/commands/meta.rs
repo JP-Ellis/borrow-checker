@@ -15,10 +15,200 @@ use bc_models::MetaEntry;
 use bc_models::MetaKey;
 use bc_models::MetaType;
 use bc_models::MetaValue;
+use clap::Subcommand;
 
 use crate::context::AppContext;
 use crate::error::CliError;
 use crate::error::CliResult;
+
+/// Arguments for the `meta` subcommand.
+#[non_exhaustive]
+#[derive(Debug, clap::Args)]
+pub struct Args {
+    /// The registry operation to perform.
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+/// Available registry operations.
+#[derive(Debug, Subcommand)]
+#[non_exhaustive]
+pub enum Command {
+    /// List every registered key with its type.
+    List,
+    /// Change a key's type, refitting every entry stored under it.
+    ///
+    /// Widening to `text` keeps every value. Narrowing parses each one and
+    /// flags whatever will not read as the new type; nothing is discarded.
+    Retype {
+        /// The registered key to retype.
+        key: String,
+        /// The type it should hold from now on.
+        #[arg(value_enum, value_name = "TYPE")]
+        ty: TypeArg,
+    },
+    /// Rename a key, carrying every entry under it across.
+    Rename {
+        /// The registered key to rename.
+        from: String,
+        /// Its new name.
+        to: String,
+    },
+}
+
+/// CLI representation of [`MetaType`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum TypeArg {
+    /// Free text; anything reads as this, so a text key never mismatches.
+    Text,
+    /// An arbitrary-precision decimal number.
+    Number,
+    /// `true` or `false`.
+    Boolean,
+    /// A `YYYY-MM-DD` calendar date.
+    Date,
+    /// An RFC 3339 instant.
+    Timestamp,
+    /// A decimal value and a commodity code, e.g. `42.00 AUD`.
+    Amount,
+    /// A reference to an account, written as a path or an id.
+    Account,
+}
+
+impl From<TypeArg> for MetaType {
+    #[inline]
+    fn from(arg: TypeArg) -> Self {
+        match arg {
+            TypeArg::Text => Self::Text,
+            TypeArg::Number => Self::Number,
+            TypeArg::Boolean => Self::Boolean,
+            TypeArg::Date => Self::Date,
+            TypeArg::Timestamp => Self::Timestamp,
+            TypeArg::Amount => Self::Amount,
+            TypeArg::Account => Self::Account,
+        }
+    }
+}
+
+/// Renders a type as the name the registry stores and the CLI accepts.
+///
+/// # Arguments
+///
+/// * `ty` - The type to name.
+fn type_name(ty: MetaType) -> &'static str {
+    match ty {
+        MetaType::Text => "text",
+        MetaType::Number => "number",
+        MetaType::Boolean => "boolean",
+        MetaType::Date => "date",
+        MetaType::Timestamp => "timestamp",
+        MetaType::Amount => "amount",
+        MetaType::Account => "account",
+    }
+}
+
+/// Executes the `meta` subcommand.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] for an invalid key, and [`CliError::Core`] from
+/// the registry.
+pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
+    match args.command {
+        Command::List => list(ctx).await,
+        Command::Retype { key, ty } => retype(ctx, &key, ty.into()).await,
+        Command::Rename { from, to } => rename(ctx, &from, &to).await,
+    }
+}
+
+/// Lists every registered key.
+///
+/// # Errors
+///
+/// Returns [`CliError::Core`] from the registry and [`CliError::Json`] from
+/// serialisation.
+async fn list(ctx: &AppContext) -> CliResult<()> {
+    let keys = ctx.metadata.list().await?;
+    if ctx.json {
+        return crate::output::print_json(&keys);
+    }
+    if keys.is_empty() {
+        #[expect(clippy::print_stdout, reason = "CLI output")]
+        {
+            println!("No metadata keys.");
+        }
+        return Ok(());
+    }
+    let rows: Vec<Vec<String>> = keys
+        .iter()
+        .map(|def| {
+            vec![
+                def.key().to_string(),
+                type_name(def.ty()).to_owned(),
+                def.created_at().to_string(),
+            ]
+        })
+        .collect();
+    crate::output::print_table(&["KEY", "TYPE", "REGISTERED"], &rows);
+    Ok(())
+}
+
+/// Retypes one key.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] for an invalid key, and [`CliError::Core`] when
+/// the key is not registered or the refit fails.
+async fn retype(ctx: &AppContext, raw_key: &str, ty: MetaType) -> CliResult<()> {
+    let key = parse_meta_key(raw_key)?;
+    // `retype` answers with the type it replaced, so naming both costs no
+    // second query.
+    let from = ctx.metadata.retype(&key, ty).await?;
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "key": key.as_str(),
+            "from": type_name(from),
+            "to": type_name(ty),
+        }));
+    }
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        if from == ty {
+            println!("Key '{key}' is already {}", type_name(ty));
+        } else {
+            println!(
+                "Retyped '{key}': {} -> {}",
+                type_name(from),
+                type_name(ty)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Renames one key.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] for an invalid key, and [`CliError::Core`] when
+/// `from` is not registered or `to` already is.
+async fn rename(ctx: &AppContext, raw_from: &str, raw_to: &str) -> CliResult<()> {
+    let from = parse_meta_key(raw_from)?;
+    let to = parse_meta_key(raw_to)?;
+    ctx.metadata.rename(&from, &to).await?;
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "from": from.as_str(),
+            "to": to.as_str(),
+        }));
+    }
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("Renamed '{from}' to '{to}'");
+    }
+    Ok(())
+}
 
 /// Splits one `--meta KEY=VALUE` argument into its key and its raw value.
 ///
