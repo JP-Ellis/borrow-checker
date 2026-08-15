@@ -20,6 +20,7 @@ Commands:
   restore            Restore the database from a backup file
   budget             Manage budgets: create, list, archive, status
   tag                Manage tags: create, rename, delete, list
+  meta               Manage the metadata key registry: list, retype, rename
   commodity          Manage commodities: list, create, update, delete
   plugin             Manage plugins (requires Milestone 6)
   profile            Manage import profiles (create, list, show, edit, remove)

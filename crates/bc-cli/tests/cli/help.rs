@@ -21,6 +21,7 @@ fn top_level_help(#[case] flag: &str) {
 #[case("account")]
 #[case("transaction")]
 #[case("import")]
+#[case("meta")]
 #[case("export")]
 #[case("report")]
 #[case("budget")]
