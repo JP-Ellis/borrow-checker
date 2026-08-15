@@ -6,6 +6,7 @@ use bc_models::AccountId;
 use bc_models::Amount;
 use bc_models::CommodityCode;
 use bc_models::Cost;
+use bc_models::Metadata;
 use bc_models::Posting;
 use bc_models::PostingId;
 use bc_models::Reconciliation;
@@ -145,6 +146,30 @@ fn merge_preserving(current: &Transaction, updated: &Transaction) -> Transaction
         .build()
 }
 
+/// Reports whether an edit moved `before` to `after`.
+///
+/// Entries are compared by key, by value, and by position.
+/// [`bc_models::MetaEntry::mismatched`] is excluded: the write path derives that
+/// flag from the value against the key's registered type and overwrites
+/// whatever an incoming entry claims, so two lists differing in it alone
+/// describe the same edit and must not produce an event.
+///
+/// # Arguments
+///
+/// * `before` - The stored list.
+/// * `after` - The desired list.
+///
+/// # Returns
+///
+/// `true` when the two lists differ in anything an edit can express.
+fn metadata_changed(before: &Metadata, after: &Metadata) -> bool {
+    before.len() != after.len()
+        || before
+            .iter()
+            .zip(after.iter())
+            .any(|(old, new)| old.key() != new.key() || old.value() != new.value())
+}
+
 /// Computes the events that turn `prev` into `posting`, both being the same
 /// leg of transaction `id` before and after an edit.
 ///
@@ -186,7 +211,7 @@ fn diff_posting(id: &TransactionId, prev: &Posting, posting: &Posting) -> Vec<Ev
             to: new_spread,
         });
     }
-    if prev.metadata() != posting.metadata() {
+    if metadata_changed(prev.metadata(), posting.metadata()) {
         events.push(Event::PostingMetadataChanged {
             id: id.clone(),
             posting_id: posting.id().clone(),
@@ -250,7 +275,7 @@ pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> 
         });
     }
 
-    if current.metadata() != updated.metadata() {
+    if metadata_changed(current.metadata(), updated.metadata()) {
         events.push(Event::TransactionMetadataChanged {
             id: id.clone(),
             before: current.metadata().clone(),
@@ -3938,7 +3963,7 @@ mod tests {
                         .id(p.id().clone())
                         .account_id(p.account_id().clone())
                         .maybe_amount(p.amount().cloned())
-                        .metadata(carried.take().unwrap_or_default())
+                        .metadata(carried.take().unwrap_or_else(|| p.metadata().clone()))
                         .tag_ids(p.tag_ids().to_vec())
                         .build()
                 })
@@ -4357,10 +4382,15 @@ mod tests {
         ]));
 
         assert_eq!(
-            diff_transaction(&current, &updated).len(),
-            1,
+            diff_transaction(&current, &updated),
+            vec![Event::TransactionMetadataChanged {
+                id: current.id().clone(),
+                before: text_meta(&[("payee", "Generic Grocer"), ("note", "weekly shop")]),
+                after: text_meta(&[("note", "weekly shop"), ("payee", "Generic Grocer")]),
+            }],
             "position is the display order and the editor lets a user set it, \
-             so a reorder across keys is an edit the log has to hold"
+             so a reorder across keys is an edit the log has to hold, and the \
+             payload has to carry both orderings for a replay to reproduce it"
         );
     }
 
@@ -4386,6 +4416,28 @@ mod tests {
     fn diff_emits_nothing_when_metadata_is_unchanged() {
         let tx = sample_tx().with_metadata(text_meta(&[("payee", "Generic Grocer")]));
         assert_eq!(diff_transaction(&tx, &tx), vec![]);
+    }
+
+    #[test]
+    fn the_mismatched_flag_alone_is_not_an_edit() {
+        let flagged = sample_tx().with_metadata(Metadata::new(vec![
+            MetaEntry::builder()
+                .key(key("invoice"))
+                .value(MetaValue::Text("not a number".to_owned()))
+                .mismatched(true)
+                .build(),
+        ]));
+        let rebuilt = flagged
+            .clone()
+            .with_metadata(text_meta(&[("invoice", "not a number")]));
+
+        assert_eq!(
+            diff_transaction(&flagged, &rebuilt),
+            vec![],
+            "the write path derives `mismatched` and ignores what the entry \
+             claims, so a caller that rebuilds an entry without the flag has \
+             edited nothing and must not land an event"
+        );
     }
 
     #[test]
