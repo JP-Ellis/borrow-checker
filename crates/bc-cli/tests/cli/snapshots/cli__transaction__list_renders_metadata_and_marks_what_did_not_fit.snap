@@ -1,0 +1,13 @@
+---
+source: crates/bc-cli/tests/cli/transaction.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+ ID                                     | DATE       | DESCRIPTION            | AMOUNTS  | META
+=================================================================================================================================================
+ [TRANSACTION_ID] | 2026-03-01 | Generic Grocer: Coffee | 5.00 AUD | payee=Generic Grocer, !invoice=awaiting the paperwork
+----------------------------------------+------------+------------------------+----------+-------------------------------------------------------
+ [TRANSACTION_ID] | 2026-03-01 | Coffee                 | 5.00 AUD | invoice=1502
+----- stderr -----

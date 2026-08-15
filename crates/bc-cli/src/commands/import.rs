@@ -1644,6 +1644,7 @@ mod tests {
             loans: bc_core::LoanService::new(pool.clone()),
             budgets: bc_core::BudgetService::new(pool.clone()),
             tags: bc_core::TagService::new(pool.clone()),
+            metadata: bc_core::MetadataService::new(pool.clone()),
             backup: bc_core::BackupService::new(pool.clone(), db_path.clone(), policy),
             db_path,
             sources: bc_core::SourceService::new(pool.clone()),

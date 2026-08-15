@@ -5,6 +5,8 @@
     reason = "integration test file — tests/ directory is implicitly cfg(test)"
 )]
 
+use pretty_assertions::assert_eq;
+
 use crate::cmd_snapshot;
 use crate::common::TestContext;
 
@@ -275,55 +277,336 @@ fn amend_after_reversal_succeeds() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
-#[test]
-fn amend_clear_payee() {
-    let ctx = TestContext::new();
-    let (checking_id, expenses_id) = setup_accounts(&ctx);
+/// Adds a balanced two-leg transaction carrying `extra` arguments, and returns
+/// its ID.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn add_with(ctx: &TestContext, checking: &str, expenses: &str, extra: &[&str]) -> String {
+    let mut args: Vec<String> = ["--json", "transaction", "add", "--date", "2026-03-01"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    args.push("--description".to_owned());
+    args.push("Coffee".to_owned());
+    args.extend(extra.iter().map(|s| (*s).to_owned()));
+    args.push("--posting".to_owned());
+    args.push(format!("{checking}:-5.00:AUD"));
+    args.push("--posting".to_owned());
+    args.push(format!("{expenses}:5.00:AUD"));
 
-    let out = ctx
-        .command()
-        .args([
-            "--json",
-            "transaction",
-            "add",
-            "--date",
-            "2026-03-01",
-            "--description",
-            "Coffee",
-            "--payee",
-            "Café Central",
-            "--posting",
-            &format!("{checking_id}:-5.00:AUD"),
-            "--posting",
-            &format!("{expenses_id}:5.00:AUD"),
-        ])
-        .output()
-        .expect("add");
+    let out = ctx.command().args(&args).output().expect("add");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
-    let tx_id = json
-        .get("id")
+    json.get("id")
         .and_then(serde_json::Value::as_str)
         .expect("id")
-        .to_owned();
+        .to_owned()
+}
 
-    // Verify the payee exists before clearing.
-    let before: serde_json::Value = serde_json::from_slice(
-        &ctx.command()
-            .args(["--json", "transaction", "list"])
-            .output()
-            .expect("list")
-            .stdout,
-    )
-    .expect("json");
-    assert!(
-        before
-            .as_array()
-            .expect("array")
-            .iter()
-            .any(|tx| tx.get("payee").and_then(serde_json::Value::as_str) == Some("Café Central"))
+/// Reads a transaction's metadata as `(key, value)` pairs in stored order,
+/// where each value is its externally-tagged JSON object.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn metadata_of(stdout: &[u8]) -> Vec<(String, serde_json::Value)> {
+    let json: serde_json::Value = serde_json::from_slice(stdout).expect("json");
+    json.get("metadata")
+        .and_then(serde_json::Value::as_array)
+        .expect("metadata array")
+        .iter()
+        .map(|entry| {
+            (
+                entry
+                    .get("key")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("key")
+                    .to_owned(),
+                entry.get("value").expect("value").clone(),
+            )
+        })
+        .collect()
+}
+
+/// Re-reads one transaction out of `transaction list`, as JSON.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn reload(ctx: &TestContext, tx_id: &str) -> Vec<u8> {
+    let out = ctx
+        .command()
+        .args(["--json", "transaction", "list"])
+        .output()
+        .expect("list");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let found = json
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|tx| tx.get("id").and_then(serde_json::Value::as_str) == Some(tx_id))
+        .expect("the transaction just written")
+        .clone();
+    serde_json::to_vec(&found).expect("re-serialise")
+}
+
+#[test]
+fn add_takes_a_new_keys_type_from_its_value() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &[
+            "--meta",
+            "payee=Generic Grocer",
+            "--meta",
+            "invoice=1502",
+            "--meta",
+            "reimbursed=false",
+            "--meta",
+            "due=2026-04-15",
+        ],
+    );
+
+    assert_eq!(
+        metadata_of(&reload(&ctx, &tx_id)),
+        vec![
+            (
+                "payee".to_owned(),
+                serde_json::json!({ "text": "Generic Grocer" })
+            ),
+            ("invoice".to_owned(), serde_json::json!({ "number": "1502" })),
+            (
+                "reimbursed".to_owned(),
+                serde_json::json!({ "boolean": false })
+            ),
+            ("due".to_owned(), serde_json::json!({ "date": "2026-04-15" })),
+        ],
+        "a key the registry has not seen takes the type its value reads as"
+    );
+}
+
+#[test]
+fn add_takes_a_registered_keys_type_over_its_value() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    // Registers `invoice` as a number.
+    add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &["--meta", "invoice=1502"],
+    );
+    let second = add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &["--meta", "invoice=1600"],
+    );
+
+    assert_eq!(
+        metadata_of(&reload(&ctx, &second)),
+        vec![("invoice".to_owned(), serde_json::json!({ "number": "1600" }))],
+        "the registry decides the type, so the second write is a number too"
+    );
+}
+
+#[test]
+fn a_value_the_registered_type_cannot_read_is_stored_flagged() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &["--meta", "invoice=1502"],
+    );
+    let second = add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &["--meta", "invoice=awaiting the paperwork"],
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&reload(&ctx, &second)).expect("valid JSON");
+    let entry = json
+        .get("metadata")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|entries| entries.first())
+        .expect("one entry");
+    assert_eq!(
+        entry.get("value"),
+        Some(&serde_json::json!({ "text": "awaiting the paperwork" })),
+        "nothing is lost: the text is kept verbatim"
+    );
+    assert_eq!(
+        entry.get("mismatched"),
+        Some(&serde_json::Value::Bool(true)),
+        "and the store flags what it could not fit"
+    );
+}
+
+#[test]
+fn a_meta_value_may_contain_an_equals_sign() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &["--meta", "query=type=expense"],
+    );
+
+    assert_eq!(
+        metadata_of(&reload(&ctx, &tx_id)),
+        vec![(
+            "query".to_owned(),
+            serde_json::json!({ "text": "type=expense" })
+        )],
+        "the split is on the first '=' only"
+    );
+}
+
+#[test]
+fn one_key_may_carry_several_entries() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &["--meta", "note=first", "--meta", "note=second"],
+    );
+
+    assert_eq!(
+        metadata_of(&reload(&ctx, &tx_id)),
+        vec![
+            ("note".to_owned(), serde_json::json!({ "text": "first" })),
+            ("note".to_owned(), serde_json::json!({ "text": "second" })),
+        ],
+        "repeated keys are legal and there is nothing to collapse"
+    );
+}
+
+#[test]
+fn amend_replaces_one_key_in_place_and_leaves_the_others() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &[
+            "--meta",
+            "payee=Generic Grocer",
+            "--meta",
+            "note=weekly shop",
+        ],
+    );
+
+    ctx.command()
+        .args([
+            "transaction",
+            "amend",
+            &tx_id,
+            "--meta",
+            "payee=Other Grocer",
+        ])
+        .output()
+        .expect("amend");
+
+    assert_eq!(
+        metadata_of(&reload(&ctx, &tx_id)),
+        vec![
+            (
+                "payee".to_owned(),
+                serde_json::json!({ "text": "Other Grocer" })
+            ),
+            (
+                "note".to_owned(),
+                serde_json::json!({ "text": "weekly shop" })
+            ),
+        ],
+        "position is the display order, so a replaced key keeps the place it held"
+    );
+}
+
+#[test]
+fn amend_clear_meta_removes_every_entry_under_the_key() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &[
+            "--meta",
+            "note=first",
+            "--meta",
+            "payee=Generic Grocer",
+            "--meta",
+            "note=second",
+        ],
+    );
+
+    ctx.command()
+        .args(["transaction", "amend", &tx_id, "--clear-meta", "note"])
+        .output()
+        .expect("amend");
+
+    assert_eq!(
+        metadata_of(&reload(&ctx, &tx_id)),
+        vec![(
+            "payee".to_owned(),
+            serde_json::json!({ "text": "Generic Grocer" })
+        )],
+        "clearing a key removes every entry under it, not just the first"
+    );
+}
+
+#[test]
+fn list_renders_metadata_and_marks_what_did_not_fit() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    // Registers `invoice` as a number, then writes text under it.
+    add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &["--meta", "invoice=1502"],
+    );
+    add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &[
+            "--meta",
+            "payee=Generic Grocer",
+            "--meta",
+            "invoice=awaiting the paperwork",
+        ],
     );
 
     let mut cmd = ctx.command();
-    cmd.args(["--json", "transaction", "amend", &tx_id, "--clear-payee"]);
+    cmd.args(["transaction", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn amend_rejects_setting_and_clearing_one_key() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = add_with(
+        &ctx,
+        &checking_id,
+        &expenses_id,
+        &["--meta", "note=first"],
+    );
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "amend",
+        &tx_id,
+        "--meta",
+        "note=second",
+        "--clear-meta",
+        "note",
+    ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
