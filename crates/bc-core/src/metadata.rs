@@ -19,7 +19,11 @@ use crate::BcError;
 use crate::BcResult;
 use crate::db::from_db_str;
 use crate::db::to_db_str;
+use crate::metadata::coerce::Coerced;
+use crate::metadata::coerce::coerce;
 use crate::transaction::sql_placeholders;
+
+pub(crate) mod coerce;
 
 /// Which of the two metadata tables a call addresses.
 ///
@@ -228,10 +232,19 @@ pub(crate) async fn register_key_if_absent(
 /// `position` is the entry's index in `metadata`, so it orders the owner's whole
 /// list across keys rather than within a key.
 ///
-/// A value whose type differs from its key's registered type is stored as its
-/// canonical string and flagged `mismatched`, never rejected. Rescuing such a
-/// value by parsing it into the registered type is phase 3's; this phase flags
-/// every one of them.
+/// A value is fitted to its key's registered type by the rule in
+/// [`crate::metadata::coerce`]: identity and any value into a `text` key fit
+/// outright, `text` into another type is parsed, and every other cross-type
+/// pair is stored as its canonical string and flagged `mismatched`, never
+/// rejected.
+///
+/// [`MetaEntry::mismatched`] on an incoming entry is advisory and ignored. The
+/// stored flag is derived here from the value and the registered type, so an
+/// entry whose value has since been repaired stops being flagged.
+///
+/// An account value stores its resolved path in `value_text` whatever its key
+/// is registered as, and whether or not it fitted. The path is the one thing
+/// that outlives the account.
 ///
 /// # Arguments
 ///
@@ -259,14 +272,24 @@ pub(crate) async fn insert(
 
     for (index, entry) in metadata.iter().enumerate() {
         let registered = register_key_if_absent(db_tx, entry.key(), entry.value().ty()).await?;
-        let mismatched = entry.mismatched() || entry.value().ty() != registered;
         let position = i64::try_from(index)
             .map_err(|_err| BcError::BadData("metadata position exceeds i64::MAX".into()))?;
-        let columns = if mismatched {
-            ValueColumns::flagged(entry.value())
-        } else {
-            value_columns(db_tx, entry.value()).await?
+        // `entry.mismatched()` is deliberately not read. The flag is derived
+        // from the value against the key's current registered type, so an
+        // entry repaired by the caller stops being flagged on the next write.
+        let (mut columns, mismatched) = match coerce(entry.value(), registered) {
+            Coerced::Fits(ref fitted) => (value_columns(db_tx, fitted).await?, false),
+            Coerced::Mismatch => (ValueColumns::flagged(entry.value()), true),
         };
+        // An account value canonicalises to the bare id, and `value_text` must
+        // hold the path. Keyed on the value rather than on the key's
+        // registered type or on whether the value fitted, so no row anywhere
+        // stores an id.
+        if let MetaValue::Account(ref id) = *entry.value()
+            && let Some(path) = account_path(db_tx, id).await?
+        {
+            columns.text = path;
+        }
 
         sqlx::query(sqlx::AssertSqlSafe(statement.clone()))
             .bind(owner_id)
@@ -755,12 +778,213 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn an_explicitly_mismatched_entry_keeps_its_flag(pool: SqlitePool) {
+    async fn an_incoming_mismatch_flag_is_advisory(pool: SqlitePool) {
         let tx = seed_transaction(&pool).await;
         let entry = MetaEntry::mismatch(key("invoice"), "not-a-number");
-        write(&pool, &tx, &Metadata::new(vec![entry.clone()])).await;
+        write(&pool, &tx, &Metadata::new(vec![entry])).await;
 
-        assert_eq!(read(&pool, &tx).await, Metadata::new(vec![entry]));
+        assert_eq!(
+            read(&pool, &tx).await,
+            Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Text("not-a-number".to_owned())
+            )]),
+            "`mismatched` is derived from the value against the key's \
+             registered type, never inherited from the caller: `invoice` \
+             registers as text on this very write, so the value fits and the \
+             flag clears"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn text_is_rescued_into_the_registered_type(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write(
+            &pool,
+            &tx,
+            &Metadata::new(vec![
+                MetaEntry::new(key("invoice"), MetaValue::Number(dec!(1502))),
+                MetaEntry::new(key("invoice"), MetaValue::Text("1503".to_owned())),
+            ]),
+        )
+        .await;
+
+        let back = read(&pool, &tx).await;
+        let seen: Vec<(&MetaValue, bool)> =
+            back.iter().map(|e| (e.value(), e.mismatched())).collect();
+        assert_eq!(
+            seen,
+            vec![
+                (&MetaValue::Number(dec!(1502)), false),
+                (&MetaValue::Number(dec!(1503)), false),
+            ],
+            "text that reads as the registered type is parsed, not flagged"
+        );
+
+        let shadows: Vec<Option<f64>> = sqlx::query_scalar(
+            "SELECT value_num FROM transaction_metadata WHERE transaction_id = ? \
+             ORDER BY position",
+        )
+        .bind(&tx)
+        .fetch_all(&pool)
+        .await
+        .expect("shadows");
+        assert_eq!(
+            shadows,
+            vec![Some(1502.0_f64), Some(1503.0_f64)],
+            "a rescued value earns its typed columns like any other"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn every_type_fits_a_text_key_as_its_canonical_string(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write(
+            &pool,
+            &tx,
+            &Metadata::new(vec![
+                MetaEntry::new(key("label"), MetaValue::Text("first".to_owned())),
+                MetaEntry::new(key("label"), MetaValue::Number(dec!(1502.50))),
+                MetaEntry::new(key("label"), MetaValue::Boolean(true)),
+                MetaEntry::new(key("label"), MetaValue::Date(date(2026, 1, 15))),
+                MetaEntry::new(
+                    key("label"),
+                    MetaValue::Amount(Amount::new(dec!(42.00), CommodityCode::new("AUD"))),
+                ),
+            ]),
+        )
+        .await;
+
+        let back = read(&pool, &tx).await;
+        let seen: Vec<(String, bool)> = back
+            .iter()
+            .map(|e| (e.value().canonical(), e.mismatched()))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("first".to_owned(), false),
+                ("1502.50".to_owned(), false),
+                ("true".to_owned(), false),
+                ("2026-01-15".to_owned(), false),
+                ("42.00 AUD".to_owned(), false),
+            ],
+            "a text key accepts anything, unflagged"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_cross_type_value_is_still_flagged(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write(
+            &pool,
+            &tx,
+            &Metadata::new(vec![
+                MetaEntry::new(key("invoice"), MetaValue::Number(dec!(1502))),
+                MetaEntry::new(key("invoice"), MetaValue::Boolean(true)),
+            ]),
+        )
+        .await;
+
+        let back = read(&pool, &tx).await;
+        let flags: Vec<bool> = back.iter().map(MetaEntry::mismatched).collect();
+        assert_eq!(
+            flags,
+            vec![false, true],
+            "boolean into a number key has no rescue; only text does"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_account_value_in_a_text_key_stores_its_path(pool: SqlitePool) {
+        let accounts = crate::AccountService::new(pool.clone());
+        let parent = accounts
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create parent");
+        let account = accounts
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&parent)
+            .call()
+            .await
+            .expect("create account");
+
+        let tx = seed_transaction(&pool).await;
+        write(
+            &pool,
+            &tx,
+            &Metadata::new(vec![
+                MetaEntry::new(key("offset"), MetaValue::Text("Assets:Cash".to_owned())),
+                MetaEntry::new(key("offset"), MetaValue::Account(account)),
+            ]),
+        )
+        .await;
+
+        let rows: Vec<(String, Option<String>, i64)> = sqlx::query_as(
+            "SELECT value_text, value_account, mismatched FROM transaction_metadata \
+             WHERE transaction_id = ? ORDER BY position",
+        )
+        .bind(&tx)
+        .fetch_all(&pool)
+        .await
+        .expect("rows");
+        assert_eq!(
+            rows,
+            vec![
+                ("Assets:Cash".to_owned(), None, 0),
+                ("Assets:Savings".to_owned(), None, 0),
+            ],
+            "the account fits the text key, and value_text keeps the path \
+             rather than the bare id"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_mismatched_account_value_still_stores_its_path(pool: SqlitePool) {
+        let account = crate::AccountService::new(pool.clone())
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+
+        let tx = seed_transaction(&pool).await;
+        write(
+            &pool,
+            &tx,
+            &Metadata::new(vec![
+                MetaEntry::new(key("invoice"), MetaValue::Number(dec!(1502))),
+                MetaEntry::new(key("invoice"), MetaValue::Account(account)),
+            ]),
+        )
+        .await;
+
+        let rows: Vec<(String, Option<String>, i64)> = sqlx::query_as(
+            "SELECT value_text, value_account, mismatched FROM transaction_metadata \
+             WHERE transaction_id = ? ORDER BY position",
+        )
+        .bind(&tx)
+        .fetch_all(&pool)
+        .await
+        .expect("rows");
+        assert_eq!(
+            rows,
+            vec![
+                ("1502".to_owned(), None, 0),
+                ("Savings".to_owned(), None, 1),
+            ],
+            "an account value carries its path into value_text whatever the \
+             key is registered as, flagged or not; no row holds a bare id"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
