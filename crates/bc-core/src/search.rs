@@ -46,7 +46,10 @@ pub struct TransactionQuery {
     pub accounts: Vec<AccountId>,
     /// Tag ids; multiple union.
     pub tags: Vec<TagId>,
-    /// Case-insensitive substring over payee OR narration.
+    /// Case-insensitive substring over the description.
+    ///
+    /// Metadata is deliberately out of reach: bare free-text search does not
+    /// look inside it, and payee search waits on the query language (#429).
     pub text: Option<String>,
     /// Magnitude predicate.
     pub amount: Option<AmountQuery>,
@@ -321,10 +324,7 @@ impl Service {
             clauses.push("t.date < ?".to_owned());
         }
         if query.text.is_some() {
-            clauses.push(
-                "(lower(t.payee) LIKE ? ESCAPE '\\' OR lower(t.description) LIKE ? ESCAPE '\\')"
-                    .to_owned(),
-            );
+            clauses.push("lower(t.description) LIKE ? ESCAPE '\\'".to_owned());
         }
         if query.reconciliation.is_some() {
             clauses.push("t.reconciliation = ?".to_owned());
@@ -359,7 +359,7 @@ impl Service {
             format!("WHERE {}", clauses.join(" AND "))
         };
         let sql = format!(
-            "SELECT t.id, t.date, t.payee, t.description, t.note, t.reconciliation, t.created_at \
+            "SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
              FROM transactions t {where_sql} ORDER BY t.date DESC, t.id ASC"
         );
 
@@ -379,7 +379,7 @@ impl Service {
             // matched case-sensitively; proper Unicode folding would need an
             // ICU-backed collation (deferred, see #242).
             let needle = format!("%{}%", escape_like(&text.to_ascii_lowercase()));
-            stmt = stmt.bind(needle.clone()).bind(needle);
+            stmt = stmt.bind(needle);
         }
         if let Some(rec) = query.reconciliation {
             stmt = stmt.bind(to_db_str(rec)?);
@@ -928,15 +928,15 @@ mod search_tests {
     use crate::balance::Engine;
     use crate::transaction::Service;
 
-    /// Builds a two-leg AUD transaction on the given date with payee text.
+    /// Builds a two-leg AUD transaction on the given date with description text.
     fn tx_on(
         acc_a: &bc_models::AccountId,
         acc_b: &bc_models::AccountId,
         d: Date,
-        payee: &str,
+        description: &str,
         value: rust_decimal::Decimal,
     ) -> Transaction {
-        tx_with_id(TransactionId::new(), acc_a, acc_b, d, payee, value)
+        tx_with_id(TransactionId::new(), acc_a, acc_b, d, description, value)
     }
 
     /// Builds a two-leg AUD transaction with an explicit id, so tests can
@@ -950,14 +950,13 @@ mod search_tests {
         acc_a: &bc_models::AccountId,
         acc_b: &bc_models::AccountId,
         d: Date,
-        payee: &str,
+        description: &str,
         value: rust_decimal::Decimal,
     ) -> Transaction {
         Transaction::builder()
             .id(id)
             .date(d)
-            .payee(payee.to_owned())
-            .description("desc")
+            .description(description.to_owned())
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
@@ -1077,7 +1076,7 @@ mod search_tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn text_matches_payee_case_insensitively(pool: sqlx::SqlitePool) {
+    async fn text_matches_description_case_insensitively(pool: sqlx::SqlitePool) {
         let accts = crate::account::Service::new(pool.clone());
         let a = accts
             .create()
@@ -1110,8 +1109,68 @@ mod search_tests {
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         assert_eq!(
-            out.first().expect("one result").transaction.payee(),
-            Some("Amazon")
+            out.first().expect("one result").transaction.description(),
+            "Amazon"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn text_does_not_reach_into_metadata(pool: sqlx::SqlitePool) {
+        // Bare free-text search is description-only by design. Payee lives in
+        // metadata now, so searching for it finds nothing until the metadata
+        // query language lands (#429). This test pins the gap so the next
+        // person to "fix" free-text search finds the reason first.
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        let svc = Service::new(pool.clone());
+
+        let base = tx_on(&a, &b, date(2026, 6, 1), "Weekly shop", dec!(100));
+        let tx = Transaction::builder()
+            .id(base.id().clone())
+            .date(base.date())
+            .description(base.description().to_owned())
+            .reconciliation(base.reconciliation())
+            .created_at(*base.created_at())
+            .metadata(bc_models::Metadata::new(vec![bc_models::MetaEntry::new(
+                bc_models::MetaKey::new("payee").expect("valid key"),
+                bc_models::MetaValue::Text("Generic Grocer".to_owned()),
+            )]))
+            .postings(base.postings().to_vec())
+            .build();
+        svc.create(tx).await.expect("create");
+
+        let query = TransactionQuery {
+            text: Some("grocer".to_owned()),
+            ..Default::default()
+        };
+        assert!(
+            svc.search(&query).await.expect("search").is_empty(),
+            "a needle that only the payee metadata carries must not match"
+        );
+
+        let by_description = TransactionQuery {
+            text: Some("weekly".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            svc.search(&by_description).await.expect("search").len(),
+            1,
+            "the same transaction is still reachable by its description"
         );
     }
 
@@ -1149,8 +1208,8 @@ mod search_tests {
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         assert_eq!(
-            out.first().expect("one result").transaction.payee(),
-            Some("50% off")
+            out.first().expect("one result").transaction.description(),
+            "50% off"
         );
     }
 
@@ -1272,8 +1331,8 @@ mod search_tests {
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         assert_eq!(
-            out.first().expect("one result").transaction.payee(),
-            Some("big")
+            out.first().expect("one result").transaction.description(),
+            "big"
         );
     }
 
@@ -1314,8 +1373,8 @@ mod search_tests {
         // dropped by the coarse SQL filter's f64 rounding.
         assert_eq!(out.len(), 1);
         assert_eq!(
-            out.first().expect("one result").transaction.payee(),
-            Some("boundary")
+            out.first().expect("one result").transaction.description(),
+            "boundary"
         );
     }
 
@@ -1355,8 +1414,8 @@ mod search_tests {
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         assert_eq!(
-            out.first().expect("one result").transaction.payee(),
-            Some("a_b")
+            out.first().expect("one result").transaction.description(),
+            "a_b"
         );
     }
 
@@ -1387,8 +1446,7 @@ mod search_tests {
         let pending = Transaction::builder()
             .id(TransactionId::new())
             .date(date(2026, 6, 2))
-            .payee("pending".to_owned())
-            .description("desc")
+            .description("pending")
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
@@ -1413,8 +1471,8 @@ mod search_tests {
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         assert_eq!(
-            out.first().expect("one result").transaction.payee(),
-            Some("pending")
+            out.first().expect("one result").transaction.description(),
+            "pending"
         );
     }
 
@@ -1450,8 +1508,7 @@ mod search_tests {
         let tagged = Transaction::builder()
             .id(TransactionId::new())
             .date(date(2026, 6, 1))
-            .payee("with tag".to_owned())
-            .description("desc")
+            .description("with tag")
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
@@ -1480,7 +1537,7 @@ mod search_tests {
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         let hit = out.first().expect("one result");
-        assert_eq!(hit.transaction.payee(), Some("with tag"));
+        assert_eq!(hit.transaction.description(), "with tag");
         // A tx-level tag attributes every leg as matched.
         assert_eq!(hit.matched_postings.len(), 2);
     }
@@ -1550,14 +1607,13 @@ mod search_tests {
         concrete_acc: &bc_models::AccountId,
         elided_acc: &bc_models::AccountId,
         d: Date,
-        payee: &str,
+        description: &str,
         value: rust_decimal::Decimal,
     ) -> Transaction {
         Transaction::builder()
             .id(TransactionId::new())
             .date(d)
-            .payee(payee.to_owned())
-            .description("desc")
+            .description(description.to_owned())
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
@@ -1884,12 +1940,11 @@ mod search_tests {
             clippy::arithmetic_side_effects,
             reason = "negating a test fixture's Decimal magnitude to build the offsetting leg"
         )]
-        let tagged = |d: Date, payee: &str, a_amount: rust_decimal::Decimal| {
+        let tagged = |d: Date, description: &str, a_amount: rust_decimal::Decimal| {
             Transaction::builder()
                 .id(TransactionId::new())
                 .date(d)
-                .payee(payee.to_owned())
-                .description("desc")
+                .description(description.to_owned())
                 .postings(vec![
                     Posting::builder()
                         .id(PostingId::new())
@@ -2143,8 +2198,7 @@ mod search_tests {
         let tagged = Transaction::builder()
             .id(TransactionId::new())
             .date(date(2025, 1, 10))
-            .payee("tagged".to_owned())
-            .description("desc")
+            .description("tagged")
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
@@ -2325,8 +2379,7 @@ mod search_tests {
         let split = Transaction::builder()
             .id(TransactionId::new())
             .date(date(2025, 1, 10))
-            .payee("split".to_owned())
-            .description("desc")
+            .description("split")
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
@@ -2399,8 +2452,7 @@ mod search_tests {
         let multi = Transaction::builder()
             .id(TransactionId::new())
             .date(date(2025, 1, 10))
-            .payee("multi".to_owned())
-            .description("desc")
+            .description("multi")
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
