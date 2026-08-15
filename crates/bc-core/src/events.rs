@@ -10,6 +10,7 @@ use bc_models::DepreciationId;
 use bc_models::EventId;
 use bc_models::ImportBatchId;
 use bc_models::LoanId;
+use bc_models::Metadata;
 use bc_models::Period;
 use bc_models::PostingId;
 use bc_models::Reconciliation;
@@ -367,8 +368,8 @@ pub enum Event {
         survivor_date_before: Date,
         /// Survivor's transaction-level tags before the merge (restored on unmerge).
         survivor_tags_before: Vec<TagId>,
-        /// Survivor's labeled extra dates before the merge (restored on unmerge).
-        survivor_extra_dates_before: Vec<(String, Date)>,
+        /// Survivor's metadata before the merge (restored on unmerge).
+        survivor_metadata_before: Metadata,
         /// Survivor's reconciliation state before the merge (restored on unmerge).
         survivor_reconciliation_before: Reconciliation,
     },
@@ -422,20 +423,16 @@ pub struct AbsorbedTransaction {
     pub id: TransactionId,
     /// Value date.
     pub date: Date,
-    /// Optional payee.
-    pub payee: Option<String>,
     /// Description (bank narration captured at import).
     pub description: String,
-    /// Optional user note.
-    pub note: Option<String>,
     /// Reconciliation state.
     pub reconciliation: Reconciliation,
     /// Creation timestamp, preserved for stable identity across a merge/unmerge cycle.
     pub created_at: Timestamp,
     /// Transaction-level tag IDs.
     pub tag_ids: Vec<TagId>,
-    /// Labeled extra dates.
-    pub extra_dates: Vec<(String, Date)>,
+    /// Typed key-value metadata, in display order.
+    pub metadata: Metadata,
     /// The single posting moved onto the survivor.
     pub posting_id: PostingId,
     /// The posting's original position within the absorbed transaction.
@@ -1107,13 +1104,14 @@ mod tests {
         let absorbed = super::AbsorbedTransaction {
             id: TransactionId::new(),
             date: date(2025, 6, 27),
-            payee: Some("ACME".to_owned()),
             description: "TRANSFER".to_owned(),
-            note: None,
             reconciliation: bc_models::Reconciliation::Reconciled,
             created_at: Timestamp::now(),
             tag_ids: Vec::new(),
-            extra_dates: Vec::new(),
+            metadata: bc_models::Metadata::new(vec![bc_models::MetaEntry::new(
+                bc_models::MetaKey::new("payee").expect("valid key"),
+                bc_models::MetaValue::Text("Generic Grocer".to_owned()),
+            )]),
             posting_id: PostingId::new(),
             posting_position: 0,
             source_ref_ids: vec![SourceRefId::new()],
@@ -1124,7 +1122,7 @@ mod tests {
             absorbed,
             survivor_date_before: date(2025, 6, 26),
             survivor_tags_before: Vec::new(),
-            survivor_extra_dates_before: Vec::new(),
+            survivor_metadata_before: bc_models::Metadata::default(),
             survivor_reconciliation_before: bc_models::Reconciliation::Unreconciled,
         };
 

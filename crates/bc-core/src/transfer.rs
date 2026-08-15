@@ -27,8 +27,8 @@ struct SurvivorSnapshot {
     date: jiff::civil::Date,
     /// Survivor's transaction-level tags before the merge.
     tags: Vec<bc_models::TagId>,
-    /// Survivor's labeled extra dates before the merge.
-    extra_dates: Vec<(String, jiff::civil::Date)>,
+    /// Survivor's metadata before the merge.
+    metadata: bc_models::Metadata,
     /// Survivor's reconciliation state before the merge.
     reconciliation: bc_models::Reconciliation,
 }
@@ -111,13 +111,11 @@ impl Service {
         let snapshot = crate::events::AbsorbedTransaction {
             id: absorbed_id.clone(),
             date: absorbed.date(),
-            payee: absorbed.payee().map(str::to_owned),
             description: absorbed.description().to_owned(),
-            note: absorbed.note().map(str::to_owned),
             reconciliation: absorbed.reconciliation(),
             created_at: *absorbed.created_at(),
             tag_ids: absorbed.tag_ids().to_vec(),
-            extra_dates: absorbed.extra_dates().to_vec(),
+            metadata: absorbed.metadata().clone(),
             posting_id: absorbed_posting.id().clone(),
             // `check_mergeable` guarantees the absorbed transaction has exactly one
             // posting, and postings are positioned by enumeration index, so the
@@ -130,7 +128,7 @@ impl Service {
             absorbed: snapshot,
             survivor_date_before: survivor.date(),
             survivor_tags_before: survivor.tag_ids().to_vec(),
-            survivor_extra_dates_before: survivor.extra_dates().to_vec(),
+            survivor_metadata_before: survivor.metadata().clone(),
             survivor_reconciliation_before: survivor.reconciliation(),
         };
 
@@ -177,11 +175,7 @@ impl Service {
         .execute(&mut *db_tx)
         .await?;
 
-        // Union the absorbed transaction's tags and dates onto the survivor. The
-        // `transaction_dates` primary key is `(transaction_id, label)`, so a label
-        // present on both legs cannot hold two dates: `INSERT OR IGNORE` keeps the
-        // survivor's existing date and drops the absorbed leg's value for that
-        // label (the union is over labels, not `(label, date)` pairs).
+        // Union the absorbed transaction's tags onto the survivor.
         sqlx::query(
             "INSERT OR IGNORE INTO transaction_tags (transaction_id, tag_id) \
              SELECT ?, tag_id FROM transaction_tags WHERE transaction_id = ?",
@@ -190,13 +184,17 @@ impl Service {
         .bind(&absorbed_str)
         .execute(&mut *db_tx)
         .await?;
-        sqlx::query(
-            "INSERT OR IGNORE INTO transaction_dates (transaction_id, label, date) \
-             SELECT ?, label, date FROM transaction_dates WHERE transaction_id = ?",
+
+        // Union the metadata by concatenation, dropping only exact duplicates.
+        // Repeated keys are legal, so a key both legs carry is simply two
+        // entries; the survivor's rows are rewritten so `position` stays
+        // contiguous across the joined list.
+        crate::metadata::replace(
+            &mut db_tx,
+            crate::metadata::Owner::Transaction,
+            &survivor_str,
+            &crate::metadata::union(survivor.metadata(), absorbed.metadata()),
         )
-        .bind(&survivor_str)
-        .bind(&absorbed_str)
-        .execute(&mut *db_tx)
         .await?;
 
         // Update the survivor header: earliest date, most-settled reconciliation.
@@ -208,16 +206,19 @@ impl Service {
             .await?;
 
         // Remove the absorbed transaction's now-orphaned child rows, then itself.
-        // (postings + transaction_sources were repointed above; posting_tags follow
-        // the moved posting; transaction_tags/transaction_dates do not cascade.)
+        // (postings + transaction_sources were repointed above; posting_tags and
+        // posting_metadata follow the moved posting; transaction_tags and
+        // transaction_metadata do not cascade.)
         sqlx::query("DELETE FROM transaction_tags WHERE transaction_id = ?")
             .bind(&absorbed_str)
             .execute(&mut *db_tx)
             .await?;
-        sqlx::query("DELETE FROM transaction_dates WHERE transaction_id = ?")
-            .bind(&absorbed_str)
-            .execute(&mut *db_tx)
-            .await?;
+        crate::metadata::delete_for(
+            &mut db_tx,
+            crate::metadata::Owner::Transaction,
+            &absorbed_str,
+        )
+        .await?;
         sqlx::query("DELETE FROM transactions WHERE id = ?")
             .bind(&absorbed_str)
             .execute(&mut *db_tx)
@@ -268,7 +269,7 @@ impl Service {
                         absorbed,
                         survivor_date_before,
                         survivor_tags_before,
-                        survivor_extra_dates_before,
+                        survivor_metadata_before,
                         survivor_reconciliation_before,
                         ..
                     } = event
@@ -277,7 +278,7 @@ impl Service {
                         snapshots.push(SurvivorSnapshot {
                             date: survivor_date_before,
                             tags: survivor_tags_before,
-                            extra_dates: survivor_extra_dates_before,
+                            metadata: survivor_metadata_before,
                             reconciliation: survivor_reconciliation_before,
                         });
                     }
@@ -307,14 +308,12 @@ impl Service {
 
         // Recreate the absorbed transaction header with its original id.
         sqlx::query(
-            "INSERT INTO transactions (id, date, payee, description, note, reconciliation, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&absorbed_str)
         .bind(absorbed.date.to_string())
-        .bind(absorbed.payee.as_deref())
         .bind(&absorbed.description)
-        .bind(absorbed.note.as_deref())
         .bind(crate::db::to_db_str(absorbed.reconciliation)?)
         .bind(absorbed.created_at.to_string())
         .execute(&mut *db_tx)
@@ -332,16 +331,13 @@ impl Service {
                 .execute(&mut *db_tx)
                 .await?;
         }
-        for (label, when) in &absorbed.extra_dates {
-            sqlx::query(
-                "INSERT INTO transaction_dates (transaction_id, label, date) VALUES (?, ?, ?)",
-            )
-            .bind(&absorbed_str)
-            .bind(label)
-            .bind(when.to_string())
-            .execute(&mut *db_tx)
-            .await?;
-        }
+        crate::metadata::insert(
+            &mut db_tx,
+            crate::metadata::Owner::Transaction,
+            &absorbed_str,
+            &absorbed.metadata,
+        )
+        .await?;
 
         // Reverse only what the merge added to the survivor, so edits made while
         // merged survive. The merge unioned the absorbed leg's tags/dates onto the
@@ -358,16 +354,17 @@ impl Service {
                 .execute(&mut *db_tx)
                 .await?;
         }
-        for (label, _) in &absorbed.extra_dates {
-            if snapshot.extra_dates.iter().any(|(l, _)| l == label) {
-                continue;
-            }
-            sqlx::query("DELETE FROM transaction_dates WHERE transaction_id = ? AND label = ?")
-                .bind(&survivor_str)
-                .bind(label)
-                .execute(&mut *db_tx)
-                .await?;
-        }
+        // Metadata is restored by rewriting the survivor's list rather than by
+        // deleting the rows the merge added. A repeated key gives "the row the
+        // merge added" no unambiguous target, and the pre-merge snapshot is an
+        // exact statement of what the list should be.
+        crate::metadata::replace(
+            &mut db_tx,
+            crate::metadata::Owner::Transaction,
+            &survivor_str,
+            &snapshot.metadata,
+        )
+        .await?;
 
         // Move the posting and source refs back to the absorbed transaction.
         sqlx::query("UPDATE postings SET transaction_id = ?, position = ? WHERE id = ?")
@@ -752,6 +749,10 @@ mod db_tests {
     use bc_models::AccountType;
     use bc_models::Amount;
     use bc_models::CommodityCode;
+    use bc_models::MetaEntry;
+    use bc_models::MetaKey;
+    use bc_models::MetaValue;
+    use bc_models::Metadata;
     use bc_models::Posting;
     use bc_models::PostingId;
     use bc_models::Reconciliation;
@@ -792,13 +793,31 @@ mod db_tests {
             when,
             Reconciliation::Reconciled,
             vec![],
-            vec![],
+            Metadata::default(),
         )
         .await
     }
 
+    /// Builds a metadata key, for tests that know their literal is valid.
+    fn meta_key(name: &str) -> MetaKey {
+        MetaKey::new(name).expect("key should be valid")
+    }
+
+    /// Reads one transaction's metadata as `(key, value_text)` in display
+    /// order, so a test can assert on repeats and ordering together.
+    async fn survivor_metadata(pool: &SqlitePool, id: &TransactionId) -> Vec<(String, String)> {
+        sqlx::query_as(
+            "SELECT key, value_text FROM transaction_metadata \
+             WHERE transaction_id = ? ORDER BY position",
+        )
+        .bind(id.to_string())
+        .fetch_all(pool)
+        .await
+        .expect("read metadata")
+    }
+
     /// Like [`leg`], but lets the caller control the reconciliation state,
-    /// tags, and extra dates attached to the transaction at creation time.
+    /// tags, and metadata attached to the transaction at creation time.
     async fn leg_with(
         pool: &SqlitePool,
         acct: &AccountId,
@@ -806,7 +825,7 @@ mod db_tests {
         when: Date,
         reconciliation: Reconciliation,
         tag_ids: Vec<TagId>,
-        extra_dates: Vec<(String, Date)>,
+        metadata: Metadata,
     ) -> TransactionId {
         let money = Amount::new(Decimal::from(amount), CommodityCode::new("AUD"));
         let tx_id = TransactionId::new();
@@ -824,7 +843,7 @@ mod db_tests {
             ])
             .reconciliation(reconciliation)
             .tag_ids(tag_ids)
-            .extra_dates(extra_dates)
+            .metadata(metadata)
             .created_at(Timestamp::now())
             .build();
         crate::TransactionService::new(pool.clone())
@@ -989,7 +1008,7 @@ mod db_tests {
             date(2025, 6, 26),
             Reconciliation::Unreconciled,
             vec![],
-            vec![],
+            Metadata::default(),
         )
         .await;
         let credit = leg_with(
@@ -999,7 +1018,7 @@ mod db_tests {
             date(2025, 6, 27),
             Reconciliation::Reconciled,
             vec![],
-            vec![],
+            Metadata::default(),
         )
         .await;
 
@@ -1031,7 +1050,7 @@ mod db_tests {
             date(2025, 6, 26),
             Reconciliation::Unreconciled,
             vec![],
-            vec![],
+            Metadata::default(),
         )
         .await;
         let credit = leg_with(
@@ -1041,7 +1060,7 @@ mod db_tests {
             date(2025, 6, 27),
             Reconciliation::Reconciled,
             vec![],
-            vec![],
+            Metadata::default(),
         )
         .await;
 
@@ -1092,10 +1111,9 @@ mod db_tests {
             .await
             .expect("create credit-only tag");
 
-        // Both legs carry an extra date under the SAME label with DIFFERENT
-        // values: without `INSERT OR IGNORE` in `merge`, unioning this onto
-        // the survivor violates the `transaction_dates` PK and the merge
-        // fails (Fix 1 regression guard).
+        // Both legs carry an entry under the SAME key with DIFFERENT values.
+        // Metadata permits repeats, so the union keeps both rather than
+        // reconciling them: a key on both legs is simply two entries.
         let debit = leg_with(
             &pool,
             &savings,
@@ -1103,7 +1121,10 @@ mod db_tests {
             date(2025, 6, 26),
             Reconciliation::Reconciled,
             vec![shared_tag.clone(), debit_only_tag.clone()],
-            vec![("value_date".to_owned(), date(2025, 6, 20))],
+            Metadata::new(vec![MetaEntry::new(
+                meta_key("value_date"),
+                MetaValue::Date(date(2025, 6, 20)),
+            )]),
         )
         .await;
         let credit = leg_with(
@@ -1113,7 +1134,10 @@ mod db_tests {
             date(2025, 6, 27),
             Reconciliation::Reconciled,
             vec![shared_tag.clone(), credit_only_tag.clone()],
-            vec![("value_date".to_owned(), date(2025, 6, 21))],
+            Metadata::new(vec![MetaEntry::new(
+                meta_key("value_date"),
+                MetaValue::Date(date(2025, 6, 21)),
+            )]),
         )
         .await;
 
@@ -1140,16 +1164,13 @@ mod db_tests {
             "survivor ends with the unioned tags, shared tag not duplicated"
         );
 
-        let survivor_dates: Vec<(String, String)> =
-            sqlx::query_as("SELECT label, date FROM transaction_dates WHERE transaction_id = ?")
-                .bind(debit.to_string())
-                .fetch_all(&pool)
-                .await
-                .expect("survivor dates");
         assert_eq!(
-            survivor_dates,
-            vec![("value_date".to_owned(), "2025-06-20".to_owned())],
-            "survivor keeps its own value_date on a label collision; absorbed's duplicate is dropped"
+            survivor_metadata(&pool, &debit).await,
+            vec![
+                ("value_date".to_owned(), "2025-06-20".to_owned()),
+                ("value_date".to_owned(), "2025-06-21".to_owned()),
+            ],
+            "both legs' entries survive the union, in survivor-then-absorbed order"
         );
     }
 
@@ -1189,7 +1210,7 @@ mod db_tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn unmerge_restores_exact_pre_merge_tags_and_dates(pool: SqlitePool) {
+    async fn unmerge_restores_exact_pre_merge_tags_and_metadata(pool: SqlitePool) {
         let savings = account(&pool, "Savings").await;
         let mortgage = account(&pool, "Mortgage").await;
 
@@ -1217,7 +1238,10 @@ mod db_tests {
             date(2025, 6, 26),
             Reconciliation::Reconciled,
             vec![shared_tag.clone(), debit_only_tag.clone()],
-            vec![("value_date".to_owned(), date(2025, 6, 20))],
+            Metadata::new(vec![MetaEntry::new(
+                meta_key("value_date"),
+                MetaValue::Date(date(2025, 6, 20)),
+            )]),
         )
         .await;
         let credit = leg_with(
@@ -1227,7 +1251,10 @@ mod db_tests {
             date(2025, 6, 27),
             Reconciliation::Reconciled,
             vec![shared_tag.clone(), credit_only_tag.clone()],
-            vec![("value_date".to_owned(), date(2025, 6, 21))],
+            Metadata::new(vec![MetaEntry::new(
+                meta_key("value_date"),
+                MetaValue::Date(date(2025, 6, 21)),
+            )]),
         )
         .await;
 
@@ -1250,18 +1277,11 @@ mod db_tests {
             "survivor's tags are restored to exactly its pre-merge set"
         );
 
-        let mut survivor_dates: Vec<(String, String)> =
-            sqlx::query_as("SELECT label, date FROM transaction_dates WHERE transaction_id = ?")
-                .bind(debit.to_string())
-                .fetch_all(&pool)
-                .await
-                .expect("survivor dates");
-        survivor_dates.sort();
         assert_eq!(
-            survivor_dates,
+            survivor_metadata(&pool, &debit).await,
             vec![("value_date".to_owned(), "2025-06-20".to_owned())],
-            "survivor's extra dates are restored to exactly its pre-merge set, \
-             not the absorbed's overlapping-label value"
+            "survivor's metadata is restored to exactly its pre-merge list, \
+             not the absorbed's overlapping-key value"
         );
 
         let mut absorbed_tags: Vec<String> =
@@ -1278,17 +1298,10 @@ mod db_tests {
             "absorbed's tags are restored to exactly its pre-merge set"
         );
 
-        let mut absorbed_dates: Vec<(String, String)> =
-            sqlx::query_as("SELECT label, date FROM transaction_dates WHERE transaction_id = ?")
-                .bind(credit.to_string())
-                .fetch_all(&pool)
-                .await
-                .expect("absorbed dates");
-        absorbed_dates.sort();
         assert_eq!(
-            absorbed_dates,
+            survivor_metadata(&pool, &credit).await,
             vec![("value_date".to_owned(), "2025-06-21".to_owned())],
-            "absorbed's extra dates are restored to exactly its pre-merge set"
+            "absorbed's metadata is restored to exactly its pre-merge list"
         );
     }
 
@@ -1318,7 +1331,7 @@ mod db_tests {
             date(2025, 6, 26),
             Reconciliation::Unreconciled,
             vec![debit_tag.clone()],
-            vec![],
+            Metadata::default(),
         )
         .await;
         let credit = leg_with(
@@ -1328,7 +1341,7 @@ mod db_tests {
             date(2025, 6, 27),
             Reconciliation::Unreconciled,
             vec![credit_tag.clone()],
-            vec![],
+            Metadata::default(),
         )
         .await;
 
