@@ -332,16 +332,23 @@ fn parse_meta_line(line: &str) -> Option<MetaEntry> {
         return None;
     }
     let stated = rest.trim_start();
-    if stated.starts_with('"') {
+    let raw = if stated.starts_with('"') {
         let mut input = stated;
-        if let Ok(text) = quoted_string(&mut input) {
-            return Some(MetaEntry {
-                key: key.to_owned(),
-                value: MetaValue::Text(text),
-            });
+        match quoted_string(&mut input) {
+            Ok(text) => {
+                return Some(MetaEntry {
+                    key: key.to_owned(),
+                    value: MetaValue::Text(text),
+                });
+            }
+            // An unterminated quote leaves nothing to tell a comment from the
+            // string, so the line is kept whole rather than cut at a `;` that
+            // may belong to the value.
+            Err(_error) => stated,
         }
-    }
-    let raw = stated.split(';').next().unwrap_or(stated).trim_end();
+    } else {
+        stated.split(';').next().unwrap_or(stated).trim_end()
+    };
     Some(MetaEntry {
         key: key.to_owned(),
         value: parse_meta_value(raw),
@@ -1066,6 +1073,19 @@ mod tests {
             Some(MetaEntry {
                 key: "note".to_owned(),
                 value: MetaValue::Text("a;b".to_owned()),
+            })
+        );
+    }
+
+    /// An unterminated quote leaves no comment to strip, so the line survives
+    /// whole instead of losing everything past its first semicolon.
+    #[test]
+    fn an_unterminated_quoted_value_keeps_its_whole_text() {
+        assert_eq!(
+            parse_meta_line(r#"note: "hello ; world"#),
+            Some(MetaEntry {
+                key: "note".to_owned(),
+                value: MetaValue::Text(r#""hello ; world"#.to_owned()),
             })
         );
     }
