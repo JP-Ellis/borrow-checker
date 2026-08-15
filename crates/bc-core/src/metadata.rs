@@ -489,13 +489,20 @@ pub(crate) async fn load_for(
             .map_err(|e| BcError::BadData(format!("invalid metadata key '{key_str}': {e}")))?;
         let ty = from_db_str::<MetaType>(&type_str)?;
         let (value, mismatched) = read_value(ty, value_text, value_account, flag != 0);
-        grouped.entry(owner_id).or_default().push(
-            MetaEntry::builder()
-                .key(key)
-                .value(value)
-                .mismatched(mismatched)
-                .build(),
-        );
+        // A flagged row always stores text, so the pair is representable. The
+        // error arm is unreachable through `read_value` and exists because
+        // `MetaEntry` refuses to hold a flagged non-text value at all.
+        let entry = match (mismatched, value) {
+            (true, MetaValue::Text(raw)) => MetaEntry::mismatch(key, raw),
+            (true, other) => {
+                return Err(BcError::BadData(format!(
+                    "flagged metadata entry for '{key_str}' holds {:?}, not text",
+                    other.ty()
+                )));
+            }
+            (false, fitted) => MetaEntry::new(key, fitted),
+        };
+        grouped.entry(owner_id).or_default().push(entry);
     }
 
     Ok(grouped
@@ -750,11 +757,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn an_explicitly_mismatched_entry_keeps_its_flag(pool: SqlitePool) {
         let tx = seed_transaction(&pool).await;
-        let entry = MetaEntry::builder()
-            .key(key("invoice"))
-            .value(MetaValue::Text("not-a-number".to_owned()))
-            .mismatched(true)
-            .build();
+        let entry = MetaEntry::mismatch(key("invoice"), "not-a-number");
         write(&pool, &tx, &Metadata::new(vec![entry.clone()])).await;
 
         assert_eq!(read(&pool, &tx).await, Metadata::new(vec![entry]));
