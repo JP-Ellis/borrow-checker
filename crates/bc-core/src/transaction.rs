@@ -4420,13 +4420,10 @@ mod tests {
 
     #[test]
     fn the_mismatched_flag_alone_is_not_an_edit() {
-        let flagged = sample_tx().with_metadata(Metadata::new(vec![
-            MetaEntry::builder()
-                .key(key("invoice"))
-                .value(MetaValue::Text("not a number".to_owned()))
-                .mismatched(true)
-                .build(),
-        ]));
+        let flagged = sample_tx().with_metadata(Metadata::new(vec![MetaEntry::mismatch(
+            key("invoice"),
+            "not a number",
+        )]));
         let rebuilt = flagged
             .clone()
             .with_metadata(text_meta(&[("invoice", "not a number")]));
