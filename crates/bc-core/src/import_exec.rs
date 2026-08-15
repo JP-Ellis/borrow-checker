@@ -27,6 +27,10 @@ use bc_models::Amount;
 use bc_models::Balances;
 use bc_models::CommodityCode;
 use bc_models::ImportBatchId;
+use bc_models::MetaEntry;
+use bc_models::MetaKey;
+use bc_models::MetaValue;
+use bc_models::Metadata;
 use bc_models::Posting;
 use bc_models::PostingId;
 use bc_models::Reconciliation;
@@ -37,7 +41,6 @@ use bc_models::TagPath;
 use bc_models::Transaction;
 use bc_models::TransactionId;
 use jiff::Timestamp;
-use jiff::civil::Date;
 
 use crate::AccountPath;
 use crate::AccountResolver;
@@ -473,7 +476,7 @@ impl LegPlan {
             .id(PostingId::new())
             .account_id(self.account_id.clone())
             .maybe_amount(self.amount.clone().or_else(|| residual.cloned()))
-            .maybe_note(self.note.clone())
+            .metadata(text_metadata(NOTE_KEY, self.note.as_deref()))
             .tag_ids(resolve_tag_ids(&self.tag_paths, tags))
             .build()
     }
@@ -1479,39 +1482,74 @@ fn row_local_value<T>(
     }
 }
 
-/// Drops the labelled dates a row states more than once, keeping the first.
+/// The metadata key a raw row's payee lands under.
+const PAYEE_KEY: &str = "payee";
+
+/// The metadata key a raw row's or leg's free-text note lands under.
+const NOTE_KEY: &str = "note";
+
+/// Wraps one optional string as a single text metadata entry.
 ///
-/// `transaction_dates` is keyed by `(transaction_id, label)`, so a repeated
-/// label would raise a unique violation and cost the row every one of its
-/// postings. A label stated twice is a defect in the document's metadata, not
-/// grounds to discard the transaction it decorates.
+/// `key` is a literal from this module, so it always validates; an absent value
+/// yields no entry.
 ///
 /// # Arguments
 ///
-/// * `raw` - The document transaction, for its dates and for diagnostics.
+/// * `key` - The key to file the value under.
+/// * `value` - The value, when the document stated one.
 ///
 /// # Returns
 ///
-/// The row's labelled dates in document order, one entry per label.
-fn distinct_extra_dates(raw: &RawTransaction) -> Vec<(String, Date)> {
-    let mut seen = HashSet::new();
-    raw.extra_dates
-        .iter()
-        .filter(|(label, date)| {
-            if seen.insert(label.clone()) {
-                return true;
-            }
-            tracing::warn!(
+/// The entry, or empty metadata.
+fn text_metadata(key: &str, value: Option<&str>) -> Metadata {
+    let Some((meta_key, text)) = MetaKey::new(key).ok().zip(value) else {
+        return Metadata::default();
+    };
+    Metadata::new(vec![MetaEntry::new(
+        meta_key,
+        MetaValue::Text(text.to_owned()),
+    )])
+}
+
+/// Builds a row's metadata from the bespoke fields the importer ABI still
+/// carries.
+///
+/// `payee` and `note` land under keys of those names; each labelled date lands
+/// under its label as a [`MetaValue::Date`]. A label that is not a usable
+/// [`MetaKey`] is dropped with a diagnostic — the row is worth importing
+/// without it.
+///
+/// Repeated labels are kept. They previously had to be deduplicated because
+/// `transaction_dates` was keyed by `(transaction_id, label)`; metadata permits
+/// repeats, so dropping one would discard data for no reason.
+///
+/// # Arguments
+///
+/// * `raw` - The document transaction, for its fields and for diagnostics.
+///
+/// # Returns
+///
+/// The row's entries, ordered payee, note, then the labelled dates.
+fn transaction_metadata(raw: &RawTransaction) -> Metadata {
+    let mut entries: Vec<MetaEntry> = Vec::new();
+    if let Some((key, payee)) = MetaKey::new(PAYEE_KEY).ok().zip(raw.payee.as_ref()) {
+        entries.push(MetaEntry::new(key, MetaValue::Text(payee.clone())));
+    }
+    if let Some((key, note)) = MetaKey::new(NOTE_KEY).ok().zip(raw.note.as_ref()) {
+        entries.push(MetaEntry::new(key, MetaValue::Text(note.clone())));
+    }
+    for (label, when) in &raw.extra_dates {
+        match MetaKey::new(label.clone()) {
+            Ok(key) => entries.push(MetaEntry::new(key, MetaValue::Date(*when))),
+            Err(err) => tracing::warn!(
                 location = location_of(raw),
                 label,
-                %date,
-                "the row states this date label more than once; keeping the first and \
-                 dropping this one"
-            );
-            false
-        })
-        .cloned()
-        .collect()
+                %err,
+                "this date label is not a usable metadata key; dropping the entry"
+            ),
+        }
+    }
+    Metadata::new(entries)
 }
 
 /// Reports whether `error` describes one row's data rather than a failure of
@@ -2286,10 +2324,8 @@ where
         let tx = Transaction::builder()
             .id(TransactionId::new())
             .date(raw.date)
-            .maybe_payee(raw.payee.clone())
             .description(raw.description.clone())
-            .maybe_note(raw.note.clone())
-            .extra_dates(distinct_extra_dates(raw))
+            .metadata(transaction_metadata(raw))
             .tag_ids(resolve_tag_ids(&raw.tags, &self.tags))
             .postings(postings.clone())
             .reconciliation(Reconciliation::Unreconciled)
@@ -2746,11 +2782,15 @@ mod tests {
 
     /// Reads the `note` column of the single posting booked to `account`.
     async fn note_of_posting(pool: &SqlitePool, account: &AccountId) -> Option<String> {
-        sqlx::query_scalar("SELECT note FROM postings WHERE account_id = ?")
-            .bind(account.to_string())
-            .fetch_one(pool)
-            .await
-            .expect("posting note")
+        sqlx::query_scalar(
+            "SELECT m.value_text FROM posting_metadata m \
+             JOIN postings p ON m.posting_id = p.id \
+             WHERE p.account_id = ? AND m.key = 'note'",
+        )
+        .bind(account.to_string())
+        .fetch_optional(pool)
+        .await
+        .expect("posting note")
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2781,22 +2821,27 @@ mod tests {
 
     /// Reads the `note` column of the single stored transaction.
     async fn note_of_transaction(pool: &SqlitePool) -> Option<String> {
-        sqlx::query_scalar("SELECT note FROM transactions")
-            .fetch_one(pool)
+        sqlx::query_scalar("SELECT value_text FROM transaction_metadata WHERE key = 'note'")
+            .fetch_optional(pool)
             .await
             .expect("transaction note")
     }
 
-    /// Reads every `(label, date)` pair stored for the single transaction.
+    /// Reads every date-keyed metadata entry of the single transaction, in
+    /// display order.
     async fn dates_of_transaction(pool: &SqlitePool) -> Vec<(String, String)> {
-        sqlx::query_as("SELECT label, date FROM transaction_dates ORDER BY label")
-            .fetch_all(pool)
-            .await
-            .expect("transaction dates")
+        sqlx::query_as(
+            "SELECT m.key, m.value_text FROM transaction_metadata m \
+             JOIN metadata_keys k ON m.key = k.key \
+             WHERE k.value_type = 'date' ORDER BY m.position",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("transaction dates")
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn transaction_note_and_extra_dates_are_persisted(pool: SqlitePool) {
+    async fn transaction_note_and_dates_persist_as_metadata(pool: SqlitePool) {
         two_account_tree(&pool).await;
         let svcs = services(&pool).await;
         let raw = RawTransaction::builder()
@@ -2819,14 +2864,15 @@ mod tests {
         assert_eq!(
             dates_of_transaction(&pool).await,
             vec![
-                ("posted".to_owned(), "2025-06-28".to_owned()),
                 ("settled".to_owned(), "2025-06-29".to_owned()),
-            ]
+                ("posted".to_owned(), "2025-06-28".to_owned()),
+            ],
+            "entries keep the order the document stated them in"
         );
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn a_repeated_date_label_costs_the_date_not_the_row(pool: SqlitePool) {
+    async fn a_repeated_date_label_becomes_two_entries(pool: SqlitePool) {
         two_account_tree(&pool).await;
         let svcs = services(&pool).await;
         let raw = RawTransaction::builder()
@@ -2842,13 +2888,16 @@ mod tests {
 
         let outcome = run(&svcs, &[raw]).await;
 
-        // The row still persists: a duplicated label is a defect in the
-        // document's metadata, not grounds to discard the transaction.
+        // Metadata permits repeated keys, so both `posted` entries are kept.
+        // They previously had to be deduplicated because `transaction_dates`
+        // was keyed by `(transaction_id, label)`; dropping one now would
+        // discard data for no reason.
         assert_eq!(outcome.new_transactions, 1);
         assert_eq!(
             dates_of_transaction(&pool).await,
             vec![
                 ("posted".to_owned(), "2025-06-28".to_owned()),
+                ("posted".to_owned(), "2025-06-30".to_owned()),
                 ("settled".to_owned(), "2025-06-29".to_owned()),
             ]
         );
