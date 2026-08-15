@@ -291,6 +291,28 @@ impl MetaEntryDto {
             mismatched: false,
         }
     }
+
+    /// Creates a flagged entry, whose value is always the raw text that would
+    /// not fit its key's registered type.
+    ///
+    /// Mirrors `bc_models::MetaEntry::mismatch`, and exists because
+    /// [`MetaEntryDto`] is `#[non_exhaustive]`: no other crate can build a
+    /// flagged entry by struct literal, which the frontend's editor tests and QA
+    /// fixtures both need.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to file the text under.
+    /// * `text` - The raw text the store could not fit.
+    #[must_use]
+    #[inline]
+    pub fn flagged(key: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: MetaValueDto::Text(text.into()),
+            mismatched: true,
+        }
+    }
 }
 
 /// A registry entry binding a metadata key to its value type.
@@ -541,6 +563,18 @@ mod tests {
         let entry = MetaEntryDto::new("payee", MetaValueDto::Text("Generic Grocer".to_owned()));
         assert_eq!(entry.key, "payee");
         assert!(!entry.mismatched);
+    }
+
+    #[test]
+    fn a_flagged_entry_carries_its_text() {
+        let entry = MetaEntryDto::flagged("cleared", "sometime in May");
+        assert!(entry.mismatched);
+        assert_eq!(entry.key, "cleared");
+        assert_eq!(
+            entry.value,
+            MetaValueDto::Text("sometime in May".to_owned()),
+            "a flagged value is always the raw text that would not fit"
+        );
     }
 
     #[test]
