@@ -210,6 +210,12 @@ describe('Accounts — edit transaction detail', () => {
         await openGroceriesAccount();
         await expandSupermarketRow();
 
+        // The seeded transaction already carries a `payee` row, so count the
+        // rows before adding one: without this the assertions below hold even
+        // when the click does nothing, and the test then overwrites the payee.
+        const rowsBeforeAdd = await $$('[data-testid="meta-key"]');
+        const rowsBefore = await rowsBeforeAdd.length;
+
         // Add an empty metadata row to the editor.
         const addMetaBtn = await $('[data-testid="meta-add"]');
         await addMetaBtn.waitForDisplayed({
@@ -222,7 +228,7 @@ describe('Accounts — edit transaction detail', () => {
         const valueInputs = await $$('[data-testid="meta-value"]');
         const keyCount = await keyInputs.length;
         const valueCount = await valueInputs.length;
-        expect(keyCount).toBeGreaterThan(0);
+        expect(keyCount).toBe(rowsBefore + 1);
         expect(valueCount).toBe(keyCount);
 
         await keyInputs[keyCount - 1].setValue('invoice');
@@ -244,10 +250,14 @@ describe('Accounts — edit transaction detail', () => {
         const added = entries.find(row => row.key === 'invoice');
         expect(added).toBeDefined();
         expect(added!.value_text).toBe('1502');
-        // Nothing about `1502` fails to read as a number, so it stores unflagged.
+        // A text value fits a text key, so it stores unflagged.
         expect(added!.mismatched).toBe(0);
         // A key enters the registry on first write, typed by its first value.
-        expect(dbMetadataKeyType('invoice')).toBe('number');
+        // Typing a key the registry does not hold leaves the row's editing type
+        // at the default, so the value goes out as text and the key registers as
+        // text. Picking a type is the create-key row's job, which this flow does
+        // not use.
+        expect(dbMetadataKeyType('invoice')).toBe('text');
     });
 
     it('can edit an existing metadata entry and persist it on save', async function () {
