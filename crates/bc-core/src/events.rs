@@ -29,7 +29,7 @@ use crate::BcResult;
 
 /// All domain events produced by the core engine.
 #[non_exhaustive]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "PascalCase")]
 pub enum Event {
     /// A new account was created.
@@ -134,6 +134,25 @@ pub enum Event {
         added: Vec<TagId>,
         /// Tags removed in this change.
         removed: Vec<TagId>,
+    },
+    /// A transaction's metadata list was replaced.
+    ///
+    /// The payload is the owner's whole list on each side, not a per-key or
+    /// per-entry delta. Repeated keys are legal, so "which entry changed" has
+    /// no answer; and `position` orders an owner's entries across all its keys
+    /// and is the display order, so a reorder is an edit in its own right that
+    /// only a whole-list payload can express.
+    ///
+    /// [`bc_models::MetaEntry::mismatched`] rides along inside each entry but
+    /// is advisory: the write path derives it from the value against the key's
+    /// registered type and ignores whatever the entry claims.
+    TransactionMetadataChanged {
+        /// The transaction's ID.
+        id: TransactionId,
+        /// The full metadata list before the change.
+        before: Metadata,
+        /// The full metadata list after the change.
+        after: Metadata,
     },
     /// A transaction's extra (labeled) dates were changed.
     TransactionExtraDatesChanged {
@@ -417,7 +436,7 @@ pub enum Event {
 
 /// Snapshot of the transaction absorbed by a merge, sufficient to recreate it on unmerge.
 #[non_exhaustive]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AbsorbedTransaction {
     /// The absorbed transaction's ID (recreated verbatim on unmerge).
     pub id: TransactionId,
@@ -459,6 +478,7 @@ impl Event {
             Self::TransactionDescriptionChanged { .. } => "TransactionDescriptionChanged",
             Self::TransactionNoteChanged { .. } => "TransactionNoteChanged",
             Self::TransactionTagsChanged { .. } => "TransactionTagsChanged",
+            Self::TransactionMetadataChanged { .. } => "TransactionMetadataChanged",
             Self::TransactionExtraDatesChanged { .. } => "TransactionExtraDatesChanged",
             Self::TransactionReconciled { .. } => "TransactionReconciled",
             Self::PostingRecategorised { .. } => "PostingRecategorised",
@@ -498,6 +518,7 @@ impl Event {
             | Self::TransactionDescriptionChanged { id, .. }
             | Self::TransactionNoteChanged { id, .. }
             | Self::TransactionTagsChanged { id, .. }
+            | Self::TransactionMetadataChanged { id, .. }
             | Self::TransactionExtraDatesChanged { id, .. }
             | Self::TransactionReconciled { id, .. }
             | Self::PostingRecategorised { id, .. }
@@ -815,6 +836,47 @@ mod tests {
             }
             other => panic!("expected TransactionAmended, got {other:?}"),
         }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn transaction_metadata_changed_round_trips(pool: sqlx::SqlitePool) {
+        use bc_models::MetaEntry;
+        use bc_models::MetaKey;
+        use bc_models::MetaValue;
+        use bc_models::Metadata;
+        use bc_models::TransactionId;
+        use rust_decimal_macros::dec;
+
+        let store = SqliteStore::new(pool.clone());
+        let id = TransactionId::new();
+        let meta_key = |name: &str| MetaKey::new(name).expect("valid key");
+        let event = Event::TransactionMetadataChanged {
+            id: id.clone(),
+            before: Metadata::new(vec![MetaEntry::new(
+                meta_key("payee"),
+                MetaValue::Text("Generic Grocer".to_owned()),
+            )]),
+            after: Metadata::new(vec![
+                MetaEntry::new(
+                    meta_key("payee"),
+                    MetaValue::Text("Other Grocer".to_owned()),
+                ),
+                MetaEntry::new(meta_key("invoice"), MetaValue::Number(dec!(1502))),
+            ]),
+        };
+
+        assert_eq!(event.aggregate_id(), id.to_string());
+        store.append(&event).await.expect("append");
+
+        let records = store.replay_for(&id.to_string()).await.expect("replay");
+        let record = records.first().expect("one record");
+        assert_eq!(record.kind, "TransactionMetadataChanged");
+        let replayed: Event =
+            serde_json::from_str(&record.payload).expect("payload should deserialise");
+        assert_eq!(
+            replayed, event,
+            "the whole list survives a JSON round-trip through the log, order included"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]

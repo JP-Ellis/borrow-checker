@@ -197,6 +197,14 @@ pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> 
         });
     }
 
+    if current.metadata() != updated.metadata() {
+        events.push(Event::TransactionMetadataChanged {
+            id: id.clone(),
+            before: current.metadata().clone(),
+            after: updated.metadata().clone(),
+        });
+    }
+
     let current_postings: std::collections::HashMap<&PostingId, &Posting> =
         current.postings().iter().map(|p| (p.id(), p)).collect();
 
@@ -4252,6 +4260,62 @@ mod tests {
         );
     }
 
+    /// Builds a metadata list from `(key, text)` pairs.
+    fn text_meta(pairs: &[(&str, &str)]) -> Metadata {
+        Metadata::new(
+            pairs
+                .iter()
+                .map(|&(name, value)| MetaEntry::new(key(name), MetaValue::Text(value.to_owned())))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn diff_emits_one_event_for_the_whole_metadata_list() {
+        let current = sample_tx().with_metadata(text_meta(&[
+            ("payee", "Generic Grocer"),
+            ("note", "weekly shop"),
+        ]));
+        let updated = current
+            .clone()
+            .with_metadata(text_meta(&[("payee", "Other Grocer"), ("note", "weekly shop")]));
+
+        assert_eq!(
+            diff_transaction(&current, &updated),
+            vec![Event::TransactionMetadataChanged {
+                id: current.id().clone(),
+                before: text_meta(&[("payee", "Generic Grocer"), ("note", "weekly shop")]),
+                after: text_meta(&[("payee", "Other Grocer"), ("note", "weekly shop")]),
+            }],
+            "one event carries the owner's whole list, touched keys and untouched alike"
+        );
+    }
+
+    #[test]
+    fn reordering_two_different_keys_is_recorded() {
+        let current = sample_tx().with_metadata(text_meta(&[
+            ("payee", "Generic Grocer"),
+            ("note", "weekly shop"),
+        ]));
+        let updated = current.clone().with_metadata(text_meta(&[
+            ("note", "weekly shop"),
+            ("payee", "Generic Grocer"),
+        ]));
+
+        assert_eq!(
+            diff_transaction(&current, &updated).len(),
+            1,
+            "position is the display order and the editor lets a user set it, \
+             so a reorder across keys is an edit the log has to hold"
+        );
+    }
+
+    #[test]
+    fn diff_emits_nothing_when_metadata_is_unchanged() {
+        let tx = sample_tx().with_metadata(text_meta(&[("payee", "Generic Grocer")]));
+        assert_eq!(diff_transaction(&tx, &tx), vec![]);
+    }
+
     #[test]
     fn diff_detects_recategorise_and_added_leg() {
         let current = sample_tx();
@@ -4271,8 +4335,12 @@ mod tests {
         );
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn amend_updates_metadata(pool: sqlx::SqlitePool) {
+    /// Persists a balanced two-leg transaction carrying `metadata`, and returns
+    /// the service and the stored ID.
+    async fn seeded_transaction(
+        pool: &sqlx::SqlitePool,
+        metadata: Metadata,
+    ) -> (Service, TransactionId) {
         let acct_svc = crate::AccountService::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -4293,22 +4361,19 @@ mod tests {
         let svc = Service::new(pool.clone());
 
         let original = Transaction::builder()
-            .id(bc_models::TransactionId::new())
+            .id(TransactionId::new())
             .date(date(2026, 2, 1))
             .description("Groceries")
-            .metadata(Metadata::new(vec![MetaEntry::new(
-                key("note"),
-                MetaValue::Text("old note".to_owned()),
-            )]))
+            .metadata(metadata)
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
-                    .account_id(acc_a.clone())
+                    .account_id(acc_a)
                     .amount(Amount::new(dec!(-30), CommodityCode::new("AUD")))
                     .build(),
                 Posting::builder()
                     .id(PostingId::new())
-                    .account_id(acc_b.clone())
+                    .account_id(acc_b)
                     .amount(Amount::new(dec!(30), CommodityCode::new("AUD")))
                     .build(),
             ])
@@ -4316,16 +4381,20 @@ mod tests {
             .created_at(Timestamp::now())
             .build();
 
-        let id = svc.create(original.clone()).await.expect("create");
+        let id = svc.create(original).await.expect("create");
+        (svc, id)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amend_updates_metadata(pool: sqlx::SqlitePool) {
+        let (svc, id) = seeded_transaction(&pool, text_meta(&[("note", "old note")])).await;
+        let original = svc.find_by_id(&id).await.expect("load");
 
         let updated = Transaction::builder()
             .id(id.clone())
             .date(date(2026, 2, 1))
             .description("Groceries")
-            .metadata(Metadata::new(vec![MetaEntry::new(
-                key("note"),
-                MetaValue::Text("new note".to_owned()),
-            )]))
+            .metadata(text_meta(&[("note", "new note")]))
             .postings(original.postings().to_vec())
             .reconciliation(Reconciliation::Unreconciled)
             .created_at(*original.created_at())
@@ -4338,6 +4407,27 @@ mod tests {
             found.metadata().get_first_text(&key("note")),
             Some("new note"),
             "amended metadata must persist"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_records_a_transaction_metadata_event(pool: sqlx::SqlitePool) {
+        let (svc, id) = seeded_transaction(&pool, text_meta(&[("note", "old note")])).await;
+
+        let current = svc.find_by_id(&id).await.expect("load");
+        svc.edit(current.with_metadata(text_meta(&[("note", "new note")])))
+            .await
+            .expect("edit");
+
+        let kinds: Vec<String> =
+            sqlx::query_scalar("SELECT kind FROM events WHERE aggregate_id = ? ORDER BY rowid ASC")
+                .bind(id.to_string())
+                .fetch_all(&pool)
+                .await
+                .expect("kinds");
+        assert!(
+            kinds.contains(&"TransactionMetadataChanged".to_owned()),
+            "editing metadata through the service reaches the log, got {kinds:?}"
         );
     }
 
