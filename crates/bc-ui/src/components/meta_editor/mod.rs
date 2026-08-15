@@ -64,6 +64,8 @@ use crate::components::meta_editor::model::push_blank_row;
 use crate::components::meta_editor::model::registered_type;
 #[cfg(target_arch = "wasm32")]
 use crate::components::meta_editor::model::remove_row;
+#[cfg(target_arch = "wasm32")]
+use crate::components::meta_editor::model::text_parses_as;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "meta_editor.module.scss");
@@ -339,6 +341,14 @@ fn MetaEditorRow(
             .is_some_and(|draft| parses_as(ty, &draft))
     };
 
+    /* A flagged row is one text box whatever its key's type, so its badge reads
+    that box against the type the way the write path will. */
+    let live_text_parses = move |ty: MetaTypeDto| {
+        row_now()
+            .and_then(|row| row.draft)
+            .is_some_and(|draft| text_parses_as(ty, &draft.text))
+    };
+
     let remove = move |_| {
         let mut next = rows.get_untracked();
         if remove_row(&mut next, uid) {
@@ -527,7 +537,7 @@ fn MetaEditorRow(
             view! {
                 {text_control("")}
                 {move || {
-                    if live_parses(ty) {
+                    if live_text_parses(ty) {
                         view! {
                             <span
                                 class=style::badge_ok
@@ -542,8 +552,13 @@ fn MetaEditorRow(
                             <span
                                 class=style::badge_bad
                                 title=format!(
-                                    "the stored value is not a {}. Fix the value here, or retype the key with `borrow-checker meta retype {} text`",
+                                    "the stored value is not a {}. {}retype the key with `borrow-checker meta retype {} text`",
                                     ty.label(),
+                                    if ty == MetaTypeDto::Account {
+                                        "Only an account id repairs it here, so "
+                                    } else {
+                                        "Fix the value here, or "
+                                    },
                                     row_now().map(|row| row.key().to_owned()).unwrap_or_default(),
                                 )
                             >

@@ -92,14 +92,23 @@ impl MetaRow {
         let Some(ref draft) = self.draft else {
             return self.source.clone();
         };
-        if draft.key.trim().is_empty() || is_blank(draft.ty, draft) {
+        // A flagged row is one text box whatever its key's type, so its whole
+        // value lives in `text` and its blankness is that box being empty.
+        let flagged = self.was_flagged();
+        let blank = if flagged {
+            draft.text.trim().is_empty()
+        } else {
+            is_blank(draft.ty, draft)
+        };
+        if draft.key.trim().is_empty() || blank {
             return None;
         }
-        // A row the store flagged sends its value back as text whatever it now
-        // parses as. The write path's rescue case is what repairs it; the editor
-        // constructs no typed variant to repair anything.
-        let value = if self.was_flagged() {
-            MetaValueDto::Text(raw_text(draft.ty, draft))
+        // A row the store flagged sends back exactly what the user typed,
+        // whatever it now parses as. The write path's rescue case is what
+        // repairs it; the editor constructs no typed variant to repair anything,
+        // and adds nothing to the text either.
+        let value = if flagged {
+            MetaValueDto::Text(draft.text.clone())
         } else {
             draft_value(draft.ty, draft)
         };
@@ -284,6 +293,37 @@ pub fn parses_as(ty: MetaTypeDto, draft: &MetaDraft) -> bool {
             !draft.commodity.trim().is_empty() && draft.text.trim().parse::<Decimal>().is_ok()
         }
         MetaTypeDto::Account => !draft.account_id.trim().is_empty(),
+    }
+}
+
+/// Returns whether `text` parses as `ty` the way the write path will parse it.
+///
+/// Drives the badge on a flagged row, whose whole value is one text box.
+/// Mirrors `bc_models::MetaType::parse_value`, which is unreachable here: the
+/// WASM bundle must never pull in `bc-models`. It trims nothing, because that
+/// method trims nothing either.
+///
+/// `account` is the one type this cannot answer, because an account id is a
+/// typed id whose parser lives in `bc-models`. A flagged account row therefore
+/// reads as unparsed, which is what an account path — the text such an entry
+/// actually holds — is.
+///
+/// # Arguments
+///
+/// * `ty` - The key's registered type.
+/// * `text` - The raw text the row would send.
+#[must_use]
+pub fn text_parses_as(ty: MetaTypeDto, text: &str) -> bool {
+    match ty {
+        MetaTypeDto::Text => true,
+        MetaTypeDto::Number => text.parse::<Decimal>().is_ok(),
+        MetaTypeDto::Boolean => text == "true" || text == "false",
+        MetaTypeDto::Date => text.parse::<jiff::civil::Date>().is_ok(),
+        MetaTypeDto::Timestamp => text.parse::<jiff::Timestamp>().is_ok(),
+        MetaTypeDto::Amount => text.split_once(' ').is_some_and(|(value, commodity)| {
+            !commodity.is_empty() && value.parse::<Decimal>().is_ok()
+        }),
+        MetaTypeDto::Account => false,
     }
 }
 
@@ -529,6 +569,7 @@ mod tests {
     use super::push_blank_row;
     use super::remove_row;
     use super::rows_from_entries;
+    use super::text_parses_as;
 
     /// A fake account id in the backend's shape; not a real account.
     const ACCOUNT_ID: &str = "account_00000000000000000000000000";
@@ -863,6 +904,76 @@ mod tests {
             )],
             "the editor constructs no typed variant to repair anything; the write \
              path's rescue case parses the text and clears the flag"
+        );
+    }
+
+    #[test]
+    fn repairing_a_flagged_amount_sends_only_what_was_typed() {
+        let mut rows = rows_from_entries(&[MetaEntryDto::flagged("budgeted", "about forty bucks")]);
+        let row = rows.first_mut().expect("one row");
+        let mut repaired = MetaDraft::seed(row.source.as_ref(), &registry(), "AUD");
+        repaired.text = "42.00 USD".to_owned();
+        row.draft = Some(repaired);
+        assert_eq!(
+            emit_rows(&rows),
+            vec![MetaEntryDto::new(
+                "budgeted",
+                MetaValueDto::Text("42.00 USD".to_owned())
+            )],
+            "a flagged row is one text box, so the seeded commodity must not be \
+             appended behind what the user typed"
+        );
+    }
+
+    #[test]
+    fn repairing_a_flagged_boolean_keeps_the_typed_text() {
+        let mut rows = rows_from_entries(&[MetaEntryDto::flagged("reimbursed", "yes")]);
+        let row = rows.first_mut().expect("one row");
+        let mut repaired = MetaDraft::seed(row.source.as_ref(), &registry(), "AUD");
+        repaired.text = "true".to_owned();
+        row.draft = Some(repaired);
+        assert_eq!(
+            emit_rows(&rows),
+            vec![MetaEntryDto::new(
+                "reimbursed",
+                MetaValueDto::Text("true".to_owned())
+            )],
+            "the checkbox is not the control on a flagged row, so its state must \
+             not stand in for the text"
+        );
+    }
+
+    #[test]
+    fn clearing_a_flagged_row_prunes_it() {
+        let mut rows = rows_from_entries(&[MetaEntryDto::flagged("reimbursed", "yes")]);
+        let row = rows.first_mut().expect("one row");
+        let mut cleared = MetaDraft::seed(row.source.as_ref(), &registry(), "AUD");
+        cleared.text = String::new();
+        row.draft = Some(cleared);
+        assert_eq!(emit_rows(&rows), Vec::new());
+    }
+
+    #[rstest]
+    #[case(MetaTypeDto::Text, "anything", true)]
+    #[case(MetaTypeDto::Number, "1502.50", true)]
+    #[case(MetaTypeDto::Number, "1502.50 ", false)]
+    #[case(MetaTypeDto::Boolean, "true", true)]
+    #[case(MetaTypeDto::Boolean, "yes", false)]
+    #[case(MetaTypeDto::Date, "2026-05-02", true)]
+    #[case(MetaTypeDto::Timestamp, "2023-11-14T22:13:20Z", true)]
+    #[case(MetaTypeDto::Amount, "42.00 AUD", true)]
+    #[case(MetaTypeDto::Amount, "42.00", false)]
+    #[case(MetaTypeDto::Amount, "42.00 ", false)]
+    #[case(MetaTypeDto::Account, ACCOUNT_ID, false)]
+    fn the_badge_reads_the_text_the_way_the_write_path_will(
+        #[case] ty: MetaTypeDto,
+        #[case] text: &str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(
+            text_parses_as(ty, text),
+            expected,
+            "these are MetaType::parse_value's accepted forms, untrimmed"
         );
     }
 
