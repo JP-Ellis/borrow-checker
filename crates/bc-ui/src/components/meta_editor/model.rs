@@ -227,6 +227,10 @@ pub fn canonical_text(value: &MetaValueDto) -> String {
 /// Mismatch is tested before tombstone: a flagged account entry keeps no account
 /// link, so its frozen text is a failed value rather than a deleted account.
 ///
+/// A tombstone stops being one the moment the user repoints it: the frozen path
+/// describes the entry as loaded, and once a replacement account is picked it
+/// describes nothing the row will save.
+///
 /// # Arguments
 ///
 /// * `row` - The row to classify.
@@ -245,6 +249,10 @@ pub fn classify(row: &MetaRow, keys: &[MetaKeyDefDto]) -> RowKind {
         return RowKind::Mismatched(ty);
     }
     let frozen_account = ty == MetaTypeDto::Account
+        && row
+            .draft
+            .as_ref()
+            .is_none_or(|draft| draft.account_id.trim().is_empty())
         && row
             .source
             .as_ref()
@@ -733,6 +741,31 @@ mod tests {
         )]);
         let row = rows.first().expect("one row");
         assert_eq!(classify(row, &registry()), RowKind::Tombstone);
+    }
+
+    #[test]
+    fn a_repointed_tombstone_stops_being_one() {
+        let mut rows = rows_from_entries(&[MetaEntryDto::new(
+            "offset",
+            MetaValueDto::Text("Assets:Bank:Savings".to_owned()),
+        )]);
+        let row = rows.first_mut().expect("one row");
+        let mut repointed = MetaDraft::seed(row.source.as_ref(), &registry(), "AUD");
+        repointed.account_id = ACCOUNT_ID.to_owned();
+        row.draft = Some(repointed);
+        assert_eq!(
+            classify(row, &registry()),
+            RowKind::Typed(MetaTypeDto::Account),
+            "the frozen path describes the entry as loaded, and a picked account \
+             replaces it"
+        );
+        assert_eq!(
+            emit_rows(&rows),
+            vec![MetaEntryDto::new(
+                "offset",
+                MetaValueDto::Account(ACCOUNT_ID.to_owned())
+            )]
+        );
     }
 
     #[test]
