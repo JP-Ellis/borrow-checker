@@ -111,24 +111,10 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
             Event::TransactionAmended { .. } => ("amend", "transaction amended".to_owned()),
             Event::TransactionVoided { .. } => ("void", "transaction voided".to_owned()),
             Event::TransactionReversed { .. } => ("reverse", "transaction reversed".to_owned()),
-            Event::TransactionPayeeChanged { to, .. } => (
-                "payee",
-                format!("payee → {}", to.as_deref().unwrap_or("(none)")),
-            ),
             Event::TransactionDateChanged { to, .. } => ("date", format!("date → {to}")),
-            Event::TransactionExtraDatesChanged { .. } => {
-                ("dates", "extra dates changed".to_owned())
-            }
             Event::TransactionDescriptionChanged { .. } => {
                 ("desc", "description changed".to_owned())
             }
-            Event::TransactionNoteChanged { to, .. } => (
-                "note",
-                match to {
-                    Some(_) => "note changed".to_owned(),
-                    None => "note removed".to_owned(),
-                },
-            ),
             Event::TransactionTagsChanged { added, removed, .. } => {
                 ("tags", format!("tags +{} -{}", added.len(), removed.len()))
             }
@@ -139,7 +125,6 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                 ("recat", format!("recategorised → {to_account}"))
             }
             Event::PostingAmountChanged { .. } => ("amount", "amount changed".to_owned()),
-            Event::PostingNoteChanged { .. } => ("note", "posting note changed".to_owned()),
             Event::PostingSpreadChanged { to, .. } => (
                 "spread",
                 match to {

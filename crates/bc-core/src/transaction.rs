@@ -1817,7 +1817,6 @@ impl Service {
             id: tx_id.clone(),
             date: updated.date(),
             description: updated.description().to_owned(),
-            payee: None,
         };
 
         let mut db_tx = self.pool.begin().await?;
@@ -1832,9 +1831,10 @@ impl Service {
     /// Applies a desired transaction state, recording decomposed semantic events.
     ///
     /// Loads the current state, diffs it against `updated` to produce granular
-    /// events (payee/date/note/tags and per-posting recategorise/amount/note/
-    /// spread/add/remove), then atomically appends those events and rewrites the
-    /// projection. Persistence is permissive: an unbalanced result is allowed.
+    /// events (date, description, tags and metadata, and per-posting
+    /// recategorise / amount / spread / metadata / add / remove), then
+    /// atomically appends those events and rewrites the projection.
+    /// Persistence is permissive: an unbalanced result is allowed.
     ///
     /// # Arguments
     ///
