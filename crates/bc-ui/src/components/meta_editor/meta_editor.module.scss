@@ -1,0 +1,199 @@
+/* Repeatable typed key-value metadata editor. */
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+  width: 100%;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 10rem auto 1fr auto;
+  align-items: center;
+  gap: var(--bc-space-2);
+}
+
+.key_cell {
+  position: relative;
+}
+
+.key_input {
+  width: 100%;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink);
+  background: var(--bc-surface-alt);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  outline: none;
+}
+
+.ty {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-ink-mute);
+  white-space: nowrap;
+}
+
+.val_cell {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+  min-width: 0;
+}
+
+.val_input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink);
+  background: var(--bc-surface-alt);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  outline: none;
+}
+
+.val_num {
+  flex: 0 1 10rem;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.commodity {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink);
+  background: var(--bc-surface-alt);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  padding: var(--bc-space-1);
+}
+
+.raw {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.frozen {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink-mute);
+  text-decoration: line-through;
+  white-space: nowrap;
+}
+
+.badge_bad {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-bad);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.badge_ok {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-ink-mute);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.hint {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-ink-mute);
+  white-space: nowrap;
+}
+
+.remove {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink-mute);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0 var(--bc-space-1);
+}
+
+.remove:hover {
+  color: var(--bc-bad);
+}
+
+.add {
+  align-self: flex-start;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-accent);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* MARK: Key suggestion menu — mirrors the tag picker's. */
+.menu {
+  position: absolute;
+  z-index: 20;
+  inset-inline-start: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: min(28rem, 90vw);
+  margin-block-start: var(--bc-space-1);
+  max-height: 12rem;
+  overflow-y: auto;
+  list-style: none;
+  padding: var(--bc-space-1);
+  background: var(--bc-surface);
+  border: 1px solid var(--bc-border-strong);
+  border-radius: var(--bc-radius-card);
+}
+
+.option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--bc-space-2);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  border-radius: var(--bc-radius-control);
+  cursor: pointer;
+}
+
+.option_hi {
+  background: var(--bc-surface-accent);
+}
+
+.create_option {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-accent);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  border-radius: var(--bc-radius-control);
+  cursor: pointer;
+  border-top: 1px solid var(--bc-border);
+  margin-block-start: var(--bc-space-1);
+  padding-block-start: var(--bc-space-2);
+}
+
+.create_ty {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-ink);
+  background: var(--bc-surface-alt);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+}

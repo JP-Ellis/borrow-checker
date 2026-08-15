@@ -25,6 +25,7 @@ use crate::shell::palette::CommandPalette;
 #[component]
 pub fn ConsoleShell() -> impl IntoView {
     let _currency_store = crate::currency_ctx::provide_currency_store();
+    let _meta_key_store = crate::meta_keys_ctx::provide_meta_key_store();
     let _filter_store = crate::filter_ctx::provide_filter_store();
     let _toast_store = crate::components::toast::provide_toast_store();
     let palette_open = RwSignal::new(false);

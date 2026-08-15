@@ -12,7 +12,11 @@ use core::str::FromStr as _;
 
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::AccountNode;
+#[cfg(target_arch = "wasm32")]
+use bc_ipc::AccountRef;
 use bc_ipc::Amount;
+#[cfg(target_arch = "wasm32")]
+use bc_ipc::MetaTypeDto;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::NewPosting;
 #[cfg(target_arch = "wasm32")]
@@ -24,6 +28,17 @@ use leptos::prelude::*;
 use rust_decimal::Decimal;
 #[cfg(target_arch = "wasm32")]
 use stylance::import_style;
+
+#[cfg(target_arch = "wasm32")]
+use crate::components::meta_editor::MetaEditor;
+#[cfg(target_arch = "wasm32")]
+use crate::components::meta_editor::model::MetaDraft;
+#[cfg(target_arch = "wasm32")]
+use crate::components::meta_editor::model::MetaRow;
+#[cfg(target_arch = "wasm32")]
+use crate::components::meta_editor::model::emit_rows;
+#[cfg(target_arch = "wasm32")]
+use crate::components::meta_editor::model::registered_type;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "add_transaction.module.scss");
@@ -166,8 +181,30 @@ pub fn AddTransactionForm(
         .map(|(id, _)| id.clone())
         .unwrap_or_default();
 
+    // Accounts for the metadata editor's `account`-typed rows.
+    let picker_accounts: Vec<AccountRef> = accounts
+        .iter()
+        .map(|a| AccountRef::new(a.id.clone(), a.name.clone()))
+        .collect();
+
+    let meta_keys = crate::meta_keys_ctx::use_meta_key_store();
     let date_input = RwSignal::new(default_date);
-    let payee_input = RwSignal::new(String::new());
+    // `payee` is an ordinary metadata row, seeded because it is the field a new
+    // transaction almost always wants, not because it holds a privileged
+    // position. Its type comes from the registry when the key is known and is
+    // created as text when it is not.
+    let metadata: RwSignal<Vec<MetaRow>> = RwSignal::new(vec![MetaRow {
+        uid: 0,
+        source: None,
+        draft: Some(MetaDraft {
+            key: "payee".to_owned(),
+            ty: registered_type(&meta_keys.get_untracked(), "payee").unwrap_or(MetaTypeDto::Text),
+            text: String::new(),
+            boolean: false,
+            commodity: currency_code.clone(),
+            account_id: String::new(),
+        }),
+    }]);
     let status_input = RwSignal::new(Reconciliation::Flagged);
     let errors: RwSignal<Vec<&'static str>> = RwSignal::new(vec![]);
 
@@ -191,6 +228,7 @@ pub fn AddTransactionForm(
         }
     };
 
+    let currency_code_meta = currency_code.clone();
     let currency_code_submit = currency_code.clone();
     let current_account_id_submit = current_account_id.clone();
 
@@ -198,11 +236,6 @@ pub fn AddTransactionForm(
         e.prevent_default();
         errors.set(vec![]);
         let mut errs: Vec<&'static str> = vec![];
-
-        let payee = payee_input.get();
-        if payee.trim().is_empty() {
-            errs.push("payee is required");
-        }
 
         let date_str = date_input.get();
         if date_str.trim().is_empty() {
@@ -259,7 +292,7 @@ pub fn AddTransactionForm(
         postings.push(NewPosting::new(
             current_account_id_submit.clone(),
             Some(primary_amt),
-            None::<&str>,
+            vec![],
             vec![],
             None,
             None,
@@ -271,7 +304,7 @@ pub fn AddTransactionForm(
             postings.push(NewPosting::new(
                 acc_id,
                 Some(amt),
-                None::<&str>,
+                vec![],
                 vec![],
                 None,
                 None,
@@ -280,9 +313,8 @@ pub fn AddTransactionForm(
 
         let tx = NewTransaction::new(
             date,
-            payee,
             "",
-            None::<&str>,
+            emit_rows(&metadata.get()),
             status_input.get(),
             vec![],
             postings,
@@ -329,18 +361,13 @@ pub fn AddTransactionForm(
                     }
                 />
 
-                <label class=style::label for="atf-payee">
-                    "payee"
-                </label>
-                <input
-                    id="atf-payee"
-                    class=style::input
-                    type="text"
-                    placeholder="payee name"
-                    prop:value=move || payee_input.get()
-                    on:input=move |e| {
-                        payee_input.set(event_target_value(&e));
-                    }
+                <label class=style::label>"fields"</label>
+                <MetaEditor
+                    rows=metadata.read_only().into()
+                    on_change=Callback::new(move |rows: Vec<MetaRow>| metadata.set(rows))
+                    accounts=picker_accounts
+                    default_commodity=Signal::derive(move || currency_code_meta.clone())
+                    testid_prefix="atf-meta"
                 />
 
                 <label class=style::label for="atf-status">

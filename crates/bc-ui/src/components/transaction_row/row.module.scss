@@ -318,13 +318,6 @@
   &:empty { display: none; }
 }
 
-.pnote_input {
-  font-style: italic;
-  color: var(--bc-ink-mute);
-  font-size: var(--bc-text-caption);
-  width: 16ch;
-}
-
 .posting_tools {
   display: flex;
   gap: var(--bc-space-2);
@@ -501,28 +494,6 @@
   .f_num { width: 11ch; }
 }
 
-.date_x {
-  cursor: pointer;
-  opacity: 0.5;
-  color: var(--bc-ink-mute);
-
-  &:hover { opacity: 1; }
-}
-
-.add_date {
-  grid-column: 1 / -1;
-  justify-self: start;
-  margin-top: var(--bc-space-1);
-  font-family: var(--bc-font-mono);
-  font-size: var(--bc-text-eyebrow);
-  color: var(--bc-accent);
-  background: transparent;
-  border: 1px dashed var(--bc-border);
-  border-radius: var(--bc-radius-pill);
-  padding: var(--bc-space-05) var(--bc-space-2);
-  cursor: pointer;
-}
-
 .metamix_lbl {
   font-size: var(--bc-text-eyebrow);
   text-transform: uppercase;
@@ -533,13 +504,6 @@
 .textfield {
   flex: 1;
   color: inherit;
-}
-
-.note_input {
-  color: var(--bc-ink-mute);
-  font-style: italic;
-  font-size: var(--bc-text-caption);
-  flex: 1;
 }
 
 /* MARK: Savebar */
