@@ -1,6 +1,6 @@
 /**
  * Flow test proving the budget page consumes the app-wide global filter:
- * applying a filter dimension (free payee/narration text) recomputes a known
+ * applying a filter dimension (free description text) recomputes a known
  * budget row's actual spend, and clearing it reverts to the unfiltered
  * baseline. A date bound is inert for budgets (they are period-gridded via
  * `PeriodNav`, not the filter's date range) and instead surfaces a hint.
@@ -11,12 +11,18 @@
  * `budget.spec.ts`.
  *
  * Seed data (`crates/bc-seed/src/main.rs`): every historical month has three
- * Groceries transactions — "Woolworths" $140.00, "Coles" $110.00, "IGA"
- * $55.00 — totalling $305.00. Stepping the budget page's `PeriodNav` back one
- * month from the current month (which has only a single, non-representative
+ * Groceries transactions, described "<Month> groceries" $140.00, "<Month>
+ * fortnightly groceries" $110.00 and "<Month> grocery top-up" $55.00,
+ * totalling $305.00. Stepping the budget page's `PeriodNav` back one month
+ * from the current month (which has only a single, non-representative
  * Groceries transaction) lands on such a month. Filtering free text
- * "Woolworths" isolates the $140.00 leg — a proper subset, not zero — proving
- * the budget recomputes with the filter applied.
+ * "fortnightly" isolates the $110.00 leg — a proper subset, not zero —
+ * proving the budget recomputes with the filter applied.
+ *
+ * The needle is a description substring, not a payee. Free-text search reads
+ * `description` alone; a payee is metadata, which bare text search does not
+ * reach. "fortnightly" is also month-agnostic, so it holds whichever month the
+ * period step lands on.
  */
 import { browser, $, expect } from '@wdio/globals';
 import { commitAfterToken, commitTextToken } from '../support/palette.js';
