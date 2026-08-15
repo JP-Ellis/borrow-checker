@@ -382,13 +382,54 @@ pub(crate) async fn replace(
 /// The merged list.
 #[must_use]
 pub(crate) fn union(survivor: &Metadata, absorbed: &Metadata) -> Metadata {
-    let mut merged: Vec<MetaEntry> = survivor.entries().to_vec();
-    for entry in absorbed.iter() {
-        if !merged.contains(entry) {
-            merged.push(entry.clone());
+    let original = survivor.entries();
+    let mut merged: Vec<MetaEntry> = original.to_vec();
+    // Redundancy is judged against the survivor's own entries only. Testing
+    // against `merged` would also collapse two identical entries the absorbed
+    // leg carries by itself, which the survivor never held.
+    merged.extend(
+        absorbed
+            .iter()
+            .filter(|entry| !original.contains(entry))
+            .cloned(),
+    );
+    Metadata::new(merged)
+}
+
+/// Removes from `current` the entries a merge appended to the survivor.
+///
+/// The inverse of [`union`] on the survivor's side. A merge appended exactly
+/// those absorbed entries absent from `before`, so dropping one occurrence of
+/// each leaves the survivor's own entries alongside every edit made while the
+/// two were merged.
+///
+/// An entry the merge appended and the user then added again by hand is
+/// indistinguishable from a single entry counted twice, so one occurrence
+/// survives — the reading that keeps the user's work.
+///
+/// # Arguments
+///
+/// * `current` - The survivor's entries as they stand now; their order is kept.
+/// * `before` - The survivor's entries as they stood before the merge.
+/// * `absorbed` - The absorbed transaction's entries at merge time.
+///
+/// # Returns
+///
+/// The survivor's entries with the merge's contribution removed.
+#[must_use]
+pub(crate) fn subtract_merged(
+    current: &Metadata,
+    before: &Metadata,
+    absorbed: &Metadata,
+) -> Metadata {
+    let original = before.entries();
+    let mut remaining: Vec<MetaEntry> = current.entries().to_vec();
+    for entry in absorbed.iter().filter(|e| !original.contains(e)) {
+        if let Some(position) = remaining.iter().position(|held| held == entry) {
+            remaining.remove(position);
         }
     }
-    Metadata::new(merged)
+    Metadata::new(remaining)
 }
 
 /// Loads the metadata of every owner in `owner_ids` in one query.
@@ -825,6 +866,55 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn an_account_parent_cycle_is_rejected(pool: SqlitePool) {
+        let accounts = crate::AccountService::new(pool.clone());
+        let parent = accounts
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create parent");
+        let child = accounts
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&parent)
+            .call()
+            .await
+            .expect("create child");
+
+        // Close the loop behind the service's back: no API builds a cycle, but a
+        // hand-edited database can hold one and the walk must not spin.
+        sqlx::query("UPDATE accounts SET parent_id = ? WHERE id = ?")
+            .bind(child.to_string())
+            .bind(parent.to_string())
+            .execute(&pool)
+            .await
+            .expect("close the cycle");
+
+        let tx = seed_transaction(&pool).await;
+        let mut db_tx = pool.begin().await.expect("begin");
+        let result = insert(
+            &mut db_tx,
+            Owner::Transaction,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("offset"),
+                MetaValue::Account(child),
+            )]),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(BcError::BadData(_))),
+            "a cyclic parent chain is bad data, not an infinite walk, got {result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn deleting_a_referenced_account_tombstones_the_entry(pool: SqlitePool) {
         let account = crate::AccountService::new(pool.clone())
             .create()
@@ -1000,6 +1090,34 @@ mod tests {
                 ("payee", &MetaValue::Text("Other Grocer".to_owned())),
             ],
             "a repeated key is two entries; only the exact duplicate is dropped"
+        );
+    }
+
+    #[test]
+    fn union_keeps_duplicates_the_absorbed_leg_carries_alone() {
+        let survivor = Metadata::new(vec![MetaEntry::new(
+            key("payee"),
+            MetaValue::Text("Generic Grocer".to_owned()),
+        )]);
+        let absorbed = Metadata::new(vec![
+            MetaEntry::new(key("note"), MetaValue::Text("twice".to_owned())),
+            MetaEntry::new(key("note"), MetaValue::Text("twice".to_owned())),
+        ]);
+
+        let merged = union(&survivor, &absorbed);
+
+        let pairs: Vec<(&str, &MetaValue)> = merged
+            .iter()
+            .map(|e| (e.key().as_str(), e.value()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("payee", &MetaValue::Text("Generic Grocer".to_owned())),
+                ("note", &MetaValue::Text("twice".to_owned())),
+                ("note", &MetaValue::Text("twice".to_owned())),
+            ],
+            "redundancy is judged against the survivor, so the absorbed leg keeps its own repeats"
         );
     }
 }
