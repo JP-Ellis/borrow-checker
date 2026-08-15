@@ -432,7 +432,15 @@ fn MetaEditorRow(
                 let matches = suggestions();
                 match matches.get(highlighted.get_untracked()) {
                     Some(def) => commit_key(def.key.clone(), def.ty),
-                    None => commit_create(),
+                    None if create_query().is_some() => commit_create(),
+                    // The key as typed is already the registered one, so there
+                    // is nothing to pick and nothing to create. Enter still
+                    // closes the menu and moves on, as it does on every other
+                    // path through this handler.
+                    None => {
+                        open.set(false);
+                        focus_soon(val_id(instance, uid));
+                    }
                 }
                 ev.prevent_default();
             }
