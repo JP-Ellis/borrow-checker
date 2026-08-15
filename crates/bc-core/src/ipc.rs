@@ -118,6 +118,10 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
             Event::TransactionTagsChanged { added, removed, .. } => {
                 ("tags", format!("tags +{} -{}", added.len(), removed.len()))
             }
+            Event::TransactionMetadataChanged { before, after, .. } => (
+                "meta",
+                format!("metadata {} → {} entries", before.len(), after.len()),
+            ),
             Event::TransactionReconciled { from, to, .. } => {
                 ("reconcile", format!("reconciliation {from:?} → {to:?}"))
             }
@@ -125,6 +129,14 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                 ("recat", format!("recategorised → {to_account}"))
             }
             Event::PostingAmountChanged { .. } => ("amount", "amount changed".to_owned()),
+            Event::PostingMetadataChanged { before, after, .. } => (
+                "meta",
+                format!(
+                    "posting metadata {} → {} entries",
+                    before.len(),
+                    after.len()
+                ),
+            ),
             Event::PostingSpreadChanged { to, .. } => (
                 "spread",
                 match to {
