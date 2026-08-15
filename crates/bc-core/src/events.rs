@@ -67,9 +67,10 @@ pub enum Event {
     },
     /// A transaction was amended.
     ///
-    /// Records the updated metadata fields (date, description, payee).
-    /// Posting and tag mutations are applied directly to the projection tables
-    /// and are not captured in this event payload.
+    /// Records the updated scalar fields. Postings, tags and metadata are
+    /// applied directly to the projection tables and are not captured in this
+    /// payload; [`Self::TransactionMetadataChanged`] covers metadata on the
+    /// [`crate::TransactionService::edit`] path.
     TransactionAmended {
         /// The transaction's ID.
         id: TransactionId,
@@ -77,8 +78,6 @@ pub enum Event {
         date: jiff::civil::Date,
         /// The new description after amendment.
         description: String,
-        /// The new payee after amendment, or `None` if the payee was removed.
-        payee: Option<String>,
     },
     /// A transaction was voided.
     TransactionVoided {
@@ -91,15 +90,6 @@ pub enum Event {
         original_id: TransactionId,
         /// The new reversal transaction's ID.
         reversal_id: TransactionId,
-    },
-    /// A transaction's payee was changed.
-    TransactionPayeeChanged {
-        /// The transaction's ID.
-        id: TransactionId,
-        /// Payee before the change, or `None` if previously unset.
-        from: Option<String>,
-        /// Payee after the change, or `None` if cleared.
-        to: Option<String>,
     },
     /// A transaction's date was changed.
     TransactionDateChanged {
@@ -118,15 +108,6 @@ pub enum Event {
         from: String,
         /// Description after the change.
         to: String,
-    },
-    /// A transaction's note was changed.
-    TransactionNoteChanged {
-        /// The transaction's ID.
-        id: TransactionId,
-        /// Note before the change, or `None` if previously unset.
-        from: Option<String>,
-        /// Note after the change, or `None` if cleared.
-        to: Option<String>,
     },
     /// A transaction's tag set was changed.
     TransactionTagsChanged {
@@ -155,15 +136,6 @@ pub enum Event {
         before: Metadata,
         /// The full metadata list after the change.
         after: Metadata,
-    },
-    /// A transaction's extra (labeled) dates were changed.
-    TransactionExtraDatesChanged {
-        /// The transaction's ID.
-        id: TransactionId,
-        /// The full extra-date set before the change.
-        from: Vec<(String, jiff::civil::Date)>,
-        /// The full extra-date set after the change.
-        to: Vec<(String, jiff::civil::Date)>,
     },
     /// A transaction's reconciliation state was changed.
     TransactionReconciled {
@@ -212,17 +184,6 @@ pub enum Event {
         before: Metadata,
         /// The full metadata list after the change.
         after: Metadata,
-    },
-    /// A posting's note was changed.
-    PostingNoteChanged {
-        /// The owning transaction's ID.
-        id: TransactionId,
-        /// The posting whose note changed.
-        posting_id: PostingId,
-        /// Note before the change, or `None` if previously unset.
-        from: Option<String>,
-        /// Note after the change, or `None` if cleared.
-        to: Option<String>,
     },
     /// A posting's accrual spread window was changed.
     PostingSpreadChanged {
@@ -540,18 +501,14 @@ impl Event {
             Self::TransactionAmended { .. } => "TransactionAmended",
             Self::TransactionVoided { .. } => "TransactionVoided",
             Self::TransactionReversed { .. } => "TransactionReversed",
-            Self::TransactionPayeeChanged { .. } => "TransactionPayeeChanged",
             Self::TransactionDateChanged { .. } => "TransactionDateChanged",
             Self::TransactionDescriptionChanged { .. } => "TransactionDescriptionChanged",
-            Self::TransactionNoteChanged { .. } => "TransactionNoteChanged",
             Self::TransactionTagsChanged { .. } => "TransactionTagsChanged",
             Self::TransactionMetadataChanged { .. } => "TransactionMetadataChanged",
-            Self::TransactionExtraDatesChanged { .. } => "TransactionExtraDatesChanged",
             Self::TransactionReconciled { .. } => "TransactionReconciled",
             Self::PostingRecategorised { .. } => "PostingRecategorised",
             Self::PostingAmountChanged { .. } => "PostingAmountChanged",
             Self::PostingMetadataChanged { .. } => "PostingMetadataChanged",
-            Self::PostingNoteChanged { .. } => "PostingNoteChanged",
             Self::PostingSpreadChanged { .. } => "PostingSpreadChanged",
             Self::PostingAdded { .. } => "PostingAdded",
             Self::PostingRemoved { .. } => "PostingRemoved",
@@ -584,18 +541,14 @@ impl Event {
             Self::TransactionCreated { id }
             | Self::TransactionAmended { id, .. }
             | Self::TransactionVoided { id }
-            | Self::TransactionPayeeChanged { id, .. }
             | Self::TransactionDateChanged { id, .. }
             | Self::TransactionDescriptionChanged { id, .. }
-            | Self::TransactionNoteChanged { id, .. }
             | Self::TransactionTagsChanged { id, .. }
             | Self::TransactionMetadataChanged { id, .. }
-            | Self::TransactionExtraDatesChanged { id, .. }
             | Self::TransactionReconciled { id, .. }
             | Self::PostingRecategorised { id, .. }
             | Self::PostingAmountChanged { id, .. }
             | Self::PostingMetadataChanged { id, .. }
-            | Self::PostingNoteChanged { id, .. }
             | Self::PostingSpreadChanged { id, .. }
             | Self::PostingAdded { id, .. }
             | Self::PostingRemoved { id, .. } => id.to_string(),
@@ -845,7 +798,6 @@ mod tests {
             id: id.clone(),
             date: Date::constant(2026, 3, 15),
             description: "Amended description".to_owned(),
-            payee: Some("Woolworths".to_owned()),
         };
 
         store.append(&event).await.expect("append should succeed");
@@ -869,49 +821,10 @@ mod tests {
                 id: replayed_id,
                 date,
                 description,
-                payee,
             } => {
                 assert_eq!(replayed_id, id);
                 assert_eq!(date, Date::constant(2026, 3, 15));
                 assert_eq!(description, "Amended description");
-                assert_eq!(payee, Some("Woolworths".to_owned()));
-            }
-            other => panic!("expected TransactionAmended, got {other:?}"),
-        }
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn transaction_amended_payload_round_trips_without_payee(pool: sqlx::SqlitePool) {
-        use bc_models::TransactionId;
-        use jiff::civil::Date;
-
-        let store = SqliteStore::new(pool.clone());
-        let id = TransactionId::new();
-        let event = Event::TransactionAmended {
-            id: id.clone(),
-            date: Date::constant(2026, 1, 1),
-            description: "No payee".to_owned(),
-            payee: None,
-        };
-
-        store.append(&event).await.expect("append should succeed");
-
-        let records = store
-            .replay_for(&id.to_string())
-            .await
-            .expect("replay should succeed");
-        let record = records.first().expect("one record should exist");
-
-        let replayed: Event =
-            serde_json::from_str(&record.payload).expect("payload should deserialise");
-
-        #[expect(
-            clippy::wildcard_enum_match_arm,
-            reason = "Event is #[non_exhaustive]; wildcard arm is required for exhaustive match in tests"
-        )]
-        match replayed {
-            Event::TransactionAmended { payee, .. } => {
-                assert_eq!(payee, None);
             }
             other => panic!("expected TransactionAmended, got {other:?}"),
         }
@@ -1267,13 +1180,16 @@ mod tests {
     #[test]
     fn decomposed_events_aggregate_on_transaction_id() {
         let tx = TransactionId::new();
-        let event = Event::TransactionPayeeChanged {
+        let event = Event::TransactionMetadataChanged {
             id: tx.clone(),
-            from: Some("Old".to_owned()),
-            to: Some("New".to_owned()),
+            before: bc_models::Metadata::default(),
+            after: bc_models::Metadata::new(vec![bc_models::MetaEntry::new(
+                bc_models::MetaKey::new("payee").expect("valid key"),
+                bc_models::MetaValue::Text("Generic Grocer".to_owned()),
+            )]),
         };
         assert_eq!(event.aggregate_id(), tx.to_string());
-        assert_eq!(event.kind(), "TransactionPayeeChanged");
+        assert_eq!(event.kind(), "TransactionMetadataChanged");
     }
 
     #[test]
