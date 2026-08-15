@@ -693,22 +693,23 @@ fn parse_number(
 
 #[cfg(test)]
 mod tests {
-    /// Reads the first `payee` metadata entry, when the row states one.
-    fn payee_of(tx: &RawTransaction) -> Option<&str> {
-        tx.metadata.iter().find_map(|entry| match entry.value {
-            bc_sdk::MetaValue::Text(ref text) if entry.key == "payee" => Some(text.as_str()),
-            _ => None,
-        })
-    }
-
     use std::io::Write as _;
 
     use bc_sdk::Importer as _;
+    use bc_sdk::MetaValue;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
     use super::*;
     use crate::config::LegSpec;
+
+    /// Reads the first `payee` metadata entry, when the row states one.
+    fn payee_of(tx: &RawTransaction) -> Option<&str> {
+        tx.metadata.iter().find_map(|entry| match entry.value {
+            MetaValue::Text(ref text) if entry.key == "payee" => Some(text.as_str()),
+            _ => None,
+        })
+    }
 
     #[test]
     fn parse_number_strips_currency_symbols() {
