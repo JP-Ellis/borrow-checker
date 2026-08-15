@@ -434,6 +434,20 @@ pub enum Event {
         /// The type it registered with.
         ty: MetaType,
     },
+    /// A metadata key's registered type was changed.
+    ///
+    /// Every entry stored under the key was refitted to `to` in the same
+    /// database transaction: values that parse are converted, values that do
+    /// not are stored as text and flagged. A retype where `from == to` changes
+    /// nothing and emits nothing.
+    MetadataKeyRetyped {
+        /// The retyped key.
+        key: MetaKey,
+        /// The type it held before.
+        from: MetaType,
+        /// The type it holds now.
+        to: MetaType,
+    },
     /// An import batch was discarded, undoing the run that produced it.
     ///
     /// One event covers the whole discard. Emitting a `PostingRemoved` per row
@@ -535,6 +549,7 @@ impl Event {
             Self::TransactionsMerged { .. } => "TransactionsMerged",
             Self::TransactionUnmerged { .. } => "TransactionUnmerged",
             Self::MetadataKeyRegistered { .. } => "MetadataKeyRegistered",
+            Self::MetadataKeyRetyped { .. } => "MetadataKeyRetyped",
             Self::ImportBatchDiscarded { .. } => "ImportBatchDiscarded",
         }
     }
@@ -584,7 +599,9 @@ impl Event {
             // The registry has no entity ID: a key is its own aggregate. Every
             // other aggregate ID is a prefixed `define_id!` string, so a bare
             // key can never collide with one.
-            Self::MetadataKeyRegistered { key, .. } => key.as_str().to_owned(),
+            Self::MetadataKeyRegistered { key, .. } | Self::MetadataKeyRetyped { key, .. } => {
+                key.as_str().to_owned()
+            }
             Self::ImportBatchDiscarded { batch_id, .. } => batch_id.to_string(),
         }
     }
