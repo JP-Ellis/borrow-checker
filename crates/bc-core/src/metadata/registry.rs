@@ -44,7 +44,11 @@ impl TryFrom<KeyRow> for MetaKeyDef {
         let created_at = row.created_at.parse::<Timestamp>().map_err(|e| {
             BcError::BadData(format!("invalid created_at '{}': {e}", row.created_at))
         })?;
-        Ok(Self::builder().key(key).ty(ty).created_at(created_at).build())
+        Ok(Self::builder()
+            .key(key)
+            .ty(ty)
+            .created_at(created_at)
+            .build())
     }
 }
 
@@ -299,11 +303,10 @@ async fn replay(
     );
     // Fetched whole rather than streamed: `value_columns` borrows the
     // transaction mutably inside the loop below.
-    let rows: Vec<(i64, String, Option<String>, i64)> =
-        sqlx::query_as(sqlx::AssertSqlSafe(select))
-            .bind(key.as_str())
-            .fetch_all(&mut **db_tx)
-            .await?;
+    let rows: Vec<(i64, String, Option<String>, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(select))
+        .bind(key.as_str())
+        .fetch_all(&mut **db_tx)
+        .await?;
 
     let update = format!(
         "UPDATE {} SET value_text = ?, value_num = ?, value_commodity = ?, \
