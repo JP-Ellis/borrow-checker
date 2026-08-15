@@ -546,11 +546,12 @@ mod tests {
             .await
             .expect("register");
 
-        let aggregate: String =
-            sqlx::query_scalar("SELECT aggregate_id FROM events WHERE kind = 'MetadataKeyRegistered'")
-                .fetch_one(&pool)
-                .await
-                .expect("aggregate");
+        let aggregate: String = sqlx::query_scalar(
+            "SELECT aggregate_id FROM events WHERE kind = 'MetadataKeyRegistered'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("aggregate");
         assert_eq!(aggregate, "invoice");
     }
 
@@ -1260,8 +1261,7 @@ mod tests {
         let mut replayed: std::collections::BTreeMap<MetaKey, MetaType> =
             std::collections::BTreeMap::new();
         for payload in rows {
-            let event: crate::events::Event =
-                serde_json::from_str(&payload).expect("deserialise");
+            let event: crate::events::Event = serde_json::from_str(&payload).expect("deserialise");
             #[expect(
                 clippy::wildcard_enum_match_arm,
                 reason = "Event is #[non_exhaustive]; only the registry variants are replayed here"

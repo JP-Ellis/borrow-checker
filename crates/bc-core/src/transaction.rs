@@ -4355,9 +4355,10 @@ mod tests {
             ("payee", "Generic Grocer"),
             ("note", "weekly shop"),
         ]));
-        let updated = current
-            .clone()
-            .with_metadata(text_meta(&[("payee", "Other Grocer"), ("note", "weekly shop")]));
+        let updated = current.clone().with_metadata(text_meta(&[
+            ("payee", "Other Grocer"),
+            ("note", "weekly shop"),
+        ]));
 
         assert_eq!(
             diff_transaction(&current, &updated),
