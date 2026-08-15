@@ -591,4 +591,116 @@ mod tests {
         );
         assert_eq!(render_entry(&entry, None), "invoice=1502.50");
     }
+
+    /// Builds text entries from `key=value` pairs, in order.
+    fn entries(pairs: &[(&str, &str)]) -> Vec<MetaEntry> {
+        pairs
+            .iter()
+            .map(|&(key, value)| {
+                MetaEntry::new(
+                    MetaKey::new(key).expect("valid key"),
+                    MetaValue::Text(value.to_owned()),
+                )
+            })
+            .collect()
+    }
+
+    /// Reads an amended list back as `key=value` pairs, in order.
+    fn pairs(metadata: &bc_models::Metadata) -> Vec<String> {
+        metadata.iter().map(|e| render_entry(e, None)).collect()
+    }
+
+    /// Names one key for `--clear-meta`.
+    fn keys(names: &[&str]) -> Vec<MetaKey> {
+        names
+            .iter()
+            .map(|&name| MetaKey::new(name).expect("valid key"))
+            .collect()
+    }
+
+    #[test]
+    fn a_replaced_key_keeps_the_place_its_first_entry_held() {
+        let current = bc_models::Metadata::new(entries(&[
+            ("payee", "Generic Grocer"),
+            ("note", "weekly shop"),
+        ]));
+        let amended = apply_changes(&current, &entries(&[("payee", "Other Grocer")]), &[]);
+        assert_eq!(pairs(&amended), ["payee=Other Grocer", "note=weekly shop"]);
+    }
+
+    /// Position orders an owner's entries globally, so replacing a key that
+    /// held several entries drops all of them and lands the new ones where the
+    /// first one was, rather than at the end.
+    #[test]
+    fn replacing_a_repeated_key_splices_every_new_entry_at_its_first_position() {
+        let current = bc_models::Metadata::new(entries(&[
+            ("note", "first"),
+            ("payee", "Generic Grocer"),
+            ("note", "second"),
+        ]));
+        let amended = apply_changes(
+            &current,
+            &entries(&[("note", "only"), ("note", "also")]),
+            &[],
+        );
+        assert_eq!(
+            pairs(&amended),
+            ["note=only", "note=also", "payee=Generic Grocer"]
+        );
+    }
+
+    #[test]
+    fn a_key_the_list_did_not_hold_appends_in_argument_order() {
+        let current = bc_models::Metadata::new(entries(&[("payee", "Generic Grocer")]));
+        let amended = apply_changes(
+            &current,
+            &entries(&[("invoice", "1502"), ("due", "2026-04-15")]),
+            &[],
+        );
+        assert_eq!(
+            pairs(&amended),
+            ["payee=Generic Grocer", "invoice=1502", "due=2026-04-15"]
+        );
+    }
+
+    #[test]
+    fn clearing_a_key_removes_every_entry_under_it() {
+        let current = bc_models::Metadata::new(entries(&[
+            ("note", "first"),
+            ("payee", "Generic Grocer"),
+            ("note", "second"),
+        ]));
+        let amended = apply_changes(&current, &[], &keys(&["note"]));
+        assert_eq!(pairs(&amended), ["payee=Generic Grocer"]);
+    }
+
+    /// A clear and a replacement naming different keys apply to one list
+    /// without either disturbing the other's position.
+    #[test]
+    fn a_clear_and_a_replacement_apply_together() {
+        let current = bc_models::Metadata::new(entries(&[
+            ("note", "weekly shop"),
+            ("payee", "Generic Grocer"),
+            ("due", "2026-04-15"),
+        ]));
+        let amended = apply_changes(
+            &current,
+            &entries(&[("payee", "Other Grocer")]),
+            &keys(&["note"]),
+        );
+        assert_eq!(pairs(&amended), ["payee=Other Grocer", "due=2026-04-15"]);
+    }
+
+    #[test]
+    fn an_amendment_naming_nothing_leaves_the_list_alone() {
+        let current = bc_models::Metadata::new(entries(&[
+            ("payee", "Generic Grocer"),
+            ("note", "weekly shop"),
+        ]));
+        let amended = apply_changes(&current, &[], &[]);
+        assert_eq!(
+            pairs(&amended),
+            ["payee=Generic Grocer", "note=weekly shop"]
+        );
+    }
 }
