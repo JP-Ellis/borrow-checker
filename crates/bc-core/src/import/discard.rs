@@ -369,6 +369,10 @@ async fn delete_postings(
             .bind(posting_id)
             .execute(&mut *conn)
             .await?;
+        sqlx::query("DELETE FROM posting_metadata WHERE posting_id = ?")
+            .bind(posting_id)
+            .execute(&mut *conn)
+            .await?;
         sqlx::query("DELETE FROM postings WHERE id = ?")
             .bind(posting_id)
             .execute(&mut *conn)
@@ -508,7 +512,7 @@ async fn sweep_empty_transactions(
             .bind(transaction_id)
             .execute(&mut *conn)
             .await?;
-        sqlx::query("DELETE FROM transaction_dates WHERE transaction_id = ?")
+        sqlx::query("DELETE FROM transaction_metadata WHERE transaction_id = ?")
             .bind(transaction_id)
             .execute(&mut *conn)
             .await?;
@@ -1300,7 +1304,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn a_tagged_posting_and_its_tagged_transaction_are_removed(pool: SqlitePool) {
-        // posting_tags, transaction_tags and transaction_dates do not cascade
+        // posting_tags, transaction_tags and the two metadata tables do not cascade
         // from the rows discard deletes, so each needs its own DELETE. Without
         // them a discard of anything the user had tagged aborts on a foreign
         // key violation instead of running.
@@ -1326,13 +1330,23 @@ mod tests {
             .execute(&pool)
             .await
             .expect("tag the transaction");
-        sqlx::query("INSERT INTO transaction_dates (transaction_id, label, date) VALUES (?, ?, ?)")
-            .bind(tx.to_string())
+        sqlx::query("INSERT INTO metadata_keys (key, value_type, created_at) VALUES (?, ?, ?)")
             .bind("settled")
-            .bind("2026-01-16")
+            .bind("date")
+            .bind("2026-01-15T00:00:00Z")
             .execute(&pool)
             .await
-            .expect("label a date");
+            .expect("register the key");
+        sqlx::query(
+            "INSERT INTO transaction_metadata (transaction_id, key, position, value_text) \
+             VALUES (?, ?, 0, ?)",
+        )
+        .bind(tx.to_string())
+        .bind("settled")
+        .bind("2026-01-16")
+        .execute(&pool)
+        .await
+        .expect("annotate the transaction");
 
         let outcome = batches
             .discard(&batch)
@@ -1347,7 +1361,7 @@ mod tests {
             0
         );
         assert_eq!(
-            count(&pool, "SELECT COUNT(*) FROM transaction_dates").await,
+            count(&pool, "SELECT COUNT(*) FROM transaction_metadata").await,
             0
         );
         assert_eq!(
