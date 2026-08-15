@@ -149,9 +149,7 @@ CREATE INDEX idx_account_tags_tag ON account_tags (tag_id);
 CREATE TABLE transactions (
     id             TEXT NOT NULL PRIMARY KEY,
     date           TEXT NOT NULL, -- YYYY-MM-DD
-    payee          TEXT,
     description    TEXT NOT NULL,
-    note           TEXT,
     reconciliation TEXT NOT NULL,
     created_at     TEXT NOT NULL
 );
@@ -164,7 +162,6 @@ CREATE TABLE postings (
     account_id           TEXT    NOT NULL REFERENCES accounts(id),
     amount               TEXT,             -- decimal string; NULL when this leg is elided
     commodity            TEXT,             -- CommodityCode (e.g. "AUD"); NULL iff amount is NULL; not FK
-    note                 TEXT,
     position             INTEGER NOT NULL DEFAULT 0,
     -- Mirror of the owning transaction's date, maintained by the triggers below.
     -- Denormalised so date predicates can drive the index scan: with the date on
@@ -227,14 +224,76 @@ CREATE TABLE posting_tags (
 );
 CREATE INDEX idx_posting_tags_tag ON posting_tags (tag_id);
 
--- Free-form labeled dates for a transaction.
-CREATE TABLE transaction_dates (
-    transaction_id TEXT NOT NULL REFERENCES transactions(id),
-    label          TEXT NOT NULL,
-    date           TEXT NOT NULL, -- YYYY-MM-DD
-    PRIMARY KEY (transaction_id, label)
+-- MARK: Metadata
+
+-- The global metadata key registry. Every key used on any owner is registered
+-- here exactly once, with the value type its entries are read back as.
+--
+-- There are no reserved or built-in keys: `payee` holds no privileged position,
+-- and every key can be renamed and retyped. A key enters on first write with
+-- the type its first value carried, and outlives every entry that used it, so a
+-- re-entered key keeps its meaning.
+CREATE TABLE metadata_keys (
+    key        TEXT NOT NULL PRIMARY KEY,   -- normalised [a-z][a-z0-9_-]*
+    value_type TEXT NOT NULL,               -- text|number|boolean|date|timestamp|amount|account
+    created_at TEXT NOT NULL
 );
-CREATE INDEX idx_transaction_dates_tx ON transaction_dates (transaction_id);
+
+-- Typed key-value metadata on a transaction.
+--
+-- `position` orders every entry belonging to one transaction, across all its
+-- keys rather than within a key, and is the display order. Repeated keys are
+-- permitted, so there is no natural primary key candidate and neither metadata
+-- table declares one; both rely on SQLite's implicit rowid.
+--
+-- `mismatched` marks a value whose type differed from its key's registered
+-- type. Such a value is stored as its canonical string and flagged rather than
+-- rejected, so nothing is lost and no import blocks.
+CREATE TABLE transaction_metadata (
+    transaction_id  TEXT    NOT NULL REFERENCES transactions(id),
+    key             TEXT    NOT NULL REFERENCES metadata_keys(key),
+    position        INTEGER NOT NULL DEFAULT 0,
+    -- Canonical string form, always populated, so equality and substring
+    -- matching read one column whatever the type. Dates (YYYY-MM-DD) and
+    -- timestamps (RFC 3339) sort correctly here and need no numeric shadow.
+    -- For an account value this holds the account's colon-separated path, not
+    -- its id: the path is what survives the account being deleted.
+    value_text      TEXT    NOT NULL,
+    -- Sortable shadow giving numbers and amounts range queries and correct
+    -- ordering. Exact comparison still goes through `value_text`, since REAL
+    -- cannot hold a Decimal faithfully. NULL for every other type — and also
+    -- NULL for a decimal too large for f64, so a range query on this column
+    -- silently skips such a row. A filter that must not miss one has to fall
+    -- back to `value_text`.
+    value_num       REAL,
+    value_commodity TEXT,               -- amount only
+    -- Account values only. ON DELETE SET NULL tombstones the entry when its
+    -- account is deleted: the link is cleared, `value_text` keeps the path the
+    -- entry pointed at, and the entry itself survives. Without the clause the
+    -- account delete would be rejected outright, since every connection sets
+    -- PRAGMA foreign_keys = ON.
+    value_account   TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+    mismatched      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_tx_metadata_owner ON transaction_metadata (transaction_id, position);
+CREATE INDEX idx_tx_metadata_key   ON transaction_metadata (key, value_text);
+CREATE INDEX idx_tx_metadata_num   ON transaction_metadata (key, value_num);
+
+-- Typed key-value metadata on a posting leg. Same shape and same column
+-- semantics as transaction_metadata, keyed on the owning posting.
+CREATE TABLE posting_metadata (
+    posting_id      TEXT    NOT NULL REFERENCES postings(id),
+    key             TEXT    NOT NULL REFERENCES metadata_keys(key),
+    position        INTEGER NOT NULL DEFAULT 0,
+    value_text      TEXT    NOT NULL,
+    value_num       REAL,
+    value_commodity TEXT,
+    value_account   TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+    mismatched      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_posting_metadata_owner ON posting_metadata (posting_id, position);
+CREATE INDEX idx_posting_metadata_key   ON posting_metadata (key, value_text);
+CREATE INDEX idx_posting_metadata_num   ON posting_metadata (key, value_num);
 
 -- MARK: Balances
 
