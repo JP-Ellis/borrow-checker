@@ -122,24 +122,25 @@ impl bc_sdk::Importer for OfxImporter {
 
 #[cfg(test)]
 mod tests {
-    /// Reads the first `payee` metadata entry, when the row states one.
-    fn payee_of(tx: &RawTransaction) -> Option<&str> {
-        tx.metadata.iter().find_map(|entry| match entry.value {
-            bc_sdk::MetaValue::Text(ref text) if entry.key == "payee" => Some(text.as_str()),
-            _ => None,
-        })
-    }
-
     use std::io::Write as _;
 
     use bc_sdk::Amount;
     use bc_sdk::Date;
     use bc_sdk::ImportConfig;
     use bc_sdk::Importer as _;
+    use bc_sdk::MetaValue;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
     use super::*;
+
+    /// Reads the first `payee` metadata entry, when the row states one.
+    fn payee_of(tx: &RawTransaction) -> Option<&str> {
+        tx.metadata.iter().find_map(|entry| match entry.value {
+            MetaValue::Text(ref text) if entry.key == "payee" => Some(text.as_str()),
+            _ => None,
+        })
+    }
 
     const OFX_V1: &[u8] = b"\
 OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
