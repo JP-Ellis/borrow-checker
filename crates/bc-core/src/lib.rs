@@ -25,6 +25,7 @@ pub(crate) mod import_exec;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 pub(crate) mod loan;
+pub(crate) mod metadata;
 pub(crate) mod period_overlap;
 pub(crate) mod report;
 pub mod residual;
