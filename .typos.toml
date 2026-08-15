@@ -1,3 +1,8 @@
-[default.extend-words]
-# "nd" is a valid English ordinal suffix (2nd, 22nd) — not a typo of "and"
-nd = "nd"
+[default]
+# A Rust unicode escape carries a hex code point, never prose. "\u{21ba}" holds
+# the letters "ba", which typos reads as a misspelling of "by".
+extend-ignore-re = ['\\u\{[0-9A-Fa-f]+\}']
+
+  [default.extend-words]
+  # "nd" is a valid English ordinal suffix (2nd, 22nd) — not a typo of "and"
+  nd = "nd"
