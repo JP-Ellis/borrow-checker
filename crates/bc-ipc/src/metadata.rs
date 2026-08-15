@@ -13,6 +13,138 @@ use serde::Serialize;
 
 use crate::Amount;
 
+// MARK: Key validation
+
+/// Maximum length of a metadata key, in bytes.
+///
+/// Keys are restricted to ASCII, so this is also a character count and serves
+/// directly as an input's `maxlength`.
+pub const META_KEY_MAX_BYTES: usize = 64;
+
+/// Why a string cannot be used as a metadata key.
+///
+/// Carried instead of a bare `false` so a frontend can say which rule the input
+/// broke while the user is still typing. [`core::fmt::Display`] renders each
+/// variant as a complete sentence, so a caller needs no match arm of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum MetaKeyProblem {
+    /// The key was empty; a metadata key requires at least one character.
+    #[error("a metadata key must not be empty")]
+    Empty,
+    /// The first character was not an ASCII letter.
+    #[error("a metadata key must start with a letter, found '{found}'")]
+    LeadingChar {
+        /// The offending first character, after lowercasing.
+        found: char,
+    },
+    /// A character outside `[a-z0-9_-]` appeared after the first.
+    #[error("a metadata key may only contain letters, digits, '_' and '-', found '{found}'")]
+    InvalidChar {
+        /// The offending character, after lowercasing.
+        found: char,
+    },
+    /// The key exceeded [`META_KEY_MAX_BYTES`].
+    #[error(
+        "a metadata key must be at most {} bytes, found {len}",
+        META_KEY_MAX_BYTES
+    )]
+    TooLong {
+        /// Length of the offending key in bytes, after lowercasing.
+        len: usize,
+    },
+}
+
+/// Lowercases `key`, without judging whether the result is usable.
+///
+/// This is the normalisation half of [`validate_meta_key`], split out because a
+/// frontend wants it on every keystroke: the backend lowercases silently, so an
+/// input that does not show the user what will actually be stored lies to them.
+/// Folding is ASCII-only, matching the backend — Unicode folding would map
+/// codepoints outside the charset onto it, and `U+212A` KELVIN SIGN would reach
+/// the registry as a colliding `k`.
+///
+/// # Arguments
+///
+/// * `key` - The raw key, in any case.
+///
+/// # Returns
+///
+/// The key with every ASCII letter lowercased.
+///
+/// # Example
+///
+/// ```
+/// # use bc_ipc::normalise_meta_key;
+/// assert_eq!(normalise_meta_key("Payee"), "payee");
+/// ```
+#[must_use]
+#[inline]
+pub fn normalise_meta_key(key: &str) -> String {
+    key.to_ascii_lowercase()
+}
+
+/// Normalises `key` and reports whether it is a usable metadata key.
+///
+/// Mirrors `bc_models::MetaKey::new`, which this crate cannot call: the domain
+/// crate is unreachable from the default build, and that build is the one the
+/// WASM frontend compiles. The rule is duplicated rather than shared, and the
+/// `models`-gated test `mirror_agrees_with_the_domain_validator` fails the
+/// moment the two disagree.
+///
+/// The backend validates again and answers an invalid key with
+/// `BcError::Validation`. That safeguard is not weakened by this check; it is
+/// simply too late to be the only one, since it fails a whole transaction save
+/// over one malformed key.
+///
+/// # Arguments
+///
+/// * `key` - The raw key, in any case.
+///
+/// # Returns
+///
+/// The normalised key, ready to send.
+///
+/// # Errors
+///
+/// Returns the [`MetaKeyProblem`] naming the first rule the key broke. Rules
+/// are checked in the backend's order — empty, leading character, charset,
+/// length — so both sides reject a key for the same reason, not merely reject
+/// it.
+///
+/// # Example
+///
+/// ```
+/// # use bc_ipc::{validate_meta_key, MetaKeyProblem};
+/// assert_eq!(validate_meta_key("Invoice"), Ok("invoice".to_owned()));
+/// assert_eq!(
+///     validate_meta_key("1nvoice"),
+///     Err(MetaKeyProblem::LeadingChar { found: '1' })
+/// );
+/// ```
+#[inline]
+pub fn validate_meta_key(key: &str) -> Result<String, MetaKeyProblem> {
+    let normalised = normalise_meta_key(key);
+    let mut chars = normalised.chars();
+    let Some(first) = chars.next() else {
+        return Err(MetaKeyProblem::Empty);
+    };
+    if !first.is_ascii_lowercase() {
+        return Err(MetaKeyProblem::LeadingChar { found: first });
+    }
+    if let Some(found) =
+        chars.find(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_' || *c == '-'))
+    {
+        return Err(MetaKeyProblem::InvalidChar { found });
+    }
+    if normalised.len() > META_KEY_MAX_BYTES {
+        return Err(MetaKeyProblem::TooLong {
+            len: normalised.len(),
+        });
+    }
+    Ok(normalised)
+}
+
 /// The type of a metadata value, without the value.
 ///
 /// Every registered key carries one of these. The serde form (`text`,
@@ -331,10 +463,14 @@ mod tests {
     use rstest::rstest;
     use rust_decimal::Decimal;
 
+    use super::META_KEY_MAX_BYTES;
     use super::MetaEntryDto;
     use super::MetaKeyDefDto;
+    use super::MetaKeyProblem;
     use super::MetaTypeDto;
     use super::MetaValueDto;
+    use super::normalise_meta_key;
+    use super::validate_meta_key;
     use crate::Amount;
 
     /// One sample of each of the seven value types, in variant order.
@@ -415,6 +551,60 @@ mod tests {
         assert_eq!(def, back);
     }
 
+    #[rstest]
+    #[case("Payee", "payee")]
+    #[case("INVOICE", "invoice")]
+    #[case("due date", "due date")]
+    #[case("é", "é")]
+    fn normalise_lowercases_ascii_and_leaves_the_rest(#[case] raw: &str, #[case] expected: &str) {
+        assert_eq!(normalise_meta_key(raw), expected);
+    }
+
+    #[rstest]
+    #[case("payee", "payee")]
+    #[case("Payee", "payee")]
+    #[case("inVoice", "invoice")]
+    #[case("due_date-2", "due_date-2")]
+    fn validate_accepts_and_normalises(#[case] raw: &str, #[case] expected: &str) {
+        assert_eq!(validate_meta_key(raw), Ok(expected.to_owned()));
+    }
+
+    #[rstest]
+    #[case("", MetaKeyProblem::Empty)]
+    #[case("1nvoice", MetaKeyProblem::LeadingChar { found: '1' })]
+    #[case("_leading", MetaKeyProblem::LeadingChar { found: '_' })]
+    #[case("é", MetaKeyProblem::LeadingChar { found: 'é' })]
+    #[case("due date", MetaKeyProblem::InvalidChar { found: ' ' })]
+    #[case("payee:name", MetaKeyProblem::InvalidChar { found: ':' })]
+    fn validate_names_the_rule_that_was_broken(
+        #[case] raw: &str,
+        #[case] expected: MetaKeyProblem,
+    ) {
+        assert_eq!(validate_meta_key(raw), Err(expected));
+    }
+
+    #[test]
+    fn validate_admits_the_byte_cap_and_rejects_one_past_it() {
+        let at_cap = "a".repeat(META_KEY_MAX_BYTES);
+        assert_eq!(validate_meta_key(&at_cap), Ok(at_cap.clone()));
+        assert_eq!(
+            validate_meta_key(&format!("{at_cap}a")),
+            Err(MetaKeyProblem::TooLong {
+                len: META_KEY_MAX_BYTES + 1
+            })
+        );
+    }
+
+    #[test]
+    fn charset_is_judged_before_length() {
+        let over_cap_with_a_space = format!("{} ", "a".repeat(META_KEY_MAX_BYTES));
+        assert_eq!(
+            validate_meta_key(&over_cap_with_a_space),
+            Err(MetaKeyProblem::InvalidChar { found: ' ' }),
+            "a key breaking both rules is reported the same way on both sides"
+        );
+    }
+
     #[cfg(feature = "models")]
     mod models {
         use bc_models::MetaEntry;
@@ -427,10 +617,13 @@ mod tests {
 
         use super::sample_values;
         use crate::BcError;
+        use crate::META_KEY_MAX_BYTES;
         use crate::MetaEntryDto;
         use crate::MetaKeyDefDto;
+        use crate::MetaKeyProblem;
         use crate::MetaTypeDto;
         use crate::MetaValueDto;
+        use crate::validate_meta_key;
 
         #[test]
         fn every_value_round_trips_through_the_domain() {
@@ -454,6 +647,105 @@ mod tests {
         ) {
             assert_eq!(MetaTypeDto::from(domain), dto);
             assert_eq!(MetaType::from(dto), domain);
+        }
+
+        /// Every key the two validators are held to agree on.
+        ///
+        /// Covers each problem variant, the lowercase-first case, the byte cap
+        /// in both directions, and keys breaking two rules at once, where only
+        /// a shared check order gives a shared answer.
+        fn candidate_keys() -> Vec<String> {
+            let long = "a".repeat(META_KEY_MAX_BYTES);
+            vec![
+                "payee".to_owned(),
+                "Payee".to_owned(),
+                "INVOICE".to_owned(),
+                "inVoice".to_owned(),
+                "due_date-2".to_owned(),
+                "a".to_owned(),
+                String::new(),
+                "1nvoice".to_owned(),
+                "_leading".to_owned(),
+                "-leading".to_owned(),
+                "é".to_owned(),
+                "due date".to_owned(),
+                "due.date".to_owned(),
+                "duée".to_owned(),
+                "payee:name".to_owned(),
+                long.clone(),
+                format!("{long}a"),
+                format!("{long} "),
+                format!("{long}é"),
+            ]
+        }
+
+        /// Restates a domain rejection as its mirror, so the two are comparable.
+        ///
+        /// A match rather than a string compare: the wording of the two error
+        /// types is allowed to differ, and only the rule each names has to
+        /// agree.
+        fn mirror_of(err: &bc_models::MetaKeyError) -> MetaKeyProblem {
+            match *err {
+                bc_models::MetaKeyError::Empty => MetaKeyProblem::Empty,
+                bc_models::MetaKeyError::LeadingChar { found } => {
+                    MetaKeyProblem::LeadingChar { found }
+                }
+                bc_models::MetaKeyError::InvalidChar { found } => {
+                    MetaKeyProblem::InvalidChar { found }
+                }
+                bc_models::MetaKeyError::TooLong { len } => MetaKeyProblem::TooLong { len },
+                ref other => panic!("domain rejection {other:?} has no mirror in bc-ipc"),
+            }
+        }
+
+        #[test]
+        fn mirror_agrees_with_the_domain_validator() {
+            for raw in candidate_keys() {
+                let ours = validate_meta_key(&raw);
+                let theirs = MetaKey::new(raw.clone());
+                let expected = match theirs {
+                    Ok(key) => Ok(key.as_str().to_owned()),
+                    Err(ref err) => Err(mirror_of(err)),
+                };
+                assert_eq!(
+                    ours, expected,
+                    "the bc-ipc mirror and bc_models::MetaKey::new disagree on '{raw}'"
+                );
+            }
+        }
+
+        #[test]
+        fn the_byte_cap_matches_the_domain() {
+            let at_cap = "a".repeat(META_KEY_MAX_BYTES);
+            MetaKey::new(at_cap.clone()).expect("the domain admits a key at the mirrored cap");
+            let over = format!("{at_cap}a");
+            assert_eq!(
+                MetaKey::new(over.clone()).err().map(|e| mirror_of(&e)),
+                Some(MetaKeyProblem::TooLong {
+                    len: META_KEY_MAX_BYTES + 1
+                }),
+                "META_KEY_MAX_BYTES must be the domain's cap, not merely near it"
+            );
+        }
+
+        #[rstest]
+        #[case(MetaType::Text, MetaTypeDto::Text)]
+        #[case(MetaType::Number, MetaTypeDto::Number)]
+        #[case(MetaType::Boolean, MetaTypeDto::Boolean)]
+        #[case(MetaType::Date, MetaTypeDto::Date)]
+        #[case(MetaType::Timestamp, MetaTypeDto::Timestamp)]
+        #[case(MetaType::Amount, MetaTypeDto::Amount)]
+        #[case(MetaType::Account, MetaTypeDto::Account)]
+        fn the_type_label_matches_the_domains_registry_name(
+            #[case] domain: MetaType,
+            #[case] dto: MetaTypeDto,
+        ) {
+            let registry_name = serde_json::to_string(&domain).expect("serialize");
+            assert_eq!(
+                format!("\"{}\"", dto.label()),
+                registry_name,
+                "the display label and the name stored in the registry must not drift apart"
+            );
         }
 
         #[test]
