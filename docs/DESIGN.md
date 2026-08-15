@@ -102,11 +102,12 @@ The core owns two layers:
 ```
 AccountCreated / AccountUpdated / AccountArchived
 TransactionCreated / TransactionAmended / TransactionVoided / TransactionReversed
-TransactionPayeeChanged / TransactionDateChanged / TransactionDescriptionChanged
-TransactionNoteChanged / TransactionTagsChanged / TransactionExtraDatesChanged
+TransactionDateChanged / TransactionDescriptionChanged
+TransactionTagsChanged / TransactionMetadataChanged
 TransactionReconciled
-PostingRecategorised / PostingAmountChanged / PostingNoteChanged / PostingSpreadChanged
+PostingRecategorised / PostingAmountChanged / PostingMetadataChanged / PostingSpreadChanged
 PostingAdded / PostingRemoved
+MetadataKeyRegistered / MetadataKeyRetyped / MetadataKeyRenamed
 AssetValuationRecorded
 DepreciationCalculated
 LoanTermsSet

@@ -417,10 +417,13 @@ pub enum Event {
     /// lose which entries came from which key and no event could record it
     /// faithfully enough to replay.
     ///
-    /// The event aggregates on `from`, so it is the old name's last event and a
-    /// reader starting from the new name follows the chain backwards. The new
-    /// name's registration time lives on the original
-    /// [`Self::MetadataKeyRegistered`] row, reached the same way.
+    /// The event aggregates on `from`, so it closes the old name's aggregate.
+    /// Nothing is filed under the new name, so a reader holding the current
+    /// name cannot reach the rename by aggregate lookup; it finds the rename by
+    /// scanning `MetadataKeyRenamed` payloads for a matching `to`, then repeats
+    /// from `from` to walk further back. The key's registration time stays on
+    /// the original [`Self::MetadataKeyRegistered`] row at the end of that
+    /// walk.
     MetadataKeyRenamed {
         /// The name the key held before.
         from: MetaKey,
