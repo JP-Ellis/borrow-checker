@@ -2967,6 +2967,72 @@ mod tests {
         );
     }
 
+    /// Reads the stored text and account foreign key of the single entry filed
+    /// under `key` on the leg booked to `account`.
+    async fn leg_entry_under(
+        pool: &SqlitePool,
+        account: &AccountId,
+        key: &str,
+    ) -> Option<(String, Option<String>)> {
+        sqlx::query_as(
+            "SELECT m.value_text, m.value_account FROM posting_metadata m \
+             JOIN postings p ON m.posting_id = p.id \
+             WHERE p.account_id = ? AND m.key = ?",
+        )
+        .bind(account.to_string())
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .expect("leg metadata entry")
+    }
+
+    /// Imports one transaction whose only leg states `stated` as an
+    /// account-valued entry.
+    async fn run_with_leg_counterparty(pool: &SqlitePool, stated: &str) {
+        let svcs = services(pool).await;
+        let raw = raw_with(
+            "groceries",
+            vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .maybe_amount(Some(Amount::new(
+                        Decimal::from(50_i64),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .metadata(vec![meta_account("counterparty", stated)])
+                    .build(),
+            ],
+        );
+        run(&svcs, &[raw]).await;
+    }
+
+    /// A leg's entries reach the resolver down a different call path from a
+    /// row's — `resolve_leg` rather than the writer — so binding is asserted on
+    /// each owner rather than inferred from the other.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_account_path_on_a_leg_binds_to_that_account(pool: SqlitePool) {
+        let (bank, food) = two_account_tree(&pool).await;
+
+        run_with_leg_counterparty(&pool, "Expenses:Food").await;
+
+        assert_eq!(
+            leg_entry_under(&pool, &bank, "counterparty").await,
+            Some(("Expenses:Food".to_owned(), Some(food.to_string())))
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_account_path_on_a_leg_naming_nothing_stays_text(pool: SqlitePool) {
+        let (bank, _food) = two_account_tree(&pool).await;
+
+        run_with_leg_counterparty(&pool, "Assets:Nowhere").await;
+
+        assert_eq!(
+            leg_entry_under(&pool, &bank, "counterparty").await,
+            Some(("Assets:Nowhere".to_owned(), None))
+        );
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn a_repeated_date_label_becomes_two_entries(pool: SqlitePool) {
         two_account_tree(&pool).await;
