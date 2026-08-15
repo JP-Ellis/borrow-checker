@@ -5,6 +5,8 @@
 
 use bc_models::Amount;
 use bc_models::CommodityCode;
+use bc_models::MetaKey;
+use bc_models::MetaValue;
 use rust_decimal::Decimal;
 
 use crate::host::bindings::borrow_checker::sdk::types as wt;
@@ -33,6 +35,94 @@ fn wit_date(d: wt::Date) -> Result<jiff::civil::Date, bc_core::ImportError> {
     })
 }
 
+/// Converts one WIT metadata value into the form the import pipeline reads.
+///
+/// Six of the seven types are self-contained. The seventh names an account by
+/// path, and binding a path needs the account tree, which this crate cannot
+/// see — so the path travels on as [`bc_core::RawMetaValue::AccountPath`] and
+/// `bc-core` binds it where it binds a leg's account.
+///
+/// # Arguments
+///
+/// * `v` - The value as the plugin stated it.
+///
+/// # Returns
+///
+/// The translated value.
+///
+/// # Errors
+///
+/// Returns [`bc_core::ImportError::Parse`] when a number, a date or a
+/// timestamp does not carry the type the plugin claimed for it.
+fn wit_meta_value(v: wt::MetaValue) -> Result<bc_core::RawMetaValue, bc_core::ImportError> {
+    let resolved = match v {
+        wt::MetaValue::Text(text) => MetaValue::Text(text),
+        // `from_str_exact` for the reason `wit_amount` uses it: `from_str`
+        // silently rounds a value carrying more significant digits than
+        // `Decimal` holds, which is precision loss dressed as success.
+        wt::MetaValue::Number(ref raw) => {
+            MetaValue::Number(Decimal::from_str_exact(raw).map_err(|e| {
+                bc_core::ImportError::Parse(format!(
+                    "plugin returned an unparsable metadata number {raw:?}: {e}"
+                ))
+            })?)
+        }
+        wt::MetaValue::Boolean(flag) => MetaValue::Boolean(flag),
+        wt::MetaValue::Date(date) => MetaValue::Date(wit_date(date)?),
+        wt::MetaValue::Timestamp(ref raw) => {
+            MetaValue::Timestamp(raw.parse::<jiff::Timestamp>().map_err(|e| {
+                bc_core::ImportError::Parse(format!(
+                    "plugin returned an unparsable metadata timestamp {raw:?}: {e}"
+                ))
+            })?)
+        }
+        wt::MetaValue::Amount(amount) => MetaValue::Amount(Amount::try_from(amount)?),
+        wt::MetaValue::Account(path) => return Ok(bc_core::RawMetaValue::AccountPath(path)),
+    };
+    Ok(bc_core::RawMetaValue::Resolved(resolved))
+}
+
+/// Converts a plugin's metadata list, dropping the entries it misnamed.
+///
+/// A key outside `[a-z][a-z0-9_-]*` costs its own entry and nothing else: the
+/// rest of the row is worth importing, and the value is one annotation, not
+/// the money.
+///
+/// # Arguments
+///
+/// * `entries` - The entries as the plugin stated them, in display order.
+///
+/// # Returns
+///
+/// The entries whose key was usable, in the order stated.
+///
+/// # Errors
+///
+/// Returns [`bc_core::ImportError::Parse`] when a value does not carry the
+/// type the plugin claimed for it. A malformed value is the plugin's own
+/// defect, unlike a key a user chose.
+fn wit_metadata(
+    entries: Vec<wt::MetaEntry>,
+) -> Result<Vec<bc_core::RawMetaEntry>, bc_core::ImportError> {
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        match MetaKey::new(entry.key.clone()) {
+            Ok(key) => out.push(
+                bc_core::RawMetaEntry::builder()
+                    .key(key)
+                    .value(wit_meta_value(entry.value)?)
+                    .build(),
+            ),
+            Err(error) => tracing::warn!(
+                key = entry.key.as_str(),
+                %error,
+                "plugin stated a metadata key that is not usable; dropping the entry"
+            ),
+        }
+    }
+    Ok(out)
+}
+
 impl TryFrom<wt::RawPosting> for bc_core::RawPosting {
     type Error = bc_core::ImportError;
 
@@ -41,8 +131,8 @@ impl TryFrom<wt::RawPosting> for bc_core::RawPosting {
             .account(p.account)
             .maybe_amount(p.amount.map(Amount::try_from).transpose()?)
             .maybe_balance(p.balance.map(Amount::try_from).transpose()?)
-            .maybe_note(p.note)
             .tags(p.tags)
+            .metadata(wit_metadata(p.metadata)?)
             .build())
     }
 }
@@ -67,20 +157,12 @@ impl TryFrom<wt::RawTransaction> for bc_core::RawTransaction {
                 "plugin returned a raw transaction with no postings".to_owned(),
             ));
         }
-        let extra_dates = t
-            .extra_dates
-            .into_iter()
-            .map(|(label, raw_date)| wit_date(raw_date).map(|parsed| (label, parsed)))
-            .collect::<Result<Vec<_>, _>>()?;
-
         Ok(bc_core::RawTransaction::builder()
             .date(date)
-            .maybe_payee(t.payee)
             .description(t.description)
-            .maybe_note(t.note)
             .maybe_reference(t.reference)
             .tags(t.tags)
-            .extra_dates(extra_dates)
+            .metadata(wit_metadata(t.metadata)?)
             .maybe_source_location(t.source_location.map(Into::into))
             .postings(
                 t.postings
@@ -203,12 +285,10 @@ mod tests {
                 month: 99_u8,
                 day: 1_u8,
             },
-            payee: None,
             description: "test".to_owned(),
-            note: None,
             reference: None,
             tags: vec![],
-            extra_dates: vec![],
+            metadata: vec![],
             source_location: None,
             postings: vec![],
         };
@@ -226,12 +306,10 @@ mod tests {
                 month: 2_u8,
                 day: 30_u8,
             },
-            payee: None,
             description: "test".to_owned(),
-            note: None,
             reference: None,
             tags: vec![],
-            extra_dates: vec![],
+            metadata: vec![],
             source_location: None,
             postings: vec![],
         };
@@ -249,12 +327,10 @@ mod tests {
                 month: 6_u8,
                 day: 27_u8,
             },
-            payee: None,
             description: "Coffee".to_owned(),
-            note: None,
             reference: None,
             tags: vec![],
-            extra_dates: vec![],
+            metadata: vec![],
             source_location: None,
             postings: vec![wt::RawPosting {
                 account: "Assets:Bank:Checking".to_owned(),
@@ -263,8 +339,8 @@ mod tests {
                     commodity: "AUD".to_owned(),
                 }),
                 balance: None,
-                note: None,
                 tags: vec![],
+                metadata: vec![],
             }],
         };
         let core = bc_core::RawTransaction::try_from(t).expect("valid");
@@ -283,12 +359,10 @@ mod tests {
                 month: 6_u8,
                 day: 27_u8,
             },
-            payee: None,
             description: "Coffee".to_owned(),
-            note: None,
             reference: None,
             tags: vec![],
-            extra_dates: vec![],
+            metadata: vec![],
             source_location: None,
             postings: vec![],
         };
@@ -322,12 +396,10 @@ mod tests {
                 month: 6_u8,
                 day: 27_u8,
             },
-            payee: None,
             description: "SPLIT".to_owned(),
-            note: None,
             reference: None,
             tags: vec![],
-            extra_dates: vec![],
+            metadata: vec![],
             source_location: Some(wt::SourceLocation {
                 display: "ledger/2025.beancount:412".to_owned(),
                 uri: Some("file:///ledger/2025.beancount#L412".to_owned()),
@@ -336,8 +408,8 @@ mod tests {
                 account: "Assets:Bank".to_owned(),
                 amount: None,
                 balance: None,
-                note: None,
                 tags: vec![],
+                metadata: vec![],
             }],
         };
 
@@ -358,19 +430,17 @@ mod tests {
                 month: 6_u8,
                 day: 27_u8,
             },
-            payee: None,
             description: "SPLIT".to_owned(),
-            note: None,
             reference: None,
             tags: vec![],
-            extra_dates: vec![],
+            metadata: vec![],
             source_location: None,
             postings: vec![wt::RawPosting {
                 account: "Assets:Bank".to_owned(),
                 amount: None,
                 balance: None,
-                note: None,
                 tags: vec![],
+                metadata: vec![],
             }],
         };
 
@@ -378,6 +448,187 @@ mod tests {
         assert!(
             core.source_location.is_none(),
             "a source with no address must not be forced to fabricate one"
+        );
+    }
+
+    /// Pairs `key` with `value` on the wire.
+    fn wit_entry(key: &str, value: wt::MetaValue) -> wt::MetaEntry {
+        wt::MetaEntry {
+            key: key.to_owned(),
+            value,
+        }
+    }
+
+    /// Translates `entries` as one transaction's metadata.
+    fn translated(entries: Vec<wt::MetaEntry>) -> Vec<bc_core::RawMetaEntry> {
+        let t = wt::RawTransaction {
+            date: wt::Date {
+                year: 2026_i32,
+                month: 1_u8,
+                day: 15_u8,
+            },
+            description: "Coffee".to_owned(),
+            reference: None,
+            tags: vec![],
+            metadata: entries,
+            source_location: None,
+            postings: vec![wt::RawPosting {
+                account: "Assets:Bank".to_owned(),
+                amount: None,
+                balance: None,
+                tags: vec![],
+                metadata: vec![],
+            }],
+        };
+        bc_core::RawTransaction::try_from(t)
+            .expect("valid metadata")
+            .metadata
+    }
+
+    /// Builds the value half of the single translated entry.
+    fn translated_value(value: wt::MetaValue) -> bc_core::RawMetaValue {
+        let entries = translated(vec![wit_entry("thing", value)]);
+        let [entry] = <[bc_core::RawMetaEntry; 1]>::try_from(entries)
+            .expect("exactly one entry should survive");
+        entry.value
+    }
+
+    #[test]
+    fn every_wire_value_type_reaches_the_pipeline() {
+        assert_eq!(
+            translated_value(wt::MetaValue::Text("Generic Grocer".to_owned())),
+            bc_core::RawMetaValue::Resolved(bc_models::MetaValue::Text(
+                "Generic Grocer".to_owned()
+            ))
+        );
+        assert_eq!(
+            translated_value(wt::MetaValue::Number("1502.50".to_owned())),
+            bc_core::RawMetaValue::Resolved(bc_models::MetaValue::Number(
+                rust_decimal::Decimal::from_str("1502.50").expect("valid decimal")
+            ))
+        );
+        assert_eq!(
+            translated_value(wt::MetaValue::Boolean(true)),
+            bc_core::RawMetaValue::Resolved(bc_models::MetaValue::Boolean(true))
+        );
+        assert_eq!(
+            translated_value(wt::MetaValue::Date(wt::Date {
+                year: 2026_i32,
+                month: 1_u8,
+                day: 15_u8
+            })),
+            bc_core::RawMetaValue::Resolved(bc_models::MetaValue::Date(jiff::civil::date(
+                2026, 1, 15
+            )))
+        );
+        assert_eq!(
+            translated_value(wt::MetaValue::Timestamp("2023-11-14T22:13:20Z".to_owned())),
+            bc_core::RawMetaValue::Resolved(bc_models::MetaValue::Timestamp(
+                jiff::Timestamp::from_second(1_700_000_000).expect("valid timestamp")
+            ))
+        );
+        assert_eq!(
+            translated_value(wt::MetaValue::Amount(wt::Amount {
+                value: "42.00".to_owned(),
+                commodity: "AUD".to_owned(),
+            })),
+            bc_core::RawMetaValue::Resolved(bc_models::MetaValue::Amount(bc_models::Amount::new(
+                rust_decimal::Decimal::from_str("42.00").expect("valid decimal"),
+                bc_models::CommodityCode::new("AUD"),
+            )))
+        );
+    }
+
+    /// This crate holds no account tree, so a path travels on unbound and
+    /// `bc-core` binds it where it binds a leg's account.
+    #[test]
+    fn an_account_value_stays_a_path() {
+        assert_eq!(
+            translated_value(wt::MetaValue::Account("Assets:Bank:Savings".to_owned())),
+            bc_core::RawMetaValue::AccountPath("Assets:Bank:Savings".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_number_carrying_more_precision_than_decimal_holds_is_rejected() {
+        let t = wt::RawTransaction {
+            date: wt::Date {
+                year: 2026_i32,
+                month: 1_u8,
+                day: 15_u8,
+            },
+            description: "Coffee".to_owned(),
+            reference: None,
+            tags: vec![],
+            metadata: vec![wit_entry(
+                "invoice",
+                wt::MetaValue::Number("1.00000000000000000000000000000005".to_owned()),
+            )],
+            source_location: None,
+            postings: vec![wt::RawPosting {
+                account: "Assets:Bank".to_owned(),
+                amount: None,
+                balance: None,
+                tags: vec![],
+                metadata: vec![],
+            }],
+        };
+        let error = bc_core::RawTransaction::try_from(t)
+            .expect_err("a value beyond Decimal's capacity must be rejected");
+        assert!(
+            error.to_string().contains("metadata number"),
+            "the error should name what failed: {error}"
+        );
+    }
+
+    /// A user chose the key, so a bad one costs its own entry and nothing
+    /// else. `Payee` also folds to `payee`, which is why the registry can hold
+    /// one key rather than two spellings of it.
+    #[test]
+    fn an_unusable_key_is_dropped_and_its_siblings_survive() {
+        let entries = translated(vec![
+            wit_entry("Payee", wt::MetaValue::Text("Generic Grocer".to_owned())),
+            wit_entry("in voice", wt::MetaValue::Text("dropped".to_owned())),
+            wit_entry("note", wt::MetaValue::Text("weekly shop".to_owned())),
+        ]);
+
+        let keys: Vec<&str> = entries.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, vec!["payee", "note"]);
+    }
+
+    #[test]
+    fn a_posting_carries_its_own_metadata() {
+        let t = wt::RawTransaction {
+            date: wt::Date {
+                year: 2026_i32,
+                month: 1_u8,
+                day: 15_u8,
+            },
+            description: "Coffee".to_owned(),
+            reference: None,
+            tags: vec![],
+            metadata: vec![],
+            source_location: None,
+            postings: vec![wt::RawPosting {
+                account: "Assets:Bank".to_owned(),
+                amount: None,
+                balance: None,
+                tags: vec![],
+                metadata: vec![wit_entry(
+                    "note",
+                    wt::MetaValue::Text("paid by card".to_owned()),
+                )],
+            }],
+        };
+
+        let core = bc_core::RawTransaction::try_from(t).expect("valid");
+        let posting = core.postings.first().expect("one posting");
+        assert_eq!(
+            posting.metadata,
+            vec![bc_core::RawMetaEntry::resolved(
+                bc_models::MetaKey::new("note").expect("valid key"),
+                bc_models::MetaValue::Text("paid by card".to_owned()),
+            )]
         );
     }
 }
