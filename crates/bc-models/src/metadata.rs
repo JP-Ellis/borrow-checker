@@ -52,6 +52,11 @@ pub enum KeyError {
 /// registry, where `Payee` and `payee` as separate keys would be a permanent
 /// papercut.
 ///
+/// Normalisation is ASCII-only. Unicode case folding would map codepoints
+/// outside the charset onto it — `U+212A` KELVIN SIGN folds to `k` — so a
+/// key no reader would call ASCII would pass validation and collide with an
+/// ASCII one.
+///
 /// Re-exported from the crate root as [`crate::MetaKey`].
 ///
 /// # Example
@@ -71,7 +76,7 @@ pub enum KeyError {
 pub struct MetaKey(String);
 
 impl MetaKey {
-    /// Normalises `key` to lowercase and validates it.
+    /// Normalises `key` to ASCII lowercase and validates it.
     ///
     /// # Arguments
     ///
@@ -89,7 +94,8 @@ impl MetaKey {
     /// `[a-z0-9_-]`, and [`KeyError::TooLong`] beyond 64 bytes.
     #[inline]
     pub fn new(key: impl Into<String>) -> Result<Self, KeyError> {
-        let normalised = key.into().to_lowercase();
+        let mut normalised = key.into();
+        normalised.make_ascii_lowercase();
         let mut chars = normalised.chars();
         let Some(first) = chars.next() else {
             return Err(KeyError::Empty);
@@ -257,9 +263,8 @@ impl MetaValue {
 /// assert_eq!(entry.key().as_str(), "payee");
 /// assert!(!entry.mismatched());
 /// ```
-// NOTE: the field docstrings propagate to the setter methods on the builder, so
-// keep them accurate and self-contained.
-#[derive(bon::Builder, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "Repr")]
 #[non_exhaustive]
 pub struct MetaEntry {
     /// The key this value is filed under. Normalised to lowercase.
@@ -271,16 +276,63 @@ pub struct MetaEntry {
 
     /// `true` when the incoming value could not be represented in the key's
     /// registered type. The value is kept as text and flagged rather than
-    /// rejected, so nothing is lost and no import blocks. Defaults to `false`.
-    #[builder(default)]
+    /// rejected, so nothing is lost and no import blocks.
     mismatched: bool,
+}
+
+/// Deserialisation shim for [`MetaEntry`].
+///
+/// The flagged-implies-text invariant is a property of the pair, so it cannot
+/// be checked field by field as serde fills them in. This mirrors the wire
+/// shape, and [`MetaEntry`]'s `TryFrom` rejects the pairs the type forbids.
+#[derive(serde::Deserialize)]
+struct Repr {
+    /// The key this value is filed under.
+    key: MetaKey,
+    /// The value, before the flagged-implies-text check.
+    value: MetaValue,
+    /// Whether the value was flagged as not fitting its key's type.
+    #[serde(default)]
+    mismatched: bool,
+}
+
+/// Error returned when a serialised [`MetaEntry`] breaks the flagged-value
+/// invariant.
+///
+/// Re-exported from the crate root as [`crate::MetaEntryError`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum EntryError {
+    /// A flagged entry carried a value other than [`MetaValue::Text`].
+    #[error("a mismatched metadata entry must hold text, found {found:?}")]
+    FlaggedNonText {
+        /// Type of the offending value.
+        found: MetaType,
+    },
+}
+
+impl TryFrom<Repr> for MetaEntry {
+    type Error = EntryError;
+
+    #[inline]
+    fn try_from(repr: Repr) -> Result<Self, Self::Error> {
+        if repr.mismatched && repr.value.ty() != MetaType::Text {
+            return Err(EntryError::FlaggedNonText {
+                found: repr.value.ty(),
+            });
+        }
+        Ok(Self {
+            key: repr.key,
+            value: repr.value,
+            mismatched: repr.mismatched,
+        })
+    }
 }
 
 impl MetaEntry {
     /// Creates an entry whose value fits its key's registered type.
     ///
-    /// Use [`MetaEntry::builder`] to construct an entry flagged as
-    /// `mismatched`.
+    /// Use [`MetaEntry::mismatch`] for a value that did not fit.
     ///
     /// # Arguments
     ///
@@ -293,6 +345,26 @@ impl MetaEntry {
             key,
             value,
             mismatched: false,
+        }
+    }
+
+    /// Creates an entry flagged as not fitting its key's registered type.
+    ///
+    /// The raw text is preserved verbatim, so nothing is lost and no import
+    /// blocks. Taking the text rather than a [`MetaValue`] is what makes the
+    /// flagged-implies-text invariant hold by construction.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to file the value under.
+    /// * `raw` - The value's text, as it arrived.
+    #[inline]
+    #[must_use]
+    pub fn mismatch(key: MetaKey, raw: impl Into<String>) -> Self {
+        Self {
+            key,
+            value: MetaValue::Text(raw.into()),
+            mismatched: true,
         }
     }
 
@@ -582,6 +654,21 @@ mod tests {
         assert_eq!(MetaKey::new(input), Err(KeyError::InvalidChar { found }));
     }
 
+    /// `U+212A` KELVIN SIGN folds to ASCII `k` under Unicode case mapping, so
+    /// Unicode lowercasing here would admit a key outside the documented
+    /// charset and collide it with the ASCII spelling.
+    #[test]
+    fn meta_key_rejects_unicode_folding_onto_the_ascii_charset() {
+        assert_eq!(
+            MetaKey::new("\u{212A}elvin"),
+            Err(KeyError::LeadingChar { found: '\u{212A}' })
+        );
+        assert_eq!(
+            MetaKey::new("in\u{212A}oice"),
+            Err(KeyError::InvalidChar { found: '\u{212A}' })
+        );
+    }
+
     #[test]
     fn meta_key_accepts_64_bytes() {
         let input = "a".repeat(64);
@@ -709,28 +796,42 @@ mod tests {
     }
 
     #[test]
-    fn meta_entry_builder_defaults_to_not_mismatched() {
-        let entry = MetaEntry::builder()
-            .key(key("payee"))
-            .value(MetaValue::Text("Generic Grocer".to_owned()))
-            .build();
-        assert!(!entry.mismatched());
-        assert_eq!(entry, text_entry("payee", "Generic Grocer"));
+    fn meta_entry_records_a_mismatch_as_text() {
+        let entry = MetaEntry::mismatch(key("invoice"), "not-a-number");
+        assert!(entry.mismatched());
+        assert_eq!(entry.key(), &key("invoice"));
+        assert_eq!(entry.value(), &MetaValue::Text("not-a-number".to_owned()));
     }
 
     #[test]
-    fn meta_entry_records_a_mismatch() {
-        let entry = MetaEntry::builder()
-            .key(key("invoice"))
-            .value(MetaValue::Text("not-a-number".to_owned()))
-            .mismatched(true)
-            .build();
-        assert!(entry.mismatched());
+    fn meta_entry_deserialise_rejects_a_flagged_non_text_value() {
+        let json = r#"{"key":"invoice","value":{"number":"1502"},"mismatched":true}"#;
+        let err = serde_json::from_str::<MetaEntry>(json)
+            .expect_err("a flagged non-text value should be rejected");
+        assert!(
+            err.to_string().contains("must hold text"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn meta_entry_deserialise_accepts_a_flagged_text_value() {
+        let json = r#"{"key":"invoice","value":{"text":"not-a-number"},"mismatched":true}"#;
+        let entry: MetaEntry = serde_json::from_str(json).expect("deserialize should succeed");
+        assert_eq!(entry, MetaEntry::mismatch(key("invoice"), "not-a-number"));
+    }
+
+    #[test]
+    fn meta_entry_mismatch_round_trips_through_json() {
+        let entry = MetaEntry::mismatch(key("invoice"), "not-a-number");
+        let json = serde_json::to_string(&entry).expect("serialize should succeed");
+        let back: MetaEntry = serde_json::from_str(&json).expect("deserialize should succeed");
+        assert_eq!(entry, back);
     }
 
     #[test]
     fn meta_entry_round_trips_through_json() {
-        let entry = text_entry("note", "docter's appointment");
+        let entry = text_entry("note", "doctor's appointment");
         let json = serde_json::to_string(&entry).expect("serialize should succeed");
         let back: MetaEntry = serde_json::from_str(&json).expect("deserialize should succeed");
         assert_eq!(entry, back);
@@ -780,13 +881,7 @@ mod tests {
     fn metadata_iter_reaches_the_mismatched_flag() {
         let mut meta = Metadata::default();
         meta.push(text_entry("payee", "Generic Grocer"));
-        meta.push(
-            MetaEntry::builder()
-                .key(key("invoice"))
-                .value(MetaValue::Text("not-a-number".to_owned()))
-                .mismatched(true)
-                .build(),
-        );
+        meta.push(MetaEntry::mismatch(key("invoice"), "not-a-number"));
         let flagged: Vec<&str> = meta
             .iter()
             .filter(|e| e.mismatched())
