@@ -89,20 +89,25 @@ impl bc_sdk::Importer for BeancountImporter {
                     RawPosting::builder()
                         .account(posting.account)
                         .maybe_amount(amount)
+                        .metadata(meta_entries(posting.metadata))
                         .build(),
                 );
             }
+
+            // The payee leads, then the file's own metadata lines in source
+            // order.
+            let mut metadata: Vec<MetaEntry> = tx
+                .payee
+                .into_iter()
+                .map(|name| MetaEntry::text("payee", name))
+                .collect();
+            metadata.extend(meta_entries(tx.metadata));
 
             raw_txs.push(
                 RawTransaction::builder()
                     .date(tx.date)
                     .description(tx.narration)
-                    .metadata(
-                        tx.payee
-                            .into_iter()
-                            .map(|name| MetaEntry::text("payee", name))
-                            .collect(),
-                    )
+                    .metadata(metadata)
                     .tags(tx.tags)
                     .source_location(
                         SourceLocation::builder()
@@ -125,6 +130,37 @@ impl bc_sdk::Importer for BeancountImporter {
     fn validate(&self, _config: ImportConfig) -> Result<(), ImportError> {
         Ok(())
     }
+}
+
+/// Converts parsed metadata lines into the SDK's entries.
+///
+/// A beancount date and amount each become the matching typed value; a
+/// timestamp has no beancount spelling, so no entry ever produces one here.
+///
+/// # Arguments
+///
+/// * `entries` - The parsed entries, in source order.
+///
+/// # Returns
+///
+/// The same entries in the same order.
+fn meta_entries(entries: Vec<ast::MetaEntry>) -> Vec<MetaEntry> {
+    entries
+        .into_iter()
+        .map(|entry| {
+            let value = match entry.value {
+                ast::MetaValue::Text(text) => bc_sdk::MetaValue::Text(text),
+                ast::MetaValue::Number(number) => bc_sdk::MetaValue::Number(number),
+                ast::MetaValue::Boolean(flag) => bc_sdk::MetaValue::Boolean(flag),
+                ast::MetaValue::Date(date) => bc_sdk::MetaValue::Date(date),
+                ast::MetaValue::Amount(PostingAmount { value, currency }) => {
+                    bc_sdk::MetaValue::Amount(Amount::new(value, currency))
+                }
+                ast::MetaValue::Account(path) => bc_sdk::MetaValue::Account(path),
+            };
+            MetaEntry::new(entry.key, value)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -162,6 +198,65 @@ mod tests {
         ImportConfig::from_json_string(
             serde_json::json!({ "source_file": source_file }).to_string(),
         )
+    }
+
+    /// The motivating example from the design: metadata at both levels, and a
+    /// key repeated across two legs.
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test code: panicking on wrong index is the desired behaviour"
+    )]
+    fn metadata_reaches_both_the_transaction_and_its_legs() {
+        let input = "2026-01-15 * \"Some transaction\"\n\
+                     \x20 note: hello!\n\
+                     \x20 invoice: 1502\n\
+                     \x20 Expenses:Health   100.00 AUD\n\
+                     \x20   note: appointment\n\
+                     \x20 Expenses:Health    50.00 AUD\n\
+                     \x20   note: medication\n\
+                     \x20 Assets:Bank      -150.00 AUD\n";
+        let txs = BeancountImporter
+            .import(test_config("metadata_reaches_both_levels", input))
+            .expect("import");
+        let tx = txs.first().expect("one transaction");
+
+        assert_eq!(
+            tx.metadata,
+            vec![
+                MetaEntry::text("note", "hello!"),
+                MetaEntry::number("invoice", dec!(1502)),
+            ],
+            "a file with no payee states no payee entry"
+        );
+        assert_eq!(
+            tx.postings[0].metadata,
+            vec![MetaEntry::text("note", "appointment")]
+        );
+        assert_eq!(
+            tx.postings[1].metadata,
+            vec![MetaEntry::text("note", "medication")]
+        );
+        assert_eq!(tx.postings[2].metadata, vec![]);
+    }
+
+    /// The payee leads, so the file's own entries follow it.
+    #[test]
+    fn the_payee_precedes_the_file_s_own_entries() {
+        let input = "2026-01-15 * \"Generic Grocer\" \"Weekly shop\"\n\
+                     \x20 settled: 2026-01-17\n\
+                     \x20 Assets:Bank    -50.00 AUD\n";
+        let txs = BeancountImporter
+            .import(test_config("payee_precedes_own_entries", input))
+            .expect("import");
+
+        assert_eq!(
+            txs.first().expect("one transaction").metadata,
+            vec![
+                MetaEntry::text("payee", "Generic Grocer"),
+                MetaEntry::date("settled", Date::new(2026, 1, 17)),
+            ]
+        );
     }
 
     #[test]

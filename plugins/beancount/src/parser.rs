@@ -10,6 +10,8 @@ use winnow::token::take_till;
 use winnow::token::take_while;
 
 use crate::ast::Directive;
+use crate::ast::MetaEntry;
+use crate::ast::MetaValue;
 use crate::ast::Posting;
 use crate::ast::PostingAmount;
 use crate::ast::Transaction;
@@ -61,8 +63,9 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
         }
 
         // An indented line belongs to the directive above it — a posting leg
-        // or a metadata key — and is never a top-level directive. Postings are
-        // consumed by `collect_postings`; anything else here is metadata.
+        // or a metadata entry — and is never a top-level directive. A
+        // transaction's body is consumed by `collect_body`; an indented line
+        // reaching here follows a directive with no body.
         if line.starts_with([' ', '\t']) {
             continue;
         }
@@ -89,7 +92,7 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
             .or_else(|| rest.strip_prefix("! ").map(|r| (TxFlag::Incomplete, r)))
         {
             let (payee, narration, tags) = parse_payee_narration(r.trim_start())?;
-            let postings = collect_postings(&mut lines)?;
+            let (postings, metadata) = collect_body(&mut lines)?;
             directives.push(Directive::Transaction(Transaction {
                 date,
                 flag,
@@ -97,6 +100,7 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
                 narration,
                 tags,
                 postings,
+                metadata,
                 line: line_no,
             }));
         } else if let Some(r) = rest.strip_prefix("open ") {
@@ -250,7 +254,11 @@ fn parse_payee_narration(s: &str) -> Result<(Option<String>, String, Vec<String>
     }
 }
 
-/// Collects indented posting lines following a transaction header.
+/// Collects the indented lines following a transaction header.
+///
+/// A body line is either a posting or a `key: value` metadata entry. A
+/// metadata entry attaches to the leg above it, and to the transaction itself
+/// when no leg has been seen yet, which is beancount's own rule.
 ///
 /// # Arguments
 ///
@@ -258,15 +266,16 @@ fn parse_payee_narration(s: &str) -> Result<(Option<String>, String, Vec<String>
 ///
 /// # Returns
 ///
-/// A list of parsed postings.
+/// The postings, and the transaction's own metadata entries.
 ///
 /// # Errors
 ///
 /// Returns an error if any posting line fails to parse.
-fn collect_postings<'a>(
+fn collect_body<'a>(
     lines: &mut core::iter::Peekable<impl Iterator<Item = (usize, &'a str)>>,
-) -> Result<Vec<Posting>, String> {
-    let mut postings = Vec::new();
+) -> Result<(Vec<Posting>, Vec<MetaEntry>), String> {
+    let mut postings: Vec<Posting> = Vec::new();
+    let mut metadata: Vec<MetaEntry> = Vec::new();
     while let Some(&(_, next)) = lines.peek() {
         let starts_indented = next.starts_with(' ') || next.starts_with('\t');
         if !starts_indented {
@@ -280,9 +289,104 @@ fn collect_postings<'a>(
         if trimmed.is_empty() || trimmed.starts_with(';') {
             continue;
         }
+        if let Some(entry) = parse_meta_line(trimmed) {
+            match postings.last_mut() {
+                Some(posting) => posting.metadata.push(entry),
+                None => metadata.push(entry),
+            }
+            continue;
+        }
         postings.push(parse_posting(trimmed)?);
     }
-    Ok(postings)
+    Ok((postings, metadata))
+}
+
+/// Reads an indented line as a `key: value` metadata entry.
+///
+/// A key is `[a-z][A-Za-z0-9_-]*` followed by a colon and then whitespace,
+/// which is what separates `note: hello` from the account path `Assets:Bank`
+/// — an account's first character is uppercase, and no space follows its
+/// colons. Without this rule a metadata line parses as a posting on an
+/// account literally named `note:`.
+///
+/// # Arguments
+///
+/// * `line` - A trimmed line from a transaction's body.
+///
+/// # Returns
+///
+/// The entry, or `None` when the line is not metadata.
+fn parse_meta_line(line: &str) -> Option<MetaEntry> {
+    let (key, rest) = line.split_once(':')?;
+    let mut chars = key.chars();
+    if !chars.next().is_some_and(|c| c.is_ascii_lowercase()) {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return None;
+    }
+    if !rest.starts_with([' ', '\t']) {
+        return None;
+    }
+    let raw = rest.split(';').next().unwrap_or(rest).trim();
+    Some(MetaEntry {
+        key: key.to_owned(),
+        value: parse_meta_value(raw),
+    })
+}
+
+/// Types the value half of a metadata line.
+///
+/// Beancount's value grammar is wider than the seven types the host holds, so
+/// a currency code, a `#`-prefixed tag and every unrecognised form all land
+/// as text. That is what they are once they leave beancount's own semantics.
+///
+/// # Arguments
+///
+/// * `raw` - The value text, comment stripped and trimmed.
+///
+/// # Returns
+///
+/// The typed value.
+fn parse_meta_value(raw: &str) -> MetaValue {
+    if raw.starts_with('"') {
+        let mut input = raw;
+        if let Ok(text) = quoted_string(&mut input) {
+            return MetaValue::Text(text);
+        }
+    }
+    if raw == "TRUE" {
+        return MetaValue::Boolean(true);
+    }
+    if raw == "FALSE" {
+        return MetaValue::Boolean(false);
+    }
+    if raw.len() == 10 {
+        let mut input = raw;
+        if let Ok(parsed) = date(&mut input)
+            && input.is_empty()
+        {
+            return MetaValue::Date(parsed);
+        }
+    }
+    if let Some((value, currency)) = raw.split_once(' ')
+        && let Ok(parsed) = value.parse::<Decimal>()
+        && !currency.trim().is_empty()
+    {
+        return MetaValue::Amount(PostingAmount {
+            value: parsed,
+            currency: currency.trim().to_owned(),
+        });
+    }
+    if let Ok(parsed) = raw.parse::<Decimal>() {
+        return MetaValue::Number(parsed);
+    }
+    // An account path is capitalised and colon-separated. A bare capitalised
+    // word with no colon is a currency code, which has no type of its own.
+    if raw.contains(':') && raw.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return MetaValue::Account(raw.to_owned());
+    }
+    MetaValue::Text(raw.to_owned())
 }
 
 /// Parses a single posting line.
@@ -318,6 +422,7 @@ fn parse_posting(line: &str) -> Result<Posting, String> {
         return Ok(Posting {
             account: line_no_comment.trim().to_owned(),
             amount: None,
+            metadata: Vec::new(),
         });
     };
 
@@ -349,6 +454,7 @@ fn parse_posting(line: &str) -> Result<Posting, String> {
     Ok(Posting {
         account,
         amount: Some(PostingAmount { value, currency }),
+        metadata: Vec::new(),
     })
 }
 
@@ -758,6 +864,162 @@ mod tests {
                 account: "Assets:Bank".to_owned(),
                 currency: Some("AUD".to_owned()),
             }]
+        );
+    }
+
+    /// Extracts the sole transaction from a parsed file.
+    fn only_transaction(input: &str) -> Transaction {
+        let directives = parse(input).expect("parse");
+        let first = directives.into_iter().next().expect("one directive");
+        let Directive::Transaction(tx) = first else {
+            panic!("expected a transaction directive")
+        };
+        tx
+    }
+
+    /// Beancount's value grammar is wider than the seven types the host holds,
+    /// so a currency code and a tag land as text.
+    #[test]
+    fn a_metadata_value_takes_the_type_its_syntax_states() {
+        assert_eq!(
+            parse_meta_value("\"hello!\""),
+            MetaValue::Text("hello!".to_owned())
+        );
+        assert_eq!(parse_meta_value("TRUE"), MetaValue::Boolean(true));
+        assert_eq!(parse_meta_value("FALSE"), MetaValue::Boolean(false));
+        assert_eq!(
+            parse_meta_value("2026-01-15"),
+            MetaValue::Date(bc_sdk::Date::new(2026, 1, 15))
+        );
+        assert_eq!(
+            parse_meta_value("1502.50"),
+            MetaValue::Number(dec!(1502.50))
+        );
+        assert_eq!(
+            parse_meta_value("42.00 AUD"),
+            MetaValue::Amount(PostingAmount {
+                value: dec!(42.00),
+                currency: "AUD".to_owned(),
+            })
+        );
+        assert_eq!(
+            parse_meta_value("Assets:Bank:Savings"),
+            MetaValue::Account("Assets:Bank:Savings".to_owned())
+        );
+        assert_eq!(parse_meta_value("AUD"), MetaValue::Text("AUD".to_owned()));
+        assert_eq!(
+            parse_meta_value("#holiday"),
+            MetaValue::Text("#holiday".to_owned())
+        );
+        assert_eq!(
+            parse_meta_value("bare words"),
+            MetaValue::Text("bare words".to_owned())
+        );
+    }
+
+    #[test]
+    fn metadata_attaches_to_the_transaction_before_any_leg() {
+        let tx = only_transaction(
+            "2026-01-15 * \"Generic Grocer\" \"Weekly shop\"\n\
+             \x20 note: reimbursable\n\
+             \x20 invoice: 1502\n\
+             \x20 Expenses:Food   50.00 AUD\n\
+             \x20 Assets:Bank    -50.00 AUD\n",
+        );
+
+        assert_eq!(
+            tx.metadata,
+            vec![
+                MetaEntry {
+                    key: "note".to_owned(),
+                    value: MetaValue::Text("reimbursable".to_owned()),
+                },
+                MetaEntry {
+                    key: "invoice".to_owned(),
+                    value: MetaValue::Number(dec!(1502)),
+                },
+            ]
+        );
+        assert_eq!(tx.postings.len(), 2);
+        assert!(
+            tx.postings.iter().all(|p| p.metadata.is_empty()),
+            "no leg was named before these entries"
+        );
+    }
+
+    #[test]
+    fn metadata_after_a_leg_attaches_to_that_leg() {
+        let tx = only_transaction(
+            "2026-01-15 * \"Weekly shop\"\n\
+             \x20 Expenses:Health   100.00 AUD\n\
+             \x20   note: appointment\n\
+             \x20 Assets:Bank      -100.00 AUD\n",
+        );
+
+        assert!(tx.metadata.is_empty(), "the entry belongs to the first leg");
+        let first = tx.postings.first().expect("two legs");
+        assert_eq!(
+            first.metadata,
+            vec![MetaEntry {
+                key: "note".to_owned(),
+                value: MetaValue::Text("appointment".to_owned()),
+            }]
+        );
+        assert!(tx.postings.get(1).expect("two legs").metadata.is_empty());
+    }
+
+    /// Metadata permits repeated keys, so both survive.
+    #[test]
+    fn a_repeated_metadata_key_keeps_both_entries() {
+        let tx = only_transaction(
+            "2026-01-15 * \"Weekly shop\"\n\
+             \x20 note: first\n\
+             \x20 note: second\n\
+             \x20 Assets:Bank    -50.00 AUD\n",
+        );
+
+        let values: Vec<&MetaValue> = tx.metadata.iter().map(|e| &e.value).collect();
+        assert_eq!(
+            values,
+            vec![
+                &MetaValue::Text("first".to_owned()),
+                &MetaValue::Text("second".to_owned()),
+            ]
+        );
+    }
+
+    /// Before metadata was parsed, every indented line was a posting, so
+    /// `note: hello` became a leg on an account named `note:`.
+    #[test]
+    fn a_metadata_line_is_no_longer_read_as_a_posting() {
+        let tx = only_transaction(
+            "2026-01-15 * \"Weekly shop\"\n\
+             \x20 note: hello\n\
+             \x20 Assets:Bank    -50.00 AUD\n",
+        );
+
+        let accounts: Vec<&str> = tx.postings.iter().map(|p| p.account.as_str()).collect();
+        assert_eq!(accounts, vec!["Assets:Bank"]);
+    }
+
+    /// An account path is capitalised and takes no space after its colon, so
+    /// it must not be mistaken for a metadata key.
+    #[test]
+    fn an_account_line_is_not_metadata() {
+        assert_eq!(parse_meta_line("Assets:Bank    -50.00 AUD"), None);
+        assert_eq!(parse_meta_line("a:b"), None, "a value needs whitespace");
+        assert_eq!(parse_meta_line("no colon here"), None);
+    }
+
+    /// A trailing comment is not part of the value.
+    #[test]
+    fn a_metadata_value_drops_its_trailing_comment() {
+        assert_eq!(
+            parse_meta_line("note: hello ; and a comment"),
+            Some(MetaEntry {
+                key: "note".to_owned(),
+                value: MetaValue::Text("hello".to_owned()),
+            })
         );
     }
 }

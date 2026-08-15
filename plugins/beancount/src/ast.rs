@@ -63,6 +63,36 @@ pub(crate) enum Directive {
     Other,
 }
 
+/// A typed value on a `key: value` metadata line.
+///
+/// Beancount's own value grammar is wider than the seven types the host
+/// holds. A currency code and a `#`-prefixed tag each land as text, which is
+/// what they are once they leave beancount's own semantics.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MetaValue {
+    /// A quoted string, a currency code, a tag, or anything unrecognised.
+    Text(String),
+    /// A bare decimal.
+    Number(Decimal),
+    /// `TRUE` or `FALSE`.
+    Boolean(bool),
+    /// A `YYYY-MM-DD` date.
+    Date(Date),
+    /// A decimal paired with a currency code.
+    Amount(PostingAmount),
+    /// A colon-separated account path.
+    Account(String),
+}
+
+/// One `key: value` metadata line.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MetaEntry {
+    /// The key, exactly as written.
+    pub key: String,
+    /// The typed value.
+    pub value: MetaValue,
+}
+
 /// A Beancount transaction.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Transaction {
@@ -78,6 +108,8 @@ pub(crate) struct Transaction {
     pub tags: Vec<String>,
     /// The posting legs for this transaction.
     pub postings: Vec<Posting>,
+    /// The transaction's own `key: value` metadata lines, in source order.
+    pub metadata: Vec<MetaEntry>,
     /// 1-based source line number of the transaction's header line.
     pub line: usize,
 }
@@ -99,6 +131,8 @@ pub(crate) struct Posting {
     /// The explicit amount, or `None` if the posting elides it (Beancount
     /// derives the elided amount so the transaction balances).
     pub amount: Option<PostingAmount>,
+    /// This leg's own `key: value` metadata lines, in source order.
+    pub metadata: Vec<MetaEntry>,
 }
 
 /// An explicit numeric amount and commodity on a posting leg.
