@@ -482,7 +482,7 @@ pub async fn search_transactions(
         .collect())
 }
 
-// MARK: Tag helpers
+// MARK: Metadata helpers
 
 /// Converts a list of metadata entry DTOs into a domain metadata list.
 ///
@@ -505,6 +505,8 @@ pub async fn search_transactions(
 fn metadata_from(entries: &[bc_ipc::MetaEntryDto]) -> Result<bc_models::Metadata, bc_ipc::BcError> {
     entries.iter().map(bc_models::MetaEntry::try_from).collect()
 }
+
+// MARK: Tag helpers
 
 /// Resolves a list of tag path strings to existing tag IDs.
 ///
@@ -783,6 +785,42 @@ pub async fn get_account_sparkline(
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn metadata_from_preserves_order_and_drops_the_flag() {
+        let entries = vec![
+            bc_ipc::MetaEntryDto::new(
+                "payee",
+                bc_ipc::MetaValueDto::Text("Generic Grocer".to_owned()),
+            ),
+            bc_ipc::MetaEntryDto::new("note", bc_ipc::MetaValueDto::Text("weekly shop".to_owned())),
+        ];
+        let meta = super::metadata_from(&entries).expect("valid entries convert");
+        assert_eq!(
+            meta.iter().map(|e| e.key().as_str()).collect::<Vec<_>>(),
+            vec!["payee", "note"],
+            "input order is the display order"
+        );
+        assert!(
+            meta.iter().all(|e| !e.mismatched()),
+            "the write path derives the flag; an incoming entry does not assert it"
+        );
+    }
+
+    #[test]
+    fn metadata_from_rejects_an_invalid_key() {
+        let entries = vec![bc_ipc::MetaEntryDto::new(
+            "1nvoice",
+            bc_ipc::MetaValueDto::Boolean(true),
+        )];
+        let err = super::metadata_from(&entries).expect_err("a key must start with a letter");
+        assert!(
+            matches!(err, bc_ipc::BcError::Validation(ref m) if m.contains("1nvoice")),
+            "the failure names the offending key, got: {err:?}"
+        );
+    }
+
     #[test]
     fn resolve_tag_inputs_errors_on_unknown_tag() {
         tauri::async_runtime::block_on(async {
