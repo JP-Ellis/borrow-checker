@@ -470,7 +470,9 @@ pub struct NewPosting {
     pub account_id: String,
     /// Posting amount. `None` when the amount should be elided (inferred to balance).
     pub amount: Option<Amount>,
-    /// Typed key-value metadata in display order.
+    /// Typed key-value metadata in display order. Each entry's
+    /// [`MetaEntryDto::mismatched`] is ignored: the backend derives it against
+    /// the key's registered type.
     pub metadata: Vec<MetaEntryDto>,
     /// Tag paths to attach to this posting (must reference existing tags).
     pub tags: Vec<String>,
@@ -522,7 +524,9 @@ pub struct NewTransaction {
     pub date: jiff::civil::Date,
     /// Free-text description (raw narration). Empty string if not provided.
     pub description: String,
-    /// Typed key-value metadata in display order.
+    /// Typed key-value metadata in display order. Each entry's
+    /// [`MetaEntryDto::mismatched`] is ignored: the backend derives it against
+    /// the key's registered type.
     pub metadata: Vec<MetaEntryDto>,
     /// Reconciliation status.
     pub reconciliation: Reconciliation,
@@ -576,7 +580,9 @@ pub struct EditPosting {
     pub account_id: String,
     /// Posting amount, or `None` if elided (inferred to balance).
     pub amount: Option<Amount>,
-    /// Typed key-value metadata in display order; replaces the stored list on save.
+    /// Typed key-value metadata in display order; replaces the stored list on
+    /// save. Each entry's [`MetaEntryDto::mismatched`] is ignored: the backend
+    /// derives it against the key's registered type.
     pub metadata: Vec<MetaEntryDto>,
     /// Tag paths to attach (colon-joined; resolved to existing tags on save).
     pub tags: Vec<String>,
@@ -634,7 +640,9 @@ pub struct EditTransaction {
     pub date: jiff::civil::Date,
     /// Free-text description.
     pub description: String,
-    /// Typed key-value metadata in display order; replaces the stored list on save.
+    /// Typed key-value metadata in display order; replaces the stored list on
+    /// save. Each entry's [`MetaEntryDto::mismatched`] is ignored: the backend
+    /// derives it against the key's registered type.
     pub metadata: Vec<MetaEntryDto>,
     /// Reconciliation status (read-only in the editor, echoed back unchanged).
     pub reconciliation: Reconciliation,
