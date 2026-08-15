@@ -24,6 +24,8 @@ use crate::CommodityInfo;
 use crate::EditTransaction;
 use crate::Filter;
 use crate::FilteredTransaction;
+use crate::MetaKeyDefDto;
+use crate::MetaTypeDto;
 use crate::NativePeriodRow;
 use crate::NewTransaction;
 use crate::PluginInfo;
@@ -123,6 +125,59 @@ pub async fn create_transaction(tx: &NewTransaction) -> Result<String, BcError> 
 #[inline]
 pub async fn list_tags() -> Result<Vec<TagInfo>, BcError> {
     tauri_sys::core::invoke_result::<Vec<TagInfo>, BcError>(commands::LIST_TAGS, NoArgs {}).await
+}
+
+/// Lists every registered metadata key with its type.
+///
+/// The response is a whole-registry snapshot. Key counts stay small and keys
+/// change only through the two commands below, so a caller may hold it for the
+/// session and append to it locally rather than re-fetching after every save.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the Tauri invoke fails.
+#[inline]
+pub async fn list_metadata_keys() -> Result<Vec<MetaKeyDefDto>, BcError> {
+    tauri_sys::core::invoke_result::<Vec<MetaKeyDefDto>, BcError>(
+        commands::LIST_METADATA_KEYS,
+        NoArgs {},
+    )
+    .await
+}
+
+/// Changes a metadata key's registered type, returning the type it had before.
+///
+/// Every stored value under the key is re-asserted against the new type:
+/// widening to `text` is a relabel, and narrowing flags whatever will not
+/// parse.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] for an invalid or unregistered key, or
+/// [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn retype_metadata_key(key: &str, ty: MetaTypeDto) -> Result<MetaTypeDto, BcError> {
+    tauri_sys::core::invoke_result::<MetaTypeDto, BcError>(
+        commands::RETYPE_METADATA_KEY,
+        commands::RetypeMetadataKeyArgs { key, ty },
+    )
+    .await
+}
+
+/// Renames a metadata key, carrying its entries with it.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] for an invalid name, an unregistered
+/// source, or a target that is already registered; [`BcError::Internal`] if the
+/// invoke fails.
+#[inline]
+pub async fn rename_metadata_key(from: &str, to: &str) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result::<(), BcError>(
+        commands::RENAME_METADATA_KEY,
+        commands::RenameMetadataKeyArgs { from, to },
+    )
+    .await
 }
 
 /// Lists registered commodities/currencies.

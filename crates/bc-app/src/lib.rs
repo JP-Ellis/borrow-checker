@@ -29,6 +29,8 @@ pub(crate) struct AppState {
     pub(crate) budget_tree: bc_core::BudgetTreeService,
     /// Tag service — hierarchy, resolution, and membership.
     pub(crate) tags: bc_core::TagService,
+    /// Metadata key registry — lookup, retype, and rename.
+    pub(crate) metadata: bc_core::MetadataService,
     /// Commodity/currency registry service.
     pub(crate) commodities: bc_core::CommodityService,
     /// Transfer resolution service — merge/unmerge and suggestion matching.
@@ -126,6 +128,9 @@ pub fn run() {
             commands::tags::rename_tag,
             commands::tags::delete_tag,
             commands::tags::list_tags,
+            commands::metadata::list_metadata_keys,
+            commands::metadata::retype_metadata_key,
+            commands::metadata::rename_metadata_key,
             commands::commodities::list_currencies,
             commands::commodities::create_currency,
             commands::commodities::update_currency,
@@ -182,6 +187,7 @@ pub fn run() {
                 balance_engine: bc_core::BalanceEngine::new(pool.clone()),
                 budgets: bc_core::BudgetService::new(pool.clone()),
                 tags: bc_core::TagService::new(pool.clone()),
+                metadata: bc_core::MetadataService::new(pool.clone()),
                 commodities,
                 budget_tree: bc_core::BudgetTreeService::new(pool.clone(), fx),
                 transfers: bc_core::TransferService::new(pool.clone()),
