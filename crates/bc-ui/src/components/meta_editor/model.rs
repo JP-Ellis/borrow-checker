@@ -12,8 +12,10 @@
 
 use bc_ipc::MetaEntryDto;
 use bc_ipc::MetaKeyDefDto;
+use bc_ipc::MetaKeyProblem;
 use bc_ipc::MetaTypeDto;
 use bc_ipc::MetaValueDto;
+use bc_ipc::validate_meta_key;
 use rust_decimal::Decimal;
 
 /// One editable row of an owner's metadata.
@@ -86,23 +88,23 @@ impl MetaRow {
     /// `mismatched: false`; the backend derives the flag afresh either way and
     /// discards what the entry claims.
     ///
-    /// A row with a blank value, or a value under a blank key, is pruned.
+    /// A row with a blank value, or a value under a key the backend would
+    /// reject, is pruned. Pruning is what keeps metadata unable to block a save:
+    /// the editor refuses an unusable key at the input, and a row that holds one
+    /// anyway is dropped rather than sent for the backend to fail the whole
+    /// transaction over.
     #[must_use]
     pub fn emitted(&self) -> Option<MetaEntryDto> {
         let Some(ref draft) = self.draft else {
             return self.source.clone();
         };
-        // A flagged row is one text box whatever its key's type, so its whole
-        // value lives in `text` and its blankness is that box being empty.
-        let flagged = self.was_flagged();
-        let blank = if flagged {
-            draft.text.trim().is_empty()
-        } else {
-            is_blank(draft.ty, draft)
+        let Ok(key) = validate_meta_key(draft.key.trim()) else {
+            return None;
         };
-        if draft.key.trim().is_empty() || blank {
+        if self.is_blank() {
             return None;
         }
+        let flagged = self.was_flagged();
         // A row the store flagged sends back exactly what the user typed,
         // whatever it now parses as. The write path's rescue case is what
         // repairs it; the editor constructs no typed variant to repair anything,
@@ -112,7 +114,7 @@ impl MetaRow {
         } else {
             draft_value(draft.ty, draft)
         };
-        Some(MetaEntryDto::new(draft.key.trim(), value))
+        Some(MetaEntryDto::new(key, value))
     }
 
     /// Returns the key this row currently carries, preferring the draft's.
@@ -133,13 +135,31 @@ impl MetaRow {
         self.source.as_ref().is_some_and(|entry| entry.mismatched)
     }
 
+    /// Returns whether this row's value control holds nothing.
+    ///
+    /// A flagged row is one text box whatever its key's type, so its whole value
+    /// lives in `text` and its blankness is that box being empty.
+    #[must_use]
+    pub fn is_blank(&self) -> bool {
+        match self.draft {
+            Some(ref draft) => {
+                if self.was_flagged() {
+                    draft.text.trim().is_empty()
+                } else {
+                    is_blank(draft.ty, draft)
+                }
+            }
+            None => self.source.is_none(),
+        }
+    }
+
     /// Returns whether this row carries neither a key nor a value.
     ///
     /// Drives the `Backspace`-deletes-the-row rule.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         match self.draft {
-            Some(ref draft) => draft.key.trim().is_empty() && is_blank(draft.ty, draft),
+            Some(ref draft) => draft.key.trim().is_empty() && self.is_blank(),
             None => self.source.is_none(),
         }
     }
@@ -294,6 +314,28 @@ pub fn parses_as(ty: MetaTypeDto, draft: &MetaDraft) -> bool {
         }
         MetaTypeDto::Account => !draft.account_id.trim().is_empty(),
     }
+}
+
+/// Returns why this row's key is unusable, for the hint shown beside its value.
+///
+/// Answers `None` for an untouched row, which carries a key the backend already
+/// accepted, and for a row the user has only just appended: a blank key on a
+/// blank row is a row not yet filled in, not a row that is wrong.
+///
+/// [`MetaKeyProblem`] renders itself as a complete sentence, so the caller shows
+/// the reason without knowing the rules.
+///
+/// # Arguments
+///
+/// * `row` - The row to check.
+#[must_use]
+pub fn key_problem(row: &MetaRow) -> Option<MetaKeyProblem> {
+    let draft = row.draft.as_ref()?;
+    let problem = validate_meta_key(draft.key.trim()).err()?;
+    if matches!(problem, MetaKeyProblem::Empty) && row.is_blank() {
+        return None;
+    }
+    Some(problem)
 }
 
 /// Returns whether `text` parses as `ty` the way the write path will parse it.
@@ -550,6 +592,7 @@ mod tests {
     use bc_ipc::Amount;
     use bc_ipc::MetaEntryDto;
     use bc_ipc::MetaKeyDefDto;
+    use bc_ipc::MetaKeyProblem;
     use bc_ipc::MetaTypeDto;
     use bc_ipc::MetaValueDto;
     use pretty_assertions::assert_eq;
@@ -564,6 +607,7 @@ mod tests {
     use super::emit_rows;
     use super::first_text_by_key;
     use super::insert_row_below;
+    use super::key_problem;
     use super::move_row;
     use super::parses_as;
     use super::push_blank_row;
@@ -652,6 +696,102 @@ mod tests {
                 MetaValueDto::Text("Generic Grocer".to_owned())
             )]
         );
+    }
+
+    #[test]
+    fn a_key_the_backend_would_reject_is_pruned_not_sent() {
+        // The backend answers an invalid key by failing the whole transaction.
+        // Metadata can never block a save, so a row holding one is dropped the
+        // way a blank row already is.
+        let rows = vec![
+            MetaRow {
+                uid: 0,
+                source: None,
+                draft: Some(draft(MetaTypeDto::Text, "due date", "tuesday")),
+            },
+            MetaRow {
+                uid: 1,
+                source: None,
+                draft: Some(draft(MetaTypeDto::Text, "1nvoice", "7")),
+            },
+            MetaRow {
+                uid: 2,
+                source: None,
+                draft: Some(draft(MetaTypeDto::Text, "payee", "Generic Grocer")),
+            },
+        ];
+        assert_eq!(
+            emit_rows(&rows),
+            vec![MetaEntryDto::new(
+                "payee",
+                MetaValueDto::Text("Generic Grocer".to_owned())
+            )],
+            "the two unusable keys go, and the valid row beside them survives"
+        );
+    }
+
+    #[test]
+    fn an_emitted_key_is_normalised() {
+        let rows = vec![MetaRow {
+            uid: 0,
+            source: None,
+            draft: Some(draft(MetaTypeDto::Text, "  Payee  ", "Generic Grocer")),
+        }];
+        assert_eq!(
+            emit_rows(&rows),
+            vec![MetaEntryDto::new(
+                "payee",
+                MetaValueDto::Text("Generic Grocer".to_owned())
+            )],
+            "the key crosses the wire in the form the backend stores it in"
+        );
+    }
+
+    #[rstest]
+    #[case("due date", Some(MetaKeyProblem::InvalidChar { found: ' ' }))]
+    #[case("1nvoice", Some(MetaKeyProblem::LeadingChar { found: '1' }))]
+    #[case("due-date", None)]
+    #[case("Due-Date", None)]
+    fn the_hint_names_the_rule_the_key_broke(
+        #[case] key: &str,
+        #[case] expected: Option<MetaKeyProblem>,
+    ) {
+        let row = MetaRow {
+            uid: 0,
+            source: None,
+            draft: Some(draft(MetaTypeDto::Text, key, "a value")),
+        };
+        assert_eq!(key_problem(&row), expected);
+    }
+
+    #[test]
+    fn a_valued_row_with_no_key_is_hinted() {
+        let row = MetaRow {
+            uid: 0,
+            source: None,
+            draft: Some(draft(MetaTypeDto::Text, "  ", "orphaned")),
+        };
+        assert_eq!(key_problem(&row), Some(MetaKeyProblem::Empty));
+    }
+
+    #[test]
+    fn a_row_only_just_appended_is_not_yet_wrong() {
+        let mut rows = Vec::new();
+        push_blank_row(&mut rows, "AUD");
+        let row = rows.first().expect("pushed row");
+        assert_eq!(
+            key_problem(row),
+            None,
+            "a blank key on a blank row is a row not filled in, not a row in error"
+        );
+    }
+
+    #[test]
+    fn an_untouched_row_is_never_hinted() {
+        let rows = rows_from_entries(&seven_entries());
+        for row in &rows {
+            assert_eq!(key_problem(row), None);
+        }
     }
 
     #[test]
