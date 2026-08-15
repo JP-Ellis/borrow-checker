@@ -84,15 +84,21 @@ impl bc_sdk::Importer for OfxImporter {
                     .unwrap_or("")
                     .to_owned();
                 let reference = Some(tx.fitid).filter(|s| !s.is_empty());
+                // NAME is the counterparty and MEMO the statement's own note.
+                // MEMO also feeds `description`, which is a dedup fingerprint
+                // input and so cannot be re-derived without making every
+                // already-imported statement look new.
+                let mut metadata = Vec::with_capacity(2);
+                if let Some(name) = tx.name.filter(|s| !s.is_empty()) {
+                    metadata.push(MetaEntry::text("payee", name));
+                }
+                if let Some(memo) = tx.memo.filter(|s| !s.is_empty()) {
+                    metadata.push(MetaEntry::text("note", memo));
+                }
                 Ok(RawTransaction::builder()
                     .date(tx.date)
                     .description(description)
-                    .metadata(
-                        tx.name
-                            .into_iter()
-                            .map(|name| MetaEntry::text("payee", name))
-                            .collect(),
-                    )
+                    .metadata(metadata)
                     .maybe_reference(reference)
                     .source_location(
                         SourceLocation::builder()
@@ -216,6 +222,40 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
             .expect("import");
         // Second transaction has no MEMO, so description = NAME.
         assert_eq!(txs[1].description, "Employer");
+    }
+
+    /// NAME names the counterparty and MEMO the statement's own note, so each
+    /// gets the key it belongs under.
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test code: panicking on wrong index is the desired behaviour"
+    )]
+    fn name_and_memo_become_the_payee_and_note_keys() {
+        let txs = OfxImporter::new()
+            .import(test_config("name_and_memo_become_keys", OFX_V1))
+            .expect("import");
+
+        let first: Vec<(&str, &str)> = txs[0]
+            .metadata
+            .iter()
+            .filter_map(|entry| match entry.value {
+                bc_sdk::MetaValue::Text(ref text) => Some((entry.key.as_str(), text.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            first,
+            vec![("payee", "Woolworths"), ("note", "Groceries")],
+            "NAME then MEMO, in that order"
+        );
+
+        let second_keys: Vec<&str> = txs[1].metadata.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(
+            second_keys,
+            vec!["payee"],
+            "a transaction with no MEMO states no note"
+        );
     }
 
     #[test]
