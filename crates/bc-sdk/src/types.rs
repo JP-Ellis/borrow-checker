@@ -162,9 +162,11 @@ pub enum MetaValue {
 
 /// One metadata key-value pair on a raw transaction or posting.
 ///
-/// Keys are normalised to lowercase and must match `[a-z][a-z0-9_-]*`, at most
-/// 64 bytes. The host drops an entry whose key does not, and keeps the rest of
-/// the row. Repeated keys are permitted, and entries stay in the order stated.
+/// A key crosses the boundary exactly as an importer writes it; the host is
+/// what normalises. It lowercases first, so `Payee` and `payee` are one key,
+/// then requires `[a-z][a-z0-9_-]*` and at most 64 bytes. A key that still
+/// fails costs its own entry and nothing else — the rest of the row is kept.
+/// Repeated keys are permitted, and entries stay in the order stated.
 ///
 /// # Example
 ///
