@@ -303,11 +303,14 @@ fn collect_body<'a>(
 
 /// Reads an indented line as a `key: value` metadata entry.
 ///
-/// A key is `[a-z][A-Za-z0-9_-]*` followed by a colon and then whitespace,
-/// which is what separates `note: hello` from the account path `Assets:Bank`
-/// — an account's first character is uppercase, and no space follows its
-/// colons. Without this rule a metadata line parses as a posting on an
-/// account literally named `note:`.
+/// A key is `[a-z][A-Za-z0-9_-]*` followed by a colon and then whitespace or
+/// the end of the line, which is what separates `note: hello` from the account
+/// path `Assets:Bank` — an account's first character is uppercase, and no
+/// space follows its colons. Without this rule a metadata line parses as a
+/// posting on an account literally named `note:`.
+///
+/// A quoted value owns every character up to its closing quote, `;` included,
+/// so a trailing comment is stripped only outside the quotes.
 ///
 /// # Arguments
 ///
@@ -325,14 +328,45 @@ fn parse_meta_line(line: &str) -> Option<MetaEntry> {
     if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         return None;
     }
-    if !rest.starts_with([' ', '\t']) {
+    if !rest.is_empty() && !rest.starts_with([' ', '\t']) {
         return None;
     }
-    let raw = rest.split(';').next().unwrap_or(rest).trim();
+    let stated = rest.trim_start();
+    if stated.starts_with('"') {
+        let mut input = stated;
+        if let Ok(text) = quoted_string(&mut input) {
+            return Some(MetaEntry {
+                key: key.to_owned(),
+                value: MetaValue::Text(text),
+            });
+        }
+    }
+    let raw = stated.split(';').next().unwrap_or(stated).trim_end();
     Some(MetaEntry {
         key: key.to_owned(),
         value: parse_meta_value(raw),
     })
+}
+
+/// Reports whether a token is spelled like a beancount currency code.
+///
+/// Beancount writes a currency in upper case, so a lower-case or
+/// space-carrying token after a number is prose and the line is text. Without
+/// this, `invoice: 1502 rev B` becomes an amount denominated in `rev B`.
+///
+/// # Arguments
+///
+/// * `token` - The text following the number, already trimmed.
+///
+/// # Returns
+///
+/// Whether `token` can be a currency code.
+fn is_currency(token: &str) -> bool {
+    let mut chars = token.chars();
+    chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        && chars.all(|c| {
+            c.is_ascii_uppercase() || c.is_ascii_digit() || matches!(c, '\'' | '.' | '_' | '-')
+        })
 }
 
 /// Types the value half of a metadata line.
@@ -371,7 +405,7 @@ fn parse_meta_value(raw: &str) -> MetaValue {
     }
     if let Some((value, currency)) = raw.split_once(' ')
         && let Ok(parsed) = value.parse::<Decimal>()
-        && !currency.trim().is_empty()
+        && is_currency(currency.trim())
     {
         return MetaValue::Amount(PostingAmount {
             value: parsed,
@@ -1020,6 +1054,54 @@ mod tests {
                 key: "note".to_owned(),
                 value: MetaValue::Text("hello".to_owned()),
             })
+        );
+    }
+
+    /// A quoted value owns its own semicolons, so the comment rule must not
+    /// cut one in half.
+    #[test]
+    fn a_quoted_metadata_value_keeps_its_semicolons() {
+        assert_eq!(
+            parse_meta_line(r#"note: "a;b" ; and a comment"#),
+            Some(MetaEntry {
+                key: "note".to_owned(),
+                value: MetaValue::Text("a;b".to_owned()),
+            })
+        );
+    }
+
+    /// A key with nothing after it is still a key. Read as a posting it would
+    /// put a leg on an account named `note:`.
+    #[test]
+    fn a_metadata_key_with_no_value_is_still_metadata() {
+        let tx = only_transaction(
+            "2026-01-15 * \"Weekly shop\"\n\
+             \x20 note:\n\
+             \x20 Assets:Bank    -50.00 AUD\n",
+        );
+
+        assert_eq!(
+            tx.metadata,
+            vec![MetaEntry {
+                key: "note".to_owned(),
+                value: MetaValue::Text(String::new()),
+            }]
+        );
+        let accounts: Vec<&str> = tx.postings.iter().map(|p| p.account.as_str()).collect();
+        assert_eq!(accounts, vec!["Assets:Bank"]);
+    }
+
+    /// A number followed by prose is prose. Only an upper-case token after a
+    /// number denominates an amount.
+    #[test]
+    fn a_number_followed_by_prose_is_text() {
+        assert_eq!(
+            parse_meta_value("1502 rev B"),
+            MetaValue::Text("1502 rev B".to_owned())
+        );
+        assert_eq!(
+            parse_meta_value("42.00 aud"),
+            MetaValue::Text("42.00 aud".to_owned())
         );
     }
 }
