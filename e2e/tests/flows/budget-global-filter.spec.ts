@@ -120,7 +120,7 @@ async function groceriesRowAmounts(): Promise<string> {
 
 // ── Filter chip helpers (mirrors register-global-filter.spec.ts) ───────────
 
-/** Clicks a chip's ✕ by its exact label (e.g. `"text: Woolworths"`). */
+/** Clicks a chip's ✕ by its exact label (e.g. `"text: fortnightly"`). */
 async function removeChip(label: string): Promise<void> {
     const btn = await $(`[data-testid="filter-chips"] button[aria-label="remove ${label} filter"]`);
     await btn.waitForDisplayed();
@@ -168,22 +168,21 @@ describe('Budget — global filter', () => {
         await navigateToBudget();
 
         // Step back one month to a window with the seed's steady-state three
-        // Groceries transactions (Woolworths $140.00 + Coles $110.00 + IGA
-        // $55.00 = $305.00).
+        // Groceries transactions ($140.00 + $110.00 + $55.00 = $305.00).
         await stepToPreviousPeriod();
 
         // 2. Read the baseline (unfiltered) actual for the Groceries row.
         const baseline = await groceriesRowAmounts();
         expect(baseline).toContain('305');
 
-        // 3. Open the ⌘K palette and commit free text "Woolworths" — matches
-        // only the Woolworths $140.00 leg, a proper subset of the month's
-        // Groceries spend.
-        await commitTextToken('Woolworths');
+        // 3. Open the ⌘K palette and commit free text "fortnightly" — a
+        // description substring carried by the $110.00 leg alone, and by no
+        // other transaction in the month.
+        await commitTextToken('fortnightly');
 
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();
-        expect(await chips.getText()).toContain('text: Woolworths');
+        expect(await chips.getText()).toContain('text: fortnightly');
 
         // 4. Assert the row's actual dropped to the filtered subset total.
         await browser.waitUntil(
@@ -192,11 +191,11 @@ describe('Budget — global filter', () => {
         );
         await waitForTreeSettled();
         const filtered = await groceriesRowAmounts();
-        expect(filtered).toContain('140');
+        expect(filtered).toContain('110');
         expect(filtered).not.toContain('305');
 
         // 5. Remove the chip via the top-bar ✕ (palette already closed above).
-        await removeChip('text: Woolworths');
+        await removeChip('text: fortnightly');
         await expect($('[data-testid="filter-chips"]')).not.toBeDisplayed();
 
         // 6. Assert the actual reverts to the baseline.
