@@ -1490,8 +1490,9 @@ const NOTE_KEY: &str = "note";
 
 /// Wraps one optional string as a single text metadata entry.
 ///
-/// `key` is a literal from this module, so it always validates; an absent value
-/// yields no entry.
+/// A `key` that is not a valid [`MetaKey`], and an absent value, each yield no
+/// entry. Every call site passes a literal from this module, so only the absent
+/// value arises in practice.
 ///
 /// # Arguments
 ///
