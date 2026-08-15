@@ -172,9 +172,11 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
                 })
                 .collect();
             let amounts_str = amounts.join(", ");
-            // Read the payee through `iter()`: `get_first_text` answers `None`
-            // both for an absent payee and for one stored under another type,
-            // and a flagged entry is exactly the second case.
+            // Read the payee through `iter()`, which is the only way to reach
+            // `mismatched`. A flagged entry is stored as text, so
+            // `get_first_text` returns it and drops the flag with no trace,
+            // leaving a value the store could not read looking like one it
+            // could.
             let description = tx
                 .metadata()
                 .iter()
