@@ -66,7 +66,7 @@ struct ValueColumns {
     num: Option<f64>,
     /// Commodity code; set for amounts only.
     commodity: Option<String>,
-    /// Referenced account id; set for account values only.
+    /// Referenced account id; set for account values naming a live account.
     account: Option<String>,
 }
 
@@ -76,6 +76,13 @@ impl ValueColumns {
     /// A mismatched value keeps only its canonical string: the typed columns
     /// describe a type the key is not registered as, so populating them would
     /// index the value under a type nothing queries it by.
+    ///
+    /// [`insert`] overwrites [`Self::text`] with the resolved path when the
+    /// value is an account, so a flagged account row holds a path here and not
+    /// the bare id [`MetaValue::canonical`] returns. Its [`Self::account`]
+    /// stays `None`, which means a mismatched account entry carries no
+    /// `ON DELETE SET NULL` link and so is never tombstoned: its path reads the
+    /// same whether the account it names still exists or not.
     fn flagged(value: &MetaValue) -> Self {
         Self {
             text: value.canonical(),
@@ -133,8 +140,14 @@ async fn account_path(
 ///
 /// An account value is stored with its resolved path in `value_text` and its id
 /// in `value_account`, so a later account deletion leaves a tombstone naming
-/// what the entry pointed at. An account that cannot be resolved falls back to
-/// the id in both columns.
+/// what the entry pointed at.
+///
+/// An id naming no live account is stored as a tombstone from the outset:
+/// `value_text` keeps the bare id, since there is no path to resolve, and
+/// `value_account` stays `NULL`. `value_account REFERENCES accounts(id)` under
+/// `PRAGMA foreign_keys = ON`, so binding the id there would abort the whole
+/// statement — and a metadata write flags what it cannot represent instead of
+/// rejecting it.
 ///
 /// # Arguments
 ///
@@ -162,15 +175,20 @@ async fn value_columns(
             commodity: Some(amount.commodity().as_str().to_owned()),
             account: None,
         },
-        MetaValue::Account(ref id) => {
-            let path = account_path(db_tx, id).await?;
-            ValueColumns {
-                text: path.unwrap_or(text),
+        MetaValue::Account(ref id) => match account_path(db_tx, id).await? {
+            Some(path) => ValueColumns {
+                text: path,
                 num: None,
                 commodity: None,
                 account: Some(id.to_string()),
-            }
-        }
+            },
+            None => ValueColumns {
+                text,
+                num: None,
+                commodity: None,
+                account: None,
+            },
+        },
         MetaValue::Text(_)
         | MetaValue::Boolean(_)
         | MetaValue::Date(_)
@@ -243,9 +261,11 @@ pub(crate) async fn register_key_if_absent(
 /// stored flag is derived here from the value and the registered type, so an
 /// entry whose value has since been repaired stops being flagged.
 ///
-/// An account value stores its resolved path in `value_text` whatever its key
-/// is registered as, and whether or not it fitted. The path is the one thing
-/// that outlives the account.
+/// An account value naming a live account stores its resolved path in
+/// `value_text` whatever its key is registered as, and whether or not it
+/// fitted. The path is the one thing that outlives the account. An id naming no
+/// live account has no path to store, so `value_text` keeps the bare id and
+/// `value_account` stays `NULL`.
 ///
 /// # Arguments
 ///
@@ -278,15 +298,20 @@ pub(crate) async fn insert(
         // `entry.mismatched()` is deliberately not read. The flag is derived
         // from the value against the key's current registered type, so an
         // entry repaired by the caller stops being flagged on the next write.
-        let (mut columns, mismatched) = match coerce(entry.value(), registered) {
+        let coerced = coerce(entry.value(), registered);
+        // A value that fitted as an account already carries its path, resolved
+        // by `value_columns`. Every other shape needs one filled in below.
+        let fitted_as_account = matches!(coerced, Coerced::Fits(MetaValue::Account(_)));
+        let (mut columns, mismatched) = match coerced {
             Coerced::Fits(ref fitted) => (value_columns(db_tx, fitted).await?, false),
             Coerced::Mismatch => (ValueColumns::flagged(entry.value()), true),
         };
         // An account value canonicalises to the bare id, and `value_text` must
         // hold the path. Keyed on the value rather than on the key's
         // registered type or on whether the value fitted, so no row anywhere
-        // stores an id.
-        if let MetaValue::Account(ref id) = *entry.value()
+        // stores an id where a path exists.
+        if !fitted_as_account
+            && let MetaValue::Account(ref id) = *entry.value()
             && let Some(path) = account_path(db_tx, id).await?
         {
             columns.text = path;
@@ -985,6 +1010,38 @@ mod tests {
             ],
             "an account value carries its path into value_text whatever the \
              key is registered as, flagged or not; no row holds a bare id"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_account_value_naming_no_account_stores_no_link(pool: SqlitePool) {
+        let absent = AccountId::new();
+        let tx = seed_transaction(&pool).await;
+        // `value_account REFERENCES accounts(id)` under PRAGMA foreign_keys =
+        // ON, so binding an id no account carries would abort the write.
+        write(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("offset"),
+                MetaValue::Account(absent.clone()),
+            )]),
+        )
+        .await;
+
+        let row: (String, Option<String>, i64) = sqlx::query_as(
+            "SELECT value_text, value_account, mismatched FROM transaction_metadata \
+             WHERE transaction_id = ?",
+        )
+        .bind(&tx)
+        .fetch_one(&pool)
+        .await
+        .expect("row");
+        assert_eq!(
+            row,
+            (absent.to_string(), None, 0),
+            "there is no path to resolve, so value_text keeps the bare id and \
+             the row is a tombstone from the outset"
         );
     }
 
