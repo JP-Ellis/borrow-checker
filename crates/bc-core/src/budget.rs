@@ -618,9 +618,7 @@ fn build_posting_amounts_sql(
 
     if let Some(q) = query {
         if q.text.is_some() {
-            sql.push_str(
-                " AND (lower(t.payee) LIKE ? ESCAPE '\\' OR lower(t.description) LIKE ? ESCAPE '\\')",
-            );
+            sql.push_str(" AND lower(t.description) LIKE ? ESCAPE '\\'");
         }
         if q.reconciliation.is_some() {
             sql.push_str(" AND t.reconciliation = ?");
@@ -842,7 +840,7 @@ impl BudgetStatusEngine {
                     "%{}%",
                     crate::search::escape_like(&text.to_ascii_lowercase())
                 );
-                stmt = stmt.bind(needle.clone()).bind(needle);
+                stmt = stmt.bind(needle);
             }
             if let Some(rec) = q.reconciliation {
                 stmt = stmt.bind(crate::db::to_db_str(rec)?);
