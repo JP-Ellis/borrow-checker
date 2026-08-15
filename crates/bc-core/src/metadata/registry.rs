@@ -431,6 +431,98 @@ mod tests {
         db_tx.commit().await.expect("commit");
     }
 
+    /// Reads every event of one kind out of the log, oldest first.
+    async fn payloads_of_kind(pool: &SqlitePool, kind: &str) -> Vec<crate::events::Event> {
+        let rows: Vec<String> =
+            sqlx::query_scalar("SELECT payload FROM events WHERE kind = ? ORDER BY rowid ASC")
+                .bind(kind)
+                .fetch_all(pool)
+                .await
+                .expect("payloads");
+        rows.iter()
+            .map(|payload| serde_json::from_str(payload).expect("deserialise"))
+            .collect()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn writing_a_new_key_records_its_registration(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Number(dec!(1502)),
+            )]),
+        )
+        .await;
+
+        assert_eq!(
+            payloads_of_kind(&pool, "MetadataKeyRegistered").await,
+            vec![crate::events::Event::MetadataKeyRegistered {
+                key: key("invoice"),
+                ty: MetaType::Number,
+            }],
+            "auto-registration on the write path is what puts most keys in the \
+             registry, so it is what the log has to record"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn writing_a_key_a_second_time_records_nothing(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        let entries = Metadata::new(vec![MetaEntry::new(
+            key("invoice"),
+            MetaValue::Number(dec!(1502)),
+        )]);
+        write_transaction_meta(&pool, &tx, &entries).await;
+        write_transaction_meta(&pool, &tx, &entries).await;
+
+        assert_eq!(
+            payloads_of_kind(&pool, "MetadataKeyRegistered").await.len(),
+            1,
+            "an INSERT OR IGNORE that ignored is not a registration"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn registration_records_the_type_the_registry_kept(pool: SqlitePool) {
+        let registry = Service::new(pool.clone());
+        registry
+            .register(&key("invoice"), MetaType::Number)
+            .await
+            .expect("register");
+        registry
+            .register(&key("invoice"), MetaType::Text)
+            .await
+            .expect("register");
+
+        assert_eq!(
+            payloads_of_kind(&pool, "MetadataKeyRegistered").await,
+            vec![crate::events::Event::MetadataKeyRegistered {
+                key: key("invoice"),
+                ty: MetaType::Number,
+            }],
+            "the second call asserts text and the registry keeps number, so \
+             there is nothing new to record"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_registration_event_aggregates_on_the_key(pool: SqlitePool) {
+        Service::new(pool.clone())
+            .register(&key("invoice"), MetaType::Number)
+            .await
+            .expect("register");
+
+        let aggregate: String =
+            sqlx::query_scalar("SELECT aggregate_id FROM events WHERE kind = 'MetadataKeyRegistered'")
+                .fetch_one(&pool)
+                .await
+                .expect("aggregate");
+        assert_eq!(aggregate, "invoice");
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn list_returns_every_key_in_key_order(pool: SqlitePool) {
         let tx = seed_transaction(&pool).await;
