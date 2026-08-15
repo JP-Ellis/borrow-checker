@@ -5,6 +5,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::MetaEntryDto;
 use crate::money::Amount;
 
 /// The five canonical account types in double-entry accounting.
@@ -307,8 +308,8 @@ pub struct Posting {
     pub account: AccountRef,
     /// Posting amount — stored, or derived when the source document elided it.
     pub amount: PostingAmount,
-    /// Optional inline comment shown in the TOML view.
-    pub note: Option<String>,
+    /// Typed key-value metadata in display order. Repeated keys are legal.
+    pub metadata: Vec<MetaEntryDto>,
     /// Resolved tag paths attached to this posting (colon-joined; includes inherited transaction tags).
     pub tags: Vec<String>,
     /// Accrual spread start date. `None` means no spreading applied.
@@ -325,7 +326,7 @@ impl Posting {
     /// * `id` - Stable posting identifier (UUID string).
     /// * `account` - Account reference with ID and display name.
     /// * `amount` - Posting amount, stored or derived.
-    /// * `note` - Optional inline comment, or `None`.
+    /// * `metadata` - Typed key-value metadata in display order.
     /// * `tags` - Tag IDs attached to this posting.
     /// * `spread_from` - Accrual spread start date, or `None`.
     /// * `spread_until` - Accrual spread end date (inclusive — the last day of the spread), or `None`.
@@ -335,7 +336,7 @@ impl Posting {
         id: impl Into<String>,
         account: AccountRef,
         amount: PostingAmount,
-        note: Option<impl Into<String>>,
+        metadata: Vec<MetaEntryDto>,
         tags: Vec<String>,
         spread_from: Option<jiff::civil::Date>,
         spread_until: Option<jiff::civil::Date>,
@@ -344,7 +345,7 @@ impl Posting {
             id: id.into(),
             account,
             amount,
-            note: note.map(Into::into),
+            metadata,
             tags,
             spread_from,
             spread_until,
@@ -401,14 +402,11 @@ pub struct Transaction {
     pub id: String,
     /// Transaction date.
     pub date: jiff::civil::Date,
-    /// Payee display name.
-    pub payee: String,
     /// Free-text description (raw imported narration).
     pub description: String,
-    /// User's free-text note, distinct from the imported `description`.
-    pub note: Option<String>,
-    /// Extra named dates attached to this transaction (e.g. `("effective", 2026-04-01)`).
-    pub extra_dates: Vec<(String, jiff::civil::Date)>,
+    /// Typed key-value metadata in display order. Repeated keys are legal, and
+    /// `payee` holds no privileged position among them.
+    pub metadata: Vec<MetaEntryDto>,
     /// Reconciliation status.
     pub reconciliation: Reconciliation,
     /// Tag paths attached to this transaction (colon-joined).
@@ -426,10 +424,8 @@ impl Transaction {
     ///
     /// * `id` - Stable identifier.
     /// * `date` - Transaction date.
-    /// * `payee` - Payee display name.
     /// * `description` - Free-text description (raw imported narration).
-    /// * `note` - User free-text note, or `None`.
-    /// * `extra_dates` - Extra named dates (label + date pairs).
+    /// * `metadata` - Typed key-value metadata in display order.
     /// * `reconciliation` - Reconciliation status.
     /// * `tags` - Tag paths (colon-joined).
     /// * `postings` - All postings (must sum to zero).
@@ -443,10 +439,8 @@ impl Transaction {
     pub fn new(
         id: impl Into<String>,
         date: jiff::civil::Date,
-        payee: impl Into<String>,
         description: impl Into<String>,
-        note: Option<impl Into<String>>,
-        extra_dates: Vec<(String, jiff::civil::Date)>,
+        metadata: Vec<MetaEntryDto>,
         reconciliation: Reconciliation,
         tags: Vec<String>,
         postings: Vec<Posting>,
@@ -455,10 +449,8 @@ impl Transaction {
         Self {
             id: id.into(),
             date,
-            payee: payee.into(),
             description: description.into(),
-            note: note.map(Into::into),
-            extra_dates,
+            metadata,
             reconciliation,
             tags,
             postings,
@@ -478,8 +470,8 @@ pub struct NewPosting {
     pub account_id: String,
     /// Posting amount. `None` when the amount should be elided (inferred to balance).
     pub amount: Option<Amount>,
-    /// Optional inline note.
-    pub note: Option<String>,
+    /// Typed key-value metadata in display order.
+    pub metadata: Vec<MetaEntryDto>,
     /// Tag paths to attach to this posting (must reference existing tags).
     pub tags: Vec<String>,
     /// Accrual spread start date. `None` means no spreading.
@@ -495,7 +487,7 @@ impl NewPosting {
     ///
     /// * `account_id` - Account ID referencing an existing active account.
     /// * `amount` - Posting amount, or `None` to elide (inferred to balance).
-    /// * `note` - Optional inline note, or `None`.
+    /// * `metadata` - Typed key-value metadata in display order.
     /// * `tags` - Tag IDs to attach to this posting.
     /// * `spread_from` - Accrual spread start date, or `None`.
     /// * `spread_until` - Accrual spread end date (inclusive — the last day of the spread), or `None`.
@@ -504,7 +496,7 @@ impl NewPosting {
     pub fn new(
         account_id: impl Into<String>,
         amount: Option<Amount>,
-        note: Option<impl Into<String>>,
+        metadata: Vec<MetaEntryDto>,
         tags: Vec<String>,
         spread_from: Option<jiff::civil::Date>,
         spread_until: Option<jiff::civil::Date>,
@@ -512,7 +504,7 @@ impl NewPosting {
         Self {
             account_id: account_id.into(),
             amount,
-            note: note.map(Into::into),
+            metadata,
             tags,
             spread_from,
             spread_until,
@@ -528,12 +520,10 @@ impl NewPosting {
 pub struct NewTransaction {
     /// Transaction date.
     pub date: jiff::civil::Date,
-    /// Payee display name.
-    pub payee: String,
     /// Free-text description (raw narration). Empty string if not provided.
     pub description: String,
-    /// User's free-text note. `None` if not provided.
-    pub note: Option<String>,
+    /// Typed key-value metadata in display order.
+    pub metadata: Vec<MetaEntryDto>,
     /// Reconciliation status.
     pub reconciliation: Reconciliation,
     /// Tag paths attached to this transaction.
@@ -548,9 +538,8 @@ impl NewTransaction {
     /// # Arguments
     ///
     /// * `date` - Transaction date.
-    /// * `payee` - Payee display name.
     /// * `description` - Free-text description (raw narration).
-    /// * `note` - User's free-text note, or `None`.
+    /// * `metadata` - Typed key-value metadata in display order.
     /// * `reconciliation` - Reconciliation status.
     /// * `tags` - Tag paths attached to this transaction.
     /// * `postings` - All postings (must sum to zero per commodity).
@@ -558,18 +547,16 @@ impl NewTransaction {
     #[inline]
     pub fn new(
         date: jiff::civil::Date,
-        payee: impl Into<String>,
         description: impl Into<String>,
-        note: Option<impl Into<String>>,
+        metadata: Vec<MetaEntryDto>,
         reconciliation: Reconciliation,
         tags: Vec<String>,
         postings: Vec<NewPosting>,
     ) -> Self {
         Self {
             date,
-            payee: payee.into(),
             description: description.into(),
-            note: note.map(Into::into),
+            metadata,
             reconciliation,
             tags,
             postings,
@@ -589,8 +576,8 @@ pub struct EditPosting {
     pub account_id: String,
     /// Posting amount, or `None` if elided (inferred to balance).
     pub amount: Option<Amount>,
-    /// Free-text note, or `None`.
-    pub note: Option<String>,
+    /// Typed key-value metadata in display order; replaces the stored list on save.
+    pub metadata: Vec<MetaEntryDto>,
     /// Tag paths to attach (colon-joined; resolved to existing tags on save).
     pub tags: Vec<String>,
     /// Accrual spread start (inclusive), or `None`.
@@ -607,7 +594,7 @@ impl EditPosting {
     /// * `id` - Existing posting ID to update in place, or `None` to add a new leg.
     /// * `account_id` - Account this posting hits.
     /// * `amount` - Posting amount, or `None` if elided (inferred to balance).
-    /// * `note` - Free-text note, or `None`.
+    /// * `metadata` - Typed key-value metadata; replaces the stored list on save.
     /// * `tags` - Tag paths to attach (resolved to existing tags on save).
     /// * `spread_from` - Accrual spread start, or `None`.
     /// * `spread_until` - Accrual spread end, or `None`.
@@ -617,7 +604,7 @@ impl EditPosting {
         id: Option<String>,
         account_id: impl Into<String>,
         amount: Option<Amount>,
-        note: Option<String>,
+        metadata: Vec<MetaEntryDto>,
         tags: Vec<String>,
         spread_from: Option<jiff::civil::Date>,
         spread_until: Option<jiff::civil::Date>,
@@ -626,7 +613,7 @@ impl EditPosting {
             id,
             account_id: account_id.into(),
             amount,
-            note,
+            metadata,
             tags,
             spread_from,
             spread_until,
@@ -645,20 +632,16 @@ pub struct EditTransaction {
     pub id: String,
     /// Transaction date.
     pub date: jiff::civil::Date,
-    /// Payee display name.
-    pub payee: String,
     /// Free-text description.
     pub description: String,
-    /// User's free-text note, or `None`.
-    pub note: Option<String>,
+    /// Typed key-value metadata in display order; replaces the stored list on save.
+    pub metadata: Vec<MetaEntryDto>,
     /// Reconciliation status (read-only in the editor, echoed back unchanged).
     pub reconciliation: Reconciliation,
     /// Transaction-level tag paths (resolved to existing tags on save).
     pub tags: Vec<String>,
     /// All postings in display order.
     pub postings: Vec<EditPosting>,
-    /// Extra named dates (label + date pairs); replaces the stored set on save.
-    pub extra_dates: Vec<(String, jiff::civil::Date)>,
 }
 
 impl EditTransaction {
@@ -668,40 +651,30 @@ impl EditTransaction {
     ///
     /// * `id` - ID of the transaction being edited.
     /// * `date` - Transaction date.
-    /// * `payee` - Payee display name.
     /// * `description` - Free-text description.
-    /// * `note` - User's free-text note, or `None`.
+    /// * `metadata` - Typed key-value metadata; replaces the stored list on save.
     /// * `reconciliation` - Reconciliation status (echoed back unchanged).
     /// * `tags` - Transaction-level tag paths (resolved to existing tags on save).
     /// * `postings` - All postings in display order.
-    /// * `extra_dates` - Extra named dates (label + date pairs); replaces the stored set on save.
     #[must_use]
     #[inline]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "mirrors the public DTO field set; a builder would add ceremony for a flat data carrier"
-    )]
     pub fn new(
         id: impl Into<String>,
         date: jiff::civil::Date,
-        payee: impl Into<String>,
         description: impl Into<String>,
-        note: Option<String>,
+        metadata: Vec<MetaEntryDto>,
         reconciliation: Reconciliation,
         tags: Vec<String>,
         postings: Vec<EditPosting>,
-        extra_dates: Vec<(String, jiff::civil::Date)>,
     ) -> Self {
         Self {
             id: id.into(),
             date,
-            payee: payee.into(),
             description: description.into(),
-            note,
+            metadata,
             reconciliation,
             tags,
             postings,
-            extra_dates,
         }
     }
 }
@@ -727,7 +700,7 @@ pub struct AmountFilter {
 /// All fields are optional/empty by default; an empty filter matches everything.
 /// Dimensions combine with AND; the repeatable dimensions (`accounts`, `tags`)
 /// OR within themselves. `text` matches a case-insensitive substring against
-/// either the payee or the narration (description).
+/// the narration (description) alone; metadata waits for the query language.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Filter {
@@ -739,7 +712,7 @@ pub struct Filter {
     pub accounts: Vec<String>,
     /// Tag ids; multiple entries union (OR).
     pub tags: Vec<String>,
-    /// Case-insensitive substring over payee OR narration.
+    /// Case-insensitive substring over the narration.
     pub text: Option<String>,
     /// Magnitude predicate; a transaction matches if any posting qualifies.
     pub amount: Option<AmountFilter>,
@@ -1085,13 +1058,19 @@ mod tests {
 
     use super::*;
     use crate::Amount;
+    use crate::MetaValueDto;
+
+    /// A one-entry metadata list carrying `key` as text.
+    fn meta(key: &str, text: &str) -> Vec<MetaEntryDto> {
+        vec![MetaEntryDto::new(key, MetaValueDto::Text(text.to_owned()))]
+    }
 
     #[test]
     fn new_posting_constructor_roundtrip() {
         let p = NewPosting::new(
             "acc-1",
             Some(Amount::new(Decimal::new(-1_000, 2), "AUD")),
-            Some("test note"),
+            meta("note", "test note"),
             vec![],
             None,
             None,
@@ -1101,7 +1080,7 @@ mod tests {
             p.amount.as_ref().map(|a| a.value),
             Some(rust_decimal::Decimal::new(-1_000, 2))
         );
-        assert_eq!(p.note.as_deref(), Some("test note"));
+        assert_eq!(p.metadata, meta("note", "test note"));
     }
 
     #[rstest]
@@ -1110,16 +1089,15 @@ mod tests {
     fn new_transaction_serde_roundtrip(#[case] reconciliation: Reconciliation) {
         let tx = NewTransaction::new(
             jiff::civil::Date::constant(2026, 5, 23),
-            "Test Payee",
             "",
-            None::<&str>,
+            meta("payee", "Generic Grocer"),
             reconciliation,
             vec![],
             vec![
                 NewPosting::new(
                     "acc-a",
                     Some(Amount::new(Decimal::new(-500, 2), "AUD")),
-                    None::<&str>,
+                    vec![],
                     vec![],
                     None,
                     None,
@@ -1127,7 +1105,7 @@ mod tests {
                 NewPosting::new(
                     "acc-b",
                     Some(Amount::new(Decimal::new(500, 2), "AUD")),
-                    None::<&str>,
+                    vec![],
                     vec![],
                     None,
                     None,
@@ -1145,7 +1123,7 @@ mod tests {
             "posting-1",
             AccountRef::new("acc-1", "Assets :: Checking"),
             PostingAmount::Ambiguous,
-            Some("posting note"),
+            meta("note", "posting note"),
             vec!["tag-abc".to_owned()],
             None,
             None,
@@ -1153,13 +1131,14 @@ mod tests {
         let tx = Transaction::new(
             "tx-1",
             jiff::civil::Date::constant(2026, 6, 1),
-            "Test Payee",
             "raw narration",
-            Some("user note"),
-            vec![(
-                "effective".to_owned(),
-                jiff::civil::Date::constant(2026, 6, 15),
-            )],
+            vec![
+                MetaEntryDto::new("payee", MetaValueDto::Text("Generic Grocer".to_owned())),
+                MetaEntryDto::new(
+                    "effective",
+                    MetaValueDto::Date(jiff::civil::Date::constant(2026, 6, 15)),
+                ),
+            ],
             Reconciliation::Flagged,
             vec![],
             vec![posting],
@@ -1170,11 +1149,13 @@ mod tests {
         assert_eq!(tx, tx2);
         assert_eq!(tx2.reconciliation, Reconciliation::Flagged);
         assert_eq!(tx2.description, "raw narration");
-        assert_eq!(tx2.note.as_deref(), Some("user note"));
-        assert_eq!(tx2.extra_dates.len(), 1);
         assert_eq!(
-            tx2.extra_dates.first().map(|(l, _)| l.as_str()),
-            Some("effective")
+            tx2.metadata
+                .iter()
+                .map(|e| e.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["payee", "effective"],
+            "order is the display order and survives the round trip"
         );
         assert!(matches!(
             tx2.postings.first().map(|p| &p.amount),
@@ -1185,8 +1166,8 @@ mod tests {
             Some(["tag-abc".to_owned()].as_slice())
         );
         assert_eq!(
-            tx2.postings.first().and_then(|p| p.note.as_deref()),
-            Some("posting note")
+            tx2.postings.first().map(|p| p.metadata.clone()),
+            Some(meta("note", "posting note"))
         );
     }
 
@@ -1303,16 +1284,15 @@ mod tests {
     fn new_transaction_serde_roundtrip_with_tags(#[case] reconciliation: Reconciliation) {
         let tx = NewTransaction::new(
             jiff::civil::Date::constant(2026, 5, 23),
-            "Payee With Tags",
             "",
-            None::<&str>,
+            meta("payee", "Generic Grocer"),
             reconciliation,
             vec!["category:groceries".to_owned(), "budget:food".to_owned()],
             vec![
                 NewPosting::new(
                     "acc-a",
                     Some(Amount::new(Decimal::new(-3_000, 2), "AUD")),
-                    None::<&str>,
+                    vec![],
                     vec![],
                     None,
                     None,
@@ -1320,7 +1300,7 @@ mod tests {
                 NewPosting::new(
                     "acc-b",
                     Some(Amount::new(Decimal::new(3_000, 2), "AUD")),
-                    None::<&str>,
+                    vec![],
                     vec![],
                     None,
                     None,
@@ -1386,21 +1366,19 @@ mod tests {
         let dto = EditTransaction {
             id: "tx-1".to_owned(),
             date: "2026-04-30".parse().expect("date"),
-            payee: "Atlassian".to_owned(),
             description: "salary".to_owned(),
-            note: None,
+            metadata: meta("payee", "Generic Employer"),
             reconciliation: Reconciliation::Unreconciled,
             tags: vec!["work".to_owned()],
             postings: vec![EditPosting {
                 id: Some("p-1".to_owned()),
                 account_id: "acc-1".to_owned(),
                 amount: None,
-                note: None,
+                metadata: vec![],
                 tags: vec![],
                 spread_from: None,
                 spread_until: None,
             }],
-            extra_dates: vec![],
         };
         let json = serde_json::to_string(&dto).expect("ser");
         let back: EditTransaction = serde_json::from_str(&json).expect("de");
@@ -1412,9 +1390,7 @@ mod tests {
         let tx = Transaction::new(
             "tx-1",
             jiff::civil::Date::constant(2026, 6, 1),
-            "Test Payee",
             "raw narration",
-            None::<&str>,
             vec![],
             Reconciliation::Unreconciled,
             vec![],
@@ -1472,7 +1448,7 @@ mod tests {
             Some("p-1".to_owned()),
             "acct-checking",
             Some(Amount::new(rust_decimal::Decimal::new(-5_000, 2), "AUD")),
-            None,
+            vec![],
             vec!["tag-1".to_owned()],
             None,
             None,
@@ -1480,19 +1456,16 @@ mod tests {
         let tx = EditTransaction::new(
             "tx-1",
             Date::constant(2026, 4, 30),
-            "Coles",
             "weekly shop",
-            Some("note".to_owned()),
+            meta("payee", "Generic Grocer"),
             Reconciliation::Unreconciled,
             vec!["work".to_owned()],
             vec![p.clone()],
-            vec![],
         );
 
         assert_eq!(tx.id, "tx-1");
         assert_eq!(tx.date, Date::constant(2026, 4, 30));
-        assert_eq!(tx.payee, "Coles");
-        assert_eq!(tx.note.as_deref(), Some("note"));
+        assert_eq!(tx.metadata, meta("payee", "Generic Grocer"));
         assert_eq!(tx.postings, vec![p]);
     }
 
