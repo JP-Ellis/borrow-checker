@@ -12,6 +12,7 @@ mod source;
 use bc_sdk::Amount;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
+use bc_sdk::MetaEntry;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
 use bc_sdk::SourceLocation;
@@ -95,8 +96,13 @@ impl bc_sdk::Importer for BeancountImporter {
             raw_txs.push(
                 RawTransaction::builder()
                     .date(tx.date)
-                    .maybe_payee(tx.payee)
                     .description(tx.narration)
+                    .metadata(
+                        tx.payee
+                            .into_iter()
+                            .map(|name| MetaEntry::text("payee", name))
+                            .collect(),
+                    )
                     .tags(tx.tags)
                     .source_location(
                         SourceLocation::builder()
@@ -123,6 +129,14 @@ impl bc_sdk::Importer for BeancountImporter {
 
 #[cfg(test)]
 mod tests {
+    /// Reads the first `payee` metadata entry, when the row states one.
+    fn payee_of(tx: &RawTransaction) -> Option<&str> {
+        tx.metadata.iter().find_map(|entry| match entry.value {
+            bc_sdk::MetaValue::Text(ref text) if entry.key == "payee" => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
     use std::io::Write as _;
 
     use bc_sdk::Amount;
@@ -160,7 +174,7 @@ mod tests {
             .expect("import");
         assert_eq!(txs.len(), 1);
         let tx = txs.first().expect("should have one transaction");
-        assert_eq!(tx.payee.as_deref(), Some("Acme"));
+        assert_eq!(payee_of(tx), Some("Acme"));
         assert_eq!(tx.description, "Salary");
         assert_eq!(tx.date, Date::new(2025, 1, 15));
         assert_eq!(tx.postings.len(), 2);
@@ -183,7 +197,7 @@ mod tests {
             .import(test_config("imports_narration_only", input))
             .expect("import");
         let tx = txs.first().expect("should have one transaction");
-        assert_eq!(tx.payee, None);
+        assert_eq!(payee_of(tx), None);
         assert_eq!(tx.description, "Transfer");
         assert_eq!(tx.postings.len(), 2);
         assert_eq!(tx.postings[0].account, "A:B");
