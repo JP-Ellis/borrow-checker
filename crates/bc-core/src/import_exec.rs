@@ -46,6 +46,8 @@ use crate::AccountPath;
 use crate::AccountResolver;
 use crate::BcResult;
 use crate::CommodityResolver;
+use crate::RawMetaEntry;
+use crate::RawMetaValue;
 use crate::RawPosting;
 use crate::RawTransaction;
 use crate::Resolution;
@@ -432,8 +434,8 @@ struct ResolvedLeg {
     amount: Option<Amount>,
     /// The leg's dedup fingerprint, over the document's own values.
     fingerprint: String,
-    /// The leg's free-text note, as the document stated it.
-    note: Option<String>,
+    /// The leg's metadata, with every account path the document stated bound.
+    metadata: Metadata,
     /// The leg's tag paths, as the document stated them.
     tag_paths: Vec<String>,
 }
@@ -449,8 +451,8 @@ struct LegPlan {
     amount: Option<Amount>,
     /// The leg's dedup fingerprint, over the document's own values.
     fingerprint: String,
-    /// The leg's free-text note, as the document stated it.
-    note: Option<String>,
+    /// The leg's metadata, with every account path the document stated bound.
+    metadata: Metadata,
     /// The leg's tag paths, as the document stated them.
     tag_paths: Vec<String>,
     /// The occurrence slot this leg claims within `(account, fingerprint)`.
@@ -476,7 +478,7 @@ impl LegPlan {
             .id(PostingId::new())
             .account_id(self.account_id.clone())
             .maybe_amount(self.amount.clone().or_else(|| residual.cloned()))
-            .metadata(text_metadata(NOTE_KEY, self.note.as_deref()))
+            .metadata(self.metadata.clone())
             .tag_ids(resolve_tag_ids(&self.tag_paths, tags))
             .build()
     }
@@ -1094,7 +1096,7 @@ fn resolve_leg(
         account_id,
         account_path: rendered,
         amount,
-        note: posting.note.clone(),
+        metadata: resolve_metadata(resolver, location_of(raw), &posting.metadata),
         tag_paths: posting.tags.clone(),
     })
 }
@@ -1165,7 +1167,7 @@ fn allocate_occurrences(rows: Vec<Vec<ResolvedLeg>>) -> Vec<Vec<LegPlan>> {
                         account_path: leg.account_path,
                         amount: leg.amount,
                         fingerprint: leg.fingerprint,
-                        note: leg.note,
+                        metadata: leg.metadata,
                         tag_paths: leg.tag_paths,
                         occurrence,
                     }
@@ -1482,75 +1484,81 @@ fn row_local_value<T>(
     }
 }
 
-/// The metadata key a raw row's payee lands under.
-const PAYEE_KEY: &str = "payee";
-
-/// The metadata key a raw row's or leg's free-text note lands under.
-const NOTE_KEY: &str = "note";
-
-/// Wraps one optional string as a single text metadata entry.
+/// Binds every account path a document's metadata names to an account.
 ///
-/// A `key` that is not a valid [`MetaKey`], and an absent value, each yield no
-/// entry. Every call site passes a literal from this module, so only the absent
-/// value arises in practice.
+/// The six self-contained value types pass through untouched. An account path
+/// that names an account becomes a [`MetaValue::Account`]; one that is
+/// malformed or names nothing becomes text and warns. Keeping the path as text
+/// is what makes the entry repairable: the write path reads it against the
+/// key's registered type, finds a path where an id belongs, and flags it.
 ///
 /// # Arguments
 ///
-/// * `key` - The key to file the value under.
-/// * `value` - The value, when the document stated one.
+/// * `resolver` - The account-tree snapshot to resolve against.
+/// * `location` - Where the document stated these entries, for diagnostics.
+/// * `entries` - The entries the importer stated, in display order.
 ///
 /// # Returns
 ///
-/// The entry, or empty metadata.
-fn text_metadata(key: &str, value: Option<&str>) -> Metadata {
-    let Some((meta_key, text)) = MetaKey::new(key).ok().zip(value) else {
-        return Metadata::default();
-    };
-    Metadata::new(vec![MetaEntry::new(
-        meta_key,
-        MetaValue::Text(text.to_owned()),
-    )])
+/// The same entries in the same order, every account bound that could be.
+fn resolve_metadata(
+    resolver: &AccountResolver,
+    location: &str,
+    entries: &[RawMetaEntry],
+) -> Metadata {
+    entries
+        .iter()
+        .map(|entry| {
+            let value = match entry.value {
+                RawMetaValue::Resolved(ref value) => value.clone(),
+                RawMetaValue::AccountPath(ref stated) => {
+                    resolve_meta_account(resolver, location, &entry.key, stated)
+                }
+            };
+            MetaEntry::new(entry.key.clone(), value)
+        })
+        .collect()
 }
 
-/// Builds a row's metadata from the bespoke fields the importer ABI still
-/// carries.
-///
-/// `payee` and `note` land under keys of those names; each labelled date lands
-/// under its label as a [`MetaValue::Date`]. A label that is not a usable
-/// [`MetaKey`] is dropped with a diagnostic — the row is worth importing
-/// without it.
-///
-/// Repeated labels are kept. They previously had to be deduplicated because
-/// `transaction_dates` was keyed by `(transaction_id, label)`; metadata permits
-/// repeats, so dropping one would discard data for no reason.
+/// Binds one account path stated as a metadata value.
 ///
 /// # Arguments
 ///
-/// * `raw` - The document transaction, for its fields and for diagnostics.
+/// * `resolver` - The account-tree snapshot to resolve against.
+/// * `location` - Where the document stated this entry, for diagnostics.
+/// * `key` - The key the path is filed under, for diagnostics.
+/// * `stated` - The account path as the document wrote it.
 ///
 /// # Returns
 ///
-/// The row's entries, ordered payee, note, then the labelled dates.
-fn transaction_metadata(raw: &RawTransaction) -> Metadata {
-    let mut entries: Vec<MetaEntry> = Vec::new();
-    if let Some((key, payee)) = MetaKey::new(PAYEE_KEY).ok().zip(raw.payee.as_ref()) {
-        entries.push(MetaEntry::new(key, MetaValue::Text(payee.clone())));
-    }
-    if let Some((key, note)) = MetaKey::new(NOTE_KEY).ok().zip(raw.note.as_ref()) {
-        entries.push(MetaEntry::new(key, MetaValue::Text(note.clone())));
-    }
-    for (label, when) in &raw.extra_dates {
-        match MetaKey::new(label.clone()) {
-            Ok(key) => entries.push(MetaEntry::new(key, MetaValue::Date(*when))),
-            Err(err) => tracing::warn!(
-                location = location_of(raw),
-                label,
-                %err,
-                "this date label is not a usable metadata key; dropping the entry"
-            ),
+/// The bound account, or the path as text when nothing binds it.
+fn resolve_meta_account(
+    resolver: &AccountResolver,
+    location: &str,
+    key: &MetaKey,
+    stated: &str,
+) -> MetaValue {
+    let Ok(path) = AccountPath::parse(stated) else {
+        tracing::warn!(
+            location,
+            key = key.as_str(),
+            account = stated,
+            "malformed account path in metadata; keeping the path as text"
+        );
+        return MetaValue::Text(stated.to_owned());
+    };
+    match resolver.resolve(&path) {
+        Resolution::Resolved { id, .. } => MetaValue::Account(id),
+        Resolution::Missing { .. } => {
+            tracing::warn!(
+                location,
+                key = key.as_str(),
+                account = stated,
+                "account path in metadata names no account; keeping the path as text"
+            );
+            MetaValue::Text(stated.to_owned())
         }
     }
-    Metadata::new(entries)
 }
 
 /// Reports whether `error` describes one row's data rather than a failure of
@@ -2326,7 +2334,11 @@ where
             .id(TransactionId::new())
             .date(raw.date)
             .description(raw.description.clone())
-            .metadata(transaction_metadata(raw))
+            .metadata(resolve_metadata(
+                self.accounts,
+                location_of(raw),
+                &raw.metadata,
+            ))
             .tag_ids(resolve_tag_ids(&raw.tags, &self.tags))
             .postings(postings.clone())
             .reconciliation(Reconciliation::Unreconciled)
@@ -2512,6 +2524,27 @@ mod tests {
 
     use super::*;
     use crate::RawPosting;
+
+    /// Builds a text metadata entry, panicking on a key the tests wrote wrong.
+    fn meta_text(key: &str, value: &str) -> RawMetaEntry {
+        RawMetaEntry::resolved(
+            MetaKey::new(key).expect("test key must be valid"),
+            MetaValue::Text(value.to_owned()),
+        )
+    }
+
+    /// Builds a date metadata entry, panicking on a key the tests wrote wrong.
+    fn meta_date(key: &str, when: jiff::civil::Date) -> RawMetaEntry {
+        RawMetaEntry::resolved(
+            MetaKey::new(key).expect("test key must be valid"),
+            MetaValue::Date(when),
+        )
+    }
+
+    /// Builds an unresolved account-path metadata entry.
+    fn meta_account(key: &str, path: &str) -> RawMetaEntry {
+        RawMetaEntry::account_path(MetaKey::new(key).expect("test key must be valid"), path)
+    }
 
     /// Builds the service bundle every test needs.
     struct Services {
@@ -2807,7 +2840,7 @@ mod tests {
                         Decimal::from(50_i64),
                         CommodityCode::new("AUD"),
                     )))
-                    .note("paid by card")
+                    .metadata(vec![meta_text("note", "paid by card")])
                     .build(),
             ],
         );
@@ -2848,10 +2881,10 @@ mod tests {
         let raw = RawTransaction::builder()
             .date(date(2025, 6, 27))
             .description("groceries")
-            .note("split with flatmate")
-            .extra_dates(vec![
-                ("settled".to_owned(), date(2025, 6, 29)),
-                ("posted".to_owned(), date(2025, 6, 28)),
+            .metadata(vec![
+                meta_text("note", "split with flatmate"),
+                meta_date("settled", date(2025, 6, 29)),
+                meta_date("posted", date(2025, 6, 28)),
             ])
             .postings(vec![leg("Assets:Bank", Some(50_i64))])
             .build();
@@ -2872,6 +2905,68 @@ mod tests {
         );
     }
 
+    /// Reads the stored text and account foreign key of the single entry filed
+    /// under `key`.
+    async fn entry_under(pool: &SqlitePool, key: &str) -> Option<(String, Option<String>)> {
+        sqlx::query_as("SELECT value_text, value_account FROM transaction_metadata WHERE key = ?")
+            .bind(key)
+            .fetch_optional(pool)
+            .await
+            .expect("metadata entry")
+    }
+
+    /// Imports one transaction carrying `stated` as an account-valued entry.
+    async fn run_with_counterparty(pool: &SqlitePool, stated: &str) {
+        let svcs = services(pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .metadata(vec![meta_account("counterparty", stated)])
+            .postings(vec![leg("Assets:Bank", Some(50_i64))])
+            .build();
+        run(&svcs, &[raw]).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_account_path_in_metadata_binds_to_that_account(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+
+        run_with_counterparty(&pool, "Expenses:Food").await;
+
+        assert_eq!(
+            entry_under(&pool, "counterparty").await,
+            Some(("Expenses:Food".to_owned(), Some(food.to_string()))),
+            "a bound account is stored by id, with its path for a human to read"
+        );
+    }
+
+    /// A plugin has no account tree, so it can only name an account by path. A
+    /// path the tree does not hold costs the binding, never the entry: the text
+    /// survives for the user to repair.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_account_path_naming_nothing_stays_text(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+
+        run_with_counterparty(&pool, "Assets:Nowhere").await;
+
+        assert_eq!(
+            entry_under(&pool, "counterparty").await,
+            Some(("Assets:Nowhere".to_owned(), None))
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_malformed_account_path_stays_text(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+
+        run_with_counterparty(&pool, "").await;
+
+        assert_eq!(
+            entry_under(&pool, "counterparty").await,
+            Some((String::new(), None))
+        );
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn a_repeated_date_label_becomes_two_entries(pool: SqlitePool) {
         two_account_tree(&pool).await;
@@ -2879,10 +2974,10 @@ mod tests {
         let raw = RawTransaction::builder()
             .date(date(2025, 6, 27))
             .description("groceries")
-            .extra_dates(vec![
-                ("posted".to_owned(), date(2025, 6, 28)),
-                ("posted".to_owned(), date(2025, 6, 30)),
-                ("settled".to_owned(), date(2025, 6, 29)),
+            .metadata(vec![
+                meta_date("posted", date(2025, 6, 28)),
+                meta_date("posted", date(2025, 6, 30)),
+                meta_date("settled", date(2025, 6, 29)),
             ])
             .postings(vec![leg("Assets:Bank", Some(50_i64))])
             .build();
@@ -2913,7 +3008,7 @@ mod tests {
         let first = RawTransaction::builder()
             .date(date(2025, 6, 27))
             .description("groceries")
-            .note("original note")
+            .metadata(vec![meta_text("note", "original note")])
             .postings(vec![
                 leg("Assets:Bank", Some(-50_i64)),
                 leg("Expenses:Food", Some(50_i64)),
@@ -2927,7 +3022,7 @@ mod tests {
         let second = RawTransaction::builder()
             .date(date(2025, 6, 27))
             .description("groceries")
-            .note("revised note")
+            .metadata(vec![meta_text("note", "revised note")])
             .postings(vec![
                 leg("Assets:Bank", Some(-50_i64)),
                 leg("Expenses:Food", Some(50_i64)),

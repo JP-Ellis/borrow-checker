@@ -74,6 +74,8 @@ pub use fx::noop_fx;
 pub use import::Config as ImportConfig;
 pub use import::Error as ImportError;
 pub use import::Importer;
+pub use import::RawMetaEntry;
+pub use import::RawMetaValue;
 pub use import::RawPosting;
 pub use import::RawTransaction;
 pub use import::SourceLocation;
