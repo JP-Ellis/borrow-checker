@@ -11,6 +11,12 @@ use rust_decimal::Decimal;
 
 use crate::host::bindings::borrow_checker::sdk::types as wt;
 
+/// Stands in for the location of a row whose plugin reported none.
+///
+/// Matches what `bc_core::import_exec` renders for the same case, so one
+/// document's diagnostics read the same whichever layer emitted them.
+const UNKNOWN_SOURCE: &str = "<unknown source>";
+
 /// Converts a WIT wire-format date into a validated `jiff` civil date.
 ///
 /// # Errors
@@ -91,6 +97,7 @@ fn wit_meta_value(v: wt::MetaValue) -> Result<bc_core::RawMetaValue, bc_core::Im
 /// # Arguments
 ///
 /// * `entries` - The entries as the plugin stated them, in display order.
+/// * `location` - Where the document stated these entries, for diagnostics.
 ///
 /// # Returns
 ///
@@ -103,6 +110,7 @@ fn wit_meta_value(v: wt::MetaValue) -> Result<bc_core::RawMetaValue, bc_core::Im
 /// defect, unlike a key a user chose.
 fn wit_metadata(
     entries: Vec<wt::MetaEntry>,
+    location: &str,
 ) -> Result<Vec<bc_core::RawMetaEntry>, bc_core::ImportError> {
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -114,6 +122,7 @@ fn wit_metadata(
                     .build(),
             ),
             Err(error) => tracing::warn!(
+                location,
                 key = entry.key.as_str(),
                 %error,
                 "plugin stated a metadata key that is not usable; dropping the entry"
@@ -123,18 +132,36 @@ fn wit_metadata(
     Ok(out)
 }
 
-impl TryFrom<wt::RawPosting> for bc_core::RawPosting {
-    type Error = bc_core::ImportError;
-
-    fn try_from(p: wt::RawPosting) -> Result<Self, Self::Error> {
-        Ok(bc_core::RawPosting::builder()
-            .account(p.account)
-            .maybe_amount(p.amount.map(Amount::try_from).transpose()?)
-            .maybe_balance(p.balance.map(Amount::try_from).transpose()?)
-            .tags(p.tags)
-            .metadata(wit_metadata(p.metadata)?)
-            .build())
-    }
+/// Converts one WIT posting leg into the form the import pipeline reads.
+///
+/// Takes the location from its transaction: a leg does not carry one of its
+/// own, and a diagnostic naming no row leaves the user nothing to fix.
+///
+/// # Arguments
+///
+/// * `p` - The leg as the plugin stated it.
+/// * `location` - Where the document stated the transaction this leg belongs
+///   to, for diagnostics.
+///
+/// # Returns
+///
+/// The translated leg.
+///
+/// # Errors
+///
+/// Returns [`bc_core::ImportError::Parse`] when an amount, a balance or a
+/// metadata value does not carry the type the plugin claimed for it.
+fn wit_posting(
+    p: wt::RawPosting,
+    location: &str,
+) -> Result<bc_core::RawPosting, bc_core::ImportError> {
+    Ok(bc_core::RawPosting::builder()
+        .account(p.account)
+        .maybe_amount(p.amount.map(Amount::try_from).transpose()?)
+        .maybe_balance(p.balance.map(Amount::try_from).transpose()?)
+        .tags(p.tags)
+        .metadata(wit_metadata(p.metadata, location)?)
+        .build())
 }
 
 impl From<wt::SourceLocation> for bc_core::SourceLocation {
@@ -157,17 +184,24 @@ impl TryFrom<wt::RawTransaction> for bc_core::RawTransaction {
                 "plugin returned a raw transaction with no postings".to_owned(),
             ));
         }
+        // Rendered before the builder consumes `t`, and named the same way
+        // `bc_core::import_exec` names a row with no stated location.
+        let location = t
+            .source_location
+            .as_ref()
+            .map_or(UNKNOWN_SOURCE, |stated| stated.display.as_str())
+            .to_owned();
         Ok(bc_core::RawTransaction::builder()
             .date(date)
             .description(t.description)
             .maybe_reference(t.reference)
             .tags(t.tags)
-            .metadata(wit_metadata(t.metadata)?)
+            .metadata(wit_metadata(t.metadata, &location)?)
             .maybe_source_location(t.source_location.map(Into::into))
             .postings(
                 t.postings
                     .into_iter()
-                    .map(bc_core::RawPosting::try_from)
+                    .map(|p| wit_posting(p, &location))
                     .collect::<Result<Vec<_>, _>>()?,
             )
             .build())
