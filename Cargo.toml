@@ -99,13 +99,13 @@ members  = [
     "fmt",
     "json"
   ] }
-  wasmtime              = { version = "47", default-features = false, features = [
+  wasmtime              = { version = "48", default-features = false, features = [
     "component-model",
     "cranelift",
     "runtime",
     "std",
   ] }
-  wasmtime-wasi         = { version = "47" }
+  wasmtime-wasi         = { version = "48" }
   winnow                = "1.0"
   wit-bindgen           = { version = "0.60", default-features = false, features = [
     "macros"
