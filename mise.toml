@@ -24,7 +24,7 @@ config_roots = [
 [tools]
 "core:node" = "24"
 "core:rust" = {
-  version    = "1.97",
+  version    = "1.98",
   components = "llvm-tools,rustfmt,clippy",
   # wasm32-wasip2: plugin system (Wasmtime)
   # wasm32-unknown-unknown: Leptos frontend (Tauri webview)
