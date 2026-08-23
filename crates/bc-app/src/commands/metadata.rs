@@ -83,11 +83,11 @@ pub async fn retype_metadata_key(
     state: State<'_, AppState>,
 ) -> Result<bc_ipc::MetaTypeDto, bc_ipc::BcError> {
     let parsed = parse_key(&key)?;
-    let from = state
+    let report = state
         .metadata
         .retype(&parsed, bc_models::MetaType::from(ty))
         .await?;
-    Ok(bc_ipc::MetaTypeDto::from(from))
+    Ok(bc_ipc::MetaTypeDto::from(report.from))
 }
 
 /// Renames a key, carrying its entries with it.
@@ -110,5 +110,8 @@ pub async fn rename_metadata_key(
 ) -> Result<(), bc_ipc::BcError> {
     let parsed_from = parse_key(&from)?;
     let parsed_to = parse_key(&to)?;
-    Ok(state.metadata.rename(&parsed_from, &parsed_to).await?)
+    // The count of entries carried is not part of the IPC contract, so it is
+    // dropped here rather than widening the command's return type.
+    state.metadata.rename(&parsed_from, &parsed_to).await?;
+    Ok(())
 }

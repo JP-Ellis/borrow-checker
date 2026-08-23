@@ -67,6 +67,20 @@ pub struct Service {
     pub(super) pool: SqlitePool,
 }
 
+/// What a [`Service::retype`] call did.
+///
+/// Re-exported from the crate root as [`crate::Retyped`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[non_exhaustive]
+pub struct Retyped {
+    /// The type the key held before.
+    pub from: MetaType,
+    /// Entries that read as the new type.
+    pub refitted: u64,
+    /// Entries stored as text and flagged, because they will not read as it.
+    pub flagged: u64,
+}
+
 impl Service {
     /// Creates a registry over the given connection pool.
     #[must_use]
@@ -160,7 +174,8 @@ impl Service {
     ///
     /// # Returns
     ///
-    /// The type the key held before this call.
+    /// The type the key held before this call, and how every entry under it
+    /// landed. The counts fall out of the replay the call runs anyway.
     ///
     /// # Events
     ///
@@ -173,7 +188,7 @@ impl Service {
     /// Returns [`BcError::NotFound`] when `key` is not registered, and
     /// [`BcError`] on database failure.
     #[inline]
-    pub async fn retype(&self, key: &MetaKey, to: MetaType) -> BcResult<MetaType> {
+    pub async fn retype(&self, key: &MetaKey, to: MetaType) -> BcResult<Retyped> {
         let mut db_tx = self.pool.begin().await?;
         let registered: Option<String> =
             sqlx::query_scalar("SELECT value_type FROM metadata_keys WHERE key = ?")
@@ -185,7 +200,11 @@ impl Service {
         };
         let from = from_db_str::<MetaType>(&stored)?;
         if from == to {
-            return Ok(from);
+            return Ok(Retyped {
+                from,
+                refitted: 0,
+                flagged: 0,
+            });
         }
 
         sqlx::query("UPDATE metadata_keys SET value_type = ? WHERE key = ?")
@@ -193,8 +212,12 @@ impl Service {
             .bind(key.as_str())
             .execute(&mut *db_tx)
             .await?;
+        let mut refitted = 0_u64;
+        let mut flagged = 0_u64;
         for owner in [Owner::Transaction, Owner::Posting] {
-            replay(&mut db_tx, owner, key, from, to).await?;
+            let (fitted, missed) = replay(&mut db_tx, owner, key, from, to).await?;
+            refitted = refitted.saturating_add(fitted);
+            flagged = flagged.saturating_add(missed);
         }
         insert_event(
             &Event::MetadataKeyRetyped {
@@ -206,7 +229,11 @@ impl Service {
         )
         .await?;
         db_tx.commit().await?;
-        Ok(from)
+        Ok(Retyped {
+            from,
+            refitted,
+            flagged,
+        })
     }
 
     /// Renames `from` to `to`, carrying every entry under it across.
@@ -223,6 +250,10 @@ impl Service {
     /// * `from` - The registered key to rename.
     /// * `to` - Its new name.
     ///
+    /// # Returns
+    ///
+    /// The number of entries carried across, from both owner tables.
+    ///
     /// # Events
     ///
     /// Appends [`Event::MetadataKeyRenamed`] in the same transaction as the
@@ -235,9 +266,9 @@ impl Service {
     /// [`BcError::InvalidInput`] when `to` already is, and [`BcError`] on
     /// database failure.
     #[inline]
-    pub async fn rename(&self, from: &MetaKey, to: &MetaKey) -> BcResult<()> {
+    pub async fn rename(&self, from: &MetaKey, to: &MetaKey) -> BcResult<u64> {
         if from == to {
-            return Ok(());
+            return Ok(0);
         }
         let mut db_tx = self.pool.begin().await?;
         let source: Option<(String, String)> =
@@ -269,13 +300,15 @@ impl Service {
             .bind(&created_at)
             .execute(&mut *db_tx)
             .await?;
+        let mut carried = 0_u64;
         for owner in [Owner::Transaction, Owner::Posting] {
             let repoint = format!("UPDATE {} SET key = ? WHERE key = ?", owner.table());
-            sqlx::query(sqlx::AssertSqlSafe(repoint))
+            let moved = sqlx::query(sqlx::AssertSqlSafe(repoint))
                 .bind(to.as_str())
                 .bind(from.as_str())
                 .execute(&mut *db_tx)
                 .await?;
+            carried = carried.saturating_add(moved.rows_affected());
         }
         sqlx::query("DELETE FROM metadata_keys WHERE key = ?")
             .bind(from.as_str())
@@ -291,7 +324,7 @@ impl Service {
         .await?;
 
         db_tx.commit().await?;
-        Ok(())
+        Ok(carried)
     }
 }
 
@@ -305,6 +338,11 @@ impl Service {
 /// * `from` - The type the entries currently read back as.
 /// * `to` - The type they should read back as.
 ///
+/// # Returns
+///
+/// The number of entries that fit `to`, and the number flagged because they
+/// will not read as it.
+///
 /// # Errors
 ///
 /// Returns [`BcError`] on database failure.
@@ -314,7 +352,7 @@ async fn replay(
     key: &MetaKey,
     from: MetaType,
     to: MetaType,
-) -> BcResult<()> {
+) -> BcResult<(u64, u64)> {
     if to == MetaType::Text {
         // A pure relabel. `value_text` already holds the canonical string of
         // every row — including the resolved path of an account value, which
@@ -325,11 +363,11 @@ async fn replay(
              value_account = NULL, mismatched = 0 WHERE key = ?",
             owner.table()
         );
-        sqlx::query(sqlx::AssertSqlSafe(relabel))
+        let relabelled = sqlx::query(sqlx::AssertSqlSafe(relabel))
             .bind(key.as_str())
             .execute(&mut **db_tx)
             .await?;
-        return Ok(());
+        return Ok((relabelled.rows_affected(), 0));
     }
 
     let select = format!(
@@ -348,6 +386,8 @@ async fn replay(
          value_account = ?, mismatched = ? WHERE rowid = ?",
         owner.table()
     );
+    let mut refitted = 0_u64;
+    let mut flagged = 0_u64;
     for (rowid, stored_text, stored_account, flag) in rows {
         // A flagged row reads back as text whatever `from` says, which is
         // exactly the asserted-text case of the coercion rule. Its old flag is
@@ -370,6 +410,11 @@ async fn replay(
                 1_i64,
             ),
         };
+        if mismatched == 0 {
+            refitted = refitted.saturating_add(1);
+        } else {
+            flagged = flagged.saturating_add(1);
+        }
         sqlx::query(sqlx::AssertSqlSafe(update.clone()))
             .bind(columns.text)
             .bind(columns.num)
@@ -380,7 +425,7 @@ async fn replay(
             .execute(&mut **db_tx)
             .await?;
     }
-    Ok(())
+    Ok((refitted, flagged))
 }
 
 #[cfg(test)]
@@ -669,7 +714,8 @@ mod tests {
             registry
                 .retype(&key("invoice"), MetaType::Number)
                 .await
-                .expect("retype"),
+                .expect("retype")
+                .from,
             MetaType::Text,
             "the previous type is what phase 4's event records as `from`"
         );
@@ -694,7 +740,8 @@ mod tests {
             registry
                 .retype(&key("invoice"), MetaType::Number)
                 .await
-                .expect("retype"),
+                .expect("retype")
+                .from,
             MetaType::Number
         );
     }
@@ -1438,5 +1485,69 @@ mod tests {
             .rename(&key("absent"), &key("present"))
             .await;
         assert!(matches!(outcome, Err(BcError::NotFound(ref what)) if what.contains("absent")));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retype_reports_how_every_entry_landed(pool: SqlitePool) {
+        let first = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &first,
+            &Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Text("1502".to_owned()),
+            )]),
+        )
+        .await;
+        let second = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &second,
+            &Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Text("pending".to_owned()),
+            )]),
+        )
+        .await;
+
+        let report = Service::new(pool)
+            .retype(&key("invoice"), MetaType::Number)
+            .await
+            .expect("retype");
+
+        assert_eq!(report.from, MetaType::Text, "the type it replaced");
+        assert_eq!(report.refitted, 1, "'1502' narrows to a number");
+        assert_eq!(report.flagged, 1, "'pending' does not");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rename_reports_the_entries_it_carried(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        let posting = seed_posting(&pool, &tx).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Number(dec!(1502)),
+            )]),
+        )
+        .await;
+        write_posting_meta(
+            &pool,
+            &posting,
+            &Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Number(dec!(1503)),
+            )]),
+        )
+        .await;
+
+        let carried = Service::new(pool)
+            .rename(&key("invoice"), &key("invoice-number"))
+            .await
+            .expect("rename");
+
+        assert_eq!(carried, 2, "the count spans both owner tables");
     }
 }
