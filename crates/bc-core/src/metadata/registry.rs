@@ -82,6 +82,27 @@ pub struct Retyped {
     pub mismatched: u64,
 }
 
+/// How [`Service::delete`] treats a key that still has entries.
+///
+/// Re-exported from the crate root as [`crate::Deletion`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Deletion {
+    /// Delete only a key no entry references, and refuse otherwise.
+    IfUnused,
+    /// Delete the key and every entry stored under it.
+    Cascade,
+}
+
+/// Names one or many entries.
+///
+/// # Arguments
+///
+/// * `count` - How many entries are being described.
+pub(crate) const fn entry_noun(count: u64) -> &'static str {
+    if count == 1 { "entry" } else { "entries" }
+}
+
 impl Service {
     /// Creates a registry over the given connection pool.
     #[must_use]
@@ -332,6 +353,79 @@ impl Service {
 
         db_tx.commit().await?;
         Ok(carried)
+    }
+
+    /// Removes `key` from the registry, and under [`Deletion::Cascade`] every
+    /// entry stored under it.
+    ///
+    /// This is the one registry operation that refuses rather than warns. A
+    /// cascade destroys rows no later command can rebuild from the projection,
+    /// and the CLI is not interactive, so removing thousands of entries is
+    /// something a caller states rather than defaults into. [`Deletion::Cascade`]
+    /// is always available, so the refusal names a way through rather than
+    /// closing the door.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The registered key to delete.
+    /// * `mode` - Whether to refuse or cascade when entries exist.
+    ///
+    /// # Returns
+    ///
+    /// What the call removed. A key deleted while unused answers with zeros.
+    ///
+    /// # Events
+    ///
+    /// Appends [`Event::MetadataKeyDeleted`] in the same transaction as the
+    /// deletion, so the key and the entries it took commit or roll back
+    /// together.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] when `key` is not registered,
+    /// [`BcError::InvalidInput`] under [`Deletion::IfUnused`] when any entry
+    /// exists, and [`BcError`] on database failure.
+    #[inline]
+    pub async fn delete(&self, key: &MetaKey, mode: Deletion) -> BcResult<crate::MetaKeyUsage> {
+        let Some(usage) = self.usage(key).await? else {
+            return Err(BcError::NotFound(format!("metadata key '{key}'")));
+        };
+        if mode == Deletion::IfUnused && usage.total() > 0 {
+            return Err(BcError::InvalidInput(format!(
+                "cannot delete metadata key '{key}': it has {} transaction {} and {} posting {}",
+                usage.transactions(),
+                entry_noun(usage.transactions()),
+                usage.postings(),
+                entry_noun(usage.postings()),
+            )));
+        }
+
+        let mut db_tx = self.pool.begin().await?;
+        // Both metadata tables reference `metadata_keys(key)` with no
+        // ON DELETE CASCADE, and every connection sets PRAGMA foreign_keys =
+        // ON, so the children go before the parent.
+        for owner in [Owner::Transaction, Owner::Posting] {
+            let purge = format!("DELETE FROM {} WHERE key = ?", owner.table());
+            sqlx::query(sqlx::AssertSqlSafe(purge))
+                .bind(key.as_str())
+                .execute(&mut *db_tx)
+                .await?;
+        }
+        sqlx::query("DELETE FROM metadata_keys WHERE key = ?")
+            .bind(key.as_str())
+            .execute(&mut *db_tx)
+            .await?;
+        insert_event(
+            &Event::MetadataKeyDeleted {
+                key: key.clone(),
+                ty: usage.def().ty(),
+                entries: usage.total(),
+            },
+            &mut db_tx,
+        )
+        .await?;
+        db_tx.commit().await?;
+        Ok(usage)
     }
 }
 
@@ -1607,5 +1701,138 @@ mod tests {
             .expect("rename");
 
         assert_eq!(carried, 2, "the count spans both owner tables");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_unused_key_is_deleted(pool: SqlitePool) {
+        let service = Service::new(pool);
+        service
+            .register(&key("owner"), MetaType::Account)
+            .await
+            .expect("register");
+
+        let removed = service
+            .delete(&key("owner"), Deletion::IfUnused)
+            .await
+            .expect("delete");
+
+        assert_eq!(removed.total(), 0, "nothing was stored under it");
+        assert_eq!(
+            service.get(&key("owner")).await.expect("get"),
+            None,
+            "the key has left the registry"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_key_in_use_is_not_deleted_without_a_cascade(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Number(dec!(1502)),
+            )]),
+        )
+        .await;
+        let service = Service::new(pool);
+
+        let err = service
+            .delete(&key("invoice"), Deletion::IfUnused)
+            .await
+            .expect_err("a key with entries is refused");
+
+        assert!(
+            matches!(err, BcError::InvalidInput(ref msg) if msg.contains("1 transaction entry")),
+            "the refusal names what it is protecting, got: {err}"
+        );
+        assert!(
+            service.get(&key("invoice")).await.expect("get").is_some(),
+            "a refused delete leaves the registry untouched"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_cascade_deletes_the_key_and_its_entries(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        let posting = seed_posting(&pool, &tx).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Number(dec!(1502)),
+            )]),
+        )
+        .await;
+        write_posting_meta(
+            &pool,
+            &posting,
+            &Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Number(dec!(1503)),
+            )]),
+        )
+        .await;
+        let service = Service::new(pool.clone());
+
+        let removed = service
+            .delete(&key("invoice"), Deletion::Cascade)
+            .await
+            .expect("cascade");
+
+        assert_eq!(removed.transactions(), 1, "the transaction entry went");
+        assert_eq!(removed.postings(), 1, "the posting entry went too");
+        let left: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM transaction_metadata WHERE key = 'invoice') \
+             + (SELECT COUNT(*) FROM posting_metadata WHERE key = 'invoice')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(left, 0, "no entry outlives the key it was filed under");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn deleting_an_unregistered_key_is_not_found(pool: SqlitePool) {
+        let err = Service::new(pool)
+            .delete(&key("absent"), Deletion::Cascade)
+            .await
+            .expect_err("nothing to delete");
+
+        assert!(
+            matches!(err, BcError::NotFound(_)),
+            "an unregistered key is not found, got: {err}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_delete_is_recorded_in_the_log(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Number(dec!(1502)),
+            )]),
+        )
+        .await;
+        Service::new(pool.clone())
+            .delete(&key("invoice"), Deletion::Cascade)
+            .await
+            .expect("cascade");
+
+        assert_eq!(
+            payloads_of_kind(&pool, "MetadataKeyDeleted").await,
+            vec![crate::events::Event::MetadataKeyDeleted {
+                key: key("invoice"),
+                ty: MetaType::Number,
+                entries: 1,
+            }],
+            "the event records what the key held, so a reader knows what was \
+             destroyed without walking back to the registration"
+        );
     }
 }
