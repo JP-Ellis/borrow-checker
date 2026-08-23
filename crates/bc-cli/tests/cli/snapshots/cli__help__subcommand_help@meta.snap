@@ -10,11 +10,12 @@ Manage the metadata key registry
 Usage: borrow-checker meta [OPTIONS] <COMMAND>
 
 Commands:
-  list    List every registered key with its type
-  retype  Change a key's type, refitting every entry stored under it
-  rename  Rename a key, carrying every entry under it across
-  delete  Delete a key, and with `--force` every entry stored under it
-  help    Print this message or the help of the given subcommand(s)
+  register  Register a key with an explicit type, before any value is written
+  list      List every registered key with its type
+  retype    Change a key's type, refitting every entry stored under it
+  rename    Rename a key, carrying every entry under it across
+  delete    Delete a key, and with `--force` every entry stored under it
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
       --json

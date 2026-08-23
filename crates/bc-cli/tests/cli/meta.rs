@@ -396,3 +396,62 @@ fn delete_reports_what_it_removed_as_json() {
         "the cascade removed the one entry that was written"
     );
 }
+
+#[test]
+fn register_declares_a_key_before_any_value_is_written() {
+    let ctx = TestContext::new();
+
+    let mut cmd = ctx.command();
+    cmd.args(["meta", "register", "owner", "account"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn a_registered_key_holds_the_type_it_was_given() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args(["meta", "register", "owner", "account"])
+        .output()
+        .expect("meta register");
+
+    assert_eq!(
+        registry(&ctx),
+        vec![("owner".to_owned(), "account".to_owned())],
+        "inference never yields `account`, so declaring it is the only way in"
+    );
+}
+
+#[test]
+fn registering_a_key_that_exists_reports_the_type_it_holds() {
+    let ctx = TestContext::new();
+    register_key(&ctx, "invoice=1502");
+
+    let mut cmd = ctx.command();
+    cmd.args(["meta", "register", "invoice", "text"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn registering_a_key_that_exists_leaves_its_type_alone() {
+    let ctx = TestContext::new();
+    register_key(&ctx, "invoice=1502");
+    ctx.command()
+        .args(["meta", "register", "invoice", "text"])
+        .output()
+        .expect("meta register");
+
+    assert_eq!(
+        registry(&ctx),
+        vec![("invoice".to_owned(), "number".to_owned())],
+        "a key keeps the type its first value gave it; changing it is retype's"
+    );
+}
+
+#[test]
+fn registering_an_invalid_key_is_rejected() {
+    let ctx = TestContext::new();
+
+    let mut cmd = ctx.command();
+    cmd.args(["meta", "register", "1nvoice", "text"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
