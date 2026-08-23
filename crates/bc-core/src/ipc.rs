@@ -27,6 +27,7 @@ use crate::BudgetTreeItem;
 use crate::Event;
 use crate::NativePeriodStatus;
 use crate::budget_tree::BudgetTreeSummary;
+use crate::metadata::registry::entry_noun;
 use crate::search::AmountQuery;
 use crate::search::TransactionQuery;
 
@@ -137,7 +138,7 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                     after.len()
                 ),
             ),
-            // The three registry events aggregate on the metadata key, and
+            // The four registry events aggregate on the metadata key, and
             // `TransactionService::audit_trail` selects on a transaction id, so
             // no query returns one today. The copy exists so the first reader
             // of a key's history finds a sentence rather than a variant name.
@@ -159,6 +160,13 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
             Event::MetadataKeyRenamed { from, to } => {
                 ("key", format!("metadata key '{from}' renamed to '{to}'"))
             }
+            Event::MetadataKeyDeleted { key, entries, .. } => (
+                "key",
+                format!(
+                    "metadata key '{key}' deleted with {entries} {}",
+                    entry_noun(*entries)
+                ),
+            ),
             Event::PostingSpreadChanged { to, .. } => (
                 "spread",
                 match to {

@@ -98,6 +98,7 @@ pub use import_exec::SkipCause;
 pub use import_exec::execute_import;
 pub use import_exec::plan_import;
 pub use loan::Service as LoanService;
+pub use metadata::registry::Deletion;
 pub use metadata::registry::Retyped;
 pub use metadata::registry::Service as MetadataService;
 pub use metadata::usage::Usage as MetaKeyUsage;

@@ -430,6 +430,23 @@ pub enum Event {
         /// The name it holds now.
         to: MetaKey,
     },
+    /// A metadata key left the registry, taking every entry under it.
+    ///
+    /// `ty` records what the key held, so a reader reaching this row knows what
+    /// was destroyed without walking back to the registration. One event covers
+    /// however many rows the delete removed, as for
+    /// [`Self::TransactionsMerged`] and [`Self::ImportBatchDiscarded`]: a
+    /// per-row event would write thousands describing a single user action.
+    ///
+    /// A key deleted while unused records `entries: 0`.
+    MetadataKeyDeleted {
+        /// The deleted key.
+        key: MetaKey,
+        /// The type it held.
+        ty: MetaType,
+        /// How many entries were removed with it, across both owner tables.
+        entries: u64,
+    },
     /// An import batch was discarded, undoing the run that produced it.
     ///
     /// One event covers the whole discard. Emitting a `PostingRemoved` per row
@@ -529,6 +546,7 @@ impl Event {
             Self::MetadataKeyRegistered { .. } => "MetadataKeyRegistered",
             Self::MetadataKeyRetyped { .. } => "MetadataKeyRetyped",
             Self::MetadataKeyRenamed { .. } => "MetadataKeyRenamed",
+            Self::MetadataKeyDeleted { .. } => "MetadataKeyDeleted",
             Self::ImportBatchDiscarded { .. } => "ImportBatchDiscarded",
         }
     }
@@ -574,9 +592,9 @@ impl Event {
             // The registry has no entity ID: a key is its own aggregate. Every
             // other aggregate ID is a prefixed `define_id!` string, so a bare
             // key can never collide with one.
-            Self::MetadataKeyRegistered { key, .. } | Self::MetadataKeyRetyped { key, .. } => {
-                key.as_str().to_owned()
-            }
+            Self::MetadataKeyRegistered { key, .. }
+            | Self::MetadataKeyRetyped { key, .. }
+            | Self::MetadataKeyDeleted { key, .. } => key.as_str().to_owned(),
             Self::MetadataKeyRenamed { from, .. } => from.as_str().to_owned(),
             Self::ImportBatchDiscarded { batch_id, .. } => batch_id.to_string(),
         }
