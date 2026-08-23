@@ -5,7 +5,7 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Manage the metadata key registry: list, retype, rename
+Manage the metadata key registry
 
 Usage: borrow-checker meta [OPTIONS] <COMMAND>
 
