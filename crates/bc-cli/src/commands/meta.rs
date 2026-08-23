@@ -58,6 +58,17 @@ pub enum Command {
         /// Its new name.
         to: String,
     },
+    /// Delete a key, and with `--force` every entry stored under it.
+    ///
+    /// A key that still has entries is refused without `--force`, because a
+    /// cascade destroys rows nothing can rebuild afterwards.
+    Delete {
+        /// The registered key to delete.
+        key: String,
+        /// Delete the key's entries along with it.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// CLI representation of [`MetaType`].
@@ -136,6 +147,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         Command::List { usage } => list(ctx, usage).await,
         Command::Retype { key, ty } => retype(ctx, &key, ty.into()).await,
         Command::Rename { from, to } => rename(ctx, &from, &to).await,
+        Command::Delete { key, force } => delete(ctx, &key, force).await,
     }
 }
 
@@ -290,6 +302,55 @@ async fn rename(ctx: &AppContext, raw_from: &str, raw_to: &str) -> CliResult<()>
                 entry_noun(carried)
             );
         }
+    }
+    Ok(())
+}
+
+/// Deletes one key.
+///
+/// The refusal from the registry names the counts; this adds the flag that
+/// gets past it, which `bc-core` cannot name without knowing about the CLI.
+///
+/// # Arguments
+///
+/// * `ctx` - The application context, for the registry.
+/// * `raw_key` - The key to delete, as typed.
+/// * `force` - Whether to delete the key's entries along with it.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] for an invalid key or for a key still in use, and
+/// [`CliError::Core`] when the key is not registered or the delete fails.
+async fn delete(ctx: &AppContext, raw_key: &str, force: bool) -> CliResult<()> {
+    let key = parse_meta_key(raw_key)?;
+    let mode = if force {
+        bc_core::Deletion::Cascade
+    } else {
+        bc_core::Deletion::IfUnused
+    };
+    let removed = match ctx.metadata.delete(&key, mode).await {
+        Ok(usage) => usage,
+        // `delete` returns InvalidInput for exactly one reason: the key is
+        // still in use. The message already names the counts.
+        Err(bc_core::BcError::InvalidInput(msg)) => {
+            return Err(CliError::Arg(format!(
+                "{msg}\n       pass --force to delete the key and its entries"
+            )));
+        }
+        Err(err) => return Err(err.into()),
+    };
+    if ctx.json {
+        return crate::output::print_json(&removed);
+    }
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!(
+            "Deleted '{key}' ({} transaction {} and {} posting {} removed)",
+            removed.transactions(),
+            entry_noun(removed.transactions()),
+            removed.postings(),
+            entry_noun(removed.postings())
+        );
     }
     Ok(())
 }

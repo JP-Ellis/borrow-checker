@@ -326,3 +326,73 @@ fn a_rename_carrying_two_entries_says_entries() {
     cmd.args(["meta", "rename", "invoice", "bill"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+#[test]
+fn a_forced_delete_empties_the_registry() {
+    let ctx = TestContext::new();
+    register_key(&ctx, "invoice=1502");
+    ctx.command()
+        .args(["meta", "delete", "invoice", "--force"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        registry(&ctx),
+        Vec::<(String, String)>::new(),
+        "a forced delete empties the registry"
+    );
+}
+
+#[test]
+fn deleting_a_key_in_use_refuses_and_names_the_force_flag() {
+    let ctx = TestContext::new();
+    register_key(&ctx, "invoice=1502");
+
+    let mut cmd = ctx.command();
+    cmd.args(["meta", "delete", "invoice"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn a_refused_delete_leaves_the_key_registered() {
+    let ctx = TestContext::new();
+    register_key(&ctx, "invoice=1502");
+    ctx.command()
+        .args(["meta", "delete", "invoice"])
+        .assert()
+        .failure();
+
+    assert_eq!(
+        registry(&ctx),
+        vec![("invoice".to_owned(), "number".to_owned())],
+        "the refusal changes nothing"
+    );
+}
+
+#[test]
+fn deleting_a_key_the_registry_never_saw_fails() {
+    let ctx = TestContext::new();
+
+    let mut cmd = ctx.command();
+    cmd.args(["meta", "delete", "absent"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn delete_reports_what_it_removed_as_json() {
+    let ctx = TestContext::new();
+    register_key(&ctx, "invoice=1502");
+
+    let out = ctx
+        .command()
+        .args(["--json", "meta", "delete", "invoice", "--force"])
+        .output()
+        .expect("meta delete");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+
+    assert_eq!(
+        json.get("transactions").and_then(serde_json::Value::as_u64),
+        Some(1),
+        "the cascade removed the one entry that was written"
+    );
+}
