@@ -97,16 +97,15 @@ fn tokenise_xml(bytes: &[u8]) -> Result<Vec<SgmlToken>, String> {
             .map_err(|xml_err| xml_err.to_string())?
         {
             Event::Start(ref e) => {
-                current_tag = String::from_utf8_lossy(e.name().as_ref()).to_ascii_uppercase();
+                current_tag = e.name().as_ref().to_ascii_uppercase();
                 tokens.push(SgmlToken::Open(current_tag.clone()));
             }
             Event::End(ref e) => {
-                let tag = String::from_utf8_lossy(e.name().as_ref()).to_ascii_uppercase();
+                let tag = e.name().as_ref().to_ascii_uppercase();
                 tokens.push(SgmlToken::Close(tag));
             }
             Event::Text(ref e) => {
-                let decoded = e.decode().map_err(|xml_err| xml_err.to_string())?;
-                let text = quick_xml::escape::unescape(&decoded)
+                let text = quick_xml::escape::unescape(e)
                     .map_err(|xml_err| xml_err.to_string())?
                     .trim()
                     .to_owned();
