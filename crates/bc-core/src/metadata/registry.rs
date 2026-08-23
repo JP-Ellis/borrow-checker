@@ -58,9 +58,13 @@ impl TryFrom<KeyRow> for MetaKeyDef {
 ///
 /// Re-exported from the crate root as [`crate::MetadataService`].
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::field_scoped_visibility_modifiers,
+    reason = "the sibling `metadata::usage` module runs its own queries over this pool"
+)]
 pub struct Service {
     /// Shared SQLite connection pool.
-    pool: SqlitePool,
+    pub(super) pool: SqlitePool,
 }
 
 impl Service {
