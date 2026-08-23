@@ -34,6 +34,19 @@ pub struct Args {
 #[derive(Debug, Subcommand)]
 #[non_exhaustive]
 pub enum Command {
+    /// Register a key with an explicit type, before any value is written.
+    ///
+    /// Auto-registration infers a key's type from its first value, and
+    /// inference never yields `account`. Declaring the type up front is what
+    /// mints an account-typed key, and it stops a bad first value from freezing
+    /// the wrong type. A key already registered keeps the type it holds.
+    Register {
+        /// The key to register.
+        key: String,
+        /// The type every value under it is coerced towards.
+        #[arg(value_enum, value_name = "TYPE")]
+        ty: TypeArg,
+    },
     /// List every registered key with its type.
     List {
         /// Also count the entries stored under each key.
@@ -144,11 +157,47 @@ fn type_name(ty: MetaType) -> &'static str {
 /// the registry.
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
+        Command::Register { key, ty } => register(ctx, &key, ty.into()).await,
         Command::List { usage } => list(ctx, usage).await,
         Command::Retype { key, ty } => retype(ctx, &key, ty.into()).await,
         Command::Rename { from, to } => rename(ctx, &from, &to).await,
         Command::Delete { key, force } => delete(ctx, &key, force).await,
     }
+}
+
+/// Registers one key with an explicit type.
+///
+/// # Arguments
+///
+/// * `ctx` - The application context, for the registry.
+/// * `raw_key` - The key to register, as typed.
+/// * `ty` - The type to register it with, when it is absent.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] for an invalid key, and [`CliError::Core`] from
+/// the registry.
+async fn register(ctx: &AppContext, raw_key: &str, ty: MetaType) -> CliResult<()> {
+    let key = parse_meta_key(raw_key)?;
+    // `register` answers with the type the registry ends up holding, which is
+    // the key's own when it was already there.
+    let registered = ctx.metadata.register(&key, ty).await?;
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "key": key.as_str(),
+            "ty": type_name(registered),
+            "created": registered == ty,
+        }));
+    }
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        if registered == ty {
+            println!("Registered '{key}' as {}", type_name(ty));
+        } else {
+            println!("Key '{key}' is already {}", type_name(registered));
+        }
+    }
+    Ok(())
 }
 
 /// Lists every registered key, with entry counts when `usage` is set.
