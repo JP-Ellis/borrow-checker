@@ -1,0 +1,10 @@
+---
+source: crates/bc-cli/tests/cli/meta.rs
+expression: output
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: cannot delete metadata key 'invoice': it has 1 transaction entry and 0 posting entries
+       pass --force to delete the key and its entries
