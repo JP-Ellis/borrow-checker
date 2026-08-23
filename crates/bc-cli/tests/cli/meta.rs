@@ -233,3 +233,67 @@ fn an_invalid_key_is_rejected_before_the_registry_is_touched() {
     cmd.args(["meta", "rename", "invoice", "1bill"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+/// Filters that collapse a table's column padding and its separator rule.
+///
+/// A registration timestamp renders with as many fractional-second digits as
+/// it has, and the table sizes the `REGISTERED` column to that width, so the
+/// padding and the rule shift from run to run. `TestContext` already rewrites
+/// the timestamp itself; these leave only the cells and the pipes.
+const TABLE_FILTERS: [(&str, &str); 2] = [(" {2,}", " "), ("={2,}", "=")];
+
+#[test]
+fn list_usage_counts_a_written_key() {
+    let ctx = TestContext::new();
+    register_key(&ctx, "invoice=1502");
+
+    let mut cmd = ctx.command();
+    cmd.args(["meta", "list", "--usage"]);
+    insta::with_settings!({ filters => TABLE_FILTERS.to_vec() }, {
+        cmd_snapshot!(ctx, &mut cmd);
+    });
+}
+
+#[test]
+fn list_usage_json_carries_the_counts() {
+    let ctx = TestContext::new();
+    register_key(&ctx, "invoice=1502");
+
+    let out = ctx
+        .command()
+        .args(["--json", "meta", "list", "--usage"])
+        .output()
+        .expect("meta list --usage");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    let first = json.get(0).expect("one key");
+
+    assert_eq!(
+        first.get("key").and_then(serde_json::Value::as_str),
+        Some("invoice"),
+        "the registration's fields are flattened alongside the counts"
+    );
+    assert_eq!(
+        first
+            .get("transactions")
+            .and_then(serde_json::Value::as_u64),
+        Some(1),
+        "one entry was written on a transaction"
+    );
+    assert_eq!(
+        first.get("mismatched").and_then(serde_json::Value::as_u64),
+        Some(0),
+        "1502 reads as the number the key registered as"
+    );
+}
+
+#[test]
+fn list_without_usage_keeps_its_three_columns() {
+    let ctx = TestContext::new();
+    register_key(&ctx, "invoice=1502");
+
+    let mut cmd = ctx.command();
+    cmd.args(["meta", "list"]);
+    insta::with_settings!({ filters => TABLE_FILTERS.to_vec() }, {
+        cmd_snapshot!(ctx, &mut cmd);
+    });
+}

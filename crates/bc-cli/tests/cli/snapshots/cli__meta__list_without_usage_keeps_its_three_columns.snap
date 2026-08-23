@@ -5,5 +5,7 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Renamed 'invoice' to 'bill' (1 entry carried)
+ KEY | TYPE | REGISTERED
+=
+ invoice | number | [TIMESTAMP]
 ----- stderr -----

@@ -35,7 +35,11 @@ pub struct Args {
 #[non_exhaustive]
 pub enum Command {
     /// List every registered key with its type.
-    List,
+    List {
+        /// Also count the entries stored under each key.
+        #[arg(long)]
+        usage: bool,
+    },
     /// Change a key's type, refitting every entry stored under it.
     ///
     /// Widening to `text` keeps every value. Narrowing parses each one and
@@ -91,6 +95,19 @@ impl From<TypeArg> for MetaType {
     }
 }
 
+/// Names the unit a count of metadata entries is measured in.
+///
+/// # Arguments
+///
+/// * `count` - How many entries.
+///
+/// # Returns
+///
+/// `"entry"` for exactly one, `"entries"` otherwise.
+pub(crate) const fn entry_noun(count: u64) -> &'static str {
+    if count == 1 { "entry" } else { "entries" }
+}
+
 /// Renders a type as the name the registry stores and the CLI accepts.
 ///
 /// # Arguments
@@ -116,19 +133,27 @@ fn type_name(ty: MetaType) -> &'static str {
 /// the registry.
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
-        Command::List => list(ctx).await,
+        Command::List { usage } => list(ctx, usage).await,
         Command::Retype { key, ty } => retype(ctx, &key, ty.into()).await,
         Command::Rename { from, to } => rename(ctx, &from, &to).await,
     }
 }
 
-/// Lists every registered key.
+/// Lists every registered key, with entry counts when `usage` is set.
+///
+/// # Arguments
+///
+/// * `ctx` - The application context, for the registry.
+/// * `usage` - Whether to count the entries stored under each key.
 ///
 /// # Errors
 ///
 /// Returns [`CliError::Core`] from the registry and [`CliError::Json`] from
 /// serialisation.
-async fn list(ctx: &AppContext) -> CliResult<()> {
+async fn list(ctx: &AppContext, usage: bool) -> CliResult<()> {
+    if usage {
+        return list_with_usage(ctx).await;
+    }
     let keys = ctx.metadata.list().await?;
     if ctx.json {
         return crate::output::print_json(&keys);
@@ -154,6 +179,48 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
     Ok(())
 }
 
+/// Lists every registered key with the entries stored under it.
+///
+/// # Arguments
+///
+/// * `ctx` - The application context, for the registry.
+///
+/// # Errors
+///
+/// Returns [`CliError::Core`] from the registry and [`CliError::Json`] from
+/// serialisation.
+async fn list_with_usage(ctx: &AppContext) -> CliResult<()> {
+    let usage = ctx.metadata.usage_all().await?;
+    if ctx.json {
+        return crate::output::print_json(&usage);
+    }
+    if usage.is_empty() {
+        #[expect(clippy::print_stdout, reason = "CLI output")]
+        {
+            println!("No metadata keys.");
+        }
+        return Ok(());
+    }
+    let rows: Vec<Vec<String>> = usage
+        .iter()
+        .map(|entry| {
+            vec![
+                entry.key().to_string(),
+                type_name(entry.def().ty()).to_owned(),
+                entry.def().created_at().to_string(),
+                entry.transactions().to_string(),
+                entry.postings().to_string(),
+                entry.mismatched().to_string(),
+            ]
+        })
+        .collect();
+    crate::output::print_table(
+        &["KEY", "TYPE", "REGISTERED", "TX", "POST", "FLAGGED"],
+        &rows,
+    );
+    Ok(())
+}
+
 /// Retypes one key.
 ///
 /// # Errors
@@ -162,22 +229,30 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
 /// the key is not registered or the refit fails.
 async fn retype(ctx: &AppContext, raw_key: &str, ty: MetaType) -> CliResult<()> {
     let key = parse_meta_key(raw_key)?;
-    // `retype` answers with the type it replaced, so naming both costs no
-    // second query.
-    let from = ctx.metadata.retype(&key, ty).await?;
+    // `retype` answers with the type it replaced and how every entry landed,
+    // so naming all three costs no second query.
+    let report = ctx.metadata.retype(&key, ty).await?;
     if ctx.json {
         return crate::output::print_json(&serde_json::json!({
             "key": key.as_str(),
-            "from": type_name(from),
+            "from": type_name(report.from),
             "to": type_name(ty),
+            "refitted": report.refitted,
+            "flagged": report.flagged,
         }));
     }
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        if from == ty {
+        if report.from == ty {
             println!("Key '{key}' is already {}", type_name(ty));
         } else {
-            println!("Retyped '{key}': {} -> {}", type_name(from), type_name(ty));
+            println!(
+                "Retyped '{key}': {} -> {} ({} refitted, {} flagged)",
+                type_name(report.from),
+                type_name(ty),
+                report.refitted,
+                report.flagged
+            );
         }
     }
     Ok(())
@@ -192,16 +267,20 @@ async fn retype(ctx: &AppContext, raw_key: &str, ty: MetaType) -> CliResult<()> 
 async fn rename(ctx: &AppContext, raw_from: &str, raw_to: &str) -> CliResult<()> {
     let from = parse_meta_key(raw_from)?;
     let to = parse_meta_key(raw_to)?;
-    ctx.metadata.rename(&from, &to).await?;
+    let carried = ctx.metadata.rename(&from, &to).await?;
     if ctx.json {
         return crate::output::print_json(&serde_json::json!({
             "from": from.as_str(),
             "to": to.as_str(),
+            "carried": carried,
         }));
     }
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        println!("Renamed '{from}' to '{to}'");
+        println!(
+            "Renamed '{from}' to '{to}' ({carried} {} carried)",
+            entry_noun(carried)
+        );
     }
     Ok(())
 }
