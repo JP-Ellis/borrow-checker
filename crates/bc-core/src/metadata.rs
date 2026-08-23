@@ -27,6 +27,7 @@ use crate::transaction::sql_placeholders;
 
 pub(crate) mod coerce;
 pub(crate) mod registry;
+pub(crate) mod usage;
 
 /// Which of the two metadata tables a call addresses.
 ///
