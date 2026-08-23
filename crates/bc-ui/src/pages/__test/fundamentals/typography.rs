@@ -402,9 +402,8 @@ pub fn TypographyFundamentals() -> impl IntoView {
                                                 "color:var({ink});font-variant-numeric:tabular-nums",
                                             )>{*date}</span>
                                             <span style=format!("color:var({ink})")>{*payee}</span>
-                                            <span style=format!(
-                                                "color:var(--bc-bad);text-align:right;font-variant-numeric:tabular-nums",
-                                            )>{*amount}</span>
+                                            <span style="color:var(--bc-bad);text-align:right;\
+                                            font-variant-numeric:tabular-nums">{*amount}</span>
                                             <span style="color:var(--bc-type)">{*cat}</span>
                                         </div>
                                     }
