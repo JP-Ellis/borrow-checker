@@ -18,8 +18,7 @@ pub(crate) mod bindings {
 
 /// Type alias for the wasmtime-generated `BorrowChecker` world bindings.
 pub(crate) type BcPlugin = bindings::BorrowChecker;
-use wasmtime_wasi::DirPerms;
-use wasmtime_wasi::FilePerms;
+use wasmtime_wasi::FsPerms;
 use wasmtime_wasi::ResourceTable;
 use wasmtime_wasi::WasiCtx;
 use wasmtime_wasi::WasiCtxBuilder;
@@ -56,7 +55,7 @@ impl HostCtx {
     ) -> wasmtime::Result<Self> {
         let mut wasi = WasiCtxBuilder::new();
         if let Some(root) = documents_root {
-            wasi.preopened_dir(root, ".", DirPerms::READ, FilePerms::READ)?;
+            wasi.preopened_dir(root, ".", FsPerms::ReadOnly)?;
         }
         Ok(Self {
             table: ResourceTable::new(),
