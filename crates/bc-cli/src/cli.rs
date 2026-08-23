@@ -88,7 +88,7 @@ pub enum Commands {
     Budget(budget::Args),
     /// Manage tags: create, rename, delete, list.
     Tag(tag::Args),
-    /// Manage the metadata key registry: list, retype, rename.
+    /// Manage the metadata key registry.
     Meta(meta::Args),
     /// Manage commodities: list, create, update, delete.
     Commodity(commodity::Args),
