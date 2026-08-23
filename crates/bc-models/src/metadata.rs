@@ -809,8 +809,6 @@ impl<'meta> IntoIterator for &'meta Metadata {
 
 #[cfg(test)]
 mod tests {
-    use core::str::FromStr as _;
-
     use jiff::Timestamp;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;

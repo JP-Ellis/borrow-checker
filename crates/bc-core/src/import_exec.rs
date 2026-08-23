@@ -17,6 +17,8 @@
 //! 6. **Decide and write** per transaction — create, attach, or skip
 //!    ([`Writer::write_row`]).
 
+use core::future::Future;
+use core::future::ready;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -2093,27 +2095,27 @@ impl Sink for Plan {
     }
 
     /// Opens no batch: a dry run records no provenance.
-    async fn open_batch(
+    fn open_batch(
         &mut self,
         _batches: &crate::ImportBatchService,
         _profile_id: Option<&bc_models::ProfileId>,
         _importer: &str,
-    ) -> BcResult<Option<ImportBatchId>> {
-        Ok(None)
+    ) -> impl Future<Output = BcResult<Option<ImportBatchId>>> {
+        ready(Ok(None))
     }
 
-    async fn create(
+    fn create(
         &mut self,
         _raw: &RawTransaction,
         _tx: Transaction,
         postings: &[Posting],
         legs: &[LegPlan],
-    ) -> BcResult<()> {
+    ) -> impl Future<Output = BcResult<()>> {
         // A brand-new transaction holds exactly these postings, so they are the
         // whole leg set the residual is derived from.
         let residual = Self::residual(postings);
         self.record_legs(postings, legs, residual.as_ref());
-        Ok(())
+        ready(Ok(()))
     }
 
     /// Records the appended legs, and the movement the appending causes
@@ -2129,7 +2131,7 @@ impl Sink for Plan {
     /// An adoption is not among either: its posting is already the user's own
     /// and already in their balances, so it moves no total, though it does feed
     /// the residual by way of `stored`, which is where its posting sits.
-    async fn attach(
+    fn attach(
         &mut self,
         _raw: &RawTransaction,
         _owner: &TransactionId,
@@ -2137,7 +2139,7 @@ impl Sink for Plan {
         postings: &[Posting],
         insertions: &[&LegPlan],
         _adoptions: &[(PostingId, &LegPlan)],
-    ) -> BcResult<()> {
+    ) -> impl Future<Output = BcResult<()>> {
         let before = Self::residual(stored.iter().map(|held| held.posting));
         let after = Self::residual(stored.iter().map(|held| held.posting).chain(postings));
 
@@ -2162,16 +2164,16 @@ impl Sink for Plan {
         }
 
         self.record_legs(postings, insertions.iter().copied(), after.as_ref());
-        Ok(())
+        ready(Ok(()))
     }
 
     /// Closes no batch, because none was opened.
-    async fn close_batch(
+    fn close_batch(
         &self,
         _batches: &crate::ImportBatchService,
         _counts: &Counts,
-    ) -> BcResult<()> {
-        Ok(())
+    ) -> impl Future<Output = BcResult<()>> {
+        ready(Ok(()))
     }
 }
 
