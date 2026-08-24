@@ -107,7 +107,7 @@ TransactionTagsChanged / TransactionMetadataChanged
 TransactionReconciled
 PostingRecategorised / PostingAmountChanged / PostingMetadataChanged / PostingSpreadChanged
 PostingAdded / PostingRemoved
-MetadataKeyRegistered / MetadataKeyRetyped / MetadataKeyRenamed
+MetadataKeyRegistered / MetadataKeyRetyped / MetadataKeyRenamed / MetadataKeyDeleted
 AssetValuationRecorded
 DepreciationCalculated
 LoanTermsSet

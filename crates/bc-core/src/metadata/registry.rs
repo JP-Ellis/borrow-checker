@@ -23,6 +23,8 @@ use crate::metadata::coerce::Coerced;
 use crate::metadata::coerce::coerce;
 use crate::metadata::read_value;
 use crate::metadata::register_key_if_absent;
+use crate::metadata::usage::assemble;
+use crate::metadata::usage::counts;
 use crate::metadata::value_columns;
 
 /// One row of `metadata_keys`.
@@ -146,12 +148,7 @@ impl Service {
     /// if the stored row cannot be read.
     #[inline]
     pub async fn get(&self, key: &MetaKey) -> BcResult<Option<MetaKeyDef>> {
-        let row: Option<KeyRow> =
-            sqlx::query_as("SELECT key, value_type, created_at FROM metadata_keys WHERE key = ?")
-                .bind(key.as_str())
-                .fetch_optional(&self.pool)
-                .await?;
-        row.map(MetaKeyDef::try_from).transpose()
+        def_of(&self.pool, key).await
     }
 
     /// Registers `key` with `ty` when the registry does not already hold it.
@@ -387,10 +384,20 @@ impl Service {
     /// exists, and [`BcError`] on database failure.
     #[inline]
     pub async fn delete(&self, key: &MetaKey, mode: Deletion) -> BcResult<crate::MetaKeyUsage> {
-        let Some(usage) = self.usage(key).await? else {
+        // The counts both gate the delete and are reported as what it removed,
+        // so they are read inside the transaction that deletes. Reading them on
+        // a pool connection first would let a concurrent write land under `key`
+        // between the count and the purge, and `IfUnused` would destroy it.
+        let mut db_tx = self.pool.begin().await?;
+        let Some(def) = def_of(&mut *db_tx, key).await? else {
             return Err(BcError::NotFound(format!("metadata key '{key}'")));
         };
+        let transactions = counts(&mut *db_tx, Owner::Transaction, Some(key)).await?;
+        let postings = counts(&mut *db_tx, Owner::Posting, Some(key)).await?;
+        let usage = assemble(def, &transactions, &postings);
         if mode == Deletion::IfUnused && usage.total() > 0 {
+            // Returning drops `db_tx`, which rolls back, so a refusal leaves
+            // the registry as it found it.
             return Err(BcError::InvalidInput(format!(
                 "cannot delete metadata key '{key}': it has {} transaction {} and {} posting {}",
                 usage.transactions(),
@@ -400,7 +407,6 @@ impl Service {
             )));
         }
 
-        let mut db_tx = self.pool.begin().await?;
         // Both metadata tables reference `metadata_keys(key)` with no
         // ON DELETE CASCADE, and every connection sets PRAGMA foreign_keys =
         // ON, so the children go before the parent.
@@ -427,6 +433,35 @@ impl Service {
         db_tx.commit().await?;
         Ok(usage)
     }
+}
+
+/// Reads one key's registration.
+///
+/// # Arguments
+///
+/// * `executor` - The pool or transaction to query. A caller that must not see
+///   a concurrent write between the lookup and acting on it passes its
+///   transaction.
+/// * `key` - The key to look up.
+///
+/// # Returns
+///
+/// The registration, or `None` when `key` is not registered.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on query failure and [`BcError::BadData`] if
+/// the stored registration cannot be read.
+async fn def_of<'exe, E>(executor: E, key: &MetaKey) -> BcResult<Option<MetaKeyDef>>
+where
+    E: sqlx::Executor<'exe, Database = sqlx::Sqlite>,
+{
+    let row: Option<KeyRow> =
+        sqlx::query_as("SELECT key, value_type, created_at FROM metadata_keys WHERE key = ?")
+            .bind(key.as_str())
+            .fetch_optional(executor)
+            .await?;
+    row.map(MetaKeyDef::try_from).transpose()
 }
 
 /// Refits every entry under `key` in one owner table from `from` to `to`.
@@ -1750,6 +1785,17 @@ mod tests {
         assert!(
             service.get(&key("invoice")).await.expect("get").is_some(),
             "a refused delete leaves the registry untouched"
+        );
+        assert_eq!(
+            service
+                .usage(&key("invoice"))
+                .await
+                .expect("usage")
+                .expect("registered")
+                .total(),
+            1,
+            "the refusal rolls its transaction back, so the entry it was \
+             protecting is still there"
         );
     }
 
