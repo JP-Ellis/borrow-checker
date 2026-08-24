@@ -5,7 +5,7 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Manage transactions (list, add, amend, reverse)
+Manage transactions
 
 Usage: borrow-checker transaction [OPTIONS] <COMMAND>
 

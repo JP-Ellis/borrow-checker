@@ -5,7 +5,7 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Manage accounts (list, create, archive)
+Manage accounts
 
 Usage: borrow-checker account [OPTIONS] <COMMAND>
 

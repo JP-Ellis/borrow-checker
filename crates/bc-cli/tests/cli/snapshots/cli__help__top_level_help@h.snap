@@ -10,20 +10,20 @@ BorrowChecker command-line interface
 Usage: borrow-checker [OPTIONS] <COMMAND>
 
 Commands:
-  account            Manage accounts (list, create, archive)
-  asset              Manage assets (record-valuation, book-value, depreciate, set-loan-terms, amortization)
+  account            Manage accounts
+  asset              Manage assets
   backup             Snapshot the database to a backup file
-  transaction        Manage transactions (list, add, amend, reverse)
-  import             Manage imports (run, list, discard)
+  transaction        Manage transactions
+  import             Manage imports
   export             Export all accounts and transactions to a file or stdout
   report             Generate financial reports
   restore            Restore the database from a backup file
-  budget             Manage budgets: create, list, archive, status
-  tag                Manage tags: create, rename, delete, list
+  budget             Manage budgets
+  tag                Manage tags
   meta               Manage the metadata key registry
-  commodity          Manage commodities: list, create, update, delete
+  commodity          Manage commodities
   plugin             Manage plugins (requires Milestone 6)
-  profile            Manage import profiles (create, list, show, edit, remove)
+  profile            Manage import profiles
   completions        Generate shell completion scripts
   merge              Merge two transactions (e.g. the two legs of a transfer) into one
   unmerge            Reverse a previous merge, splitting a transaction back into two
