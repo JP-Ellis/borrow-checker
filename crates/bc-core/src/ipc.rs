@@ -160,10 +160,11 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
             Event::MetadataKeyRenamed { from, to } => {
                 ("key", format!("metadata key '{from}' renamed to '{to}'"))
             }
-            Event::MetadataKeyDeleted { key, entries, .. } => (
+            Event::MetadataKeyDeleted { key, ty, entries } => (
                 "key",
                 format!(
-                    "metadata key '{key}' deleted with {entries} {}",
+                    "metadata key '{key}' ({}) deleted with {entries} {}",
+                    bc_ipc::MetaTypeDto::from(*ty).label(),
                     entry_noun(*entries)
                 ),
             ),
@@ -743,6 +744,22 @@ mod tests {
                     to: bc_models::MetaKey::new("reference").expect("valid key"),
                 },
                 "metadata key 'invoice' renamed to 'reference'",
+            ),
+            (
+                crate::Event::MetadataKeyDeleted {
+                    key: key.clone(),
+                    ty: bc_models::MetaType::Number,
+                    entries: 1,
+                },
+                "metadata key 'invoice' (number) deleted with 1 entry",
+            ),
+            (
+                crate::Event::MetadataKeyDeleted {
+                    key: key.clone(),
+                    ty: bc_models::MetaType::Text,
+                    entries: 0,
+                },
+                "metadata key 'invoice' (text) deleted with 0 entries",
             ),
         ];
         for (event, expected) in cases {

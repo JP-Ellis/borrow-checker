@@ -8,7 +8,6 @@ use std::collections::HashMap;
 
 use bc_models::MetaKey;
 use bc_models::MetaKeyDef;
-use sqlx::SqlitePool;
 
 use crate::BcResult;
 use crate::metadata::Owner;
@@ -137,7 +136,8 @@ impl Service {
 ///
 /// # Arguments
 ///
-/// * `pool` - The connection pool to query.
+/// * `executor` - The pool or transaction to query. A caller that must not see
+///   a concurrent write between counting and acting passes its transaction.
 /// * `owner` - Which metadata table to count.
 /// * `only` - A single key to restrict the scan to, or `None` for every key.
 ///
@@ -149,11 +149,14 @@ impl Service {
 /// # Errors
 ///
 /// Returns [`crate::BcError::Database`] on query failure.
-async fn counts(
-    pool: &SqlitePool,
+pub(super) async fn counts<'exe, E>(
+    executor: E,
     owner: Owner,
     only: Option<&MetaKey>,
-) -> BcResult<HashMap<String, (u64, u64)>> {
+) -> BcResult<HashMap<String, (u64, u64)>>
+where
+    E: sqlx::Executor<'exe, Database = sqlx::Sqlite>,
+{
     let mut sql = format!(
         "SELECT key, COUNT(*), COALESCE(SUM(mismatched), 0) FROM {}",
         owner.table()
@@ -167,7 +170,7 @@ async fn counts(
     if let Some(key) = only {
         query = query.bind(key.as_str());
     }
-    let rows = query.fetch_all(pool).await?;
+    let rows = query.fetch_all(executor).await?;
 
     // COUNT and SUM over a non-negative column never go negative, so the sign
     // is discarded rather than checked.
@@ -184,7 +187,7 @@ async fn counts(
 /// * `def` - The key's registration.
 /// * `transactions` - `transaction_metadata` counts, from [`counts`].
 /// * `postings` - `posting_metadata` counts, from [`counts`].
-fn assemble(
+pub(super) fn assemble(
     def: MetaKeyDef,
     transactions: &HashMap<String, (u64, u64)>,
     postings: &HashMap<String, (u64, u64)>,
@@ -213,6 +216,7 @@ mod tests {
     use jiff::Timestamp;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
+    use sqlx::SqlitePool;
 
     use super::*;
     use crate::metadata::insert;
