@@ -5,5 +5,5 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Retyped 'invoice': number -> text (1 refitted, 0 flagged)
+Retyped 'invoice': number -> text (1 refitted, 0 mismatched)
 ----- stderr -----

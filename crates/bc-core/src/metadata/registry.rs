@@ -77,8 +77,9 @@ pub struct Retyped {
     pub from: MetaType,
     /// Entries that read as the new type.
     pub refitted: u64,
-    /// Entries stored as text and flagged, because they will not read as it.
-    pub flagged: u64,
+    /// Entries stored as text and marked `mismatched`, because they will not
+    /// read as the new type.
+    pub mismatched: u64,
 }
 
 impl Service {
@@ -174,8 +175,12 @@ impl Service {
     ///
     /// # Returns
     ///
-    /// The type the key held before this call, and how every entry under it
-    /// landed. The counts fall out of the replay the call runs anyway.
+    /// The type the key held before this call, and how each entry landed in
+    /// the replay. The counts fall out of the replay the call runs anyway.
+    ///
+    /// A retype to the type already held replays nothing, so both counts are
+    /// zero however many entries the key holds. Ask [`Service::usage`] what a
+    /// key holds; these two count only what this call rewrote.
     ///
     /// # Events
     ///
@@ -203,7 +208,7 @@ impl Service {
             return Ok(Retyped {
                 from,
                 refitted: 0,
-                flagged: 0,
+                mismatched: 0,
             });
         }
 
@@ -213,11 +218,11 @@ impl Service {
             .execute(&mut *db_tx)
             .await?;
         let mut refitted = 0_u64;
-        let mut flagged = 0_u64;
+        let mut mismatched = 0_u64;
         for owner in [Owner::Transaction, Owner::Posting] {
             let (fitted, missed) = replay(&mut db_tx, owner, key, from, to).await?;
             refitted = refitted.saturating_add(fitted);
-            flagged = flagged.saturating_add(missed);
+            mismatched = mismatched.saturating_add(missed);
         }
         insert_event(
             &Event::MetadataKeyRetyped {
@@ -232,7 +237,7 @@ impl Service {
         Ok(Retyped {
             from,
             refitted,
-            flagged,
+            mismatched,
         })
     }
 
@@ -252,7 +257,9 @@ impl Service {
     ///
     /// # Returns
     ///
-    /// The number of entries carried across, from both owner tables.
+    /// The number of entries carried across, from both owner tables. A rename
+    /// to the same name moves nothing and answers zero, however many entries
+    /// the key holds.
     ///
     /// # Events
     ///
@@ -340,8 +347,8 @@ impl Service {
 ///
 /// # Returns
 ///
-/// The number of entries that fit `to`, and the number flagged because they
-/// will not read as it.
+/// The number of entries that fit `to`, and the number stored as text and
+/// marked `mismatched` because they will not read as it.
 ///
 /// # Errors
 ///
@@ -387,7 +394,7 @@ async fn replay(
         owner.table()
     );
     let mut refitted = 0_u64;
-    let mut flagged = 0_u64;
+    let mut mismatched_rows = 0_u64;
     for (rowid, stored_text, stored_account, flag) in rows {
         // A flagged row reads back as text whatever `from` says, which is
         // exactly the asserted-text case of the coercion rule. Its old flag is
@@ -413,7 +420,7 @@ async fn replay(
         if mismatched == 0 {
             refitted = refitted.saturating_add(1);
         } else {
-            flagged = flagged.saturating_add(1);
+            mismatched_rows = mismatched_rows.saturating_add(1);
         }
         sqlx::query(sqlx::AssertSqlSafe(update.clone()))
             .bind(columns.text)
@@ -425,7 +432,7 @@ async fn replay(
             .execute(&mut **db_tx)
             .await?;
     }
-    Ok((refitted, flagged))
+    Ok((refitted, mismatched_rows))
 }
 
 #[cfg(test)]
@@ -1517,7 +1524,58 @@ mod tests {
 
         assert_eq!(report.from, MetaType::Text, "the type it replaced");
         assert_eq!(report.refitted, 1, "'1502' narrows to a number");
-        assert_eq!(report.flagged, 1, "'pending' does not");
+        assert_eq!(report.mismatched, 1, "'pending' does not");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_retype_to_the_type_already_held_counts_nothing(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Number(dec!(1502)),
+            )]),
+        )
+        .await;
+
+        let report = Service::new(pool)
+            .retype(&key("invoice"), MetaType::Number)
+            .await
+            .expect("retype");
+
+        assert_eq!(report.from, MetaType::Number, "the type is unchanged");
+        assert_eq!(
+            (report.refitted, report.mismatched),
+            (0, 0),
+            "no replay ran, so the counts describe the call and not the key — \
+             the entry the key holds is not counted here"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_rename_to_the_same_name_carries_nothing(pool: SqlitePool) {
+        let tx = seed_transaction(&pool).await;
+        write_transaction_meta(
+            &pool,
+            &tx,
+            &Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Number(dec!(1502)),
+            )]),
+        )
+        .await;
+
+        let carried = Service::new(pool)
+            .rename(&key("invoice"), &key("invoice"))
+            .await
+            .expect("rename");
+
+        assert_eq!(
+            carried, 0,
+            "nothing moved, even though the key holds an entry"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]

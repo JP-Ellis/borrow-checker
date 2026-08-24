@@ -297,3 +297,32 @@ fn list_without_usage_keeps_its_three_columns() {
         cmd_snapshot!(ctx, &mut cmd);
     });
 }
+
+#[test]
+fn list_usage_on_an_empty_registry_says_so() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args(["meta", "list", "--usage"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn renaming_a_key_to_its_own_name_moves_nothing() {
+    let ctx = TestContext::new();
+    register_key(&ctx, "invoice=1502");
+
+    let mut cmd = ctx.command();
+    cmd.args(["meta", "rename", "invoice", "invoice"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn a_rename_carrying_two_entries_says_entries() {
+    let ctx = TestContext::new();
+    register_key(&ctx, "invoice=1502");
+    register_key(&ctx, "invoice=1503");
+
+    let mut cmd = ctx.command();
+    cmd.args(["meta", "rename", "invoice", "bill"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}

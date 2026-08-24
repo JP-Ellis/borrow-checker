@@ -215,7 +215,7 @@ async fn list_with_usage(ctx: &AppContext) -> CliResult<()> {
         })
         .collect();
     crate::output::print_table(
-        &["KEY", "TYPE", "REGISTERED", "TX", "POST", "FLAGGED"],
+        &["KEY", "TYPE", "REGISTERED", "TX", "POST", "MISMATCHED"],
         &rows,
     );
     Ok(())
@@ -238,7 +238,7 @@ async fn retype(ctx: &AppContext, raw_key: &str, ty: MetaType) -> CliResult<()> 
             "from": type_name(report.from),
             "to": type_name(ty),
             "refitted": report.refitted,
-            "flagged": report.flagged,
+            "mismatched": report.mismatched,
         }));
     }
     #[expect(clippy::print_stdout, reason = "CLI output")]
@@ -247,11 +247,11 @@ async fn retype(ctx: &AppContext, raw_key: &str, ty: MetaType) -> CliResult<()> 
             println!("Key '{key}' is already {}", type_name(ty));
         } else {
             println!(
-                "Retyped '{key}': {} -> {} ({} refitted, {} flagged)",
+                "Retyped '{key}': {} -> {} ({} refitted, {} mismatched)",
                 type_name(report.from),
                 type_name(ty),
                 report.refitted,
-                report.flagged
+                report.mismatched
             );
         }
     }
@@ -268,19 +268,28 @@ async fn rename(ctx: &AppContext, raw_from: &str, raw_to: &str) -> CliResult<()>
     let from = parse_meta_key(raw_from)?;
     let to = parse_meta_key(raw_to)?;
     let carried = ctx.metadata.rename(&from, &to).await?;
+    // `rename` short-circuits on the same name without counting, so its zero
+    // describes the move rather than the key. Saying "0 entries carried" here
+    // would assert something about a key that may hold thousands.
+    let unchanged = from == to;
     if ctx.json {
         return crate::output::print_json(&serde_json::json!({
             "from": from.as_str(),
             "to": to.as_str(),
             "carried": carried,
+            "unchanged": unchanged,
         }));
     }
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        println!(
-            "Renamed '{from}' to '{to}' ({carried} {} carried)",
-            entry_noun(carried)
-        );
+        if unchanged {
+            println!("Key '{from}' is already named that");
+        } else {
+            println!(
+                "Renamed '{from}' to '{to}' ({carried} {} carried)",
+                entry_noun(carried)
+            );
+        }
     }
     Ok(())
 }

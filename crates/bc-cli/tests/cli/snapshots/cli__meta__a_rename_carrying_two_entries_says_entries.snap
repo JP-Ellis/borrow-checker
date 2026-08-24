@@ -5,7 +5,5 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
- KEY | TYPE | REGISTERED | TX | POST | MISMATCHED
-=
- invoice | number | [TIMESTAMP] | 1 | 0 | 0
+Renamed 'invoice' to 'bill' (2 entries carried)
 ----- stderr -----
