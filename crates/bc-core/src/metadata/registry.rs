@@ -84,6 +84,19 @@ pub struct Retyped {
     pub mismatched: u64,
 }
 
+/// What a [`Service::register`] call did.
+///
+/// Re-exported from the crate root as [`crate::Registered`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[non_exhaustive]
+pub struct Registered {
+    /// The type the registry ends up holding, which is the key's own when it
+    /// was already there.
+    pub ty: MetaType,
+    /// Whether this call is the one that added the key.
+    pub created: bool,
+}
+
 /// How [`Service::delete`] treats a key that still has entries.
 ///
 /// Re-exported from the crate root as [`crate::Deletion`].
@@ -163,14 +176,16 @@ impl Service {
     ///
     /// # Returns
     ///
-    /// The type the registry ends up holding.
+    /// The type the registry ends up holding, and whether this call is the one
+    /// that added the key. The two are independent: a key already registered
+    /// with `ty` reports that type and `created` false.
     ///
     /// # Errors
     ///
     /// Returns [`BcError::Database`] on failure and [`BcError::BadData`] if the
     /// stored type is unreadable.
     #[inline]
-    pub async fn register(&self, key: &MetaKey, ty: MetaType) -> BcResult<MetaType> {
+    pub async fn register(&self, key: &MetaKey, ty: MetaType) -> BcResult<Registered> {
         let mut db_tx = self.pool.begin().await?;
         let registered = register_key_if_absent(&mut db_tx, key, ty).await?;
         db_tx.commit().await?;
@@ -797,20 +812,33 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn register_is_insert_if_absent(pool: SqlitePool) {
         let registry = Service::new(pool.clone());
+        let fresh = registry
+            .register(&key("invoice"), MetaType::Number)
+            .await
+            .expect("register");
+        assert_eq!(fresh.ty, MetaType::Number);
+        assert!(fresh.created, "the key was absent, so this call added it");
+
+        let narrower = registry
+            .register(&key("invoice"), MetaType::Text)
+            .await
+            .expect("register");
         assert_eq!(
-            registry
-                .register(&key("invoice"), MetaType::Number)
-                .await
-                .expect("register"),
-            MetaType::Number
-        );
-        assert_eq!(
-            registry
-                .register(&key("invoice"), MetaType::Text)
-                .await
-                .expect("register"),
+            narrower.ty,
             MetaType::Number,
             "a registered key keeps the type its first value gave it"
+        );
+        assert!(!narrower.created, "the key was already there");
+
+        let same = registry
+            .register(&key("invoice"), MetaType::Number)
+            .await
+            .expect("register");
+        assert_eq!(same.ty, MetaType::Number);
+        assert!(
+            !same.created,
+            "re-asserting the type a key already holds adds nothing, which the \
+             returned type alone cannot say"
         );
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM metadata_keys")

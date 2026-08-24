@@ -23,6 +23,7 @@ use crate::events::Event;
 use crate::events::insert_event;
 use crate::metadata::coerce::Coerced;
 use crate::metadata::coerce::coerce;
+use crate::metadata::registry::Registered;
 use crate::transaction::sql_placeholders;
 
 pub(crate) mod coerce;
@@ -206,7 +207,7 @@ async fn value_columns(
 }
 
 /// Registers `key` with `ty` if the registry does not already hold it, and
-/// returns the type the registry ends up holding.
+/// reports the type the registry ends up holding.
 ///
 /// Phase 2 registers and never retypes: a key already present keeps the type
 /// its first value gave it, whatever this call asserts. The returned type is
@@ -221,7 +222,10 @@ async fn value_columns(
 ///
 /// # Returns
 ///
-/// The registered type: `ty` for a new key, the existing type otherwise.
+/// The registered type — `ty` for a new key, the existing type otherwise —
+/// and whether this call inserted it. A key already registered with `ty` is
+/// indistinguishable from a new one by type alone, so the insert reports
+/// itself rather than being inferred.
 ///
 /// # Events
 ///
@@ -238,7 +242,7 @@ pub(crate) async fn register_key_if_absent(
     db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     key: &MetaKey,
     ty: MetaType,
-) -> BcResult<MetaType> {
+) -> BcResult<Registered> {
     let inserted = sqlx::query(
         "INSERT OR IGNORE INTO metadata_keys (key, value_type, created_at) VALUES (?, ?, ?)",
     )
@@ -266,7 +270,10 @@ pub(crate) async fn register_key_if_absent(
         )
         .await?;
     }
-    Ok(registered)
+    Ok(Registered {
+        ty: registered,
+        created: inserted,
+    })
 }
 
 /// Writes every entry of `metadata` against `owner_id`, registering any key the
@@ -316,7 +323,11 @@ pub(crate) async fn insert(
     );
 
     for (index, entry) in metadata.iter().enumerate() {
-        let registered = register_key_if_absent(db_tx, entry.key(), entry.value().ty()).await?;
+        // Only the type matters here; whether this write is what added the key
+        // is the registry command's concern.
+        let registered = register_key_if_absent(db_tx, entry.key(), entry.value().ty())
+            .await?
+            .ty;
         let position = i64::try_from(index)
             .map_err(|_err| BcError::BadData("metadata position exceeds i64::MAX".into()))?;
         // `entry.mismatched()` is deliberately not read. The flag is derived
