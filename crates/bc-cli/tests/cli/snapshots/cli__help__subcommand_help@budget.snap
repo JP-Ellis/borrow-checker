@@ -5,7 +5,7 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Manage budgets: create, list, archive, status
+Manage budgets
 
 Usage: borrow-checker budget [OPTIONS] <COMMAND>
 

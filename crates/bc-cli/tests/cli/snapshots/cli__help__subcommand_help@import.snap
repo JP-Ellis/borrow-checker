@@ -5,7 +5,7 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Manage imports (run, list, discard)
+Manage imports
 
 Usage: borrow-checker import [OPTIONS] <COMMAND>
 

@@ -68,15 +68,15 @@ pub struct GlobalArgs {
 #[derive(Debug, clap::Subcommand)]
 #[non_exhaustive]
 pub enum Commands {
-    /// Manage accounts (list, create, archive).
+    /// Manage accounts.
     Account(account::Args),
-    /// Manage assets (record-valuation, book-value, depreciate, set-loan-terms, amortization).
+    /// Manage assets.
     Asset(asset::Args),
     /// Snapshot the database to a backup file.
     Backup(backup::Args),
-    /// Manage transactions (list, add, amend, reverse).
+    /// Manage transactions.
     Transaction(transaction::Args),
-    /// Manage imports (run, list, discard).
+    /// Manage imports.
     Import(import::Args),
     /// Export all accounts and transactions to a file or stdout.
     Export(export::Args),
@@ -84,17 +84,17 @@ pub enum Commands {
     Report(report::Args),
     /// Restore the database from a backup file.
     Restore(restore::Args),
-    /// Manage budgets: create, list, archive, status.
+    /// Manage budgets.
     Budget(budget::Args),
-    /// Manage tags: create, rename, delete, list.
+    /// Manage tags.
     Tag(tag::Args),
     /// Manage the metadata key registry.
     Meta(meta::Args),
-    /// Manage commodities: list, create, update, delete.
+    /// Manage commodities.
     Commodity(commodity::Args),
     /// Manage plugins (requires Milestone 6).
     Plugin(plugin::Args),
-    /// Manage import profiles (create, list, show, edit, remove).
+    /// Manage import profiles.
     Profile(profile::Args),
     /// Generate shell completion scripts.
     Completions(completions::Args),
