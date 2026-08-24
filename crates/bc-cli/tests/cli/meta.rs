@@ -448,6 +448,53 @@ fn registering_a_key_that_exists_leaves_its_type_alone() {
 }
 
 #[test]
+fn registering_a_key_with_the_type_it_holds_is_not_a_creation() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args(["meta", "register", "owner", "account"])
+        .output()
+        .expect("first register");
+
+    let mut cmd = ctx.command();
+    cmd.args(["meta", "register", "owner", "account"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn register_reports_creation_as_json() {
+    let ctx = TestContext::new();
+
+    let first = ctx
+        .command()
+        .args(["--json", "meta", "register", "owner", "account"])
+        .output()
+        .expect("first register");
+    let fresh: serde_json::Value = serde_json::from_slice(&first.stdout).expect("valid JSON");
+    assert_eq!(
+        fresh.get("created").and_then(serde_json::Value::as_bool),
+        Some(true),
+        "the key was absent, so this call is what added it"
+    );
+
+    let second = ctx
+        .command()
+        .args(["--json", "meta", "register", "owner", "account"])
+        .output()
+        .expect("second register");
+    let again: serde_json::Value = serde_json::from_slice(&second.stdout).expect("valid JSON");
+    assert_eq!(
+        again.get("created").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "the key was already registered as account, which the type alone cannot say"
+    );
+    assert_eq!(
+        again.get("ty").and_then(serde_json::Value::as_str),
+        Some("account"),
+        "the type it holds is reported either way"
+    );
+}
+
+#[test]
 fn registering_an_invalid_key_is_rejected() {
     let ctx = TestContext::new();
 
