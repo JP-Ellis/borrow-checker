@@ -179,22 +179,24 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 /// the registry.
 async fn register(ctx: &AppContext, raw_key: &str, ty: MetaType) -> CliResult<()> {
     let key = parse_meta_key(raw_key)?;
-    // `register` answers with the type the registry ends up holding, which is
-    // the key's own when it was already there.
-    let registered = ctx.metadata.register(&key, ty).await?;
+    // `register` answers with the type the registry ends up holding — the
+    // key's own when it was already there — and with whether this call added
+    // it. The type alone cannot tell the two apart, because re-registering a
+    // key with the type it already holds returns that same type.
+    let report = ctx.metadata.register(&key, ty).await?;
     if ctx.json {
         return crate::output::print_json(&serde_json::json!({
             "key": key.as_str(),
-            "ty": type_name(registered),
-            "created": registered == ty,
+            "ty": type_name(report.ty),
+            "created": report.created,
         }));
     }
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        if registered == ty {
-            println!("Registered '{key}' as {}", type_name(ty));
+        if report.created {
+            println!("Registered '{key}' as {}", type_name(report.ty));
         } else {
-            println!("Key '{key}' is already {}", type_name(registered));
+            println!("Key '{key}' is already {}", type_name(report.ty));
         }
     }
     Ok(())
