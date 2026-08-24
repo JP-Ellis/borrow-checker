@@ -87,6 +87,8 @@ pub async fn retype_metadata_key(
         .metadata
         .retype(&parsed, bc_models::MetaType::from(ty))
         .await?;
+    // The refitted and mismatched counts are not part of the IPC contract, so
+    // they are dropped here rather than widening the command's return type.
     Ok(bc_ipc::MetaTypeDto::from(report.from))
 }
 

@@ -1,8 +1,8 @@
 //! Counting the entries stored under a metadata key.
 //!
-//! [`MetaKeyDef`] says what a key is; [`Usage`] says what it costs. A retype
-//! replays every entry under a key and a delete destroys them, so both want the
-//! count before they run.
+//! [`MetaKeyDef`] says what a key is; [`Usage`] says how much of it there is. A
+//! retype replays every entry under a key and a delete destroys them, so both
+//! want the count before they run.
 
 use std::collections::HashMap;
 
@@ -30,7 +30,7 @@ pub struct Usage {
     transactions: u64,
     /// Rows in `posting_metadata`.
     postings: u64,
-    /// Rows flagged `mismatched`, across both owner tables.
+    /// Rows marked `mismatched`, across both owner tables.
     mismatched: u64,
 }
 
@@ -63,9 +63,13 @@ impl Usage {
         self.postings
     }
 
-    /// Returns the number of flagged entries across both owner tables.
+    /// Returns the number of entries across both owner tables that do not read
+    /// as the key's registered type.
     ///
-    /// This is the count that says a retype will hurt.
+    /// This counts damage already done under the type in force, not damage a
+    /// retype would do. A key registered `text` always answers zero, because
+    /// every value fits a text key and a retype to text clears the mark, so a
+    /// zero here does not promise that narrowing the key is free.
     #[must_use]
     #[inline]
     pub const fn mismatched(&self) -> u64 {
@@ -307,7 +311,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn usage_counts_flagged_entries(pool: SqlitePool) {
+    async fn usage_counts_mismatched_entries(pool: SqlitePool) {
         let tx = seed_transaction(&pool).await;
         write_meta(
             &pool,
@@ -342,8 +346,8 @@ mod tests {
         assert_eq!(
             usage.mismatched(),
             1,
-            "'pending' does not read as a number, so the store flags it — and \
-             the flagged count is what says a retype will hurt"
+            "'pending' does not read as a number, so the store marks it \
+             mismatched"
         );
     }
 
