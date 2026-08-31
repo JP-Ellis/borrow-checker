@@ -2,14 +2,12 @@
 
 monorepo_root = true
 
-# 2026.7.6 both stopped consulting cargo-quickinstall by default and added the
+# 2026.7.6 stopped consulting cargo-quickinstall by default and added the
 # setting below to opt back in — older versions cannot parse this file.
 min_version = "2026.7.6"
 
 [settings]
-experimental                      = true
-unix_default_inline_shell_args    = "bash -c -o errexit"
-windows_default_inline_shell_args = "pwsh -NonInteractive -Command"
+experimental = true
 
   [settings.cargo]
   binstall_quickinstall = true
@@ -97,6 +95,7 @@ BC_DB_PATH="$DEV_DB" cargo tauri dev
   [tasks."bench:fixtures"]
   description = "Generate cached benchmark ledgers (slow; run once)"
   run         = """
+#!/usr/bin/env bash
 set -euo pipefail
 mkdir -p target/bench-fixtures
 cargo build --release -p bc-seed
