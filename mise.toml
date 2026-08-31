@@ -35,7 +35,7 @@ config_roots = [
 "aqua:cargo-bins/cargo-binstall" = "1"
 
 # JS package manager (aube) and runner (aubx)
-"github:endevco/aube" = "v2.0.1"
+"github:endevco/aube" = "2"
 
 "cargo:cargo-hack"     = "0.6"
 "cargo:cargo-leptos"   = "0.3"
