@@ -148,16 +148,23 @@ impl PluginImporter {
         let bindings = BcPlugin::instantiate(&mut store, &self.component, &self.linker)?;
         Ok((bindings, store))
     }
-}
 
-impl bc_core::Importer for PluginImporter {
-    #[inline]
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    #[inline]
-    fn import(
+    /// Runs the import against the guest on the calling thread.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The profile configuration handed to the plugin.
+    ///
+    /// # Returns
+    ///
+    /// The transactions the plugin parsed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bc_core::ImportError`] when `documents_root` is unset, the
+    /// config cannot be serialised, instantiation fails, or the guest rejects
+    /// the config or fails to parse.
+    fn import_on_this_thread(
         &self,
         config: &bc_core::ImportConfig,
     ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
@@ -195,8 +202,24 @@ impl bc_core::Importer for PluginImporter {
             .collect::<Result<Vec<_>, _>>()
     }
 
-    #[inline]
-    fn validate(&self, config: &bc_core::ImportConfig) -> Result<(), bc_core::ImportError> {
+    /// Runs the config check against the guest on the calling thread.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The profile configuration handed to the plugin.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the plugin accepts the config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bc_core::ImportError`] when the config cannot be serialised,
+    /// instantiation fails, or the guest rejects the config.
+    fn validate_on_this_thread(
+        &self,
+        config: &bc_core::ImportConfig,
+    ) -> Result<(), bc_core::ImportError> {
         let config_json = serde_json::to_string(config.as_value())
             .map_err(|e| bc_core::ImportError::Parse(format!("config serialisation: {e}")))?;
 
@@ -211,5 +234,56 @@ impl bc_core::Importer for PluginImporter {
             .call_validate(&mut store, &config_json)
             .map_err(|e| bc_core::ImportError::Parse(format!("plugin call failed: {e}")))?
             .map_err(bc_core::ImportError::from)
+    }
+}
+
+/// Runs `f` on a scoped thread that carries no async runtime context.
+///
+/// WASI is linked with [`wasmtime_wasi::p2::add_to_linker_sync`], whose
+/// blocking shim calls `Handle::block_on` whenever a Tokio runtime is current.
+/// That panics with "Cannot start a runtime from within a runtime", so a guest
+/// call made from an `async fn` would abort the process. Every caller is async
+/// — the CLI is `#[tokio::main]` and the Tauri app runs on a runtime — so the
+/// hop belongs here rather than at each call site.
+///
+/// # Arguments
+///
+/// * `f` - The closure to run off the runtime.
+///
+/// # Returns
+///
+/// Whatever `f` returns.
+///
+/// # Panics
+///
+/// Propagates a panic raised by `f`, so a guest trap surfaces unchanged.
+fn off_async_runtime<T, F>(f: F) -> T
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    std::thread::scope(|scope| match scope.spawn(f).join() {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    })
+}
+
+impl bc_core::Importer for PluginImporter {
+    #[inline]
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[inline]
+    fn import(
+        &self,
+        config: &bc_core::ImportConfig,
+    ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
+        off_async_runtime(|| self.import_on_this_thread(config))
+    }
+
+    #[inline]
+    fn validate(&self, config: &bc_core::ImportConfig) -> Result<(), bc_core::ImportError> {
+        off_async_runtime(|| self.validate_on_this_thread(config))
     }
 }

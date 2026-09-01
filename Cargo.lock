@@ -556,6 +556,7 @@ dependencies = [
  "rust_decimal",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
  "tracing",
  "wasmtime",
  "wasmtime-wasi",
