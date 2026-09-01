@@ -141,4 +141,49 @@ mod tests {
             .import(&config)
             .expect_err("import with an incomplete config should return an error");
     }
+
+    /// A guest call made from inside a Tokio runtime must not panic.
+    ///
+    /// WASI is linked with `add_to_linker_sync`, whose blocking shim calls
+    /// `Handle::block_on` when a runtime is current. Every caller is async, so
+    /// without the hop onto a runtime-free thread this aborts the process with
+    /// "Cannot start a runtime from within a runtime". A synchronous test does
+    /// not reach that path, which is why this one drives a runtime.
+    #[tokio::test]
+    async fn csv_plugin_import_from_within_a_tokio_runtime() {
+        let root = env::temp_dir().join("bc-plugins-csv-import-async-test");
+        let dir = root.join("import");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(
+            dir.join("transactions.csv"),
+            "Date,Amount,Description\n2024-01-15,-42.50,Test\n",
+        )
+        .expect("write csv");
+
+        let registry = load_registry_with_root(Some(root.as_path()));
+        let importer = registry
+            .create_for_name("csv")
+            .expect("CSV plugin not found in registry");
+
+        let config_json = r#"{
+            "account": "Assets:Test",
+            "commodity": "AUD",
+            "source_dir": "import",
+            "source_glob": "*.csv",
+            "date_column": "Date",
+            "date_format": "%Y-%m-%d",
+            "amount_columns": {"style": "single", "column": "Amount"},
+            "description_column": "Description"
+        }"#;
+        let value: serde_json::Value =
+            serde_json::from_str(config_json).expect("hardcoded JSON is valid");
+        let config = ImportConfig::from_value(value);
+
+        importer.validate(&config).expect("validate from a runtime");
+        let txns = importer.import(&config).expect("import from a runtime");
+        assert_eq!(txns.len(), 1);
+
+        drop(fs::remove_dir_all(&root));
+    }
 }
