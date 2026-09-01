@@ -31,6 +31,8 @@ leptosfmt crates/                                           # format Leptos view
 
 **bc-ui must be checked on `--target wasm32-unknown-unknown`**, not native. Many `web-sys`/`js-sys` APIs are absent on native, so a passing native check does not mean the UI crate compiles correctly.
 
+**Build `--release` before any bulk CLI run.** Every `borrow-checker` invocation opens the database, applies the backup policy and checks migrations, and under the debug profile that per-invocation cost dominates — a bootstrap script over a hundred accounts is painful to sit through. Run `cargo build --release -p bc-cli` once and point the loop at `target/release/borrow-checker`. A debug binary is fine for a single sanity check.
+
 ## Workspace Layout
 
 ```text
@@ -85,6 +87,7 @@ Hoist `use` statements to the top of the enclosing module — including `mod tes
 - Use `rstest` for parameterised tests and `insta` for snapshot assertions.
 - Run a single test: `cargo nextest run -p <crate> <test-name>`.
 - **Never use real personal or financial data** in tests, fixtures, or doc examples. Invent obviously-fake values (account `123456789`, generic payees). Real data has leaked into this public repo before and required a history rewrite.
+- **Round any statistic derived from real data** before it enters a spec, fixture default, test or commit message — `--skew 0.30` not `0.32`, `--tx-per-month 200` not `172`. Posting counts per account, transaction rates and elided-leg ratios reconstruct a profile of real financial behaviour, so a precise derived figure is itself identifying. Measure precisely to inform the decision, then round; rounding up slightly is fine, since a conservative benchmark floor beats an exact one.
 - `bc-plugins` integration tests load pre-compiled `wasm32-wasip2` artifacts and fail in any checkout where `plugins/` has not been built. That is environmental, not a regression — to verify unrelated work, run `cargo nextest run --workspace -E 'not package(bc-plugins)'`.
 - **Plugin unit tests run natively, not on `wasm32-wasip2`.** `plugins/*` are workspace members, so `cargo nextest run --workspace` compiles their tests for the host, where `usize` is 64-bit — in production it is 32-bit. A native pass is not a `wasip2` pass. Real `wasip2` behaviour is covered by the `bc-plugins` integration tests, which run the staged `.wasm` components under Wasmtime. `mise run lint` does check the plugins on `wasm32-wasip2`, so target-dependent lints are still caught.
 
@@ -103,6 +106,10 @@ This creates a **cross-target `#[expect]` trap**: a lint that fires only on one 
 
 To unit-test pure logic that lives under the wasm-gated `components/` tree, put it in a Leptos-free file and `include!` it from a `#[cfg(test)] mod components_tests` shim in `main.rs`. A file mixing Leptos and pure logic cannot be shim-included — split the helper out first.
 
+**Amounts are TEXT decimal strings, so SQLite cannot sum them.** `SUM` over an amount column returns `typeof = real`, and `SUM('0.1') + SUM('0.2') = 0.3` is false. Every balance aggregation stays in Rust `rust_decimal`; set-based aggregation is not available on this backend. It is a SQLite tax rather than an architectural choice — Postgres `NUMERIC` is exact and maps to `rust_decimal` directly.
+
+**Query plans need no fixtures.** The repo runs `ANALYZE` nowhere, so there is no `sqlite_stat1` and SQLite plans by data-independent heuristics. A schema-only database built from `0001_initial_schema.sql` reproduces production plans exactly.
+
 ## Design Principles
 
 **Warn, don't block.** This is a power-user tool; guardrails inform rather than gatekeep. An unbalanced transaction saves with a warning flag; editing a reconciled transaction is allowed with a warning. Reserve hard errors for genuinely unrepresentable states (unparsable amount, more than one elided posting, a posting with no account).
@@ -117,3 +124,6 @@ Conventional commits are enforced (`committed.toml`). Subject line ≤ 50 charac
 
 - **Copilot auto-reviews every PR** in this repo. Do not call `gh pr edit --add-reviewer copilot-pull-request-reviewer` — it will trigger automatically.
 - **`docs/superpowers/`** is gitignored. Never `git add` or commit files under that path (specs and plans written there are ephemeral).
+- **Descoped work gets an issue**, filed and linked into the parent epic's checklist. The backlog is tracked through epics and the roadmap issue, and a note in a gitignored design doc vanishes with the doc. Before declaring a design or implementation done, walk its out-of-scope list and file each entry with its concrete failure mode and why it was deferred.
+- **A `Closes #N` that auto-closes on merge can be wrong.** An investigation or benchmark PR that merely *references* an issue reads to GitHub exactly like one that fixes it. For each issue closed by a merge, grep for the specific symbol, query or line the issue names and confirm it actually changed. Squash-merges also make `git rev-list main..branch` useless for judging whether a branch landed — compare tree content or the PR state.
+- **`CI complete` already covers e2e.** `ci.yml` runs `xvfb-run -a mise run //e2e:test` inside the `test` job, one of the seven jobs the check waits on. Read the job's step list before treating an e2e run as separate work.
