@@ -47,17 +47,22 @@ leptos_router_macro      = "0.8"
 rust_decimal             = { workspace = true }
 stylance                 = "0.8"
 # tauri-sys is not on crates.io; requires `esbuild` (provided via mise).
-tauri-sys                = { git = "https://github.com/JonasKruckenberg/tauri-sys", branch = "v2", features = [
-  "core"
-] }
+tauri-sys                = {
+  git      = "https://github.com/JonasKruckenberg/tauri-sys",
+  branch   = "v2",
+  features = ["core"]
+}
 wasm-bindgen             = "0.2"
-web-sys                  = { version = "0.3", features = [
-  "DomRect",
-  "Element",
-  "HtmlElement",
-  "HtmlInputElement",
-  "KeyboardEvent",
-] }
+web-sys                  = {
+  version  = "0.3",
+  features = [
+    "DomRect",
+    "Element",
+    "HtmlElement",
+    "HtmlInputElement",
+    "KeyboardEvent",
+  ]
+}
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
