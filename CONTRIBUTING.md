@@ -50,7 +50,7 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 ## Plugin Development
 
 To write a BorrowChecker plugin, see the `bc-sdk` crate documentation (coming in Milestone 6).
-Plugins are compiled to `wasm32-wasip1` and distributed as `.wasm` files.
+Plugins are compiled to `wasm32-wasip2` and distributed as `.wasm` files.
 
 ## Code of Conduct
 
