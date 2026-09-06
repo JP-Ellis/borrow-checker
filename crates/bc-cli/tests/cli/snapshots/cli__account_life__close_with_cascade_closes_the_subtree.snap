@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/account_life.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Closed account: [ACCOUNT_ID] (on 2024-06-30)
+----- stderr -----

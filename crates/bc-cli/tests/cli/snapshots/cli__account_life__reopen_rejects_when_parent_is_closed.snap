@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/account_life.rs
+expression: output
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: data error: cannot reopen an account whose parent closed on 2024-06-30; reopen the parent first

@@ -1,0 +1,11 @@
+---
+source: crates/bc-cli/tests/cli/account_life.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+ ID                                 | NAME   | TYPE  | KIND  | OPENED | CLOSED
+===============================================================================
+ [ACCOUNT_ID] | Assets | Asset | Group |        |
+----- stderr -----

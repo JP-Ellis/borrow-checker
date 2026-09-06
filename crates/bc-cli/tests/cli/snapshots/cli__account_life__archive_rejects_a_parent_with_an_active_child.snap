@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/account_life.rs
+expression: output
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: data error: cannot archive an account while 1 descendant(s) remain active: Checking; archive them first or pass cascade
