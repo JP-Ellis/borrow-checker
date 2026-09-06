@@ -103,6 +103,10 @@ impl bc_sdk::Importer for CsvImporter {
     #[inline]
     fn validate(&self, config: ImportConfig) -> Result<(), ImportError> {
         let cfg: Config = config.as_typed()?;
+        // Warned here and not in `Config::validate`, which `import` calls
+        // again: the host runs `validate` before `parse` for every import, so
+        // emitting from both would report each stray key twice.
+        cfg.warn_unknown_keys();
         cfg.validate()
     }
 }

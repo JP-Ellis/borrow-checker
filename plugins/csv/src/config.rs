@@ -769,6 +769,26 @@ impl Config {
         refs
     }
 
+    /// Warns about each top-level key the profile states and this importer does
+    /// not read.
+    ///
+    /// A key nothing reads leaves a usable profile, so this warns where
+    /// [`Self::validate`] would reject.
+    ///
+    /// It sits outside `validate` because `Importer::import` calls `validate`
+    /// again after the host has already called `Importer::validate`. Emitting
+    /// from inside would report every stray key twice per import.
+    #[inline]
+    pub(crate) fn warn_unknown_keys(&self) {
+        for key in self.unknown.keys() {
+            bc_sdk::warn!(
+                "unknown csv profile key";
+                key = key,
+                detail = unknown_key_warning(key)
+            );
+        }
+    }
+
     /// Returns the column names required to identify the CSV header row.
     ///
     /// Used by [`Header::AutoDetect`] to locate the header line. Index-based
@@ -797,8 +817,10 @@ impl Config {
     /// a headerless profile converted from a name-based one typically has
     /// several at once.
     ///
-    /// A key this importer does not read is warned about rather than rejected,
-    /// because it changes no row.
+    /// A key this importer does not read is accepted here.
+    /// [`Self::warn_unknown_keys`] reports it separately, because ignoring one
+    /// can still change what a row carries: a profile setting the retired
+    /// `payee_column` imports every transaction with no payee.
     ///
     /// # Returns
     ///
@@ -935,16 +957,6 @@ impl Config {
                 }
             }
             Header::Present => {}
-        }
-
-        // Warned rather than pushed onto `problems`: a key this importer does
-        // not read changes no row, so it informs without gatekeeping.
-        for key in self.unknown.keys() {
-            bc_sdk::warn!(
-                "unknown csv profile key";
-                key = key,
-                detail = unknown_key_warning(key)
-            );
         }
 
         if problems.is_empty() {
