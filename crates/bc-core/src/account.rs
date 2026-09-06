@@ -200,6 +200,36 @@ fn build_tags_map(rows: Vec<(String, String)>) -> BcResult<HashMap<String, Vec<T
     Ok(map)
 }
 
+/// Returns every descendant of `id`, deepest last, using a recursive CTE.
+///
+/// Excludes `id` itself. Each row is `(id, name, closed_on, archived_at)`.
+///
+/// # Arguments
+///
+/// * `conn` - An open connection to read through.
+/// * `id` - The subtree root.
+///
+/// # Errors
+///
+/// Returns [`BcError`] on database read failure.
+async fn descendants_of(
+    conn: &mut sqlx::SqliteConnection,
+    id: &AccountId,
+) -> BcResult<Vec<(String, String, Option<String>, Option<String>)>> {
+    sqlx::query_as(
+        "WITH RECURSIVE subtree(id, name, closed_on, archived_at) AS ( \
+             SELECT id, name, closed_on, archived_at FROM accounts WHERE parent_id = ? \
+             UNION ALL \
+             SELECT a.id, a.name, a.closed_on, a.archived_at \
+             FROM accounts a JOIN subtree s ON a.parent_id = s.id \
+         ) SELECT id, name, closed_on, archived_at FROM subtree",
+    )
+    .bind(id.to_string())
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(BcError::from)
+}
+
 /// Service for creating and managing accounts.
 #[derive(Debug, Clone)]
 pub struct Service {
@@ -281,24 +311,49 @@ impl Service {
 
     /// Archives an account by setting its `archived_at` timestamp.
     ///
+    /// An archived account may not have an active descendant. With `cascade`
+    /// false this rejects when any descendant is still active, naming them;
+    /// with `cascade` true every active descendant is archived alongside `id`
+    /// in the same transaction.
+    ///
     /// The event append and the projection UPDATE are wrapped in a single SQLite
     /// transaction so they succeed or fail atomically.  `rows_affected()` is used
-    /// to detect a missing or already-archived account without a separate pre-check,
+    /// to detect a missing or already-archived target without a separate pre-check,
     /// eliminating a TOCTOU race.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account to archive.
+    /// * `cascade` - Whether to archive active descendants too.
     ///
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if the account does not exist.
     /// Returns [`BcError::AlreadyArchived`] if the account exists but is already archived.
+    /// Returns [`BcError::BadData`] if `cascade` is false and any descendant is
+    /// still active.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
-    pub async fn archive(&self, id: &AccountId) -> BcResult<()> {
+    pub async fn archive(&self, id: &AccountId, cascade: bool) -> BcResult<()> {
         let now = Timestamp::now();
-        let event = Event::AccountArchived { id: id.clone() };
 
         let mut tx = self.pool.begin().await?;
 
-        insert_event(&event, &mut tx).await?;
+        let descendants = descendants_of(&mut tx, id).await?;
+        let active: Vec<&(String, String, Option<String>, Option<String>)> =
+            descendants.iter().filter(|d| d.3.is_none()).collect();
+
+        if !active.is_empty() && !cascade {
+            let names: Vec<&str> = active.iter().map(|d| d.1.as_str()).collect();
+            return Err(BcError::BadData(format!(
+                "cannot archive an account while {} descendant(s) remain active: {}; \
+                 archive them first or pass cascade",
+                active.len(),
+                names.join(", ")
+            )));
+        }
+
+        insert_event(&Event::AccountArchived { id: id.clone() }, &mut tx).await?;
 
         let result =
             sqlx::query("UPDATE accounts SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
@@ -326,8 +381,206 @@ impl Service {
             };
         }
 
+        if cascade {
+            for descendant in &active {
+                let descendant_id = descendant.0.parse::<AccountId>().map_err(|e| {
+                    BcError::BadData(format!("invalid account id '{}': {e}", descendant.0))
+                })?;
+                insert_event(
+                    &Event::AccountArchived {
+                        id: descendant_id.clone(),
+                    },
+                    &mut tx,
+                )
+                .await?;
+                sqlx::query(
+                    "UPDATE accounts SET archived_at = ? WHERE id = ? AND archived_at IS NULL",
+                )
+                .bind(now.to_string())
+                .bind(descendant_id.to_string())
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
         tx.commit().await?;
-        tracing::info!(account_id = %id, "account archived");
+        tracing::info!(
+            account_id = %id,
+            archived = active.len().saturating_add(1),
+            "account archived"
+        );
+        Ok(())
+    }
+
+    /// Closes an account on a business date.
+    ///
+    /// A closed account may not have an open descendant. With `cascade` false
+    /// this rejects when any descendant is still open, naming them; with
+    /// `cascade` true the same `closed_on` is stamped on every open descendant
+    /// in the same transaction.
+    ///
+    /// Closing does not archive. `archived_at` controls visibility in active
+    /// lists; an account closed years ago is still wanted in reports covering
+    /// the years it was open.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account to close.
+    /// * `on` - The business date it closed.
+    /// * `cascade` - Whether to close open descendants too.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::BadData`] if `cascade` is false and any descendant is
+    /// still open.
+    /// Returns [`BcError`] on event append or database update failure.
+    #[inline]
+    pub async fn close(
+        &self,
+        id: &AccountId,
+        on: jiff::civil::Date,
+        cascade: bool,
+    ) -> BcResult<()> {
+        let mut tx = self.pool.begin().await?;
+
+        let exists: bool = sqlx::query_scalar("SELECT count(*) > 0 FROM accounts WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&mut *tx)
+            .await?;
+        if !exists {
+            return Err(BcError::NotFound(id.to_string()));
+        }
+
+        let descendants = descendants_of(&mut tx, id).await?;
+        let open: Vec<&(String, String, Option<String>, Option<String>)> =
+            descendants.iter().filter(|d| d.2.is_none()).collect();
+
+        if !open.is_empty() && !cascade {
+            let names: Vec<&str> = open.iter().map(|d| d.1.as_str()).collect();
+            return Err(BcError::BadData(format!(
+                "cannot close an account while {} descendant(s) remain open: {}; \
+                 close them first or pass cascade",
+                open.len(),
+                names.join(", ")
+            )));
+        }
+
+        let mut to_close: Vec<AccountId> = vec![id.clone()];
+        if cascade {
+            for descendant in &open {
+                to_close.push(descendant.0.parse::<AccountId>().map_err(|e| {
+                    BcError::BadData(format!("invalid account id '{}': {e}", descendant.0))
+                })?);
+            }
+        }
+
+        for target in &to_close {
+            insert_event(
+                &Event::AccountClosed {
+                    id: target.clone(),
+                    closed_on: on,
+                },
+                &mut tx,
+            )
+            .await?;
+            sqlx::query("UPDATE accounts SET closed_on = ? WHERE id = ?")
+                .bind(on.to_string())
+                .bind(target.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        tracing::info!(account_id = %id, closed_on = %on, closed = to_close.len(), "account closed");
+        Ok(())
+    }
+
+    /// Clears an account's `closed_on`, reopening it.
+    ///
+    /// Rejects when the parent is closed, holding the "no open descendant of a
+    /// closed account" invariant from the other direction.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account to reopen.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::BadData`] if the account's parent is closed.
+    /// Returns [`BcError`] on event append or database update failure.
+    #[inline]
+    pub async fn reopen(&self, id: &AccountId) -> BcResult<()> {
+        let mut tx = self.pool.begin().await?;
+
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT parent_id FROM accounts WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((parent_id,)) = row else {
+            return Err(BcError::NotFound(id.to_string()));
+        };
+
+        if let Some(parent) = parent_id {
+            let parent_closed: Option<String> =
+                sqlx::query_scalar("SELECT closed_on FROM accounts WHERE id = ?")
+                    .bind(&parent)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .flatten();
+            if let Some(closed_on) = parent_closed {
+                return Err(BcError::BadData(format!(
+                    "cannot reopen an account whose parent closed on {closed_on}; \
+                     reopen the parent first"
+                )));
+            }
+        }
+
+        insert_event(&Event::AccountReopened { id: id.clone() }, &mut tx).await?;
+        sqlx::query("UPDATE accounts SET closed_on = NULL WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        tracing::info!(account_id = %id, "account reopened");
+        Ok(())
+    }
+
+    /// Sets an account's declared opening date.
+    ///
+    /// Unconstrained by the parent's dates: an account can be moved between
+    /// parents, so a child that opened before its current parent is an ordinary
+    /// fact rather than an error.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account to update.
+    /// * `opened_on` - The new opening date, or `None` to clear it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError`] on database update failure.
+    #[inline]
+    pub async fn set_opened_on(
+        &self,
+        id: &AccountId,
+        opened_on: Option<jiff::civil::Date>,
+    ) -> BcResult<()> {
+        let result = sqlx::query("UPDATE accounts SET opened_on = ? WHERE id = ?")
+            .bind(opened_on.map(|d| d.to_string()))
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(BcError::NotFound(id.to_string()));
+        }
+
+        tracing::info!(account_id = %id, "account opened_on set");
         Ok(())
     }
 
@@ -1282,7 +1535,9 @@ mod tests {
             .await
             .expect("create should succeed");
 
-        svc.archive(&id).await.expect("archive should succeed");
+        svc.archive(&id, false)
+            .await
+            .expect("archive should succeed");
 
         let found = svc.find_by_id(&id).await.expect("find should succeed");
         assert!(!found.is_active());
@@ -1310,7 +1565,7 @@ mod tests {
     async fn archive_nonexistent_account_returns_not_found(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool.clone());
         let fake_id = bc_models::AccountId::new();
-        let result = svc.archive(&fake_id).await;
+        let result = svc.archive(&fake_id, false).await;
         assert!(matches!(result, Err(BcError::NotFound(_))));
         // Verify the failed archive did not leave any orphaned events.
         let store = crate::events::SqliteStore::new(pool.clone());
@@ -1335,10 +1590,10 @@ mod tests {
             .call()
             .await
             .expect("create should succeed");
-        svc.archive(&id)
+        svc.archive(&id, false)
             .await
             .expect("first archive should succeed");
-        let result = svc.archive(&id).await;
+        let result = svc.archive(&id, false).await;
         assert!(matches!(result, Err(BcError::AlreadyArchived(_))));
     }
 
@@ -1506,7 +1761,9 @@ mod tests {
             .call()
             .await
             .expect("create should succeed");
-        svc.archive(&id2).await.expect("archive should succeed");
+        svc.archive(&id2, false)
+            .await
+            .expect("archive should succeed");
 
         let active = svc.list_active().await.expect("list should succeed");
         assert_eq!(active.len(), 1);
@@ -1594,7 +1851,7 @@ mod tests {
             .call()
             .await
             .expect("create gone");
-        svc.archive(&gone).await.expect("archive");
+        svc.archive(&gone, false).await.expect("archive");
 
         let active: Vec<AccountId> = svc
             .list_active()
@@ -1907,7 +2164,7 @@ mod tests {
             .await
             .expect("first run");
         let leaf = first.ids.get("Assets:BankA:OldCard").expect("leaf").clone();
-        svc.archive(&leaf).await.expect("archive");
+        svc.archive(&leaf, false).await.expect("archive");
 
         let out = svc
             .create_paths(&[spec("Assets:BankA:OldCard")])
@@ -2121,5 +2378,146 @@ mod tests {
                 "an auto-created ancestor must not inherit the leaf's depreciation policy"
             );
         }
+    }
+
+    /// Builds `Assets` -> `Assets:BankA` -> `Assets:BankA:Checking`, returning
+    /// the three ids in that order.
+    async fn three_deep(svc: &Service) -> (AccountId, AccountId, AccountId) {
+        let assets = svc
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::Group)
+            .call()
+            .await
+            .expect("create Assets");
+        let bank_a = svc
+            .create()
+            .name("BankA")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::Group)
+            .parent_id(&assets)
+            .call()
+            .await
+            .expect("create BankA");
+        let checking = svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&bank_a)
+            .call()
+            .await
+            .expect("create Checking");
+        (assets, bank_a, checking)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn close_rejects_an_account_with_open_descendants(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, bank_a, _checking) = three_deep(&svc).await;
+
+        let error = svc
+            .close(&bank_a, jiff::civil::date(2024, 6, 30), false)
+            .await
+            .expect_err("closing a parent with an open child must be rejected");
+
+        assert!(
+            matches!(error, BcError::BadData(ref m) if m.contains("Checking")),
+            "the error must name the open descendants: {error:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn close_with_cascade_closes_every_descendant(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, bank_a, checking) = three_deep(&svc).await;
+
+        svc.close(&bank_a, jiff::civil::date(2024, 6, 30), true)
+            .await
+            .expect("cascade close");
+
+        for id in [&bank_a, &checking] {
+            let account = svc.find_by_id(id).await.expect("find");
+            assert_eq!(account.closed_on(), Some(jiff::civil::date(2024, 6, 30)));
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn close_leaves_archived_at_alone(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+
+        svc.close(&checking, jiff::civil::date(2024, 6, 30), false)
+            .await
+            .expect("close");
+        let account = svc.find_by_id(&checking).await.expect("find");
+        assert_eq!(account.archived_at(), None, "closing must not archive");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn archive_rejects_an_account_with_active_descendants(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, bank_a, _checking) = three_deep(&svc).await;
+
+        let error = svc
+            .archive(&bank_a, false)
+            .await
+            .expect_err("archiving a parent with an active child must be rejected");
+        assert!(matches!(error, BcError::BadData(_)), "{error:?}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn archive_with_cascade_archives_every_descendant(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, bank_a, checking) = three_deep(&svc).await;
+
+        svc.archive(&bank_a, true).await.expect("cascade archive");
+        for id in [&bank_a, &checking] {
+            let account = svc.find_by_id(id).await.expect("find");
+            assert!(account.archived_at().is_some());
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reopen_rejects_a_child_under_a_closed_parent(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, bank_a, checking) = three_deep(&svc).await;
+
+        svc.close(&bank_a, jiff::civil::date(2024, 6, 30), true)
+            .await
+            .expect("cascade close");
+        let error = svc
+            .reopen(&checking)
+            .await
+            .expect_err("reopening under a closed parent must be rejected");
+        assert!(matches!(error, BcError::BadData(_)), "{error:?}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reopen_clears_closed_on_when_the_parent_is_open(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+
+        svc.close(&checking, jiff::civil::date(2024, 6, 30), false)
+            .await
+            .expect("close");
+        svc.reopen(&checking).await.expect("reopen");
+        let account = svc.find_by_id(&checking).await.expect("find");
+        assert_eq!(account.closed_on(), None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_opened_on_is_unconstrained_by_the_parent(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, bank_a, checking) = three_deep(&svc).await;
+
+        // A child may open before its parent — accounts get re-parented.
+        svc.set_opened_on(&bank_a, Some(jiff::civil::date(2021, 1, 1)))
+            .await
+            .expect("set parent opened_on");
+        svc.set_opened_on(&checking, Some(jiff::civil::date(2019, 1, 1)))
+            .await
+            .expect("a child opening before its parent is allowed");
     }
 }
