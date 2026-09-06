@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/account_life.rs
+expression: output
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: data error: cannot close Checking on 2019-01-01, before it opened on 2021-01-01

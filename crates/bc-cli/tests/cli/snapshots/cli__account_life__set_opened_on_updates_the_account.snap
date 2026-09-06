@@ -5,5 +5,5 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Set opened_on for account [ACCOUNT_ID]: 2024-01-01
+Set opening date for account [ACCOUNT_ID]: 2024-01-01
 ----- stderr -----

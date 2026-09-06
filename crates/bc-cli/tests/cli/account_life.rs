@@ -290,3 +290,65 @@ fn archive_with_cascade_archives_the_subtree() {
     list_cmd.args(["account", "list"]);
     cmd_snapshot!(ctx, &mut list_cmd);
 }
+
+#[test]
+fn close_before_the_opening_date_is_rejected() {
+    let ctx = TestContext::new();
+    let checking = create_asset(&ctx, "Assets:BankA:Checking");
+
+    let mut set_cmd = ctx.command();
+    set_cmd
+        .args(["account", "set-opened-on", &checking, "--on", "2021-01-01"])
+        .output()
+        .expect("set opening date");
+
+    let mut cmd = ctx.command();
+    cmd.args(["account", "close", &checking, "--on", "2019-01-01"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn set_opened_on_after_the_closing_date_is_rejected() {
+    let ctx = TestContext::new();
+    let checking = create_asset(&ctx, "Assets:BankA:Checking");
+
+    let mut close_cmd = ctx.command();
+    close_cmd
+        .args(["account", "close", &checking, "--on", "2020-01-01"])
+        .output()
+        .expect("close");
+
+    let mut cmd = ctx.command();
+    cmd.args(["account", "set-opened-on", &checking, "--on", "2025-01-01"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn closing_an_already_closed_account_exits_three() {
+    let ctx = TestContext::new();
+    let checking = create_asset(&ctx, "Assets:BankA:Checking");
+
+    let mut close_cmd = ctx.command();
+    close_cmd
+        .args(["account", "close", &checking, "--on", "2020-01-01"])
+        .output()
+        .expect("close");
+
+    // Exit 3 is "already in the state you asked for", so a script closing
+    // accounts idempotently can tell it from any other failure.
+    let mut cmd = ctx.command();
+    cmd.args(["account", "close", &checking, "--on", "2020-01-01"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn reopening_an_open_account_exits_four() {
+    let ctx = TestContext::new();
+    let checking = create_asset(&ctx, "Assets:BankA:Checking");
+
+    // Exit 4 is "not in the state the operation requires", distinct from the
+    // exit 3 above.
+    let mut cmd = ctx.command();
+    cmd.args(["account", "reopen", &checking]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
