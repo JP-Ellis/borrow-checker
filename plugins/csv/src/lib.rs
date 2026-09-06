@@ -819,8 +819,7 @@ mod tests {
         })
     }
 
-    /// Maps `column` onto the `payee` key, as most of these tests once did
-    /// through the retired `payee_column` field.
+    /// Maps `column` onto the `payee` metadata key.
     fn payee_map(column: ColumnRef) -> MetadataColumn {
         MetadataColumn {
             key: "payee".to_owned(),
