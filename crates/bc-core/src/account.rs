@@ -200,7 +200,64 @@ fn build_tags_map(rows: Vec<(String, String)>) -> BcResult<HashMap<String, Vec<T
     Ok(map)
 }
 
-/// Rejects a write when `blocking` descendants exist and `cascade` is false.
+/// What [`Service::archive`] and [`Service::close`] do about descendants that
+/// block the write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Cascade {
+    /// Reject the write, naming the descendants that block it.
+    Reject,
+    /// Apply the same write to every blocking descendant, in one transaction.
+    Into,
+}
+
+impl Cascade {
+    /// Whether this cascades into blocking descendants rather than rejecting.
+    #[must_use]
+    #[inline]
+    pub const fn is_into(self) -> bool {
+        matches!(self, Self::Into)
+    }
+}
+
+/// Rejects a closing date that precedes the stored opening date it is paired
+/// with.
+///
+/// An account whose `closed_on` precedes its `opened_on` has no date inside its
+/// declared life, so `warning::check_postings` warns on every posting into it,
+/// often twice. `label` names the account in the message.
+///
+/// # Arguments
+///
+/// * `on` - The closing date being applied.
+/// * `opened_on` - The account's stored opening date, unparsed, if any.
+/// * `label` - How to name the account in the error message.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `on` precedes `opened_on`, or if `opened_on`
+/// does not parse as a date.
+fn reject_close_before_open(
+    on: jiff::civil::Date,
+    opened_on: Option<&str>,
+    label: &str,
+) -> BcResult<()> {
+    let Some(raw) = opened_on else {
+        return Ok(());
+    };
+    let opening = raw
+        .parse::<jiff::civil::Date>()
+        .map_err(|e| BcError::BadData(format!("invalid opened_on '{raw}': {e}")))?;
+    if on < opening {
+        return Err(BcError::BadData(format!(
+            "cannot close {label} on {on}, before it opened on {opening}"
+        )));
+    }
+    Ok(())
+}
+
+/// Rejects a write when `blocking` descendants exist and `cascade` is
+/// [`Cascade::Reject`].
 ///
 /// Shared by [`Service::archive`] and [`Service::close`], whose descendant
 /// checks differ only in which descendants block the write (active vs. open)
@@ -209,7 +266,7 @@ fn build_tags_map(rows: Vec<(String, String)>) -> BcResult<HashMap<String, Vec<T
 ///
 /// # Arguments
 ///
-/// * `blocking` - The descendants that block the write, as `(id, name, closed_on, archived_at)`.
+/// * `blocking` - The descendants that block the write.
 /// * `cascade` - Whether the caller intends to cascade into `blocking`, which lifts the block.
 /// * `action` - The write being attempted, for the error message (e.g. `"archive"`, `"close"`).
 /// * `state` - Why a descendant blocks the write, for the error message (e.g. `"active"`, `"open"`).
@@ -217,17 +274,17 @@ fn build_tags_map(rows: Vec<(String, String)>) -> BcResult<HashMap<String, Vec<T
 /// # Errors
 ///
 /// Returns [`BcError::BadData`] naming every blocking descendant if `blocking`
-/// is non-empty and `cascade` is false.
+/// is non-empty and `cascade` is [`Cascade::Reject`].
 fn reject_blocking_descendants(
-    blocking: &[&(String, String, Option<String>, Option<String>)],
-    cascade: bool,
+    blocking: &[&Descendant],
+    cascade: Cascade,
     action: &str,
     state: &str,
 ) -> BcResult<()> {
-    if blocking.is_empty() || cascade {
+    if blocking.is_empty() || cascade.is_into() {
         return Ok(());
     }
-    let names: Vec<&str> = blocking.iter().map(|d| d.1.as_str()).collect();
+    let names: Vec<&str> = blocking.iter().map(|d| d.name.as_str()).collect();
     Err(BcError::BadData(format!(
         "cannot {action} an account while {} descendant(s) remain {state}: {}; \
          {action} them first or pass cascade",
@@ -236,9 +293,39 @@ fn reject_blocking_descendants(
     )))
 }
 
+/// One descendant account, as [`descendants_of`] reads it.
+///
+/// Named fields rather than a tuple: `opened_on`, `closed_on` and `archived_at`
+/// are all nullable dates, and `archive` and `close` filter on different ones.
+#[derive(Debug, sqlx::FromRow)]
+struct Descendant {
+    /// The account's id, unparsed.
+    id: String,
+    /// The account's name, for naming it in a blocking-descendant error.
+    name: String,
+    /// The account's declared opening date, if any.
+    opened_on: Option<String>,
+    /// The account's declared closing date, if any.
+    closed_on: Option<String>,
+    /// When the account was archived, if it was.
+    archived_at: Option<String>,
+}
+
+impl Descendant {
+    /// Whether the account is still open, i.e. declares no closing date.
+    fn is_open(&self) -> bool {
+        self.closed_on.is_none()
+    }
+
+    /// Whether the account is still active, i.e. has not been archived.
+    fn is_active(&self) -> bool {
+        self.archived_at.is_none()
+    }
+}
+
 /// Returns every descendant of `id`, deepest last, using a recursive CTE.
 ///
-/// Excludes `id` itself. Each row is `(id, name, closed_on, archived_at)`.
+/// Excludes `id` itself.
 ///
 /// # Arguments
 ///
@@ -251,14 +338,14 @@ fn reject_blocking_descendants(
 async fn descendants_of(
     conn: &mut sqlx::SqliteConnection,
     id: &AccountId,
-) -> BcResult<Vec<(String, String, Option<String>, Option<String>)>> {
+) -> BcResult<Vec<Descendant>> {
     sqlx::query_as(
-        "WITH RECURSIVE subtree(id, name, closed_on, archived_at) AS ( \
-             SELECT id, name, closed_on, archived_at FROM accounts WHERE parent_id = ? \
+        "WITH RECURSIVE subtree(id, name, opened_on, closed_on, archived_at) AS ( \
+             SELECT id, name, opened_on, closed_on, archived_at FROM accounts WHERE parent_id = ? \
              UNION ALL \
-             SELECT a.id, a.name, a.closed_on, a.archived_at \
+             SELECT a.id, a.name, a.opened_on, a.closed_on, a.archived_at \
              FROM accounts a JOIN subtree s ON a.parent_id = s.id \
-         ) SELECT id, name, closed_on, archived_at FROM subtree",
+         ) SELECT id, name, opened_on, closed_on, archived_at FROM subtree",
     )
     .bind(id.to_string())
     .fetch_all(&mut *conn)
@@ -362,24 +449,27 @@ impl Service {
     /// # Arguments
     ///
     /// * `id` - The account to archive.
-    /// * `cascade` - Whether to archive active descendants too.
+    /// * `cascade` - Whether to archive active descendants too, or reject on them.
     ///
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if the account does not exist.
-    /// Returns [`BcError::AlreadyArchived`] if the account exists but is already archived.
-    /// Returns [`BcError::BadData`] if `cascade` is false and any descendant is
-    /// still active.
+    /// Returns [`BcError::BadData`] if `cascade` is [`Cascade::Reject`] and any
+    /// descendant is still active. This check runs first, so an already-archived
+    /// account with active descendants reports the descendants rather than
+    /// [`BcError::AlreadyArchived`] — the blocking subtree is the more useful
+    /// thing to name.
+    /// Returns [`BcError::AlreadyArchived`] if the account exists, is already
+    /// archived, and nothing blocked the call.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
-    pub async fn archive(&self, id: &AccountId, cascade: bool) -> BcResult<()> {
+    pub async fn archive(&self, id: &AccountId, cascade: Cascade) -> BcResult<()> {
         let now = Timestamp::now();
 
         let mut tx = self.pool.begin().await?;
 
         let descendants = descendants_of(&mut tx, id).await?;
-        let active: Vec<&(String, String, Option<String>, Option<String>)> =
-            descendants.iter().filter(|d| d.3.is_none()).collect();
+        let active: Vec<&Descendant> = descendants.iter().filter(|d| d.is_active()).collect();
 
         reject_blocking_descendants(&active, cascade, "archive", "active")?;
 
@@ -406,20 +496,20 @@ impl Service {
             if !exists {
                 return Err(BcError::NotFound(id.to_string()));
             }
-            if !cascade {
+            if !cascade.is_into() {
                 return Err(BcError::AlreadyArchived(id.clone()));
             }
-            // `cascade` is true and the target is merely already archived —
+            // `cascade` is `Into` and the target is merely already archived —
             // that is not a reason to leave its active descendants alone, so
             // fall through to the cascade below without an event for `id`
             // (nothing about it actually changed).
         }
 
         let mut archived = usize::from(target_archived);
-        if cascade {
+        if cascade.is_into() {
             for descendant in &active {
-                let descendant_id = descendant.0.parse::<AccountId>().map_err(|e| {
-                    BcError::BadData(format!("invalid account id '{}': {e}", descendant.0))
+                let descendant_id = descendant.id.parse::<AccountId>().map_err(|e| {
+                    BcError::BadData(format!("invalid account id '{}': {e}", descendant.id))
                 })?;
                 insert_event(
                     &Event::AccountArchived {
@@ -457,31 +547,52 @@ impl Service {
     ///
     /// # Arguments
     ///
+    /// `on` may not precede the account's own `opened_on`, nor that of any
+    /// descendant a cascade would stamp: an account that closed before it
+    /// opened has no date inside its declared life, so every posting into it
+    /// would warn.
+    ///
+    /// # Arguments
+    ///
     /// * `id` - The account to close.
     /// * `on` - The business date it closed.
-    /// * `cascade` - Whether to close open descendants too.
+    /// * `cascade` - Whether to close open descendants too, or reject on them.
     ///
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if the account does not exist.
     /// Returns [`BcError::AlreadyClosed`] if the account exists but is already closed.
-    /// Returns [`BcError::BadData`] if `cascade` is false and any descendant is
-    /// still open.
+    /// Returns [`BcError::BadData`] if `cascade` is [`Cascade::Reject`] and any
+    /// descendant is still open, or if `on` precedes the opening date of the
+    /// account or of any descendant being closed.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
     pub async fn close(
         &self,
         id: &AccountId,
         on: jiff::civil::Date,
-        cascade: bool,
+        cascade: Cascade,
     ) -> BcResult<()> {
         let mut tx = self.pool.begin().await?;
 
         let descendants = descendants_of(&mut tx, id).await?;
-        let open: Vec<&(String, String, Option<String>, Option<String>)> =
-            descendants.iter().filter(|d| d.2.is_none()).collect();
+        let open: Vec<&Descendant> = descendants.iter().filter(|d| d.is_open()).collect();
 
         reject_blocking_descendants(&open, cascade, "close", "open")?;
+
+        let target: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT name, opened_on FROM accounts WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
+        if let Some((name, opened_on)) = target {
+            reject_close_before_open(on, opened_on.as_deref(), &name)?;
+        }
+        if cascade.is_into() {
+            for descendant in &open {
+                reject_close_before_open(on, descendant.opened_on.as_deref(), &descendant.name)?;
+            }
+        }
 
         let result =
             sqlx::query("UPDATE accounts SET closed_on = ? WHERE id = ? AND closed_on IS NULL")
@@ -513,20 +624,20 @@ impl Service {
             if !exists {
                 return Err(BcError::NotFound(id.to_string()));
             }
-            if !cascade {
+            if !cascade.is_into() {
                 return Err(BcError::AlreadyClosed(id.clone()));
             }
-            // `cascade` is true and the target is merely already closed —
+            // `cascade` is `Into` and the target is merely already closed —
             // that is not a reason to leave its open descendants alone, so
             // fall through to the cascade below without an event for `id`
             // (nothing about it actually changed).
         }
 
         let mut closed = usize::from(target_closed);
-        if cascade {
+        if cascade.is_into() {
             for descendant in &open {
-                let descendant_id = descendant.0.parse::<AccountId>().map_err(|e| {
-                    BcError::BadData(format!("invalid account id '{}': {e}", descendant.0))
+                let descendant_id = descendant.id.parse::<AccountId>().map_err(|e| {
+                    BcError::BadData(format!("invalid account id '{}': {e}", descendant.id))
                 })?;
                 insert_event(
                     &Event::AccountClosed {
@@ -611,7 +722,8 @@ impl Service {
     ///
     /// Unconstrained by the parent's dates: an account can be moved between
     /// parents, so a child that opened before its current parent is an ordinary
-    /// fact rather than an error.
+    /// fact rather than an error. It is constrained by the account's own
+    /// `closed_on`, which must not precede it — see [`Self::close`].
     ///
     /// # Arguments
     ///
@@ -621,6 +733,8 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::BadData`] if `opened_on` falls after the account's
+    /// declared `closed_on`.
     /// Returns [`BcError`] on database update failure.
     #[inline]
     pub async fn set_opened_on(
@@ -628,16 +742,36 @@ impl Service {
         id: &AccountId,
         opened_on: Option<jiff::civil::Date>,
     ) -> BcResult<()> {
-        let result = sqlx::query("UPDATE accounts SET opened_on = ? WHERE id = ?")
-            .bind(opened_on.map(|d| d.to_string()))
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await?;
+        let mut tx = self.pool.begin().await?;
 
-        if result.rows_affected() == 0 {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT closed_on FROM accounts WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((closed_on,)) = row else {
             return Err(BcError::NotFound(id.to_string()));
+        };
+
+        if let (Some(opening), Some(raw)) = (opened_on, closed_on.as_deref()) {
+            let closing = raw
+                .parse::<jiff::civil::Date>()
+                .map_err(|e| BcError::BadData(format!("invalid closed_on '{raw}': {e}")))?;
+            if opening > closing {
+                return Err(BcError::BadData(format!(
+                    "cannot set an opening date of {opening} on an account that closed on \
+                     {closing}; reopen it or correct the closing date first"
+                )));
+            }
         }
 
+        sqlx::query("UPDATE accounts SET opened_on = ? WHERE id = ?")
+            .bind(opened_on.map(|d| d.to_string()))
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
         tracing::info!(account_id = %id, "account opened_on set");
         Ok(())
     }
@@ -1593,7 +1727,7 @@ mod tests {
             .await
             .expect("create should succeed");
 
-        svc.archive(&id, false)
+        svc.archive(&id, Cascade::Reject)
             .await
             .expect("archive should succeed");
 
@@ -1623,7 +1757,7 @@ mod tests {
     async fn archive_nonexistent_account_returns_not_found(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool.clone());
         let fake_id = bc_models::AccountId::new();
-        let result = svc.archive(&fake_id, false).await;
+        let result = svc.archive(&fake_id, Cascade::Reject).await;
         assert!(matches!(result, Err(BcError::NotFound(_))));
         // Verify the failed archive did not leave any orphaned events.
         let store = crate::events::SqliteStore::new(pool.clone());
@@ -1648,10 +1782,10 @@ mod tests {
             .call()
             .await
             .expect("create should succeed");
-        svc.archive(&id, false)
+        svc.archive(&id, Cascade::Reject)
             .await
             .expect("first archive should succeed");
-        let result = svc.archive(&id, false).await;
+        let result = svc.archive(&id, Cascade::Reject).await;
         assert!(matches!(result, Err(BcError::AlreadyArchived(_))));
     }
 
@@ -1819,7 +1953,7 @@ mod tests {
             .call()
             .await
             .expect("create should succeed");
-        svc.archive(&id2, false)
+        svc.archive(&id2, Cascade::Reject)
             .await
             .expect("archive should succeed");
 
@@ -1909,7 +2043,7 @@ mod tests {
             .call()
             .await
             .expect("create gone");
-        svc.archive(&gone, false).await.expect("archive");
+        svc.archive(&gone, Cascade::Reject).await.expect("archive");
 
         let active: Vec<AccountId> = svc
             .list_active()
@@ -2222,7 +2356,7 @@ mod tests {
             .await
             .expect("first run");
         let leaf = first.ids.get("Assets:BankA:OldCard").expect("leaf").clone();
-        svc.archive(&leaf, false).await.expect("archive");
+        svc.archive(&leaf, Cascade::Reject).await.expect("archive");
 
         let out = svc
             .create_paths(&[spec("Assets:BankA:OldCard")])
@@ -2476,7 +2610,7 @@ mod tests {
         let (_assets, bank_a, _checking) = three_deep(&svc).await;
 
         let error = svc
-            .close(&bank_a, jiff::civil::date(2024, 6, 30), false)
+            .close(&bank_a, jiff::civil::date(2024, 6, 30), Cascade::Reject)
             .await
             .expect_err("closing a parent with an open child must be rejected");
 
@@ -2491,7 +2625,7 @@ mod tests {
         let svc = Service::new(pool);
         let (_assets, bank_a, checking) = three_deep(&svc).await;
 
-        svc.close(&bank_a, jiff::civil::date(2024, 6, 30), true)
+        svc.close(&bank_a, jiff::civil::date(2024, 6, 30), Cascade::Into)
             .await
             .expect("cascade close");
 
@@ -2506,7 +2640,7 @@ mod tests {
         let svc = Service::new(pool);
         let (_assets, _bank_a, checking) = three_deep(&svc).await;
 
-        svc.close(&checking, jiff::civil::date(2024, 6, 30), false)
+        svc.close(&checking, jiff::civil::date(2024, 6, 30), Cascade::Reject)
             .await
             .expect("close");
         let account = svc.find_by_id(&checking).await.expect("find");
@@ -2518,12 +2652,12 @@ mod tests {
         let svc = Service::new(pool.clone());
         let (_assets, _bank_a, checking) = three_deep(&svc).await;
 
-        svc.close(&checking, jiff::civil::date(2024, 6, 30), false)
+        svc.close(&checking, jiff::civil::date(2024, 6, 30), Cascade::Reject)
             .await
             .expect("first close");
 
         let error = svc
-            .close(&checking, jiff::civil::date(2024, 7, 31), false)
+            .close(&checking, jiff::civil::date(2024, 7, 31), Cascade::Reject)
             .await
             .expect_err("closing an already-closed account must be rejected");
         assert!(matches!(error, BcError::AlreadyClosed(ref id) if *id == checking));
@@ -2557,7 +2691,7 @@ mod tests {
             .await
             .expect("create parent");
 
-        svc.close(&parent, jiff::civil::date(2024, 6, 30), false)
+        svc.close(&parent, jiff::civil::date(2024, 6, 30), Cascade::Reject)
             .await
             .expect("close the parent while it has no children");
 
@@ -2573,7 +2707,7 @@ mod tests {
             .await
             .expect("create a child under a closed parent");
 
-        svc.close(&parent, jiff::civil::date(2024, 7, 31), true)
+        svc.close(&parent, jiff::civil::date(2024, 7, 31), Cascade::Into)
             .await
             .expect("cascade close repairs an already-closed parent");
 
@@ -2591,7 +2725,7 @@ mod tests {
         let (_assets, bank_a, _checking) = three_deep(&svc).await;
 
         let error = svc
-            .archive(&bank_a, false)
+            .archive(&bank_a, Cascade::Reject)
             .await
             .expect_err("archiving a parent with an active child must be rejected");
         assert!(
@@ -2605,7 +2739,9 @@ mod tests {
         let svc = Service::new(pool);
         let (_assets, bank_a, checking) = three_deep(&svc).await;
 
-        svc.archive(&bank_a, true).await.expect("cascade archive");
+        svc.archive(&bank_a, Cascade::Into)
+            .await
+            .expect("cascade archive");
         for id in [&bank_a, &checking] {
             let account = svc.find_by_id(id).await.expect("find");
             assert!(account.archived_at().is_some());
@@ -2624,7 +2760,7 @@ mod tests {
             .await
             .expect("create parent");
 
-        svc.archive(&parent, false)
+        svc.archive(&parent, Cascade::Reject)
             .await
             .expect("archive the parent while it has no children");
 
@@ -2640,7 +2776,7 @@ mod tests {
             .await
             .expect("create a child under an archived parent");
 
-        svc.archive(&parent, true)
+        svc.archive(&parent, Cascade::Into)
             .await
             .expect("cascade archive repairs an already-archived parent");
 
@@ -2656,7 +2792,7 @@ mod tests {
         let svc = Service::new(pool.clone());
         let (assets, bank_a, checking) = three_deep(&svc).await;
 
-        svc.close(&assets, jiff::civil::date(2024, 6, 30), true)
+        svc.close(&assets, jiff::civil::date(2024, 6, 30), Cascade::Into)
             .await
             .expect("cascade close");
 
@@ -2679,7 +2815,7 @@ mod tests {
         let svc = Service::new(pool);
         let (_assets, bank_a, checking) = three_deep(&svc).await;
 
-        svc.close(&bank_a, jiff::civil::date(2024, 6, 30), true)
+        svc.close(&bank_a, jiff::civil::date(2024, 6, 30), Cascade::Into)
             .await
             .expect("cascade close");
         let error = svc
@@ -2694,7 +2830,7 @@ mod tests {
         let svc = Service::new(pool);
         let (_assets, _bank_a, checking) = three_deep(&svc).await;
 
-        svc.close(&checking, jiff::civil::date(2024, 6, 30), false)
+        svc.close(&checking, jiff::civil::date(2024, 6, 30), Cascade::Reject)
             .await
             .expect("close");
         svc.reopen(&checking).await.expect("reopen");
@@ -2726,5 +2862,115 @@ mod tests {
         svc.set_opened_on(&checking, Some(jiff::civil::date(2019, 1, 1)))
             .await
             .expect("a child opening before its parent is allowed");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn close_before_the_opening_date_is_rejected(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+        svc.set_opened_on(&checking, Some(jiff::civil::date(2021, 1, 1)))
+            .await
+            .expect("set opened_on");
+
+        let error = svc
+            .close(&checking, jiff::civil::date(2019, 1, 1), Cascade::Reject)
+            .await
+            .expect_err("closing before opening must be rejected");
+
+        assert!(
+            matches!(error, BcError::BadData(ref msg) if msg.contains("before it opened on 2021-01-01")),
+            "{error:?}"
+        );
+
+        // The rejection left the account open rather than half-applying.
+        let account = svc.find_by_id(&checking).await.expect("find");
+        assert_eq!(account.closed_on(), None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn close_on_the_opening_date_is_allowed(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+        svc.set_opened_on(&checking, Some(jiff::civil::date(2021, 1, 1)))
+            .await
+            .expect("set opened_on");
+
+        svc.close(&checking, jiff::civil::date(2021, 1, 1), Cascade::Reject)
+            .await
+            .expect("a same-day open and close is a real, if short, life");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_cascade_is_rejected_by_a_descendant_that_opened_later(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, bank_a, checking) = three_deep(&svc).await;
+        svc.set_opened_on(&checking, Some(jiff::civil::date(2024, 1, 1)))
+            .await
+            .expect("set child opened_on");
+
+        let error = svc
+            .close(&bank_a, jiff::civil::date(2022, 6, 30), Cascade::Into)
+            .await
+            .expect_err("a cascade must not stamp an inverted window on a child");
+
+        assert!(
+            matches!(error, BcError::BadData(ref msg) if msg.contains("Checking")),
+            "{error:?}"
+        );
+
+        // Neither the parent nor the child was closed.
+        assert_eq!(
+            svc.find_by_id(&bank_a)
+                .await
+                .expect("find parent")
+                .closed_on(),
+            None
+        );
+        assert_eq!(
+            svc.find_by_id(&checking)
+                .await
+                .expect("find child")
+                .closed_on(),
+            None
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_opened_on_after_the_closing_date_is_rejected(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+        svc.close(&checking, jiff::civil::date(2020, 1, 1), Cascade::Reject)
+            .await
+            .expect("close");
+
+        let error = svc
+            .set_opened_on(&checking, Some(jiff::civil::date(2025, 1, 1)))
+            .await
+            .expect_err("opening after closing must be rejected");
+
+        assert!(
+            matches!(error, BcError::BadData(ref msg) if msg.contains("closed on 2020-01-01")),
+            "{error:?}"
+        );
+
+        // The stored opening date is untouched.
+        let account = svc.find_by_id(&checking).await.expect("find");
+        assert_eq!(account.opened_on(), None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn clearing_the_opening_date_of_a_closed_account_is_allowed(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+        svc.set_opened_on(&checking, Some(jiff::civil::date(2019, 1, 1)))
+            .await
+            .expect("set opened_on");
+        svc.close(&checking, jiff::civil::date(2020, 1, 1), Cascade::Reject)
+            .await
+            .expect("close");
+
+        svc.set_opened_on(&checking, None)
+            .await
+            .expect("clearing declares nothing, so it cannot invert the window");
     }
 }

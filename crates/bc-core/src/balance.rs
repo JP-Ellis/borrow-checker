@@ -884,6 +884,7 @@ mod tests {
     use sqlx::Row as _;
 
     use super::*;
+    use crate::account::Cascade;
 
     /// Returns the `detail` column of every `EXPLAIN QUERY PLAN` row for `sql`.
     ///
@@ -2149,7 +2150,10 @@ mod tests {
         sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_bank_a', 'tx_a1', ?, NULL, NULL, 1)")
             .bind(bank.to_string()).execute(&pool).await.expect("insert elided leg");
 
-        acct_svc.archive(&bank, false).await.expect("archive Bank");
+        acct_svc
+            .archive(&bank, Cascade::Reject)
+            .await
+            .expect("archive Bank");
 
         let engine = Engine::new(pool.clone());
         let balances = engine.default_balances().await.expect("default balances");

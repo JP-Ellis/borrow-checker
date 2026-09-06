@@ -273,6 +273,7 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::*;
+    use crate::account::Cascade;
 
     #[test]
     fn parses_a_multi_segment_path() {
@@ -489,7 +490,7 @@ mod tests {
         let assets = account(&pool, "Assets", None).await;
         let old = account(&pool, "OldBank", Some(&assets)).await;
         let svc = crate::AccountService::new(pool.clone());
-        svc.archive(&old, false).await.expect("archive");
+        svc.archive(&old, Cascade::Reject).await.expect("archive");
 
         let resolver = AccountResolver::load(&svc).await.expect("load resolver");
         assert_eq!(
