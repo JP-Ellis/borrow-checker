@@ -573,18 +573,24 @@ impl Service {
     /// The event append and all projection inserts are wrapped in a single
     /// SQLite transaction so they succeed or fail atomically.
     ///
+    /// # Warnings
+    ///
+    /// Returns advisory [`crate::Warning`]s alongside the result — a commodity
+    /// outside the account's declared list, a date outside its declared life,
+    /// or an archived account. None of these blocks the write.
+    ///
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if the posting list is empty, contains two
     /// or more elided amounts, or is a single lone elided posting.
     /// Returns [`BcError`] on event append or database insert failure.
     #[inline]
-    pub async fn create(&self, tx: Transaction) -> BcResult<TransactionId> {
+    pub async fn create(&self, tx: Transaction) -> BcResult<crate::Warned<TransactionId>> {
         let mut db_tx = self.pool.begin().await?;
-        let tx_id = self.create_in_tx(&mut db_tx, tx).await?;
+        let warned = self.create_in_tx(&mut db_tx, tx).await?;
         db_tx.commit().await?;
-        tracing::info!(transaction_id = %tx_id, "transaction created");
-        Ok(tx_id)
+        tracing::info!(transaction_id = %warned.value, "transaction created");
+        Ok(warned)
     }
 
     /// Persists a transaction within an already-open database transaction.
@@ -604,6 +610,12 @@ impl Service {
     ///
     /// The ID of the persisted transaction.
     ///
+    /// # Warnings
+    ///
+    /// Returns advisory [`crate::Warning`]s alongside the result — a commodity
+    /// outside the account's declared list, a date outside its declared life,
+    /// or an archived account. None of these blocks the write.
+    ///
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if the posting list is empty, contains two
@@ -613,8 +625,10 @@ impl Service {
         &self,
         db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         tx: Transaction,
-    ) -> BcResult<TransactionId> {
+    ) -> BcResult<crate::Warned<TransactionId>> {
         validate_postings(tx.postings())?;
+
+        let warnings = crate::warning::check_postings(db_tx, tx.date(), tx.postings()).await?;
 
         let tx_id = tx.id().clone();
         let event = Event::TransactionCreated { id: tx_id.clone() };
@@ -653,7 +667,7 @@ impl Service {
             crate::tag::insert_posting_tags(&mut *db_tx, posting.id(), posting.tag_ids()).await?;
         }
 
-        Ok(tx_id)
+        Ok(crate::Warned::new(tx_id, warnings))
     }
 
     /// Appends postings to an existing transaction within an open database
@@ -1814,6 +1828,12 @@ impl Service {
     /// tags are replaced without an event of their own;
     /// [`Service::edit`] is the path that decomposes those.
     ///
+    /// # Warnings
+    ///
+    /// Returns advisory [`crate::Warning`]s alongside the result — a commodity
+    /// outside the account's declared list, a date outside its declared life,
+    /// or an archived account. None of these blocks the write.
+    ///
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if the posting list is empty, contains two
@@ -1821,7 +1841,7 @@ impl Service {
     /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
-    pub async fn amend(&self, updated: Transaction) -> BcResult<()> {
+    pub async fn amend(&self, updated: Transaction) -> BcResult<crate::Warned<()>> {
         validate_postings(updated.postings())?;
 
         let tx_id = updated.id().clone();
@@ -1843,6 +1863,8 @@ impl Service {
         }
 
         let mut db_tx = self.pool.begin().await?;
+        let warnings =
+            crate::warning::check_postings(&mut db_tx, updated.date(), updated.postings()).await?;
         for event in &events {
             insert_event(event, &mut db_tx).await?;
         }
@@ -1850,7 +1872,7 @@ impl Service {
             .await?;
         db_tx.commit().await?;
         tracing::info!(transaction_id = %tx_id, "transaction amended");
-        Ok(())
+        Ok(crate::Warned::new((), warnings))
     }
 
     /// Applies a desired transaction state, recording decomposed semantic events.
@@ -1866,13 +1888,19 @@ impl Service {
     /// * `updated` - The desired transaction state. Must carry the ID of an
     ///   existing transaction; all postings are replaced.
     ///
+    /// # Warnings
+    ///
+    /// Returns advisory [`crate::Warning`]s alongside the result — a commodity
+    /// outside the account's declared list, a date outside its declared life,
+    /// or an archived account. None of these blocks the write.
+    ///
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if the posting list is empty, has ≥2 elided
     /// amounts, or is a lone elided posting. Returns [`BcError::NotFound`] if no
     /// transaction with that ID exists. Returns [`BcError`] on DB failure.
     #[inline]
-    pub async fn edit(&self, updated: Transaction) -> BcResult<()> {
+    pub async fn edit(&self, updated: Transaction) -> BcResult<crate::Warned<()>> {
         validate_postings(updated.postings())?;
 
         let tx_id = updated.id().clone();
@@ -1881,6 +1909,8 @@ impl Service {
         let events = diff_transaction(&current, &merged);
 
         let mut db_tx = self.pool.begin().await?;
+        let warnings =
+            crate::warning::check_postings(&mut db_tx, merged.date(), merged.postings()).await?;
         for event in &events {
             insert_event(event, &mut db_tx).await?;
         }
@@ -1889,7 +1919,7 @@ impl Service {
         db_tx.commit().await?;
 
         tracing::info!(transaction_id = %tx_id, event_count = events.len(), "transaction edited");
-        Ok(())
+        Ok(crate::Warned::new((), warnings))
     }
 
     /// Lists all transactions with a posting against `account_id`
@@ -2321,7 +2351,7 @@ mod tests {
             .created_at(jiff::Timestamp::now())
             .build();
 
-        let tx_id = svc.create(tx).await.expect("create tx");
+        let tx_id = svc.create(tx).await.expect("create tx").into_inner();
         let loaded = svc.find_by_id(&tx_id).await.expect("get tx");
 
         let gym_posting = loaded
@@ -2382,7 +2412,7 @@ mod tests {
             .created_at(jiff::Timestamp::now())
             .build();
 
-        let tx_id = svc.create(tx).await.expect("create tx");
+        let tx_id = svc.create(tx).await.expect("create tx").into_inner();
 
         svc.set_posting_spread(&posting_id, date(2026, 9, 1), date(2027, 3, 12))
             .await
@@ -2587,6 +2617,86 @@ mod tests {
             !found.balanced(),
             "one-sided transaction should not be balanced"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    async fn create_warns_but_persists_a_posting_outside_the_account_life(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .opened_on(date(2020, 1, 1))
+            .call()
+            .await
+            .expect("create account");
+
+        let svc = Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2019, 5, 1))
+            .description("Dated before the account opened")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc)
+                    .amount(Amount::new(dec!(50.00), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+
+        let warned = svc.create(tx).await.expect("create must succeed");
+
+        assert_eq!(warned.warnings.len(), 1, "{:?}", warned.warnings);
+        assert!(
+            matches!(
+                warned.warnings[0],
+                crate::Warning::PostingBeforeAccountOpened { .. }
+            ),
+            "{:?}",
+            warned.warnings
+        );
+
+        svc.find_by_id(&warned.value)
+            .await
+            .expect("the transaction must still have been written");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_inside_the_account_life_warns_nothing(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .opened_on(date(2020, 1, 1))
+            .call()
+            .await
+            .expect("create account");
+
+        let svc = Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2022, 3, 3))
+            .description("Dated inside the account life")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc)
+                    .amount(Amount::new(dec!(50.00), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+
+        let warned = svc.create(tx).await.expect("create must succeed");
+        assert!(warned.warnings.is_empty(), "{:?}", warned.warnings);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2930,7 +3040,11 @@ mod tests {
             ])
             .build();
 
-        let id = svc.create(original.clone()).await.expect("create");
+        let id = svc
+            .create(original.clone())
+            .await
+            .expect("create")
+            .into_inner();
 
         let amended = Transaction::builder()
             .id(id.clone())
@@ -3540,7 +3654,11 @@ mod tests {
             .created_at(Timestamp::now())
             .build();
 
-        let id = svc.create(original.clone()).await.expect("create");
+        let id = svc
+            .create(original.clone())
+            .await
+            .expect("create")
+            .into_inner();
 
         let updated = Transaction::builder()
             .id(id.clone())
@@ -3610,7 +3728,11 @@ mod tests {
             .created_at(Timestamp::now())
             .build();
 
-        let id = svc.create(original.clone()).await.expect("create");
+        let id = svc
+            .create(original.clone())
+            .await
+            .expect("create")
+            .into_inner();
 
         let source_svc = crate::SourceService::new(pool.clone());
         let batch_svc = crate::ImportBatchService::new(pool.clone());
@@ -4116,7 +4238,11 @@ mod tests {
             .reconciliation(Reconciliation::Unreconciled)
             .created_at(Timestamp::now())
             .build();
-        let tx_id = svc.create(tx).await.expect("seed transaction created");
+        let tx_id = svc
+            .create(tx)
+            .await
+            .expect("seed transaction created")
+            .into_inner();
         (tx_id, posting_id, expenses_id)
     }
 
@@ -4204,7 +4330,11 @@ mod tests {
             .created_at(Timestamp::now())
             .build();
 
-        let tx_id = svc.create(original.clone()).await.expect("create");
+        let tx_id = svc
+            .create(original.clone())
+            .await
+            .expect("create")
+            .into_inner();
 
         // Edit: only change the description — metadata echoed from current,
         // posting cost must survive.
@@ -4279,7 +4409,7 @@ mod tests {
             .created_at(Timestamp::now())
             .build();
 
-        let tx_id = svc.create(original).await.expect("create");
+        let tx_id = svc.create(original).await.expect("create").into_inner();
 
         let current = svc.find_by_id(&tx_id).await.expect("load");
         let edited = Transaction::builder()
@@ -4503,7 +4633,7 @@ mod tests {
             .created_at(Timestamp::now())
             .build();
 
-        let id = svc.create(original).await.expect("create");
+        let id = svc.create(original).await.expect("create").into_inner();
         (svc, id)
     }
 
@@ -4918,7 +5048,11 @@ mod tests {
             .reconciliation(Reconciliation::Unreconciled)
             .created_at(Timestamp::now())
             .build();
-        let id = svc.create(tx).await.expect("create balanced tx");
+        let id = svc
+            .create(tx)
+            .await
+            .expect("create balanced tx")
+            .into_inner();
 
         svc.reconcile(&id, Reconciliation::Reconciled)
             .await

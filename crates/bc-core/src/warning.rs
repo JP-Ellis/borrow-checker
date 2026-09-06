@@ -139,13 +139,6 @@ impl<T> Warned<T> {
 }
 
 /// The per-account facts the guard needs, fetched once per distinct account.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired into the transaction write path in Task 6; only exercised by tests until then"
-    )
-)]
 struct Guard {
     /// The account's colon-joined path, for display.
     path: String,
@@ -178,13 +171,6 @@ struct Guard {
 /// Returns [`crate::BcError`] only on database read failure. A posting whose
 /// account does not exist yields no warning — referential integrity is not
 /// this function's job.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired into the transaction write path in Task 6; only exercised by tests until then"
-    )
-)]
 pub(crate) async fn check_postings(
     conn: &mut sqlx::SqliteConnection,
     date: Date,
@@ -262,13 +248,6 @@ type GuardRow = (
 );
 
 /// Fetches one account's guard facts, or `None` if no such account exists.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired into the transaction write path in Task 6; only exercised by tests until then"
-    )
-)]
 async fn load_guard(
     conn: &mut sqlx::SqliteConnection,
     id: &AccountId,
@@ -311,13 +290,6 @@ async fn load_guard(
 }
 
 /// Parses a nullable `YYYY-MM-DD` column, naming it in any error.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired into the transaction write path in Task 6; only exercised by tests until then"
-    )
-)]
 fn parse_date_column(raw: Option<&str>, column: &str) -> crate::BcResult<Option<Date>> {
     raw.map(|s| {
         s.parse::<Date>()
@@ -330,13 +302,6 @@ fn parse_date_column(raw: Option<&str>, column: &str) -> crate::BcResult<Option<
 ///
 /// Joins through to `commodities` because `account_commodities` stores ids
 /// while a posting's [`bc_models::Amount`] carries only a code.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired into the transaction write path in Task 6; only exercised by tests until then"
-    )
-)]
 async fn load_allowed_codes(
     conn: &mut sqlx::SqliteConnection,
     id: &AccountId,
@@ -620,6 +585,106 @@ mod tests {
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(
             matches!(warnings[0], Warning::PostingIntoArchivedAccount { .. }),
+            "{warnings:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_archived_account_outside_its_life_warns_twice(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let id = accounts
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .opened_on(date(2020, 1, 1))
+            .call()
+            .await
+            .expect("create account");
+        sqlx::query("UPDATE accounts SET closed_on = ?1, archived_at = ?2 WHERE id = ?3")
+            .bind("2024-06-30")
+            .bind(jiff::Timestamp::now().to_string())
+            .bind(id.to_string())
+            .execute(&pool)
+            .await
+            .expect("seed closed_on and archived_at");
+
+        let mut conn = pool.acquire().await.expect("acquire");
+        let warnings = check_postings(&mut conn, date(2025, 1, 15), &one_leg(id, "AUD"))
+            .await
+            .expect("check postings");
+
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| matches!(w, Warning::PostingIntoArchivedAccount { .. })),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| matches!(w, Warning::PostingAfterAccountClosed { .. })),
+            "{warnings:?}"
+        );
+    }
+
+    /// A single elided-leg posting list against `account` — no amount, so the
+    /// commodity check has nothing to compare.
+    fn one_elided_leg(account: bc_models::AccountId) -> Vec<Posting> {
+        vec![
+            Posting::builder()
+                .id(PostingId::new())
+                .account_id(account)
+                .build(),
+        ]
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_elided_posting_skips_the_commodity_check_only(pool: sqlx::SqlitePool) {
+        let (aud, _btc) = seed_commodities(&pool).await;
+        let accounts = crate::account::Service::new(pool.clone());
+        let id = accounts
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .commodity_ids(&[aud])
+            .opened_on(date(2020, 1, 1))
+            .call()
+            .await
+            .expect("create account");
+        sqlx::query("UPDATE accounts SET archived_at = ?1 WHERE id = ?2")
+            .bind(jiff::Timestamp::now().to_string())
+            .bind(id.to_string())
+            .execute(&pool)
+            .await
+            .expect("seed archived_at");
+
+        let mut conn = pool.acquire().await.expect("acquire");
+        let warnings = check_postings(&mut conn, date(2019, 5, 1), &one_elided_leg(id))
+            .await
+            .expect("check postings");
+
+        // The archived and pre-opening checks fire; the commodity check has no
+        // amount to inspect and stays silent.
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| matches!(w, Warning::PostingIntoArchivedAccount { .. })),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| matches!(w, Warning::PostingBeforeAccountOpened { .. })),
+            "{warnings:?}"
+        );
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| matches!(w, Warning::CommodityOutsideAccountList { .. })),
             "{warnings:?}"
         );
     }
