@@ -117,7 +117,7 @@ fn qa_tags() -> Vec<TagInfo> {
 fn balanced_tx() -> Transaction {
     tx(
         "tx-balanced",
-        "Coles Carlton",
+        "Coles",
         "POS purchase",
         Reconciliation::Reconciled,
         vec!["groceries".to_owned()],

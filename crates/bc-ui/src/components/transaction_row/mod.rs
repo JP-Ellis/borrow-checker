@@ -1358,7 +1358,7 @@ mod tests {
 
     #[test]
     fn payee_initial_first_letter() {
-        assert_eq!(super::payee_initial("Coles Carlton"), 'C');
+        assert_eq!(super::payee_initial("Coles"), 'C');
     }
 
     #[test]
