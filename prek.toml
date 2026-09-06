@@ -39,13 +39,13 @@ hooks = [{ id = "yamlfix", args = ["--config-file", ".yamlfix.toml"] }]
 # JSON formatting (via Biome)
 [[repos]]
 repo  = "https://github.com/biomejs/pre-commit"
-rev   = "v2.4.14"
+rev   = "v2.5.12"
 hooks = [{ id = "biome-check" }]
 
 # TOML formatting (tombi replaces taplo)
 [[repos]]
 repo  = "https://github.com/tombi-toml/tombi-pre-commit"
-rev   = "v0.10.6"
+rev   = "v1.5.2"
 hooks = [
   { id = "tombi-format", exclude = '(^|/)Cargo\.lock$' },
   { id = "tombi-lint" },
@@ -68,13 +68,13 @@ hooks = [{ id = "mdformat", exclude = "^CHANGELOG\\.md$" }]
 # Spell checking
 [[repos]]
 repo  = "https://github.com/crate-ci/typos"
-rev   = "v1.46.0"
+rev   = "v1.50.1"
 hooks = [{ id = "typos" }]
 
 # Shell script linting
 [[repos]]
 repo  = "https://github.com/shellcheck-py/shellcheck-py"
-rev   = "v0.11.0.1"
+rev   = "v0.11.0.1-1"
 hooks = [{ id = "shellcheck", args = ["--external-sources"] }]
 
 # Shell script formatting
