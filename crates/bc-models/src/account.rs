@@ -127,10 +127,10 @@ pub struct Account {
 
     /// Account maintenance kind — governs how this account's balance is updated.
     ///
-    /// Defaults to [`Kind::DepositAccount`], which is backwards-compatible with all
-    /// existing accounts. Only `DepositAccount` accounts may have an import profile
-    /// attached; this invariant is enforced by `bc-core` at creation time.
-    /// Deferred to Milestone 2 (import profiles not yet implemented in M1).
+    /// Defaults to [`Kind::DepositAccount`]. Import profiles carry no account
+    /// reference — `profile_id` lives on `import_batches`, so a profile is
+    /// applied to a run rather than to an account — and nothing restricts which
+    /// kind a profile is used against.
     #[builder(default = Kind::DepositAccount)]
     kind: Kind,
 
@@ -180,6 +180,21 @@ pub struct Account {
     /// Set via [`Account::archive`]; do not assign directly via the builder
     /// unless re-hydrating an already-archived record.
     archived_at: Option<Timestamp>,
+
+    /// Business date on which this account started existing. `None` means no
+    /// declared start, and so no lower bound on transaction dates.
+    ///
+    /// Distinct from `created_at`, which records when the row was written, and
+    /// from `archived_at`, which controls visibility rather than describing a
+    /// date in the account's life.
+    opened_on: Option<jiff::civil::Date>,
+
+    /// Business date on which this account stopped existing. `None` means the
+    /// account is still open.
+    ///
+    /// Orthogonal to `archived_at`: an account closed years ago is still wanted
+    /// in reports covering the years it was open, so closing does not archive.
+    closed_on: Option<jiff::civil::Date>,
 }
 
 impl Account {
@@ -317,10 +332,37 @@ impl Account {
             self.archived_at = Some(at);
         }
     }
+
+    /// Returns the date the account started existing, if declared.
+    #[inline]
+    #[must_use]
+    pub fn opened_on(&self) -> Option<jiff::civil::Date> {
+        self.opened_on
+    }
+
+    /// Returns the date the account stopped existing, if closed.
+    #[inline]
+    #[must_use]
+    pub fn closed_on(&self) -> Option<jiff::civil::Date> {
+        self.closed_on
+    }
+
+    /// Sets the date the account started existing.
+    #[inline]
+    pub fn set_opened_on(&mut self, opened_on: Option<jiff::civil::Date>) {
+        self.opened_on = opened_on;
+    }
+
+    /// Sets the date the account stopped existing.
+    #[inline]
+    pub fn set_closed_on(&mut self, closed_on: Option<jiff::civil::Date>) {
+        self.closed_on = closed_on;
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -521,7 +563,6 @@ mod tests {
 
     #[test]
     fn account_with_acquisition_fields_round_trips() {
-        use jiff::civil::date;
         use rust_decimal_macros::dec;
 
         use crate::valuation::DepreciationPolicy;
@@ -550,5 +591,45 @@ mod tests {
 
         let parsed: Kind = serde_json::from_str("\"group\"").expect("deserialise Kind::Group");
         assert_eq!(parsed, Kind::Group);
+    }
+
+    #[test]
+    fn account_dates_default_to_none() {
+        let account = Account::builder()
+            .name("Checking")
+            .account_type(Type::Asset)
+            .build();
+
+        assert_eq!(account.opened_on(), None);
+        assert_eq!(account.closed_on(), None);
+    }
+
+    #[test]
+    fn account_dates_round_trip_through_the_builder() {
+        let account = Account::builder()
+            .name("Checking")
+            .account_type(Type::Asset)
+            .opened_on(date(2020, 1, 1))
+            .closed_on(date(2024, 6, 30))
+            .build();
+
+        assert_eq!(account.opened_on(), Some(date(2020, 1, 1)));
+        assert_eq!(account.closed_on(), Some(date(2024, 6, 30)));
+    }
+
+    #[test]
+    fn account_dates_are_settable() {
+        let mut account = Account::builder()
+            .name("Checking")
+            .account_type(Type::Asset)
+            .build();
+
+        account.set_opened_on(Some(date(2020, 1, 1)));
+        account.set_closed_on(Some(date(2024, 6, 30)));
+        assert_eq!(account.opened_on(), Some(date(2020, 1, 1)));
+        assert_eq!(account.closed_on(), Some(date(2024, 6, 30)));
+
+        account.set_closed_on(None);
+        assert_eq!(account.closed_on(), None);
     }
 }
