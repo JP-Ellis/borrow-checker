@@ -200,6 +200,42 @@ fn build_tags_map(rows: Vec<(String, String)>) -> BcResult<HashMap<String, Vec<T
     Ok(map)
 }
 
+/// Rejects a write when `blocking` descendants exist and `cascade` is false.
+///
+/// Shared by [`Service::archive`] and [`Service::close`], whose descendant
+/// checks differ only in which descendants block the write (active vs. open)
+/// and in wording. `action` names the write in the message (e.g. `"archive"`)
+/// and `state` names why a descendant blocks it (e.g. `"active"`).
+///
+/// # Arguments
+///
+/// * `blocking` - The descendants that block the write, as `(id, name, closed_on, archived_at)`.
+/// * `cascade` - Whether the caller intends to cascade into `blocking`, which lifts the block.
+/// * `action` - The write being attempted, for the error message (e.g. `"archive"`, `"close"`).
+/// * `state` - Why a descendant blocks the write, for the error message (e.g. `"active"`, `"open"`).
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] naming every blocking descendant if `blocking`
+/// is non-empty and `cascade` is false.
+fn reject_blocking_descendants(
+    blocking: &[&(String, String, Option<String>, Option<String>)],
+    cascade: bool,
+    action: &str,
+    state: &str,
+) -> BcResult<()> {
+    if blocking.is_empty() || cascade {
+        return Ok(());
+    }
+    let names: Vec<&str> = blocking.iter().map(|d| d.1.as_str()).collect();
+    Err(BcError::BadData(format!(
+        "cannot {action} an account while {} descendant(s) remain {state}: {}; \
+         {action} them first or pass cascade",
+        blocking.len(),
+        names.join(", ")
+    )))
+}
+
 /// Returns every descendant of `id`, deepest last, using a recursive CTE.
 ///
 /// Excludes `id` itself. Each row is `(id, name, closed_on, archived_at)`.
@@ -314,7 +350,9 @@ impl Service {
     /// An archived account may not have an active descendant. With `cascade`
     /// false this rejects when any descendant is still active, naming them;
     /// with `cascade` true every active descendant is archived alongside `id`
-    /// in the same transaction.
+    /// in the same transaction. `id` being already archived does not stop the
+    /// cascade — an already-archived parent with active descendants is exactly
+    /// the state `cascade` repairs.
     ///
     /// The event append and the projection UPDATE are wrapped in a single SQLite
     /// transaction so they succeed or fail atomically.  `rows_affected()` is used
@@ -343,17 +381,7 @@ impl Service {
         let active: Vec<&(String, String, Option<String>, Option<String>)> =
             descendants.iter().filter(|d| d.3.is_none()).collect();
 
-        if !active.is_empty() && !cascade {
-            let names: Vec<&str> = active.iter().map(|d| d.1.as_str()).collect();
-            return Err(BcError::BadData(format!(
-                "cannot archive an account while {} descendant(s) remain active: {}; \
-                 archive them first or pass cascade",
-                active.len(),
-                names.join(", ")
-            )));
-        }
-
-        insert_event(&Event::AccountArchived { id: id.clone() }, &mut tx).await?;
+        reject_blocking_descendants(&active, cascade, "archive", "active")?;
 
         let result =
             sqlx::query("UPDATE accounts SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
@@ -362,25 +390,32 @@ impl Service {
                 .execute(&mut *tx)
                 .await?;
 
-        if result.rows_affected() == 0 {
+        let target_archived = result.rows_affected() > 0;
+
+        if target_archived {
+            insert_event(&Event::AccountArchived { id: id.clone() }, &mut tx).await?;
+        } else {
             // rows_affected == 0 means the UPDATE found no matching row.
-            // Returning here drops `tx` without committing — sqlx rolls it
-            // back implicitly, discarding the event insert above.
-            //
             // Perform a follow-up SELECT to distinguish "not found" from
             // "already archived" so callers get a semantic error.
             let exists: bool = sqlx::query_scalar("SELECT count(*) > 0 FROM accounts WHERE id = ?")
                 .bind(id.to_string())
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *tx)
                 .await?;
 
-            return if exists {
-                Err(BcError::AlreadyArchived(id.clone()))
-            } else {
-                Err(BcError::NotFound(id.to_string()))
-            };
+            if !exists {
+                return Err(BcError::NotFound(id.to_string()));
+            }
+            if !cascade {
+                return Err(BcError::AlreadyArchived(id.clone()));
+            }
+            // `cascade` is true and the target is merely already archived —
+            // that is not a reason to leave its active descendants alone, so
+            // fall through to the cascade below without an event for `id`
+            // (nothing about it actually changed).
         }
 
+        let mut archived = usize::from(target_archived);
         if cascade {
             for descendant in &active {
                 let descendant_id = descendant.0.parse::<AccountId>().map_err(|e| {
@@ -400,15 +435,12 @@ impl Service {
                 .bind(descendant_id.to_string())
                 .execute(&mut *tx)
                 .await?;
+                archived = archived.saturating_add(1);
             }
         }
 
         tx.commit().await?;
-        tracing::info!(
-            account_id = %id,
-            archived = active.len().saturating_add(1),
-            "account archived"
-        );
+        tracing::info!(account_id = %id, archived, "account archived");
         Ok(())
     }
 
@@ -456,15 +488,7 @@ impl Service {
         let open: Vec<&(String, String, Option<String>, Option<String>)> =
             descendants.iter().filter(|d| d.2.is_none()).collect();
 
-        if !open.is_empty() && !cascade {
-            let names: Vec<&str> = open.iter().map(|d| d.1.as_str()).collect();
-            return Err(BcError::BadData(format!(
-                "cannot close an account while {} descendant(s) remain open: {}; \
-                 close them first or pass cascade",
-                open.len(),
-                names.join(", ")
-            )));
-        }
+        reject_blocking_descendants(&open, cascade, "close", "open")?;
 
         let mut to_close: Vec<AccountId> = vec![id.clone()];
         if cascade {
@@ -2464,7 +2488,10 @@ mod tests {
             .archive(&bank_a, false)
             .await
             .expect_err("archiving a parent with an active child must be rejected");
-        assert!(matches!(error, BcError::BadData(_)), "{error:?}");
+        assert!(
+            matches!(error, BcError::BadData(ref m) if m.contains("Checking")),
+            "the error must name the active descendants: {error:?}"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2476,6 +2503,68 @@ mod tests {
         for id in [&bank_a, &checking] {
             let account = svc.find_by_id(id).await.expect("find");
             assert!(account.archived_at().is_some());
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn cascade_archive_repairs_an_already_archived_parent(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let parent = svc
+            .create()
+            .name("BankA")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::Group)
+            .call()
+            .await
+            .expect("create parent");
+
+        svc.archive(&parent, false)
+            .await
+            .expect("archive the parent while it has no children");
+
+        // Nothing today stops creating a child under an already-archived
+        // parent — this reaches exactly the state `cascade` must repair.
+        let child = svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&parent)
+            .call()
+            .await
+            .expect("create a child under an archived parent");
+
+        svc.archive(&parent, true)
+            .await
+            .expect("cascade archive repairs an already-archived parent");
+
+        let found = svc.find_by_id(&child).await.expect("find child");
+        assert!(
+            found.archived_at().is_some(),
+            "the active child must end up archived"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn cascade_close_writes_one_closed_event_per_account(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let (assets, bank_a, checking) = three_deep(&svc).await;
+
+        svc.close(&assets, jiff::civil::date(2024, 6, 30), true)
+            .await
+            .expect("cascade close");
+
+        let store = crate::events::SqliteStore::new(pool);
+        for id in [&assets, &bank_a, &checking] {
+            let events = store
+                .replay_for(&id.to_string())
+                .await
+                .expect("replay should succeed");
+            let closed_count = events.iter().filter(|e| e.kind == "AccountClosed").count();
+            assert_eq!(
+                closed_count, 1,
+                "expected exactly one AccountClosed event for {id}"
+            );
         }
     }
 
