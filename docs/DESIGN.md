@@ -138,7 +138,7 @@ Accounts are classified by `AccountType` (Asset, Liability, Equity, Income, Expe
 
 **Hierarchy via `parent_id`:**
 
-Accounts form an arbitrary-depth tree through an optional `parent_id: Option<AccountId>`. A root account (`parent_id = None`) is the authority for its `AccountType`; child accounts inherit their root's type (enforced in `bc-core` at creation time). The hierarchy supports:
+Accounts form an arbitrary-depth tree through an optional `parent_id: Option<AccountId>`. A root account (`parent_id = None`) is the authority for its `AccountType`; child accounts inherit their root's type when a path is materialised by `account create`, which derives the type from the root segment and applies it to every segment it creates. The programmatic `Service::create` takes an explicit type and does not check it against the parent. The hierarchy supports:
 
 - Institution grouping: `Assets > Bank > Savings, Checking`
 - Virtual sub-accounts: `Assets > Bank > Offset > Mine, Partner, Shared`
@@ -157,7 +157,7 @@ No two sibling accounts share a name (`idx_accounts_sibling_unique`, a `UNIQUE` 
 | `VirtualAllocation` | No independent existence. Subdivides a parent account's balance. Examples: earmarked sub-accounts within an offset account. |
 | `Group` | Organisational node that holds no postings of its own. Created implicitly as a path ancestor when `account create` materialises a nested path, or explicitly via `--kind group`. Examples: `Assets`, `Assets:BankA`, `Expenses:Food`. |
 
-Only `DepositAccount` accounts may have an import profile — enforced in `bc-core` at creation time.
+An import profile carries a name, an importer identifier and a config blob; it holds no account reference, and nothing restricts which account kind a profile is applied to. `DepositAccount` is the kind the import workflow expects, by convention rather than by a check.
 
 **Cross-cutting labels via an entity-based tag model:**
 
