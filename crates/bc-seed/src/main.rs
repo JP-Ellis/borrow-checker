@@ -1417,7 +1417,8 @@ async fn main() -> anyhow::Result<()> {
                 ])
                 .build(),
         )
-        .await?;
+        .await?
+        .into_inner();
     drop(transactions.reverse(&voided_jan_paycheck).await?);
 
     // -------------------------------------------------------------------------
@@ -1620,7 +1621,8 @@ async fn main() -> anyhow::Result<()> {
                 ])
                 .build(),
         )
-        .await?;
+        .await?
+        .into_inner();
     drop(transactions.reverse(&voided_feb_woolworths).await?);
 
     // -------------------------------------------------------------------------
