@@ -1,0 +1,10 @@
+---
+source: crates/bc-cli/tests/cli/transaction.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Created transaction: [TRANSACTION_ID]
+----- stderr -----
+warning: Assets:Checking is dated 2020-01-01 but the account opened on 2024-01-01

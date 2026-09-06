@@ -1,6 +1,5 @@
 ---
 source: crates/bc-cli/src/commands/import.rs
-assertion_line: 1392
 expression: report.to_json()
 ---
 {
@@ -58,6 +57,10 @@ expression: report.to_json()
     "XRP"
   ],
   "unresolved_commodity_postings": 0,
+  "warnings": [
+    "Assets:BankA:Checking is archived"
+  ],
+  "warnings_are_lower_bound": true,
   "would_create_tags": [
     "groceries",
     "holiday"

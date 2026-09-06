@@ -528,6 +528,10 @@ struct Report<'out> {
     unresolved_commodities: &'out [String],
     /// The tag paths the run created.
     created_tags: &'out [String],
+    /// Advisory warnings raised by postings that were nonetheless written.
+    /// Complete: a real run holds a database connection throughout, so every
+    /// cause `check_postings` can raise is checked for every posting.
+    warnings: &'out [bc_core::Warning],
 }
 
 impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
@@ -542,6 +546,7 @@ impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
             unresolved_accounts: &outcome.unresolved_accounts,
             unresolved_commodities: &outcome.unresolved_commodities,
             created_tags: &outcome.created_tags,
+            warnings: &outcome.warnings,
         }
     }
 }
@@ -560,11 +565,19 @@ impl Report<'_> {
     ///
     /// The report, newline-terminated.
     fn render(&self) -> String {
-        let mut lines: Vec<String> = vec![format!(
+        let mut lines: Vec<String> = Vec::new();
+
+        if !self.warnings.is_empty() {
+            lines.push(format!("Warnings ({}):", self.warnings.len()));
+            lines.extend(self.warnings.iter().map(|warning| format!("  {warning}")));
+            lines.push(String::new());
+        }
+
+        lines.push(format!(
             "Imported {}, attached {}.",
             plural(self.new_transactions, "transaction"),
             plural(self.attached_postings, "posting"),
-        )];
+        ));
 
         if !self.unresolved_accounts.is_empty() {
             lines.push(String::new());
@@ -673,6 +686,11 @@ impl Report<'_> {
             "unresolved_accounts": self.unresolved_accounts,
             "unresolved_commodities": self.unresolved_commodities,
             "created_tags": self.created_tags,
+            "warnings": self
+                .warnings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
         })
     }
 }
@@ -730,6 +748,15 @@ struct PlanReport {
     charged_by_cause: Vec<(bc_core::SkipCause, usize)>,
     /// Every leg or row the run would skip, with its cause and location.
     diagnostics: Vec<PlanDiagnostic>,
+    /// Advisory warnings raised while resolving legs.
+    ///
+    /// Not the complete set a real run would produce: [`bc_core::ImportPlan`]
+    /// holds no database connection (its structural guarantee that a dry run
+    /// writes nothing), so the three `check_postings`-derived warnings —
+    /// commodity outside an account's declared list, dated before
+    /// `opened_on`, dated after `closed_on` — cannot be computed here. This
+    /// is a lower bound; see [`render_warnings`].
+    warnings: Vec<bc_core::Warning>,
 }
 
 impl From<&bc_core::ImportPlan> for PlanReport {
@@ -768,6 +795,7 @@ impl From<&bc_core::ImportPlan> for PlanReport {
                     detail: diagnostic.detail.clone(),
                 })
                 .collect(),
+            warnings: plan.warnings.clone(),
         }
     }
 }
@@ -782,12 +810,23 @@ impl PlanReport {
     /// no `batch_id` key at all, because a dry run opens no batch — there is
     /// no unknown identifier to report, only the absence of one.
     ///
+    /// `warnings_are_lower_bound` is always `true`: [`Self::warnings`] cannot
+    /// include the `check_postings`-derived variants (see that field's doc),
+    /// so a script must not treat an empty or short `warnings` array as proof
+    /// a real run would raise none.
+    ///
     /// # Returns
     ///
     /// The payload `--json` prints for a dry run.
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "dry_run": true,
+            "warnings": self
+                .warnings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            "warnings_are_lower_bound": true,
             "new_transactions": self.new_transactions,
             "attached_postings": self.attached_postings,
             "skipped_postings": self.skipped_postings,
@@ -995,17 +1034,42 @@ fn render_account_totals(plan: &PlanReport) -> Vec<String> {
     lines
 }
 
+/// Renders the dry run's warnings block, always — even when
+/// [`PlanReport::warnings`] is empty — because the count is a lower bound,
+/// not the complete set a real run would report; a reader who sees an empty
+/// or short list and takes it as "nothing to worry about" would be surprised
+/// by the real run. See [`PlanReport::warnings`] for why the dry-run path
+/// cannot compute the rest.
+///
+/// # Arguments
+///
+/// * `plan` - The report to render the warnings block for.
+///
+/// # Returns
+///
+/// The block's lines, not yet joined with the rest of the report.
+fn render_warnings(plan: &PlanReport) -> Vec<String> {
+    let mut lines = vec![format!(
+        "warnings ({}) — lower bound: a dry run opens no database connection, so it cannot \
+         check postings against their accounts; a real run may report more",
+        plan.warnings.len()
+    )];
+    lines.extend(plan.warnings.iter().map(|warning| format!("  {warning}")));
+    lines
+}
+
 /// Renders the human-readable dry-run report.
 ///
-/// Leads with what is broken — the unresolved accounts and commodities, then
-/// the legs skipped and why — because the report exists for profile tuning:
-/// someone iterating on date formats, sign conventions and column indices
-/// needs to see what is wrong before what would otherwise succeed. The
-/// per-account `WOULD POST` table closes the report, so an inverted sign or a
-/// misdirected column shows up immediately.
+/// Leads with what is broken — first the warnings, caveated as a lower bound,
+/// then the unresolved accounts and commodities, then the legs skipped and
+/// why — because the report exists for profile tuning: someone iterating on
+/// date formats, sign conventions and column indices needs to see what is
+/// wrong before what would otherwise succeed. The per-account `WOULD POST`
+/// table closes the report, so an inverted sign or a misdirected column shows
+/// up immediately.
 ///
-/// Every section but the header and the totals line is omitted when its own
-/// count is zero.
+/// Every section but the header, the warnings block and the totals line is
+/// omitted when its own count is zero.
 ///
 /// # Arguments
 ///
@@ -1017,10 +1081,13 @@ fn render_account_totals(plan: &PlanReport) -> Vec<String> {
 ///
 /// The report, newline-terminated.
 fn render_plan(plan: &PlanReport, profile: &str, importer: &str) -> String {
-    let mut blocks: Vec<Vec<String>> = vec![vec![
-        format!("dry run — profile '{profile}', importer '{importer}'"),
-        "nothing was written".to_owned(),
-    ]];
+    let mut blocks: Vec<Vec<String>> = vec![
+        vec![
+            format!("dry run — profile '{profile}', importer '{importer}'"),
+            "nothing was written".to_owned(),
+        ],
+        render_warnings(plan),
+    ];
 
     let mut worklist: Vec<String> = Vec::new();
     if !plan.unresolved_accounts.is_empty() {
@@ -1195,6 +1262,7 @@ mod tests {
             unresolved_accounts: &[],
             unresolved_commodities: &[],
             created_tags: &created,
+            warnings: &[],
         };
 
         insta::assert_snapshot!(report.render());
@@ -1219,6 +1287,7 @@ mod tests {
             unresolved_accounts,
             unresolved_commodities,
             created_tags: &[],
+            warnings: &[],
         }
     }
 
@@ -1289,15 +1358,16 @@ mod tests {
                 "unresolved_accounts": ["Expenses:Fun", "Expenses:Rent"],
                 "unresolved_commodities": ["DOGE"],
                 "created_tags": Vec::<String>::new(),
+                "warnings": Vec::<String>::new(),
             }),
             "a script reads these keys; renaming one or dropping the cause split is a \
              breaking change"
         );
     }
 
-    /// A [`PlanReport`] exercising every section: unresolved accounts and
-    /// commodities, two skip causes, tags it would create, and per-account
-    /// totals including one account whose legs net to zero.
+    /// A [`PlanReport`] exercising every section: one warning, unresolved
+    /// accounts and commodities, two skip causes, tags it would create, and
+    /// per-account totals including one account whose legs net to zero.
     fn sample_report() -> PlanReport {
         PlanReport {
             new_transactions: 2,
@@ -1343,6 +1413,10 @@ mod tests {
                     detail: "2 legs, two or more elided".to_owned(),
                 },
             ],
+            warnings: vec![bc_core::Warning::PostingIntoArchivedAccount {
+                account_id: AccountId::new(),
+                account_path: "Assets:BankA:Checking".to_owned(),
+            }],
         }
     }
 
@@ -1369,6 +1443,7 @@ mod tests {
                     detail: "Expenses:Utilities:Gas".to_owned(),
                 })
                 .collect(),
+            warnings: Vec::new(),
         }
     }
 
