@@ -1134,6 +1134,43 @@ mod tests {
     }
 
     #[test]
+    fn parse_bytes_reads_a_datetime_date_column() {
+        // Some exports put a midnight timestamp in the date column. Naming the
+        // time directives consumes it; jiff discards the time.
+        let csv = b"Date,Amount\n\
+                    2025-03-15 00:00:00,50.00\n";
+        let cfg = Config {
+            date_format: "%Y-%m-%d %H:%M:%S".to_owned(),
+            ..dated_rows_config()
+        };
+
+        let txns = CsvImporter
+            .parse_bytes(csv, &cfg, "statement.csv")
+            .expect("a datetime column parses under a datetime format");
+
+        assert_eq!(txns.len(), 1);
+        assert_eq!(txns[0].date, Date::new(2025, 3, 15));
+    }
+
+    #[test]
+    fn parse_bytes_rejects_a_datetime_under_a_bare_date_format() {
+        // strptime must consume the whole cell, so the format has to match the
+        // value in both directions. This is the diagnostic a profile author
+        // meets before reaching for the datetime format above.
+        let csv = b"Date,Amount\n\
+                    2025-03-15 00:00:00,50.00\n";
+
+        let err = CsvImporter
+            .parse_bytes(csv, &dated_rows_config(), "statement.csv")
+            .expect_err("a bare date format leaves the time unparsed");
+
+        assert!(
+            err.to_string().contains("Date"),
+            "the error should name the date column: {err}"
+        );
+    }
+
+    #[test]
     fn import_headerless_csv_by_index() {
         let dir = std::env::temp_dir().join("bc-csv-import-headerless-test");
         let _ = std::fs::remove_dir_all(&dir);
