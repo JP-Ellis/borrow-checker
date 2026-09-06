@@ -89,6 +89,13 @@ jobs:
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
         timeout-minutes: 3
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
+        with:
+          # A run may only restore caches from its own ref or the default
+          # branch, so a cache written on a pull request is unreadable by every
+          # other pull request. Writing them anyway pushed the repository past
+          # the 10 GB limit on each run, evicting main's entries and leaving
+          # every job to build from cold. Only main populates the cache now.
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: mise run lint:hack
 
   format:
@@ -99,6 +106,10 @@ jobs:
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
         timeout-minutes: 3
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
+        with:
+          # rustfmt and leptosfmt compile nothing, so the cache held only a
+          # registry copy while consuming part of the repository's 10 GB.
+          cache: false
       - run: rustup toolchain add nightly --component rustfmt --no-self-update
       - run: mise run format
 
@@ -110,6 +121,9 @@ jobs:
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
         timeout-minutes: 3
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
+        with:
+          # cargo-machete parses manifests and sources; it compiles nothing.
+          cache: false
       - run: mise run machete
 
   test:
@@ -151,6 +165,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
         with:
           cache-key: ${{ matrix.toolchain }}
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: rustup toolchain install ${{ matrix.toolchain }} --no-self-update
         if: matrix.toolchain != 'stable'
       - run: mise run test
@@ -179,6 +194,13 @@ jobs:
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
         timeout-minutes: 3
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
+        with:
+          # A run may only restore caches from its own ref or the default
+          # branch, so a cache written on a pull request is unreadable by every
+          # other pull request. Writing them anyway pushed the repository past
+          # the 10 GB limit on each run, evicting main's entries and leaving
+          # every job to build from cold. Only main populates the cache now.
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: mise run coverage
       - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
