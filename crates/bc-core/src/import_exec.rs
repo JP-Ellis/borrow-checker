@@ -54,6 +54,7 @@ use crate::RawPosting;
 use crate::RawTransaction;
 use crate::Resolution;
 use crate::StoredLeg;
+use crate::Warning;
 
 /// What an import run did.
 #[non_exhaustive]
@@ -126,6 +127,14 @@ pub struct ImportOutcome {
     /// two hundred rows yields a single entry, carrying the first row's
     /// location. Such an entry costs no posting and so appears in no count.
     pub diagnostics: Vec<Diagnostic>,
+    /// Advisory warnings raised by postings that were nonetheless written: a
+    /// commodity outside an account's declared list, a date outside its
+    /// declared life, or an archived account.
+    ///
+    /// Deliberately separate from [`Self::diagnostics`] and
+    /// [`Self::charged_by_cause`], which account for postings that were thrown
+    /// away and whose counts must keep summing to [`Self::skipped_postings`].
+    pub warnings: Vec<Warning>,
 }
 
 /// What an import run **would** do, computed without writing anything.
@@ -217,6 +226,14 @@ pub struct ImportPlan {
     /// Every leg or row the run would skip, in encounter order, with the cause
     /// and the document location. The counts above are the totals of these.
     pub diagnostics: Vec<Diagnostic>,
+    /// Advisory warnings raised by postings that would nonetheless be written: a
+    /// commodity outside an account's declared list, a date outside its
+    /// declared life, or an archived account.
+    ///
+    /// Deliberately separate from [`Self::diagnostics`] and
+    /// [`Self::charged_by_cause`], which account for postings that were thrown
+    /// away and whose counts must keep summing to [`Self::skipped_postings`].
+    pub warnings: Vec<Warning>,
 }
 
 /// Adds `postings` to `tally`'s entry for `cause`, creating it if this is the
@@ -259,6 +276,10 @@ struct Counts {
     charged_by_cause: BTreeMap<SkipCause, usize>,
     /// Every leg or row this run could not persist, in encounter order.
     diagnostics: Vec<Diagnostic>,
+    /// Advisory warnings raised by postings that were nonetheless written,
+    /// deliberately kept apart from `diagnostics` and `charged_by_cause`. See
+    /// [`ImportOutcome::warnings`] for why.
+    warnings: Vec<Warning>,
 }
 
 impl Counts {
@@ -630,6 +651,7 @@ pub async fn execute_import(
         created_tags: run.created_tags,
         charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
+        warnings: run.counts.warnings,
     })
 }
 
@@ -720,6 +742,7 @@ pub async fn plan_import(
         account_totals: sink.totals.into_iter().collect(),
         charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
+        warnings: run.counts.warnings,
     })
 }
 
@@ -878,15 +901,13 @@ fn resolve_legs(
 
         let mut legs = Vec::with_capacity(raw.postings.len());
         for posting in &raw.postings {
-            match resolve_leg(
-                resolver,
-                commodities,
-                raw,
-                posting,
-                &mut out.unresolved_accounts,
-                &mut out.unresolved_commodities,
-                &mut archived,
-            ) {
+            let mut guards = ResolveGuards {
+                unresolved: &mut out.unresolved_accounts,
+                unresolved_commodities: &mut out.unresolved_commodities,
+                archived_seen: &mut archived,
+                warnings: &mut out.counts.warnings,
+            };
+            match resolve_leg(resolver, commodities, raw, posting, &mut guards) {
                 Ok(leg) => legs.push(leg),
                 Err((cause, detail)) => {
                     out.counts.note(location_of(raw), cause, detail);
@@ -968,6 +989,23 @@ fn has_ambiguous_residual(raw: &RawTransaction) -> bool {
         >= 2_usize
 }
 
+/// The warn-once guards and warnings accumulator [`resolve_leg`] updates,
+/// grouped into one value so the function keeps a reasonable arity.
+struct ResolveGuards<'a> {
+    /// Accumulator of distinct unresolved accounts; also the warn-once guard,
+    /// since inserting a path reports whether it is new.
+    unresolved: &'a mut BTreeSet<String>,
+    /// Accumulator of distinct unregistered commodity codes, and likewise
+    /// their warn-once guard.
+    unresolved_commodities: &'a mut BTreeSet<String>,
+    /// Warn-once guard for archived accounts already reported.
+    archived_seen: &'a mut BTreeSet<String>,
+    /// Run-level warnings accumulator; gains one
+    /// [`Warning::PostingIntoArchivedAccount`] the first time a distinct
+    /// archived account is named.
+    warnings: &'a mut Vec<Warning>,
+}
+
 /// Resolves one leg, reporting the diagnostics a skipped leg warrants.
 ///
 /// # Arguments
@@ -976,11 +1014,7 @@ fn has_ambiguous_residual(raw: &RawTransaction) -> bool {
 /// * `commodities` - The registry snapshot to resolve commodity codes against.
 /// * `raw` - The transaction the leg belongs to, for diagnostics.
 /// * `posting` - The leg to resolve.
-/// * `unresolved` - Accumulator of distinct unresolved accounts; also the
-///   warn-once guard, since inserting a path reports whether it is new.
-/// * `unresolved_commodities` - Accumulator of distinct unregistered commodity
-///   codes, and likewise their warn-once guard.
-/// * `archived` - Warn-once guard for archived accounts already reported.
+/// * `guards` - The warn-once guards and warnings accumulator to update.
 ///
 /// # Returns
 ///
@@ -991,9 +1025,7 @@ fn resolve_leg(
     commodities: &CommodityResolver,
     raw: &RawTransaction,
     posting: &RawPosting,
-    unresolved: &mut BTreeSet<String>,
-    unresolved_commodities: &mut BTreeSet<String>,
-    archived_seen: &mut BTreeSet<String>,
+    guards: &mut ResolveGuards<'_>,
 ) -> Result<ResolvedLeg, (SkipCause, String)> {
     let path = match AccountPath::parse(&posting.account) {
         Ok(parsed) => parsed,
@@ -1014,12 +1046,16 @@ fn resolve_leg(
             // Warn once per distinct account, for the same reason the unresolved
             // path below does: one archived account named by every row of a file
             // should log one line, not one per row.
-            if archived && archived_seen.insert(rendered.clone()) {
+            if archived && guards.archived_seen.insert(rendered.clone()) {
                 tracing::warn!(
                     location = location_of(raw),
                     account = %path,
                     "importing into an archived account"
                 );
+                guards.warnings.push(Warning::PostingIntoArchivedAccount {
+                    account_id: id.clone(),
+                    account_path: rendered.clone(),
+                });
             }
             id
         }
@@ -1029,7 +1065,7 @@ fn resolve_leg(
         } => {
             // Warn once per distinct path: a file naming one missing account in
             // every row should log one line, not one per row.
-            if unresolved.insert(rendered.clone()) {
+            if guards.unresolved.insert(rendered.clone()) {
                 tracing::warn!(
                     location = location_of(raw),
                     account = rendered.as_str(),
@@ -1055,7 +1091,7 @@ fn resolve_leg(
             // Warn once per distinct code, for the same reason an unresolved
             // account path does: one unregistered commodity named by every row
             // of a file should log one line, not one per row.
-            if unresolved_commodities.insert(code.clone()) {
+            if guards.unresolved_commodities.insert(code.clone()) {
                 tracing::warn!(
                     location = location_of(raw),
                     commodity = code.as_str(),
@@ -1685,6 +1721,12 @@ trait Sink {
     /// * `postings` - Its postings, index-aligned with `legs`.
     /// * `legs` - The planned legs those postings were built from.
     ///
+    /// # Returns
+    ///
+    /// Advisory warnings the write-time guard raised for this transaction's
+    /// postings. A sink that performs no such check (a dry-run plan) returns
+    /// none.
+    ///
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on insert failure.
@@ -1694,7 +1736,7 @@ trait Sink {
         tx: Transaction,
         postings: &[Posting],
         legs: &[LegPlan],
-    ) -> BcResult<()>;
+    ) -> BcResult<Vec<Warning>>;
 
     /// Appends unstored legs to the transaction that owns their siblings.
     ///
@@ -1866,17 +1908,17 @@ impl Sink for Commit<'_> {
         tx: Transaction,
         postings: &[Posting],
         legs: &[LegPlan],
-    ) -> BcResult<()> {
+    ) -> BcResult<Vec<Warning>> {
         let batch_id = self.batch()?;
         let tx_id = tx.id().clone();
         let mut db_tx = self.transactions.pool().begin().await?;
-        self.transactions.create_in_tx(&mut db_tx, tx).await?;
+        let warned = self.transactions.create_in_tx(&mut db_tx, tx).await?;
         for (posting, leg) in postings.iter().zip(legs) {
             let source = Self::source_ref(raw, leg, batch_id, &tx_id, posting.id(), true);
             self.sources.attach_in_tx(&mut db_tx, &source).await?;
         }
         db_tx.commit().await?;
-        Ok(())
+        Ok(warned.warnings)
     }
 
     /// The owner's stored postings are of no interest here: this sink appends
@@ -2104,18 +2146,23 @@ impl Sink for Plan {
         ready(Ok(None))
     }
 
+    ///
+    /// Raises no warnings: the write-time guard checked here reads accounts
+    /// through a database connection a dry run never opens, so a plan reports
+    /// only the warnings [`resolve_leg`] already raised during resolution
+    /// (currently just the archived-account one).
     fn create(
         &mut self,
         _raw: &RawTransaction,
         _tx: Transaction,
         postings: &[Posting],
         legs: &[LegPlan],
-    ) -> impl Future<Output = BcResult<()>> {
+    ) -> impl Future<Output = BcResult<Vec<Warning>>> {
         // A brand-new transaction holds exactly these postings, so they are the
         // whole leg set the residual is derived from.
         let residual = Self::residual(postings);
         self.record_legs(postings, legs, residual.as_ref());
-        ready(Ok(()))
+        ready(Ok(Vec::new()))
     }
 
     /// Records the appended legs, and the movement the appending causes
@@ -2349,9 +2396,19 @@ where
 
         let written = self.sink.create(raw, tx, &postings, legs).await;
 
-        if !row_local(written, raw, "creating the transaction", legs.len(), counts)? {
+        let Some(warnings) =
+            row_local_value(written, raw, "creating the transaction", legs.len(), counts)?
+        else {
             return Ok(());
-        }
+        };
+        // The write-time guard raises its own archived-account warning per
+        // posting, but `resolve_leg` already raised one, deduplicated once per
+        // distinct account for the whole run — keep that version only.
+        counts.warnings.extend(
+            warnings
+                .into_iter()
+                .filter(|warning| !matches!(warning, Warning::PostingIntoArchivedAccount { .. })),
+        );
 
         counts.new_transactions = counts.new_transactions.saturating_add(1_usize);
         Ok(())
@@ -3241,6 +3298,37 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn import_reports_warnings_without_charging_a_skip(pool: SqlitePool) {
+        let (bank, _food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+
+        // Close the destination account before every imported row's date, via
+        // direct SQL: `Service` exposes no method to set `closed_on` after
+        // creation, so the write-time guard's own tests (`warning.rs`) seed it
+        // the same way.
+        sqlx::query("UPDATE accounts SET closed_on = ?1 WHERE id = ?2")
+            .bind(date(2019, 1, 1).to_string())
+            .bind(bank.to_string())
+            .execute(&pool)
+            .await
+            .expect("seed closed_on");
+
+        let batch = vec![raw("COFFEE", -5), raw("LUNCH", -20)];
+        let outcome = run(&svcs, &batch).await;
+
+        assert!(
+            !outcome.warnings.is_empty(),
+            "expected a closed-account warning"
+        );
+        assert_eq!(outcome.skipped_postings, 0, "a warning must not skip a leg");
+        assert!(
+            outcome.charged_by_cause.is_empty(),
+            "{:?}",
+            outcome.charged_by_cause
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn identical_rows_both_import_first_run(pool: SqlitePool) {
         two_account_tree(&pool).await;
         let svcs = services(&pool).await;
@@ -3530,6 +3618,20 @@ mod tests {
         assert!(outcome.unresolved_accounts.is_empty());
         assert_eq!(postings_of_account(&pool, &food).await, 1);
         assert_eq!(postings_of_account(&pool, &bank).await, 1);
+
+        // The resolution pass raises the warn-once version of this warning; the
+        // write-time guard raises its own per-posting one for the same account,
+        // which the collection site filters out so the two do not double up.
+        assert_eq!(
+            outcome
+                .warnings
+                .iter()
+                .filter(|warning| matches!(warning, Warning::PostingIntoArchivedAccount { .. }))
+                .count(),
+            1,
+            "{:?}",
+            outcome.warnings
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
