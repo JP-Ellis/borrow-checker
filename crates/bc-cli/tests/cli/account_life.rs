@@ -1,6 +1,7 @@
 //! Integration tests for the account lifecycle sub-commands: `close`,
 //! `reopen`, `set-opened-on`, `archive --cascade`, and the `--opened-on`
-//! flag on `create`.
+//! flag on `create` (including its reuse-conflict handling when `create` is
+//! run again against an existing path).
 
 #![expect(
     clippy::tests_outside_test_module,
@@ -66,6 +67,82 @@ fn create_with_opened_on_shows_in_list() {
 
     let mut cmd = ctx.command();
     cmd.args(["account", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn recreate_with_same_opened_on_is_a_noop() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args([
+            "account",
+            "create",
+            "Assets:BankA:Checking",
+            "--type",
+            "asset",
+            "--opened-on",
+            "2024-01-01",
+        ])
+        .output()
+        .expect("create");
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "account",
+        "create",
+        "Assets:BankA:Checking",
+        "--type",
+        "asset",
+        "--opened-on",
+        "2024-01-01",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn recreate_with_different_opened_on_is_rejected() {
+    let ctx = TestContext::new();
+    ctx.command()
+        .args([
+            "account",
+            "create",
+            "Assets:BankA:Checking",
+            "--type",
+            "asset",
+            "--opened-on",
+            "2024-01-01",
+        ])
+        .output()
+        .expect("create");
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "account",
+        "create",
+        "Assets:BankA:Checking",
+        "--type",
+        "asset",
+        "--opened-on",
+        "2024-02-01",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn recreate_with_opened_on_when_none_stored_is_rejected() {
+    let ctx = TestContext::new();
+    create_asset(&ctx, "Assets:BankA:Checking");
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "account",
+        "create",
+        "Assets:BankA:Checking",
+        "--type",
+        "asset",
+        "--opened-on",
+        "2024-01-01",
+    ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 

@@ -60,7 +60,9 @@ pub enum Command {
         /// `declining-balance`.
         #[arg(long)]
         annual_rate: Option<String>,
-        /// Business date the account opened (YYYY-MM-DD).
+        /// Business date the account opened (YYYY-MM-DD). Applies to the
+        /// named account only; any ancestors minted by this call are left
+        /// undated.
         #[arg(long = "opened-on", value_name = "YYYY-MM-DD")]
         opened_on: Option<jiff::civil::Date>,
     },
@@ -375,9 +377,21 @@ async fn create(
 
     // `PathSpec` (used above to mint any missing ancestors atomically) has no
     // `opened_on` field, so the leaf's opening date is set as a follow-up call
-    // rather than threaded through `create_paths`.
-    if opened_on.is_some() {
-        ctx.accounts.set_opened_on(account_id, opened_on).await?;
+    // rather than threaded through `create_paths`. On a reused leaf this must
+    // behave like every other attribute `conflict_of` guards: a match is a
+    // silent no-op, a mismatch is rejected, so `create` on an existing path
+    // never silently overwrites what is already recorded.
+    if let Some(requested_opened_on) = opened_on {
+        if was_created {
+            ctx.accounts.set_opened_on(account_id, opened_on).await?;
+        } else {
+            let account = ctx.accounts.find_by_id(account_id).await?;
+            if account.opened_on() != Some(requested_opened_on) {
+                return Err(crate::error::CliError::Arg(format!(
+                    "account '{rendered}' already exists with a different opened_on date"
+                )));
+            }
+        }
     }
 
     if ctx.json {
