@@ -2,8 +2,8 @@
 source: crates/bc-cli/tests/cli/account_life.rs
 expression: output
 ---
-success: true
-exit_code: 0
+success: false
+exit_code: 4
 ----- stdout -----
-Cleared opening date for account [ACCOUNT_ID]
 ----- stderr -----
+error: account is not closed: [ACCOUNT_ID]

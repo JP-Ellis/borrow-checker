@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/account_life.rs
+expression: output
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: data error: cannot set an opening date of 2025-01-01 on an account that closed on 2020-01-01; reopen it or correct the closing date first

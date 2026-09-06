@@ -76,9 +76,15 @@ async fn main() {
 
     if let Err(e) = result {
         eprintln!("error: {e}");
+        // Exit codes a script can branch on: 2 is "no such account", 3 is "the
+        // account is already in the state you asked for" and 4 is "the account
+        // is not in the state the operation requires". Everything else is 1.
         let code = match &e {
             CliError::Core(bc_core::BcError::NotFound(_)) => 2_i32,
-            CliError::Core(bc_core::BcError::AlreadyArchived(_)) => 3_i32,
+            CliError::Core(
+                bc_core::BcError::AlreadyArchived(_) | bc_core::BcError::AlreadyClosed(_),
+            ) => 3_i32,
+            CliError::Core(bc_core::BcError::NotClosed(_)) => 4_i32,
             CliError::Core(_) | CliError::Io(_) | CliError::Json(_) | CliError::Arg(_) => 1_i32,
         };
         std::process::exit(code);
