@@ -83,6 +83,12 @@ repo  = "https://github.com/scop/pre-commit-shfmt"
 rev   = "v3.13.1-1"
 hooks = [{ id = "shfmt" }]
 
+# GitHub Actions workflow linting
+[[repos]]
+repo  = "https://github.com/rhysd/actionlint"
+rev   = "v1.7.12"
+hooks = [{ id = "actionlint" }]
+
 # Rust local hooks — delegate to mise tasks for a single source of truth
 [[repos]]
 repo  = "local"
