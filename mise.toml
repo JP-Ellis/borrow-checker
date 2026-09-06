@@ -202,21 +202,15 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   description = "Check for unused dependencies"
   run         = "cargo machete --with-metadata"
 
-  # Doc tests run inside llvm-cov's environment so they reuse the instrumented
-  # build rather than forcing a second, uninstrumented one. cargo-llvm-cov marks
-  # `--doctests` unstable, but it works on the pinned toolchain; were that to
-  # regress, dropping the flag still runs the doc tests, they just stop
-  # counting. nextest rejects the flag, so only the doc run and the report
-  # carry it.
+  # Doc tests are absent here. `cargo llvm-cov test --doc` always turns on
+  # `--doctests`, which needs a nightly rustdoc for `-Z persist-doctests`, and
+  # this workspace is pinned to stable. Running them uninstrumented instead
+  # would build every dependency a second time in this job. They run on the
+  # Windows and macOS test jobs, which build uninstrumented anyway.
   [tasks.coverage]
-  description = "Run unit and doc tests under coverage, emitting an LCOV report"
+  description = "Run unit tests under coverage, emitting an LCOV report"
   depends     = ["build-plugins", "//crates/bc-app:gen:icons"]
-  run         = [
-    "cargo llvm-cov clean --workspace",
-    "cargo llvm-cov --no-report nextest --workspace --all-features",
-    "cargo llvm-cov --no-report --doctests test --doc --workspace --all-features",
-    "cargo llvm-cov report --doctests --lcov --output-path coverage.lcov",
-  ]
+  run         = "cargo llvm-cov nextest --workspace --all-features --lcov --output-path coverage.lcov"
 
   [tasks."build-plugins"]
   description = "Compile WASM importer plugins and stage them under target/plugins/"
