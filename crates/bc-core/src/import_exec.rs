@@ -3601,7 +3601,7 @@ mod tests {
     async fn a_leg_naming_an_archived_account_still_imports(pool: SqlitePool) {
         let (bank, food) = two_account_tree(&pool).await;
         crate::AccountService::new(pool.clone())
-            .archive(&food)
+            .archive(&food, false)
             .await
             .expect("archive Expenses:Food");
         let svcs = services(&pool).await;

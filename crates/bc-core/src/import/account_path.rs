@@ -489,7 +489,7 @@ mod tests {
         let assets = account(&pool, "Assets", None).await;
         let old = account(&pool, "OldBank", Some(&assets)).await;
         let svc = crate::AccountService::new(pool.clone());
-        svc.archive(&old).await.expect("archive");
+        svc.archive(&old, false).await.expect("archive");
 
         let resolver = AccountResolver::load(&svc).await.expect("load resolver");
         assert_eq!(

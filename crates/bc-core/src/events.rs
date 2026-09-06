@@ -60,6 +60,18 @@ pub enum Event {
         /// The account's ID.
         id: AccountId,
     },
+    /// An account was closed on a business date.
+    AccountClosed {
+        /// The account closed.
+        id: AccountId,
+        /// The business date it closed on.
+        closed_on: jiff::civil::Date,
+    },
+    /// A previously closed account was reopened.
+    AccountReopened {
+        /// The account reopened.
+        id: AccountId,
+    },
     /// A new transaction was recorded.
     TransactionCreated {
         /// The new transaction's ID.
@@ -517,6 +529,8 @@ impl Event {
             Self::AccountCreated { .. } => "AccountCreated",
             Self::AccountUpdated { .. } => "AccountUpdated",
             Self::AccountArchived { .. } => "AccountArchived",
+            Self::AccountClosed { .. } => "AccountClosed",
+            Self::AccountReopened { .. } => "AccountReopened",
             Self::TransactionCreated { .. } => "TransactionCreated",
             Self::TransactionAmended { .. } => "TransactionAmended",
             Self::TransactionVoided { .. } => "TransactionVoided",
@@ -558,7 +572,9 @@ impl Event {
         match self {
             Self::AccountCreated { id, .. }
             | Self::AccountUpdated { id }
-            | Self::AccountArchived { id } => id.to_string(),
+            | Self::AccountArchived { id }
+            | Self::AccountClosed { id, .. }
+            | Self::AccountReopened { id } => id.to_string(),
             Self::TransactionCreated { id }
             | Self::TransactionAmended { id, .. }
             | Self::TransactionVoided { id }
