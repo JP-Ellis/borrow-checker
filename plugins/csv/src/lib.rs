@@ -162,7 +162,10 @@ impl CsvImporter {
             bc_sdk::warn!("duplicate column name in header"; path = file, detail = detail);
         }
 
-        let date_idx = columns.resolve(&cfg.date_column)?;
+        // Resolved before the row loop purely for the error: an unresolvable
+        // date column is a profile that does not match the file, and should say
+        // so once rather than once per row.
+        let _date_idx = columns.resolve(&cfg.date_column)?;
 
         let commodity_source = cfg
             .commodity
@@ -209,8 +212,15 @@ impl CsvImporter {
                 }
             };
 
-            let date_str = record_field(&record, date_idx, &cfg.date_column.describe())?;
-            let parsed = jiff::civil::Date::strptime(&cfg.date_format, &date_str).map_err(|e| {
+            let Some(date_str) = cell(&record, &columns, &cfg.date_column, expected)? else {
+                bc_sdk::warn!(
+                    "csv row states no date; skipping the row";
+                    path = file,
+                    row = row.to_string()
+                );
+                continue;
+            };
+            let parsed = jiff::civil::Date::strptime(&cfg.date_format, date_str).map_err(|e| {
                 ImportError::BadValue {
                     field: cfg.date_column.describe(),
                     detail: e.to_string(),
@@ -380,42 +390,14 @@ fn unreachable_names(
     Ok(())
 }
 
-/// Returns the value of a record field at the given index, or an error if the
-/// index is out of range.
-///
-/// # Arguments
-///
-/// * `record` - The CSV record to index into.
-/// * `idx` - Zero-based column index.
-/// * `column_name` - Human-readable column name used in the error message.
-///
-/// # Returns
-///
-/// The field value as an owned `String`.
-///
-/// # Errors
-///
-/// Returns [`ImportError::MissingField`] if `idx` is out of range.
-#[inline]
-fn record_field(
-    record: &csv::StringRecord,
-    idx: usize,
-    column_name: &str,
-) -> Result<String, ImportError> {
-    record
-        .get(idx)
-        .map(str::to_owned)
-        .ok_or_else(|| ImportError::MissingField(column_name.to_owned()))
-}
-
 /// Returns the trimmed text of a configured column, or `None` when it is absent
 /// from this row or blank.
 ///
 /// This is the single short-row policy every column whose absence is tolerable
 /// obeys, so that "absent from this row" and "absent from every row" mean the
-/// same thing wherever such a cell is read. The date column reads through
-/// [`record_field`] instead, because a row that names no date cannot become a
-/// transaction at all.
+/// same thing wherever such a cell is read, the date column included: a row
+/// that names no date cannot become a transaction, so it is skipped with a
+/// warning rather than failing the file.
 ///
 /// A column absent from *this* row because the row is short is a per-row
 /// omission and yields `None`, indistinguishable from a blank cell. A
@@ -1061,6 +1043,94 @@ mod tests {
         };
         let result = importer.parse_bytes(b"\x00\x00 not csv", &cfg, "statement.csv");
         assert!(result.is_err());
+    }
+
+    /// A profile reading `Date` and `Amount` by name, posting in a fixed
+    /// commodity — the shape the row-level date tests exercise.
+    fn dated_rows_config() -> Config {
+        Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            date_column: ColumnRef::Name("Date".to_owned()),
+            date_format: "%Y-%m-%d".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Amount".to_owned()),
+            },
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn parse_bytes_skips_an_undated_opening_balance_row() {
+        // Real broker exports open with a balance-carrying row that states no
+        // date. It is one row's omission, not a broken file.
+        let csv = b"Date,Amount,Balance\n\
+                    ,,1000.00\n\
+                    2025-03-15,50.00,1050.00\n\
+                    2025-03-16,-120.00,930.00\n";
+        let cfg = Config {
+            balance_column: Some(ColumnRef::Name("Balance".to_owned())),
+            ..dated_rows_config()
+        };
+
+        let txns = CsvImporter
+            .parse_bytes(csv, &cfg, "statement.csv")
+            .expect("an undated row must not fail the file");
+
+        assert_eq!(txns.len(), 2, "the undated row is skipped, the rest import");
+        assert_eq!(txns[0].date, Date::new(2025, 3, 15));
+        assert_eq!(txns[1].date, Date::new(2025, 3, 16));
+    }
+
+    #[test]
+    fn parse_bytes_skips_an_undated_row_mid_file() {
+        let csv = b"Date,Amount\n\
+                    2025-03-15,50.00\n\
+                    ,75.00\n\
+                    2025-03-16,-120.00\n";
+
+        let txns = CsvImporter
+            .parse_bytes(csv, &dated_rows_config(), "statement.csv")
+            .expect("an undated row must not fail the file");
+
+        assert_eq!(txns.len(), 2);
+        assert_eq!(txns[0].date, Date::new(2025, 3, 15));
+        assert_eq!(txns[1].date, Date::new(2025, 3, 16));
+    }
+
+    #[test]
+    fn parse_bytes_skips_a_row_too_short_to_reach_the_date() {
+        // The date sits in the second column, so a one-field row never reaches
+        // it. That is the same per-row omission as a blank cell.
+        let csv = b"Amount,Date\n\
+                    50.00\n\
+                    -120.00,2025-03-16\n";
+
+        let txns = CsvImporter
+            .parse_bytes(csv, &dated_rows_config(), "statement.csv")
+            .expect("a short row must not fail the file");
+
+        assert_eq!(txns.len(), 1);
+        assert_eq!(txns[0].date, Date::new(2025, 3, 16));
+    }
+
+    #[test]
+    fn parse_bytes_still_fails_on_an_unparsable_date() {
+        // A date that is present but will not parse is a profile whose
+        // date_format does not match the file, which is wrong for every row.
+        let csv = b"Date,Amount\n\
+                    not-a-date,50.00\n";
+
+        let err = CsvImporter
+            .parse_bytes(csv, &dated_rows_config(), "statement.csv")
+            .expect_err("an unparsable date is a profile mismatch");
+
+        assert!(
+            err.to_string().contains("Date"),
+            "the error should name the date column: {err}"
+        );
     }
 
     #[test]
