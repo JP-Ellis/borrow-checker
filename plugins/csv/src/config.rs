@@ -392,51 +392,6 @@ pub struct MetadataColumn {
 ///
 /// Construct using [`Config::default()`] and then set individual fields,
 /// or deserialize from JSON.
-/// A profile key this importer does not know.
-///
-/// Deserializes any value and keeps none of it: the key name is the map key,
-/// and that is all a warning needs. Retaining the value would mean carrying a
-/// self-describing value type into the WASM build for a string nothing reads.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct UnknownField;
-
-impl<'de> serde::Deserialize<'de> for UnknownField {
-    #[inline]
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        serde::de::IgnoredAny::deserialize(deserializer).map(|_ignored| Self)
-    }
-}
-
-/// Returns the warning text for a profile key this importer does not know.
-///
-/// A key a previous version accepted gets a message naming its replacement: a
-/// profile carrying one was written against a version where it worked, and its
-/// author needs the migration rather than the observation.
-///
-/// # Arguments
-///
-/// * `key` - The unrecognised key as the profile spelled it.
-///
-/// # Returns
-///
-/// The warning text.
-fn unknown_key_warning(key: &str) -> String {
-    match key {
-        "payee_column" => "payee_column is retired and is ignored. The payee is now one \
-             metadata key among others: replace it with \
-             {\"metadata_columns\":[{\"key\":\"payee\",\"column\":\"Payee\"}]}, naming the \
-             same column."
-            .to_owned(),
-        other => format!(
-            "{other} is not a key this importer reads, and is ignored. Check it for a typo \
-             against the profile's documented fields."
-        ),
-    }
-}
-
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Config {
@@ -507,6 +462,51 @@ pub struct Config {
     /// `preamble` or an `extra_legs` entry belongs to that struct, not this one.
     #[serde(flatten, default, skip_serializing)]
     pub(crate) unknown: BTreeMap<String, UnknownField>,
+}
+
+/// A profile key this importer does not know.
+///
+/// Deserializes any value and keeps none of it: the key name is the map key,
+/// and that is all a warning needs. Retaining the value would mean carrying a
+/// self-describing value type into the WASM build for a string nothing reads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct UnknownField;
+
+impl<'de> serde::Deserialize<'de> for UnknownField {
+    #[inline]
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        serde::de::IgnoredAny::deserialize(deserializer).map(|_ignored| Self)
+    }
+}
+
+/// Returns the warning text for a profile key this importer does not know.
+///
+/// A key a previous version accepted gets a message naming its replacement: a
+/// profile carrying one was written against a version where it worked, and its
+/// author needs the migration rather than the observation.
+///
+/// # Arguments
+///
+/// * `key` - The unrecognised key as the profile spelled it.
+///
+/// # Returns
+///
+/// The warning text.
+fn unknown_key_warning(key: &str) -> String {
+    match key {
+        "payee_column" => "payee_column is retired and is ignored. The payee is now one \
+             metadata key among others: replace it with \
+             {\"metadata_columns\":[{\"key\":\"payee\",\"column\":\"Payee\"}]}, naming the \
+             same column."
+            .to_owned(),
+        other => format!(
+            "{other} is not a key this importer reads, and is ignored. Check it for a typo \
+             against the profile's documented fields."
+        ),
+    }
 }
 
 /// Returns the default field delimiter.
