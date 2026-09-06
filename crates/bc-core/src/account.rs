@@ -464,6 +464,7 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::AlreadyClosed`] if the account exists but is already closed.
     /// Returns [`BcError::BadData`] if `cascade` is false and any descendant is
     /// still open.
     /// Returns [`BcError`] on event append or database update failure.
@@ -476,47 +477,76 @@ impl Service {
     ) -> BcResult<()> {
         let mut tx = self.pool.begin().await?;
 
-        let exists: bool = sqlx::query_scalar("SELECT count(*) > 0 FROM accounts WHERE id = ?")
-            .bind(id.to_string())
-            .fetch_one(&mut *tx)
-            .await?;
-        if !exists {
-            return Err(BcError::NotFound(id.to_string()));
-        }
-
         let descendants = descendants_of(&mut tx, id).await?;
         let open: Vec<&(String, String, Option<String>, Option<String>)> =
             descendants.iter().filter(|d| d.2.is_none()).collect();
 
         reject_blocking_descendants(&open, cascade, "close", "open")?;
 
-        let mut to_close: Vec<AccountId> = vec![id.clone()];
-        if cascade {
-            for descendant in &open {
-                to_close.push(descendant.0.parse::<AccountId>().map_err(|e| {
-                    BcError::BadData(format!("invalid account id '{}': {e}", descendant.0))
-                })?);
-            }
-        }
+        let result =
+            sqlx::query("UPDATE accounts SET closed_on = ? WHERE id = ? AND closed_on IS NULL")
+                .bind(on.to_string())
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await?;
 
-        for target in &to_close {
+        let target_closed = result.rows_affected() > 0;
+
+        if target_closed {
             insert_event(
                 &Event::AccountClosed {
-                    id: target.clone(),
+                    id: id.clone(),
                     closed_on: on,
                 },
                 &mut tx,
             )
             .await?;
-            sqlx::query("UPDATE accounts SET closed_on = ? WHERE id = ?")
-                .bind(on.to_string())
-                .bind(target.to_string())
-                .execute(&mut *tx)
+        } else {
+            // rows_affected == 0 means the UPDATE found no matching row.
+            // Perform a follow-up SELECT to distinguish "not found" from
+            // "already closed" so callers get a semantic error.
+            let exists: bool = sqlx::query_scalar("SELECT count(*) > 0 FROM accounts WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_one(&mut *tx)
                 .await?;
+
+            if !exists {
+                return Err(BcError::NotFound(id.to_string()));
+            }
+            if !cascade {
+                return Err(BcError::AlreadyClosed(id.clone()));
+            }
+            // `cascade` is true and the target is merely already closed —
+            // that is not a reason to leave its open descendants alone, so
+            // fall through to the cascade below without an event for `id`
+            // (nothing about it actually changed).
+        }
+
+        let mut closed = usize::from(target_closed);
+        if cascade {
+            for descendant in &open {
+                let descendant_id = descendant.0.parse::<AccountId>().map_err(|e| {
+                    BcError::BadData(format!("invalid account id '{}': {e}", descendant.0))
+                })?;
+                insert_event(
+                    &Event::AccountClosed {
+                        id: descendant_id.clone(),
+                        closed_on: on,
+                    },
+                    &mut tx,
+                )
+                .await?;
+                sqlx::query("UPDATE accounts SET closed_on = ? WHERE id = ? AND closed_on IS NULL")
+                    .bind(on.to_string())
+                    .bind(descendant_id.to_string())
+                    .execute(&mut *tx)
+                    .await?;
+                closed = closed.saturating_add(1);
+            }
         }
 
         tx.commit().await?;
-        tracing::info!(account_id = %id, closed_on = %on, closed = to_close.len(), "account closed");
+        tracing::info!(account_id = %id, closed_on = %on, closed, "account closed");
         Ok(())
     }
 
@@ -532,20 +562,24 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::NotClosed`] if the account is not currently closed.
     /// Returns [`BcError::BadData`] if the account's parent is closed.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
     pub async fn reopen(&self, id: &AccountId) -> BcResult<()> {
         let mut tx = self.pool.begin().await?;
 
-        let row: Option<(Option<String>,)> =
-            sqlx::query_as("SELECT parent_id FROM accounts WHERE id = ?")
+        let row: Option<(Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT parent_id, closed_on FROM accounts WHERE id = ?")
                 .bind(id.to_string())
                 .fetch_optional(&mut *tx)
                 .await?;
-        let Some((parent_id,)) = row else {
+        let Some((parent_id, closed_on)) = row else {
             return Err(BcError::NotFound(id.to_string()));
         };
+        if closed_on.is_none() {
+            return Err(BcError::NotClosed(id.clone()));
+        }
 
         if let Some(parent) = parent_id {
             let parent_closed: Option<String> =
@@ -554,9 +588,9 @@ impl Service {
                     .fetch_optional(&mut *tx)
                     .await?
                     .flatten();
-            if let Some(closed_on) = parent_closed {
+            if let Some(parent_closed_on) = parent_closed {
                 return Err(BcError::BadData(format!(
-                    "cannot reopen an account whose parent closed on {closed_on}; \
+                    "cannot reopen an account whose parent closed on {parent_closed_on}; \
                      reopen the parent first"
                 )));
             }
@@ -2480,6 +2514,78 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn close_an_already_closed_account_returns_already_closed(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+
+        svc.close(&checking, jiff::civil::date(2024, 6, 30), false)
+            .await
+            .expect("first close");
+
+        let error = svc
+            .close(&checking, jiff::civil::date(2024, 7, 31), false)
+            .await
+            .expect_err("closing an already-closed account must be rejected");
+        assert!(matches!(error, BcError::AlreadyClosed(ref id) if *id == checking));
+
+        // The stored date and the event log must be untouched by the rejected
+        // second close.
+        let account = svc.find_by_id(&checking).await.expect("find");
+        assert_eq!(account.closed_on(), Some(jiff::civil::date(2024, 6, 30)));
+
+        let store = crate::events::SqliteStore::new(pool);
+        let events = store
+            .replay_for(&checking.to_string())
+            .await
+            .expect("replay should succeed");
+        let closed_count = events.iter().filter(|e| e.kind == "AccountClosed").count();
+        assert_eq!(
+            closed_count, 1,
+            "a rejected re-close must not append a second AccountClosed event"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn cascade_close_repairs_an_already_closed_parent(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let parent = svc
+            .create()
+            .name("BankA")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::Group)
+            .call()
+            .await
+            .expect("create parent");
+
+        svc.close(&parent, jiff::civil::date(2024, 6, 30), false)
+            .await
+            .expect("close the parent while it has no children");
+
+        // Nothing today stops creating a child under an already-closed
+        // parent — this reaches exactly the state `cascade` must repair.
+        let child = svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&parent)
+            .call()
+            .await
+            .expect("create a child under a closed parent");
+
+        svc.close(&parent, jiff::civil::date(2024, 7, 31), true)
+            .await
+            .expect("cascade close repairs an already-closed parent");
+
+        let found = svc.find_by_id(&child).await.expect("find child");
+        assert_eq!(
+            found.closed_on(),
+            Some(jiff::civil::date(2024, 7, 31)),
+            "the open child must end up closed"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn archive_rejects_an_account_with_active_descendants(pool: SqlitePool) {
         let svc = Service::new(pool);
         let (_assets, bank_a, _checking) = three_deep(&svc).await;
@@ -2594,6 +2700,18 @@ mod tests {
         svc.reopen(&checking).await.expect("reopen");
         let account = svc.find_by_id(&checking).await.expect("find");
         assert_eq!(account.closed_on(), None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reopen_an_account_that_is_not_closed_returns_not_closed(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+
+        let error = svc
+            .reopen(&checking)
+            .await
+            .expect_err("reopening an account that was never closed must be rejected");
+        assert!(matches!(error, BcError::NotClosed(ref id) if *id == checking));
     }
 
     #[sqlx::test(migrations = "./migrations")]

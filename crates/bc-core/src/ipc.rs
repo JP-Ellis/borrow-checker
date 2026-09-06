@@ -58,6 +58,8 @@ impl From<crate::BcError> for bc_ipc::BcError {
             Core::InvalidInput(_)
             | Core::BadData(_)
             | Core::AlreadyArchived(_)
+            | Core::AlreadyClosed(_)
+            | Core::NotClosed(_)
             | Core::InvalidAccountKind { .. }
             | Core::TagInUse(_)
             | Core::MarkerConflict { .. }
