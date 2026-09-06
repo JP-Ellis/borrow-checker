@@ -240,6 +240,9 @@ impl Service {
     /// Returns [`BcError`] on event append or database insert failure.
     /// Returns [`BcError::BadData`] if `acquisition_date`, `acquisition_cost`, or
     /// `depreciation_policy` is `Some` and `kind` is not [`bc_models::AccountKind::ManualAsset`].
+    /// Returns [`BcError::BadData`] if `parent_id` names an account whose type
+    /// differs from `account_type`.
+    /// Returns [`BcError::NotFound`] if `parent_id` names no account.
     #[builder]
     #[inline]
     pub async fn create(
@@ -747,6 +750,9 @@ impl Service {
 ///
 /// Returns [`BcError::BadData`] if `acquisition_date`, `acquisition_cost`, or
 /// `depreciation_policy` is `Some` and `kind` is not [`AccountKind::ManualAsset`];
+/// [`BcError::BadData`] if `parent_id` names an account whose type differs from
+/// `account_type`;
+/// [`BcError::NotFound`] if `parent_id` names no account;
 /// [`BcError::Database`] on event append or insert failure;
 /// [`BcError::Serialisation`] if the depreciation policy cannot be encoded.
 #[expect(
@@ -775,6 +781,28 @@ async fn create_in_tx(
         return Err(BcError::BadData(
             "acquisition and depreciation fields are only valid for ManualAsset accounts".into(),
         ));
+    }
+
+    // A child's type must match its parent's. Checking the immediate parent is
+    // enough: every write path holds this invariant, so a parent's stored type
+    // already equals its root ancestor's. `create_paths` enforces the same rule
+    // via `conflict_of`; this keeps the two entry points in agreement.
+    if let Some(parent) = parent_id {
+        let parent_type_row: Option<String> =
+            sqlx::query_scalar("SELECT account_type FROM accounts WHERE id = ?")
+                .bind(parent.to_string())
+                .fetch_optional(&mut *conn)
+                .await?;
+        let Some(parent_type_str) = parent_type_row else {
+            return Err(BcError::NotFound(parent.to_string()));
+        };
+        let parent_type = from_db_str::<AccountType>(&parent_type_str)?;
+        if parent_type != account_type {
+            return Err(BcError::BadData(format!(
+                "child account '{name}' has type {account_type:?} but its parent has type \
+                 {parent_type:?}; a child must share its root ancestor's type"
+            )));
+        }
     }
 
     let id = AccountId::new();
@@ -1150,6 +1178,56 @@ mod tests {
         let found = svc.find_by_id(&id).await.expect("find account");
         assert_eq!(found.opened_on(), Some(jiff::civil::date(2020, 1, 1)));
         assert_eq!(found.closed_on(), None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_rejects_child_type_contradicting_parent(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let parent = svc
+            .create()
+            .name("Assets")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::Group)
+            .call()
+            .await
+            .expect("create parent");
+
+        let error = svc
+            .create()
+            .name("CardX")
+            .account_type(bc_models::AccountType::Liability)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .parent_id(&parent)
+            .call()
+            .await
+            .expect_err("a Liability child under an Asset parent must be rejected");
+
+        assert!(
+            matches!(error, BcError::BadData(ref m) if m.contains("Liability") && m.contains("Asset")),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_accepts_child_type_matching_parent(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let parent = svc
+            .create()
+            .name("Assets")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::Group)
+            .call()
+            .await
+            .expect("create parent");
+
+        svc.create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .parent_id(&parent)
+            .call()
+            .await
+            .expect("a matching child type must be accepted");
     }
 
     #[test]
