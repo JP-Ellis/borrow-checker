@@ -91,6 +91,10 @@ pub struct AccountNode {
     pub account_type: AccountType,
     /// Tag paths attached to this account (colon-joined, e.g. `"institution:commbank"`).
     pub tags: Vec<String>,
+    /// Date the account was opened, or `None` if not recorded.
+    pub opened_on: Option<Date>,
+    /// Date the account was closed, or `None` if still open.
+    pub closed_on: Option<Date>,
 }
 
 impl AccountNode {
@@ -105,8 +109,14 @@ impl AccountNode {
     /// * `parent_id` - Parent account ID, or `None` for top-level.
     /// * `account_type` - Account type.
     /// * `tags` - Tag paths (colon-joined).
+    /// * `opened_on` - Date the account was opened, or `None` if not recorded.
+    /// * `closed_on` - Date the account was closed, or `None` if still open.
     #[must_use]
     #[inline]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "domain record with many required fields"
+    )]
     pub fn new(
         id: impl Into<String>,
         name: impl Into<String>,
@@ -115,6 +125,8 @@ impl AccountNode {
         parent_id: Option<impl Into<String>>,
         account_type: AccountType,
         tags: Vec<String>,
+        opened_on: Option<Date>,
+        closed_on: Option<Date>,
     ) -> Self {
         Self {
             id: id.into(),
@@ -124,6 +136,8 @@ impl AccountNode {
             parent_id: parent_id.map(Into::into),
             account_type,
             tags,
+            opened_on,
+            closed_on,
         }
     }
 }
@@ -1475,6 +1489,27 @@ mod tests {
         assert_eq!(tx.date, Date::constant(2026, 4, 30));
         assert_eq!(tx.metadata, meta("payee", "Generic Grocer"));
         assert_eq!(tx.postings, vec![p]);
+    }
+
+    #[test]
+    fn account_node_round_trips_its_dates() {
+        let node = AccountNode::new(
+            "acc-1",
+            "Smart Access",
+            None::<&str>,
+            None,
+            None::<&str>,
+            AccountType::Asset,
+            vec![],
+            Some(jiff::civil::date(2020, 1, 1)),
+            Some(jiff::civil::date(2024, 6, 30)),
+        );
+
+        let json = serde_json::to_string(&node).expect("serialise");
+        let back: AccountNode = serde_json::from_str(&json).expect("deserialise");
+
+        assert_eq!(back.opened_on, Some(jiff::civil::date(2020, 1, 1)));
+        assert_eq!(back.closed_on, Some(jiff::civil::date(2024, 6, 30)));
     }
 
     #[test]
