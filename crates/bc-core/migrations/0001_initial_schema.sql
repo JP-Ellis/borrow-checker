@@ -54,7 +54,9 @@ CREATE TABLE accounts (
     archived_at         TEXT,
     acquisition_date    TEXT,   -- YYYY-MM-DD when the asset was purchased
     acquisition_cost    TEXT,   -- decimal string: original purchase price
-    depreciation_policy TEXT    -- JSON DepreciationPolicy; NULL = none
+    depreciation_policy TEXT,   -- JSON DepreciationPolicy; NULL = none
+    opened_on           TEXT,   -- YYYY-MM-DD business date the account opened
+    closed_on           TEXT    -- YYYY-MM-DD business date the account closed
 );
 CREATE INDEX idx_accounts_name        ON accounts (name);
 CREATE INDEX idx_accounts_archived_at ON accounts (archived_at);
