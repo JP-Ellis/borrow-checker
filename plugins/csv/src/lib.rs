@@ -3,6 +3,22 @@
 //! Implements the [`bc_sdk::Importer`] trait for delimited text (CSV) files.
 //! Apply `#[bc_sdk::importer]` to the `impl Importer for CsvImporter` block
 //! to generate the required WASM export glue.
+//!
+//! # Scope
+//!
+//! This importer reads **transaction lists**: files whose rows are movements,
+//! each with a date and an amount, optionally carrying a running balance to
+//! reconcile against. Bank and card exports have this shape.
+//!
+//! It does not read **periodic statements**: files whose rows are a balance at
+//! a point in time plus an accrual over the period, often alongside a valuation
+//! of a non-fiat holding in a second commodity. That shape inverts the model
+//! here — the balance is the primary datum and there is no movement to post —
+//! and belongs to an importer of its own rather than a mode of this one.
+//!
+//! Nothing here sniffs a file to tell the two apart. A profile is a statement
+//! about the file it points at, and guessing against it would turn a mismatch
+//! into plausible-looking wrong data instead of an error.
 
 mod config;
 mod glob;
