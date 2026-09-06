@@ -35,7 +35,6 @@ config_roots = [
 # JS package manager (aube) and runner (aubx)
 "github:endevco/aube" = "2"
 
-"cargo:cargo-hack"     = "0.6"
 "cargo:cargo-leptos"   = "0.3"
 "cargo:cargo-llvm-cov" = "0.8"
 "cargo:cargo-machete"  = "0.9"
@@ -82,15 +81,20 @@ BC_DB_PATH="$DEV_DB" cargo tauri dev
     { task = "test:docs" },
   ]
 
+  # Every workspace feature (`ipc`, `models`) is purely additive: it adds
+  # `From` impls, an `ipc` module, and their tests. Enabling all of them runs a
+  # superset of what any other combination would, so a feature powerset here
+  # would add no coverage while forcing a separate dependency build per
+  # package. `lint:full` still checks that each crate compiles with them off.
   [tasks."test:unit"]
-  description = "Run unit tests across all feature combinations"
+  description = "Run unit tests"
   depends     = ["build-plugins", "//crates/bc-app:gen:icons"]
-  run         = "cargo hack --feature-powerset --workspace nextest run"
+  run         = "cargo nextest run --workspace --all-features"
 
   [tasks."test:docs"]
   description = "Run doc tests"
   depends     = ["//crates/bc-app:gen:icons"]
-  run         = "cargo test --doc --workspace"
+  run         = "cargo test --doc --workspace --all-features"
 
   [tasks."bench:fixtures"]
   description = "Generate cached benchmark ledgers (slow; run once)"
@@ -121,7 +125,7 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   run         = [
     { task = "format" },
     { task = "prek" },
-    { task = "lint:hack" },
+    { task = "lint:full" },
     { task = "machete" },
     { task = "test" },
     { task = "test:e2e" },
@@ -153,17 +157,21 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
 
   # MARK: Linting
 
-  [tasks."lint:hack"]
+  # `--workspace` unifies features, so bc-app turns `ipc`/`models` on for every
+  # crate. Naming the four feature-bearing crates on their own is the only way
+  # to lint them with those features off, the way bc-cli and bc-ui consume them.
+  [tasks."lint:full"]
   hide        = true
-  description = "Lint with Clippy across all feature combinations on all targets (CI)"
+  description = "Lint with Clippy across every feature configuration and target (CI)"
   depends     = [
     "//crates/bc-app:gen:icons",
     "install:wasm-targets",
     "install:rust-components"
   ]
   run         = [
-    "cargo hack --feature-powerset --workspace clippy --all-targets -- -D warnings",
-    "cargo hack --feature-powerset --exclude-features models -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown -- -D warnings",
+    "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "cargo clippy -p bc-config -p bc-core -p bc-ipc -p bc-plugins --all-targets -- -D warnings",
+    "cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings",
     "cargo clippy -p 'bc-plugin-*' --target wasm32-wasip2 -- -D warnings",
   ]
 
@@ -174,11 +182,12 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
     "install:wasm-targets",
     "install:rust-components"
   ]
-  usage       = 'flag "--fix" help="Apply fixes automatically (uses cargo hack --feature-powerset)"'
+  usage       = 'flag "--fix" help="Apply fixes automatically (covers every feature configuration)"'
   run         = '''
 {% if usage.fix %}
-  cargo hack --feature-powerset --workspace clippy --all-targets --fix --allow-staged --allow-dirty -- -D warnings
-  cargo hack --feature-powerset --exclude-features models -p bc-ipc -p bc-ui clippy --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings
+  cargo clippy --workspace --all-targets --all-features --fix --allow-staged --allow-dirty -- -D warnings
+  cargo clippy -p bc-config -p bc-core -p bc-ipc -p bc-plugins --all-targets --fix --allow-staged --allow-dirty -- -D warnings
+  cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings
   cargo clippy -p 'bc-plugin-*' --target wasm32-wasip2 --fix --allow-staged --allow-dirty -- -D warnings
 {% else %}
   cargo clippy --workspace --all-targets -- -D warnings

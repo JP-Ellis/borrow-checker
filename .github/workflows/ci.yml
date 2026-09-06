@@ -96,7 +96,7 @@ jobs:
           # the 10 GB limit on each run, evicting main's entries and leaving
           # every job to build from cold. Only main populates the cache now.
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: mise run lint:hack
+      - run: mise run lint:full
 
   format:
     name: Format
