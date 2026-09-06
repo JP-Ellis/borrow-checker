@@ -415,6 +415,10 @@ pub struct Config {
     #[serde(default = "default_delimiter")]
     pub delimiter: char,
     /// The column containing the transaction date.
+    ///
+    /// A row whose date cell is blank, or which is too short to reach the
+    /// column, states no date. That row is skipped with a warning and the rest
+    /// of the file still imports.
     #[serde(default = "default_date_column")]
     pub date_column: ColumnRef,
     /// The date format string (jiff `strptime` syntax, e.g. `"%Y-%m-%d"`).
