@@ -89,9 +89,10 @@ export const config: Options.Testrunner = {
   reporters: ['spec'],
 
   /* Default wait for `waitForDisplayed`/`waitForExist`/`waitUntil` and
-   * `expect(...)` polling. Deliberately generous to absorb CI cold-start and
-   * slowness; specs should only override when a wait genuinely needs to be
-   * shorter or much longer than this. */
+   * `expect(...)` polling. Sized for an IPC round trip and a re-render on a
+   * loaded CI runner — app start-up is not charged against it, because the
+   * `before` hook waits the shell out first. Specs should only override when a
+   * wait genuinely needs to be shorter or much longer than this. */
   waitforTimeout: 15_000,
 
   mochaOpts: {
@@ -178,6 +179,27 @@ export const config: Options.Testrunner = {
       // tauri-driver not available on this platform (e.g. macOS); skip gracefully
       process.exit(0);
     }
+  },
+
+  /**
+   * Absorb the app's cold start once per session, before the first test.
+   *
+   * A debug WebKitGTK app under Xvfb takes 11-14 s to paint its first frame,
+   * against a `waitforTimeout` of 15 s. Left to the specs, that start-up is
+   * charged to whichever assertion happens to come first, which tips past the
+   * timeout often enough that the suite fails roughly half the time on CI.
+   * Waiting here gives every spec a mounted shell and leaves `waitforTimeout`
+   * short enough to fail fast on a genuine regression.
+   */
+  async before(
+    _caps: Capabilities.RequestedStandaloneCapabilities,
+    _specs: string[],
+    browser: WebdriverIO.Browser,
+  ) {
+    await browser.$('nav[aria-label="main navigation"]').waitForDisplayed({
+      timeout:    120_000,
+      timeoutMsg: 'Shell did not mount within 120 s of the session starting',
+    });
   },
 
   afterSession() {
