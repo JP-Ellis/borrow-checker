@@ -48,17 +48,18 @@ members  = [
   clap                  = { version = "4", features = ["derive", "env"] }
   clap_complete         = "4"
   comfy-table           = "8"
-  config                = { version = "0.15", default-features = false, features = [
-    "toml"
-  ] }
+  config                = {
+    version          = "0.15",
+    default-features = false,
+    features         = ["toml"]
+  }
   criterion             = { version = "0.8", features = ["async_tokio"] }
   csv                   = "1"
   directories           = "6"
-  insta                 = { version = "1", features = [
-    "filters",
-    "json",
-    "redactions"
-  ] }
+  insta                 = {
+    version  = "1",
+    features = ["filters", "json", "redactions"]
+  }
   jiff                  = { version = "0.2", features = ["serde"] }
   mti                   = { version = "1.1", features = ["serde"] }
   opentelemetry         = "0.32"
@@ -70,22 +71,21 @@ members  = [
   quick-xml             = "0.42"
   quote                 = "1"
   regex                 = "1"
-  reqwest               = { version = "0.13", default-features = false, features = [
-    "blocking",
-    "rustls"
-  ] }
+  reqwest               = {
+    version          = "0.13",
+    default-features = false,
+    features         = ["blocking", "rustls"]
+  }
   rstest                = "0.26"
   rust_decimal          = { version = "1", features = ["serde-with-str"] }
   rust_decimal_macros   = "1"
   rusty-money           = { version = "0.5", features = ["iso", "serde"] }
   serde                 = { version = "1", features = ["derive"] }
   serde_json            = "1"
-  sqlx                  = { version = "0.9.0-alpha.1", features = [
-    "macros",
-    "migrate",
-    "runtime-tokio",
-    "sqlite"
-  ] }
+  sqlx                  = {
+    version  = "0.9.0-alpha.1",
+    features = ["macros", "migrate", "runtime-tokio", "sqlite"]
+  }
   syn                   = { version = "3", features = ["full"] }
   tempfile              = "3"
   thiserror             = "2"
@@ -94,22 +94,27 @@ members  = [
   toml_edit             = "0.25"
   tracing               = "0.1"
   tracing-opentelemetry = { version = "0.33" }
-  tracing-subscriber    = { version = "0.3", features = [
-    "env-filter",
-    "fmt",
-    "json"
-  ] }
-  wasmtime              = { version = "48", default-features = false, features = [
-    "component-model",
-    "cranelift",
-    "runtime",
-    "std",
-  ] }
+  tracing-subscriber    = {
+    version  = "0.3",
+    features = ["env-filter", "fmt", "json"]
+  }
+  wasmtime              = {
+    version          = "48",
+    default-features = false,
+    features         = [
+      "component-model",
+      "cranelift",
+      "runtime",
+      "std",
+    ]
+  }
   wasmtime-wasi         = { version = "48" }
   winnow                = "1.0"
-  wit-bindgen           = { version = "0.61", default-features = false, features = [
-    "macros"
-  ] }
+  wit-bindgen           = {
+    version          = "0.61",
+    default-features = false,
+    features         = ["macros"]
+  }
 
   ## ----------------------------------------
   ## MARK: Lints
