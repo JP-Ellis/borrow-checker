@@ -243,7 +243,9 @@ async fn add(
         .created_at(jiff::Timestamp::now())
         .build();
 
-    let tx_id = ctx.transactions.create(tx).await?;
+    // Warnings are not yet surfaced to the CLI; see the follow-up issue filed
+    // from this work's out-of-scope list.
+    let tx_id = ctx.transactions.create(tx).await?.into_inner();
 
     if ctx.json {
         let created = ctx.transactions.find_by_id(&tx_id).await?;

@@ -370,7 +370,9 @@ async fn archive(ctx: &AppContext, id: String) -> CliResult<()> {
     let account_id = bc_models::AccountId::from_str(&id)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID '{id}': {e}")))?;
 
-    ctx.accounts.archive(&account_id).await?;
+    // The `--cascade` flag lands in a follow-up task; preserve today's
+    // non-cascading behaviour until it does.
+    ctx.accounts.archive(&account_id, false).await?;
 
     if ctx.json {
         return crate::output::print_json(&serde_json::json!({
