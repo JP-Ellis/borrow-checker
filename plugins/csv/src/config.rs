@@ -392,6 +392,51 @@ pub struct MetadataColumn {
 ///
 /// Construct using [`Config::default()`] and then set individual fields,
 /// or deserialize from JSON.
+/// A profile key this importer does not know.
+///
+/// Deserializes any value and keeps none of it: the key name is the map key,
+/// and that is all a warning needs. Retaining the value would mean carrying a
+/// self-describing value type into the WASM build for a string nothing reads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct UnknownField;
+
+impl<'de> serde::Deserialize<'de> for UnknownField {
+    #[inline]
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        serde::de::IgnoredAny::deserialize(deserializer).map(|_ignored| Self)
+    }
+}
+
+/// Returns the warning text for a profile key this importer does not know.
+///
+/// A key a previous version accepted gets a message naming its replacement: a
+/// profile carrying one was written against a version where it worked, and its
+/// author needs the migration rather than the observation.
+///
+/// # Arguments
+///
+/// * `key` - The unrecognised key as the profile spelled it.
+///
+/// # Returns
+///
+/// The warning text.
+fn unknown_key_warning(key: &str) -> String {
+    match key {
+        "payee_column" => "payee_column is retired and is ignored. The payee is now one \
+             metadata key among others: replace it with \
+             {\"metadata_columns\":[{\"key\":\"payee\",\"column\":\"Payee\"}]}, naming the \
+             same column."
+            .to_owned(),
+        other => format!(
+            "{other} is not a key this importer reads, and is ignored. Check it for a typo \
+             against the profile's documented fields."
+        ),
+    }
+}
+
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Config {
@@ -428,14 +473,6 @@ pub struct Config {
     /// Which column(s) hold the monetary amount.
     #[serde(default)]
     pub amount_columns: AmountColumns,
-    /// Retired. Set `metadata_columns` instead.
-    ///
-    /// The field survives only so that a profile still setting it is rejected
-    /// by [`Config::validate`] with an error naming the replacement. Removing
-    /// it would leave serde ignoring the key, and the profile would import
-    /// with no payee at all.
-    #[serde(default)]
-    pub payee_column: Option<ColumnRef>,
     /// Columns mapped onto metadata keys, in the order stated.
     ///
     /// Any column can carry any key: the payee is one entry among others
@@ -461,6 +498,15 @@ pub struct Config {
     /// single-account statements, which is every bank export.
     #[serde(default)]
     pub extra_legs: Vec<LegSpec>,
+    /// Top-level keys the profile states and this importer does not read.
+    ///
+    /// Captured rather than dropped so that [`Config::validate`] can warn about
+    /// each one: serde ignores an unknown key silently, which would let a
+    /// profile written against an older version import with a field quietly
+    /// doing nothing. Only top-level keys are seen — a stray key nested inside
+    /// `preamble` or an `extra_legs` entry belongs to that struct, not this one.
+    #[serde(flatten, default, skip_serializing)]
+    pub(crate) unknown: BTreeMap<String, UnknownField>,
 }
 
 /// Returns the default field delimiter.
@@ -506,7 +552,6 @@ impl Default for Config {
             date_column: default_date_column(),
             date_format: default_date_format(),
             amount_columns: AmountColumns::default(),
-            payee_column: None,
             metadata_columns: Vec::new(),
             description_column: None,
             reference_column: None,
@@ -517,6 +562,7 @@ impl Default for Config {
             decimal_separator: default_decimal_separator(),
             thousands_separator: None,
             extra_legs: Vec::new(),
+            unknown: BTreeMap::new(),
         }
     }
 }
@@ -751,6 +797,9 @@ impl Config {
     /// a headerless profile converted from a name-based one typically has
     /// several at once.
     ///
+    /// A key this importer does not read is warned about rather than rejected,
+    /// because it changes no row.
+    ///
     /// # Returns
     ///
     /// `Ok(())` when the configuration is coherent.
@@ -786,15 +835,6 @@ impl Config {
                     .to_owned(),
             ),
             Some(_) => {}
-        }
-
-        if self.payee_column.is_some() {
-            problems.push(
-                "payee_column is retired. The payee is now one metadata key among others: \
-                 replace it with {\"metadata_columns\":[{\"key\":\"payee\",\"column\":\"Payee\"}]}, \
-                 naming the same column."
-                    .to_owned(),
-            );
         }
 
         for (index, mapping) in self.metadata_columns.iter().enumerate() {
@@ -897,6 +937,16 @@ impl Config {
             Header::Present => {}
         }
 
+        // Warned rather than pushed onto `problems`: a key this importer does
+        // not read changes no row, so it informs without gatekeeping.
+        for key in self.unknown.keys() {
+            bc_sdk::warn!(
+                "unknown csv profile key";
+                key = key,
+                detail = unknown_key_warning(key)
+            );
+        }
+
         if problems.is_empty() {
             Ok(())
         } else {
@@ -911,22 +961,80 @@ mod tests {
 
     use super::*;
 
-    /// Serde has no `deny_unknown_fields` here, so deleting the field would
-    /// leave a profile still setting it importing silently with no payee. It
-    /// survives to be rejected by name.
+    /// The minimum JSON a profile needs: the two fields with no default.
+    fn base_profile_json() -> serde_json::Value {
+        serde_json::json!({
+            "account": "Assets:Bank:Checking",
+            "source_dir": "Assets/Bank/Checking",
+            "commodity": "AUD",
+        })
+    }
+
     #[test]
-    fn validate_rejects_the_retired_payee_column_and_names_its_replacement() {
-        let cfg = Config {
-            payee_column: Some(ColumnRef::Name("Payee".to_owned())),
-            ..Config::default()
-        };
-        let msg = cfg
-            .validate()
-            .expect_err("a retired field must not import silently")
-            .to_string();
+    fn unknown_keys_are_captured_and_do_not_block_the_profile() {
+        // Serde ignores an unknown key silently, so a profile written against
+        // an older version imports with a field quietly doing nothing. The keys
+        // are captured here and warned about in `validate`.
+        let mut json = base_profile_json();
+        let object = json.as_object_mut().expect("a JSON object");
+        object.insert("payee_column".to_owned(), serde_json::json!("Payee"));
+        object.insert("descriptin_column".to_owned(), serde_json::json!("Details"));
+
+        let cfg: Config = serde_json::from_value(json).expect("deserialize");
+
+        assert_eq!(
+            cfg.unknown.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["descriptin_column", "payee_column"],
+            "both stray keys are captured, in sorted order"
+        );
+        cfg.validate()
+            .expect("a stray key informs; it does not gatekeep");
+    }
+
+    #[test]
+    fn known_keys_still_deserialize_through_the_flattened_catch_all() {
+        // Flattening routes every field through serde's content buffer, so the
+        // defaults and the typed fields must be checked to still work.
+        let cfg: Config = serde_json::from_value(base_profile_json()).expect("deserialize");
+
+        assert!(cfg.unknown.is_empty(), "nothing stray in a clean profile");
+        assert_eq!(cfg.account, "Assets:Bank:Checking");
+        assert_eq!(cfg.delimiter, ',', "a defaulted field still fills in");
+        assert_eq!(cfg.date_column, ColumnRef::Name("Date".to_owned()));
+        assert_eq!(cfg.source_glob, "*");
+    }
+
+    #[test]
+    fn a_retired_key_warns_with_its_replacement() {
+        let warning = unknown_key_warning("payee_column");
         assert!(
-            msg.contains("payee_column is retired") && msg.contains("metadata_columns"),
-            "should name the replacement: {msg}"
+            warning.contains("payee_column") && warning.contains("metadata_columns"),
+            "should name the replacement: {warning}"
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_key_warns_by_name() {
+        let warning = unknown_key_warning("descriptin_column");
+        assert!(
+            warning.contains("descriptin_column"),
+            "should name the key: {warning}"
+        );
+    }
+
+    #[test]
+    fn captured_keys_do_not_survive_reserialization() {
+        let mut json = base_profile_json();
+        json.as_object_mut()
+            .expect("a JSON object")
+            .insert("payee_column".to_owned(), serde_json::json!("Payee"));
+        let cfg: Config = serde_json::from_value(json).expect("deserialize");
+
+        let round_tripped = serde_json::to_string(&cfg).expect("serialize");
+
+        assert!(
+            !round_tripped.contains("payee_column"),
+            "a stray key is not written back out: {round_tripped}"
         );
     }
 
