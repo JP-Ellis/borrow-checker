@@ -70,6 +70,39 @@ pub enum Command {
     },
 }
 
+/// Serialises `value` and adds a `warnings` key naming each warning's
+/// [`Display`](std::fmt::Display) rendering.
+///
+/// Used for the JSON payload of a write that can raise [`bc_core::Warning`]s
+/// on a value that otherwise carries none of its own: the payload stays a
+/// plain object a script can index straight into, rather than nesting the
+/// written value under its own key.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError::Json`] if `value` cannot serialise.
+fn with_warnings<T>(
+    value: &T,
+    warnings: &[bc_core::Warning],
+) -> crate::error::CliResult<serde_json::Value>
+where
+    T: serde::Serialize,
+{
+    let mut json = serde_json::to_value(value)?;
+    if let serde_json::Value::Object(ref mut map) = json {
+        map.insert(
+            "warnings".to_owned(),
+            serde_json::Value::Array(
+                warnings
+                    .iter()
+                    .map(|warning| serde_json::Value::String(warning.to_string()))
+                    .collect(),
+            ),
+        );
+    }
+    Ok(json)
+}
+
 /// Parses a posting specification `ACCOUNT_ID:AMOUNT:COMMODITY`.
 ///
 /// # Errors
@@ -243,13 +276,18 @@ async fn add(
         .created_at(jiff::Timestamp::now())
         .build();
 
-    // Warnings are not yet surfaced to the CLI; see the follow-up issue filed
-    // from this work's out-of-scope list.
-    let tx_id = ctx.transactions.create(tx).await?.into_inner();
+    let warned = ctx.transactions.create(tx).await?;
+    for warning in &warned.warnings {
+        #[expect(clippy::print_stderr, reason = "CLI output")]
+        {
+            eprintln!("warning: {warning}");
+        }
+    }
+    let tx_id = warned.value;
 
     if ctx.json {
         let created = ctx.transactions.find_by_id(&tx_id).await?;
-        return crate::output::print_json(&created);
+        return crate::output::print_json(&with_warnings(&created, &warned.warnings)?);
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
@@ -304,11 +342,17 @@ async fn amend(
         .reconciliation(original.reconciliation())
         .created_at(*original.created_at())
         .build();
-    ctx.transactions.amend(updated).await?;
+    let warned = ctx.transactions.amend(updated).await?;
+    for warning in &warned.warnings {
+        #[expect(clippy::print_stderr, reason = "CLI output")]
+        {
+            eprintln!("warning: {warning}");
+        }
+    }
 
     if ctx.json {
         let reloaded = ctx.transactions.find_by_id(&tx_id).await?;
-        return crate::output::print_json(&reloaded);
+        return crate::output::print_json(&with_warnings(&reloaded, &warned.warnings)?);
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]

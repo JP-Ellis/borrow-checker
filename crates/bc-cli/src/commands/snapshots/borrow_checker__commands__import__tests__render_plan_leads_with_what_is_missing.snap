@@ -5,6 +5,9 @@ expression: rendered
 dry run — profile 'bank-a-checking', importer 'csv'
 nothing was written
 
+warnings (1) — lower bound: a dry run opens no database connection, so it cannot check postings against their accounts; a real run may report more
+  Assets:BankA:Checking is archived
+
 unresolved accounts (2)
   Expenses:Utilities:Gas
   Income:Interest

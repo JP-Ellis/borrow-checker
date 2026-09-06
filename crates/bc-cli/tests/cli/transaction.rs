@@ -99,6 +99,120 @@ fn add_transaction_json() {
 }
 
 #[test]
+fn transaction_warning() {
+    // Dated before the account's declared opening date: the write succeeds
+    // — "warn, don't block" — with the id on stdout and the warning on
+    // stderr, so a script piping stdout is unaffected.
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    ctx.command()
+        .args([
+            "account",
+            "set-opened-on",
+            &checking_id,
+            "--on",
+            "2024-01-01",
+        ])
+        .output()
+        .expect("set-opened-on");
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "add",
+        "--date",
+        "2020-01-01",
+        "--description",
+        "Grocery shopping",
+        "--posting",
+        &format!("{checking_id}:-50.00:AUD"),
+        "--posting",
+        &format!("{expenses_id}:50.00:AUD"),
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn transaction_warning_json() {
+    // Same write as `transaction_warning`, but under `--json`: the warning
+    // is not silently dropped — it rides along in the payload.
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    ctx.command()
+        .args([
+            "account",
+            "set-opened-on",
+            &checking_id,
+            "--on",
+            "2024-01-01",
+        ])
+        .output()
+        .expect("set-opened-on");
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "--json",
+        "transaction",
+        "add",
+        "--date",
+        "2020-01-01",
+        "--description",
+        "Grocery shopping",
+        "--posting",
+        &format!("{checking_id}:-50.00:AUD"),
+        "--posting",
+        &format!("{expenses_id}:50.00:AUD"),
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn amend_transaction_warning() {
+    // Amending a transaction's date to fall outside the account's declared
+    // life warns the same way a create does.
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    ctx.command()
+        .args([
+            "account",
+            "set-opened-on",
+            &checking_id,
+            "--on",
+            "2024-01-01",
+        ])
+        .output()
+        .expect("set-opened-on");
+
+    let add_out = ctx
+        .command()
+        .args([
+            "--json",
+            "transaction",
+            "add",
+            "--date",
+            "2024-03-01",
+            "--description",
+            "Grocery shopping",
+            "--posting",
+            &format!("{checking_id}:-50.00:AUD"),
+            "--posting",
+            &format!("{expenses_id}:50.00:AUD"),
+        ])
+        .output()
+        .expect("add");
+    let add_json: serde_json::Value = serde_json::from_slice(&add_out.stdout).expect("json");
+    let tx_id = add_json
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("id")
+        .to_owned();
+
+    let mut cmd = ctx.command();
+    cmd.args(["transaction", "amend", &tx_id, "--date", "2020-01-01"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
 fn add_unbalanced_transaction_fails() {
     let ctx = TestContext::new();
     let (checking_id, _) = setup_accounts(&ctx);
