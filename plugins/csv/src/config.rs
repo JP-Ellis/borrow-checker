@@ -418,6 +418,11 @@ pub struct Config {
     #[serde(default = "default_date_column")]
     pub date_column: ColumnRef,
     /// The date format string (jiff `strptime` syntax, e.g. `"%Y-%m-%d"`).
+    ///
+    /// The format must consume the whole cell, so it has to match the value in
+    /// both directions. A column carrying a datetime is read by naming the time
+    /// directives too: `"%Y-%m-%d %H:%M:%S"` reads `2025-03-15 00:00:00` as
+    /// `2025-03-15`, discarding the time.
     #[serde(default = "default_date_format")]
     pub date_format: String,
     /// Which column(s) hold the monetary amount.
