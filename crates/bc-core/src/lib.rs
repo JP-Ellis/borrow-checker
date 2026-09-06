@@ -35,6 +35,7 @@ pub(crate) mod source;
 pub(crate) mod tag;
 pub(crate) mod transaction;
 pub(crate) mod transfer;
+pub(crate) mod warning;
 
 pub use account::Created as CreatedAccounts;
 pub use account::PathSpec;
@@ -116,6 +117,8 @@ pub use tag::Service as TagService;
 pub use transaction::Service as TransactionService;
 pub use transfer::Service as TransferService;
 pub use transfer::TransferSuggestion;
+pub use warning::Warned;
+pub use warning::Warning;
 
 #[cfg(test)]
 mod migration_smoke {
