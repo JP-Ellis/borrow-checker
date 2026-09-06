@@ -18,6 +18,8 @@ fn sample_node() -> AccountNode {
         Some("commbank"),
         AccountType::Asset,
         vec![],
+        None,
+        None,
     )
 }
 

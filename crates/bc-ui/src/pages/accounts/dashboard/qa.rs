@@ -21,6 +21,8 @@ fn asset_node() -> AccountNode {
             "institution:commbank".to_owned(),
             "type:transactional".to_owned(),
         ],
+        None,
+        None,
     )
 }
 
@@ -34,6 +36,8 @@ fn liability_node() -> AccountNode {
         None::<&str>,
         AccountType::Liability,
         vec!["type:credit".to_owned()],
+        None,
+        None,
     )
 }
 
@@ -47,6 +51,8 @@ fn no_mask_node() -> AccountNode {
         None::<&str>,
         AccountType::Asset,
         vec![],
+        None,
+        None,
     )
 }
 
