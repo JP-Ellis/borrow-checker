@@ -23,6 +23,13 @@ env:
   NEXTEST_PROFILE: ci
   MISE_CARGO_BINSTALL_ONLY: 'true'
   MISE_ENV: ci
+  # Debuginfo is roughly a third of the target directory, which is both compile
+  # time (PDB writing dominates the Windows link) and cache size against the
+  # 10 GB repository limit. Backtraces keep function names without it; only
+  # file/line is lost, and llvm-cov reads its mapping from __llvm_covmap rather
+  # than DWARF, so coverage figures are unchanged.
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
