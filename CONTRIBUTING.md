@@ -13,7 +13,7 @@ Thank you for your interest in contributing!
 
 ## Development Setup
 
-**Prerequisites:** Rust stable + nightly (for `cargo fmt`), [`prek`](https://github.com/j178/prek) (`cargo install prek`), `cargo-nextest`, `cargo-hack`
+**Prerequisites:** Rust stable + nightly (for `cargo fmt`), [`prek`](https://github.com/j178/prek) (`cargo install prek`), `cargo-nextest`
 
 ```bash
 git clone https://github.com/JP-Ellis/borrow-checker
@@ -27,7 +27,7 @@ cargo nextest run --workspace
 
 ```bash
 cargo build --workspace                          # compile
-cargo hack --feature-powerset clippy -- -D warnings  # lint
+cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint
 cargo +nightly fmt --check                       # format
 cargo nextest run --workspace                    # test
 ```
