@@ -1535,6 +1535,28 @@ mod tests {
         insta::assert_snapshot!(rendered);
     }
 
+    /// The warnings block is the one section that renders at zero. A dry run
+    /// opens no database connection, so it cannot run the write-time guards at
+    /// all; omitting the block when the count is zero — the way every sibling
+    /// section behaves — would let a reader take silence for "no warnings
+    /// exist" when it only ever meant "none were computed".
+    #[test]
+    fn render_plan_shows_the_warnings_block_at_zero() {
+        let mut report = sample_report();
+        report.warnings = Vec::new();
+
+        let rendered = render_plan(&report, "bank-a-checking", "csv");
+
+        assert!(
+            rendered.contains("warnings (0)"),
+            "the zero-count header must still render: got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("lower bound"),
+            "and must still caveat the count: got:\n{rendered}"
+        );
+    }
+
     /// A malformed tag is dropped and its leg still posts, so it is worth
     /// reporting while costing nothing. The heading must say so rather than
     /// announcing "skipped 0 legs" above a list of real problems.
