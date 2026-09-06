@@ -42,6 +42,16 @@ impl TestContext {
                 String::new(),
             ),
             (
+                // The other half of the same problem: SQLx warns when checking a
+                // connection out of the pool passes `acquire_slow_threshold`, which a
+                // loaded Windows runner reaches on a database this small. Both
+                // thresholds report wall-clock time, so which command trips one is a
+                // property of the runner and not of the command under test.
+                Regex::new(r"WARN acquired connection, but time to acquire exceeded slow threshold[^\n]*\n?")
+                    .expect("valid regex"),
+                String::new(),
+            ),
+            (
                 Regex::new("account_[0-9a-z]{26}").expect("valid regex"),
                 "[ACCOUNT_ID]".to_owned(),
             ),
