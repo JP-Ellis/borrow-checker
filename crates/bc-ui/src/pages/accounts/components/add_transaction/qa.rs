@@ -19,6 +19,8 @@ fn sample_accounts() -> Vec<AccountNode> {
             None::<&str>,
             AccountType::Asset,
             vec![],
+            None,
+            None,
         ),
         AccountNode::new(
             "acc-groceries",
@@ -28,6 +30,8 @@ fn sample_accounts() -> Vec<AccountNode> {
             None::<&str>,
             AccountType::Expense,
             vec![],
+            None,
+            None,
         ),
         AccountNode::new(
             "acc-salary",
@@ -37,6 +41,8 @@ fn sample_accounts() -> Vec<AccountNode> {
             None::<&str>,
             AccountType::Income,
             vec![],
+            None,
+            None,
         ),
     ]
 }

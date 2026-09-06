@@ -22,6 +22,8 @@ fn sample_accounts() -> Vec<AccountNode> {
                 "institution:commbank".to_owned(),
                 "type:transactional".to_owned(),
             ],
+            None,
+            None,
         ),
         AccountNode::new(
             "commbank",
@@ -31,6 +33,8 @@ fn sample_accounts() -> Vec<AccountNode> {
             None::<&str>,
             AccountType::Asset,
             vec![],
+            None,
+            None,
         ),
         AccountNode::new(
             "amex-platinum",
@@ -40,6 +44,8 @@ fn sample_accounts() -> Vec<AccountNode> {
             None::<&str>,
             AccountType::Liability,
             vec!["type:credit".to_owned()],
+            None,
+            None,
         ),
     ]
 }
