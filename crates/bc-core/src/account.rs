@@ -48,6 +48,10 @@ struct AccountRow {
     acquisition_cost: Option<String>,
     /// JSON-encoded `DepreciationPolicy`, if set.
     depreciation_policy: Option<String>,
+    /// Business date the account opened (YYYY-MM-DD), if declared.
+    opened_on: Option<String>,
+    /// Business date the account closed (YYYY-MM-DD), if closed.
+    closed_on: Option<String>,
     /// Allowed commodities; first = default; empty = unrestricted.
     #[sqlx(skip)]
     commodities: Vec<CommodityId>,
@@ -124,6 +128,24 @@ impl TryFrom<AccountRow> for Account {
             })
             .transpose()?;
 
+        let opened_on = row
+            .opened_on
+            .as_deref()
+            .map(|s| {
+                s.parse::<jiff::civil::Date>()
+                    .map_err(|e| BcError::BadData(format!("invalid opened_on '{s}': {e}")))
+            })
+            .transpose()?;
+
+        let closed_on = row
+            .closed_on
+            .as_deref()
+            .map(|s| {
+                s.parse::<jiff::civil::Date>()
+                    .map_err(|e| BcError::BadData(format!("invalid closed_on '{s}': {e}")))
+            })
+            .transpose()?;
+
         Ok(Self::builder()
             .id(id)
             .name(row.name)
@@ -137,6 +159,8 @@ impl TryFrom<AccountRow> for Account {
             .maybe_acquisition_date(acquisition_date)
             .maybe_acquisition_cost(acquisition_cost)
             .maybe_depreciation_policy(depreciation_policy)
+            .maybe_opened_on(opened_on)
+            .maybe_closed_on(closed_on)
             .created_at(created_at)
             .build())
     }
@@ -209,6 +233,7 @@ impl Service {
     /// * `acquisition_date` - Date the asset was acquired (only for [`AccountKind::ManualAsset`]).
     /// * `acquisition_cost` - Cost of acquisition (only for [`AccountKind::ManualAsset`]).
     /// * `depreciation_policy` - Depreciation method (only for [`AccountKind::ManualAsset`]).
+    /// * `opened_on` - Business date the account opened; `None` leaves it undeclared.
     ///
     /// # Errors
     ///
@@ -229,6 +254,7 @@ impl Service {
         acquisition_date: Option<jiff::civil::Date>,
         acquisition_cost: Option<rust_decimal::Decimal>,
         depreciation_policy: Option<&bc_models::DepreciationPolicy>,
+        opened_on: Option<jiff::civil::Date>,
     ) -> BcResult<AccountId> {
         let mut tx = self.pool.begin().await?;
         let id = create_in_tx(
@@ -243,6 +269,7 @@ impl Service {
             acquisition_date,
             acquisition_cost,
             depreciation_policy,
+            opened_on,
         )
         .await?;
         tx.commit().await?;
@@ -311,7 +338,8 @@ impl Service {
     pub async fn find_by_id(&self, id: &AccountId) -> BcResult<Account> {
         let mut row = sqlx::query_as::<_, AccountRow>(
             "SELECT id, name, account_type, kind, description, parent_id, created_at, archived_at, \
-             acquisition_date, acquisition_cost, depreciation_policy \
+             acquisition_date, acquisition_cost, depreciation_policy, \
+             opened_on, closed_on \
              FROM accounts WHERE id = ?",
         )
         .bind(id.to_string())
@@ -363,7 +391,8 @@ impl Service {
     pub async fn list_active(&self) -> BcResult<Vec<Account>> {
         let mut account_rows = sqlx::query_as::<_, AccountRow>(
             "SELECT id, name, account_type, kind, description, parent_id, created_at, archived_at, \
-             acquisition_date, acquisition_cost, depreciation_policy \
+             acquisition_date, acquisition_cost, depreciation_policy, \
+             opened_on, closed_on \
              FROM accounts WHERE archived_at IS NULL ORDER BY name ASC",
         )
         .fetch_all(&self.pool)
@@ -425,7 +454,8 @@ impl Service {
     pub async fn list_all(&self) -> BcResult<Vec<Account>> {
         let mut account_rows = sqlx::query_as::<_, AccountRow>(
             "SELECT id, name, account_type, kind, description, parent_id, created_at, archived_at, \
-             acquisition_date, acquisition_cost, depreciation_policy \
+             acquisition_date, acquisition_cost, depreciation_policy, \
+             opened_on, closed_on \
              FROM accounts ORDER BY name ASC",
         )
         .fetch_all(&self.pool)
@@ -581,6 +611,7 @@ impl Service {
                             spec.acquisition_date(),
                             spec.acquisition_cost(),
                             spec.depreciation_policy(),
+                            None,
                         )
                         .await?
                     } else {
@@ -593,6 +624,7 @@ impl Service {
                             parent.as_ref(),
                             &[],
                             &[],
+                            None,
                             None,
                             None,
                             None,
@@ -705,6 +737,7 @@ impl Service {
 /// * `acquisition_date` - Date the asset was acquired (only for [`AccountKind::ManualAsset`]).
 /// * `acquisition_cost` - Cost of acquisition (only for [`AccountKind::ManualAsset`]).
 /// * `depreciation_policy` - Depreciation method (only for [`AccountKind::ManualAsset`]).
+/// * `opened_on` - Business date the account opened; `None` leaves it undeclared.
 ///
 /// # Returns
 ///
@@ -732,6 +765,7 @@ async fn create_in_tx(
     acquisition_date: Option<jiff::civil::Date>,
     acquisition_cost: Option<rust_decimal::Decimal>,
     depreciation_policy: Option<&bc_models::DepreciationPolicy>,
+    opened_on: Option<jiff::civil::Date>,
 ) -> BcResult<AccountId> {
     if kind != AccountKind::ManualAsset
         && (acquisition_date.is_some()
@@ -757,8 +791,8 @@ async fn create_in_tx(
 
     sqlx::query(
         "INSERT INTO accounts (id, name, account_type, kind, description, parent_id, created_at, \
-         acquisition_date, acquisition_cost, depreciation_policy) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         acquisition_date, acquisition_cost, depreciation_policy, opened_on) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id.to_string())
     .bind(name)
@@ -775,6 +809,7 @@ async fn create_in_tx(
             .transpose()
             .map_err(BcError::Serialisation)?,
     )
+    .bind(opened_on.map(|d| d.to_string()))
     .execute(&mut *conn)
     .await?;
 
@@ -1097,6 +1132,24 @@ mod tests {
             .await
             .expect("create via builder");
         assert!(id.to_string().starts_with("account_"));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_round_trips_opened_on(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let id = svc
+            .create()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .opened_on(jiff::civil::date(2020, 1, 1))
+            .call()
+            .await
+            .expect("create account");
+
+        let found = svc.find_by_id(&id).await.expect("find account");
+        assert_eq!(found.opened_on(), Some(jiff::civil::date(2020, 1, 1)));
+        assert_eq!(found.closed_on(), None);
     }
 
     #[test]
