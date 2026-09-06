@@ -8,6 +8,7 @@ mod help;
 mod version;
 // Subcommand test modules — uncommented as each command is implemented:
 mod account;
+mod account_life;
 mod asset;
 mod backup;
 mod budget;

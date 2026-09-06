@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/account_life.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Cleared opened_on for account [ACCOUNT_ID]
+----- stderr -----

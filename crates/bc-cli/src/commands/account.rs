@@ -60,11 +60,49 @@ pub enum Command {
         /// `declining-balance`.
         #[arg(long)]
         annual_rate: Option<String>,
+        /// Business date the account opened (YYYY-MM-DD).
+        #[arg(long = "opened-on", value_name = "YYYY-MM-DD")]
+        opened_on: Option<jiff::civil::Date>,
     },
     /// Archive an account (hides it from active lists; data is preserved).
+    ///
+    /// Rejects by default when the account has an active descendant, naming
+    /// it. Pass `--cascade` once you have seen that rejection and want to
+    /// archive the whole subtree.
     Archive {
         /// Account ID to archive.
         id: String,
+        /// Also archive every descendant that is still active.
+        #[arg(long)]
+        cascade: bool,
+    },
+    /// Close an account on a business date (does not hide it from lists).
+    ///
+    /// Rejects by default when the account has an open descendant, naming it.
+    /// Pass `--cascade` once you have seen that rejection and want to close
+    /// the whole subtree.
+    Close {
+        /// Account ID to close.
+        id: String,
+        /// Business date the account closed (YYYY-MM-DD).
+        #[arg(long = "on", value_name = "YYYY-MM-DD")]
+        on: jiff::civil::Date,
+        /// Also close every descendant that is still open.
+        #[arg(long)]
+        cascade: bool,
+    },
+    /// Reopen a closed account.
+    Reopen {
+        /// Account ID to reopen.
+        id: String,
+    },
+    /// Set or clear an account's declared opening date.
+    SetOpenedOn {
+        /// Account ID to update.
+        id: String,
+        /// Business date the account opened (YYYY-MM-DD). Omit to clear it.
+        #[arg(long = "on", value_name = "YYYY-MM-DD")]
+        on: Option<jiff::civil::Date>,
     },
     /// List account balances (default commodity) in a table.
     Balance {
@@ -143,6 +181,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             acquisition_cost,
             depreciation_policy,
             annual_rate,
+            opened_on,
         } => {
             create(
                 ctx,
@@ -154,10 +193,14 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
                 acquisition_cost,
                 depreciation_policy,
                 annual_rate,
+                opened_on,
             )
             .await
         }
-        Command::Archive { id } => archive(ctx, id).await,
+        Command::Archive { id, cascade } => archive(ctx, id, cascade).await,
+        Command::Close { id, on, cascade } => close(ctx, id, on, cascade).await,
+        Command::Reopen { id } => reopen(ctx, id).await,
+        Command::SetOpenedOn { id, on } => set_opened_on(ctx, id, on).await,
         Command::Balance {
             account_id,
             commodity,
@@ -209,10 +252,16 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
                 account.name().to_owned(),
                 type_str.to_owned(),
                 kind_str.to_owned(),
+                account
+                    .opened_on()
+                    .map_or_else(String::new, |date| date.to_string()),
+                account
+                    .closed_on()
+                    .map_or_else(String::new, |date| date.to_string()),
             ]
         })
         .collect();
-    crate::output::print_table(&["ID", "NAME", "TYPE", "KIND"], &rows);
+    crate::output::print_table(&["ID", "NAME", "TYPE", "KIND", "OPENED", "CLOSED"], &rows);
     Ok(())
 }
 
@@ -227,6 +276,10 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
     clippy::too_many_arguments,
     reason = "all parameters come from CLI flags"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass over CLI flags into a PathSpec; splitting would obscure the flow"
+)]
 async fn create(
     ctx: &AppContext,
     path: String,
@@ -237,6 +290,7 @@ async fn create(
     acquisition_cost: Option<String>,
     depreciation_policy: Option<DepreciationPolicyArg>,
     annual_rate: Option<String>,
+    opened_on: Option<jiff::civil::Date>,
 ) -> CliResult<()> {
     let parsed = bc_core::AccountPath::parse(&path).map_err(|err| {
         if let bc_core::BcError::BadData(msg) = err {
@@ -319,6 +373,13 @@ async fn create(
     let was_created = outcome.created.iter().any(|p| p == &rendered);
     let ancestors: Vec<&String> = outcome.created.iter().filter(|p| *p != &rendered).collect();
 
+    // `PathSpec` (used above to mint any missing ancestors atomically) has no
+    // `opened_on` field, so the leaf's opening date is set as a follow-up call
+    // rather than threaded through `create_paths`.
+    if opened_on.is_some() {
+        ctx.accounts.set_opened_on(account_id, opened_on).await?;
+    }
+
     if ctx.json {
         let account = ctx.accounts.find_by_id(account_id).await?;
         return crate::output::print_json(&serde_json::json!({
@@ -365,14 +426,14 @@ fn reword_underivable_root_error(err: bc_core::BcError) -> crate::error::CliErro
 ///
 /// # Errors
 ///
-/// Propagates [`crate::error::CliError`] from the account service or JSON serialisation.
-async fn archive(ctx: &AppContext, id: String) -> CliResult<()> {
+/// Propagates [`crate::error::CliError`] from the account service or JSON
+/// serialisation. Returns the core's `BadData` error, naming the blockers, if
+/// `cascade` is false and an active descendant exists.
+async fn archive(ctx: &AppContext, id: String, cascade: bool) -> CliResult<()> {
     let account_id = bc_models::AccountId::from_str(&id)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID '{id}': {e}")))?;
 
-    // The `--cascade` flag lands in a follow-up task; preserve today's
-    // non-cascading behaviour until it does.
-    ctx.accounts.archive(&account_id, false).await?;
+    ctx.accounts.archive(&account_id, cascade).await?;
 
     if ctx.json {
         return crate::output::print_json(&serde_json::json!({
@@ -384,6 +445,96 @@ async fn archive(ctx: &AppContext, id: String) -> CliResult<()> {
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         println!("Archived account: {id}");
+    }
+    Ok(())
+}
+
+/// Closes an account on a business date.
+///
+/// # Errors
+///
+/// Propagates [`crate::error::CliError`] from the account service or JSON
+/// serialisation. Returns the core's `BadData` error, naming the blockers, if
+/// `cascade` is false and an open descendant exists.
+async fn close(
+    ctx: &AppContext,
+    id: String,
+    on: jiff::civil::Date,
+    cascade: bool,
+) -> CliResult<()> {
+    let account_id = bc_models::AccountId::from_str(&id)
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID '{id}': {e}")))?;
+
+    ctx.accounts.close(&account_id, on, cascade).await?;
+
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "closed": true,
+            "id": id,
+            "closed_on": on.to_string(),
+        }));
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("Closed account: {id} (on {on})");
+    }
+    Ok(())
+}
+
+/// Reopens a closed account.
+///
+/// # Errors
+///
+/// Propagates [`crate::error::CliError`] from the account service or JSON serialisation.
+async fn reopen(ctx: &AppContext, id: String) -> CliResult<()> {
+    let account_id = bc_models::AccountId::from_str(&id)
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID '{id}': {e}")))?;
+
+    ctx.accounts.reopen(&account_id).await?;
+
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "reopened": true,
+            "id": id,
+        }));
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("Reopened account: {id}");
+    }
+    Ok(())
+}
+
+/// Sets or clears an account's declared opening date.
+///
+/// # Errors
+///
+/// Propagates [`crate::error::CliError`] from the account service or JSON serialisation.
+async fn set_opened_on(
+    ctx: &AppContext,
+    id: String,
+    on: Option<jiff::civil::Date>,
+) -> CliResult<()> {
+    let account_id = bc_models::AccountId::from_str(&id)
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID '{id}': {e}")))?;
+
+    ctx.accounts.set_opened_on(&account_id, on).await?;
+
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "id": id,
+            "opened_on": on.map(|date| date.to_string()),
+        }));
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        match on {
+            Some(date) => println!("Set opened_on for account {id}: {date}"),
+            None => println!("Cleared opened_on for account {id}"),
+        }
     }
     Ok(())
 }
