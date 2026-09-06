@@ -112,7 +112,7 @@ To unit-test pure logic that lives under the wasm-gated `components/` tree, put 
 
 ## Design Principles
 
-**Warn, don't block.** This is a power-user tool; guardrails inform rather than gatekeep. An unbalanced transaction saves with a warning flag; editing a reconciled transaction is allowed with a warning. Reserve hard errors for genuinely unrepresentable states (unparsable amount, more than one elided posting, a posting with no account).
+**Warn, don't block.** This is a power-user tool; guardrails inform rather than gatekeep. An unbalanced transaction saves with a warning flag; editing a reconciled transaction is allowed with a warning. Reserve hard errors for genuinely unrepresentable states (a transaction with no postings, two or more elided postings, a lone elided posting).
 
 **Schema changes may break.** The app has never been deployed, so there are no databases in the wild. Migrations may freely alter, drop, or recreate schema — prefer a clean schema over compatibility shims, and fold changes into existing migrations rather than writing data migrations.
 
