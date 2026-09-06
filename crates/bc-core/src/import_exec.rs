@@ -2146,11 +2146,11 @@ impl Sink for Plan {
         ready(Ok(None))
     }
 
-    ///
-    /// Raises no warnings: the write-time guard checked here reads accounts
-    /// through a database connection a dry run never opens, so a plan reports
-    /// only the warnings [`resolve_leg`] already raised during resolution
-    /// (currently just the archived-account one).
+    /// Raises no warnings: `check_postings` needs a `&mut sqlx::SqliteConnection`,
+    /// and `Plan` holds no connection by design (see the struct doc), so it cannot
+    /// run here. A plan's warnings are therefore only those [`resolve_leg`] already
+    /// raised during resolution (currently just the archived-account one) — a
+    /// lower bound, not the complete set a real run will produce.
     fn create(
         &mut self,
         _raw: &RawTransaction,
