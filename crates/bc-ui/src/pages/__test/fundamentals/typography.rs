@@ -210,7 +210,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
                         <p style="font-family:var(--bc-font-sans);\
                         font-size:var(--bc-text-label);\
                         font-weight:500;color:var(--bc-ink-soft);margin:0 0 10px">
-                            "Smart Access · BSB 062-000 · ****4821"
+                            "Smart Access · BSB 000-000 · ****0000"
                         </p>
                         <p style="font-family:var(--bc-font-sans);\
                         font-size:var(--bc-text-body);\
@@ -373,7 +373,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
                             {[
                                 (
                                     "2026-05-09",
-                                    "Coles Eastland",
+                                    "Coles",
                                     "−$184.30",
                                     "Groceries:Coles",
                                     "--bc-ink-soft",
