@@ -78,6 +78,11 @@ pub enum Command {
 /// plain object a script can index straight into, rather than nesting the
 /// written value under its own key.
 ///
+/// Each call site also prints these same warnings to stderr unconditionally,
+/// so stdout stays parseable while a human still sees them on the terminal.
+/// A `--json` consumer that captures stderr too will see each warning twice
+/// by design.
+///
 /// # Errors
 ///
 /// Returns [`crate::error::CliError::Json`] if `value` cannot serialise.
