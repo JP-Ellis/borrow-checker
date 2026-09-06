@@ -171,11 +171,14 @@ pub async fn create_transaction(
         .created_at(jiff::Timestamp::now())
         .build();
 
+    // Warnings are not yet surfaced to the UI; see the follow-up issue filed
+    // from this work's out-of-scope list.
     let tx_id = state
         .transactions
         .create(model_tx)
         .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?
+        .into_inner();
 
     Ok(tx_id.to_string())
 }
@@ -245,7 +248,10 @@ pub async fn edit_transaction(
         .created_at(jiff::Timestamp::now())
         .build();
 
-    Ok(state.transactions.edit(model_tx).await?)
+    // Warnings are not yet surfaced to the UI; see the follow-up issue filed
+    // from this work's out-of-scope list.
+    state.transactions.edit(model_tx).await?;
+    Ok(())
 }
 
 /// Sets a transaction's reconciliation state.
