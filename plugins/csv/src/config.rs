@@ -961,7 +961,9 @@ mod tests {
 
     use super::*;
 
-    /// The minimum JSON a profile needs: the two fields with no default.
+    /// The minimum JSON `validate` accepts: `account` and `source_dir` have
+    /// no default, and `commodity` is required by `validate` even though it
+    /// deserializes to `None` when absent.
     fn base_profile_json() -> serde_json::Value {
         serde_json::json!({
             "account": "Assets:Bank:Checking",
@@ -1002,6 +1004,109 @@ mod tests {
         assert_eq!(cfg.delimiter, ',', "a defaulted field still fills in");
         assert_eq!(cfg.date_column, ColumnRef::Name("Date".to_owned()));
         assert_eq!(cfg.source_glob, "*");
+    }
+
+    #[test]
+    fn a_fully_populated_profile_deserializes_through_the_flattened_catch_all() {
+        // Flattening routes every field through serde's content buffer, which
+        // is where `deserialize_any` semantics can differ from a direct
+        // deserializer. `known_keys_still_deserialize_through_the_flattened_catch_all`
+        // only exercises defaults plus a bare string and a bare integer; this
+        // covers a `char` field, an index-form `ColumnRef`, an
+        // internally-tagged nested struct (`header`, `preamble`, and
+        // `commodity`'s tagged form), `amount_columns`, and `extra_legs`.
+        let json = serde_json::json!({
+            "account": "Assets:Bank:Checking",
+            "source_dir": "Assets/Bank/Checking",
+            "source_glob": "*.csv",
+            "preamble": {"strategy": "skip_lines", "lines": 2},
+            "header": {"kind": "auto_detect", "max_scan_lines": 5},
+            "delimiter": ";",
+            "date_column": 3,
+            "date_format": "%d/%m/%Y",
+            "amount_columns": {
+                "style": "split_debit_credit",
+                "debit_column": "Debit",
+                "credit_column": "Credit"
+            },
+            "metadata_columns": [
+                {"key": "payee", "column": "Description", "type": "text"}
+            ],
+            "description_column": "Description",
+            "reference_column": "Reference",
+            "balance_column": "Balance",
+            "commodity": {"source": "fixed", "code": "AUD"},
+            "decimal_separator": ",",
+            "thousands_separator": ".",
+            "extra_legs": [
+                {
+                    "account": "Expenses:Fees",
+                    "amount_columns": {"style": "single", "column": "Fee"},
+                    "commodity": {"source": "fixed", "code": "AUD"},
+                    "negate": true
+                }
+            ]
+        });
+
+        let cfg: Config = serde_json::from_value(json).expect("deserialize");
+
+        assert!(cfg.unknown.is_empty(), "nothing stray in a clean profile");
+        assert_eq!(cfg.account, "Assets:Bank:Checking");
+        assert_eq!(cfg.source_dir, "Assets/Bank/Checking");
+        assert_eq!(cfg.source_glob, "*.csv");
+        assert_eq!(cfg.preamble, Preamble::SkipLines { lines: 2 });
+        assert_eq!(cfg.header, Header::AutoDetect { max_scan_lines: 5 });
+        assert_eq!(cfg.delimiter, ';');
+        assert_eq!(cfg.date_column, ColumnRef::Index(3));
+        assert_eq!(cfg.date_format, "%d/%m/%Y");
+        assert_eq!(
+            cfg.amount_columns,
+            AmountColumns::SplitDebitCredit {
+                debit_column: ColumnRef::Name("Debit".to_owned()),
+                credit_column: ColumnRef::Name("Credit".to_owned()),
+            }
+        );
+        assert_eq!(
+            cfg.metadata_columns,
+            vec![MetadataColumn {
+                key: "payee".to_owned(),
+                column: ColumnRef::Name("Description".to_owned()),
+                ty: MetaColumnType::Text,
+            }]
+        );
+        assert_eq!(
+            cfg.description_column,
+            Some(ColumnRef::Name("Description".to_owned()))
+        );
+        assert_eq!(
+            cfg.reference_column,
+            Some(ColumnRef::Name("Reference".to_owned()))
+        );
+        assert_eq!(
+            cfg.balance_column,
+            Some(ColumnRef::Name("Balance".to_owned()))
+        );
+        assert_eq!(
+            cfg.commodity,
+            Some(CommoditySource::Fixed {
+                code: "AUD".to_owned()
+            })
+        );
+        assert_eq!(cfg.decimal_separator, ',');
+        assert_eq!(cfg.thousands_separator, Some('.'));
+        assert_eq!(
+            cfg.extra_legs,
+            vec![LegSpec {
+                account: "Expenses:Fees".to_owned(),
+                amount_columns: AmountColumns::Single {
+                    column: ColumnRef::Name("Fee".to_owned()),
+                },
+                commodity: CommoditySource::Fixed {
+                    code: "AUD".to_owned()
+                },
+                negate: true,
+            }]
+        );
     }
 
     #[test]

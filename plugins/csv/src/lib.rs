@@ -181,7 +181,7 @@ impl CsvImporter {
         // Resolved before the row loop purely for the error: an unresolvable
         // date column is a profile that does not match the file, and should say
         // so once rather than once per row.
-        let _date_idx = columns.resolve(&cfg.date_column)?;
+        columns.resolve(&cfg.date_column)?;
 
         let commodity_source = cfg
             .commodity
@@ -1099,6 +1099,47 @@ mod tests {
         assert_eq!(txns[1].date, Date::new(2025, 3, 16));
     }
 
+    /// The skip for a dateless row must come *after* the row loop's
+    /// `expected_width`/`widest_row` bookkeeping, so an undated first row
+    /// still teaches the loop the file's width.
+    ///
+    /// The undated opening row is wider (3 fields) than the dated rows that
+    /// follow (2 fields, no balance). Skipping after bookkeeping (correct)
+    /// learns `expected = 3`, so the later, narrower rows resolve the
+    /// out-of-range balance column to `None` rather than erroring. Skipping
+    /// before bookkeeping would instead learn `expected = 2` from the first
+    /// *dated* row, and `cell`'s `idx >= expected` guard would then reject
+    /// every row's balance column, failing the whole file.
+    #[test]
+    fn parse_bytes_learns_row_width_from_an_undated_first_row() {
+        let importer = CsvImporter;
+        let cfg = Config {
+            account: "Liabilities:Bank:Card".to_owned(),
+            header: Header::Absent,
+            date_column: ColumnRef::Index(0),
+            date_format: "%d/%m/%Y".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(1),
+            },
+            balance_column: Some(ColumnRef::Index(2)),
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
+            ..Config::default()
+        };
+        let csv = b",,1000.00\n\
+                    01/02/2025,50.00\n\
+                    02/02/2025,-10.00\n";
+
+        let txns = importer
+            .parse_bytes(csv, &cfg, "statement.csv")
+            .expect("width learned from the undated row must not fail the file");
+
+        assert_eq!(txns.len(), 2, "the undated opening row is skipped");
+        assert_eq!(txns[0].date, Date::new(2025, 2, 1));
+        assert_eq!(txns[1].date, Date::new(2025, 2, 2));
+    }
+
     #[test]
     fn parse_bytes_skips_an_undated_row_mid_file() {
         let csv = b"Date,Amount\n\
@@ -1507,6 +1548,30 @@ mod tests {
         let result = importer.parse_bytes(b"01/02/2025,120.00\n", &cfg, "statement.csv");
         let err = result.expect_err("column 9 does not exist in a two-column row");
         assert_eq!(err.to_string(), "missing required field: column 9");
+    }
+
+    /// The same out-of-range guard applies to a positional *date* column, not
+    /// only the amount column: it is what stops the move to `cell` from
+    /// turning a misconfigured profile into silently dropped rows.
+    #[test]
+    fn parse_bytes_errors_on_out_of_range_date_index() {
+        let importer = CsvImporter;
+        let cfg = Config {
+            account: "Liabilities:Bank:Card".to_owned(),
+            header: Header::Absent,
+            date_column: ColumnRef::Index(5),
+            date_format: "%d/%m/%Y".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Index(1),
+            },
+            commodity: Some(CommoditySource::Fixed {
+                code: "AUD".to_owned(),
+            }),
+            ..Config::default()
+        };
+        let result = importer.parse_bytes(b"01/02/2025,120.00\n", &cfg, "statement.csv");
+        let err = result.expect_err("column 5 does not exist in a two-column row");
+        assert_eq!(err.to_string(), "missing required field: column 5");
     }
 
     /// An out-of-range index on an *optional* column must fail like a required
