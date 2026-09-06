@@ -604,7 +604,7 @@ ______________________________________________________________________
 Thin binary over `bc-core`. Commands:
 
 ```
-borrow-checker account [list|create|archive]
+borrow-checker account [list|create|archive|close|reopen|set-opened-on|balance]
 borrow-checker transaction [list|add|amend|void]
 borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|book-value]
 borrow-checker profile [create|list|show|edit|remove]
