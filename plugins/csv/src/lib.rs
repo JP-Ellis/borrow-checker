@@ -182,9 +182,10 @@ impl CsvImporter {
             bc_sdk::warn!("duplicate column name in header"; path = file, detail = detail);
         }
 
-        // Resolved before the row loop purely for the error: an unresolvable
-        // date column is a profile that does not match the file, and should say
-        // so once rather than once per row.
+        // Resolved before the row loop for the sake of a file carrying no data
+        // rows. `cell` resolves the date column again on every row, and the
+        // first failure ends the file, so this repeats no error. What it adds
+        // is the error on a file whose row loop never runs.
         columns.resolve(&cfg.date_column)?;
 
         let commodity_source = cfg
