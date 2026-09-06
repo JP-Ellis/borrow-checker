@@ -343,7 +343,7 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
 
 /// Recursively removes null-valued object keys from a JSON value.
 ///
-/// TOML has no null, so a stored `"payee_column": null` cannot be rendered at
+/// TOML has no null, so a stored `"balance_column": null` cannot be rendered at
 /// all. Dropping it is faithful rather than lossy for these configs: to serde,
 /// an absent key and an explicit null mean the same thing for an `Option`
 /// field. `profile show --json` remains the exact view.
