@@ -2700,6 +2700,134 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    async fn amend_warns_but_persists_a_posting_after_account_closed(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .opened_on(date(2020, 1, 1))
+            .call()
+            .await
+            .expect("create account");
+        sqlx::query("UPDATE accounts SET closed_on = ?1 WHERE id = ?2")
+            .bind("2024-06-30")
+            .bind(acc.to_string())
+            .execute(&pool)
+            .await
+            .expect("seed closed_on");
+
+        let svc = Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2022, 3, 3))
+            .description("Dated inside the account life")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc.clone())
+                    .amount(Amount::new(dec!(50.00), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let tx_id = svc.create(tx.clone()).await.expect("create").into_inner();
+
+        let amended = Transaction::builder()
+            .id(tx_id.clone())
+            .date(date(2025, 1, 15))
+            .description("Dated after the account closed")
+            .postings(tx.postings().to_vec())
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(*tx.created_at())
+            .build();
+        let warned = svc.amend(amended).await.expect("amend must succeed");
+
+        assert_eq!(warned.warnings.len(), 1, "{:?}", warned.warnings);
+        assert!(
+            matches!(
+                warned.warnings[0],
+                crate::Warning::PostingAfterAccountClosed { .. }
+            ),
+            "{:?}",
+            warned.warnings
+        );
+
+        let loaded = svc
+            .find_by_id(&tx_id)
+            .await
+            .expect("the amend must still have been written");
+        assert_eq!(loaded.date(), date(2025, 1, 15));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    async fn edit_warns_but_persists_a_posting_after_account_closed(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let acc = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .opened_on(date(2020, 1, 1))
+            .call()
+            .await
+            .expect("create account");
+        sqlx::query("UPDATE accounts SET closed_on = ?1 WHERE id = ?2")
+            .bind("2024-06-30")
+            .bind(acc.to_string())
+            .execute(&pool)
+            .await
+            .expect("seed closed_on");
+
+        let svc = Service::new(pool.clone());
+        let tx = Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date(2022, 3, 3))
+            .description("Dated inside the account life")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc.clone())
+                    .amount(Amount::new(dec!(50.00), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let tx_id = svc.create(tx.clone()).await.expect("create").into_inner();
+
+        let updated = Transaction::builder()
+            .id(tx_id.clone())
+            .date(date(2025, 1, 15))
+            .description("Dated after the account closed")
+            .postings(tx.postings().to_vec())
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(*tx.created_at())
+            .build();
+        let warned = svc.edit(updated).await.expect("edit must succeed");
+
+        assert_eq!(warned.warnings.len(), 1, "{:?}", warned.warnings);
+        assert!(
+            matches!(
+                warned.warnings[0],
+                crate::Warning::PostingAfterAccountClosed { .. }
+            ),
+            "{:?}",
+            warned.warnings
+        );
+
+        let loaded = svc
+            .find_by_id(&tx_id)
+            .await
+            .expect("the edit must still have been written");
+        assert_eq!(loaded.date(), date(2025, 1, 15));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn posting_cost_round_trips(pool: sqlx::SqlitePool) {
         use jiff::Timestamp;
         let acct_svc = crate::account::Service::new(pool.clone());
