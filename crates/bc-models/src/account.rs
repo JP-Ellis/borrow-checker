@@ -134,9 +134,12 @@ pub struct Account {
     #[builder(default = Kind::DepositAccount)]
     kind: Kind,
 
-    /// Commodities this account may hold. An empty list means unrestricted —
-    /// the account can hold any commodity. When non-empty, the *first* entry is
-    /// used as the default commodity for display purposes. Defaults to empty.
+    /// Commodities this account is declared to hold, in display order. The
+    /// declaration is advisory: a posting in a commodity outside a non-empty
+    /// list is written anyway and raises a `bc_core::Warning`, so this is not
+    /// an invariant a reader may rely on. An empty list declares nothing and
+    /// warns about nothing. When non-empty, the *first* entry is used as the
+    /// default commodity for display purposes. Defaults to empty.
     #[builder(default)]
     commodities: Vec<CommodityId>,
 
