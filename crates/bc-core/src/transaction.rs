@@ -687,7 +687,16 @@ impl Service {
     ///
     /// * `db_tx` - An open SQLite transaction to write within.
     /// * `transaction_id` - The transaction to append to.
+    /// * `date` - The owning transaction's own value date, checked against
+    ///   each posting's account exactly as [`Self::create_in_tx`] checks a new
+    ///   transaction's postings.
     /// * `postings` - The postings to append. An empty slice is a no-op.
+    ///
+    /// # Warnings
+    ///
+    /// Returns advisory [`crate::Warning`]s alongside the result — a commodity
+    /// outside the account's declared list, a date outside its declared life,
+    /// or an archived account. None of these blocks the write.
     ///
     /// # Errors
     ///
@@ -699,10 +708,11 @@ impl Service {
         &self,
         db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         transaction_id: &TransactionId,
+        date: Date,
         postings: &[Posting],
-    ) -> BcResult<()> {
+    ) -> BcResult<Vec<crate::Warning>> {
         if postings.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         let existing: Option<(i64, i64)> = sqlx::query_as(
@@ -729,6 +739,8 @@ impl Service {
             return Err(BcError::BadData("two or more elided postings".into()));
         }
 
+        let warnings = crate::warning::check_postings(db_tx, date, postings).await?;
+
         for (offset, posting) in postings.iter().enumerate() {
             let position = max_position
                 .saturating_add(1)
@@ -738,7 +750,7 @@ impl Service {
             insert_posting_row(db_tx, transaction_id, posting, position).await?;
             crate::tag::insert_posting_tags(&mut *db_tx, posting.id(), posting.tag_ids()).await?;
         }
-        Ok(())
+        Ok(warnings)
     }
 
     /// Finds a transaction by ID, including all its postings with cost and tag data.
@@ -3628,7 +3640,7 @@ mod tests {
             .build();
 
         let mut db_tx = pool.begin().await.expect("begin");
-        svc.add_postings_in_tx(&mut db_tx, &tx_id, &[added])
+        svc.add_postings_in_tx(&mut db_tx, &tx_id, date(2025, 6, 27), &[added])
             .await
             .expect("add postings");
         db_tx.commit().await.expect("commit");
@@ -3666,7 +3678,12 @@ mod tests {
 
         let mut db_tx = pool.begin().await.expect("begin");
         let result = svc
-            .add_postings_in_tx(&mut db_tx, &TransactionId::new(), &[orphan])
+            .add_postings_in_tx(
+                &mut db_tx,
+                &TransactionId::new(),
+                date(2025, 6, 27),
+                &[orphan],
+            )
             .await;
         assert!(
             result.is_err(),

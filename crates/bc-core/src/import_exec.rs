@@ -280,6 +280,13 @@ struct Counts {
     /// deliberately kept apart from `diagnostics` and `charged_by_cause`. See
     /// [`ImportOutcome::warnings`] for why.
     warnings: Vec<Warning>,
+    /// `(variant, account)` pairs already represented in `warnings`, so a run
+    /// over many rows against one account reports each finding once rather
+    /// than once per posting. Mirrors the warn-once precedent
+    /// [`resolve_leg`] already set for [`Warning::PostingIntoArchivedAccount`]
+    /// — extended here to the other three variants, which `check_postings`
+    /// otherwise raises afresh for every posting it checks.
+    warned_seen: HashSet<WarningKey>,
 }
 
 impl Counts {
@@ -326,6 +333,68 @@ impl Counts {
         self.unresolved_account_postings
             .saturating_add(self.unresolved_commodity_postings)
             .saturating_add(self.other_skipped_postings)
+    }
+
+    /// Adds the write-time guard's warnings for one row, deduplicated to at
+    /// most one per `(variant, account)` for the whole run.
+    ///
+    /// [`Warning::PostingIntoArchivedAccount`] is dropped outright: the
+    /// resolution pass already raised its own warn-once version of that
+    /// finding into `self.warnings` before any row was written (see
+    /// [`resolve_leg`]), so a second copy from the write-time guard would
+    /// double up. The other three variants get no such treatment upstream —
+    /// `check_postings` raises one per posting it checks — so without this
+    /// dedup, importing thousands of postings against one closed or
+    /// out-of-list account would report thousands of identical lines.
+    ///
+    /// # Arguments
+    ///
+    /// * `warnings` - The warnings one row's write raised.
+    fn push_warnings(&mut self, warnings: Vec<Warning>) {
+        for warning in warnings {
+            if matches!(warning, Warning::PostingIntoArchivedAccount { .. }) {
+                continue;
+            }
+            if let Some(key) = WarningKey::of(&warning)
+                && !self.warned_seen.insert(key)
+            {
+                continue;
+            }
+            self.warnings.push(warning);
+        }
+    }
+}
+
+/// A [`Warning`] variant paired with the account it names, used to dedup
+/// warnings that `check_postings` otherwise raises once per posting into at
+/// most one per account for the whole run.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum WarningKey {
+    /// Keys a [`Warning::CommodityOutsideAccountList`].
+    CommodityOutsideAccountList(AccountId),
+    /// Keys a [`Warning::PostingBeforeAccountOpened`].
+    PostingBeforeAccountOpened(AccountId),
+    /// Keys a [`Warning::PostingAfterAccountClosed`].
+    PostingAfterAccountClosed(AccountId),
+}
+
+impl WarningKey {
+    /// Returns the dedup key for `warning`, or `None` for a variant this
+    /// module does not dedup at collection (currently just
+    /// [`Warning::PostingIntoArchivedAccount`], deduped upstream instead).
+    fn of(warning: &Warning) -> Option<Self> {
+        match *warning {
+            Warning::CommodityOutsideAccountList { ref account_id, .. } => {
+                Some(Self::CommodityOutsideAccountList(account_id.clone()))
+            }
+            Warning::PostingBeforeAccountOpened { ref account_id, .. } => {
+                Some(Self::PostingBeforeAccountOpened(account_id.clone()))
+            }
+            Warning::PostingAfterAccountClosed { ref account_id, .. } => {
+                Some(Self::PostingAfterAccountClosed(account_id.clone()))
+            }
+            Warning::PostingIntoArchivedAccount { .. } => None,
+        }
     }
 }
 
@@ -1447,40 +1516,13 @@ fn location_of(raw: &RawTransaction) -> &str {
         .map_or("<unknown source>", |location| location.display.as_str())
 }
 
-/// Applies the run's per-row failure policy to one row's write.
+/// Applies the run's per-row failure policy to one row's step.
 ///
 /// A condition local to this row — input that cannot be represented, or a
 /// `UNIQUE` violation showing its slot is already claimed — warns and skips the
 /// row, exactly as every other unpersistable-row case in this pipeline does.
 /// One bad row among thousands must not abort the run and leave a half-written
 /// database behind an unclosed batch. A genuine I/O failure still propagates.
-///
-/// # Arguments
-///
-/// * `result` - The outcome of the row's write.
-/// * `raw` - The document transaction, for diagnostics.
-/// * `action` - What the run was attempting, for the warning.
-/// * `postings` - Legs lost if the row is skipped.
-/// * `counts` - Run totals to update.
-///
-/// # Returns
-///
-/// `true` if the write succeeded, `false` if the row was skipped.
-///
-/// # Errors
-///
-/// Returns the original error when it is not row-local.
-fn row_local(
-    result: BcResult<()>,
-    raw: &RawTransaction,
-    action: &str,
-    postings: usize,
-    counts: &mut Counts,
-) -> BcResult<bool> {
-    Ok(row_local_value(result, raw, action, postings, counts)?.is_some())
-}
-
-/// As [`row_local`], for a step that produces a value.
 ///
 /// # Arguments
 ///
@@ -1744,6 +1786,9 @@ trait Sink {
     ///
     /// * `raw` - The document transaction the legs came from.
     /// * `owner` - The transaction their stored siblings belong to.
+    /// * `owner_date` - `owner`'s own value date, checked against each
+    ///   inserted posting's account exactly as [`Sink::create`] checks a new
+    ///   transaction's postings.
     /// * `stored` - Every posting `owner` already holds, as loaded before this
     ///   row was decided. Together with `postings` this is the complete leg set
     ///   the transaction will hold, which is what a residual has to be derived
@@ -1755,18 +1800,30 @@ trait Sink {
     /// * `adoptions` - Legs whose posting the user already wrote, paired with
     ///   the posting to record provenance against.
     ///
+    /// # Returns
+    ///
+    /// Advisory warnings the write-time guard raised for the appended
+    /// postings. A sink that performs no such check (a dry-run plan) returns
+    /// none.
+    ///
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on insert failure.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one parameter per fact the write needs; bundling them into a \
+                  struct would only move the same list one level out"
+    )]
     async fn attach(
         &mut self,
         raw: &RawTransaction,
         owner: &TransactionId,
+        owner_date: jiff::civil::Date,
         stored: &[StoredPosting<'_>],
         postings: &[Posting],
         insertions: &[&LegPlan],
         adoptions: &[(PostingId, &LegPlan)],
-    ) -> BcResult<()>;
+    ) -> BcResult<Vec<Warning>>;
 
     /// Records the run's totals against the batch, if it opened one.
     ///
@@ -1928,18 +1985,21 @@ impl Sink for Commit<'_> {
         &mut self,
         raw: &RawTransaction,
         owner: &TransactionId,
+        owner_date: jiff::civil::Date,
         _stored: &[StoredPosting<'_>],
         postings: &[Posting],
         insertions: &[&LegPlan],
         adoptions: &[(PostingId, &LegPlan)],
-    ) -> BcResult<()> {
+    ) -> BcResult<Vec<Warning>> {
         let batch_id = self.batch()?;
         let mut db_tx = self.transactions.pool().begin().await?;
-        if !postings.is_empty() {
+        let warnings = if postings.is_empty() {
+            Vec::new()
+        } else {
             self.transactions
-                .add_postings_in_tx(&mut db_tx, owner, postings)
-                .await?;
-        }
+                .add_postings_in_tx(&mut db_tx, owner, owner_date, postings)
+                .await?
+        };
         for (posting, leg) in postings.iter().zip(insertions) {
             let source = Self::source_ref(raw, leg, batch_id, owner, posting.id(), true);
             self.sources.attach_in_tx(&mut db_tx, &source).await?;
@@ -1949,7 +2009,7 @@ impl Sink for Commit<'_> {
             self.sources.attach_in_tx(&mut db_tx, &source).await?;
         }
         db_tx.commit().await?;
-        Ok(())
+        Ok(warnings)
     }
 
     /// Records the run's totals against the batch this sink opened.
@@ -2178,15 +2238,19 @@ impl Sink for Plan {
     /// An adoption is not among either: its posting is already the user's own
     /// and already in their balances, so it moves no total, though it does feed
     /// the residual by way of `stored`, which is where its posting sits.
+    ///
+    /// Raises no warnings, for the same reason [`Self::create`] raises none: no
+    /// connection is available to run `check_postings` here.
     fn attach(
         &mut self,
         _raw: &RawTransaction,
         _owner: &TransactionId,
+        _owner_date: jiff::civil::Date,
         stored: &[StoredPosting<'_>],
         postings: &[Posting],
         insertions: &[&LegPlan],
         _adoptions: &[(PostingId, &LegPlan)],
-    ) -> impl Future<Output = BcResult<()>> {
+    ) -> impl Future<Output = BcResult<Vec<Warning>>> {
         let before = Self::residual(stored.iter().map(|held| held.posting));
         let after = Self::residual(stored.iter().map(|held| held.posting).chain(postings));
 
@@ -2211,7 +2275,7 @@ impl Sink for Plan {
         }
 
         self.record_legs(postings, insertions.iter().copied(), after.as_ref());
-        ready(Ok(()))
+        ready(Ok(Vec::new()))
     }
 
     /// Closes no batch, because none was opened.
@@ -2401,14 +2465,7 @@ where
         else {
             return Ok(());
         };
-        // The write-time guard raises its own archived-account warning per
-        // posting, but `resolve_leg` already raised one, deduplicated once per
-        // distinct account for the whole run — keep that version only.
-        counts.warnings.extend(
-            warnings
-                .into_iter()
-                .filter(|warning| !matches!(warning, Warning::PostingIntoArchivedAccount { .. })),
-        );
+        counts.push_warnings(warnings);
 
         counts.new_transactions = counts.new_transactions.saturating_add(1_usize);
         Ok(())
@@ -2551,18 +2608,28 @@ where
 
         let written = self
             .sink
-            .attach(raw, owner, &stored, &postings, &insertions, &adoptions)
+            .attach(
+                raw,
+                owner,
+                candidate.date(),
+                &stored,
+                &postings,
+                &insertions,
+                &adoptions,
+            )
             .await;
 
-        if !row_local(
+        let Some(warnings) = row_local_value(
             written,
             raw,
             "appending the unstored legs",
             unstored,
             counts,
-        )? {
+        )?
+        else {
             return Ok(());
-        }
+        };
+        counts.push_warnings(warnings);
 
         counts.attached_postings = counts.attached_postings.saturating_add(unstored);
         Ok(())
@@ -3325,6 +3392,95 @@ mod tests {
             outcome.charged_by_cause.is_empty(),
             "{:?}",
             outcome.charged_by_cause
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_multi_row_import_into_one_closed_account_warns_once(pool: SqlitePool) {
+        let (bank, _food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+
+        sqlx::query("UPDATE accounts SET closed_on = ?1 WHERE id = ?2")
+            .bind(date(2019, 1, 1).to_string())
+            .bind(bank.to_string())
+            .execute(&pool)
+            .await
+            .expect("seed closed_on");
+
+        // Several rows, all posting to the same closed account: the write-time
+        // guard raises one `PostingAfterAccountClosed` per posting it checks,
+        // so without a collection-site dedup this would report one line per
+        // row rather than one per account.
+        let batch = vec![
+            raw("COFFEE", -5),
+            raw("LUNCH", -20),
+            raw("DINNER", -40),
+            raw("SNACK", -3),
+        ];
+        let outcome = run(&svcs, &batch).await;
+
+        assert_eq!(outcome.new_transactions, 4);
+        assert_eq!(outcome.skipped_postings, 0, "a warning must not skip a leg");
+        assert_eq!(
+            outcome
+                .warnings
+                .iter()
+                .filter(|w| matches!(w, Warning::PostingAfterAccountClosed { .. }))
+                .count(),
+            1,
+            "one closed-account warning per account for the whole run, not one per posting: \
+             {:?}",
+            outcome.warnings
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_attached_leg_into_a_closed_account_is_warned(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let batch = vec![split_raw("SPLIT")];
+
+        // `Expenses:Food` does not exist yet, so the first pass attaches only
+        // the `Assets:Bank` leg and skips the other for want of an account.
+        let first = run(&svcs, &batch).await;
+        assert_eq!(first.skipped_postings, 1);
+        assert_eq!(posting_count(&pool).await, 1);
+
+        // The user creates the missing account, but it is already closed as of
+        // a date before this row's — the second pass attaches the leg into it
+        // anyway (warn, don't block), and must say so exactly as a freshly
+        // created transaction would. This is the attach counterpart of
+        // `import_reports_warnings_without_charging_a_skip`: only `Sink::create`
+        // used to run the write-time guard, so a leg reaching an existing
+        // transaction through `Sink::attach` warned on neither channel.
+        let food = add_food(&pool).await;
+        sqlx::query("UPDATE accounts SET closed_on = ?1 WHERE id = ?2")
+            .bind(date(2019, 1, 1).to_string())
+            .bind(food.to_string())
+            .execute(&pool)
+            .await
+            .expect("seed closed_on");
+
+        let second = run(&svcs, &batch).await;
+
+        assert_eq!(
+            second.new_transactions, 0,
+            "the transaction already exists; it must not be duplicated"
+        );
+        assert_eq!(second.attached_postings, 1, "the leg is still attached");
+        assert_eq!(
+            posting_count(&pool).await,
+            2,
+            "the leg was written despite the warning"
+        );
+        assert_eq!(second.skipped_postings, 0, "a warning must not skip a leg");
+        assert!(
+            second
+                .warnings
+                .iter()
+                .any(|w| matches!(w, Warning::PostingAfterAccountClosed { .. })),
+            "attaching into a closed account must warn: {:?}",
+            second.warnings
         );
     }
 

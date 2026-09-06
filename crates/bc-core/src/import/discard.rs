@@ -702,7 +702,7 @@ mod tests {
         let transactions = crate::TransactionService::new(pool.clone());
         let mut db_tx = pool.begin().await.expect("begin");
         transactions
-            .add_postings_in_tx(&mut db_tx, transaction_id, &[posting])
+            .add_postings_in_tx(&mut db_tx, transaction_id, date(2026, 1, 15), &[posting])
             .await
             .expect("add posting");
         db_tx.commit().await.expect("commit");
