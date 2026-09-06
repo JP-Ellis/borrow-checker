@@ -468,6 +468,8 @@ impl AccountNodeExt for bc_ipc::AccountNode {
             account.parent_id().map(ToString::to_string),
             account.account_type().into(),
             resolve_tag_paths(forest, account.tag_ids()),
+            account.opened_on(),
+            account.closed_on(),
         )
     }
 }
