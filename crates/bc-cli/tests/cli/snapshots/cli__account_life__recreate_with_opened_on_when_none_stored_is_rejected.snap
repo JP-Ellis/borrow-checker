@@ -6,4 +6,4 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: account 'Assets:BankA:Checking' already exists with a different opened_on date
+error: account 'Assets:BankA:Checking' already exists with a different opening date

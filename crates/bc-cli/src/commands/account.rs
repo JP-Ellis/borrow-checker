@@ -388,7 +388,7 @@ async fn create(
             let account = ctx.accounts.find_by_id(account_id).await?;
             if account.opened_on() != Some(requested_opened_on) {
                 return Err(crate::error::CliError::Arg(format!(
-                    "account '{rendered}' already exists with a different opened_on date"
+                    "account '{rendered}' already exists with a different opening date"
                 )));
             }
         }
