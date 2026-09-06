@@ -980,13 +980,13 @@ mod tests {
         let mut json = base_profile_json();
         let object = json.as_object_mut().expect("a JSON object");
         object.insert("payee_column".to_owned(), serde_json::json!("Payee"));
-        object.insert("descriptin_column".to_owned(), serde_json::json!("Details"));
+        object.insert("narrative_column".to_owned(), serde_json::json!("Details"));
 
         let cfg: Config = serde_json::from_value(json).expect("deserialize");
 
         assert_eq!(
             cfg.unknown.keys().map(String::as_str).collect::<Vec<_>>(),
-            vec!["descriptin_column", "payee_column"],
+            vec!["narrative_column", "payee_column"],
             "both stray keys are captured, in sorted order"
         );
         cfg.validate()
@@ -1120,9 +1120,9 @@ mod tests {
 
     #[test]
     fn an_unrecognised_key_warns_by_name() {
-        let warning = unknown_key_warning("descriptin_column");
+        let warning = unknown_key_warning("narrative_column");
         assert!(
-            warning.contains("descriptin_column"),
+            warning.contains("narrative_column"),
             "should name the key: {warning}"
         );
     }
