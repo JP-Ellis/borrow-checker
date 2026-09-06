@@ -138,7 +138,7 @@ Accounts are classified by `AccountType` (Asset, Liability, Equity, Income, Expe
 
 **Hierarchy via `parent_id`:**
 
-Accounts form an arbitrary-depth tree through an optional `parent_id: Option<AccountId>`. A root account (`parent_id = None`) is the authority for its `AccountType`; child accounts inherit their root's type when a path is materialised by `account create`, which derives the type from the root segment and applies it to every segment it creates. The programmatic `Service::create` takes an explicit type and does not check it against the parent. The hierarchy supports:
+Accounts form an arbitrary-depth tree through an optional `parent_id: Option<AccountId>`. A root account (`parent_id = None`) is the authority for its `AccountType`; child accounts inherit their root's type when a path is materialised by `account create`, which derives the type from the root segment and applies it to every segment it creates. `Service::create` checks the requested type against the parent's and rejects a contradiction, so both entry points agree. The hierarchy supports:
 
 - Institution grouping: `Assets > Bank > Savings, Checking`
 - Virtual sub-accounts: `Assets > Bank > Offset > Mine, Partner, Shared`
@@ -146,6 +146,8 @@ Accounts form an arbitrary-depth tree through an optional `parent_id: Option<Acc
 - Beancount/ledger export: the colon-separated path is derived by walking the ancestor chain
 
 No two sibling accounts share a name (`idx_accounts_sibling_unique`, a `UNIQUE` index on `(parent_id, name)` with the parent folded through `COALESCE` so root accounts — whose `parent_id` is `NULL` — are compared too). This is what makes a colon-separated path resolve to at most one account during import (see §5.2). An archived account still owns its name: renaming or reusing it requires archiving or renaming that account first.
+
+An account carries two optional business dates, `opened_on` and `closed_on`. Neither is `archived_at`, which controls visibility in active lists and says nothing about when an account existed: an account closed years ago still belongs in reports covering the years it was open. A transaction dated outside a declared life warns and is written — a date outside an account's bounds is more often a wrong declaration than a wrong transaction, and refusing the posting would lose data to fix metadata. A closed or archived account may not have an open descendant; `close` and `archive` reject by default and cascade on request.
 
 **Account kind** governs how a leaf account's balance is maintained:
 
