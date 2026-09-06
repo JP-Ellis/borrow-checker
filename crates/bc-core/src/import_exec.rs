@@ -366,12 +366,16 @@ impl Counts {
 }
 
 /// A [`Warning`] variant paired with the account it names, used to dedup
-/// warnings that `check_postings` otherwise raises once per posting into at
-/// most one per account for the whole run.
+/// warnings that `check_postings` otherwise raises once per posting. The
+/// account-life variants collapse to one per account for the whole run; the
+/// commodity variant also keys on the code, so each distinct undeclared
+/// commodity is still reported once.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum WarningKey {
-    /// Keys a [`Warning::CommodityOutsideAccountList`].
-    CommodityOutsideAccountList(AccountId),
+    /// Keys a [`Warning::CommodityOutsideAccountList`] by account *and* code:
+    /// two undeclared codes in one account are two distinct facts, and
+    /// collapsing them would report the first and hide the second.
+    CommodityOutsideAccountList(AccountId, String),
     /// Keys a [`Warning::PostingBeforeAccountOpened`].
     PostingBeforeAccountOpened(AccountId),
     /// Keys a [`Warning::PostingAfterAccountClosed`].
@@ -384,9 +388,14 @@ impl WarningKey {
     /// [`Warning::PostingIntoArchivedAccount`], deduped upstream instead).
     fn of(warning: &Warning) -> Option<Self> {
         match *warning {
-            Warning::CommodityOutsideAccountList { ref account_id, .. } => {
-                Some(Self::CommodityOutsideAccountList(account_id.clone()))
-            }
+            Warning::CommodityOutsideAccountList {
+                ref account_id,
+                ref commodity_code,
+                ..
+            } => Some(Self::CommodityOutsideAccountList(
+                account_id.clone(),
+                commodity_code.clone(),
+            )),
             Warning::PostingBeforeAccountOpened { ref account_id, .. } => {
                 Some(Self::PostingBeforeAccountOpened(account_id.clone()))
             }
@@ -2650,6 +2659,7 @@ mod tests {
 
     use super::*;
     use crate::RawPosting;
+    use crate::account::Cascade;
 
     /// Builds a text metadata entry, panicking on a key the tests wrote wrong.
     fn meta_text(key: &str, value: &str) -> RawMetaEntry {
@@ -3434,6 +3444,74 @@ mod tests {
         );
     }
 
+    /// Builds a row posting `amount` of `code` into `Assets:Bank`.
+    fn raw_in(desc: &str, amount: i64, code: &str) -> RawTransaction {
+        RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description(desc)
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .maybe_amount(Some(Amount::new(
+                        Decimal::from(amount),
+                        CommodityCode::new(code),
+                    )))
+                    .build(),
+            ])
+            .build()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn each_undeclared_commodity_is_reported_once_per_account(pool: SqlitePool) {
+        let (bank, _food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+
+        // `Assets:Bank` declares AUD and nothing else.
+        let aud: String = sqlx::query_scalar("SELECT id FROM commodities WHERE code = 'AUD'")
+            .fetch_one(&pool)
+            .await
+            .expect("find AUD");
+        sqlx::query(
+            "INSERT INTO account_commodities (account_id, commodity_id, position) \
+             VALUES (?1, ?2, 0)",
+        )
+        .bind(bank.to_string())
+        .bind(&aud)
+        .execute(&pool)
+        .await
+        .expect("declare AUD");
+
+        // Two rows in BTC and two in ETH. Repeats of one code collapse, but the
+        // two distinct codes are two distinct facts: reporting only the first
+        // would send the user to fix BTC and leave them to rediscover ETH on
+        // the next run.
+        let batch = vec![
+            raw_in("COIN", -1, "BTC"),
+            raw_in("COIN AGAIN", -2, "BTC"),
+            raw_in("ETHER", -3, "ETH"),
+            raw_in("ETHER AGAIN", -4, "ETH"),
+        ];
+        let outcome = run(&svcs, &batch).await;
+
+        assert_eq!(outcome.new_transactions, 4);
+        assert_eq!(outcome.skipped_postings, 0, "a warning must not skip a leg");
+
+        let mut codes: Vec<&str> = outcome
+            .warnings
+            .iter()
+            .filter_map(|w| match *w {
+                Warning::CommodityOutsideAccountList {
+                    ref commodity_code, ..
+                } => Some(commodity_code.as_str()),
+                Warning::PostingBeforeAccountOpened { .. }
+                | Warning::PostingAfterAccountClosed { .. }
+                | Warning::PostingIntoArchivedAccount { .. } => None,
+            })
+            .collect();
+        codes.sort_unstable();
+        assert_eq!(codes, vec!["BTC", "ETH"], "{:?}", outcome.warnings);
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn an_attached_leg_into_a_closed_account_is_warned(pool: SqlitePool) {
         bank_only_tree(&pool).await;
@@ -3757,7 +3835,7 @@ mod tests {
     async fn a_leg_naming_an_archived_account_still_imports(pool: SqlitePool) {
         let (bank, food) = two_account_tree(&pool).await;
         crate::AccountService::new(pool.clone())
-            .archive(&food, false)
+            .archive(&food, Cascade::Reject)
             .await
             .expect("archive Expenses:Food");
         let svcs = services(&pool).await;
