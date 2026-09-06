@@ -37,6 +37,7 @@ pub(crate) mod transaction;
 pub(crate) mod transfer;
 pub(crate) mod warning;
 
+pub use account::Cascade;
 pub use account::Created as CreatedAccounts;
 pub use account::PathSpec;
 pub use account::Service as AccountService;

@@ -436,6 +436,15 @@ fn reword_underivable_root_error(err: bc_core::BcError) -> crate::error::CliErro
     crate::error::CliError::Core(err)
 }
 
+/// Maps the `--cascade` flag onto the core's [`bc_core::Cascade`].
+const fn cascade_of(cascade: bool) -> bc_core::Cascade {
+    if cascade {
+        bc_core::Cascade::Into
+    } else {
+        bc_core::Cascade::Reject
+    }
+}
+
 /// Archives an account by ID.
 ///
 /// # Errors
@@ -447,7 +456,9 @@ async fn archive(ctx: &AppContext, id: String, cascade: bool) -> CliResult<()> {
     let account_id = bc_models::AccountId::from_str(&id)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID '{id}': {e}")))?;
 
-    ctx.accounts.archive(&account_id, cascade).await?;
+    ctx.accounts
+        .archive(&account_id, cascade_of(cascade))
+        .await?;
 
     if ctx.json {
         return crate::output::print_json(&serde_json::json!({
@@ -479,7 +490,9 @@ async fn close(
     let account_id = bc_models::AccountId::from_str(&id)
         .map_err(|e| crate::error::CliError::Arg(format!("invalid account ID '{id}': {e}")))?;
 
-    ctx.accounts.close(&account_id, on, cascade).await?;
+    ctx.accounts
+        .close(&account_id, on, cascade_of(cascade))
+        .await?;
 
     if ctx.json {
         return crate::output::print_json(&serde_json::json!({
@@ -546,8 +559,8 @@ async fn set_opened_on(
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         match on {
-            Some(date) => println!("Set opened_on for account {id}: {date}"),
-            None => println!("Cleared opened_on for account {id}"),
+            Some(date) => println!("Set opening date for account {id}: {date}"),
+            None => println!("Cleared opening date for account {id}"),
         }
     }
     Ok(())
