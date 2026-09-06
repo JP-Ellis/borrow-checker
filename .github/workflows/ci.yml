@@ -48,6 +48,7 @@ jobs:
       - machete
       - test
       - coverage
+      - e2e
     runs-on: ubuntu-latest
     steps:
       - name: Failed
@@ -127,28 +128,57 @@ jobs:
       - run: mise run machete
 
   test:
-    name: Test (${{ matrix.os }}, ${{ matrix.toolchain }})
+    name: Test (${{ matrix.os }})
     if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            toolchain: stable
-          - os: windows-latest
-            toolchain: stable
-          - os: macos-latest
-            toolchain: stable
-          - os: ubuntu-latest
-            toolchain: beta
+        os:
+          - windows-latest
+          - macos-latest
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.toolchain != 'stable' }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
+        timeout-minutes: 3
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: mise run test
+
+  # Linux stable runs its tests under llvm-cov rather than alongside a separate
+  # Coverage job. Instrumented artifacts share no fingerprint with plain ones,
+  # so two jobs meant building every dependency twice to run the same tests.
+  # Codecov reports the result as an annotation and never fails the build, so
+  # the instrumented run is a safe substitute for the plain one.
+  coverage:
+    name: Test & coverage (ubuntu-latest)
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # Tauri system deps — https://v2.tauri.app/start/prerequisites/#linux
-      - if: runner.os == 'Linux'
-        run: |
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev
+          libayatana-appindicator3-dev librsvg2-dev
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
+        timeout-minutes: 3
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: mise run coverage
+      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN || '' }}
+
+  e2e:
+    name: E2E (ubuntu-latest)
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # Tauri system deps — https://v2.tauri.app/start/prerequisites/#linux
+      - run: |
           set -xeuo pipefail
           sudo apt-get update
           sudo apt-get install -y \
@@ -164,15 +194,8 @@ jobs:
         timeout-minutes: 3
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
         with:
-          cache-key: ${{ matrix.toolchain }}
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: rustup toolchain install ${{ matrix.toolchain }} --no-self-update
-        if: matrix.toolchain != 'stable'
-      - run: mise run test
-        env:
-          RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       - name: Run E2E desktop tests
-        if: matrix.toolchain == 'stable' && runner.os == 'Linux'
         run: xvfb-run -a mise run //e2e:test
         env:
           # Quieten warnings inherent to a headless runner, none of which the
@@ -182,10 +205,14 @@ jobs:
           WEBKIT_DISABLE_DMABUF_RENDERER: '1'
           LIBGL_ALWAYS_SOFTWARE: '1'
 
-  coverage:
-    name: Coverage
-    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
+  # Beta is advisory and gates nothing, so it runs on pushes to main rather than
+  # on every pull request, where it cost a full cold build for no signal a
+  # reviewer acts on.
+  test-beta:
+    name: Test (ubuntu-latest, beta)
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # Tauri system deps — https://v2.tauri.app/start/prerequisites/#linux
@@ -195,13 +222,8 @@ jobs:
         timeout-minutes: 3
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
         with:
-          # A run may only restore caches from its own ref or the default
-          # branch, so a cache written on a pull request is unreadable by every
-          # other pull request. Writing them anyway pushed the repository past
-          # the 10 GB limit on each run, evicting main's entries and leaving
-          # every job to build from cold. Only main populates the cache now.
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: mise run coverage
-      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
-        with:
-          token: ${{ secrets.CODECOV_TOKEN || '' }}
+      - run: rustup toolchain install beta --no-self-update
+      - run: mise run test
+        env:
+          RUSTUP_TOOLCHAIN: beta
