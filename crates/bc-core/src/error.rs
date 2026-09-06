@@ -16,6 +16,12 @@ pub enum BcError {
     /// The account has already been archived and cannot be archived again.
     #[error("account already archived: {0}")]
     AlreadyArchived(AccountId),
+    /// The account has already been closed and cannot be closed again.
+    #[error("account already closed: {0}")]
+    AlreadyClosed(AccountId),
+    /// The account is not closed and cannot be reopened.
+    #[error("account is not closed: {0}")]
+    NotClosed(AccountId),
     /// An operation is not valid for the given account kind.
     #[error("invalid account kind for {operation}: account {account_id} is {kind:?}")]
     InvalidAccountKind {
