@@ -11,6 +11,7 @@ exit_code: 0
     "acquisition_cost": null,
     "acquisition_date": null,
     "archived_at": null,
+    "closed_on": null,
     "commodities": [],
     "created_at": "[TIMESTAMP]",
     "depreciation_policy": null,
@@ -18,6 +19,7 @@ exit_code: 0
     "id": "[ACCOUNT_ID]",
     "kind": "deposit_account",
     "name": "Checking",
+    "opened_on": null,
     "parent_id": "[ACCOUNT_ID]",
     "tag_ids": []
   },
