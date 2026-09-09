@@ -684,6 +684,7 @@ fn match_transfers(candidates: &[Candidate]) -> Vec<TransferSuggestion> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_models::Amount;
     use bc_models::CommodityCode;
@@ -757,6 +758,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod db_tests {
     use bc_models::AccountId;
     use bc_models::AccountKind;
@@ -1515,6 +1517,7 @@ mod db_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod suggest_tests {
     use bc_models::Amount;
     use bc_models::CommodityCode;

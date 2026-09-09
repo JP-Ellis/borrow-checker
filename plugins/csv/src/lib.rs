@@ -20,6 +20,8 @@
 //! about the file it points at, and guessing against it would turn a mismatch
 //! into plausible-looking wrong data instead of an error.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 mod config;
 mod glob;
 mod header;
@@ -803,6 +805,7 @@ fn parse_number(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::io::Write as _;
 

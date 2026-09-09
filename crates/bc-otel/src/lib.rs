@@ -10,6 +10,8 @@
 //! The underlying [`tracing_opentelemetry`] crate is re-exported for
 //! callers that need direct access to its types.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 use opentelemetry_sdk::trace::SdkTracerProvider;
 /// Re-export of the [`tracing_opentelemetry`] crate for callers that need
 /// direct access to its layer types or builder utilities.
@@ -131,6 +133,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

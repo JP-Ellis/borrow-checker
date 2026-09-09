@@ -196,6 +196,7 @@ impl BudgetRevision {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;

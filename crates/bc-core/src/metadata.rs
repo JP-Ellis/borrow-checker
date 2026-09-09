@@ -626,6 +626,7 @@ fn read_value(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_models::AccountKind;
     use bc_models::AccountType;

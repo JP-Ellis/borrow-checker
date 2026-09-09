@@ -1104,6 +1104,7 @@ impl BudgetStatusEngine {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod budget_service_tests {
     use bc_models::AccountKind;
     use bc_models::AccountType;

@@ -7,6 +7,7 @@
 //! Usage:
 //!   bc-seed [--db-path <PATH>] [--force].
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![expect(
     clippy::print_stdout,
     clippy::arithmetic_side_effects,
@@ -2082,6 +2083,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
 

@@ -689,6 +689,7 @@ impl Service {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod match_tests {
     use std::collections::HashSet;
 
@@ -906,6 +907,7 @@ mod match_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod search_tests {
     use bc_models::AccountKind;
     use bc_models::AccountType;
@@ -2536,6 +2538,7 @@ mod search_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg(feature = "ipc")]
 mod tests {
     use bc_models::AccountId;

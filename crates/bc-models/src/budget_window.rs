@@ -278,6 +278,7 @@ fn month_name(month: i8) -> &'static str {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use jiff::civil::date;
     use pretty_assertions::assert_eq;

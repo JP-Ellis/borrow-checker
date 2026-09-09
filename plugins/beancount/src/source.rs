@@ -256,6 +256,7 @@ fn normalise(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::path::Path;
     use std::path::PathBuf;

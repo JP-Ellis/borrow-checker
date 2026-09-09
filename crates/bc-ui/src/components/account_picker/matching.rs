@@ -197,6 +197,7 @@ pub fn split_leaf(name: &str) -> (String, String) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_ipc::AccountNode;
     use bc_ipc::AccountRef;

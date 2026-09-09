@@ -328,6 +328,7 @@ pub fn parse_amount(
 ///
 /// Test-only helper.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[must_use]
 fn parse_tags(input: &str) -> Vec<String> {
     input
@@ -538,6 +539,7 @@ pub fn ghost_amounts(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub mod tests {
     use bc_ipc::AccountRef;
     use bc_ipc::Amount;

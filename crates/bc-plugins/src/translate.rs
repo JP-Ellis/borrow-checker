@@ -240,6 +240,7 @@ impl From<wt::ImportError> for bc_core::ImportError {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::str::FromStr as _;
 

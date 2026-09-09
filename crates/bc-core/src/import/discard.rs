@@ -615,6 +615,7 @@ fn event_for(outcome: &Outcome) -> BcResult<crate::Event> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_models::AccountId;
     use bc_models::AccountKind;

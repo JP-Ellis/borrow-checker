@@ -63,6 +63,7 @@ pub fn audit_rows(entries: &[AuditEntry]) -> Vec<AuditRow> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[expect(
     clippy::indexing_slicing,
     reason = "test code: index bounds are asserted by the test setup"

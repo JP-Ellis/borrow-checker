@@ -140,6 +140,7 @@ fn line_contains_all_columns(line: &[u8], delimiter: char, required_columns: &[&
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
 

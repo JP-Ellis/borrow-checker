@@ -9,6 +9,7 @@
 //! application-level settings (financial year config, fortnightly anchor, etc.)
 //! live in `bc-config::Settings` to keep `bc-models` dependency-free.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![expect(
     clippy::pub_use,
     reason = "re-exports are intentional for an ergonomic public API surface"

@@ -538,6 +538,7 @@ fn compute_schedule(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_models::AccountId;
     use bc_models::AccountKind;

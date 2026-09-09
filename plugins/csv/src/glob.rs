@@ -58,6 +58,7 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::io::Write as _;
 

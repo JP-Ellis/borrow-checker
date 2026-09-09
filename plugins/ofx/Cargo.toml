@@ -29,3 +29,8 @@ winnow       = { workspace = true }
 pretty_assertions   = { workspace = true }
 rust_decimal_macros = { workspace = true }
 serde_json          = { workspace = true }
+
+[lints.rust]
+# cargo-llvm-cov sets this cfg; every other build leaves it unset, so the
+# `coverage(off)` markers on test modules compile away to nothing.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }

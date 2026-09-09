@@ -3,6 +3,8 @@
 //! Parses arguments, opens the database, and dispatches to the appropriate
 //! command module.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 mod cli;
 mod commands;
 mod context;

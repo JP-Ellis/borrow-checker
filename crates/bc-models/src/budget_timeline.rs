@@ -171,6 +171,7 @@ pub fn periods_overlapping<'a>(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use jiff::Timestamp;
     use jiff::civil::Date;

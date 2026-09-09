@@ -173,6 +173,7 @@ pub fn fy_window(ending_year: i16, inputs: &PeriodInputs) -> CliResult<(Date, Da
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_models::Period;
     use jiff::civil::date;

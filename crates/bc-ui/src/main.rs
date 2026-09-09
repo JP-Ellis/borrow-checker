@@ -4,6 +4,7 @@
 //! inside the Tauri `WebView`. The native stub satisfies
 //! `cargo check --workspace` without importing WASM-only APIs.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(
     target_arch = "wasm32",
     // mod.rs is used throughout to collocate source with SCSS module files.
@@ -79,6 +80,7 @@ fn main() {
 /// is authored once at its canonical path; this is an alternate mount, not a
 /// copy.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod components_tests {
     pub mod transaction_row {
         pub mod editable {
@@ -115,6 +117,7 @@ mod components_tests {
 /// `cfg(test)` via `include!`; the file is authored once at its canonical
 /// path.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod pages_tests {
     pub mod settings {
         pub mod backup {
@@ -127,6 +130,7 @@ mod pages_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

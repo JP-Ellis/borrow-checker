@@ -5,6 +5,8 @@
 //! and bridges them into `bc-core`'s
 //! [`ImporterRegistry`](bc_core::ImporterRegistry).
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 pub(crate) mod host;
 #[cfg(feature = "ipc")]
 mod ipc;

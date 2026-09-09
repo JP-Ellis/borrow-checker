@@ -96,6 +96,7 @@ impl CommodityResolver {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_models::Commodity;
     use bc_models::CommodityCode;
