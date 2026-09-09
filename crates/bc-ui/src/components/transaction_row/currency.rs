@@ -210,6 +210,7 @@ pub fn split_marked_amount(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_ipc::CommodityInfo;
     use pretty_assertions::assert_eq;

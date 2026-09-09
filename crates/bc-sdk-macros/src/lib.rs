@@ -3,6 +3,8 @@
 //! Provides the `#[importer]` attribute macro that generates WIT export glue
 //! for types implementing [`bc_sdk::Importer`].
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
@@ -114,6 +116,7 @@ fn generate_importer_export(item_impl: &ItemImpl) -> syn::Result<TokenStream2> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use syn::parse_str;
 

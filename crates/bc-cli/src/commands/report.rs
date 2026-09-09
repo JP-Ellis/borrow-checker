@@ -507,6 +507,7 @@ fn leaf_name(path: &str) -> &str {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use jiff::civil::date;
     use rust_decimal_macros::dec;

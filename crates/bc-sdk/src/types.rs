@@ -594,6 +594,7 @@ impl From<ImportError> for WitImportError {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
     use rust_decimal::Decimal;

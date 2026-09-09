@@ -4,6 +4,8 @@
 //! Apply `#[bc_sdk::importer]` to the `impl Importer for BeancountImporter` block
 //! to generate the required WASM export glue.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 mod ast;
 mod config;
 mod parser;
@@ -164,6 +166,7 @@ fn meta_entries(entries: Vec<ast::MetaEntry>) -> Vec<MetaEntry> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::io::Write as _;
 

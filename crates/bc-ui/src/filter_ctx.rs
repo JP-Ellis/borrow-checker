@@ -260,6 +260,7 @@ pub use wasm::provide_filter_store;
 pub use wasm::use_filter_store;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::collections::HashMap;
 

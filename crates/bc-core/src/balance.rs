@@ -864,6 +864,7 @@ impl Engine {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use core::num::NonZeroUsize;
 

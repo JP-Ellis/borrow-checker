@@ -633,6 +633,7 @@ pub(crate) async fn insert_posting_tags(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
 

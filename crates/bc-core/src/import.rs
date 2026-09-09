@@ -426,6 +426,7 @@ pub trait Importer: Send + Sync + 'static {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_models::CommodityCode;
     use jiff::civil::date;

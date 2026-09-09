@@ -402,6 +402,7 @@ impl Transaction {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use jiff::civil::date;
     use pretty_assertions::assert_eq;

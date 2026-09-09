@@ -3,6 +3,8 @@
 //! Settings are loaded from a hierarchy: built-in defaults → user config
 //! file(s) → local project file → environment variables (`BC_` prefix).
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 use std::path::PathBuf;
 
 use bc_models::CommodityCode;
@@ -738,6 +740,7 @@ pub fn persist_backup_section(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     #[cfg(not(windows))]
     use std::path::PathBuf;

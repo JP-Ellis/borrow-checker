@@ -172,6 +172,7 @@ fn record_to_info(rec: &bc_core::BackupRecord) -> bc_ipc::BackupInfo {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
 

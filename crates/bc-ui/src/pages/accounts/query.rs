@@ -204,6 +204,7 @@ pub fn sparkline_bucketing(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_ipc::AccountRef;
     use bc_ipc::Amount;

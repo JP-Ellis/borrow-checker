@@ -3,6 +3,8 @@
 //! This crate implements [`bc_sdk::Importer`] for Ledger files and is compiled
 //! to a WASM component for use with the BorrowChecker plugin host.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 use bc_sdk::Amount;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
@@ -139,6 +141,7 @@ impl bc_sdk::Importer for LedgerImporter {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::io::Write as _;
 

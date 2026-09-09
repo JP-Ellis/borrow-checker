@@ -437,6 +437,7 @@ impl Service {
 
     /// Test-only helper: write a snapshot with an explicit timestamp string.
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn write_snapshot_for_test(&self, kind: BackupKind, stamp: &str) -> BcResult<()> {
         let dir = self.current_policy().dir;
         std::fs::create_dir_all(&dir).map_err(|e| io_err(&e))?;
@@ -556,6 +557,7 @@ fn parse_record(path: &Path, name: &str) -> Option<BackupRecord> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::path::PathBuf;
 

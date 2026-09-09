@@ -3,6 +3,8 @@
 //! Exposes [`run`], called by both `main.rs` (desktop) and the Tauri mobile
 //! entry point (future work). All command handlers are registered here.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 pub mod commands;
 pub(crate) mod ipc;
 
@@ -202,6 +204,7 @@ pub fn run() {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     #[test]
     fn it_compiles() {}

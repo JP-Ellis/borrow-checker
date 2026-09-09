@@ -634,6 +634,7 @@ impl TryFrom<bc_ipc::Filter> for TransactionQuery {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::collections::HashMap;
 

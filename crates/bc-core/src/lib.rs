@@ -3,6 +3,7 @@
 //! Provides the append-only event log, SQLite read projections,
 //! account and transaction services, balance engine, and settings store.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![expect(
     clippy::pub_use,
     reason = "re-exports are intentional for an ergonomic public API surface"
@@ -122,6 +123,7 @@ pub use warning::Warned;
 pub use warning::Warning;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod migration_smoke {
     #[sqlx::test(migrations = "./migrations")]
     async fn transaction_sources_table_exists(pool: sqlx::SqlitePool) {

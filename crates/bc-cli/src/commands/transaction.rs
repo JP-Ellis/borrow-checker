@@ -391,6 +391,7 @@ async fn reverse(ctx: &AppContext, id: String) -> CliResult<()> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::parse_posting_spec;
 

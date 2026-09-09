@@ -318,6 +318,7 @@ async fn load_allowed_codes(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_models::Amount;
     use bc_models::CommodityCode;

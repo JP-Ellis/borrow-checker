@@ -43,6 +43,7 @@ pub fn exact_path_exists(all: &[TagInfo], query: &str) -> bool {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_ipc::TagInfo;
     use pretty_assertions::assert_eq;

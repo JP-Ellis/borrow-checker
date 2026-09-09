@@ -12,6 +12,8 @@
 //! - All types implement `Send + Sync`, `Serialize`, `Deserialize`, `Clone`,
 //!   `Debug`
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 mod accounts;
 mod backup;
 mod balances;

@@ -73,6 +73,7 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
 

@@ -2,6 +2,8 @@
 //!
 //! Implements [`bc_sdk::Importer`] for OFX v1 (SGML) and OFX v2 (XML) files.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 mod ast;
 mod config;
 mod parser;
@@ -127,6 +129,7 @@ impl bc_sdk::Importer for OfxImporter {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::io::Write as _;
 

@@ -3,6 +3,7 @@
 crate::define_id!(ProfileId, "profile");
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

@@ -1071,6 +1071,7 @@ impl From<Period> for bc_models::Period {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use jiff::Span;
     use jiff::civil::date;
@@ -1527,6 +1528,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg(feature = "models")]
 mod models_tests {
     use pretty_assertions::assert_eq;

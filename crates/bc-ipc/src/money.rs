@@ -266,6 +266,7 @@ impl From<&Amount> for bc_models::Amount {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
     use pretty_assertions::assert_ne;
@@ -419,6 +420,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg(feature = "models")]
 mod models_tests {
     use pretty_assertions::assert_eq;

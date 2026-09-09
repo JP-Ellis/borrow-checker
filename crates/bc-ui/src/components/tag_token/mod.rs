@@ -57,6 +57,7 @@ pub fn TagToken(
 pub mod qa;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::tag_background_style;
 

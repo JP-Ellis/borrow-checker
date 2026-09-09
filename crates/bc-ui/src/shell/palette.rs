@@ -561,6 +561,7 @@ pub fn CommandPalette(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_ipc::CommodityInfo;
     use pretty_assertions::assert_eq;

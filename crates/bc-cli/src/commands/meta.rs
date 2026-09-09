@@ -680,6 +680,7 @@ pub(crate) fn render_entry(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;

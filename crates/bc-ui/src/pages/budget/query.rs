@@ -27,6 +27,7 @@ pub fn date_filter_active(filter: &bc_ipc::Filter) -> bool {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
 

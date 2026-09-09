@@ -35,6 +35,7 @@ pub(crate) fn ordinal_suffix(day: u8) -> &'static str {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;

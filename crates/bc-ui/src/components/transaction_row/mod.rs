@@ -1176,6 +1176,7 @@ fn friendly_save_error(error: &bc_ipc::BcError) -> String {
 pub mod qa;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_ipc::AccountRef;
     use bc_ipc::Amount;

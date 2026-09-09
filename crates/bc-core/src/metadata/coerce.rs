@@ -63,6 +63,7 @@ pub(crate) fn coerce(value: &MetaValue, registered: MetaType) -> Coerced {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::collections::HashSet;
 

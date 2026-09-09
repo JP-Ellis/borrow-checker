@@ -465,6 +465,7 @@ async fn update(ctx: &AppContext, args: UpdateArgs) -> CliResult<()> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
 

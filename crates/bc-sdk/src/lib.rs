@@ -22,6 +22,8 @@
 //! }
 //! ```
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 // Generate all guest WIT bindings from the wit/ directory.
 // This module is re-exported as `__bindings` for use by bc-sdk-macros.
 #[doc(hidden)]

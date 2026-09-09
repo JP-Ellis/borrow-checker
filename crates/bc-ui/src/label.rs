@@ -149,6 +149,7 @@ fn join_iter(iter: &mut impl Iterator<Item = String>, sep: &str) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
 

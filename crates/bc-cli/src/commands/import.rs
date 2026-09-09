@@ -1184,6 +1184,7 @@ fn render_dry_run(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_core::SkipCause;
     use bc_models::AccountId;

@@ -588,6 +588,7 @@ pub fn first_text_by_key<'a>(entries: &'a [MetaEntryDto], key: &str) -> Option<&
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_ipc::Amount;
     use bc_ipc::MetaEntryDto;
