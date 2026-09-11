@@ -394,7 +394,7 @@ impl Service {
     /// Returns [`BcError::BadData`] if `acquisition_date`, `acquisition_cost`, or
     /// `depreciation_policy` is `Some` and `kind` is not [`bc_models::AccountKind::ManualAsset`].
     /// Returns [`BcError::BadData`] if `parent_id` names an account whose type
-    /// differs from `account_type`.
+    /// differs from `account_type`, or one that is closed or archived.
     /// Returns [`BcError::NotFound`] if `parent_id` names no account.
     #[builder]
     #[inline]
@@ -992,8 +992,9 @@ impl Service {
     /// Returns [`BcError::InvalidInput`] if a path's root is unrecognised and no
     /// explicit type was given, if an explicit type contradicts an existing root,
     /// or if an existing leaf contradicts an explicitly-requested attribute;
-    /// [`BcError::Database`] on query or insert failure; [`BcError::BadData`] if a
-    /// stored row cannot be parsed.
+    /// [`BcError::BadData`] if a missing segment would be minted under a closed
+    /// or archived account, or if a stored row cannot be parsed;
+    /// [`BcError::Database`] on query or insert failure.
     #[inline]
     #[expect(
         clippy::too_many_lines,
@@ -1216,7 +1217,7 @@ impl Service {
 /// Returns [`BcError::BadData`] if `acquisition_date`, `acquisition_cost`, or
 /// `depreciation_policy` is `Some` and `kind` is not [`AccountKind::ManualAsset`];
 /// [`BcError::BadData`] if `parent_id` names an account whose type differs from
-/// `account_type`;
+/// `account_type`, or one that is closed or archived;
 /// [`BcError::NotFound`] if `parent_id` names no account;
 /// [`BcError::Database`] on event append or insert failure;
 /// [`BcError::Serialisation`] if the depreciation policy cannot be encoded.
@@ -1252,13 +1253,19 @@ async fn create_in_tx(
     // enough: every write path holds this invariant, so a parent's stored type
     // already equals its root ancestor's. `create_paths` enforces the same rule
     // via `conflict_of`; this keeps the two entry points in agreement.
+    //
+    // A closed or archived account may not gain an open, active child. `close`
+    // and `archive` hold that invariant from above; this holds it from below,
+    // as `reopen` does. Archived is checked first: an archived account is
+    // usually also closed, and archived is the stronger state.
     if let Some(parent) = parent_id {
-        let parent_type_row: Option<String> =
-            sqlx::query_scalar("SELECT account_type FROM accounts WHERE id = ?")
-                .bind(parent.to_string())
-                .fetch_optional(&mut *conn)
-                .await?;
-        let Some(parent_type_str) = parent_type_row else {
+        let parent_row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT account_type, closed_on, archived_at FROM accounts WHERE id = ?",
+        )
+        .bind(parent.to_string())
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some((parent_type_str, parent_closed_on, parent_archived_at)) = parent_row else {
             return Err(BcError::NotFound(parent.to_string()));
         };
         let parent_type = from_db_str::<AccountType>(&parent_type_str)?;
@@ -1266,6 +1273,17 @@ async fn create_in_tx(
             return Err(BcError::BadData(format!(
                 "child account '{name}' has type {account_type:?} but its parent has type \
                  {parent_type:?}; a child must share its root ancestor's type"
+            )));
+        }
+        if parent_archived_at.is_some() {
+            return Err(BcError::BadData(format!(
+                "cannot create '{name}' under an archived account"
+            )));
+        }
+        if let Some(closed_on) = parent_closed_on {
+            return Err(BcError::BadData(format!(
+                "cannot create '{name}' under an account that closed on {closed_on}; \
+                 reopen the parent first"
             )));
         }
     }
@@ -2826,7 +2844,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn cascade_close_repairs_an_already_closed_parent(pool: SqlitePool) {
-        let svc = Service::new(pool);
+        let svc = Service::new(pool.clone());
         let parent = svc
             .create()
             .name("BankA")
@@ -2836,12 +2854,6 @@ mod tests {
             .await
             .expect("create parent");
 
-        svc.close(&parent, jiff::civil::date(2024, 6, 30), Cascade::Reject)
-            .await
-            .expect("close the parent while it has no children");
-
-        // Nothing today stops creating a child under an already-closed
-        // parent — this reaches exactly the state `cascade` must repair.
         let child = svc
             .create()
             .name("Checking")
@@ -2850,7 +2862,15 @@ mod tests {
             .parent_id(&parent)
             .call()
             .await
-            .expect("create a child under a closed parent");
+            .expect("create child");
+
+        // No service write leaves an open child under a closed parent, so the
+        // state `cascade` repairs is reached through the projection directly.
+        sqlx::query("UPDATE accounts SET closed_on = '2024-06-30' WHERE id = ?")
+            .bind(parent.to_string())
+            .execute(&pool)
+            .await
+            .expect("close the parent behind the service's back");
 
         svc.close(&parent, jiff::civil::date(2024, 7, 31), Cascade::Into)
             .await
@@ -2905,12 +2925,6 @@ mod tests {
             .await
             .expect("create parent");
 
-        svc.archive(&parent, Cascade::Reject)
-            .await
-            .expect("archive the parent while it has no children");
-
-        // Nothing today stops creating a child under an already-archived
-        // parent — this reaches exactly the state `cascade` must repair.
         let child = svc
             .create()
             .name("Checking")
@@ -2919,7 +2933,15 @@ mod tests {
             .parent_id(&parent)
             .call()
             .await
-            .expect("create a child under an archived parent");
+            .expect("create child");
+
+        // No service write leaves an active child under an archived parent, so
+        // the state `cascade` repairs is reached through the projection directly.
+        sqlx::query("UPDATE accounts SET archived_at = '2024-06-30T00:00:00Z' WHERE id = ?")
+            .bind(parent.to_string())
+            .execute(&pool)
+            .await
+            .expect("archive the parent behind the service's back");
 
         svc.archive(&parent, Cascade::Into)
             .await
@@ -2968,6 +2990,82 @@ mod tests {
             .await
             .expect_err("reopening under a closed parent must be rejected");
         assert!(matches!(error, BcError::BadData(_)), "{error:?}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_rejects_a_child_under_a_closed_parent(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+        svc.close(&checking, jiff::civil::date(2024, 6, 30), Cascade::Reject)
+            .await
+            .expect("close");
+
+        let error = svc
+            .create()
+            .name("Sub")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&checking)
+            .call()
+            .await
+            .expect_err("a closed account cannot gain an open child");
+        assert!(
+            matches!(error, BcError::BadData(ref m) if m.contains("closed on 2024-06-30")),
+            "got: {error:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_rejects_a_child_under_an_archived_parent(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+        svc.archive(&checking, Cascade::Reject)
+            .await
+            .expect("archive");
+
+        let error = svc
+            .create()
+            .name("Sub")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&checking)
+            .call()
+            .await
+            .expect_err("an archived account cannot gain an active child");
+        assert!(
+            matches!(error, BcError::BadData(ref m) if m.contains("archived")),
+            "got: {error:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_paths_rejects_minting_under_a_closed_ancestor(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, bank_a, _checking) = three_deep(&svc).await;
+        svc.close(&bank_a, jiff::civil::date(2024, 6, 30), Cascade::Into)
+            .await
+            .expect("cascade close");
+
+        let error = svc
+            .create_paths(&[spec("Assets:BankA:Savings")])
+            .await
+            .expect_err("Savings would be minted under closed BankA");
+        assert!(matches!(error, BcError::BadData(_)), "got: {error:?}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_paths_reuses_a_closed_ancestor_without_minting_under_it(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, bank_a, _checking) = three_deep(&svc).await;
+        svc.close(&bank_a, jiff::civil::date(2024, 6, 30), Cascade::Into)
+            .await
+            .expect("cascade close");
+
+        let outcome = svc
+            .create_paths(&[spec("Assets:BankA:Checking")])
+            .await
+            .expect("every segment already exists, so nothing is minted");
+        assert!(outcome.created.is_empty(), "got: {:?}", outcome.created);
     }
 
     #[sqlx::test(migrations = "./migrations")]
