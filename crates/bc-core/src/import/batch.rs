@@ -288,8 +288,9 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if no batch with that ID exists,
-    /// [`BcError::InvalidInput`] if it has already been discarded, and
-    /// [`BcError::Database`] on query failure.
+    /// [`BcError::InvalidInput`] if it has already been discarded,
+    /// [`BcError::DiscardBlocked`] if a later batch owns legs on its
+    /// transactions, and [`BcError::Database`] on query failure.
     #[inline]
     pub async fn ensure_discardable(&self, id: &ImportBatchId) -> BcResult<()> {
         let mut conn = self.pool.acquire().await?;
@@ -314,8 +315,9 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if no batch with that ID exists,
-    /// [`BcError::InvalidInput`] if it has already been discarded, and
-    /// [`BcError::Database`] on database failure.
+    /// [`BcError::InvalidInput`] if it has already been discarded,
+    /// [`BcError::DiscardBlocked`] if a later batch owns legs on its
+    /// transactions, and [`BcError::Database`] on database failure.
     #[inline]
     pub async fn discard(&self, id: &ImportBatchId) -> BcResult<DiscardOutcome> {
         discard::discard(&self.pool, id).await
