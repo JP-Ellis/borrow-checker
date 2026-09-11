@@ -2,6 +2,7 @@
 
 use bc_models::ImportBatchId;
 use bc_models::ProfileId;
+use bc_models::TagId;
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
@@ -128,6 +129,34 @@ impl Service {
 
         tracing::info!(batch_id = %id, %importer, "import batch opened");
         Ok(id)
+    }
+
+    /// Records the tags a run brought into existence, so a discard can take
+    /// them back.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The open batch.
+    /// * `tags` - Every tag row the run inserted, ancestors included.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Database`] on insert failure.
+    #[inline]
+    pub async fn record_tags(&self, id: &ImportBatchId, tags: &[TagId]) -> BcResult<()> {
+        if tags.is_empty() {
+            return Ok(());
+        }
+        let mut db_tx = self.pool.begin().await?;
+        for tag in tags {
+            sqlx::query("INSERT INTO import_batch_tags (import_batch_id, tag_id) VALUES (?, ?)")
+                .bind(id.to_string())
+                .bind(tag.to_string())
+                .execute(&mut *db_tx)
+                .await?;
+        }
+        db_tx.commit().await?;
+        Ok(())
     }
 
     /// Records the final counts for a completed import run and stamps its
