@@ -725,6 +725,9 @@ impl Service {
     /// fact rather than an error. It is constrained by the account's own
     /// `closed_on`, which must not precede it — see [`Self::close`].
     ///
+    /// Appends an [`Event::AccountOpenedOnChanged`] carrying both the previous
+    /// and the new date, so the correction is auditable and reversible.
+    ///
     /// # Arguments
     ///
     /// * `id` - The account to update.
@@ -734,8 +737,8 @@ impl Service {
     ///
     /// Returns [`BcError::NotFound`] if the account does not exist.
     /// Returns [`BcError::BadData`] if `opened_on` falls after the account's
-    /// declared `closed_on`.
-    /// Returns [`BcError`] on database update failure.
+    /// declared `closed_on`, or if a stored date does not parse.
+    /// Returns [`BcError`] on event append or database update failure.
     #[inline]
     pub async fn set_opened_on(
         &self,
@@ -744,12 +747,12 @@ impl Service {
     ) -> BcResult<()> {
         let mut tx = self.pool.begin().await?;
 
-        let row: Option<(Option<String>,)> =
-            sqlx::query_as("SELECT closed_on FROM accounts WHERE id = ?")
+        let row: Option<(Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT opened_on, closed_on FROM accounts WHERE id = ?")
                 .bind(id.to_string())
                 .fetch_optional(&mut *tx)
                 .await?;
-        let Some((closed_on,)) = row else {
+        let Some((stored_opened_on, closed_on)) = row else {
             return Err(BcError::NotFound(id.to_string()));
         };
 
@@ -764,6 +767,22 @@ impl Service {
                 )));
             }
         }
+
+        let from = stored_opened_on
+            .as_deref()
+            .map(str::parse::<jiff::civil::Date>)
+            .transpose()
+            .map_err(|e| BcError::BadData(format!("invalid opened_on: {e}")))?;
+
+        insert_event(
+            &Event::AccountOpenedOnChanged {
+                id: id.clone(),
+                from,
+                to: opened_on,
+            },
+            &mut tx,
+        )
+        .await?;
 
         sqlx::query("UPDATE accounts SET opened_on = ? WHERE id = ?")
             .bind(opened_on.map(|d| d.to_string()))
@@ -1258,6 +1277,7 @@ async fn create_in_tx(
         account_type,
         kind,
         description: description.map(str::to_owned),
+        opened_on,
     };
 
     insert_event(&event, conn).await?;
@@ -1624,6 +1644,33 @@ mod tests {
         let found = svc.find_by_id(&id).await.expect("find account");
         assert_eq!(found.opened_on(), Some(jiff::civil::date(2020, 1, 1)));
         assert_eq!(found.closed_on(), None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_carries_opened_on_in_its_event(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let id = svc
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .opened_on(jiff::civil::date(2020, 1, 1))
+            .call()
+            .await
+            .expect("create account");
+
+        let store = crate::events::SqliteStore::new(pool);
+        let events = store.replay_for(&id.to_string()).await.expect("replay");
+        let first = events.first().expect("creation appends one event");
+        let created: Event =
+            serde_json::from_str(&first.payload).expect("payload should deserialise");
+        assert!(
+            matches!(
+                created,
+                Event::AccountCreated { opened_on: Some(d), .. } if d == jiff::civil::date(2020, 1, 1)
+            ),
+            "got: {created:?}"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2863,6 +2910,54 @@ mod tests {
         svc.set_opened_on(&checking, Some(jiff::civil::date(2019, 1, 1)))
             .await
             .expect("a child opening before its parent is allowed");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_opened_on_appends_a_changed_event_with_both_sides(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+
+        svc.set_opened_on(&checking, Some(jiff::civil::date(2020, 1, 1)))
+            .await
+            .expect("first set");
+        svc.set_opened_on(&checking, Some(jiff::civil::date(2021, 6, 1)))
+            .await
+            .expect("second set");
+        svc.set_opened_on(&checking, None).await.expect("clear");
+
+        let store = crate::events::SqliteStore::new(pool);
+        let changes: Vec<(Option<jiff::civil::Date>, Option<jiff::civil::Date>)> = store
+            .replay_for(&checking.to_string())
+            .await
+            .expect("replay")
+            .iter()
+            .filter(|e| e.kind == "AccountOpenedOnChanged")
+            .map(|e| {
+                let event: Event =
+                    serde_json::from_str(&e.payload).expect("payload should deserialise");
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "Event is #[non_exhaustive]; only one variant is expected here"
+                )]
+                match event {
+                    Event::AccountOpenedOnChanged { from, to, .. } => (from, to),
+                    other => panic!("expected AccountOpenedOnChanged, got {other:?}"),
+                }
+            })
+            .collect();
+
+        assert_eq!(
+            changes,
+            vec![
+                (None, Some(jiff::civil::date(2020, 1, 1))),
+                (
+                    Some(jiff::civil::date(2020, 1, 1)),
+                    Some(jiff::civil::date(2021, 6, 1))
+                ),
+                (Some(jiff::civil::date(2021, 6, 1)), None),
+            ],
+            "each correction logs the previous value as `from` so undo can walk it"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
