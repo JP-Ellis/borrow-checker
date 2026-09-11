@@ -9,6 +9,14 @@
 //! The work is driven by the reference rows, never by the batch's recorded
 //! counts, so a run that aborted before recording anything discards exactly as
 //! correctly as one that completed.
+//!
+//! A batch a later run built on is refused. When a later, undiscarded batch
+//! owns a live leg on a transaction this batch owns a live leg on, removing
+//! this batch's leg would leave the later one describing money from nowhere;
+//! the error names the later batches, newest first, which is the order to
+//! discard them in. A later run that merely *adopted* one of this batch's
+//! legs is no dependant: its reference becomes a tombstone, which the outcome
+//! reports.
 
 use std::collections::BTreeSet;
 
@@ -56,6 +64,25 @@ pub struct Outcome {
     pub flagged_postings: usize,
 }
 
+/// A later batch that owns legs on a batch's transactions, blocking its
+/// discard.
+///
+/// Re-exported from the crate root as [`crate::DiscardDependant`].
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dependant {
+    /// The later batch.
+    pub batch_id: ImportBatchId,
+    /// Its importer, for the diagnostic.
+    pub importer: String,
+    /// When it started; later than the blocked batch by construction.
+    pub started_at: Timestamp,
+    /// Live postings it owns on the blocked batch's transactions.
+    pub postings: usize,
+    /// Distinct such transactions.
+    pub transactions: usize,
+}
+
 /// Discards an import batch.
 ///
 /// # Arguments
@@ -71,8 +98,9 @@ pub struct Outcome {
 ///
 /// Returns [`BcError::NotFound`] if no batch with that ID exists,
 /// [`BcError::InvalidInput`] if it has already been discarded,
-/// [`BcError::BadData`] if a count exceeds `u64`, and [`BcError::Database`] on
-/// any query failure.
+/// [`BcError::DiscardBlocked`] if a later batch owns legs on its transactions,
+/// [`BcError::BadData`] if a count exceeds `u64` or a stored timestamp will not
+/// parse, and [`BcError::Database`] on any query failure.
 pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<Outcome> {
     let id_str = id.to_string();
     let mut db_tx = pool.begin().await?;
@@ -137,11 +165,14 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
     Ok(outcome)
 }
 
-/// Checks that a batch exists and has not already been discarded.
+/// Checks that a batch exists, has not already been discarded, and has no
+/// later batch built on it.
 ///
 /// A batch that does not exist cannot be discarded, and one already discarded
 /// must not be discarded again: the second run would find no references and
-/// silently report having removed nothing.
+/// silently report having removed nothing. One a later run added legs to is
+/// refused so that run's legs are not left without their funding side; see
+/// the module doc.
 ///
 /// # Arguments
 ///
@@ -153,22 +184,121 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
 /// # Errors
 ///
 /// Returns [`BcError::NotFound`] if no batch with that ID exists,
-/// [`BcError::InvalidInput`] if it has already been discarded, and
+/// [`BcError::InvalidInput`] if it has already been discarded,
+/// [`BcError::DiscardBlocked`] if a later batch owns legs on its transactions,
+/// [`BcError::BadData`] if a stored timestamp or ID will not parse, and
 /// [`BcError::Database`] on query failure.
 pub(crate) async fn ensure_discardable(
     conn: &mut sqlx::SqliteConnection,
     id: &ImportBatchId,
 ) -> BcResult<()> {
-    let existing: Option<Option<String>> =
-        sqlx::query_scalar("SELECT discarded_at FROM import_batches WHERE id = ?")
-            .bind(id.to_string())
-            .fetch_optional(conn)
+    let id_str = id.to_string();
+    let existing: Option<(Option<String>, String)> =
+        sqlx::query_as("SELECT discarded_at, started_at FROM import_batches WHERE id = ?")
+            .bind(&id_str)
+            .fetch_optional(&mut *conn)
             .await?;
-    match existing {
-        None => Err(BcError::NotFound(format!("import batch {id}"))),
-        Some(Some(_)) => Err(already_discarded_error(id)),
-        Some(None) => Ok(()),
+    let started_at = match existing {
+        None => return Err(BcError::NotFound(format!("import batch {id}"))),
+        Some((Some(_), _)) => return Err(already_discarded_error(id)),
+        Some((None, raw)) => parse_timestamp(&raw)?,
+    };
+
+    let dependants = dependants(conn, &id_str, started_at).await?;
+    if dependants.is_empty() {
+        Ok(())
+    } else {
+        Err(BcError::DiscardBlocked {
+            batch: id.clone(),
+            dependants,
+        })
     }
+}
+
+/// Finds the later, undiscarded batches that own live legs on transactions
+/// this batch owns live legs on.
+///
+/// The ordering runs in Rust rather than SQL: `started_at` is stored as text
+/// with a fractional second only when it is non-zero, so `2026-01-01T00:00:00Z`
+/// sorts *after* `2026-01-01T00:00:00.5Z` as a string.
+///
+/// # Arguments
+///
+/// * `conn` - An open SQLite connection or transaction.
+/// * `id_str` - The batch's ID as stored.
+/// * `started_at` - When that batch started; only batches started after it
+///   count.
+///
+/// # Returns
+///
+/// The dependants, newest first.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on query failure and [`BcError::BadData`] if
+/// a stored ID or timestamp will not parse.
+async fn dependants(
+    conn: &mut sqlx::SqliteConnection,
+    id_str: &str,
+    started_at: Timestamp,
+) -> BcResult<Vec<Dependant>> {
+    // Self-join on the transaction: a leg this batch owns beside a live leg
+    // another live batch owns. DISTINCT on the reference, since this batch
+    // owning two legs on one transaction would otherwise double the other
+    // side's count.
+    let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+        "SELECT b.id, b.importer, b.started_at, \
+                COUNT(DISTINCT theirs.id), COUNT(DISTINCT theirs.transaction_id) \
+         FROM transaction_sources mine \
+         JOIN transaction_sources theirs ON theirs.transaction_id = mine.transaction_id \
+         JOIN import_batches b ON b.id = theirs.import_batch_id \
+         WHERE mine.import_batch_id = ?1 \
+           AND mine.owns_posting = 1 AND mine.posting_id IS NOT NULL \
+           AND theirs.import_batch_id <> ?1 \
+           AND theirs.owns_posting = 1 AND theirs.posting_id IS NOT NULL \
+           AND b.discarded_at IS NULL \
+         GROUP BY b.id",
+    )
+    .bind(id_str)
+    .fetch_all(conn)
+    .await?;
+
+    let mut out = Vec::new();
+    for (raw_id, importer, raw_started, postings, transactions) in rows {
+        let other_started = parse_timestamp(&raw_started)?;
+        if other_started <= started_at {
+            continue;
+        }
+        out.push(Dependant {
+            batch_id: raw_id
+                .parse::<ImportBatchId>()
+                .map_err(|e| BcError::BadData(e.to_string()))?,
+            importer,
+            started_at: other_started,
+            postings: to_usize(postings),
+            transactions: to_usize(transactions),
+        });
+    }
+    out.sort_by_key(|d| std::cmp::Reverse(d.started_at));
+    Ok(out)
+}
+
+/// Parses a stored timestamp.
+///
+/// # Arguments
+///
+/// * `raw` - The column value.
+///
+/// # Returns
+///
+/// The timestamp.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if it will not parse.
+fn parse_timestamp(raw: &str) -> BcResult<Timestamp> {
+    raw.parse::<Timestamp>()
+        .map_err(|e| BcError::BadData(e.to_string()))
 }
 
 /// Builds the error for a batch that has already been discarded.
@@ -633,6 +763,8 @@ mod tests {
     use rust_decimal::Decimal;
     use sqlx::SqlitePool;
 
+    use super::Outcome;
+    use crate::BcError;
     use crate::ImportBatchService;
 
     /// Creates a top-level account and returns its ID.
@@ -906,8 +1038,10 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn a_surviving_transactions_other_batch_reference_is_tombstoned(pool: SqlitePool) {
         let batches = ImportBatchService::new(pool.clone());
-        let first = batches.open(None, "csv").await.expect("open first");
+        // The run whose own leg holds the transaction up is opened first: a
+        // discard is refused when a *later* run owns a leg on its transaction.
         let second = batches.open(None, "csv").await.expect("open second");
+        let first = batches.open(None, "csv").await.expect("open first");
         let acct = account(&pool, "Checking").await;
         let other = account(&pool, "Groceries").await;
         let (tx, posting) = transaction_with_posting(&pool, &acct).await;
@@ -1488,6 +1622,254 @@ mod tests {
     }
 
     /// Counts rows for a `SELECT COUNT(*)` query.
+    /// Attaches a reference with no batch at all, as the public
+    /// `SourceService::attach` does for a hand-recorded provenance.
+    async fn attach_unbatched(
+        pool: &SqlitePool,
+        transaction_id: &TransactionId,
+        posting_id: &PostingId,
+        account_id: &AccountId,
+    ) {
+        let source = SourceRef::builder()
+            .id(SourceRefId::new())
+            .transaction_id(transaction_id.clone())
+            .posting_id(Some(posting_id.clone()))
+            .account_id(account_id.clone())
+            .date(date(2026, 1, 15))
+            .narration("ACME")
+            .amount(Some(Amount::new(
+                Decimal::from(50_i32),
+                CommodityCode::new("AUD"),
+            )))
+            .reference(None)
+            .occurrence(0)
+            .import_batch_id(None)
+            .owns_posting(true)
+            .created_at(Timestamp::now())
+            .build();
+        crate::SourceService::new(pool.clone())
+            .attach(&source)
+            .await
+            .expect("attach");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_batch_a_later_batch_built_on_cannot_be_discarded(pool: SqlitePool) {
+        let batches = ImportBatchService::new(pool.clone());
+        let older = batches.open(None, "csv").await.expect("open older");
+        let newer = batches.open(None, "ledger").await.expect("open newer");
+        let acct = account(&pool, "Checking").await;
+        let other = account(&pool, "Groceries").await;
+        let (tx, posting) = transaction_with_posting(&pool, &acct).await;
+        attach(&pool, &older, &tx, &posting, &acct, true).await;
+        let counter = add_posting(&pool, &tx, &other).await;
+        attach(&pool, &newer, &tx, &counter, &other, true).await;
+
+        let err = batches.discard(&older).await.expect_err("blocked");
+
+        let BcError::DiscardBlocked { batch, dependants } = err else {
+            panic!("expected DiscardBlocked, got {err:?}");
+        };
+        assert_eq!(batch, older);
+        let [dependant] = dependants.as_slice() else {
+            panic!("expected one dependant, got {dependants:?}");
+        };
+        assert_eq!(dependant.batch_id, newer);
+        assert_eq!(dependant.importer, "ledger");
+        assert_eq!(dependant.postings, 1);
+        assert_eq!(dependant.transactions, 1);
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM postings").await,
+            2,
+            "a refused discard touches nothing"
+        );
+        assert_eq!(
+            count(
+                &pool,
+                "SELECT COUNT(*) FROM import_batches WHERE discarded_at IS NOT NULL"
+            )
+            .await,
+            0
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn dependants_are_listed_newest_first_with_their_counts(pool: SqlitePool) {
+        let batches = ImportBatchService::new(pool.clone());
+        let oldest = batches.open(None, "csv").await.expect("open oldest");
+        let middle = batches.open(None, "csv").await.expect("open middle");
+        let newest = batches.open(None, "ledger").await.expect("open newest");
+        let acct = account(&pool, "Checking").await;
+        let other = account(&pool, "Groceries").await;
+        let mut slots = Slots(0);
+        // Two transactions the oldest run owns, each with two of its legs, so
+        // the self-join has a duplicate to collapse.
+        let (tx_a, _) = owned_transaction(&pool, &oldest, &acct, 2, &mut slots).await;
+        let (tx_b, _) = owned_transaction(&pool, &oldest, &acct, 2, &mut slots).await;
+        // The middle run adds one leg to each; the newest adds one to the first.
+        let middle_a = add_posting(&pool, &tx_a, &other).await;
+        attach_at(&pool, &middle, &tx_a, &middle_a, &other, true, 0).await;
+        let middle_b = add_posting(&pool, &tx_b, &other).await;
+        attach_at(&pool, &middle, &tx_b, &middle_b, &other, true, 1).await;
+        let newest_a = add_posting(&pool, &tx_a, &other).await;
+        attach_at(&pool, &newest, &tx_a, &newest_a, &other, true, 2).await;
+
+        let err = batches.discard(&oldest).await.expect_err("blocked");
+
+        let BcError::DiscardBlocked { dependants, .. } = err else {
+            panic!("expected DiscardBlocked, got {err:?}");
+        };
+        let ids: Vec<&ImportBatchId> = dependants.iter().map(|d| &d.batch_id).collect();
+        assert_eq!(
+            ids,
+            vec![&newest, &middle],
+            "newest first: the order to discard in"
+        );
+        let counts: Vec<(usize, usize)> = dependants
+            .iter()
+            .map(|d| (d.postings, d.transactions))
+            .collect();
+        assert_eq!(
+            counts,
+            vec![(1, 1), (2, 2)],
+            "each of the oldest run's two legs per transaction must not double the count"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_service_short_circuit_reports_the_same_block(pool: SqlitePool) {
+        let batches = ImportBatchService::new(pool.clone());
+        let older = batches.open(None, "csv").await.expect("open older");
+        let newer = batches.open(None, "csv").await.expect("open newer");
+        let acct = account(&pool, "Checking").await;
+        let other = account(&pool, "Groceries").await;
+        let (tx, posting) = transaction_with_posting(&pool, &acct).await;
+        attach(&pool, &older, &tx, &posting, &acct, true).await;
+        let counter = add_posting(&pool, &tx, &other).await;
+        attach(&pool, &newer, &tx, &counter, &other, true).await;
+
+        let err = batches
+            .ensure_discardable(&older)
+            .await
+            .expect_err("blocked");
+
+        assert!(
+            matches!(err, BcError::DiscardBlocked { .. }),
+            "the pre-snapshot check must refuse exactly what discard refuses, got {err:?}"
+        );
+    }
+
+    /// A shape in which another reference sits on this batch's transaction
+    /// without depending on it, so the discard must go ahead.
+    #[derive(Clone, Copy, Debug)]
+    enum Harmless {
+        /// The other batch is older: this batch's legs were the counter-legs.
+        OtherIsOlder,
+        /// The other batch adopted this batch's leg rather than owning one.
+        OtherAdopted,
+        /// The other batch's leg was deleted by the user, leaving a tombstone.
+        OtherTombstoned,
+        /// The other reference was attached by hand, with no batch.
+        OtherHasNoBatch,
+        /// The other batch was already discarded.
+        OtherDiscarded,
+        /// This batch only adopted its leg, so the discard removes no posting.
+        ThisOnlyAdopted,
+    }
+
+    /// Builds `shape` around one transaction and discards the batch under test.
+    async fn discard_harmless_shape(pool: &SqlitePool, shape: Harmless) -> Outcome {
+        let batches = ImportBatchService::new(pool.clone());
+        let (this, other_batch) = if matches!(shape, Harmless::OtherIsOlder) {
+            let other = batches.open(None, "csv").await.expect("open other");
+            let this = batches.open(None, "csv").await.expect("open this");
+            (this, other)
+        } else {
+            let this = batches.open(None, "csv").await.expect("open this");
+            let other = batches.open(None, "csv").await.expect("open other");
+            (this, other)
+        };
+        let acct = account(pool, "Checking").await;
+        let other_acct = account(pool, "Groceries").await;
+        let (tx, posting) = transaction_with_posting(pool, &acct).await;
+        let this_owns = !matches!(shape, Harmless::ThisOnlyAdopted);
+        attach(pool, &this, &tx, &posting, &acct, this_owns).await;
+
+        match shape {
+            Harmless::OtherIsOlder | Harmless::OtherDiscarded | Harmless::ThisOnlyAdopted => {
+                let counter = add_posting(pool, &tx, &other_acct).await;
+                attach(pool, &other_batch, &tx, &counter, &other_acct, true).await;
+            }
+            Harmless::OtherAdopted => {
+                attach_at(pool, &other_batch, &tx, &posting, &acct, false, 1).await;
+            }
+            Harmless::OtherTombstoned => {
+                let counter = add_posting(pool, &tx, &other_acct).await;
+                let reference = attach(pool, &other_batch, &tx, &counter, &other_acct, true).await;
+                sqlx::query("UPDATE transaction_sources SET posting_id = NULL WHERE id = ?")
+                    .bind(reference.to_string())
+                    .execute(pool)
+                    .await
+                    .expect("tombstone");
+                sqlx::query("DELETE FROM postings WHERE id = ?")
+                    .bind(counter.to_string())
+                    .execute(pool)
+                    .await
+                    .expect("delete posting");
+            }
+            Harmless::OtherHasNoBatch => {
+                let counter = add_posting(pool, &tx, &other_acct).await;
+                attach_unbatched(pool, &tx, &counter, &other_acct).await;
+            }
+        }
+        if matches!(shape, Harmless::OtherDiscarded) {
+            batches.discard(&other_batch).await.expect("discard other");
+        }
+
+        batches.discard(&this).await.expect("not blocked")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_older_batch_on_the_transaction_does_not_block(pool: SqlitePool) {
+        let outcome = discard_harmless_shape(&pool, Harmless::OtherIsOlder).await;
+        assert_eq!(outcome.removed_postings, 1);
+        assert_eq!(outcome.removed_transactions, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_later_batch_that_only_adopted_does_not_block(pool: SqlitePool) {
+        let outcome = discard_harmless_shape(&pool, Harmless::OtherAdopted).await;
+        assert_eq!(outcome.other_batch_references_removed, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_later_batchs_tombstone_does_not_block(pool: SqlitePool) {
+        let outcome = discard_harmless_shape(&pool, Harmless::OtherTombstoned).await;
+        assert_eq!(outcome.removed_transactions, 1);
+        assert_eq!(outcome.other_batch_references_removed, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_hand_attached_reference_does_not_block(pool: SqlitePool) {
+        let outcome = discard_harmless_shape(&pool, Harmless::OtherHasNoBatch).await;
+        assert_eq!(outcome.removed_postings, 1);
+        assert_eq!(outcome.removed_transactions, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_already_discarded_later_batch_does_not_block(pool: SqlitePool) {
+        let outcome = discard_harmless_shape(&pool, Harmless::OtherDiscarded).await;
+        assert_eq!(outcome.removed_postings, 1);
+        assert_eq!(outcome.removed_transactions, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_batch_that_only_adopted_is_not_blocked(pool: SqlitePool) {
+        let outcome = discard_harmless_shape(&pool, Harmless::ThisOnlyAdopted).await;
+        assert_eq!(outcome.detached_adopted, 1);
+        assert_eq!(outcome.removed_postings, 0);
+    }
+
     async fn count(pool: &SqlitePool, sql: &'static str) -> i64 {
         sqlx::query_scalar(sql)
             .fetch_one(pool)

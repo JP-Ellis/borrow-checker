@@ -1,7 +1,10 @@
 //! Core error types.
 
 use bc_models::AccountId;
+use bc_models::ImportBatchId;
 use bc_models::TransactionId;
+
+use crate::DiscardDependant;
 
 /// The result type used throughout `bc-core`.
 pub type BcResult<T> = Result<T, BcError>;
@@ -41,6 +44,17 @@ pub enum BcError {
     /// A tag could not be deleted because it is still referenced by a budget filter.
     #[error("tag in use: {0}")]
     TagInUse(String),
+    /// An import batch cannot be discarded because later batches own legs on
+    /// its transactions: removing its legs would leave theirs describing money
+    /// from nowhere. Discard the dependants first, newest first.
+    #[error("{}", blocked_message(batch, dependants))]
+    DiscardBlocked {
+        /// The batch that was refused.
+        batch: ImportBatchId,
+        /// The batches that built on it, newest first: the order to discard
+        /// them in.
+        dependants: Vec<DiscardDependant>,
+    },
     /// A commodity marker (code, symbol, or alias) collides with another commodity.
     #[error("marker conflict: '{marker}' already maps to {existing}")]
     MarkerConflict {
@@ -73,6 +87,32 @@ pub enum BcError {
     /// A database migration error.
     #[error("migration error: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
+}
+
+/// Renders the one-line message for [`BcError::DiscardBlocked`].
+///
+/// # Arguments
+///
+/// * `batch` - The batch that was refused.
+/// * `dependants` - The batches that built on it, newest first.
+///
+/// # Returns
+///
+/// The message, naming the first batch to discard.
+fn blocked_message(batch: &ImportBatchId, dependants: &[DiscardDependant]) -> String {
+    let noun = if dependants.len() == 1 {
+        "batch"
+    } else {
+        "batches"
+    };
+    let first = dependants
+        .first()
+        .map_or_else(String::new, |d| format!("; discard {} first", d.batch_id));
+    format!(
+        "import batch {batch} cannot be discarded: {} later {noun} added legs to its \
+         transactions{first}",
+        dependants.len()
+    )
 }
 
 #[cfg(test)]
