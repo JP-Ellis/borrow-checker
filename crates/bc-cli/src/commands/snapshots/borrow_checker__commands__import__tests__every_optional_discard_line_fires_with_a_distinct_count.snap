@@ -11,3 +11,5 @@ Discarded batch BATCH_ID (csv, STARTED_AT).
   9 slots freed for legs you had deleted
   7 other references removed with their transactions
   8 references from another batch lost their posting
+  2 tags removed — created by this import, applied nowhere else
+  1 tag kept — created by this import, since applied elsewhere

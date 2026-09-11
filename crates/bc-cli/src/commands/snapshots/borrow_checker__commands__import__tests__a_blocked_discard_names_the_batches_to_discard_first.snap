@@ -1,0 +1,8 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: stabilised
+---
+cannot discard batch OLDEST (csv, STARTED_AT): later batches added legs to its transactions
+  NEWEST (ledger, NEWEST_STARTED) — 1 posting on 1 transaction
+  MIDDLE (csv, MIDDLE_STARTED) — 2 postings on 2 transactions
+Discard them first, in that order.
