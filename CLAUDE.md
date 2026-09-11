@@ -82,6 +82,7 @@ Hoist `use` statements to the top of the enclosing module — including `mod tes
 ## Testing Conventions
 
 - Unit tests live in `#[cfg(test)] mod tests` alongside source.
+- Mark every `#[cfg(test)]` module `#[cfg_attr(coverage_nightly, coverage(off))]`, and every crate root `#![cfg_attr(coverage_nightly, feature(coverage_attribute))]`. `cargo llvm-cov` sets the cfg; every other build leaves it unset, so test code stays out of the coverage count without touching the normal compile.
 - Integration tests are in `crates/$crate/tests/`.
 - Use `pretty_assertions::assert_eq!` (not `std::assert_eq!`).
 - Use `rstest` for parameterised tests and `insta` for snapshot assertions.
