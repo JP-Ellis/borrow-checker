@@ -788,6 +788,8 @@ mod tests {
             edited_postings: 1,
             reconciled_postings: 2,
             flagged_postings: 9,
+            removed_tags: 3,
+            kept_tags: 1,
         };
         let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &HashMap::new());
         assert_eq!(entry.kind, "import");

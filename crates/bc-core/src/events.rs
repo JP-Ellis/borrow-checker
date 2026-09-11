@@ -506,6 +506,11 @@ pub enum Event {
         reconciled_postings: u64,
         /// Of `removed_postings`, those in a transaction flagged for review.
         flagged_postings: u64,
+        /// Tags the run created that nothing else named, deleted with it.
+        removed_tags: u64,
+        /// Tags the run created that had since been applied elsewhere and so
+        /// stayed.
+        kept_tags: u64,
     },
 }
 
