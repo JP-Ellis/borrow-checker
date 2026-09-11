@@ -1078,7 +1078,7 @@ impl Service {
                             spec.acquisition_date(),
                             spec.acquisition_cost(),
                             spec.depreciation_policy(),
-                            None,
+                            spec.opened_on(),
                         )
                         .await?
                     } else {
@@ -1133,6 +1133,7 @@ impl Service {
                             .maybe_depreciation_policy(
                                 spec.depreciation_policy().filter(|_| is_leaf).cloned(),
                             )
+                            .maybe_opened_on(spec.opened_on().filter(|_| is_leaf))
                             .build(),
                     );
                     out.created.push(walked.join(":"));
@@ -1403,6 +1404,9 @@ pub struct PathSpec {
     acquisition_cost: Option<rust_decimal::Decimal>,
     /// Depreciation policy (only for [`AccountKind::ManualAsset`] leaves).
     depreciation_policy: Option<bc_models::DepreciationPolicy>,
+    /// Business date the leaf opened. `None` means unspecified — undeclared
+    /// when creating, and not compared when reusing.
+    opened_on: Option<jiff::civil::Date>,
 }
 
 impl PathSpec {
@@ -1467,6 +1471,13 @@ impl PathSpec {
     #[must_use]
     pub fn depreciation_policy(&self) -> Option<&bc_models::DepreciationPolicy> {
         self.depreciation_policy.as_ref()
+    }
+
+    /// Returns the leaf's opening date, if one was given.
+    #[inline]
+    #[must_use]
+    pub fn opened_on(&self) -> Option<jiff::civil::Date> {
+        self.opened_on
     }
 }
 
@@ -1548,6 +1559,11 @@ fn conflict_of(
             "account '{rendered}' already exists with a different depreciation policy"
         ));
     }
+    if spec.opened_on().is_some() && existing.opened_on() != spec.opened_on() {
+        return Some(format!(
+            "account '{rendered}' already exists with a different opening date"
+        ));
+    }
     // Commodity order is significant — the first entry is the account's default
     // — so this compares as an ordered sequence.
     if !spec.commodity_ids().is_empty() && existing.commodities() != spec.commodity_ids() {
@@ -1612,6 +1628,7 @@ mod tests {
         assert_eq!(spec.acquisition_date(), None);
         assert_eq!(spec.acquisition_cost(), None);
         assert!(spec.depreciation_policy().is_none());
+        assert_eq!(spec.opened_on(), None);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2546,6 +2563,86 @@ mod tests {
             leaf.depreciation_policy(),
             Some(&policy),
             "depreciation policy"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn opened_on_round_trips_through_create_paths_onto_the_leaf(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let spec = PathSpec::builder()
+            .path(AccountPath::parse("Assets:BankA:Checking").expect("valid path"))
+            .opened_on(jiff::civil::date(2020, 1, 1))
+            .build();
+        let outcome = svc.create_paths(&[spec]).await.expect("create");
+
+        let leaf_id = outcome.ids.get("Assets:BankA:Checking").expect("leaf id");
+        let leaf = svc.find_by_id(leaf_id).await.expect("find leaf");
+        assert_eq!(leaf.opened_on(), Some(jiff::civil::date(2020, 1, 1)));
+
+        let all = svc.list_all().await.expect("list");
+        let bank_a = all.iter().find(|a| a.name() == "BankA").expect("BankA");
+        assert_eq!(
+            bank_a.opened_on(),
+            None,
+            "an auto-created ancestor must not inherit the leaf's opening date"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_matching_opened_on_on_an_existing_leaf_is_a_no_op(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let with_date = || {
+            PathSpec::builder()
+                .path(AccountPath::parse("Assets:BankA:Checking").expect("valid path"))
+                .opened_on(jiff::civil::date(2020, 1, 1))
+                .build()
+        };
+        svc.create_paths(&[with_date()]).await.expect("first");
+        let outcome = svc.create_paths(&[with_date()]).await.expect("second");
+        assert!(
+            outcome.created.is_empty(),
+            "nothing new: {:?}",
+            outcome.created
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_conflicting_opened_on_on_an_existing_leaf_is_rejected(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        svc.create_paths(&[spec("Assets:BankA:Checking")])
+            .await
+            .expect("create without a date");
+
+        let dated = PathSpec::builder()
+            .path(AccountPath::parse("Assets:BankA:Checking").expect("valid path"))
+            .opened_on(jiff::civil::date(2020, 1, 1))
+            .build();
+        let error = svc.create_paths(&[dated]).await.expect_err("mismatch");
+        assert!(
+            matches!(error, BcError::InvalidInput(ref m) if m.contains("different opening date")),
+            "got: {error:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_same_leaf_path_twice_in_one_batch_agrees_on_opened_on(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let dated = |d: jiff::civil::Date| {
+            PathSpec::builder()
+                .path(AccountPath::parse("Assets:BankA:Checking").expect("valid path"))
+                .opened_on(d)
+                .build()
+        };
+        let error = svc
+            .create_paths(&[
+                dated(jiff::civil::date(2020, 1, 1)),
+                dated(jiff::civil::date(2021, 1, 1)),
+            ])
+            .await
+            .expect_err("the second spec contradicts the first within the batch");
+        assert!(
+            matches!(error, BcError::InvalidInput(ref m) if m.contains("different opening date")),
+            "got: {error:?}"
         );
     }
 
