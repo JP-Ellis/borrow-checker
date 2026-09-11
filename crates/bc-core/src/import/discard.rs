@@ -3,8 +3,12 @@
 //! A discarded batch is a run that never happened. Every reference it wrote is
 //! hard-deleted — freeing its `(account_id, fingerprint, occurrence)` slot, the
 //! opposite of the tombstone a deleted leg leaves — every posting it created
-//! goes with them, and every transaction left holding no postings goes too.
-//! Only a posting the run *adopted* survives, losing its provenance.
+//! goes with them, every transaction left holding no postings goes too, and
+//! every tag it created goes unless something else has since named it: a
+//! membership added by hand or by a later run, a budget filter, or a child tag
+//! that stays. A tag the user renamed but never applied is not recognised as
+//! curated and goes with the run. Only a posting the run *adopted* survives,
+//! losing its provenance.
 //!
 //! The work is driven by the reference rows, never by the batch's recorded
 //! counts, so a run that aborted before recording anything discards exactly as
@@ -62,6 +66,12 @@ pub struct Outcome {
     /// flagged for review. Counted apart from [`Self::reconciled_postings`]:
     /// losing a flag and losing a statement confirmation are different losses.
     pub flagged_postings: usize,
+    /// Tags the run created that nothing else names, deleted with it.
+    pub removed_tags: usize,
+    /// Tags the run created that have since been applied elsewhere — by hand,
+    /// by a later run, as a budget filter, or as the parent of a kept tag —
+    /// and therefore stay.
+    pub kept_tags: usize,
 }
 
 /// A later batch that owns legs on a batch's transactions, blocking its
@@ -126,6 +136,9 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
     delete_postings(&mut db_tx, &plan.owned_postings).await?;
     let swept = sweep_empty_transactions(&mut db_tx, &plan.touched).await?;
     renumber_positions(&mut db_tx, &swept.survivors).await?;
+    // After the postings and transactions, so a membership that went with them
+    // no longer counts as naming the tag.
+    let reversed = reverse_tags(&mut db_tx, &id_str).await?;
 
     let outcome = Outcome {
         batch_id: id.clone(),
@@ -138,6 +151,8 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
         edited_postings: edits.edited,
         reconciled_postings: edits.reconciled,
         flagged_postings: edits.flagged,
+        removed_tags: reversed.removed,
+        kept_tags: reversed.kept,
     };
 
     sqlx::query("UPDATE import_batches SET discarded_at = ? WHERE id = ?")
@@ -160,6 +175,8 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
         edited_postings = outcome.edited_postings,
         reconciled_postings = outcome.reconciled_postings,
         flagged_postings = outcome.flagged_postings,
+        removed_tags = outcome.removed_tags,
+        kept_tags = outcome.kept_tags,
         "import batch discarded"
     );
     Ok(outcome)
@@ -700,6 +717,103 @@ async fn renumber_positions(
     Ok(())
 }
 
+/// What reversing the batch's tags did.
+struct Reversed {
+    /// Tags deleted because nothing named them.
+    removed: usize,
+    /// Tags kept because something did.
+    kept: usize,
+}
+
+/// Deletes the tags the run created that nothing now names, and forgets the
+/// rest.
+///
+/// Walks the recorded tags deepest first, so a leaf is judged before its
+/// parent and a kept leaf keeps its ancestors. "Named" means a posting,
+/// transaction or account membership, a budget revision's filter, or a child
+/// tag — one this run created and kept, or one anyone else created.
+///
+/// # Arguments
+///
+/// * `conn` - An open SQLite connection or transaction.
+/// * `id_str` - The batch's ID as stored.
+///
+/// # Returns
+///
+/// How many tags went and how many stayed.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on query or delete failure.
+async fn reverse_tags(conn: &mut sqlx::SqliteConnection, id_str: &str) -> BcResult<Reversed> {
+    // Depth is the length of each recorded tag's parent chain; the recursion
+    // stops at a root, whose parent join finds nothing.
+    let recorded: Vec<(String, i64)> = sqlx::query_as(
+        "WITH RECURSIVE chain(tag_id, ancestor_id, depth) AS ( \
+             SELECT t.id, t.parent_id, 0 FROM tags t \
+             JOIN import_batch_tags r ON r.tag_id = t.id \
+             WHERE r.import_batch_id = ? \
+           UNION ALL \
+             SELECT chain.tag_id, t.parent_id, chain.depth + 1 \
+             FROM chain JOIN tags t ON t.id = chain.ancestor_id \
+         ) \
+         SELECT tag_id, MAX(depth) AS depth FROM chain \
+         GROUP BY tag_id ORDER BY depth DESC, tag_id",
+    )
+    .bind(id_str)
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let mut out = Reversed {
+        removed: 0,
+        kept: 0,
+    };
+    for (tag_id, _depth) in recorded {
+        if is_named(&mut *conn, &tag_id).await? {
+            out.kept = out.kept.saturating_add(1);
+            continue;
+        }
+        sqlx::query("DELETE FROM tags WHERE id = ?")
+            .bind(&tag_id)
+            .execute(&mut *conn)
+            .await?;
+        out.removed = out.removed.saturating_add(1);
+    }
+    sqlx::query("DELETE FROM import_batch_tags WHERE import_batch_id = ?")
+        .bind(id_str)
+        .execute(conn)
+        .await?;
+    Ok(out)
+}
+
+/// Reports whether anything still names a tag.
+///
+/// # Arguments
+///
+/// * `conn` - An open SQLite connection or transaction.
+/// * `tag_id` - The tag's ID as stored.
+///
+/// # Returns
+///
+/// `true` if a membership, a budget filter or a child tag names it.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on query failure.
+async fn is_named(conn: &mut sqlx::SqliteConnection, tag_id: &str) -> BcResult<bool> {
+    let named: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM posting_tags WHERE tag_id = ?1) \
+              + EXISTS(SELECT 1 FROM transaction_tags WHERE tag_id = ?1) \
+              + EXISTS(SELECT 1 FROM account_tags WHERE tag_id = ?1) \
+              + EXISTS(SELECT 1 FROM budget_revisions WHERE tag_filter = ?1) \
+              + EXISTS(SELECT 1 FROM tags WHERE parent_id = ?1)",
+    )
+    .bind(tag_id)
+    .fetch_one(conn)
+    .await?;
+    Ok(named > 0)
+}
+
 /// Converts a `COUNT(*)` result to a `usize`, saturating rather than failing.
 ///
 /// # Arguments
@@ -741,6 +855,8 @@ fn event_for(outcome: &Outcome) -> BcResult<crate::Event> {
         edited_postings: to_u64(outcome.edited_postings)?,
         reconciled_postings: to_u64(outcome.reconciled_postings)?,
         flagged_postings: to_u64(outcome.flagged_postings)?,
+        removed_tags: to_u64(outcome.removed_tags)?,
+        kept_tags: to_u64(outcome.kept_tags)?,
     })
 }
 
@@ -756,6 +872,8 @@ mod tests {
     use bc_models::PostingId;
     use bc_models::SourceRef;
     use bc_models::SourceRefId;
+    use bc_models::TagId;
+    use bc_models::TagPath;
     use bc_models::TransactionId;
     use jiff::Timestamp;
     use jiff::civil::date;
@@ -1247,6 +1365,11 @@ mod tests {
                 .expect("recategorise");
         }
 
+        // Two tags the run minted, one of them since applied by hand:
+        // removed_tags = 1, kept_tags = 1.
+        let minted = tags_for(&pool, &batch, &["gifts", "travel"]).await;
+        tag_account(&pool, &acct, minted.ids.get("travel").expect("travel")).await;
+
         let outcome = batches.discard(&batch).await.expect("discard");
 
         let payload: String =
@@ -1267,6 +1390,8 @@ mod tests {
             edited_postings,
             reconciled_postings,
             flagged_postings,
+            removed_tags,
+            kept_tags,
         } = event
         else {
             panic!("the discard appended an event of the wrong kind");
@@ -1294,6 +1419,8 @@ mod tests {
             removed_postings, 14,
             "2 reconciled + 4 flagged + 1 swept + 7 surviving-collateral"
         );
+        assert_eq!(removed_tags, 1, "the unused tag went with the run");
+        assert_eq!(kept_tags, 1, "the tag applied by hand stayed");
 
         // The same nine values via the outcome, so a mapping that is
         // self-consistently wrong in both surfaces still cannot pass.
@@ -1333,6 +1460,11 @@ mod tests {
             usize::try_from(flagged_postings).expect("fits"),
             outcome.flagged_postings
         );
+        assert_eq!(
+            usize::try_from(removed_tags).expect("fits"),
+            outcome.removed_tags
+        );
+        assert_eq!(usize::try_from(kept_tags).expect("fits"), outcome.kept_tags);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1868,6 +2000,239 @@ mod tests {
         let outcome = discard_harmless_shape(&pool, Harmless::ThisOnlyAdopted).await;
         assert_eq!(outcome.detached_adopted, 1);
         assert_eq!(outcome.removed_postings, 0);
+    }
+
+    /// Creates `paths` through the tag service and records every minted row
+    /// against `batch`, the way `Commit::ensure_tags` does.
+    async fn tags_for(
+        pool: &SqlitePool,
+        batch: &ImportBatchId,
+        paths: &[&str],
+    ) -> crate::CreatedTags {
+        let parsed: Vec<TagPath> = paths.iter().map(|p| p.parse().expect("path")).collect();
+        let created = crate::TagService::new(pool.clone())
+            .create_paths(&parsed)
+            .await
+            .expect("create tags");
+        ImportBatchService::new(pool.clone())
+            .record_tags(batch, &created.minted)
+            .await
+            .expect("record tags");
+        created
+    }
+
+    /// Applies `tag` to `account` by hand.
+    async fn tag_account(pool: &SqlitePool, account: &AccountId, tag: &TagId) {
+        sqlx::query("INSERT INTO account_tags (account_id, tag_id) VALUES (?, ?)")
+            .bind(account.to_string())
+            .bind(tag.to_string())
+            .execute(pool)
+            .await
+            .expect("tag account");
+    }
+
+    /// Opens a batch owning one leg on one transaction, so a discard has
+    /// something to remove besides its tags.
+    async fn batch_with_a_leg(pool: &SqlitePool) -> (ImportBatchId, AccountId, TransactionId) {
+        let batch = ImportBatchService::new(pool.clone())
+            .open(None, "csv")
+            .await
+            .expect("open");
+        let acct = account(pool, "Checking").await;
+        let (tx, posting) = transaction_with_posting(pool, &acct).await;
+        attach(pool, &batch, &tx, &posting, &acct, true).await;
+        (batch, acct, tx)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_unused_tag_and_its_minted_ancestor_go_with_the_batch(pool: SqlitePool) {
+        let (batch, _, _) = batch_with_a_leg(&pool).await;
+        tags_for(&pool, &batch, &["food:groceries"]).await;
+
+        let outcome = ImportBatchService::new(pool.clone())
+            .discard(&batch)
+            .await
+            .expect("discard");
+
+        assert_eq!(outcome.removed_tags, 2, "food and food:groceries");
+        assert_eq!(outcome.kept_tags, 0);
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM tags").await, 0);
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM import_batch_tags").await,
+            0,
+            "the batch's record is dropped with the discard"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_ancestor_with_a_surviving_child_is_kept(pool: SqlitePool) {
+        let (batch, _, _) = batch_with_a_leg(&pool).await;
+        tags_for(&pool, &batch, &["food:groceries"]).await;
+        // A sibling created by hand afterwards, under the run's ancestor.
+        crate::TagService::new(pool.clone())
+            .create_path(&"food:dining".parse().expect("path"))
+            .await
+            .expect("create by hand");
+
+        let outcome = ImportBatchService::new(pool.clone())
+            .discard(&batch)
+            .await
+            .expect("discard");
+
+        assert_eq!(outcome.removed_tags, 1, "food:groceries");
+        assert_eq!(outcome.kept_tags, 1, "food still has a child");
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM tags").await, 2);
+    }
+
+    /// Where a tag the run created has since been applied by hand.
+    #[derive(Clone, Copy, Debug)]
+    enum Applied {
+        Posting,
+        Transaction,
+        Account,
+        BudgetFilter,
+    }
+
+    /// Mints `food:groceries` on a batch, applies the leaf as `applied`
+    /// outside the batch, and discards.
+    async fn discard_with_leaf_applied(pool: &SqlitePool, applied: Applied) -> Outcome {
+        let (batch, acct, _) = batch_with_a_leg(pool).await;
+        let minted = tags_for(pool, &batch, &["food:groceries"]).await;
+        let leaf = minted.ids.get("food:groceries").expect("leaf").to_string();
+        match applied {
+            Applied::Posting => {
+                // A posting outside the batch, so the discard does not take
+                // the membership with it.
+                let elsewhere = account(pool, "Savings").await;
+                let (_, posting) = transaction_with_posting(pool, &elsewhere).await;
+                sqlx::query("INSERT INTO posting_tags (posting_id, tag_id) VALUES (?, ?)")
+                    .bind(posting.to_string())
+                    .bind(&leaf)
+                    .execute(pool)
+                    .await
+                    .expect("tag posting");
+            }
+            Applied::Transaction => {
+                let elsewhere = account(pool, "Savings").await;
+                let (tx, _) = transaction_with_posting(pool, &elsewhere).await;
+                sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
+                    .bind(tx.to_string())
+                    .bind(&leaf)
+                    .execute(pool)
+                    .await
+                    .expect("tag transaction");
+            }
+            Applied::Account => {
+                tag_account(pool, &acct, minted.ids.get("food:groceries").expect("leaf")).await;
+            }
+            Applied::BudgetFilter => {
+                sqlx::query("INSERT INTO budgets (id, account_id, created_at) VALUES (?, ?, ?)")
+                    .bind("budget_1")
+                    .bind(acct.to_string())
+                    .bind(Timestamp::now().to_string())
+                    .execute(pool)
+                    .await
+                    .expect("budget");
+                sqlx::query(
+                    "INSERT INTO budget_revisions \
+                     (id, budget_id, effective_from, period, rollover, tag_filter, created_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind("budget_revision_1")
+                .bind("budget_1")
+                .bind("2026-01-01")
+                .bind("\"monthly\"")
+                .bind("reset_to_zero")
+                .bind(&leaf)
+                .bind(Timestamp::now().to_string())
+                .execute(pool)
+                .await
+                .expect("revision");
+            }
+        }
+
+        ImportBatchService::new(pool.clone())
+            .discard(&batch)
+            .await
+            .expect("discard")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_tag_applied_to_a_posting_by_hand_is_kept(pool: SqlitePool) {
+        let outcome = discard_with_leaf_applied(&pool, Applied::Posting).await;
+        assert_eq!(outcome.kept_tags, 2, "the leaf, and the ancestor it keeps");
+        assert_eq!(outcome.removed_tags, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_tag_applied_to_a_transaction_by_hand_is_kept(pool: SqlitePool) {
+        let outcome = discard_with_leaf_applied(&pool, Applied::Transaction).await;
+        assert_eq!(outcome.kept_tags, 2);
+        assert_eq!(outcome.removed_tags, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_tag_applied_to_an_account_by_hand_is_kept(pool: SqlitePool) {
+        let outcome = discard_with_leaf_applied(&pool, Applied::Account).await;
+        assert_eq!(outcome.kept_tags, 2);
+        assert_eq!(outcome.removed_tags, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_tag_used_as_a_budget_filter_is_kept(pool: SqlitePool) {
+        let outcome = discard_with_leaf_applied(&pool, Applied::BudgetFilter).await;
+        assert_eq!(outcome.kept_tags, 2);
+        assert_eq!(outcome.removed_tags, 0);
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM budget_revisions").await,
+            1
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_tag_a_later_batch_reused_is_kept(pool: SqlitePool) {
+        let (older, _, _) = batch_with_a_leg(&pool).await;
+        let minted = tags_for(&pool, &older, &["food:groceries"]).await;
+        // The later run names the same path, mints nothing, and tags its own
+        // leg — on a transaction of its own, so it is no dependant of the
+        // older run.
+        let batches = ImportBatchService::new(pool.clone());
+        let newer = batches.open(None, "csv").await.expect("open newer");
+        let reused = tags_for(&pool, &newer, &["food:groceries"]).await;
+        assert!(reused.minted.is_empty(), "nothing new to mint");
+        let elsewhere = account(&pool, "Savings").await;
+        let (tx, posting) = transaction_with_posting(&pool, &elsewhere).await;
+        attach_at(&pool, &newer, &tx, &posting, &elsewhere, true, 1).await;
+        sqlx::query("INSERT INTO posting_tags (posting_id, tag_id) VALUES (?, ?)")
+            .bind(posting.to_string())
+            .bind(minted.ids.get("food:groceries").expect("leaf").to_string())
+            .execute(&pool)
+            .await
+            .expect("tag posting");
+
+        let outcome = batches.discard(&older).await.expect("discard");
+
+        assert_eq!(outcome.kept_tags, 2);
+        assert_eq!(outcome.removed_tags, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_tag_deleted_by_hand_before_the_discard_is_a_no_op(pool: SqlitePool) {
+        let (batch, _, _) = batch_with_a_leg(&pool).await;
+        let minted = tags_for(&pool, &batch, &["food:groceries"]).await;
+        let root = minted.minted.first().expect("root").clone();
+        crate::TagService::new(pool.clone())
+            .delete(&root)
+            .await
+            .expect("delete by hand");
+
+        let outcome = ImportBatchService::new(pool.clone())
+            .discard(&batch)
+            .await
+            .expect("discard");
+
+        assert_eq!(outcome.removed_tags, 0);
+        assert_eq!(outcome.kept_tags, 0);
     }
 
     async fn count(pool: &SqlitePool, sql: &'static str) -> i64 {
