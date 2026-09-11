@@ -111,7 +111,7 @@ members  = [
   wasmtime-wasi         = { version = "48" }
   winnow                = "1.0"
   wit-bindgen           = {
-    version          = "0.61",
+    version          = "0.62",
     default-features = false,
     features         = ["macros"]
   }
