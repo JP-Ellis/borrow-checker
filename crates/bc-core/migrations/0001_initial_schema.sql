@@ -455,6 +455,16 @@ CREATE TABLE import_batches (
     )
 );
 
+-- Tags an import run brought into existence, so its discard can take them
+-- back. One row per `tags` row the run inserted, ancestors included: creating
+-- `a:b` in an empty tree records both `a` and `a:b`. A tag deleted by hand
+-- takes its row with it, so a discard never chases a tag that is already gone.
+CREATE TABLE import_batch_tags (
+    import_batch_id TEXT NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+    tag_id          TEXT NOT NULL REFERENCES tags(id)           ON DELETE CASCADE,
+    PRIMARY KEY (import_batch_id, tag_id)
+);
+
 -- MARK: Transaction sources
 
 -- Import provenance: one row per statement leg (posting) that produced a

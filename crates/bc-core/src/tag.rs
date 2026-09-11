@@ -72,6 +72,12 @@ pub struct Created {
     /// existence, but only `a:b` — the path actually asked for — appears in
     /// this list.
     pub created: Vec<String>,
+    /// Every `tags` row this call inserted, parents before children. Unlike
+    /// [`Self::created`] this includes the ancestors created on the way to a
+    /// requested leaf, so it is the complete list of what a discard would have
+    /// to reverse. A read-only resolve fills it with IDs that were never
+    /// persisted.
+    pub minted: Vec<TagId>,
 }
 
 /// Tag service: owns the `tags` hierarchy and all tag membership join tables.
@@ -292,6 +298,7 @@ impl Service {
                             .build(),
                     );
                     minted = true;
+                    out.minted.push(new_id.clone());
                     new_id
                 };
                 parent = Some(id);
@@ -798,6 +805,37 @@ mod tests {
 
         assert_eq!(outcome.created, vec!["person:beta".to_owned()]);
         assert_eq!(outcome.ids.len(), 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_paths_reports_every_minted_row_parents_first(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let paths: Vec<TagPath> = vec![
+            "food:groceries".parse().expect("path"),
+            "food:dining".parse().expect("path"),
+        ];
+        let outcome = svc.create_paths(&paths).await.expect("create ok");
+
+        assert_eq!(
+            outcome.minted.len(),
+            3,
+            "food, food:groceries and food:dining; the shared ancestor once"
+        );
+        let leaf = svc
+            .find_by_id(outcome.ids.get("food:groceries").expect("leaf id"))
+            .await
+            .expect("find")
+            .expect("exists");
+        assert_eq!(
+            outcome.minted.first(),
+            leaf.parent_id(),
+            "the ancestor is minted before either leaf"
+        );
+        assert_eq!(
+            outcome.created,
+            vec!["food:dining".to_owned(), "food:groceries".to_owned()],
+            "`created` still lists only the requested leaves"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]

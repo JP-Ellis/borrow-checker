@@ -891,7 +891,7 @@ where
     let commodity_resolver = CommodityResolver::load(commodities).await?;
     let batch_id = sink.open_batch(batches, profile_id, importer).await?;
 
-    let tag_pass = sink.ensure_tags(tags, raws).await?;
+    let tag_pass = sink.ensure_tags(tags, batches, raws).await?;
 
     let pass = resolve_legs(&resolver, &commodity_resolver, raws);
     let unresolved_accounts: Vec<String> = pass.unresolved_accounts.into_iter().collect();
@@ -1721,6 +1721,8 @@ trait Sink {
     /// # Arguments
     ///
     /// * `tags` - The tag service to resolve or create through.
+    /// * `batches` - Import batch provenance service, for a sink that records
+    ///   what it created against its batch.
     /// * `raws` - Parsed transactions in document order.
     ///
     /// # Returns
@@ -1734,6 +1736,7 @@ trait Sink {
     async fn ensure_tags(
         &self,
         tags: &crate::TagService,
+        batches: &crate::ImportBatchService,
         raws: &[RawTransaction],
     ) -> BcResult<Tags>;
 
@@ -1943,10 +1946,15 @@ impl Sink for Commit<'_> {
     async fn ensure_tags(
         &self,
         tags: &crate::TagService,
+        batches: &crate::ImportBatchService,
         raws: &[RawTransaction],
     ) -> BcResult<Tags> {
         let (parsed, diagnostics) = parse_tag_paths(raws);
         let created = tags.create_paths(&parsed).await?;
+        // Recorded in its own transaction: a crash between the two leaves the
+        // tags unrecorded, which is what every run did before they were
+        // recorded at all.
+        batches.record_tags(self.batch()?, &created.minted).await?;
         Ok(Tags {
             ids: created.ids,
             created: created.created,
@@ -2194,6 +2202,7 @@ impl Sink for Plan {
     async fn ensure_tags(
         &self,
         tags: &crate::TagService,
+        _batches: &crate::ImportBatchService,
         raws: &[RawTransaction],
     ) -> BcResult<Tags> {
         let (parsed, diagnostics) = parse_tag_paths(raws);
@@ -5564,6 +5573,39 @@ mod tests {
             .await
             .expect("count tags");
         assert_eq!(count, 1);
+    }
+
+    /// The run records every tag it minted against its batch, ancestors
+    /// included, so a discard can reverse them; a plan writes no tags and so
+    /// records none.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn minted_tags_are_recorded_against_the_batch(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .tags(vec!["household:food".to_owned()])
+            .postings(vec![leg("Assets:Bank", Some(50_i64))])
+            .build();
+
+        let planned = plan(&svcs, std::slice::from_ref(&raw)).await;
+        assert_eq!(planned.would_create_tags, vec!["household:food".to_owned()]);
+        let after_plan: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM import_batch_tags")
+            .fetch_one(&pool)
+            .await
+            .expect("count recorded");
+        assert_eq!(after_plan, 0, "a plan opens no batch and mints no tag");
+
+        let outcome = run(&svcs, &[raw]).await;
+
+        let recorded: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM import_batch_tags WHERE import_batch_id = ?")
+                .bind(outcome.batch_id.to_string())
+                .fetch_one(&pool)
+                .await
+                .expect("count recorded");
+        assert_eq!(recorded, 2, "household and household:food");
     }
 
     /// A tag path that will not parse warns once and is dropped; the leg it was
