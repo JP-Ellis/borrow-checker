@@ -46,6 +46,8 @@ pub enum Event {
         kind: AccountKind,
         /// Optional free-text description.
         description: Option<String>,
+        /// Business date the account opened, if declared at creation.
+        opened_on: Option<jiff::civil::Date>,
     },
     /// An account's metadata was updated.
     // TODO(M1): AccountUpdated must include the full new account state
@@ -71,6 +73,19 @@ pub enum Event {
     AccountReopened {
         /// The account reopened.
         id: AccountId,
+    },
+    /// An account's declared opening date was set, corrected or cleared.
+    ///
+    /// Both sides are recorded so the change can be walked backwards, matching
+    /// [`Self::TransactionDateChanged`]. `None` on either side means the date
+    /// was undeclared.
+    AccountOpenedOnChanged {
+        /// The account whose opening date changed.
+        id: AccountId,
+        /// Opening date before the change.
+        from: Option<jiff::civil::Date>,
+        /// Opening date after the change.
+        to: Option<jiff::civil::Date>,
     },
     /// A new transaction was recorded.
     TransactionCreated {
@@ -531,6 +546,7 @@ impl Event {
             Self::AccountArchived { .. } => "AccountArchived",
             Self::AccountClosed { .. } => "AccountClosed",
             Self::AccountReopened { .. } => "AccountReopened",
+            Self::AccountOpenedOnChanged { .. } => "AccountOpenedOnChanged",
             Self::TransactionCreated { .. } => "TransactionCreated",
             Self::TransactionAmended { .. } => "TransactionAmended",
             Self::TransactionVoided { .. } => "TransactionVoided",
@@ -574,7 +590,8 @@ impl Event {
             | Self::AccountUpdated { id }
             | Self::AccountArchived { id }
             | Self::AccountClosed { id, .. }
-            | Self::AccountReopened { id } => id.to_string(),
+            | Self::AccountReopened { id }
+            | Self::AccountOpenedOnChanged { id, .. } => id.to_string(),
             Self::TransactionCreated { id }
             | Self::TransactionAmended { id, .. }
             | Self::TransactionVoided { id }
@@ -755,6 +772,7 @@ mod tests {
             account_type: AccountType::Asset,
             kind: AccountKind::DepositAccount,
             description: None,
+            opened_on: None,
         };
 
         store.append(&event).await.expect("append should succeed");
@@ -783,6 +801,7 @@ mod tests {
                 account_type: AccountType::Asset,
                 kind: AccountKind::DepositAccount,
                 description: None,
+                opened_on: None,
             })
             .await
             .expect("first append should succeed");
@@ -1134,6 +1153,7 @@ mod tests {
             account_type: AccountType::Asset,
             kind: AccountKind::DepositAccount,
             description: Some("A test description".to_owned()),
+            opened_on: Some(date(2020, 1, 1)),
         };
 
         store
@@ -1161,12 +1181,14 @@ mod tests {
                 account_type,
                 kind,
                 description,
+                opened_on,
             } => {
                 assert_eq!(replayed_id, id);
                 assert_eq!(name, "Round-Trip Account");
                 assert_eq!(account_type, AccountType::Asset);
                 assert_eq!(kind, AccountKind::DepositAccount);
                 assert_eq!(description, Some("A test description".to_owned()));
+                assert_eq!(opened_on, Some(date(2020, 1, 1)));
             }
             other => panic!("expected AccountCreated, got {other:?}"),
         }
