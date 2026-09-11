@@ -209,7 +209,15 @@ async fn execute_discard(args: DiscardArgs, ctx: &AppContext) -> CliResult<()> {
     // function has already written a full database copy. `ensure_discardable`
     // runs the same predicate and message as a cheap short-circuit, so this
     // check and `discard`'s own cannot drift apart.
-    ctx.batches.ensure_discardable(&batch_id).await?;
+    match ctx.batches.ensure_discardable(&batch_id).await {
+        Err(bc_core::BcError::DiscardBlocked { dependants, .. }) => {
+            return Err(crate::error::CliError::Arg(render_blocked(
+                &record,
+                &dependants,
+            )));
+        }
+        other => other?,
+    }
 
     // Discard deletes postings and transactions outright. Restoring this
     // snapshot is the recovery path; the audit event carries counts, not a
@@ -233,6 +241,46 @@ async fn execute_discard(args: DiscardArgs, ctx: &AppContext) -> CliResult<()> {
         print!("{}", render_discard(&outcome, &record));
     }
     Ok(())
+}
+
+/// Renders the refusal for a batch later runs built on: the batch, then the
+/// runs to discard first, newest first, each with what it added.
+///
+/// # Arguments
+///
+/// * `batch` - The batch that was refused, for the header.
+/// * `dependants` - The batches that built on it, newest first.
+///
+/// # Returns
+///
+/// The diagnostic, without a trailing newline.
+fn render_blocked(
+    batch: &bc_core::ImportBatch,
+    dependants: &[bc_core::DiscardDependant],
+) -> String {
+    let mut lines: Vec<String> = vec![format!(
+        "cannot discard batch {} ({}, {}): later batches added legs to its transactions",
+        batch.id, batch.importer, batch.started_at
+    )];
+    for dependant in dependants {
+        lines.push(format!(
+            "  {} ({}, {}) — {} on {}",
+            dependant.batch_id,
+            dependant.importer,
+            dependant.started_at,
+            plural(dependant.postings, "posting"),
+            plural(dependant.transactions, "transaction"),
+        ));
+    }
+    lines.push(
+        if dependants.len() == 1 {
+            "Discard it first."
+        } else {
+            "Discard them first, in that order."
+        }
+        .to_owned(),
+    );
+    lines.join("\n")
 }
 
 /// Renders the human-readable discard report.
@@ -320,6 +368,18 @@ fn render_discard(outcome: &bc_core::DiscardOutcome, batch: &bc_core::ImportBatc
             },
         ));
     }
+    if outcome.removed_tags > 0 {
+        lines.push(format!(
+            "  {} removed — created by this import, applied nowhere else",
+            plural(outcome.removed_tags, "tag"),
+        ));
+    }
+    if outcome.kept_tags > 0 {
+        lines.push(format!(
+            "  {} kept — created by this import, since applied elsewhere",
+            plural(outcome.kept_tags, "tag"),
+        ));
+    }
 
     lines.push(String::new());
     lines.join("\n")
@@ -356,6 +416,8 @@ fn discard_to_json(
         "edited_postings": outcome.edited_postings,
         "reconciled_postings": outcome.reconciled_postings,
         "flagged_postings": outcome.flagged_postings,
+        "removed_tags": outcome.removed_tags,
+        "kept_tags": outcome.kept_tags,
     })
 }
 
@@ -2269,6 +2331,29 @@ mod tests {
         flag(pool, &tx).await;
     }
 
+    /// Tags: three the batch minted, one of them since applied to `acct` by
+    /// hand — contributing `removed_tags` = 2 and `kept_tags` = 1.
+    async fn tag_scenario(pool: &SqlitePool, batch: &ImportBatchId, acct: &AccountId) {
+        let paths: Vec<bc_models::TagPath> = ["gifts", "travel", "hobbies"]
+            .iter()
+            .map(|p| p.parse().expect("path"))
+            .collect();
+        let created = bc_core::TagService::new(pool.clone())
+            .create_paths(&paths)
+            .await
+            .expect("create tags");
+        bc_core::ImportBatchService::new(pool.clone())
+            .record_tags(batch, &created.minted)
+            .await
+            .expect("record tags");
+        sqlx::query("INSERT INTO account_tags (account_id, tag_id) VALUES (?, ?)")
+            .bind(acct.to_string())
+            .bind(created.ids.get("travel").expect("travel").to_string())
+            .execute(pool)
+            .await
+            .expect("tag account");
+    }
+
     /// Surviving collateral: one transaction holding eight postings the batch
     /// owns, each also carrying a reference from `other_batch` that merely
     /// adopted it, plus a ninth posting nothing references.
@@ -2378,6 +2463,8 @@ mod tests {
     /// - `freed_tombstones` = 9 (nine references tombstoned before discard)
     /// - `removed_postings` = 18 (2 plain + 1 edited + 2 reconciled + 4 flagged
     ///   + 1 collateral + 8 surviving-collateral)
+    /// - `removed_tags` = 2, `kept_tags` = 1 (three tags minted, one since
+    ///   applied to an account by hand)
     async fn discard_everything_at_once(
         pool: &SqlitePool,
     ) -> (bc_core::DiscardOutcome, bc_core::ImportBatch) {
@@ -2395,6 +2482,7 @@ mod tests {
         tombstoned_scenario(pool, &batch, &acct).await;
         collateral_scenario(pool, &batch, &other_batch, &acct).await;
         surviving_collateral_scenario(pool, &batch, &other_batch, &acct).await;
+        tag_scenario(pool, &batch, &acct).await;
 
         let record = batches.find_by_id(&batch).await.expect("find");
         let outcome = batches.discard(&batch).await.expect("discard");
@@ -2414,6 +2502,8 @@ mod tests {
         pretty_assertions::assert_eq!(outcome.freed_tombstones, 9);
         pretty_assertions::assert_eq!(outcome.other_batch_references_removed, 7);
         pretty_assertions::assert_eq!(outcome.other_batch_references_tombstoned, 8);
+        pretty_assertions::assert_eq!(outcome.removed_tags, 2);
+        pretty_assertions::assert_eq!(outcome.kept_tags, 1);
 
         // The header names the batch ID and start time, both fresh per test
         // run; redact them to fixed placeholders so the snapshot is stable.
@@ -2438,10 +2528,121 @@ mod tests {
                 "edited_postings": 1_usize,
                 "reconciled_postings": 2_usize,
                 "flagged_postings": 4_usize,
+                "removed_tags": 2_usize,
+                "kept_tags": 1_usize,
             }),
             "the JSON surface must derive from the same outcome as the human report, \
              not a separately maintained count"
         );
+    }
+
+    #[sqlx::test(migrations = "../bc-core/migrations")]
+    async fn a_blocked_discard_names_the_batches_to_discard_first(pool: SqlitePool) {
+        // Three runs on one account: the oldest owns two legs on each of two
+        // transactions, the middle run adds a leg to each, the newest adds a
+        // leg to the first. Real dependants, since the struct cannot be built
+        // outside core.
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let oldest = batches.open(None, "csv").await.expect("open oldest");
+        let middle = batches.open(None, "csv").await.expect("open middle");
+        let newest = batches.open(None, "ledger").await.expect("open newest");
+        let acct = account(&pool, "Checking").await;
+        let (tx_a, legs_a) = transaction_with_postings(&pool, &acct, 4, 50).await;
+        let (tx_b, legs_b) = transaction_with_postings(&pool, &acct, 3, 50).await;
+        let [a0, a1, a2, a3] = legs_a.as_slice() else {
+            panic!("four legs");
+        };
+        let [b0, b1, b2] = legs_b.as_slice() else {
+            panic!("three legs");
+        };
+        let legs = [
+            (&oldest, &tx_a, a0),
+            (&oldest, &tx_a, a1),
+            (&oldest, &tx_b, b0),
+            (&oldest, &tx_b, b1),
+            (&middle, &tx_a, a2),
+            (&middle, &tx_b, b2),
+            (&newest, &tx_a, a3),
+        ];
+        for (occurrence, (batch, tx, leg)) in (0_u32..).zip(legs) {
+            let spec = AttachSpec {
+                owns_posting: true,
+                occurrence,
+                amount: 50,
+            };
+            attach_at(&pool, batch, tx, leg, &acct, &spec).await;
+        }
+
+        let record = batches.find_by_id(&oldest).await.expect("find");
+        let err = batches
+            .ensure_discardable(&oldest)
+            .await
+            .expect_err("blocked");
+        let bc_core::BcError::DiscardBlocked { dependants, .. } = err else {
+            panic!("expected DiscardBlocked, got {err:?}");
+        };
+
+        let mut stabilised = super::render_blocked(&record, &dependants)
+            .replace(&oldest.to_string(), "OLDEST")
+            .replace(&record.started_at.to_string(), "STARTED_AT")
+            .replace(&newest.to_string(), "NEWEST")
+            .replace(&middle.to_string(), "MIDDLE");
+        for (dependant, label) in dependants.iter().zip(["NEWEST_STARTED", "MIDDLE_STARTED"]) {
+            stabilised = stabilised.replace(&dependant.started_at.to_string(), label);
+        }
+        insta::assert_snapshot!(stabilised);
+
+        let one = super::render_blocked(&record, dependants.get(..1).expect("one dependant"));
+        assert!(
+            one.ends_with("Discard it first."),
+            "a single dependant needs no ordering advice, got:\n{one}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blocked_discard_does_not_snapshot() {
+        // The block is raised by the same pre-snapshot check as a repeat
+        // discard, so a refused discard costs no database copy either.
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, backup_dir, older) = context_with_a_batch(home.path(), true).await;
+        // The test helpers build their services from a pool; the context
+        // exposes only the path, so open a second pool on the same file.
+        let pool = SqlitePool::connect(&format!("sqlite:{}", ctx.db_path.display()))
+            .await
+            .expect("open the context's database");
+        let newer = ctx.batches.open(None, "ledger").await.expect("open newer");
+        let acct = account(&pool, "Checking").await;
+        let (tx, postings) = transaction_with_postings(&pool, &acct, 2, 50).await;
+        let [older_leg, newer_leg] = postings.as_slice() else {
+            panic!("two postings");
+        };
+        let older_spec = AttachSpec {
+            owns_posting: true,
+            occurrence: 0,
+            amount: 50,
+        };
+        attach_at(&pool, &older, &tx, older_leg, &acct, &older_spec).await;
+        let newer_spec = AttachSpec {
+            owns_posting: true,
+            occurrence: 1,
+            amount: 50,
+        };
+        attach_at(&pool, &newer, &tx, newer_leg, &acct, &newer_spec).await;
+
+        let err = super::execute_discard(
+            super::DiscardArgs {
+                batch: older.to_string(),
+            },
+            &ctx,
+        )
+        .await
+        .expect_err("blocked");
+
+        assert!(
+            err.to_string().contains(&newer.to_string()),
+            "the diagnostic names the batch to discard first, got: {err}"
+        );
+        assert_eq!(pre_discard_snapshots(&backup_dir), 0);
     }
 
     #[sqlx::test(migrations = "../bc-core/migrations")]
