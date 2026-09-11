@@ -605,7 +605,7 @@ Thin binary over `bc-core`. Commands:
 
 ```
 borrow-checker account [list|create|archive|close|reopen|set-opened-on|balance]
-borrow-checker transaction [list|add|amend|void]
+borrow-checker transaction [list|add|amend|reverse]
 borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|book-value]
 borrow-checker profile [create|list|show|edit|remove]
 borrow-checker import run --profile <name> [--dry-run]
@@ -613,7 +613,7 @@ borrow-checker import list
 borrow-checker import discard <batch-id>
 borrow-checker export --format <ledger|beancount> --output <file>
 borrow-checker report [net-worth|summary|categories]
-borrow-checker budget [status|allocate|list]
+borrow-checker budget [list|create|archive|status|update]
 borrow-checker plugin [install|list|remove]
 borrow-checker completions <bash|elvish|fish|powershell|zsh>
 ```
