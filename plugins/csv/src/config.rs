@@ -348,6 +348,56 @@ pub struct LegSpec {
     pub(crate) unknown: BTreeMap<String, UnknownField>,
 }
 
+/// One rename applied to commodity codes as the importer resolves them.
+///
+/// ```json
+/// { "from": "$",   "to": "AUD" }
+/// { "from": "FOO", "to": "BAR", "since": "2024-01-01" }
+/// ```
+///
+/// A code with no entry passes through unchanged, so a portfolio needs an
+/// entry only for the holdings that were renamed. Aliases apply in one pass:
+/// `A → B` and `B → C` do not turn `A` into `C`.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CommodityAlias {
+    /// The code as the file spells it.
+    pub from: String,
+    /// The code to post in.
+    pub to: String,
+    /// The first row date this entry applies from, as `YYYY-MM-DD`,
+    /// inclusive. Absent means every date. When several entries match a
+    /// code, the one with the latest `since` at or before the row date wins,
+    /// and an undated entry ranks below every dated one.
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Keys stated on this entry that this importer does not read.
+    ///
+    /// Captured so that [`Config::warn_profile_advisories`] can warn about
+    /// each one by name, prefixed `commodity_aliases[{index}].`.
+    #[serde(flatten, default, skip_serializing)]
+    pub(crate) unknown: BTreeMap<String, UnknownField>,
+}
+
+impl CommodityAlias {
+    /// Parses `since`.
+    ///
+    /// # Returns
+    ///
+    /// The date, or `None` for an undated entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns the parse failure when `since` is not `YYYY-MM-DD`.
+    #[inline]
+    pub(crate) fn since_date(&self) -> Result<Option<jiff::civil::Date>, String> {
+        self.since
+            .as_deref()
+            .map(|text| jiff::civil::Date::strptime("%Y-%m-%d", text).map_err(|e| e.to_string()))
+            .transpose()
+    }
+}
+
 /// The type a metadata column's cells are read as.
 ///
 /// The host holds the authoritative type for a key. A profile states what the
@@ -470,6 +520,11 @@ pub struct Config {
     /// single-account statements, which is every bank export.
     #[serde(default)]
     pub extra_legs: Vec<LegSpec>,
+    /// Renames applied to every commodity code the importer resolves — a
+    /// fixed code, a commodity column cell, or a denomination stated on a
+    /// numeric cell. Empty when the file's spellings are the ledger's.
+    #[serde(default)]
+    pub commodity_aliases: Vec<CommodityAlias>,
     /// Top-level keys the profile states and this importer does not read.
     ///
     /// Captured rather than dropped so that [`Config::validate`] can warn about
@@ -600,6 +655,7 @@ impl Default for Config {
             decimal_separator: default_decimal_separator(),
             thousands_separator: None,
             extra_legs: Vec::new(),
+            commodity_aliases: Vec::new(),
             unknown: BTreeMap::new(),
         }
     }
@@ -807,9 +863,39 @@ impl Config {
         refs
     }
 
+    /// Applies [`Self::commodity_aliases`] to one code on one row date.
+    ///
+    /// # Arguments
+    ///
+    /// * `code` - The code as resolved from the profile or the file.
+    /// * `on` - The row's date.
+    ///
+    /// # Returns
+    ///
+    /// The aliased code, or `code` itself when no entry applies. An entry
+    /// whose `since` does not parse is skipped here; [`Self::validate`]
+    /// rejects it before any row is read.
+    #[must_use]
+    #[inline]
+    pub fn alias<'a>(&'a self, code: &'a str, on: jiff::civil::Date) -> Cow<'a, str> {
+        self.commodity_aliases
+            .iter()
+            .filter(|entry| entry.from == code)
+            .filter_map(|entry| match entry.since_date() {
+                Ok(Some(since)) if since <= on => Some((Some(since), entry)),
+                Ok(Some(_)) | Err(_) => None,
+                Ok(None) => Some((None, entry)),
+            })
+            .max_by_key(|&(since, _)| since)
+            .map_or(Cow::Borrowed(code), |(_, entry)| {
+                Cow::Borrowed(entry.to.as_str())
+            })
+    }
+
     /// Warns about each profile key this importer does not read, wherever it
-    /// sits: at the top level, inside `preamble`, or on an `extra_legs`
-    /// entry.
+    /// sits: at the top level, inside `preamble`, or on an `extra_legs` or
+    /// `commodity_aliases` entry, and about an alias that maps a code to
+    /// itself.
     ///
     /// A key nothing reads leaves a usable profile, so this warns where
     /// [`Self::validate`] would reject.
@@ -825,6 +911,16 @@ impl Config {
         }
         for (index, leg) in self.extra_legs.iter().enumerate() {
             warn_unknown_keys_in(&format!("extra_legs[{index}]."), &leg.unknown);
+        }
+        for (index, entry) in self.commodity_aliases.iter().enumerate() {
+            warn_unknown_keys_in(&format!("commodity_aliases[{index}]."), &entry.unknown);
+            if entry.from == entry.to {
+                bc_sdk::warn!(
+                    "commodity alias maps a code to itself";
+                    field = format!("commodity_aliases[{index}]"),
+                    code = entry.from.clone()
+                );
+            }
         }
     }
 
@@ -914,6 +1010,44 @@ impl Config {
                     "extra_legs[{index}].commodity names an empty code, so this leg would \
                      post in no commodity."
                 ));
+            }
+        }
+
+        let mut since_dates: Vec<Option<jiff::civil::Date>> =
+            Vec::with_capacity(self.commodity_aliases.len());
+        for (index, entry) in self.commodity_aliases.iter().enumerate() {
+            if entry.from.trim().is_empty() {
+                problems.push(format!(
+                    "commodity_aliases[{index}].from is empty, so it can match no code."
+                ));
+            }
+            if entry.to.trim().is_empty() {
+                problems.push(format!(
+                    "commodity_aliases[{index}].to is empty, so a matched code would post \
+                     in no commodity."
+                ));
+            }
+            match entry.since_date() {
+                Ok(since) => since_dates.push(since),
+                Err(detail) => {
+                    problems.push(format!(
+                        "commodity_aliases[{index}].since is not a YYYY-MM-DD date: {detail}"
+                    ));
+                    since_dates.push(None);
+                }
+            }
+        }
+        for (later, entry) in self.commodity_aliases.iter().enumerate() {
+            for earlier in 0..later {
+                if self.commodity_aliases[earlier].from == entry.from
+                    && since_dates[earlier] == since_dates[later]
+                {
+                    problems.push(format!(
+                        "commodity_aliases[{earlier}] and commodity_aliases[{later}] both \
+                         map {:?} from the same date, so neither can win.",
+                        entry.from
+                    ));
+                }
             }
         }
 
@@ -1009,7 +1143,9 @@ impl Config {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::*;
 
@@ -1157,6 +1293,10 @@ mod tests {
                     "commodity": {"source": "fixed", "code": "AUD"},
                     "negate": true
                 }
+            ],
+            "commodity_aliases": [
+                {"from": "$", "to": "AUD"},
+                {"from": "FOO", "to": "BAR", "since": "2024-01-01"}
             ]
         });
 
@@ -1227,6 +1367,145 @@ mod tests {
             }]
         );
         assert!(cfg.extra_legs[0].unknown.is_empty());
+        assert_eq!(
+            cfg.commodity_aliases,
+            vec![
+                CommodityAlias {
+                    from: "$".to_owned(),
+                    to: "AUD".to_owned(),
+                    since: None,
+                    unknown: BTreeMap::new(),
+                },
+                CommodityAlias {
+                    from: "FOO".to_owned(),
+                    to: "BAR".to_owned(),
+                    since: Some("2024-01-01".to_owned()),
+                    unknown: BTreeMap::new(),
+                },
+            ]
+        );
+    }
+
+    /// A profile with the given alias entries and nothing else of note.
+    fn aliased(entries: &[(&str, &str, Option<&str>)]) -> Config {
+        Config {
+            commodity_aliases: entries
+                .iter()
+                .map(|&(from, to, since)| CommodityAlias {
+                    from: from.to_owned(),
+                    to: to.to_owned(),
+                    since: since.map(str::to_owned),
+                    unknown: BTreeMap::new(),
+                })
+                .collect(),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn alias_leaves_an_unmapped_code_alone() {
+        let cfg = aliased(&[("$", "AUD", None)]);
+        assert_eq!(cfg.alias("BTC", date(2025, 1, 1)), "BTC");
+    }
+
+    #[test]
+    fn alias_maps_an_undated_entry_on_every_date() {
+        let cfg = aliased(&[("$", "AUD", None)]);
+        assert_eq!(cfg.alias("$", date(1990, 1, 1)), "AUD");
+        assert_eq!(cfg.alias("$", date(2030, 1, 1)), "AUD");
+    }
+
+    #[test]
+    fn alias_picks_the_latest_dated_entry_at_or_before_the_row() {
+        let cfg = aliased(&[
+            ("FOO", "BAR", Some("2024-01-01")),
+            ("FOO", "BAZ", Some("2025-06-01")),
+        ]);
+        assert_eq!(cfg.alias("FOO", date(2023, 12, 31)), "FOO");
+        assert_eq!(
+            cfg.alias("FOO", date(2024, 1, 1)),
+            "BAR",
+            "since is inclusive"
+        );
+        assert_eq!(cfg.alias("FOO", date(2025, 5, 31)), "BAR");
+        assert_eq!(cfg.alias("FOO", date(2025, 6, 1)), "BAZ");
+    }
+
+    #[test]
+    fn alias_without_since_ranks_below_a_dated_match() {
+        let cfg = aliased(&[("FOO", "OLD", None), ("FOO", "NEW", Some("2024-01-01"))]);
+        assert_eq!(cfg.alias("FOO", date(2023, 1, 1)), "OLD");
+        assert_eq!(cfg.alias("FOO", date(2024, 1, 1)), "NEW");
+    }
+
+    #[test]
+    fn alias_does_not_chain() {
+        let cfg = aliased(&[("A", "B", None), ("B", "C", None)]);
+        assert_eq!(cfg.alias("A", date(2025, 1, 1)), "B");
+    }
+
+    #[rstest]
+    #[case("", "AUD", None, "commodity_aliases[0].from is empty")]
+    #[case("$", "", None, "commodity_aliases[0].to is empty")]
+    #[case("$", "AUD", Some("01/02/2024"), "commodity_aliases[0].since")]
+    fn validate_rejects_a_malformed_alias(
+        #[case] from: &str,
+        #[case] to: &str,
+        #[case] since: Option<&str>,
+        #[case] expected: &str,
+    ) {
+        let err = aliased(&[(from, to, since)])
+            .validate()
+            .expect_err("rejected");
+        assert!(err.to_string().contains(expected), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_two_aliases_for_one_code_from_the_same_date() {
+        let err = aliased(&[("FOO", "BAR", None), ("FOO", "BAZ", None)])
+            .validate()
+            .expect_err("rejected");
+        assert!(
+            err.to_string()
+                .contains("commodity_aliases[0] and commodity_aliases[1] both map \"FOO\""),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_two_aliases_for_one_code_from_different_dates() {
+        aliased(&[("FOO", "BAR", None), ("FOO", "BAZ", Some("2024-01-01"))])
+            .validate()
+            .expect("distinct dates are a timeline, not a conflict");
+    }
+
+    #[test]
+    fn validate_accepts_an_identity_alias() {
+        aliased(&[("AUD", "AUD", None)])
+            .validate()
+            .expect("an identity alias is advisory only");
+    }
+
+    #[test]
+    fn a_stray_key_in_a_commodity_alias_is_captured() {
+        let mut json = base_profile_json();
+        json.as_object_mut().expect("a JSON object").insert(
+            "commodity_aliases".to_owned(),
+            serde_json::json!([{"from": "$", "to": "AUD", "until": "2024-12-31"}]),
+        );
+
+        let cfg: Config = serde_json::from_value(json).expect("deserialize");
+
+        assert_eq!(
+            cfg.commodity_aliases[0]
+                .unknown
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["until"]
+        );
+        cfg.validate()
+            .expect("a stray nested key informs; it does not gatekeep");
     }
 
     #[test]

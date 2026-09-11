@@ -261,7 +261,8 @@ impl CsvImporter {
                 parsed.day() as u8,
             );
 
-            let commodity = row_commodity(commodity_source, &record, &columns, expected)?;
+            let commodity =
+                row_commodity(commodity_source, cfg, parsed, &record, &columns, expected)?;
 
             let amount = parse_amount(&cfg.amount_columns, cfg, &record, &columns, expected)?
                 .ok_or_else(|| match cfg.amount_columns {
@@ -280,6 +281,8 @@ impl CsvImporter {
             let mut ctx = RowContext {
                 file,
                 row,
+                date: parsed,
+                cfg,
                 denominations: &mut denominations,
             };
             ctx.check(&amount.field, amount.denomination.as_deref(), &commodity);
@@ -327,24 +330,25 @@ impl CsvImporter {
                     // normal shape of a fee column.
                     continue;
                 };
-                let code = match row_commodity(&leg.commodity, &record, &columns, expected) {
-                    Ok(code) => code,
-                    // A blank or short-row cell means this row does not name
-                    // the leg's commodity, which is a per-row omission. An
-                    // unresolvable column reference, or one beyond every row,
-                    // is a profile that does not match the file, and would drop
-                    // the leg from every row silently.
-                    Err(e @ ImportError::BadValue { .. }) => {
-                        bc_sdk::warn!(
-                            "extra leg has an amount but no commodity; dropping the leg";
-                            account = leg.account.clone(),
-                            row = row.to_string(),
-                            reason = e.to_string()
-                        );
-                        continue;
-                    }
-                    Err(e) => return Err(e),
-                };
+                let code =
+                    match row_commodity(&leg.commodity, cfg, parsed, &record, &columns, expected) {
+                        Ok(code) => code,
+                        // A blank or short-row cell means this row does not name
+                        // the leg's commodity, which is a per-row omission. An
+                        // unresolvable column reference, or one beyond every row,
+                        // is a profile that does not match the file, and would drop
+                        // the leg from every row silently.
+                        Err(e @ ImportError::BadValue { .. }) => {
+                            bc_sdk::warn!(
+                                "extra leg has an amount but no commodity; dropping the leg";
+                                account = leg.account.clone(),
+                                row = row.to_string(),
+                                reason = e.to_string()
+                            );
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
                 ctx.check(&leg_amount.field, leg_amount.denomination.as_deref(), &code);
                 let value = if leg.negate {
                     -leg_amount.value
@@ -643,9 +647,13 @@ fn meta_value(
 
 /// Resolves the commodity code that applies to one row.
 ///
+/// The profile's aliases are applied here, so no caller can skip them.
+///
 /// # Arguments
 ///
 /// * `source` - Where the code comes from.
+/// * `cfg` - The profile, for its aliases.
+/// * `on` - The row's date, which selects among dated aliases.
 /// * `record` - The CSV record being processed.
 /// * `columns` - The header map, for resolving column references.
 /// * `expected` - The file's data-row width, for [`cell`]'s short-row policy.
@@ -664,21 +672,23 @@ fn meta_value(
 #[inline]
 fn row_commodity(
     source: &CommoditySource,
+    cfg: &Config,
+    on: jiff::civil::Date,
     record: &csv::StringRecord,
     columns: &HeaderMap,
     expected: usize,
 ) -> Result<String, ImportError> {
-    match *source {
-        CommoditySource::Fixed { ref code } => Ok(code.clone()),
+    let code = match *source {
+        CommoditySource::Fixed { ref code } => code.as_str(),
         CommoditySource::Column { ref column } => cell(record, columns, column, expected)?
-            .map(str::to_owned)
             .ok_or_else(|| ImportError::BadValue {
                 field: column.describe(),
                 detail: "the commodity cell is blank or missing from this row; every row \
                          must name its commodity"
                     .to_owned(),
-            }),
-    }
+            })?,
+    };
+    Ok(cfg.alias(code, on).into_owned())
 }
 
 /// One leg's parsed amount, with what the cell said about itself.
@@ -698,21 +708,29 @@ struct RowContext<'a> {
     file: &'a str,
     /// The 1-based data-row number.
     row: usize,
+    /// The row's date, which selects among dated aliases.
+    date: jiff::civil::Date,
+    /// The profile, for its aliases.
+    cfg: &'a Config,
     /// The file's once-per-triple denomination check.
     denominations: &'a mut DenominationCheck,
 }
 
 impl RowContext<'_> {
-    /// Compares a cell's denomination with the commodity it posts in, and
-    /// warns on the first disagreement seen for this file.
+    /// Compares a cell's denomination, after aliasing, with the commodity it
+    /// posts in, and warns on the first disagreement seen for this file.
     ///
     /// # Arguments
     ///
     /// * `field` - The configured column the cell came from.
-    /// * `cell` - The cell's denomination, if it states one.
+    /// * `cell` - The cell's denomination as written, if it states one.
     /// * `commodity` - The commodity the cell posts in.
     fn check(&mut self, field: &str, cell: Option<&str>, commodity: &str) {
-        if let Some(mismatch) = self.denominations.check(field, cell, commodity, self.row) {
+        let cell = cell.map(|code| self.cfg.alias(code, self.date));
+        if let Some(mismatch) =
+            self.denominations
+                .check(field, cell.as_deref(), commodity, self.row)
+        {
             warn_denomination(self.file, &mismatch);
         }
     }
@@ -849,6 +867,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::config::CommodityAlias;
     use crate::config::LegSpec;
     use crate::config::MetaColumnType;
     use crate::config::MetadataColumn;
@@ -2230,6 +2249,106 @@ mod tests {
         assert_eq!(
             txs[0].metadata[0].value,
             MetaValue::Amount(Amount::new(dec!(0.10), "AUD"))
+        );
+    }
+
+    /// The alias table applies to the primary commodity column, by row date.
+    #[test]
+    fn import_aliases_a_column_commodity_by_row_date() {
+        let csv = "Date,Coin,Quantity\n\
+                   2023-06-01,FOO,1.0\n\
+                   2024-06-01,FOO,2.0\n";
+        let cfg = Config {
+            account: "Assets:Crypto:Exchange".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Quantity".to_owned()),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Coin".to_owned()),
+            }),
+            commodity_aliases: vec![CommodityAlias {
+                from: "FOO".to_owned(),
+                to: "BAR".to_owned(),
+                since: Some("2024-01-01".to_owned()),
+                unknown: BTreeMap::new(),
+            }],
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        assert_eq!(
+            txs[0].postings[0].amount,
+            Some(Amount::new(dec!(1.0), "FOO"))
+        );
+        assert_eq!(
+            txs[1].postings[0].amount,
+            Some(Amount::new(dec!(2.0), "BAR"))
+        );
+    }
+
+    #[test]
+    fn import_aliases_a_fixed_commodity() {
+        let csv = "Date,Amount\n2025-01-02,5.00\n";
+        let cfg = Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            commodity: Some(CommoditySource::Fixed {
+                code: "$".to_owned(),
+            }),
+            commodity_aliases: vec![CommodityAlias {
+                from: "$".to_owned(),
+                to: "AUD".to_owned(),
+                since: None,
+                unknown: BTreeMap::new(),
+            }],
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        assert_eq!(
+            txs[0].postings[0].amount,
+            Some(Amount::new(dec!(5.00), "AUD"))
+        );
+    }
+
+    #[test]
+    fn import_aliases_an_extra_leg_column_commodity() {
+        let csv = "Date,Base,Quote,Quantity,Fees\n\
+                   2025-01-02,BTC,$,0.50000000,25.00\n";
+        let cfg = Config {
+            account: "Assets:Crypto:Exchange".to_owned(),
+            amount_columns: AmountColumns::Single {
+                column: ColumnRef::Name("Quantity".to_owned()),
+            },
+            commodity: Some(CommoditySource::Column {
+                column: ColumnRef::Name("Base".to_owned()),
+            }),
+            commodity_aliases: vec![CommodityAlias {
+                from: "$".to_owned(),
+                to: "AUD".to_owned(),
+                since: None,
+                unknown: BTreeMap::new(),
+            }],
+            extra_legs: vec![LegSpec {
+                account: "Expenses:Fees".to_owned(),
+                amount_columns: AmountColumns::Single {
+                    column: ColumnRef::Name("Fees".to_owned()),
+                },
+                commodity: CommoditySource::Column {
+                    column: ColumnRef::Name("Quote".to_owned()),
+                },
+                negate: false,
+                unknown: BTreeMap::new(),
+            }],
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        assert_eq!(
+            txs[0].postings[1].amount,
+            Some(Amount::new(dec!(25.00), "AUD"))
         );
     }
 
