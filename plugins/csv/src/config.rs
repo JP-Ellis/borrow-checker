@@ -240,6 +240,13 @@ pub enum Preamble {
     SkipLines {
         /// The number of lines to skip.
         lines: u32,
+        /// Keys stated in this block that this importer does not read.
+        ///
+        /// Captured so that [`Config::warn_profile_advisories`] can warn about
+        /// each one by name. A unit variant holds no map, so a stray key
+        /// beside `"strategy": "none"` is not reported.
+        #[serde(flatten, default, skip_serializing)]
+        unknown: BTreeMap<String, UnknownField>,
     },
 }
 
@@ -333,6 +340,12 @@ pub struct LegSpec {
     /// figure on both buys and sells.
     #[serde(default)]
     pub negate: bool,
+    /// Keys stated on this leg that this importer does not read.
+    ///
+    /// Captured so that [`Config::warn_profile_advisories`] can warn about
+    /// each one by name, prefixed `extra_legs[{index}].`.
+    #[serde(flatten, default, skip_serializing)]
+    pub(crate) unknown: BTreeMap<String, UnknownField>,
 }
 
 /// The type a metadata column's cells are read as.
@@ -462,8 +475,7 @@ pub struct Config {
     /// Captured rather than dropped so that [`Config::validate`] can warn about
     /// each one: serde ignores an unknown key silently, which would let a
     /// profile written against an older version import with a field quietly
-    /// doing nothing. Only top-level keys are seen — a stray key nested inside
-    /// `preamble` or an `extra_legs` entry belongs to that struct, not this one.
+    /// doing nothing. Nested blocks hold their own map.
     #[serde(flatten, default, skip_serializing)]
     pub(crate) unknown: BTreeMap<String, UnknownField>,
 }
@@ -510,6 +522,28 @@ fn unknown_key_warning(key: &str) -> String {
             "{other} is not a key this importer reads, and is ignored. Check it for a typo \
              against the profile's documented fields."
         ),
+    }
+}
+
+/// Emits one warning per key in `unknown`, each named with `prefix` in front.
+///
+/// The prefixed name is what [`unknown_key_warning`] sees, so a nested key
+/// (`extra_legs[0].payee_column`) can only take its generic arm: the
+/// retired-key message describes the top-level field alone.
+///
+/// # Arguments
+///
+/// * `prefix` - Empty for a top-level key, else the path to the block the
+///   key sits in, e.g. `"extra_legs[0]."`.
+/// * `unknown` - The captured keys.
+fn warn_unknown_keys_in(prefix: &str, unknown: &BTreeMap<String, UnknownField>) {
+    for key in unknown.keys() {
+        let path = format!("{prefix}{key}");
+        bc_sdk::warn!(
+            "unknown csv profile key";
+            key = path,
+            detail = unknown_key_warning(&path)
+        );
     }
 }
 
@@ -773,8 +807,9 @@ impl Config {
         refs
     }
 
-    /// Warns about each top-level key the profile states and this importer does
-    /// not read.
+    /// Warns about each profile key this importer does not read, wherever it
+    /// sits: at the top level, inside `preamble`, or on an `extra_legs`
+    /// entry.
     ///
     /// A key nothing reads leaves a usable profile, so this warns where
     /// [`Self::validate`] would reject.
@@ -783,13 +818,13 @@ impl Config {
     /// again after the host has already called `Importer::validate`. Emitting
     /// from inside would report every stray key twice per import.
     #[inline]
-    pub(crate) fn warn_unknown_keys(&self) {
-        for key in self.unknown.keys() {
-            bc_sdk::warn!(
-                "unknown csv profile key";
-                key = key,
-                detail = unknown_key_warning(key)
-            );
+    pub(crate) fn warn_profile_advisories(&self) {
+        warn_unknown_keys_in("", &self.unknown);
+        if let Preamble::SkipLines { ref unknown, .. } = self.preamble {
+            warn_unknown_keys_in("preamble.", unknown);
+        }
+        for (index, leg) in self.extra_legs.iter().enumerate() {
+            warn_unknown_keys_in(&format!("extra_legs[{index}]."), &leg.unknown);
         }
     }
 
@@ -822,7 +857,7 @@ impl Config {
     /// several at once.
     ///
     /// A key this importer does not read is accepted here.
-    /// [`Self::warn_unknown_keys`] reports it separately, because ignoring one
+    /// [`Self::warn_profile_advisories`] reports it separately, because ignoring one
     /// can still change what a row carries: a profile setting the retired
     /// `payee_column` imports every transaction with no payee.
     ///
@@ -1011,6 +1046,66 @@ mod tests {
     }
 
     #[test]
+    fn a_stray_key_in_a_preamble_block_is_captured() {
+        let mut json = base_profile_json();
+        json.as_object_mut().expect("a JSON object").insert(
+            "preamble".to_owned(),
+            serde_json::json!({"strategy": "skip_lines", "lines": 2, "line": 3}),
+        );
+
+        let cfg: Config = serde_json::from_value(json).expect("deserialize");
+
+        let Preamble::SkipLines { lines, ref unknown } = cfg.preamble else {
+            panic!("skip_lines was stated: {:?}", cfg.preamble);
+        };
+        assert_eq!(lines, 2);
+        assert_eq!(
+            unknown.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["line"]
+        );
+        cfg.validate()
+            .expect("a stray nested key informs; it does not gatekeep");
+    }
+
+    #[test]
+    fn a_stray_key_in_an_extra_leg_is_captured() {
+        let mut json = base_profile_json();
+        json.as_object_mut().expect("a JSON object").insert(
+            "extra_legs".to_owned(),
+            serde_json::json!([{
+                "account": "Expenses:Fees",
+                "amount_columns": {"style": "single", "column": "Fee"},
+                "commodity": "AUD",
+                "comodity": "AUD"
+            }]),
+        );
+
+        let cfg: Config = serde_json::from_value(json).expect("deserialize");
+
+        assert_eq!(
+            cfg.extra_legs[0]
+                .unknown
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["comodity"]
+        );
+        cfg.validate()
+            .expect("a stray nested key informs; it does not gatekeep");
+    }
+
+    #[test]
+    fn a_nested_stray_key_never_gets_the_retired_key_message() {
+        // The retired-key arm matches the bare top-level spelling only. A
+        // nested key arrives prefixed, so it can only take the generic arm.
+        let warning = unknown_key_warning("extra_legs[0].payee_column");
+        assert!(
+            warning.contains("extra_legs[0].payee_column is not a key"),
+            "generic message for a nested key: {warning}"
+        );
+    }
+
+    #[test]
     fn known_keys_still_deserialize_through_the_flattened_catch_all() {
         // Flattening routes every field through serde's content buffer, so the
         // defaults and the typed fields must be checked to still work.
@@ -1071,7 +1166,13 @@ mod tests {
         assert_eq!(cfg.account, "Assets:Bank:Checking");
         assert_eq!(cfg.source_dir, "Assets/Bank/Checking");
         assert_eq!(cfg.source_glob, "*.csv");
-        assert_eq!(cfg.preamble, Preamble::SkipLines { lines: 2 });
+        assert_eq!(
+            cfg.preamble,
+            Preamble::SkipLines {
+                lines: 2,
+                unknown: BTreeMap::new()
+            }
+        );
         assert_eq!(cfg.header, Header::AutoDetect { max_scan_lines: 5 });
         assert_eq!(cfg.delimiter, ';');
         assert_eq!(cfg.date_column, ColumnRef::Index(3));
@@ -1122,8 +1223,10 @@ mod tests {
                     code: "AUD".to_owned()
                 },
                 negate: true,
+                unknown: BTreeMap::new(),
             }]
         );
+        assert!(cfg.extra_legs[0].unknown.is_empty());
     }
 
     #[test]
@@ -1528,6 +1631,7 @@ mod tests {
                     code: String::new(),
                 },
                 negate: false,
+                unknown: BTreeMap::new(),
             }],
             ..Config::default()
         };
@@ -2002,6 +2106,7 @@ mod tests {
                         column: ColumnRef::Name("Quote".to_owned()),
                     },
                     negate: true,
+                    unknown: BTreeMap::new(),
                 },
                 LegSpec {
                     account: "Expenses:Fees".to_owned(),
@@ -2012,6 +2117,7 @@ mod tests {
                         column: ColumnRef::Name("Quote".to_owned()),
                     },
                     negate: false,
+                    unknown: BTreeMap::new(),
                 },
             ],
             ..Config::default()
@@ -2032,6 +2138,7 @@ mod tests {
                     column: ColumnRef::Name("fees".to_owned()),
                 },
                 negate: false,
+                unknown: BTreeMap::new(),
             }],
             ..Config::default()
         };
@@ -2066,6 +2173,7 @@ mod tests {
                     column: ColumnRef::Index(4),
                 },
                 negate: false,
+                unknown: BTreeMap::new(),
             }],
             ..Config::default()
         };

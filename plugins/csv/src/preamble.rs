@@ -41,7 +41,7 @@ pub(crate) fn find_csv_start<'a>(
 ) -> Result<&'a [u8], bc_sdk::ImportError> {
     let after_preamble = match *preamble {
         Preamble::None => bytes,
-        Preamble::SkipLines { lines } => skip_lines(bytes, lines)?,
+        Preamble::SkipLines { lines, .. } => skip_lines(bytes, lines)?,
     };
 
     match *header {
@@ -142,6 +142,8 @@ fn line_contains_all_columns(line: &[u8], delimiter: char, required_columns: &[&
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::collections::BTreeMap;
+
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -161,7 +163,10 @@ mod tests {
         let data = b"Date,Amount\n";
         let result = find_csv_start(
             data,
-            &Preamble::SkipLines { lines: 0 },
+            &Preamble::SkipLines {
+                lines: 0,
+                unknown: BTreeMap::new(),
+            },
             &Header::Present,
             ',',
             &[],
@@ -175,7 +180,10 @@ mod tests {
         let data = b"line1\nline2\nDate,Amount\n2025-01-01,10.00\n";
         let result = find_csv_start(
             data,
-            &Preamble::SkipLines { lines: 2 },
+            &Preamble::SkipLines {
+                lines: 2,
+                unknown: BTreeMap::new(),
+            },
             &Header::Present,
             ',',
             &[],
@@ -189,7 +197,10 @@ mod tests {
         let data = b"only one line\n";
         find_csv_start(
             data,
-            &Preamble::SkipLines { lines: 5 },
+            &Preamble::SkipLines {
+                lines: 5,
+                unknown: BTreeMap::new(),
+            },
             &Header::Present,
             ',',
             &[],
@@ -259,7 +270,10 @@ mod tests {
         let data = b"BANNER\nDate,Value\nDate,Amount\n2025-01-01,10.00\n";
         let result = find_csv_start(
             data,
-            &Preamble::SkipLines { lines: 1 },
+            &Preamble::SkipLines {
+                lines: 1,
+                unknown: BTreeMap::new(),
+            },
             &Header::AutoDetect { max_scan_lines: 5 },
             ',',
             &["Date", "Amount"],
