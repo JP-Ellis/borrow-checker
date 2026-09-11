@@ -361,6 +361,7 @@ async fn create(
         .maybe_acquisition_date(acq_date)
         .maybe_acquisition_cost(acq_cost)
         .maybe_depreciation_policy(depr_policy)
+        .maybe_opened_on(opened_on)
         .build();
 
     let outcome = ctx
@@ -374,25 +375,6 @@ async fn create(
         .ok_or_else(|| crate::error::CliError::Arg(format!("path '{rendered}' had no leaf")))?;
     let was_created = outcome.created.iter().any(|p| p == &rendered);
     let ancestors: Vec<&String> = outcome.created.iter().filter(|p| *p != &rendered).collect();
-
-    // `PathSpec` (used above to mint any missing ancestors atomically) has no
-    // `opened_on` field, so the leaf's opening date is set as a follow-up call
-    // rather than threaded through `create_paths`. On a reused leaf this must
-    // behave like every other attribute `conflict_of` guards: a match is a
-    // silent no-op, a mismatch is rejected, so `create` on an existing path
-    // never silently overwrites what is already recorded.
-    if let Some(requested_opened_on) = opened_on {
-        if was_created {
-            ctx.accounts.set_opened_on(account_id, opened_on).await?;
-        } else {
-            let account = ctx.accounts.find_by_id(account_id).await?;
-            if account.opened_on() != Some(requested_opened_on) {
-                return Err(crate::error::CliError::Arg(format!(
-                    "account '{rendered}' already exists with a different opening date"
-                )));
-            }
-        }
-    }
 
     if ctx.json {
         let account = ctx.accounts.find_by_id(account_id).await?;
