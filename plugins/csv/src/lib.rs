@@ -25,6 +25,7 @@
 mod config;
 mod glob;
 mod header;
+mod number;
 mod preamble;
 
 use bc_sdk::Amount;
@@ -45,6 +46,10 @@ use crate::config::Config;
 use crate::config::Header;
 use crate::config::MetaColumnType;
 use crate::header::HeaderMap;
+use crate::number::DenominationCheck;
+use crate::number::DenominationMismatch;
+use crate::number::parse_amount_cell;
+use crate::number::parse_number;
 use crate::preamble::find_csv_start;
 
 /// Imports transactions from delimited text (CSV) files.
@@ -199,6 +204,7 @@ impl CsvImporter {
             })?;
 
         let mut transactions = Vec::new();
+        let mut denominations = DenominationCheck::new();
 
         // The file's data-row width, learned from its first data row rather
         // than from the header: a header carrying trailing prose is wider than
@@ -257,7 +263,7 @@ impl CsvImporter {
 
             let commodity = row_commodity(commodity_source, &record, &columns, expected)?;
 
-            let amount_value = parse_amount(&cfg.amount_columns, cfg, &record, &columns, expected)?
+            let amount = parse_amount(&cfg.amount_columns, cfg, &record, &columns, expected)?
                 .ok_or_else(|| match cfg.amount_columns {
                     AmountColumns::SplitDebitCredit {
                         ref debit_column,
@@ -271,17 +277,25 @@ impl CsvImporter {
                         ImportError::MissingField(column.describe())
                     }
                 })?;
+            let mut ctx = RowContext {
+                file,
+                row,
+                denominations: &mut denominations,
+            };
+            ctx.check(&amount.field, amount.denomination.as_deref(), &commodity);
+            let amount_value = amount.value;
 
             let balance = if let Some(column) = cfg.balance_column.as_ref() {
                 match optional_text(&record, &columns, Some(column), expected)? {
                     None => None,
                     Some(raw) => {
-                        let val =
-                            parse_number(&raw, cfg.decimal_separator, cfg.thousands_separator)
+                        let (val, denomination) =
+                            parse_amount_cell(&raw, cfg.decimal_separator, cfg.thousands_separator)
                                 .map_err(|e| ImportError::BadValue {
                                     field: column.describe(),
                                     detail: e,
                                 })?;
+                        ctx.check(&column.describe(), denomination.as_deref(), &commodity);
                         Some(Amount::new(val, commodity.clone()))
                     }
                 }
@@ -289,7 +303,7 @@ impl CsvImporter {
                 None
             };
 
-            let metadata = row_metadata(cfg, &record, &columns, expected, &commodity, row)?;
+            let metadata = row_metadata(cfg, &record, &columns, expected, &commodity, &mut ctx)?;
             let description =
                 optional_text(&record, &columns, cfg.description_column.as_ref(), expected)?
                     .unwrap_or_default();
@@ -305,7 +319,7 @@ impl CsvImporter {
             ];
 
             for leg in &cfg.extra_legs {
-                let Some(value) =
+                let Some(leg_amount) =
                     parse_amount(&leg.amount_columns, cfg, &record, &columns, expected)?
                 else {
                     // A blank cell, or a row too short to reach the column,
@@ -331,7 +345,12 @@ impl CsvImporter {
                     }
                     Err(e) => return Err(e),
                 };
-                let value = if leg.negate { -value } else { value };
+                ctx.check(&leg_amount.field, leg_amount.denomination.as_deref(), &code);
+                let value = if leg.negate {
+                    -leg_amount.value
+                } else {
+                    leg_amount.value
+                };
                 postings.push(
                     RawPosting::builder()
                         .account(leg.account.clone())
@@ -515,7 +534,7 @@ fn optional_text(
 /// * `columns` - The file's header map.
 /// * `expected` - The file's data-row width.
 /// * `commodity` - The row's commodity, which an `amount` column posts in.
-/// * `row` - The 1-based data-row number, for diagnostics.
+/// * `ctx` - The row's number, file, and denomination check.
 ///
 /// # Returns
 ///
@@ -533,20 +552,21 @@ fn row_metadata(
     columns: &HeaderMap,
     expected: usize,
     commodity: &str,
-    row: usize,
+    ctx: &mut RowContext<'_>,
 ) -> Result<Vec<MetaEntry>, ImportError> {
     let mut entries = Vec::with_capacity(cfg.metadata_columns.len());
     for mapping in &cfg.metadata_columns {
         let Some(raw) = cell(record, columns, &mapping.column, expected)? else {
             continue;
         };
-        let value = match meta_value(mapping.ty, raw, cfg, commodity) {
+        let field = mapping.column.describe();
+        let value = match meta_value(mapping.ty, raw, cfg, commodity, &field, ctx) {
             Ok(value) => value,
             Err(detail) => {
                 bc_sdk::warn!(
                     "metadata cell does not carry the type the profile states; filing it as text";
                     key = mapping.key.clone(),
-                    row = row.to_string(),
+                    row = ctx.row.to_string(),
                     detail = detail
                 );
                 MetaValue::Text(raw.to_owned())
@@ -565,6 +585,8 @@ fn row_metadata(
 /// * `raw` - The trimmed cell text, known to be non-empty.
 /// * `cfg` - The profile, for its numeric separators and date format.
 /// * `commodity` - The row's commodity, which an `amount` cell posts in.
+/// * `field` - The mapped column, for the denomination check.
+/// * `ctx` - The row's number, file, and denomination check.
 ///
 /// # Returns
 ///
@@ -578,6 +600,8 @@ fn meta_value(
     raw: &str,
     cfg: &Config,
     commodity: &str,
+    field: &str,
+    ctx: &mut RowContext<'_>,
 ) -> Result<MetaValue, String> {
     match ty {
         MetaColumnType::Text => Ok(MetaValue::Text(raw.to_owned())),
@@ -585,8 +609,14 @@ fn meta_value(
         MetaColumnType::Number => {
             parse_number(raw, cfg.decimal_separator, cfg.thousands_separator).map(MetaValue::Number)
         }
-        MetaColumnType::Amount => parse_number(raw, cfg.decimal_separator, cfg.thousands_separator)
-            .map(|value| MetaValue::Amount(Amount::new(value, commodity.to_owned()))),
+        MetaColumnType::Amount => {
+            parse_amount_cell(raw, cfg.decimal_separator, cfg.thousands_separator).map(
+                |(value, denomination)| {
+                    ctx.check(field, denomination.as_deref(), commodity);
+                    MetaValue::Amount(Amount::new(value, commodity.to_owned()))
+                },
+            )
+        }
         MetaColumnType::Boolean => match raw.to_ascii_lowercase().as_str() {
             "true" => Ok(MetaValue::Boolean(true)),
             "false" => Ok(MetaValue::Boolean(false)),
@@ -651,6 +681,60 @@ fn row_commodity(
     }
 }
 
+/// One leg's parsed amount, with what the cell said about itself.
+#[derive(Debug)]
+struct ParsedAmount {
+    /// The value, debits negated.
+    value: Decimal,
+    /// The denomination the populated cell states, if any.
+    denomination: Option<String>,
+    /// The populated column, for diagnostics.
+    field: String,
+}
+
+/// What one row's cells are checked against, beyond the record itself.
+struct RowContext<'a> {
+    /// The file's display path, for diagnostics.
+    file: &'a str,
+    /// The 1-based data-row number.
+    row: usize,
+    /// The file's once-per-triple denomination check.
+    denominations: &'a mut DenominationCheck,
+}
+
+impl RowContext<'_> {
+    /// Compares a cell's denomination with the commodity it posts in, and
+    /// warns on the first disagreement seen for this file.
+    ///
+    /// # Arguments
+    ///
+    /// * `field` - The configured column the cell came from.
+    /// * `cell` - The cell's denomination, if it states one.
+    /// * `commodity` - The commodity the cell posts in.
+    fn check(&mut self, field: &str, cell: Option<&str>, commodity: &str) {
+        if let Some(mismatch) = self.denominations.check(field, cell, commodity, self.row) {
+            warn_denomination(self.file, &mismatch);
+        }
+    }
+}
+
+/// Emits the warning for a cell whose denomination differs from its commodity.
+///
+/// # Arguments
+///
+/// * `file` - The file's display path.
+/// * `mismatch` - The first sighting of the triple in this file.
+fn warn_denomination(file: &str, mismatch: &DenominationMismatch) {
+    bc_sdk::warn!(
+        "cell denomination differs from the configured commodity";
+        path = file,
+        field = mismatch.field.clone(),
+        cell = mismatch.cell.clone(),
+        commodity = mismatch.commodity.clone(),
+        row = mismatch.row.to_string()
+    );
+}
+
 /// Parses the monetary amount for one leg from a record, using the given
 /// amount-column strategy.
 ///
@@ -665,8 +749,9 @@ fn row_commodity(
 ///
 /// # Returns
 ///
-/// `Ok(Some(value))` with the parsed [`Decimal`] value, debits negated, when
-/// at least one configured cell is populated. `Ok(None)` when every
+/// `Ok(Some(amount))` with the parsed value, debits negated, the cell's
+/// denomination, and the populated column, when at least one configured
+/// cell is populated. `Ok(None)` when every
 /// configured cell for these columns is blank or absent from this row — the
 /// normal shape of a leg that is absent for this row (e.g. an unfee'd trade,
 /// or a ragged export that drops its trailing fee column). A required leg
@@ -683,14 +768,20 @@ fn parse_amount(
     record: &csv::StringRecord,
     columns: &HeaderMap,
     expected: usize,
-) -> Result<Option<Decimal>, ImportError> {
+) -> Result<Option<ParsedAmount>, ImportError> {
     match *amount_columns {
         AmountColumns::Single { ref column } => {
             let Some(trimmed) = cell(record, columns, column, expected)? else {
                 return Ok(None);
             };
-            parse_number(trimmed, cfg.decimal_separator, cfg.thousands_separator)
-                .map(Some)
+            parse_amount_cell(trimmed, cfg.decimal_separator, cfg.thousands_separator)
+                .map(|(value, denomination)| {
+                    Some(ParsedAmount {
+                        value,
+                        denomination,
+                        field: column.describe(),
+                    })
+                })
                 .map_err(|e| ImportError::BadValue {
                     field: column.describe(),
                     detail: e,
@@ -708,20 +799,33 @@ fn parse_amount(
 
             match (debit_raw, credit_raw) {
                 (Some(d), None) => {
-                    let val = parse_number(d, cfg.decimal_separator, cfg.thousands_separator)
-                        .map_err(|e| ImportError::BadValue {
-                            field: debit_column.describe(),
-                            detail: e,
-                        })?;
+                    let (val, denomination) =
+                        parse_amount_cell(d, cfg.decimal_separator, cfg.thousands_separator)
+                            .map_err(|e| ImportError::BadValue {
+                                field: debit_column.describe(),
+                                detail: e,
+                            })?;
                     // Negate: a positive debit figure means money going out.
-                    Ok(Some(-val))
+                    Ok(Some(ParsedAmount {
+                        value: -val,
+                        denomination,
+                        field: debit_column.describe(),
+                    }))
                 }
-                (None, Some(c)) => parse_number(c, cfg.decimal_separator, cfg.thousands_separator)
-                    .map(Some)
-                    .map_err(|e| ImportError::BadValue {
-                        field: credit_column.describe(),
-                        detail: e,
-                    }),
+                (None, Some(c)) => {
+                    parse_amount_cell(c, cfg.decimal_separator, cfg.thousands_separator)
+                        .map(|(value, denomination)| {
+                            Some(ParsedAmount {
+                                value,
+                                denomination,
+                                field: credit_column.describe(),
+                            })
+                        })
+                        .map_err(|e| ImportError::BadValue {
+                            field: credit_column.describe(),
+                            detail: e,
+                        })
+                }
                 (Some(_), Some(_)) => Err(ImportError::Parse(format!(
                     "both {} and {} are populated in the same row",
                     debit_column.describe(),
@@ -731,77 +835,6 @@ fn parse_amount(
             }
         }
     }
-}
-
-/// Parses a numeric string, stripping currency symbols, thousands separators,
-/// and normalising the decimal separator to `'.'`.
-///
-/// # Arguments
-///
-/// * `raw` - The raw string to parse.
-/// * `decimal_sep` - The decimal separator character in use.
-/// * `thousands_sep` - An optional thousands separator to strip.
-///
-/// # Returns
-///
-/// The parsed [`Decimal`] value.
-///
-/// # Errors
-///
-/// Returns a [`String`] describing the parse error.
-#[inline]
-fn parse_number(
-    raw: &str,
-    decimal_sep: char,
-    thousands_sep: Option<char>,
-) -> Result<Decimal, String> {
-    // Strip leading/trailing whitespace, then separate any leading minus sign
-    // before trimming currency prefixes/suffixes.
-    let trimmed = raw.trim();
-
-    // Detect accounting notation: (50.00) means negative.
-    let (sign, magnitude_str) =
-        if let Some(inner) = trimmed.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
-            ("-", inner)
-        } else if let Some(rest) = trimmed.strip_prefix('-') {
-            ("-", rest)
-        } else {
-            ("", trimmed)
-        };
-
-    let stripped_magnitude = magnitude_str
-        .trim_matches(|c| matches!(c, '$' | '£' | '€' | '+'))
-        .trim();
-    let stripped = if sign.is_empty() {
-        stripped_magnitude.to_owned()
-    } else {
-        format!("-{stripped_magnitude}")
-    };
-
-    // Remove thousands separator when configured.
-    let without_thousands: String;
-    let after_thousands = if let Some(ts) = thousands_sep {
-        without_thousands = stripped.chars().filter(|&c| c != ts).collect();
-        without_thousands.as_str()
-    } else {
-        stripped.as_str()
-    };
-
-    // Normalise decimal separator to '.'.
-    let normalised: String;
-    let normalised_str = if decimal_sep == '.' {
-        after_thousands
-    } else {
-        normalised = after_thousands
-            .chars()
-            .map(|c| if c == decimal_sep { '.' } else { c })
-            .collect();
-        normalised.as_str()
-    };
-
-    normalised_str
-        .parse::<Decimal>()
-        .map_err(|e| format!("cannot parse '{raw}' as a decimal: {e}"))
 }
 
 #[cfg(test)]
@@ -835,39 +868,6 @@ mod tests {
             column,
             ty: MetaColumnType::Text,
         }
-    }
-
-    #[test]
-    fn parse_number_strips_currency_symbols() {
-        assert_eq!(parse_number("$50.00", '.', None), Ok(dec!(50.00)));
-        assert_eq!(parse_number("£100.50", '.', None), Ok(dec!(100.50)));
-        assert_eq!(parse_number("€9.99", '.', None), Ok(dec!(9.99)));
-    }
-
-    #[test]
-    fn parse_number_strips_thousands_separator() {
-        assert_eq!(parse_number("1,234.56", '.', Some(',')), Ok(dec!(1234.56)));
-    }
-
-    #[test]
-    fn parse_number_normalises_decimal_separator() {
-        assert_eq!(parse_number("1234,56", ',', None), Ok(dec!(1234.56)));
-    }
-
-    #[test]
-    fn parse_number_negative() {
-        assert_eq!(parse_number("-50.00", '.', None), Ok(dec!(-50.00)));
-    }
-
-    #[test]
-    fn parse_number_parenthesised_accounting_notation() {
-        // Many Australian bank exports use (50.00) to represent a debit.
-        assert_eq!(parse_number("(50.00)", '.', None), Ok(dec!(-50.00)));
-        assert_eq!(
-            parse_number("(1,234.56)", '.', Some(',')),
-            Ok(dec!(-1234.56))
-        );
-        assert_eq!(parse_number("($99.95)", '.', None), Ok(dec!(-99.95)));
     }
 
     #[test]
@@ -2166,6 +2166,71 @@ mod tests {
             .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
             .expect("parses");
         assert_eq!(txs[0].postings.len(), 1);
+    }
+
+    /// A cell's own code is stripped, and the row posts in the configured
+    /// commodity whether the two agree or not. The disagreement is a warning,
+    /// which is not observable here; the parsed values are.
+    #[test]
+    fn import_reads_cells_that_state_a_denomination() {
+        let csv = "Date,Amount\n\
+                   2025-01-02,USD 5.00\n\
+                   2025-01-03,500 AUD\n";
+        let cfg = Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        assert_eq!(
+            txs[0].postings[0].amount,
+            Some(Amount::new(dec!(5.00), "AUD"))
+        );
+        assert_eq!(
+            txs[1].postings[0].amount,
+            Some(Amount::new(dec!(500), "AUD"))
+        );
+    }
+
+    #[test]
+    fn import_reads_a_balance_cell_that_states_a_denomination() {
+        let csv = "Date,Amount,Balance\n\
+                   2025-01-02,5.00,AUD 105.00\n";
+        let cfg = Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            balance_column: Some(ColumnRef::Name("Balance".to_owned())),
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        assert_eq!(
+            txs[0].postings[0].balance,
+            Some(Amount::new(dec!(105.00), "AUD"))
+        );
+    }
+
+    #[test]
+    fn import_reads_an_amount_metadata_cell_that_states_a_denomination() {
+        let csv = "Date,Amount,Fee\n\
+                   2025-01-02,5.00,$0.10\n";
+        let cfg = Config {
+            account: "Assets:Bank:Checking".to_owned(),
+            metadata_columns: vec![MetadataColumn {
+                key: "fee".to_owned(),
+                column: ColumnRef::Name("Fee".to_owned()),
+                ty: MetaColumnType::Amount,
+            }],
+            ..Config::default()
+        };
+        let txs = CsvImporter
+            .parse_bytes(csv.as_bytes(), &cfg, "test.csv")
+            .expect("parses");
+        assert_eq!(
+            txs[0].metadata[0].value,
+            MetaValue::Amount(Amount::new(dec!(0.10), "AUD"))
+        );
     }
 
     #[test]
