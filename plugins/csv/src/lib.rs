@@ -108,7 +108,7 @@ impl bc_sdk::Importer for CsvImporter {
         // Warned here and not in `Config::validate`, which `import` calls
         // again: the host runs `validate` before `parse` for every import, so
         // emitting from both would report each stray key twice.
-        cfg.warn_unknown_keys();
+        cfg.warn_profile_advisories();
         cfg.validate()
     }
 }
@@ -807,6 +807,7 @@ fn parse_number(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::collections::BTreeMap;
     use std::io::Write as _;
 
     use bc_sdk::Importer as _;
@@ -2099,6 +2100,7 @@ mod tests {
                         column: ColumnRef::Name("Quote".to_owned()),
                     },
                     negate: true,
+                    unknown: BTreeMap::new(),
                 },
                 LegSpec {
                     account: "Expenses:Fees".to_owned(),
@@ -2109,6 +2111,7 @@ mod tests {
                         column: ColumnRef::Name("Quote".to_owned()),
                     },
                     negate: false,
+                    unknown: BTreeMap::new(),
                 },
             ],
             ..Config::default()
@@ -2155,6 +2158,7 @@ mod tests {
                     column: ColumnRef::Name("Quote".to_owned()),
                 },
                 negate: false,
+                unknown: BTreeMap::new(),
             }],
             ..Config::default()
         };
@@ -2185,6 +2189,7 @@ mod tests {
                     column: ColumnRef::Name("Quote".to_owned()),
                 },
                 negate: true,
+                unknown: BTreeMap::new(),
             }],
             ..Config::default()
         };
@@ -2220,6 +2225,7 @@ mod tests {
                     column: ColumnRef::Name("Quote".to_owned()),
                 },
                 negate: false,
+                unknown: BTreeMap::new(),
             }],
             ..Config::default()
         };
@@ -2421,6 +2427,7 @@ mod tests {
                     code: "AUD".to_owned(),
                 },
                 negate: false,
+                unknown: BTreeMap::new(),
             }],
             ..Config::default()
         };
@@ -2530,6 +2537,7 @@ mod tests {
                     column: ColumnRef::Name("Quote".to_owned()),
                 },
                 negate: false,
+                unknown: BTreeMap::new(),
             }],
             ..Config::default()
         };
@@ -2566,6 +2574,7 @@ mod tests {
                     column: ColumnRef::Name("Quote".to_owned()),
                 },
                 negate: false,
+                unknown: BTreeMap::new(),
             }],
             ..Config::default()
         };
@@ -2606,6 +2615,7 @@ mod tests {
                     code: "AUD".to_owned(),
                 },
                 negate: false,
+                unknown: BTreeMap::new(),
             }],
             ..Config::default()
         };
@@ -2639,6 +2649,7 @@ mod tests {
                     column: ColumnRef::Name("Quote".to_owned()),
                 },
                 negate: false,
+                unknown: BTreeMap::new(),
             }],
             ..Config::default()
         };
