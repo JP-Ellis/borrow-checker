@@ -1,0 +1,17 @@
+---
+source: crates/bc-cli/tests/cli/report.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+ ACCOUNT  | KIND    | BALANCE | CCY | IN USD
+=============================================
+ Checking | deposit | 100.00  | AUD | -
+----------+---------+---------+-----+--------
+ Checking | deposit | 40.00   | USD | 40.00
+
+Net Worth: 40.00 USD
+
+note: not valued in USD and left out of the total: 100.00 AUD
+----- stderr -----

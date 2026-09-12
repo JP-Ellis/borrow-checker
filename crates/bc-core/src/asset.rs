@@ -279,51 +279,13 @@ impl Service {
         Ok(id)
     }
 
-    /// Returns the most recent market value for `account_id` in `commodity`.
+    /// Returns the most recent valuation for `account_id` in whatever commodity
+    /// it was recorded.
     ///
     /// Returns `None` if no valuations have been recorded.
     ///
     /// Rows are ordered by `recorded_at DESC` (business date), then `created_at DESC`
     /// (insertion order) to break ties.
-    ///
-    /// # Arguments
-    ///
-    /// * `account_id` - The account whose market value is queried.
-    /// * `commodity` - Commodity filter (e.g. `"AUD"`).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BcError`] on database or data parse failure.
-    #[inline]
-    pub async fn latest_market_value(
-        &self,
-        account_id: &AccountId,
-        commodity: &str,
-    ) -> BcResult<Option<Decimal>> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT market_value \
-             FROM asset_valuations \
-             WHERE account_id = ? AND commodity = ? \
-             ORDER BY recorded_at DESC, created_at DESC \
-             LIMIT 1",
-        )
-        .bind(account_id.to_string())
-        .bind(commodity)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        row.map(|(s,)| {
-            s.parse::<Decimal>()
-                .map_err(|e| BcError::BadData(format!("invalid market_value '{s}': {e}")))
-        })
-        .transpose()
-    }
-
-    /// Returns the most recent valuation for `account_id` in whatever commodity
-    /// it was recorded.
-    ///
-    /// Returns `None` if no valuations have been recorded. Ordering matches
-    /// [`Self::latest_market_value`]: `recorded_at DESC`, then `created_at DESC`.
     ///
     /// # Arguments
     ///
@@ -781,15 +743,15 @@ mod tests {
         .await
         .expect("record valuation should succeed");
 
-        let mv = svc
-            .latest_market_value(&account_id, "AUD")
+        let latest = svc
+            .latest_valuation(&account_id)
             .await
-            .expect("query market value");
-        assert_eq!(mv, Some(dec!(700_000)));
+            .expect("query valuation");
+        assert_eq!(latest, Some(bc_models::Amount::new(dec!(700_000), "AUD")));
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn latest_market_value_returns_most_recent(pool: SqlitePool) {
+    async fn latest_valuation_returns_most_recent(pool: SqlitePool) {
         let account_id = make_manual_asset(&pool).await;
         let svc = super::Service::new(pool.clone());
 
@@ -815,11 +777,8 @@ mod tests {
         .await
         .expect("second valuation");
 
-        let mv = svc
-            .latest_market_value(&account_id, "AUD")
-            .await
-            .expect("query");
-        assert_eq!(mv, Some(dec!(650_000)));
+        let latest = svc.latest_valuation(&account_id).await.expect("query");
+        assert_eq!(latest, Some(bc_models::Amount::new(dec!(650_000), "AUD")));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -854,14 +813,11 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn latest_market_value_none_when_no_valuations(pool: SqlitePool) {
+    async fn latest_valuation_none_when_no_valuations(pool: SqlitePool) {
         let account_id = make_manual_asset(&pool).await;
         let svc = super::Service::new(pool.clone());
-        let mv = svc
-            .latest_market_value(&account_id, "AUD")
-            .await
-            .expect("query");
-        assert_eq!(mv, None);
+        let latest = svc.latest_valuation(&account_id).await.expect("query");
+        assert_eq!(latest, None);
     }
 
     #[sqlx::test(migrations = "./migrations")]
