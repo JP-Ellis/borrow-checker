@@ -194,7 +194,9 @@ pub struct DiscardArgs {
 /// # Errors
 ///
 /// Returns [`crate::error::CliError`] if the ID is malformed, the batch does
-/// not exist or has already been discarded, or the snapshot cannot be written.
+/// not exist or has already been discarded, a later batch built on it (the
+/// refusal names the batches to discard first), or the snapshot cannot be
+/// written.
 async fn execute_discard(args: DiscardArgs, ctx: &AppContext) -> CliResult<()> {
     let batch_id = args
         .batch
@@ -258,8 +260,13 @@ fn render_blocked(
     batch: &bc_core::ImportBatch,
     dependants: &[bc_core::DiscardDependant],
 ) -> String {
+    let (noun, closing) = if dependants.len() == 1 {
+        ("a later batch", "Discard it first.")
+    } else {
+        ("later batches", "Discard them first, in that order.")
+    };
     let mut lines: Vec<String> = vec![format!(
-        "cannot discard batch {} ({}, {}): later batches added legs to its transactions",
+        "cannot discard batch {} ({}, {}): {noun} added legs to its transactions",
         batch.id, batch.importer, batch.started_at
     )];
     for dependant in dependants {
@@ -272,14 +279,7 @@ fn render_blocked(
             plural(dependant.transactions, "transaction"),
         ));
     }
-    lines.push(
-        if dependants.len() == 1 {
-            "Discard it first."
-        } else {
-            "Discard them first, in that order."
-        }
-        .to_owned(),
-    );
+    lines.push(closing.to_owned());
     lines.join("\n")
 }
 
@@ -2593,6 +2593,13 @@ mod tests {
         insta::assert_snapshot!(stabilised);
 
         let one = super::render_blocked(&record, dependants.get(..1).expect("one dependant"));
+        assert!(
+            one.starts_with(&format!(
+                "cannot discard batch {oldest} ({}, {}): a later batch added legs",
+                record.importer, record.started_at
+            )),
+            "a single dependant is named in the singular, got:\n{one}"
+        );
         assert!(
             one.ends_with("Discard it first."),
             "a single dependant needs no ordering advice, got:\n{one}"
