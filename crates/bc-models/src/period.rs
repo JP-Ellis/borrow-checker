@@ -29,6 +29,8 @@ pub enum BuildError {
 #[non_exhaustive]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Period {
+    /// Every calendar day.
+    Daily,
     /// Every 7 days.
     Weekly,
     /// Every 14 days, anchored to a specific date.
@@ -340,6 +342,7 @@ impl Period {
                 // Custom has no anchor; treat date as-is (period start = date itself)
                 date
             }
+            Self::Daily => date,
             Self::FinancialQuarter {
                 start_month,
                 start_day,
@@ -402,6 +405,7 @@ impl Period {
     #[must_use]
     pub fn advance(&self, date: Date) -> Date {
         match self {
+            Self::Daily => date.saturating_add(jiff::Span::new().days(1)),
             Self::Weekly => date.saturating_add(jiff::Span::new().weeks(1)),
             Self::Fortnightly { .. } => date.saturating_add(jiff::Span::new().weeks(2)),
             Self::Monthly => date.saturating_add(jiff::Span::new().months(1)),
@@ -518,6 +522,7 @@ mod tests {
             Period::Monthly,
             Period::Quarterly,
             Period::CalendarYear,
+            Period::Daily,
         );
     }
 
@@ -617,5 +622,27 @@ mod tests {
             assert_eq!(quarters[3], date(2027, 4, 1));
             assert_eq!(quarters[4], date(2027, 7, 1));
         }
+    }
+
+    #[test]
+    fn daily_serialises_as_type_daily() {
+        let json = serde_json::to_string(&Period::Daily).expect("serialise");
+        assert_eq!(json, r#"{"type":"daily"}"#);
+        let back: Period = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back, Period::Daily);
+    }
+
+    #[test]
+    fn range_containing_daily_is_the_day_itself() {
+        use jiff::civil::date;
+        let (start, end) = Period::Daily.range_containing(date(2026, 1, 31));
+        assert_eq!(start, date(2026, 1, 31));
+        assert_eq!(end, date(2026, 2, 1));
+    }
+
+    #[test]
+    fn daily_advance_crosses_a_month_boundary() {
+        use jiff::civil::date;
+        assert_eq!(Period::Daily.advance(date(2026, 2, 28)), date(2026, 3, 1));
     }
 }
