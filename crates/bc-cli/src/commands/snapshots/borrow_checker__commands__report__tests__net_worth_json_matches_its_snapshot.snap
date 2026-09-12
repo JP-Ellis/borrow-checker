@@ -1,0 +1,40 @@
+---
+source: crates/bc-cli/src/commands/report.rs
+expression: "NetWorthView::new(&net_worth_report()).to_json()"
+---
+{
+  "accounts": [
+    {
+      "account": "House",
+      "balance": "300000",
+      "commodity": "USD",
+      "in_total": "450000",
+      "kind": "manual asset",
+      "valuation": "converted"
+    },
+    {
+      "account": "Savings",
+      "balance": "100.00",
+      "commodity": "AUD",
+      "in_total": "100.00",
+      "kind": "deposit",
+      "valuation": "native"
+    },
+    {
+      "account": "Wallet",
+      "balance": "0.5",
+      "commodity": "BTC",
+      "in_total": null,
+      "kind": "deposit",
+      "valuation": "unvalued"
+    }
+  ],
+  "commodity": "AUD",
+  "converted": {
+    "USD": "300000"
+  },
+  "total": "450100.00",
+  "unvalued": {
+    "BTC": "0.5"
+  }
+}

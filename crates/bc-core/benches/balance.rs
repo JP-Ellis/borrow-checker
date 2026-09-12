@@ -140,9 +140,14 @@ fn bench_net_worth(c: &mut Criterion) {
             continue;
         };
         let engine = BalanceEngine::new(pool);
+        let fx = bc_core::noop_fx();
         group.bench_function(*tier, |b| {
-            b.to_async(&runtime)
-                .iter(|| async { engine.net_worth(COMMODITY).await.expect("net_worth") });
+            b.to_async(&runtime).iter(|| async {
+                engine
+                    .net_worth(COMMODITY, fx.as_ref())
+                    .await
+                    .expect("net_worth")
+            });
         });
     }
 

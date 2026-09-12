@@ -1813,6 +1813,7 @@ mod tests {
             auto_pre_import,
             auto_pre_discard: true,
             budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
+            fx: bc_core::noop_fx(),
         };
         (ctx, backup_dir)
     }

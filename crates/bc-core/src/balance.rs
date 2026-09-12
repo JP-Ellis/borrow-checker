@@ -49,6 +49,54 @@ pub struct PeriodStats {
     pub tx_count: u32,
 }
 
+/// How a [`NetWorthRow`] entered its report's total.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Valuation {
+    /// The holding is already in the report commodity and was summed as-is.
+    Native,
+    /// The holding was converted at a rate; the converted amount is what the
+    /// total contains.
+    Converted(Amount),
+    /// No rate was available. The holding is listed but absent from the total.
+    Unvalued,
+}
+
+/// One holding in a net-worth report: an account's balance in one commodity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NetWorthRow {
+    /// The account holding the balance.
+    pub account_id: AccountId,
+    /// The account's display name.
+    pub name: String,
+    /// The account's kind, so a caller can label a manual asset differently.
+    pub kind: bc_models::AccountKind,
+    /// The balance in its own commodity.
+    pub balance: Amount,
+    /// Whether, and how, `balance` reached the total.
+    pub valuation: Valuation,
+}
+
+/// The outcome of [`Engine::net_worth`].
+///
+/// `total` only counts holdings that were native to the report commodity or
+/// that a rate could convert. Everything else is in `unvalued`, so a caller
+/// can tell an honest zero from a holding it could not price.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NetWorth {
+    /// Sum of every valued holding, in the report commodity.
+    pub total: Amount,
+    /// Every holding, ordered by account name then commodity. An account with
+    /// no holdings at all gets one zero row in the report commodity.
+    pub rows: Vec<NetWorthRow>,
+    /// Native amounts a rate turned into part of `total`, summed by commodity.
+    pub converted: bc_models::Balances,
+    /// Native amounts no rate could value, summed by commodity. Not in `total`.
+    pub unvalued: bc_models::Balances,
+}
+
 /// Calculates account balances from the `postings` projection table.
 #[derive(Debug, Clone)]
 pub struct Engine {
@@ -136,6 +184,64 @@ pub(crate) fn bucket_ranges(
     ranges
 }
 
+impl NetWorthRow {
+    /// Creates a row; see the field docs for what each part means.
+    #[must_use]
+    #[inline]
+    pub fn new(
+        account_id: AccountId,
+        name: String,
+        kind: bc_models::AccountKind,
+        balance: Amount,
+        valuation: Valuation,
+    ) -> Self {
+        Self {
+            account_id,
+            name,
+            kind,
+            balance,
+            valuation,
+        }
+    }
+}
+
+impl NetWorth {
+    /// Creates a report; see the field docs for what each part means.
+    #[must_use]
+    #[inline]
+    pub fn new(
+        total: Amount,
+        rows: Vec<NetWorthRow>,
+        converted: bc_models::Balances,
+        unvalued: bc_models::Balances,
+    ) -> Self {
+        Self {
+            total,
+            rows,
+            converted,
+            unvalued,
+        }
+    }
+
+    /// Adds `value` (already in the report commodity) to `total`.
+    fn add_to_total(&mut self, value: Decimal) -> BcResult<()> {
+        let sum = self
+            .total
+            .value()
+            .checked_add(value)
+            .ok_or_else(|| BcError::BadData("net worth overflow".into()))?;
+        self.total = Amount::new(sum, self.total.commodity().clone());
+        Ok(())
+    }
+}
+
+/// Adds `value` of `code` into `balances`, mapping overflow to [`BcError::BadData`].
+fn add_holding(balances: &mut bc_models::Balances, value: Decimal, code: &str) -> BcResult<()> {
+    balances
+        .try_add(&Amount::new(value, code))
+        .map_err(|e| BcError::BadData(format!("net worth overflow for '{code}': {e}")))
+}
+
 impl Engine {
     /// Creates a [`Engine`] with the given connection pool.
     #[must_use]
@@ -180,19 +286,21 @@ impl Engine {
         Ok(Amount::new(total, commodity))
     }
 
-    /// Computes total net worth in `commodity` across all asset and liability accounts.
+    /// Computes net worth in `commodity` across all active asset and liability accounts.
     ///
-    /// - [`DepositAccount`], [`Receivable`], [`VirtualAllocation`], [`Group`]: balance from postings.
-    ///   A [`Group`] is an organisational node whose postings belong on its
-    ///   descendants, so its own balance is normally zero.
+    /// - [`DepositAccount`], [`Receivable`], [`VirtualAllocation`], [`Group`]: balance from
+    ///   postings, in every commodity the account holds. A [`Group`] is an organisational
+    ///   node whose postings belong on its descendants, so its own balance is normally zero.
     /// - [`ManualAsset`]: latest recorded market value from `asset_valuations`.
     /// - Accounts with `AccountType` other than `Asset`/`Liability` are excluded.
     ///
-    /// Returns an [`Amount`] carrying `commodity`, zero-valued if no relevant accounts exist.
+    /// A holding in another commodity is converted through `fx` when a rate exists and
+    /// listed in [`NetWorth::unvalued`] when none does. A missing rate is never an error:
+    /// the total stays honest by omission, and the caller can see what was omitted.
     ///
     /// # Errors
     ///
-    /// Returns [`BcError`] on database or parse failure.
+    /// Returns [`BcError`] on database or parse failure, or if a sum overflows.
     ///
     /// [`DepositAccount`]: bc_models::AccountKind::DepositAccount
     /// [`Receivable`]: bc_models::AccountKind::Receivable
@@ -204,52 +312,164 @@ impl Engine {
         reason = "intentional fallback with warning for future AccountKind variants"
     )]
     #[inline]
-    pub async fn net_worth(&self, commodity: &str) -> BcResult<Amount> {
+    pub async fn net_worth(
+        &self,
+        commodity: &str,
+        fx: &dyn crate::fx::FxRateService,
+    ) -> BcResult<NetWorth> {
         use bc_models::AccountKind;
         use bc_models::AccountType;
 
-        // Load all active asset + liability accounts.
         let accounts = crate::account::Service::new(self.pool.clone())
             .list_active()
             .await?;
-
-        let mut total = Decimal::ZERO;
         let asset_svc = crate::asset::Service::new(self.pool.clone());
+        let mut holdings = self.holdings_by_account().await?;
 
+        let target = bc_models::CommodityCode::new(commodity);
+        let mut report = NetWorth::new(
+            Amount::new(Decimal::ZERO, commodity),
+            Vec::new(),
+            bc_models::Balances::new(),
+            bc_models::Balances::new(),
+        );
+
+        // `list_active` orders by name, so rows come out by name then commodity.
         for account in &accounts {
             match account.account_type() {
                 AccountType::Asset | AccountType::Liability => {}
                 _ => continue,
             }
 
-            let contribution = match account.kind() {
+            let balances = match account.kind() {
                 AccountKind::ManualAsset => {
-                    // Use latest recorded market value, not posting-based balance.
-                    asset_svc
-                        .latest_market_value(account.id(), commodity)
-                        .await?
-                        .unwrap_or(Decimal::ZERO)
+                    // The newest recorded market value, in whichever commodity it
+                    // was recorded, stands in for a posting-based balance.
+                    let mut balances = bc_models::Balances::new();
+                    if let Some(valuation) = asset_svc.latest_valuation(account.id()).await? {
+                        add_holding(
+                            &mut balances,
+                            valuation.value(),
+                            valuation.commodity().as_str(),
+                        )?;
+                    }
+                    balances
                 }
                 AccountKind::DepositAccount
                 | AccountKind::Receivable
                 | AccountKind::VirtualAllocation
-                | AccountKind::Group => self.balance_for(account.id(), commodity).await?.value(),
+                | AccountKind::Group => holdings
+                    .remove(&account.id().to_string())
+                    .unwrap_or_default(),
                 _ => {
                     tracing::warn!(
                         account_id = %account.id(),
                         kind = ?account.kind(),
                         "unknown AccountKind in net_worth; using posting-based balance"
                     );
-                    self.balance_for(account.id(), commodity).await?.value()
+                    holdings
+                        .remove(&account.id().to_string())
+                        .unwrap_or_default()
                 }
             };
 
-            total = total
-                .checked_add(contribution)
-                .ok_or_else(|| BcError::BadData("net worth overflow".into()))?;
+            // `Balances` never holds a zero, so an account with nothing in it
+            // would otherwise vanish from the rows; give it one zero row so a
+            // caller can tell "empty" from "not an asset or liability".
+            let mut sorted: Vec<(&str, Decimal)> = balances.iter().collect();
+            if sorted.is_empty() {
+                sorted.push((commodity, Decimal::ZERO));
+            }
+            sorted.sort_unstable_by(|a, b| a.0.cmp(b.0));
+            for (code, value) in sorted {
+                let balance = Amount::new(value, code);
+                let valuation = if *balance.commodity() == target {
+                    report.add_to_total(value)?;
+                    Valuation::Native
+                } else {
+                    match fx.convert(&balance, &target) {
+                        Ok(converted) => {
+                            report.add_to_total(converted.value())?;
+                            add_holding(&mut report.converted, value, code)?;
+                            Valuation::Converted(converted)
+                        }
+                        Err(e) => {
+                            // The report carries this in `unvalued`; the log
+                            // line only adds which account it came from.
+                            tracing::debug!(
+                                account_id = %account.id(),
+                                %e,
+                                "net_worth: holding left out of the total"
+                            );
+                            add_holding(&mut report.unvalued, value, code)?;
+                            Valuation::Unvalued
+                        }
+                    }
+                };
+                report.rows.push(NetWorthRow::new(
+                    account.id().clone(),
+                    account.name().to_owned(),
+                    account.kind(),
+                    balance,
+                    valuation,
+                ));
+            }
         }
 
-        Ok(Amount::new(total, commodity))
+        Ok(report)
+    }
+
+    /// Sums every stored posting on an active asset or liability account by
+    /// commodity, then folds in each account's elided-leg residuals.
+    ///
+    /// Amounts are TEXT, so the sum happens here rather than in SQL. Accounts
+    /// with nothing but zero balances are absent from the map.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or parse failure, or if a sum overflows.
+    async fn holdings_by_account(
+        &self,
+    ) -> BcResult<std::collections::HashMap<String, bc_models::Balances>> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT p.account_id, p.commodity, p.amount
+             FROM postings p
+             JOIN accounts a ON a.id = p.account_id
+             WHERE a.archived_at IS NULL
+               AND a.account_type IN (?, ?)
+               AND p.commodity IS NOT NULL",
+        )
+        .bind(crate::db::to_db_str(bc_models::AccountType::Asset)?)
+        .bind(crate::db::to_db_str(bc_models::AccountType::Liability)?)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut holdings: std::collections::HashMap<String, bc_models::Balances> =
+            std::collections::HashMap::new();
+        for (account_id, code, amount) in rows {
+            let value = amount
+                .parse::<Decimal>()
+                .map_err(|e| BcError::BadData(format!("invalid decimal amount '{amount}': {e}")))?;
+            add_holding(holdings.entry(account_id).or_default(), value, &code)?;
+        }
+
+        // Elided legs carry no stored amount, so the query above cannot see
+        // them; their residuals are derived per account (see `crate::residual`).
+        // `Residuals` covers every account, so entries for accounts outside the
+        // asset/liability set are dropped by the caller's kind dispatch.
+        let residuals = crate::residual::Residuals::for_all_accounts(&self.pool).await?;
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "each entry folds into its own account's total; order cannot change a sum"
+        )]
+        for (account_id, balances) in residuals.totals_by_account()? {
+            let entry = holdings.entry(account_id).or_default();
+            for (code, value) in balances.iter() {
+                add_holding(entry, value, code)?;
+            }
+        }
+
+        Ok(holdings)
     }
 
     /// Fetches all postings for `account_id` in `commodity` within `[from, to)`.
@@ -1019,12 +1239,14 @@ mod tests {
             .expect("record valuation");
 
         let engine = Engine::new(pool.clone());
-        let net_worth = engine.net_worth("AUD").await.expect("net worth");
+        let net_worth = engine
+            .net_worth("AUD", &crate::fx::NoopFxRateService)
+            .await
+            .expect("net worth");
 
         // Expected: savings (50_000) + house valuation (650_000) = 700_000
         // (Income account is excluded from net worth as it's not Asset/Liability)
-        assert_eq!(net_worth.value(), dec!(700_000));
-        assert_eq!(net_worth.commodity().as_str(), "AUD");
+        assert_eq!(net_worth.total, Amount::new(dec!(700_000), "AUD"));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2847,12 +3069,24 @@ mod tests {
             .expect("create the group account");
 
         let engine = Engine::new(pool.clone());
-        let total = engine.net_worth("AUD").await.expect("net worth");
+        let report = engine
+            .net_worth("AUD", &crate::fx::NoopFxRateService)
+            .await
+            .expect("net worth");
 
         assert_eq!(
-            total.value(),
+            report.total.value(),
             Decimal::ZERO,
             "a Group account holds no postings, so it contributes nothing"
+        );
+        assert_eq!(
+            report
+                .rows
+                .iter()
+                .map(|row| (row.balance.clone(), row.valuation.clone()))
+                .collect::<Vec<_>>(),
+            vec![(Amount::new(Decimal::ZERO, "AUD"), Valuation::Native)],
+            "an account with no holdings still gets one zero row, so it is not mistaken for absent"
         );
         assert_eq!(
             engine
@@ -2862,5 +3096,206 @@ mod tests {
                 .value(),
             Decimal::ZERO
         );
+    }
+
+    /// Creates an active asset `DepositAccount` and an income counterpart.
+    async fn wallet_and_income(pool: &sqlx::SqlitePool) -> (AccountId, AccountId) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let wallet = accounts
+            .create()
+            .name("Wallet")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Wallet");
+        let income = accounts
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create Income");
+        (wallet, income)
+    }
+
+    /// Posts `amount` of `commodity` into `wallet` from `income` under `tx_id`.
+    async fn fund_wallet(
+        pool: &sqlx::SqlitePool,
+        tx_id: &str,
+        wallet: &AccountId,
+        income: &AccountId,
+        amount: &str,
+        commodity: &str,
+    ) {
+        insert_tx(pool, tx_id, "2026-01-01").await;
+        insert_posting(
+            pool,
+            &format!("{tx_id}_w"),
+            tx_id,
+            &wallet.to_string(),
+            Some(amount),
+            Some(commodity),
+            0,
+        )
+        .await;
+        insert_posting(
+            pool,
+            &format!("{tx_id}_i"),
+            tx_id,
+            &income.to_string(),
+            Some(&format!("-{amount}")),
+            Some(commodity),
+            1,
+        )
+        .await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn net_worth_reports_a_foreign_holding_it_cannot_value(pool: sqlx::SqlitePool) {
+        let (wallet, income) = wallet_and_income(&pool).await;
+        fund_wallet(&pool, "tx_aud", &wallet, &income, "100.00", "AUD").await;
+        fund_wallet(&pool, "tx_btc", &wallet, &income, "0.5", "BTC").await;
+
+        let report = Engine::new(pool.clone())
+            .net_worth("AUD", &crate::fx::NoopFxRateService)
+            .await
+            .expect("net worth");
+
+        assert_eq!(report.total, Amount::new(dec!(100.00), "AUD"));
+        assert_eq!(report.unvalued.get("BTC"), Some(dec!(0.5)));
+        assert!(report.converted.is_empty());
+        assert_eq!(
+            report
+                .rows
+                .iter()
+                .map(|row| (row.balance.clone(), row.valuation.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (Amount::new(dec!(100.00), "AUD"), Valuation::Native),
+                (Amount::new(dec!(0.5), "BTC"), Valuation::Unvalued),
+            ]
+        );
+    }
+
+    /// Values every BTC at a flat 100 000 AUD; anything else is unavailable.
+    struct FlatBtcRate;
+
+    impl crate::fx::FxRateService for FlatBtcRate {
+        fn convert(
+            &self,
+            amount: &Amount,
+            to_commodity: &CommodityCode,
+        ) -> Result<Amount, crate::fx::FxError> {
+            if amount.commodity().as_str() == "BTC" && to_commodity.as_str() == "AUD" {
+                let value = amount
+                    .value()
+                    .checked_mul(dec!(100_000))
+                    .expect("test amounts are small");
+                return Ok(Amount::new(value, "AUD"));
+            }
+            crate::fx::NoopFxRateService.convert(amount, to_commodity)
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn net_worth_converts_a_foreign_holding_when_a_rate_exists(pool: sqlx::SqlitePool) {
+        let (wallet, income) = wallet_and_income(&pool).await;
+        fund_wallet(&pool, "tx_aud", &wallet, &income, "100.00", "AUD").await;
+        fund_wallet(&pool, "tx_btc", &wallet, &income, "0.5", "BTC").await;
+
+        let report = Engine::new(pool.clone())
+            .net_worth("AUD", &FlatBtcRate)
+            .await
+            .expect("net worth");
+
+        assert_eq!(report.total, Amount::new(dec!(50100.00), "AUD"));
+        assert_eq!(report.converted.get("BTC"), Some(dec!(0.5)));
+        assert!(report.unvalued.is_empty());
+        assert_eq!(
+            report.rows.get(1).map(|row| row.valuation.clone()),
+            Some(Valuation::Converted(Amount::new(dec!(50000.0), "AUD")))
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn net_worth_reports_a_manual_asset_valued_in_another_commodity(pool: sqlx::SqlitePool) {
+        use bc_models::ValuationSource;
+
+        let house = crate::account::Service::new(pool.clone())
+            .create()
+            .name("House")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::ManualAsset)
+            .call()
+            .await
+            .expect("create ManualAsset");
+        let assets = crate::asset::Service::new(pool.clone());
+        // An older AUD valuation superseded by a newer USD one: the newest wins
+        // regardless of commodity, so the AUD figure must not resurface.
+        assets
+            .record_valuation(
+                &house,
+                dec!(400_000),
+                "AUD",
+                ValuationSource::ManualEstimate,
+                date(2025, 1, 1),
+                None,
+            )
+            .await
+            .expect("record AUD valuation");
+        assets
+            .record_valuation(
+                &house,
+                dec!(300_000),
+                "USD",
+                ValuationSource::ProfessionalAppraisal,
+                date(2026, 1, 1),
+                None,
+            )
+            .await
+            .expect("record USD valuation");
+
+        let report = Engine::new(pool.clone())
+            .net_worth("AUD", &crate::fx::NoopFxRateService)
+            .await
+            .expect("net worth");
+
+        assert_eq!(report.total, Amount::new(Decimal::ZERO, "AUD"));
+        assert_eq!(report.unvalued.get("USD"), Some(dec!(300_000)));
+        assert_eq!(
+            report
+                .rows
+                .iter()
+                .map(|row| (row.balance.clone(), row.valuation.clone()))
+                .collect::<Vec<_>>(),
+            vec![(Amount::new(dec!(300_000), "USD"), Valuation::Unvalued)]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn net_worth_counts_an_elided_foreign_leg(pool: sqlx::SqlitePool) {
+        let (wallet, income) = wallet_and_income(&pool).await;
+        insert_tx(&pool, "tx_el", "2026-01-01").await;
+        insert_posting(
+            &pool,
+            "p_el_i",
+            "tx_el",
+            &income.to_string(),
+            Some("-0.25"),
+            Some("BTC"),
+            0,
+        )
+        .await;
+        insert_posting(&pool, "p_el_w", "tx_el", &wallet.to_string(), None, None, 1).await;
+
+        let report = Engine::new(pool.clone())
+            .net_worth("AUD", &crate::fx::NoopFxRateService)
+            .await
+            .expect("net worth");
+
+        assert_eq!(report.unvalued.get("BTC"), Some(dec!(0.25)));
+        assert_eq!(report.rows.len(), 1);
     }
 }

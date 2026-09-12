@@ -285,3 +285,57 @@ fn categories_unresolvable_tag_errors_json() {
     cmd.args(["--json", "report", "categories", "--tag", "no-such-tag"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+#[test]
+fn net_worth_lists_a_holding_it_cannot_value() {
+    let ctx = TestContext::new();
+    let (checking_id, interest_id) = setup_accounts(&ctx);
+
+    for (n, amount, commodity) in [("1", "100.00", "AUD"), ("2", "0.5", "BTC")] {
+        ctx.command()
+            .args([
+                "transaction",
+                "add",
+                "--date",
+                "2026-01-01",
+                "--description",
+                &format!("Deposit {n}"),
+                "--posting",
+                &format!("{checking_id}:{amount}:{commodity}"),
+                "--posting",
+                &format!("{interest_id}:-{amount}:{commodity}"),
+            ])
+            .output()
+            .expect("add transaction");
+    }
+
+    let mut cmd = ctx.command();
+    cmd.args(["report", "net-worth"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn net_worth_json_lists_a_holding_it_cannot_value() {
+    let ctx = TestContext::new();
+    let (checking_id, interest_id) = setup_accounts(&ctx);
+
+    ctx.command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2026-01-01",
+            "--description",
+            "Deposit",
+            "--posting",
+            &format!("{checking_id}:0.5:BTC"),
+            "--posting",
+            &format!("{interest_id}:-0.5:BTC"),
+        ])
+        .output()
+        .expect("add transaction");
+
+    let mut cmd = ctx.command();
+    cmd.args(["--json", "report", "net-worth"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}

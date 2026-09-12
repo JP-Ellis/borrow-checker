@@ -1,0 +1,26 @@
+---
+source: crates/bc-cli/tests/cli/report.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "accounts": [
+    {
+      "account": "Checking",
+      "balance": "0.5",
+      "commodity": "BTC",
+      "in_total": null,
+      "kind": "deposit",
+      "valuation": "unvalued"
+    }
+  ],
+  "commodity": "AUD",
+  "converted": {},
+  "total": "0",
+  "unvalued": {
+    "BTC": "0.5"
+  }
+}
+----- stderr -----
