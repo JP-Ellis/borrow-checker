@@ -343,7 +343,8 @@ fn effective_offset(
 /// Returns [`BcError::BadData`] if the period type is unsupported for loans.
 fn advance_by_period(date: Date, period: &Period) -> BcResult<Date> {
     match period {
-        Period::Weekly
+        Period::Daily
+        | Period::Weekly
         | Period::Fortnightly { .. }
         | Period::Monthly
         | Period::Quarterly
@@ -369,6 +370,7 @@ fn advance_by_period(date: Date, period: &Period) -> BcResult<Date> {
 )]
 fn periods_per_year(period: &Period) -> BcResult<Decimal> {
     match period {
+        Period::Daily => Ok(Decimal::from(365_u32)),
         Period::Weekly => Ok(Decimal::from(52_u32)),
         Period::Fortnightly { .. } => Ok(Decimal::from(26_u32)),
         Period::Monthly => Ok(Decimal::from(12_u32)),
@@ -546,6 +548,7 @@ mod tests {
     use bc_models::LoanTerms;
     use bc_models::Period;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use sqlx::SqlitePool;
 
@@ -856,6 +859,14 @@ mod tests {
             "offset should reduce interest: {} vs {}",
             with_first.interest,
             no_first.interest
+        );
+    }
+
+    #[test]
+    fn daily_has_365_periods_per_year() {
+        assert_eq!(
+            super::periods_per_year(&Period::Daily).expect("daily is supported"),
+            Decimal::from(365_u32)
         );
     }
 }

@@ -275,6 +275,7 @@ fn budget_tree_node_recursive(item: &BudgetTreeItem) -> bc_ipc::BudgetTreeNode {
 /// Returns a short lowercase label for a [`bc_models::Period`] variant.
 fn period_label(period: &bc_models::Period) -> String {
     match period {
+        bc_models::Period::Daily => "daily".to_owned(),
         bc_models::Period::Weekly => "weekly".to_owned(),
         bc_models::Period::Fortnightly { .. } => "fortnightly".to_owned(),
         bc_models::Period::Monthly => "monthly".to_owned(),
@@ -1058,5 +1059,10 @@ mod tests {
             dto.postings[2].amount,
             bc_ipc::PostingAmount::Ambiguous
         ));
+    }
+
+    #[test]
+    fn period_label_names_daily() {
+        assert_eq!(super::period_label(&bc_models::Period::Daily), "daily");
     }
 }
