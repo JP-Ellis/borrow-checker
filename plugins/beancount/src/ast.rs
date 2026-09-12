@@ -44,6 +44,17 @@ pub(crate) enum Directive {
     },
     /// A Fava `custom "budget"` directive.
     Budget(Budget),
+    /// A `custom "budget"` line that does not read as a budget.
+    ///
+    /// Carried rather than failing the parse: the importer only wants
+    /// transactions, so it warns and continues, while `budgets()` turns the
+    /// carrier into an error.
+    MalformedBudget {
+        /// 1-based source line number of the directive.
+        line: usize,
+        /// What was wrong with the line.
+        reason: String,
+    },
     /// An `include "path"` directive naming another file to splice in.
     Include {
         /// The path exactly as written in the source, still unresolved.
