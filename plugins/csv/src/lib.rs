@@ -49,7 +49,6 @@ use crate::header::HeaderMap;
 use crate::number::DenominationCheck;
 use crate::number::DenominationMismatch;
 use crate::number::parse_amount_cell;
-use crate::number::parse_number;
 use crate::preamble::find_csv_start;
 
 /// Imports transactions from delimited text (CSV) files.
@@ -611,7 +610,15 @@ fn meta_value(
         MetaColumnType::Text => Ok(MetaValue::Text(raw.to_owned())),
         MetaColumnType::Account => Ok(MetaValue::Account(raw.to_owned())),
         MetaColumnType::Number => {
-            parse_number(raw, cfg.decimal_separator, cfg.thousands_separator).map(MetaValue::Number)
+            parse_amount_cell(raw, cfg.decimal_separator, cfg.thousands_separator).and_then(
+                |(value, denomination)| match denomination {
+                    Some(denomination) => Err(format!(
+                        "'{raw}' names a denomination ({denomination}), so it is an amount, \
+                         not a number"
+                    )),
+                    None => Ok(MetaValue::Number(value)),
+                },
+            )
         }
         MetaColumnType::Amount => {
             parse_amount_cell(raw, cfg.decimal_separator, cfg.thousands_separator).map(
@@ -1693,6 +1700,24 @@ mod tests {
         assert_eq!(
             typed_cell(crate::config::MetaColumnType::Number, "not-a-number"),
             bc_sdk::MetaValue::Text("not-a-number".to_owned())
+        );
+    }
+
+    /// A number is a bare quantity; a cell naming what it counts is an
+    /// amount, and only the `amount` type reads a denomination.
+    #[test]
+    fn a_denominated_cell_is_not_a_number() {
+        assert_eq!(
+            typed_cell(crate::config::MetaColumnType::Number, "5 BTC"),
+            bc_sdk::MetaValue::Text("5 BTC".to_owned())
+        );
+        assert_eq!(
+            typed_cell(crate::config::MetaColumnType::Number, "$5"),
+            bc_sdk::MetaValue::Text("$5".to_owned())
+        );
+        assert_eq!(
+            typed_cell(crate::config::MetaColumnType::Amount, "5 AUD"),
+            bc_sdk::MetaValue::Amount(Amount::new(dec!(5), "AUD"))
         );
     }
 
