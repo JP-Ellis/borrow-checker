@@ -125,12 +125,33 @@ pub(crate) fn split_denomination(text: &str) -> Result<SplitCell<'_>, String> {
     }
 }
 
+/// Strips one leading `+` or `-` from `text`.
+///
+/// # Arguments
+///
+/// * `text` - The text to inspect.
+///
+/// # Returns
+///
+/// Whether the sign was negative, when there was one, and the rest with
+/// any whitespace after the sign discarded.
+fn strip_sign(text: &str) -> (Option<bool>, &str) {
+    if let Some(rest) = text.strip_prefix('-') {
+        (Some(true), rest.trim_start())
+    } else if let Some(rest) = text.strip_prefix('+') {
+        (Some(false), rest.trim_start())
+    } else {
+        (None, text)
+    }
+}
+
 /// Parses a numeric cell, returning its value and the denomination it states.
 ///
-/// Accepts an optional leading `-` or accounting parentheses for the sign,
-/// a denomination on either side of the digits, a `-` between a leading
-/// denomination and the digits when no sign has been seen yet, a `+`, a
-/// configured thousands separator, and a configured decimal separator.
+/// Accepts accounting parentheses or a leading `+` or `-` for the sign, a
+/// denomination on either side of the digits, a `+` or `-` between a leading
+/// denomination and the digits instead of a leading sign, a configured
+/// thousands separator, and a configured decimal separator. A sign in both
+/// positions is an error.
 ///
 /// # Arguments
 ///
@@ -152,29 +173,25 @@ pub(crate) fn parse_amount_cell(
 ) -> Result<(Decimal, Option<String>), String> {
     let trimmed = raw.trim();
 
-    // Accounting notation (50.00) and a leading minus both mean negative.
-    let (mut negative, body) =
+    // Accounting notation (50.00) means negative; otherwise a sign may lead.
+    let (outer, body) =
         if let Some(inner) = trimmed.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
-            (true, inner)
-        } else if let Some(rest) = trimmed.strip_prefix('-') {
-            (true, rest)
+            (Some(true), inner)
         } else {
-            (false, trimmed)
+            strip_sign(trimmed)
         };
 
     let split = split_denomination(body).map_err(|e| format!("cannot parse '{raw}': {e}"))?;
 
-    // A sign may also sit between a leading denomination and the digits.
-    let magnitude = if let Some(rest) = split.magnitude.strip_prefix('-') {
-        if negative {
+    // A sign may instead sit between a leading denomination and the digits.
+    let (inner, magnitude) = strip_sign(split.magnitude);
+    let negative = match (outer, inner) {
+        (Some(_), Some(_)) => {
             return Err(format!("cannot parse '{raw}': it carries two signs"));
         }
-        negative = true;
-        rest.trim_start()
-    } else {
-        split.magnitude
+        (Some(negative), None) | (None, Some(negative)) => negative,
+        (None, None) => false,
     };
-    let magnitude = magnitude.trim_matches('+').trim();
 
     let mut digits = String::with_capacity(magnitude.len().saturating_add(1));
     if negative {
@@ -373,9 +390,28 @@ mod tests {
         assert!(err.contains("two denominations"), "{err}");
     }
 
-    #[test]
-    fn parse_number_rejects_two_signs() {
-        let err = parse_number("-AUD -5.00", '.', None).expect_err("two signs");
+    #[rstest]
+    #[case("+5.00", dec!(5.00))]
+    #[case("+$5.00", dec!(5.00))]
+    #[case("+AUD 5.00", dec!(5.00))]
+    #[case("AUD +5.00", dec!(5.00))]
+    #[case("$+5.00", dec!(5.00))]
+    fn parse_number_accepts_a_plus_sign_before_or_after_the_denomination(
+        #[case] raw: &str,
+        #[case] expected: Decimal,
+    ) {
+        assert_eq!(parse_number(raw, '.', None), Ok(expected));
+    }
+
+    #[rstest]
+    #[case("-AUD -5.00")]
+    #[case("(AUD -5.00)")]
+    #[case("-AUD +5.00")]
+    #[case("+AUD -5.00")]
+    #[case("+AUD +5.00")]
+    #[case("(AUD +5.00)")]
+    fn parse_number_rejects_two_signs(#[case] raw: &str) {
+        let err = parse_number(raw, '.', None).expect_err("two signs");
         assert!(err.contains("two signs"), "{err}");
     }
 
