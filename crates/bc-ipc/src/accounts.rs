@@ -1006,12 +1006,7 @@ impl From<&bc_models::Period> for Period {
                 start_month: *start_month,
                 start_day: *start_day,
             },
-            bc_models::Period::Daily
-            | bc_models::Period::Custom {
-                days: Some(1),
-                weeks: None,
-                months: None,
-            } => Self::Daily,
+            bc_models::Period::Daily => Self::Daily,
             other => {
                 tracing::warn!(
                     ?other,
@@ -1529,6 +1524,7 @@ mod tests {
 #[cfg(feature = "models")]
 mod models_tests {
     use pretty_assertions::assert_eq;
+    use pretty_assertions::assert_ne;
 
     use super::Period;
 
@@ -1536,7 +1532,11 @@ mod models_tests {
     fn model_period_into_ipc_maps_known_variants() {
         assert_eq!(Period::from(&bc_models::Period::Weekly), Period::Weekly);
         assert_eq!(Period::from(&bc_models::Period::Monthly), Period::Monthly);
-        assert_eq!(
+    }
+
+    #[test]
+    fn one_day_custom_is_not_daily() {
+        assert_ne!(
             Period::from(&bc_models::Period::Custom {
                 days: Some(1),
                 weeks: None,
