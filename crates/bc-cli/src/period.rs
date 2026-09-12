@@ -12,6 +12,8 @@ use crate::error::CliResult;
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum PeriodArg {
+    /// Every calendar day.
+    Daily,
     /// Every 7 days (Monday–Sunday).
     Weekly,
     /// Every 14 days, phased from the configured `fortnightly_anchor`.
@@ -76,6 +78,7 @@ pub struct PeriodInputs {
 #[inline]
 pub fn resolve(arg: PeriodArg, inputs: &PeriodInputs) -> CliResult<bc_models::Period> {
     match arg {
+        PeriodArg::Daily => Ok(bc_models::Period::Daily),
         PeriodArg::Weekly => Ok(bc_models::Period::Weekly),
         PeriodArg::Monthly => Ok(bc_models::Period::Monthly),
         PeriodArg::Quarterly => Ok(bc_models::Period::Quarterly),
@@ -269,6 +272,15 @@ mod tests {
             resolve(PeriodArg::CalendarYear, &inputs).expect("calendar"),
             Period::CalendarYear
         ));
+    }
+
+    #[test]
+    fn resolves_daily() {
+        let inputs = au_inputs();
+        assert_eq!(
+            resolve(PeriodArg::Daily, &inputs).expect("daily"),
+            Period::Daily
+        );
     }
 
     #[rstest]

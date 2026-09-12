@@ -613,9 +613,9 @@ fn spark_label(start: jiff::civil::Date, period: &bc_models::Period) -> String {
             let two_digit = start.year() % 100;
             format!("FY{two_digit:02}")
         }
-        bc_models::Period::Fortnightly { .. } | bc_models::Period::Custom { .. } => {
-            start.to_string()
-        }
+        bc_models::Period::Daily
+        | bc_models::Period::Fortnightly { .. }
+        | bc_models::Period::Custom { .. } => start.to_string(),
         _ => {
             tracing::warn!(period = ?period, "unknown Period variant in spark_label; using start date as label");
             start.to_string()

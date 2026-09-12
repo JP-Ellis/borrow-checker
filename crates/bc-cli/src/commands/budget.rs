@@ -536,6 +536,7 @@ async fn update_budget(
 /// Format a [`bc_models::Period`] as a human-readable string for table output.
 fn period_display(period: &bc_models::Period) -> String {
     match period {
+        Period::Daily => "Daily".to_owned(),
         Period::Weekly => "Weekly".to_owned(),
         Period::Fortnightly { anchor } => format!("Fortnightly ({anchor})"),
         Period::Monthly => "Monthly".to_owned(),
