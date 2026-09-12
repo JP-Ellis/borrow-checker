@@ -208,6 +208,17 @@ fn expand(
                     "{display}:{line}: ignoring unrecognised directive '{keyword}'"
                 ));
             }
+            // Warned here so the importer can carry on; kept in the directive
+            // list so `budgets()` can refuse the ledger.
+            Directive::MalformedBudget { line, ref reason } => {
+                loaded.warnings.push(format!(
+                    "{display}:{line}: skipping malformed budget directive: {reason}"
+                ));
+                loaded.directives.push(Sourced {
+                    file: Rc::clone(&display),
+                    directive,
+                });
+            }
             other => loaded.directives.push(Sourced {
                 file: Rc::clone(&display),
                 directive: other,
@@ -647,5 +658,36 @@ mod tests {
         let root = dir.join("main.bean");
         let loaded = load(root.to_str().expect("utf8")).expect("load");
         assert_eq!(loaded.warnings, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_malformed_budget_warns_and_is_kept() {
+        let text = format!(
+            "2026-01-01 custom \"budget\" Expenses:Widgets \"monthly\"\n{}",
+            tx("after the budget")
+        );
+        let dir = fixture("malformed-budget", &[("main.bean", &text)]);
+        let root = dir.join("main.bean");
+        let loaded = load(root.to_str().expect("utf8")).expect("a bad budget is not a load error");
+        assert_eq!(
+            transactions(&loaded)
+                .into_iter()
+                .map(|(_, narration)| narration)
+                .collect::<Vec<_>>(),
+            vec!["after the budget".to_owned()]
+        );
+        assert!(
+            loaded
+                .directives
+                .iter()
+                .any(|s| matches!(s.directive, Directive::MalformedBudget { line: 1, .. })),
+            "the carrier stays in the directive list for budgets() to see"
+        );
+        assert_eq!(loaded.warnings.len(), 1);
+        let warning = loaded.warnings.first().expect("one warning");
+        assert!(
+            warning.contains("main.bean:1") && warning.contains("no amount"),
+            "{warning}"
+        );
     }
 }

@@ -30,8 +30,9 @@ use crate::source::Sourced;
 /// Implements [`bc_sdk::Importer`] for the Beancount plain-text accounting format.
 ///
 /// Parses Beancount-formatted files and converts transaction directives into
-/// [`RawTransaction`] values. Open, close, commodity, and balance directives
-/// are silently ignored.
+/// [`RawTransaction`] values. Every other directive is skipped; an
+/// unrecognised keyword or a malformed `custom "budget"` line is skipped with
+/// a warning.
 #[derive(Debug, Default)]
 pub struct BeancountImporter;
 
@@ -202,10 +203,31 @@ pub struct Budget {
 ///
 /// # Errors
 ///
-/// Returns [`ImportError`] if a file cannot be read or fails to parse.
+/// Returns [`ImportError`] if a file cannot be read or fails to parse, or
+/// [`ImportError::Parse`] naming the first `custom "budget"` line that does
+/// not read as a budget. The importer skips such a line with a warning; a
+/// caller asking for budgets gets the whole set or nothing.
 #[inline]
 pub fn budgets(root: &str) -> Result<Vec<Budget>, ImportError> {
     let loaded = source::load(root)?;
+    let malformed = loaded
+        .directives
+        .iter()
+        .find_map(|Sourced { file, directive }| {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "only the malformed-budget carrier is wanted"
+            )]
+            match directive {
+                Directive::MalformedBudget { line, reason } => {
+                    Some(format!("{file}:{line}: {reason}"))
+                }
+                _ => None,
+            }
+        });
+    if let Some(message) = malformed {
+        return Err(ImportError::Parse(message));
+    }
     for warning in &loaded.warnings {
         bc_sdk::warn!("beancount ledger warning"; detail = warning);
     }
@@ -561,5 +583,36 @@ mod tests {
             "{}",
             second.location
         );
+    }
+
+    #[test]
+    fn budgets_fails_on_a_malformed_budget_line() {
+        let config = test_config(
+            "budgets_fails_on_malformed",
+            "2026-01-01 custom \"budget\" Expenses:Widgets \"monthly\" 500.00 AUD\n\
+             2026-02-01 custom \"budget\" Expenses:Widgets \"fortnightly\" 5.00 AUD\n",
+        );
+        let cfg: Config = config.as_typed().expect("config");
+        let err = budgets(&cfg.source_file).expect_err("a malformed budget fails budgets()");
+        let ImportError::Parse(message) = err else {
+            panic!("expected a parse error, got {err:?}");
+        };
+        assert!(
+            message.contains("ledger.bean:2") && message.contains("fortnightly"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn import_skips_a_malformed_budget_line() {
+        let config = test_config(
+            "import_skips_malformed_budget",
+            "2026-01-01 custom \"budget\" Expenses:Widgets \"monthly\"\n\
+             2026-01-02 * \"Generic Store\" \"Widgets\"\n  Expenses:Widgets  5.00 AUD\n  Assets:Bank\n",
+        );
+        let txs = BeancountImporter
+            .import(config)
+            .expect("the transaction still imports");
+        assert_eq!(txs.len(), 1);
     }
 }

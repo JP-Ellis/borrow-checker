@@ -8,6 +8,8 @@ use winnow::error::ParserError;
 use winnow::token::take_till;
 use winnow::token::take_while;
 
+use crate::ast::Budget;
+use crate::ast::BudgetPeriod;
 use crate::ast::Directive;
 use crate::ast::MetaEntry;
 use crate::ast::MetaValue;
@@ -146,7 +148,7 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
                 currency,
             });
         } else if let Some(r) = rest.strip_prefix("custom ") {
-            directives.push(custom_directive(date, r.trim_start(), line_no)?);
+            directives.push(custom_directive(date, r.trim_start(), line_no));
         } else {
             directives.push(dated_directive(rest, line_no));
         }
@@ -233,47 +235,88 @@ fn dated_directive(rest: &str, line: usize) -> Directive {
 /// # Returns
 ///
 /// [`Directive::Budget`] for `custom "budget" <Account> "<period>" <amount>
-/// <Currency>`, [`Directive::Other`] for any other custom type.
+/// <Currency>`, [`Directive::MalformedBudget`] for a `"budget"` line that
+/// does not fit that shape, and [`Directive::Other`] for any other custom
+/// type.
+fn custom_directive(date: bc_sdk::Date, rest: &str, line: usize) -> Directive {
+    let mut input = rest;
+    let Ok(kind) = quoted_string(&mut input) else {
+        return Directive::Other;
+    };
+    if kind != "budget" {
+        return Directive::Other;
+    }
+    match budget_body(date, input, line) {
+        Ok(budget) => Directive::Budget(budget),
+        Err(reason) => Directive::MalformedBudget { line, reason },
+    }
+}
+
+/// Parses the `<Account> "<period>" <amount> <Currency>` tail of a budget
+/// directive.
+///
+/// # Arguments
+///
+/// * `date` - The directive date.
+/// * `input` - The text after `custom "budget"`.
+/// * `line` - The 1-based source line number.
 ///
 /// # Errors
 ///
-/// Returns an error naming the line if a budget directive has an unknown
-/// period word, no amount, no currency, or an amount that does not evaluate.
-fn custom_directive(date: bc_sdk::Date, rest: &str, line: usize) -> Result<Directive, String> {
-    let mut input = rest;
-    let Ok(kind) = quoted_string(&mut input) else {
-        return Ok(Directive::Other);
-    };
-    if kind != "budget" {
-        return Ok(Directive::Other);
-    }
+/// Returns a message naming the missing or unreadable part: the account, the
+/// quoted period word, the amount, the currency, or an amount that does not
+/// evaluate. The message carries no line number; the caller adds the
+/// location.
+fn budget_body(date: bc_sdk::Date, input: &str, line: usize) -> Result<Budget, String> {
     let body = input.split(';').next().unwrap_or(input).trim();
+    if body.is_empty() {
+        return Err("budget directive has no account".to_owned());
+    }
     let (account, after_account) = body
         .split_once(char::is_whitespace)
-        .ok_or_else(|| format!("line {line}: budget directive has no period"))?;
+        .ok_or_else(|| "budget directive has no period".to_owned())?;
     let mut after_account = after_account.trim_start();
     let word = quoted_string(&mut after_account)
-        .map_err(|_| format!("line {line}: budget directive has no quoted period"))?;
-    let period = crate::ast::BudgetPeriod::parse(&word)
-        .ok_or_else(|| format!("line {line}: unknown budget period '{word}'"))?;
+        .map_err(|_| "budget directive has no quoted period".to_owned())?;
+    let period =
+        BudgetPeriod::parse(&word).ok_or_else(|| format!("unknown budget period '{word}'"))?;
     let tail = after_account.trim();
-    let (amount_str, currency) = tail
-        .rsplit_once(char::is_whitespace)
-        .ok_or_else(|| format!("line {line}: budget directive has no amount and currency"))?;
-    let amount = crate::expr::eval(amount_str.trim()).map_err(|e| {
-        format!(
-            "line {line}: bad budget amount '{}': {e}",
-            amount_str.trim()
-        )
+    let (amount_str, currency) = tail.rsplit_once(char::is_whitespace).ok_or_else(|| {
+        if tail.is_empty() {
+            "budget directive has no amount".to_owned()
+        } else {
+            format!("budget directive needs an amount and a currency, found '{tail}'")
+        }
     })?;
-    Ok(Directive::Budget(crate::ast::Budget {
+    let currency = currency.trim();
+    if !is_commodity_code(currency) {
+        return Err(format!(
+            "budget directive has no currency: '{currency}' is not a commodity code"
+        ));
+    }
+    let amount_str = amount_str.trim();
+    let amount = crate::expr::eval(amount_str)
+        .map_err(|e| format!("bad budget amount '{amount_str}': {e}"))?;
+    Ok(Budget {
         date,
         account: account.to_owned(),
         period,
         amount,
-        currency: currency.trim().to_owned(),
+        currency: currency.to_owned(),
         line,
-    }))
+    })
+}
+
+/// Reports whether `token` is a Beancount commodity code: an ASCII capital
+/// followed by capitals, digits or any of `'._-`.
+///
+/// # Arguments
+///
+/// * `token` - The candidate, already trimmed.
+fn is_commodity_code(token: &str) -> bool {
+    let mut chars = token.chars();
+    chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || "'._-".contains(c))
 }
 
 /// Parses the payee/narration/tags portion of a transaction header.
@@ -639,8 +682,6 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::ast::Budget;
-    use crate::ast::BudgetPeriod;
     use crate::ast::Directive;
     use crate::ast::TxFlag;
 
@@ -970,21 +1011,45 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[case(
-        "2026-01-01 custom \"budget\" Expenses:Widgets \"fortnightly\" 5.00 AUD\n",
-        "period"
-    )]
-    #[case(
-        "2026-01-01 custom \"budget\" Expenses:Widgets \"monthly\" (1 + AUD\n",
-        "line 1"
-    )]
-    #[case(
-        "2026-01-01 custom \"budget\" Expenses:Widgets \"monthly\"\n",
-        "amount"
-    )]
-    fn malformed_budget_directive_errors(#[case] input: &str, #[case] fragment: &str) {
-        let err = parse(input).expect_err("malformed");
-        assert!(err.contains(fragment), "{err}");
+    #[case("\"fortnightly\" 5.00 AUD", "unknown budget period 'fortnightly'")]
+    #[case("\"monthly\" (1 + 2 AUD", "unbalanced parenthesis")]
+    #[case("\"monthly\"", "no amount")]
+    #[case("\"monthly\" 500.00", "needs an amount and a currency")]
+    #[case("\"monthly\" (1 + 2)", "'2)' is not a commodity code")]
+    #[case("\"monthly\" 500.00 aud", "'aud' is not a commodity code")]
+    #[case("\"Monthly\" 500.00 AUD", "unknown budget period 'Monthly'")]
+    #[case("", "no period")]
+    #[case("monthly 500.00 AUD", "no quoted period")]
+    fn malformed_budget_directive_is_carried(#[case] tail: &str, #[case] fragment: &str) {
+        let input = format!("2026-01-01 custom \"budget\" Expenses:Widgets {tail}\n");
+        let directives = parse(&input).expect("a malformed budget does not fail the parse");
+        let [Directive::MalformedBudget { line, reason }] = directives.as_slice() else {
+            panic!("expected one MalformedBudget, got {directives:?}");
+        };
+        assert_eq!(*line, 1);
+        assert!(reason.contains(fragment), "{reason}");
+    }
+
+    #[test]
+    fn budget_with_empty_body_is_carried() {
+        let directives = parse("2026-01-01 custom \"budget\"\n").expect("parse");
+        let [Directive::MalformedBudget { reason, .. }] = directives.as_slice() else {
+            panic!("expected one MalformedBudget, got {directives:?}");
+        };
+        assert!(reason.contains("no account"), "{reason}");
+    }
+
+    #[test]
+    fn malformed_budget_does_not_block_following_transaction() {
+        let input = "2026-01-01 custom \"budget\" Expenses:Widgets \"monthly\"\n\
+                     2026-01-02 * \"Generic Store\" \"Widgets\"\n  Expenses:Widgets  5.00 AUD\n  Assets:Bank\n";
+        let directives = parse(input).expect("parse");
+        assert_eq!(directives.len(), 2);
+        assert!(matches!(
+            directives.first(),
+            Some(Directive::MalformedBudget { .. })
+        ));
+        assert!(matches!(directives.get(1), Some(Directive::Transaction(_))));
     }
 
     #[test]
