@@ -1013,7 +1013,9 @@ impl Config {
             }
         }
 
-        let mut since_dates: Vec<Option<jiff::civil::Date>> =
+        // A malformed `since` is reported on its own; it takes no part in the
+        // same-date check, so it is held apart from a genuinely undated entry.
+        let mut since_dates: Vec<Option<Option<jiff::civil::Date>>> =
             Vec::with_capacity(self.commodity_aliases.len());
         for (index, entry) in self.commodity_aliases.iter().enumerate() {
             if entry.from.trim().is_empty() {
@@ -1028,7 +1030,7 @@ impl Config {
                 ));
             }
             match entry.since_date() {
-                Ok(since) => since_dates.push(since),
+                Ok(since) => since_dates.push(Some(since)),
                 Err(detail) => {
                     problems.push(format!(
                         "commodity_aliases[{index}].since is not a YYYY-MM-DD date: {detail}"
@@ -1040,6 +1042,7 @@ impl Config {
         for (later, entry) in self.commodity_aliases.iter().enumerate() {
             for earlier in 0..later {
                 if self.commodity_aliases[earlier].from == entry.from
+                    && since_dates[later].is_some()
                     && since_dates[earlier] == since_dates[later]
                 {
                     problems.push(format!(
@@ -1470,6 +1473,18 @@ mod tests {
                 .contains("commodity_aliases[0] and commodity_aliases[1] both map \"FOO\""),
             "{err}"
         );
+    }
+
+    /// A `since` that will not parse is already reported; it must not also
+    /// read as "undated" and collide with an entry that really is.
+    #[test]
+    fn validate_does_not_pair_a_malformed_since_with_an_undated_alias() {
+        let err = aliased(&[("FOO", "BAR", Some("01/02/2024")), ("FOO", "BAZ", None)])
+            .validate()
+            .expect_err("rejected");
+        let text = err.to_string();
+        assert!(text.contains("commodity_aliases[0].since"), "{text}");
+        assert!(!text.contains("from the same date"), "{text}");
     }
 
     #[test]
