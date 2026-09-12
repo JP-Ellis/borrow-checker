@@ -490,6 +490,7 @@ version = "0.1.0"
 dependencies = [
  "bc-sdk",
  "pretty_assertions",
+ "rstest",
  "rust_decimal",
  "rust_decimal_macros",
  "serde",
@@ -549,6 +550,7 @@ dependencies = [
  "jiff",
  "pretty_assertions",
  "rust_decimal",
+ "rust_decimal_macros",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",

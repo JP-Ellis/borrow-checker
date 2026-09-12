@@ -8,6 +8,7 @@
 
 mod ast;
 mod config;
+mod number;
 mod parser;
 mod source;
 

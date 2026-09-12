@@ -23,8 +23,9 @@ wasmtime      = { workspace = true }
 wasmtime-wasi = { workspace = true }
 
 [dev-dependencies]
-pretty_assertions = { workspace = true }
-tokio             = { workspace = true }
+pretty_assertions   = { workspace = true }
+rust_decimal_macros = { workspace = true }
+tokio               = { workspace = true }
 
 [features]
 # Conversion from bc-plugins::PluginImporter into bc-ipc::PluginInfo (native/Tauri side only).
