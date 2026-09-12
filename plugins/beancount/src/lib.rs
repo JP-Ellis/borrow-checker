@@ -167,6 +167,72 @@ fn meta_entries(entries: Vec<ast::MetaEntry>) -> Vec<MetaEntry> {
         .collect()
 }
 
+pub use ast::BudgetPeriod;
+
+/// One Fava budget directive with its source location.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct Budget {
+    /// The directive date.
+    pub date: bc_sdk::Date,
+    /// The colon-separated account path.
+    pub account: String,
+    /// The period word, in Fava's vocabulary.
+    pub period: BudgetPeriod,
+    /// The evaluated amount.
+    pub amount: rust_decimal::Decimal,
+    /// The commodity code.
+    pub currency: String,
+    /// `file:line`, as the importer reports transactions.
+    pub location: String,
+}
+
+/// Reads every Fava budget directive reachable from `root`, in document order.
+///
+/// A native-only companion to [`BeancountImporter`]: the importer ABI carries
+/// transactions alone, so a tool that wants the ledger's budgets calls this
+/// directly. Includes are followed the same way.
+///
+/// # Arguments
+///
+/// * `root` - Path to the ledger's root file.
+///
+/// # Returns
+///
+/// The budget directives, in document order across the include graph.
+///
+/// # Errors
+///
+/// Returns [`ImportError`] if a file cannot be read or fails to parse.
+#[inline]
+pub fn budgets(root: &str) -> Result<Vec<Budget>, ImportError> {
+    let loaded = source::load(root)?;
+    for warning in &loaded.warnings {
+        bc_sdk::warn!("beancount ledger warning"; detail = warning);
+    }
+    Ok(loaded
+        .directives
+        .into_iter()
+        .filter_map(|Sourced { file, directive }| {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "only the budget variant is wanted"
+            )]
+            match directive {
+                Directive::Budget(budget) => Some(Budget {
+                    date: budget.date,
+                    account: budget.account,
+                    period: budget.period,
+                    amount: budget.amount,
+                    currency: budget.currency,
+                    location: format!("{file}:{}", budget.line),
+                }),
+                _ => None,
+            }
+        })
+        .collect())
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -455,6 +521,46 @@ mod tests {
         assert!(
             location.uri.is_none(),
             "the beancount plugin does not populate a uri"
+        );
+    }
+
+    #[test]
+    fn budgets_follows_includes_and_reports_locations() {
+        let dir = std::env::temp_dir().join("bc-beancount-budgets");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join("main.bean"),
+            "option \"title\" \"Household\"\n\ninclude \"budgets.bean\"\n",
+        )
+        .expect("write root");
+        std::fs::write(
+            dir.join("budgets.bean"),
+            "2026-01-01 custom \"budget\" Expenses:Widgets \"monthly\" 500.00 AUD\n\
+             2026-02-01 * \"Generic Store\" \"Widgets\"\n  Expenses:Widgets   50.00 AUD\n  Assets:Bank\n\
+             2026-03-01 custom \"budget\" Expenses:Widgets \"yearly\" (6 * 100) AUD\n",
+        )
+        .expect("write included");
+
+        let root = dir.join("main.bean").to_str().expect("utf8").to_owned();
+        let found = budgets(&root).expect("budgets");
+        assert_eq!(found.len(), 2);
+        let first = found.first().expect("first");
+        assert_eq!(first.account, "Expenses:Widgets");
+        assert_eq!(first.period, BudgetPeriod::Monthly);
+        assert_eq!(first.amount, rust_decimal_macros::dec!(500.00));
+        assert_eq!(first.currency, "AUD");
+        assert!(
+            first.location.ends_with("budgets.bean:1"),
+            "{}",
+            first.location
+        );
+        let second = found.get(1).expect("second");
+        assert_eq!(second.amount, rust_decimal_macros::dec!(600));
+        assert!(
+            second.location.ends_with("budgets.bean:5"),
+            "{}",
+            second.location
         );
     }
 }
