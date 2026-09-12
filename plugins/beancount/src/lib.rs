@@ -13,6 +13,7 @@ mod number;
 mod parser;
 mod source;
 
+pub use ast::BudgetPeriod;
 use bc_sdk::Amount;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
@@ -166,8 +167,6 @@ fn meta_entries(entries: Vec<ast::MetaEntry>) -> Vec<MetaEntry> {
         })
         .collect()
 }
-
-pub use ast::BudgetPeriod;
 
 /// One Fava budget directive with its source location.
 #[derive(Debug, Clone, PartialEq)]

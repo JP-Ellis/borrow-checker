@@ -163,6 +163,10 @@ impl Cursor<'_> {
 ///
 /// Returns an error if `raw` (with its separators stripped) does not parse as
 /// a decimal.
+///
+/// `,` is stripped wherever it appears in `raw`, without checking that it
+/// falls on a three-digit boundary. Fava is the only source of these
+/// strings, so a malformed grouping is not worth rejecting.
 fn number(raw: &str) -> Result<Decimal, String> {
     let plain: String = raw.chars().filter(|c| *c != ',').collect();
     plain
