@@ -726,7 +726,8 @@ impl Service {
     /// `closed_on`, which must not precede it — see [`Self::close`].
     ///
     /// Appends an [`Event::AccountOpenedOnChanged`] carrying both the previous
-    /// and the new date, so the correction is auditable and reversible.
+    /// and the new date, so the correction is auditable and reversible. A
+    /// value equal to the stored one is a no-op: nothing is logged or written.
     ///
     /// # Arguments
     ///
@@ -773,6 +774,12 @@ impl Service {
             .map(str::parse::<jiff::civil::Date>)
             .transpose()
             .map_err(|e| BcError::BadData(format!("invalid opened_on: {e}")))?;
+
+        // No change, no event: a repeated write is not a correction, and an
+        // undo walk over the log should not meet an entry that changes nothing.
+        if from == opened_on {
+            return Ok(());
+        }
 
         insert_event(
             &Event::AccountOpenedOnChanged {
@@ -1256,8 +1263,8 @@ async fn create_in_tx(
     //
     // A closed or archived account may not gain an open, active child. `close`
     // and `archive` hold that invariant from above; this holds it from below,
-    // as `reopen` does. Archived is checked first: an archived account is
-    // usually also closed, and archived is the stronger state.
+    // as `reopen` does. The two states are independent columns; when both are
+    // set, archived wins the error message as the stronger state.
     if let Some(parent) = parent_id {
         let parent_row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
             "SELECT account_type, closed_on, archived_at FROM accounts WHERE id = ?",
@@ -3152,6 +3159,36 @@ mod tests {
                 (Some(jiff::civil::date(2021, 6, 1)), None),
             ],
             "each correction logs the previous value as `from` so undo can walk it"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_opened_on_to_the_stored_value_appends_no_event(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+
+        svc.set_opened_on(&checking, Some(jiff::civil::date(2020, 1, 1)))
+            .await
+            .expect("first set");
+        svc.set_opened_on(&checking, Some(jiff::civil::date(2020, 1, 1)))
+            .await
+            .expect("repeating the same date is a no-op");
+        svc.set_opened_on(&checking, None).await.expect("clear");
+        svc.set_opened_on(&checking, None)
+            .await
+            .expect("clearing an undeclared date is a no-op");
+
+        let store = crate::events::SqliteStore::new(pool);
+        let changes = store
+            .replay_for(&checking.to_string())
+            .await
+            .expect("replay")
+            .iter()
+            .filter(|e| e.kind == "AccountOpenedOnChanged")
+            .count();
+        assert_eq!(
+            changes, 2,
+            "only the two writes that changed the date are logged"
         );
     }
 
