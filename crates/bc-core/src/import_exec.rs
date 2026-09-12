@@ -5608,6 +5608,42 @@ mod tests {
         assert_eq!(recorded, 2, "household and household:food");
     }
 
+    /// Import, discard, import: the tag tree ends where it started plus one
+    /// run's worth, not two — a discarded run's tags go with it, and the
+    /// second run mints them afresh and says so.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn import_discard_import_leaves_the_tag_tree_flat(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("groceries")
+            .tags(vec!["household:food".to_owned()])
+            .postings(vec![leg("Assets:Bank", Some(50_i64))])
+            .build();
+
+        let first = run(&svcs, std::slice::from_ref(&raw)).await;
+        let discarded = svcs
+            .batches
+            .discard(&first.batch_id)
+            .await
+            .expect("discard");
+        assert_eq!(discarded.removed_tags, 2, "household and household:food");
+
+        let second = run(&svcs, &[raw]).await;
+
+        assert_eq!(
+            second.created_tags,
+            vec!["household:food".to_owned()],
+            "the second run mints the path again, as the first did"
+        );
+        let tags: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags")
+            .fetch_one(&pool)
+            .await
+            .expect("count tags");
+        assert_eq!(tags, 2, "one run's tags, not two runs' worth");
+    }
+
     /// A tag path that will not parse warns once and is dropped; the leg it was
     /// stated on still persists. Unlike an unresolved account or commodity, a
     /// bad tag never costs the leg — tags are decoration, the amount is the
