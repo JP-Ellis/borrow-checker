@@ -3295,7 +3295,15 @@ mod tests {
             .await
             .expect("net worth");
 
+        assert_eq!(report.total, Amount::new(Decimal::ZERO, "AUD"));
         assert_eq!(report.unvalued.get("BTC"), Some(dec!(0.25)));
-        assert_eq!(report.rows.len(), 1);
+        assert_eq!(
+            report
+                .rows
+                .iter()
+                .map(|row| (row.balance.clone(), row.valuation.clone()))
+                .collect::<Vec<_>>(),
+            vec![(Amount::new(dec!(0.25), "BTC"), Valuation::Unvalued)]
+        );
     }
 }

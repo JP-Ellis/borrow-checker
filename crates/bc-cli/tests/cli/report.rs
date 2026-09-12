@@ -339,3 +339,33 @@ fn net_worth_json_lists_a_holding_it_cannot_value() {
     cmd.args(["--json", "report", "net-worth"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+#[test]
+fn net_worth_reports_in_the_requested_commodity() {
+    let ctx = TestContext::new();
+    let (checking_id, interest_id) = setup_accounts(&ctx);
+
+    for (n, amount, commodity) in [("1", "100.00", "AUD"), ("2", "40.00", "USD")] {
+        ctx.command()
+            .args([
+                "transaction",
+                "add",
+                "--date",
+                "2026-01-01",
+                "--description",
+                &format!("Deposit {n}"),
+                "--posting",
+                &format!("{checking_id}:{amount}:{commodity}"),
+                "--posting",
+                &format!("{interest_id}:-{amount}:{commodity}"),
+            ])
+            .output()
+            .expect("add transaction");
+    }
+
+    // The USD holding is native and the AUD one unvalued, which the default
+    // commodity would invert.
+    let mut cmd = ctx.command();
+    cmd.args(["report", "net-worth", "--commodity", "USD"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
