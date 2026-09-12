@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/src/commands/report.rs
+expression: "NetWorthView::new(&report).render()"
+---
+ ACCOUNT | KIND    | BALANCE | CCY | IN AUD 
+============================================
+ Savings | deposit | 100.00  | AUD | 100.00 
+
+Net Worth: 100.00 AUD

@@ -1,0 +1,16 @@
+---
+source: crates/bc-cli/src/commands/report.rs
+expression: "NetWorthView::new(&net_worth_report()).render()"
+---
+ ACCOUNT | KIND         | BALANCE | CCY | IN AUD 
+=================================================
+ House   | manual asset | 300000  | USD | 450000 
+---------+--------------+---------+-----+--------
+ Savings | deposit      | 100.00  | AUD | 100.00 
+---------+--------------+---------+-----+--------
+ Wallet  | deposit      | 0.5     | BTC | -      
+
+Net Worth: 450100.00 AUD
+
+note: the total includes holdings converted at a rate: 300000 USD
+note: not valued in AUD and left out of the total: 0.5 BTC

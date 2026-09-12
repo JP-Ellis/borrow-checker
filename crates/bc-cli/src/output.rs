@@ -32,6 +32,19 @@ where
 /// * `rows` - Table rows; each inner `Vec<String>` is one row of cell values.
 #[inline]
 pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+    println!("{}", format_table(headers, rows));
+}
+
+/// Renders a table in the same ASCII style [`print_table`] prints, without
+/// the trailing newline.
+///
+/// # Arguments
+///
+/// * `headers` - Column header labels.
+/// * `rows` - Table rows; each inner `Vec<String>` is one row of cell values.
+#[inline]
+#[must_use]
+pub fn format_table(headers: &[&str], rows: &[Vec<String>]) -> String {
     let mut table = comfy_table::Table::new();
     table
         .load_style(comfy_table::presets::ASCII_NO_BORDERS)
@@ -39,5 +52,5 @@ pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     for row in rows {
         table.add_row(row.clone());
     }
-    println!("{table}");
+    table.to_string()
 }

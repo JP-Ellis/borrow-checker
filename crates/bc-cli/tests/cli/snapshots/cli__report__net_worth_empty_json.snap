@@ -8,7 +8,8 @@ exit_code: 0
 {
   "accounts": [],
   "commodity": "AUD",
-  "total": "0"
+  "converted": {},
+  "total": "0",
+  "unvalued": {}
 }
 ----- stderr -----
-note: net-worth shows AUD balances only; multi-currency support requires Milestone 5

@@ -1,6 +1,7 @@
 //! Service for recording asset valuations and calculating depreciation.
 
 use bc_models::AccountId;
+use bc_models::Amount;
 use bc_models::DepreciationId;
 use bc_models::DepreciationPolicy;
 use bc_models::PostingId;
@@ -314,6 +315,41 @@ impl Service {
         row.map(|(s,)| {
             s.parse::<Decimal>()
                 .map_err(|e| BcError::BadData(format!("invalid market_value '{s}': {e}")))
+        })
+        .transpose()
+    }
+
+    /// Returns the most recent valuation for `account_id` in whatever commodity
+    /// it was recorded.
+    ///
+    /// Returns `None` if no valuations have been recorded. Ordering matches
+    /// [`Self::latest_market_value`]: `recorded_at DESC`, then `created_at DESC`.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account whose valuation is queried.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or data parse failure.
+    #[inline]
+    pub async fn latest_valuation(&self, account_id: &AccountId) -> BcResult<Option<Amount>> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT market_value, commodity \
+             FROM asset_valuations \
+             WHERE account_id = ? \
+             ORDER BY recorded_at DESC, created_at DESC \
+             LIMIT 1",
+        )
+        .bind(account_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(|(raw, commodity)| {
+            let value = raw
+                .parse::<Decimal>()
+                .map_err(|e| BcError::BadData(format!("invalid market_value '{raw}': {e}")))?;
+            Ok(Amount::new(value, commodity))
         })
         .transpose()
     }
@@ -784,6 +820,37 @@ mod tests {
             .await
             .expect("query");
         assert_eq!(mv, Some(dec!(650_000)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn latest_valuation_ignores_commodity(pool: SqlitePool) {
+        let account_id = make_manual_asset(&pool).await;
+        let svc = super::Service::new(pool.clone());
+
+        svc.record_valuation(
+            &account_id,
+            dec!(500_000),
+            "AUD",
+            ValuationSource::ManualEstimate,
+            jiff::civil::date(2024, 1, 1),
+            None,
+        )
+        .await
+        .expect("first valuation");
+
+        svc.record_valuation(
+            &account_id,
+            dec!(300_000),
+            "USD",
+            ValuationSource::MarketData,
+            jiff::civil::date(2025, 6, 1),
+            None,
+        )
+        .await
+        .expect("second valuation");
+
+        let latest = svc.latest_valuation(&account_id).await.expect("query");
+        assert_eq!(latest, Some(bc_models::Amount::new(dec!(300_000), "USD")));
     }
 
     #[sqlx::test(migrations = "./migrations")]

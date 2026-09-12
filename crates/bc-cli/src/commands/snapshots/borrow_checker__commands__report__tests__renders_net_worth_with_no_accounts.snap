@@ -1,0 +1,5 @@
+---
+source: crates/bc-cli/src/commands/report.rs
+expression: "NetWorthView::new(&report).render()"
+---
+No asset or liability accounts.

@@ -33,6 +33,8 @@ pub struct AppContext {
     pub budgets: bc_core::BudgetService,
     /// Budget status engine.
     pub budget_status: bc_core::BudgetStatusEngine,
+    /// Rate source for reports that value one commodity in another.
+    pub fx: std::sync::Arc<dyn bc_core::FxRateService>,
     /// Tag service.
     pub tags: bc_core::TagService,
     /// Metadata key registry.
@@ -96,6 +98,7 @@ impl AppContext {
         let commodities = bc_core::CommodityService::new(pool.clone());
         commodities.seed_defaults().await?;
 
+        let fx = bc_core::noop_fx();
         Ok(Self {
             json,
             fortnightly_anchor: settings.fortnightly_anchor(),
@@ -120,7 +123,8 @@ impl AppContext {
             batches: bc_core::ImportBatchService::new(pool.clone()),
             auto_pre_import: backup_section.auto_pre_import(),
             auto_pre_discard: backup_section.auto_pre_discard(),
-            budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
+            budget_status: bc_core::BudgetStatusEngine::new(pool, std::sync::Arc::clone(&fx)),
+            fx,
         })
     }
 }

@@ -3,7 +3,6 @@
 use core::fmt::Write as _;
 
 use bc_core::search::TransactionQuery;
-use bc_models::AccountType;
 use clap::Subcommand;
 use rust_decimal::Decimal;
 
@@ -26,7 +25,12 @@ pub struct Args {
 #[non_exhaustive]
 pub enum Command {
     /// Net worth across all asset and liability accounts.
-    NetWorth,
+    NetWorth {
+        /// Commodity to report in. A holding in another commodity is
+        /// converted when a rate exists and listed as unvalued when none does.
+        #[arg(long, default_value = "AUD")]
+        commodity: String,
+    },
     /// Transaction summary for a configurable time period.
     Summary {
         /// Period granularity. The period instance containing `--date` is used.
@@ -70,7 +74,7 @@ pub enum Command {
 #[inline]
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
-        Command::NetWorth => net_worth(ctx).await,
+        Command::NetWorth { commodity } => net_worth(ctx, &commodity).await,
         Command::Summary { period, date, fy } => summary(ctx, period, date, fy).await,
         Command::Categories {
             period,
@@ -125,138 +129,23 @@ fn resolve_window(
     Ok(crate::period::resolve(period, &inputs)?.range_containing(anchor))
 }
 
-/// Net-worth report: balance of every asset and liability account.
-///
-/// Uses [`bc_core::AssetService::latest_market_value`] for
-/// [`bc_models::AccountKind::ManualAsset`] accounts and
-/// [`bc_core::BalanceEngine::balance_for`] for all others.
+/// Net-worth report: every holding of every asset and liability account,
+/// valued in `commodity` where a rate allows.
 ///
 /// # Errors
 ///
-/// Propagates [`crate::error::CliError`] from the account, asset, or balance service.
-#[expect(
-    clippy::too_many_lines,
-    reason = "report function spans table setup and output"
-)]
-async fn net_worth(ctx: &AppContext) -> CliResult<()> {
-    const COMMODITY: &str = "AUD";
-
-    /// Returns a stable, user-friendly string for an [`bc_models::AccountKind`].
-    fn kind_label(kind: bc_models::AccountKind) -> &'static str {
-        match kind {
-            bc_models::AccountKind::DepositAccount => "deposit",
-            bc_models::AccountKind::ManualAsset => "manual asset",
-            bc_models::AccountKind::Receivable => "receivable",
-            bc_models::AccountKind::VirtualAllocation => "virtual",
-            bc_models::AccountKind::Group => "group",
-            _ => "unknown",
-        }
-    }
-
-    #[expect(clippy::print_stderr, reason = "user-visible limitation warning")]
-    {
-        eprintln!(
-            "note: net-worth shows {COMMODITY} balances only; multi-currency support requires Milestone 5"
-        );
-    }
-
-    let total = ctx.balances.net_worth(COMMODITY).await?.value();
-    let accounts = ctx.accounts.list_active().await?;
+/// Propagates [`crate::error::CliError`] from the balance engine or output layer.
+async fn net_worth(ctx: &AppContext, commodity: &str) -> CliResult<()> {
+    let report = ctx.balances.net_worth(commodity, ctx.fx.as_ref()).await?;
+    let view = NetWorthView::new(&report);
 
     if ctx.json {
-        let mut rows = Vec::new();
-        for account in &accounts {
-            #[expect(
-                clippy::wildcard_enum_match_arm,
-                reason = "AccountType is non_exhaustive; unknown future variants are skipped"
-            )]
-            match account.account_type() {
-                AccountType::Asset | AccountType::Liability => {}
-                _ => continue,
-            }
-            let balance = {
-                #[expect(
-                    clippy::wildcard_enum_match_arm,
-                    reason = "AccountKind is non_exhaustive; fall through to posting-based balance"
-                )]
-                match account.kind() {
-                    bc_models::AccountKind::ManualAsset => ctx
-                        .assets
-                        .latest_market_value(account.id(), COMMODITY)
-                        .await?
-                        .unwrap_or(Decimal::ZERO),
-                    _ => ctx
-                        .balances
-                        .balance_for(account.id(), COMMODITY)
-                        .await?
-                        .value(),
-                }
-            };
-            rows.push(serde_json::json!({
-                "account": account.name(),
-                "kind": kind_label(account.kind()),
-                "commodity": COMMODITY,
-                "balance": balance.to_string(),
-            }));
-        }
-        let summary = serde_json::json!({
-            "accounts": rows,
-            "total": total.to_string(),
-            "commodity": COMMODITY,
-        });
-        return crate::output::print_json(&summary);
+        return crate::output::print_json(&view.to_json());
     }
-
-    // Human-readable table.
-    let mut table_rows: Vec<Vec<String>> = Vec::new();
-    for account in &accounts {
-        #[expect(
-            clippy::wildcard_enum_match_arm,
-            reason = "AccountType is non_exhaustive; unknown future variants are skipped"
-        )]
-        match account.account_type() {
-            AccountType::Asset | AccountType::Liability => {}
-            _ => continue,
-        }
-        let balance = {
-            #[expect(
-                clippy::wildcard_enum_match_arm,
-                reason = "AccountKind is non_exhaustive; fall through to posting-based balance"
-            )]
-            match account.kind() {
-                bc_models::AccountKind::ManualAsset => ctx
-                    .assets
-                    .latest_market_value(account.id(), COMMODITY)
-                    .await?
-                    .unwrap_or(Decimal::ZERO),
-                _ => ctx
-                    .balances
-                    .balance_for(account.id(), COMMODITY)
-                    .await?
-                    .value(),
-            }
-        };
-        table_rows.push(vec![
-            account.name().to_owned(),
-            kind_label(account.kind()).to_owned(),
-            balance.to_string(),
-            COMMODITY.to_owned(),
-        ]);
-    }
-
-    if table_rows.is_empty() {
-        #[expect(clippy::print_stdout, reason = "CLI output")]
-        {
-            println!("No asset or liability accounts.");
-        }
-        return Ok(());
-    }
-
-    crate::output::print_table(&["ACCOUNT", "KIND", "BALANCE", "CCY"], &table_rows);
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        println!("\nNet Worth: {total} {COMMODITY}");
+        print!("{}", view.render());
     }
     Ok(())
 }
@@ -427,6 +316,156 @@ async fn categories(
 
 // MARK: Rendering
 
+/// Renders a [`bc_core::NetWorth`] as a table or JSON.
+struct NetWorthView<'a> {
+    /// The report to render.
+    report: &'a bc_core::NetWorth,
+}
+
+impl<'a> NetWorthView<'a> {
+    /// Wraps `report` for rendering.
+    fn new(report: &'a bc_core::NetWorth) -> Self {
+        Self { report }
+    }
+
+    /// Returns a stable, user-friendly string for an [`bc_models::AccountKind`].
+    fn kind_label(kind: bc_models::AccountKind) -> &'static str {
+        match kind {
+            bc_models::AccountKind::DepositAccount => "deposit",
+            bc_models::AccountKind::ManualAsset => "manual asset",
+            bc_models::AccountKind::Receivable => "receivable",
+            bc_models::AccountKind::VirtualAllocation => "virtual",
+            bc_models::AccountKind::Group => "group",
+            _ => "unknown",
+        }
+    }
+
+    /// The amount a row contributed to the total, or `None` if it was unvalued.
+    fn in_total(row: &bc_core::NetWorthRow) -> Option<Decimal> {
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "Valuation is non_exhaustive; a future variant is treated as unvalued"
+        )]
+        match &row.valuation {
+            bc_core::Valuation::Native => Some(row.balance.value()),
+            bc_core::Valuation::Converted(amount) => Some(amount.value()),
+            _ => None,
+        }
+    }
+
+    /// Formats `balances` as `0.5 BTC, 100.00 USD`.
+    fn list(balances: &bc_models::Balances) -> String {
+        balances
+            .iter()
+            .map(|(code, value)| format!("{value} {code}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Formats the report as a table, the total, and any notes.
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "writing into a String via core::fmt::Write is infallible"
+    )]
+    fn render(&self) -> String {
+        let commodity = self.report.total.commodity().as_str();
+        let mut out = String::new();
+
+        if self.report.rows.is_empty() {
+            out.push_str("No asset or liability accounts.\n");
+            return out;
+        }
+
+        let in_total = format!("IN {commodity}");
+        let rows: Vec<Vec<String>> = self
+            .report
+            .rows
+            .iter()
+            .map(|row| {
+                vec![
+                    row.name.clone(),
+                    Self::kind_label(row.kind).to_owned(),
+                    row.balance.value().to_string(),
+                    row.balance.commodity().to_string(),
+                    Self::in_total(row).map_or_else(|| "-".to_owned(), |v| v.to_string()),
+                ]
+            })
+            .collect();
+        out.push_str(&crate::output::format_table(
+            &["ACCOUNT", "KIND", "BALANCE", "CCY", &in_total],
+            &rows,
+        ));
+        let _ = writeln!(
+            out,
+            "\n\nNet Worth: {} {commodity}",
+            self.report.total.value()
+        );
+
+        if !self.report.converted.is_empty() {
+            let _ = writeln!(
+                out,
+                "\nnote: the total includes holdings converted at a rate: {}",
+                Self::list(&self.report.converted)
+            );
+        }
+        if !self.report.unvalued.is_empty() {
+            let _ = writeln!(
+                out,
+                "{}note: not valued in {commodity} and left out of the total: {}",
+                if self.report.converted.is_empty() {
+                    "\n"
+                } else {
+                    ""
+                },
+                Self::list(&self.report.unvalued)
+            );
+        }
+        out
+    }
+
+    /// The JSON form: per-holding rows plus the converted and unvalued totals.
+    fn to_json(&self) -> serde_json::Value {
+        let balances = |balances: &bc_models::Balances| -> serde_json::Value {
+            balances
+                .iter()
+                .map(|(code, value)| (code.to_owned(), serde_json::Value::from(value.to_string())))
+                .collect::<serde_json::Map<_, _>>()
+                .into()
+        };
+        let accounts: Vec<serde_json::Value> = self
+            .report
+            .rows
+            .iter()
+            .map(|row| {
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "Valuation is non_exhaustive; a future variant is treated as unvalued"
+                )]
+                let valuation = match row.valuation {
+                    bc_core::Valuation::Native => "native",
+                    bc_core::Valuation::Converted(_) => "converted",
+                    _ => "unvalued",
+                };
+                serde_json::json!({
+                    "account": row.name,
+                    "kind": Self::kind_label(row.kind),
+                    "balance": row.balance.value().to_string(),
+                    "commodity": row.balance.commodity(),
+                    "valuation": valuation,
+                    "in_total": Self::in_total(row).map(|v| v.to_string()),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "accounts": accounts,
+            "total": self.report.total.value().to_string(),
+            "commodity": self.report.total.commodity(),
+            "converted": balances(&self.report.converted),
+            "unvalued": balances(&self.report.unvalued),
+        })
+    }
+}
+
 /// Renderable form of a category report, independent of any database.
 struct Rendered {
     /// Rows in pre-order.
@@ -512,6 +551,7 @@ mod tests {
     use jiff::civil::date;
     use rust_decimal_macros::dec;
 
+    use super::NetWorthView;
     use super::Rendered;
 
     /// Builds a row at `depth` with equal own and rolled-up totals.
@@ -566,6 +606,91 @@ mod tests {
             end: date(2026, 7, 1),
         };
         insta::assert_snapshot!(rendered.render());
+    }
+
+    /// A three-account report: a native AUD account, a BTC holding no rate
+    /// could value, and a USD-valued house that a rate converted.
+    fn net_worth_report() -> bc_core::NetWorth {
+        let row = |name: &str, kind, balance: bc_models::Amount, valuation| {
+            bc_core::NetWorthRow::new(
+                bc_models::AccountId::new(),
+                name.to_owned(),
+                kind,
+                balance,
+                valuation,
+            )
+        };
+        let mut converted = bc_models::Balances::new();
+        converted
+            .try_add(&bc_models::Amount::new(dec!(300000), "USD"))
+            .expect("fits");
+        let mut unvalued = bc_models::Balances::new();
+        unvalued
+            .try_add(&bc_models::Amount::new(dec!(0.5), "BTC"))
+            .expect("fits");
+        bc_core::NetWorth::new(
+            bc_models::Amount::new(dec!(450100.00), "AUD"),
+            vec![
+                row(
+                    "House",
+                    bc_models::AccountKind::ManualAsset,
+                    bc_models::Amount::new(dec!(300000), "USD"),
+                    bc_core::Valuation::Converted(bc_models::Amount::new(dec!(450000), "AUD")),
+                ),
+                row(
+                    "Savings",
+                    bc_models::AccountKind::DepositAccount,
+                    bc_models::Amount::new(dec!(100.00), "AUD"),
+                    bc_core::Valuation::Native,
+                ),
+                row(
+                    "Wallet",
+                    bc_models::AccountKind::DepositAccount,
+                    bc_models::Amount::new(dec!(0.5), "BTC"),
+                    bc_core::Valuation::Unvalued,
+                ),
+            ],
+            converted,
+            unvalued,
+        )
+    }
+
+    #[test]
+    fn renders_net_worth_with_converted_and_unvalued_holdings() {
+        insta::assert_snapshot!(NetWorthView::new(&net_worth_report()).render());
+    }
+
+    #[test]
+    fn net_worth_json_matches_its_snapshot() {
+        insta::assert_json_snapshot!(NetWorthView::new(&net_worth_report()).to_json());
+    }
+
+    #[test]
+    fn renders_net_worth_without_notes_when_everything_is_native() {
+        let report = bc_core::NetWorth::new(
+            bc_models::Amount::new(dec!(100.00), "AUD"),
+            vec![bc_core::NetWorthRow::new(
+                bc_models::AccountId::new(),
+                "Savings".to_owned(),
+                bc_models::AccountKind::DepositAccount,
+                bc_models::Amount::new(dec!(100.00), "AUD"),
+                bc_core::Valuation::Native,
+            )],
+            bc_models::Balances::new(),
+            bc_models::Balances::new(),
+        );
+        insta::assert_snapshot!(NetWorthView::new(&report).render());
+    }
+
+    #[test]
+    fn renders_net_worth_with_no_accounts() {
+        let report = bc_core::NetWorth::new(
+            bc_models::Amount::new(rust_decimal::Decimal::ZERO, "AUD"),
+            vec![],
+            bc_models::Balances::new(),
+            bc_models::Balances::new(),
+        );
+        insta::assert_snapshot!(NetWorthView::new(&report).render());
     }
 
     #[test]
