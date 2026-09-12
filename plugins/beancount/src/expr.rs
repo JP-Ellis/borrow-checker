@@ -156,13 +156,12 @@ impl Cursor<'_> {
 ///
 /// # Arguments
 ///
-/// * `raw` - The token, digits with optional `,` thousands separators and at
-///   most one `.`.
+/// * `raw` - The token: a run of digits, `.` and `,` as the cursor found it.
 ///
 /// # Errors
 ///
-/// Returns an error if `raw` (with its separators stripped) does not parse as
-/// a decimal.
+/// Returns an error if `raw` (with its `,` stripped) does not parse as a
+/// decimal — a second `.` is caught here, not by the cursor.
 ///
 /// `,` is stripped wherever it appears in `raw`, without checking that it
 /// falls on a three-digit boundary. Fava is the only source of these
@@ -202,8 +201,26 @@ mod tests {
     #[case("1 +", "expected a number")]
     #[case("abc", "expected a number")]
     #[case("1 2", "trailing")]
+    #[case("1.2.3", "bad number")]
     fn rejects(#[case] input: &str, #[case] fragment: &str) {
         let err = eval(input).expect_err("invalid expression");
         assert!(err.contains(fragment), "{err}");
+    }
+
+    #[rstest::rstest]
+    #[case("+ 1", "addition")]
+    #[case("- -1", "subtraction")]
+    #[case("* 2", "multiplication")]
+    #[case("/ 0.1", "division")]
+    fn rejects_overflow(#[case] operation: &str, #[case] fragment: &str) {
+        let input = format!("{} {operation}", Decimal::MAX);
+        let err = eval(&input).expect_err("overflow");
+        assert!(err.contains(fragment), "{err}");
+    }
+
+    #[test]
+    fn negation_of_min_is_max() {
+        let input = format!("-({})", Decimal::MIN);
+        assert_eq!(eval(&input).expect("negation"), Decimal::MAX);
     }
 }
