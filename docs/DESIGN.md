@@ -449,9 +449,18 @@ Multiple profiles can reference the same importer with different configuration. 
 > `postings.position` as contiguous from zero. Another batch's reference that
 > merely adopted a deleted posting is reported separately from one swept away
 > with its transaction: the first is left as a tombstone, keeping its slot,
-> and only the second is gone. Discard
+> and only the second is gone. Every tag the run created (recorded in
+> `import_batch_tags`, ancestors included) is deleted unless something else
+> has since named it — a membership added by hand or by a later run, a budget
+> filter, or a child tag that stays — in which case it is kept and counted
+> separately. Discard
 > means the run never happened, not that it is reverted — there is no
-> undiscard. It takes a `pre-discard` snapshot (`backup.auto_pre_discard`, see
+> undiscard. It is refused outright when a later, undiscarded batch owns a
+> live leg on a transaction this batch owns a live leg on: removing this
+> batch's leg would leave the later one describing money from nowhere, so the
+> error names the later batches, newest first, as the order to discard them
+> in. A refused discard writes nothing and takes no snapshot. Otherwise it
+> takes a `pre-discard` snapshot (`backup.auto_pre_discard`, see
 > §4.6) before writing, and records one `ImportBatchDiscarded` event carrying
 > the removal counts; restoring that snapshot is the recovery path if a
 > discard turns out to be a mistake.
