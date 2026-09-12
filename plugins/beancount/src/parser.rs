@@ -295,7 +295,7 @@ fn budget_body(date: bc_sdk::Date, input: &str, line: usize) -> Result<Budget, S
         ));
     }
     let amount_str = amount_str.trim();
-    let amount = crate::expr::eval(amount_str)
+    let amount = number::parse_number(amount_str)
         .map_err(|e| format!("bad budget amount '{amount_str}': {e}"))?;
     Ok(Budget {
         date,
@@ -679,6 +679,7 @@ fn quoted_string(input: &mut &str) -> ModalResult<String> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -1012,7 +1013,7 @@ mod tests {
 
     #[rstest::rstest]
     #[case("\"fortnightly\" 5.00 AUD", "unknown budget period 'fortnightly'")]
-    #[case("\"monthly\" (1 + 2 AUD", "unbalanced parenthesis")]
+    #[case("\"monthly\" (1 + 2 AUD", "expected ')' at end of input")]
     #[case("\"monthly\"", "no amount")]
     #[case("\"monthly\" 500.00", "needs an amount and a currency")]
     #[case("\"monthly\" (1 + 2)", "'2)' is not a commodity code")]
