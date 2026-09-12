@@ -577,3 +577,24 @@ fn period_display(period: &bc_models::Period) -> String {
         }
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use bc_models::Period;
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+
+    use super::period_display;
+
+    #[rstest]
+    #[case::daily(Period::Daily, "Daily")]
+    #[case::weekly(Period::Weekly, "Weekly")]
+    #[case::one_day_custom(
+        Period::Custom { days: Some(1), weeks: None, months: None },
+        "Custom (1d)"
+    )]
+    fn period_display_names_each_variant(#[case] period: Period, #[case] expected: &str) {
+        assert_eq!(period_display(&period), expected);
+    }
+}

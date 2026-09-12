@@ -150,6 +150,8 @@ impl From<SourceArg> for ValuationSource {
 #[non_exhaustive]
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum FrequencyArg {
+    /// Daily payments.
+    Daily,
     /// Weekly payments.
     Weekly,
     /// Fortnightly payments.
@@ -362,6 +364,7 @@ async fn set_loan_terms(
         .map_err(|e| crate::error::CliError::Arg(format!("invalid start date '{start}': {e}")))?;
 
     let repayment_frequency: bc_models::Period = match frequency {
+        FrequencyArg::Daily => bc_models::Period::Daily,
         FrequencyArg::Weekly => bc_models::Period::Weekly,
         FrequencyArg::Fortnightly => bc_models::Period::Fortnightly { anchor: start_date },
         FrequencyArg::Monthly => bc_models::Period::Monthly,
