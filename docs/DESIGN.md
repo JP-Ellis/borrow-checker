@@ -582,6 +582,7 @@ Conflict detection is a UI concern. The event log records raw postings; resoluti
 
 | Period | Notes |
 | ------------------ | ------------------------------------------------ |
+| Daily | Calendar day |
 | Weekly | Anchor: day of week |
 | Fortnightly | Anchor: specific date, 14-day stride |
 | Monthly | Calendar month |

@@ -795,6 +795,16 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
+    fn spark_label_names_a_daily_bucket_by_its_date() {
+        let start = jiff::civil::date(2026, 2, 28);
+        assert_eq!(
+            super::spark_label(start, &bc_models::Period::Daily),
+            "2026-02-28"
+        );
+        assert_eq!(super::spark_label(start, &bc_models::Period::Weekly), "w09");
+    }
+
+    #[test]
     fn metadata_from_preserves_order_and_drops_the_flag() {
         let entries = vec![
             bc_ipc::MetaEntryDto::flagged("payee", "Generic Grocer"),
