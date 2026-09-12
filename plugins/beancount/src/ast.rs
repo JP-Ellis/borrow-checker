@@ -42,6 +42,8 @@ pub(crate) enum Directive {
         /// The commodity code of the asserted balance.
         currency: String,
     },
+    /// A Fava `custom "budget"` directive.
+    Budget(Budget),
     /// An `include "path"` directive naming another file to splice in.
     Include {
         /// The path exactly as written in the source, still unresolved.
@@ -114,6 +116,62 @@ pub(crate) struct Transaction {
     pub line: usize,
 }
 
+/// A Fava `YYYY-MM-DD custom "budget" <Account> "<period>" <amount>
+/// <Currency>` line.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Budget {
+    /// The directive date.
+    pub date: Date,
+    /// The colon-separated account path.
+    pub account: String,
+    /// The period word.
+    pub period: BudgetPeriod,
+    /// The evaluated amount.
+    pub amount: Decimal,
+    /// The commodity code.
+    pub currency: String,
+    /// 1-based source line number.
+    pub line: usize,
+}
+
+/// The period word of a Fava budget directive, in Fava's own vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetPeriod {
+    /// `"daily"`.
+    Daily,
+    /// `"weekly"`.
+    Weekly,
+    /// `"monthly"`.
+    Monthly,
+    /// `"quarterly"`.
+    Quarterly,
+    /// `"yearly"`.
+    Yearly,
+}
+
+impl BudgetPeriod {
+    /// Parses one of Fava's period words.
+    ///
+    /// # Arguments
+    ///
+    /// * `word` - The quoted period text, without its quotes.
+    ///
+    /// # Returns
+    ///
+    /// The matching variant, or `None` if `word` is not one of Fava's five
+    /// period words.
+    pub(crate) fn parse(word: &str) -> Option<Self> {
+        match word {
+            "daily" => Some(Self::Daily),
+            "weekly" => Some(Self::Weekly),
+            "monthly" => Some(Self::Monthly),
+            "quarterly" => Some(Self::Quarterly),
+            "yearly" => Some(Self::Yearly),
+            _ => None,
+        }
+    }
+}
+
 /// The flag on a Beancount transaction header line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TxFlag {
@@ -142,4 +200,20 @@ pub(crate) struct PostingAmount {
     pub value: Decimal,
     /// The commodity code (e.g. `"AUD"`).
     pub currency: String,
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    #[rstest::rstest]
+    #[case("daily", Some(BudgetPeriod::Daily))]
+    #[case("yearly", Some(BudgetPeriod::Yearly))]
+    #[case("fortnightly", None)]
+    fn budget_period_parses_fava_words(#[case] word: &str, #[case] expected: Option<BudgetPeriod>) {
+        assert_eq!(BudgetPeriod::parse(word), expected);
+    }
 }
