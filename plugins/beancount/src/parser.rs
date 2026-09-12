@@ -145,6 +145,8 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
                 amount,
                 currency,
             });
+        } else if let Some(r) = rest.strip_prefix("custom ") {
+            directives.push(custom_directive(date, r.trim_start(), line_no)?);
         } else {
             directives.push(dated_directive(rest, line_no));
         }
@@ -194,6 +196,10 @@ fn undated_directive(trimmed: &str, line: usize) -> Result<Directive, String> {
 
 /// Classifies a dated line whose keyword has no dedicated AST variant.
 ///
+/// `custom` is intercepted for `"budget"` before this list is consulted, so
+/// it is never reached for that keyword — it stays in [`TOLERATED_DATED`]
+/// because the list documents every keyword the importer knowingly ignores.
+///
 /// # Arguments
 ///
 /// * `rest` - The portion of the line following the date, left-trimmed.
@@ -213,6 +219,61 @@ fn dated_directive(rest: &str, line: usize) -> Directive {
             line,
         }
     }
+}
+
+/// Classifies a `custom` directive: a Fava budget is parsed, anything else is
+/// tolerated as [`Directive::Other`].
+///
+/// # Arguments
+///
+/// * `date` - The directive date.
+/// * `rest` - The text after `custom `, left-trimmed.
+/// * `line` - The 1-based source line number.
+///
+/// # Returns
+///
+/// [`Directive::Budget`] for `custom "budget" <Account> "<period>" <amount>
+/// <Currency>`, [`Directive::Other`] for any other custom type.
+///
+/// # Errors
+///
+/// Returns an error naming the line if a budget directive has an unknown
+/// period word, no amount, no currency, or an amount that does not evaluate.
+fn custom_directive(date: bc_sdk::Date, rest: &str, line: usize) -> Result<Directive, String> {
+    let mut input = rest;
+    let Ok(kind) = quoted_string(&mut input) else {
+        return Ok(Directive::Other);
+    };
+    if kind != "budget" {
+        return Ok(Directive::Other);
+    }
+    let body = input.split(';').next().unwrap_or(input).trim();
+    let (account, after_account) = body
+        .split_once(char::is_whitespace)
+        .ok_or_else(|| format!("line {line}: budget directive has no period"))?;
+    let mut after_account = after_account.trim_start();
+    let word = quoted_string(&mut after_account)
+        .map_err(|_| format!("line {line}: budget directive has no quoted period"))?;
+    let period = crate::ast::BudgetPeriod::parse(&word)
+        .ok_or_else(|| format!("line {line}: unknown budget period '{word}'"))?;
+    let tail = after_account.trim();
+    let (amount_str, currency) = tail
+        .rsplit_once(char::is_whitespace)
+        .ok_or_else(|| format!("line {line}: budget directive has no amount and currency"))?;
+    let amount = crate::expr::eval(amount_str.trim()).map_err(|e| {
+        format!(
+            "line {line}: bad budget amount '{}': {e}",
+            amount_str.trim()
+        )
+    })?;
+    Ok(Directive::Budget(crate::ast::Budget {
+        date,
+        account: account.to_owned(),
+        period,
+        amount,
+        currency: currency.trim().to_owned(),
+        line,
+    }))
 }
 
 /// Parses the payee/narration/tags portion of a transaction header.
@@ -578,6 +639,8 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::ast::Budget;
+    use crate::ast::BudgetPeriod;
     use crate::ast::Directive;
     use crate::ast::TxFlag;
 
@@ -865,10 +928,63 @@ mod tests {
     #[test]
     fn tolerated_dated_directives_are_other() {
         let directives = parse(
-            "2025-01-01 custom \"budget\" Expenses:Food\n2025-01-02 note Assets:Bank \"hi\"\n",
+            "2025-01-01 custom \"fava-option\" \"x\" \"y\"\n2025-01-02 note Assets:Bank \"hi\"\n",
         )
         .expect("parse");
         assert_eq!(directives, vec![Directive::Other, Directive::Other]);
+    }
+
+    #[rstest::rstest]
+    #[case("\"daily\" 5.00 AUD", BudgetPeriod::Daily, dec!(5.00))]
+    #[case("\"weekly\" 50.00 AUD", BudgetPeriod::Weekly, dec!(50.00))]
+    #[case("\"monthly\" 500.00 AUD", BudgetPeriod::Monthly, dec!(500.00))]
+    #[case("\"quarterly\" 1,500.00 AUD", BudgetPeriod::Quarterly, dec!(1500.00))]
+    #[case("\"yearly\" 0.00 AUD", BudgetPeriod::Yearly, dec!(0.00))]
+    #[case("\"yearly\" -1200.00 AUD", BudgetPeriod::Yearly, dec!(-1200.00))]
+    #[case("\"daily\" (100,000 * 0.05 / 365 / 2) AUD", BudgetPeriod::Daily, dec!(6.8493150684931506849315068495))]
+    #[case("\"monthly\"   500.00   AUD  ; a comment", BudgetPeriod::Monthly, dec!(500.00))]
+    fn parses_budget_directive(
+        #[case] tail: &str,
+        #[case] period: BudgetPeriod,
+        #[case] amount: Decimal,
+    ) {
+        let input = format!("2026-01-01 custom \"budget\" Expenses:Widgets {tail}\n");
+        let directives = parse(&input).expect("parse");
+        assert_eq!(
+            directives,
+            vec![Directive::Budget(Budget {
+                date: bc_sdk::Date::new(2026, 1, 1),
+                account: "Expenses:Widgets".to_owned(),
+                period,
+                amount,
+                currency: "AUD".to_owned(),
+                line: 1,
+            })]
+        );
+    }
+
+    #[test]
+    fn non_budget_custom_directive_is_other() {
+        let directives = parse("2026-01-01 custom \"fava-option\" \"x\" \"y\"\n").expect("parse");
+        assert_eq!(directives, vec![Directive::Other]);
+    }
+
+    #[rstest::rstest]
+    #[case(
+        "2026-01-01 custom \"budget\" Expenses:Widgets \"fortnightly\" 5.00 AUD\n",
+        "period"
+    )]
+    #[case(
+        "2026-01-01 custom \"budget\" Expenses:Widgets \"monthly\" (1 + AUD\n",
+        "line 1"
+    )]
+    #[case(
+        "2026-01-01 custom \"budget\" Expenses:Widgets \"monthly\"\n",
+        "amount"
+    )]
+    fn malformed_budget_directive_errors(#[case] input: &str, #[case] fragment: &str) {
+        let err = parse(input).expect_err("malformed");
+        assert!(err.contains(fragment), "{err}");
     }
 
     #[test]
