@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use rust_decimal::Decimal;
 
 /// Inclusive code-point ranges of Unicode general category `Sc` (currency
-/// symbol), Unicode 16.0, sorted for binary search.
+/// symbol), Unicode 17.0, sorted for binary search.
 const CURRENCY_SYMBOL_RANGES: &[(u32, u32)] = &[
     (0x0024, 0x0024),
     (0x00A2, 0x00A5),
