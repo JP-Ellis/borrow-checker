@@ -14,8 +14,10 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use bc_core::ImportConfig;
+use bc_models::Amount;
 use bc_plugins::PluginRegistry;
 use pretty_assertions::assert_eq;
+use rust_decimal_macros::dec;
 
 /// Returns the directory containing compiled plugin WASM artifacts.
 ///
@@ -130,6 +132,49 @@ fn include_escaping_the_preopen_names_the_offending_include() {
     assert!(
         message.contains("cannot read ../../../etc/passwd:"),
         "names the resolved path, with escaping `..` preserved: {message}"
+    );
+
+    drop(fs::remove_dir_all(&root));
+}
+
+#[test]
+fn grouped_digits_and_arithmetic_read_as_beancount_numbers() {
+    let root = fixture(
+        "numbers",
+        &[(
+            "ledger/main.bean",
+            concat!(
+                "2025-01-01 balance Assets:Bank  1,234,567.89 AUD\n",
+                "\n",
+                "2025-01-15 * \"Generic Lender\" \"Interest\"\n",
+                "  Expenses:Interest   (1,000,000 * 3 / 100 / 365) AUD\n",
+                "  Assets:Bank         (-1,200.00 + 350.00) AUD\n",
+                "  Equity:Rounding\n",
+            ),
+        )],
+    );
+
+    let importer = load_beancount_importer(&root);
+    let config = ImportConfig::from_value(serde_json::json!({ "source_file": "ledger/main.bean" }));
+    let txs = importer
+        .import(&config)
+        .expect("grouped and computed amounts import");
+
+    let values: Vec<_> = txs
+        .iter()
+        .flat_map(|tx| {
+            tx.postings
+                .iter()
+                .map(|p| p.amount.as_ref().map(Amount::value))
+        })
+        .collect();
+    assert_eq!(
+        values,
+        vec![
+            Some(dec!(82.19178082191780821917808219)),
+            Some(dec!(-850.00)),
+            None,
+        ]
     );
 
     drop(fs::remove_dir_all(&root));

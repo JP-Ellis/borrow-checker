@@ -1,6 +1,5 @@
 //! Line-oriented parser for the Beancount format.
 
-use rust_decimal::Decimal;
 use winnow::ModalResult;
 use winnow::Parser;
 use winnow::combinator::preceded;
@@ -16,6 +15,7 @@ use crate::ast::Posting;
 use crate::ast::PostingAmount;
 use crate::ast::Transaction;
 use crate::ast::TxFlag;
+use crate::number;
 
 /// Undated directive keywords the importer knowingly ignores.
 ///
@@ -127,13 +127,18 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
                 code: r.trim().to_owned(),
             });
         } else if let Some(r) = rest.strip_prefix("balance ") {
-            let mut parts = r.trim_start().splitn(3, ' ');
-            let account = parts.next().unwrap_or("").to_owned();
-            let amount_str = parts.next().unwrap_or("0");
-            let currency = parts.next().unwrap_or("").trim().to_owned();
-            let amount: Decimal = amount_str
-                .parse()
+            // The amount may be an expression with inner spaces, so the
+            // currency is the last word and the amount is everything between
+            // it and the account. A `~ tolerance` before the currency is
+            // dropped: the importer never checks the assertion.
+            let r = r.split(';').next().unwrap_or(r).trim();
+            let (account, rest) = r.split_once(' ').unwrap_or((r, ""));
+            let (amount_str, currency) = rest.trim().rsplit_once(' ').unwrap_or((rest, ""));
+            let amount_str = amount_str.split('~').next().unwrap_or(amount_str).trim();
+            let amount = number::parse_number(amount_str)
                 .map_err(|e| format!("bad balance amount: '{amount_str}': {e}"))?;
+            let account = account.to_owned();
+            let currency = currency.trim().to_owned();
             directives.push(Directive::Balance {
                 date,
                 account,
@@ -410,16 +415,16 @@ fn parse_meta_value(raw: &str) -> MetaValue {
             return MetaValue::Date(parsed);
         }
     }
-    if let Some((value, currency)) = raw.split_once(' ')
-        && let Ok(parsed) = value.parse::<Decimal>()
+    if let Some((value, currency)) = raw.rsplit_once(' ')
         && is_currency(currency.trim())
+        && let Ok(parsed) = number::parse_number(value)
     {
         return MetaValue::Amount(PostingAmount {
             value: parsed,
             currency: currency.trim().to_owned(),
         });
     }
-    if let Ok(parsed) = raw.parse::<Decimal>() {
+    if let Ok(parsed) = number::parse_number(raw) {
         return MetaValue::Number(parsed);
     }
     // An account path is capitalised and colon-separated. A bare capitalised
@@ -488,8 +493,7 @@ fn parse_posting(line: &str) -> Result<Posting, String> {
         .unwrap_or_default()
         .trim()
         .to_owned();
-    let value: Decimal = amount_str
-        .parse()
+    let value = number::parse_number(amount_str)
         .map_err(|e| format!("bad posting amount '{amount_str}' in: '{line_no_comment}': {e}"))?;
 
     Ok(Posting {
@@ -1123,6 +1127,142 @@ mod tests {
         assert_eq!(
             parse_meta_value("42.00 aud"),
             MetaValue::Text("42.00 aud".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_balance_amount_may_carry_digit_groups() {
+        let directives =
+            parse("2026-01-31 balance Assets:Bank  1,234,567.89 AUD\n").expect("parses");
+        assert_eq!(
+            directives,
+            vec![Directive::Balance {
+                date: bc_sdk::Date::new(2026, 1, 31),
+                account: "Assets:Bank".to_owned(),
+                amount: dec!(1234567.89),
+                currency: "AUD".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_balance_amount_may_be_an_expression() {
+        let directives =
+            parse("2026-01-31 balance Assets:Bank  (1,000.00 - 250.00) AUD\n").expect("parses");
+        assert_eq!(
+            directives,
+            vec![Directive::Balance {
+                date: bc_sdk::Date::new(2026, 1, 31),
+                account: "Assets:Bank".to_owned(),
+                amount: dec!(750.00),
+                currency: "AUD".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_balance_line_drops_its_trailing_comment() {
+        let directives = parse("2026-01-31 balance Assets:Bank  1,000.00 AUD ; closing balance\n")
+            .expect("parses");
+        assert_eq!(
+            directives,
+            vec![Directive::Balance {
+                date: bc_sdk::Date::new(2026, 1, 31),
+                account: "Assets:Bank".to_owned(),
+                amount: dec!(1000.00),
+                currency: "AUD".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_balance_tolerance_is_read_past() {
+        let directives =
+            parse("2026-01-31 balance Assets:Bank  1,000.00 ~ 0.01 AUD\n").expect("parses");
+        assert_eq!(
+            directives,
+            vec![Directive::Balance {
+                date: bc_sdk::Date::new(2026, 1, 31),
+                account: "Assets:Bank".to_owned(),
+                amount: dec!(1000.00),
+                currency: "AUD".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_malformed_balance_amount_names_the_reason() {
+        let err = parse("2026-01-31 balance Assets:Bank  1,000, AUD\n").expect_err("rejects");
+        assert_eq!(
+            err,
+            "bad balance amount: '1,000,': unexpected ',' after the number"
+        );
+    }
+
+    #[test]
+    fn a_posting_amount_may_be_an_expression() {
+        let posting = parse_posting("Assets:Bank  (-1,200.00 + 350.00) AUD").expect("parses");
+        assert_eq!(
+            posting.amount,
+            Some(PostingAmount {
+                value: dec!(-850.00),
+                currency: "AUD".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_posting_amount_may_carry_digit_groups() {
+        let posting = parse_posting("Assets:Bank  -1,234,567.89 AUD").expect("parses");
+        assert_eq!(
+            posting.amount,
+            Some(PostingAmount {
+                value: dec!(-1234567.89),
+                currency: "AUD".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_malformed_posting_amount_names_the_reason() {
+        let err = parse_posting("Assets:Bank  (1 + 2 AUD").expect_err("rejects");
+        assert_eq!(
+            err,
+            "bad posting amount '(1 + 2' in: 'Assets:Bank  (1 + 2 AUD': expected ')' at end of input"
+        );
+    }
+
+    /// A price annotation is not read yet; the rejection names it so the
+    /// stopping line is recognisable.
+    #[test]
+    fn a_priced_posting_names_the_annotation() {
+        let err = parse_posting("Assets:Bank  10.00 USD @@ 15.00 AUD").expect_err("rejects");
+        assert_eq!(
+            err,
+            "bad posting amount '10.00 USD @@ 15.00' in: 'Assets:Bank  10.00 USD @@ 15.00 AUD': unexpected 'USD @@ 15.00' after the number"
+        );
+    }
+
+    #[test]
+    fn a_metadata_number_may_carry_digit_groups_or_arithmetic() {
+        assert_eq!(
+            parse_meta_value("1,502.50"),
+            MetaValue::Number(dec!(1502.50))
+        );
+        assert_eq!(parse_meta_value("(90 / 4)"), MetaValue::Number(dec!(22.5)));
+        assert_eq!(
+            parse_meta_value("1,000 AUD"),
+            MetaValue::Amount(PostingAmount {
+                value: dec!(1000),
+                currency: "AUD".to_owned(),
+            })
+        );
+        assert_eq!(
+            parse_meta_value("(1,000,000 * 3 / 100 / 365) AUD"),
+            MetaValue::Amount(PostingAmount {
+                value: dec!(82.19178082191780821917808219),
+                currency: "AUD".to_owned(),
+            })
         );
     }
 }
