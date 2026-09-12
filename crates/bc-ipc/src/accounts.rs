@@ -1006,7 +1006,8 @@ impl From<&bc_models::Period> for Period {
                 start_month: *start_month,
                 start_day: *start_day,
             },
-            bc_models::Period::Custom {
+            bc_models::Period::Daily
+            | bc_models::Period::Custom {
                 days: Some(1),
                 weeks: None,
                 months: None,
@@ -1027,11 +1028,7 @@ impl From<Period> for bc_models::Period {
     #[inline]
     fn from(value: Period) -> Self {
         match value {
-            Period::Daily => Self::Custom {
-                days: Some(1),
-                weeks: None,
-                months: None,
-            },
+            Period::Daily => Self::Daily,
             Period::Weekly => Self::Weekly,
             Period::Fortnightly => {
                 // TODO: use the globally-configured fortnightly anchor (Milestone 5 config).
@@ -1546,6 +1543,15 @@ mod models_tests {
                 months: None
             }),
             Period::Daily
+        );
+    }
+
+    #[test]
+    fn daily_round_trips_through_models() {
+        assert_eq!(Period::from(&bc_models::Period::Daily), Period::Daily);
+        assert_eq!(
+            bc_models::Period::from(Period::Daily),
+            bc_models::Period::Daily
         );
     }
 }
