@@ -118,6 +118,8 @@ fn blocked_message(batch: &ImportBatchId, dependants: &[DiscardDependant]) -> St
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
     #[test]
@@ -137,5 +139,51 @@ mod tests {
         let id = AccountId::new();
         let err = BcError::AlreadyArchived(id.clone());
         assert!(err.to_string().contains(&id.to_string()));
+    }
+
+    fn dependant(importer: &str) -> DiscardDependant {
+        DiscardDependant {
+            batch_id: ImportBatchId::new(),
+            importer: importer.to_owned(),
+            started_at: jiff::Timestamp::UNIX_EPOCH,
+            postings: 1,
+            transactions: 1,
+        }
+    }
+
+    #[test]
+    fn discard_blocked_names_the_count_and_the_first_dependant() {
+        let batch = ImportBatchId::new();
+        let newest = dependant("ledger");
+        let first = newest.batch_id.clone();
+        let err = BcError::DiscardBlocked {
+            batch: batch.clone(),
+            dependants: vec![newest, dependant("csv")],
+        };
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "import batch {batch} cannot be discarded: 2 later batches added legs to \
+                 its transactions; discard {first} first"
+            )
+        );
+    }
+
+    #[test]
+    fn discard_blocked_with_one_dependant_is_singular() {
+        let batch = ImportBatchId::new();
+        let only = dependant("ledger");
+        let first = only.batch_id.clone();
+        let err = BcError::DiscardBlocked {
+            batch: batch.clone(),
+            dependants: vec![only],
+        };
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "import batch {batch} cannot be discarded: 1 later batch added legs to \
+                 its transactions; discard {first} first"
+            )
+        );
     }
 }

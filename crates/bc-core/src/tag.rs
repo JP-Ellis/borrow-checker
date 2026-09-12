@@ -72,11 +72,12 @@ pub struct Created {
     /// existence, but only `a:b` — the path actually asked for — appears in
     /// this list.
     pub created: Vec<String>,
-    /// Every `tags` row this call inserted, parents before children. Unlike
-    /// [`Self::created`] this includes the ancestors created on the way to a
-    /// requested leaf, so it is the complete list of what a discard would have
-    /// to reverse. A read-only resolve fills it with IDs that were never
-    /// persisted.
+    /// Every tag ID this call minted, parents before children. Unlike
+    /// [`Self::created`] this includes the ancestors minted on the way to a
+    /// requested leaf. From [`Service::create_paths`] each ID is a persisted
+    /// `tags` row, so the list is exactly what a discard has to reverse; from
+    /// [`Service::resolve_paths`] the IDs were never written and must not be
+    /// recorded against anything.
     pub minted: Vec<TagId>,
 }
 
