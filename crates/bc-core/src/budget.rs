@@ -1450,6 +1450,77 @@ mod budget_service_tests {
         .await;
     }
 
+    /// A daily budget carries its surplus across every day between two
+    /// dates, so the rollover on day three is day one's surplus plus the
+    /// whole of day two's untouched target.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn daily_rollover_carries_across_days(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let budget_acc = accounts
+            .create()
+            .name("Interest")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("acc");
+        let offset = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("offset");
+        let svc = BudgetService::new(pool.clone());
+        let (budget, _) = svc
+            .create()
+            .account_id(budget_acc.clone())
+            .effective_from(Date::constant(2030, 7, 1))
+            .target(Amount::new(
+                Decimal::from(10_i32),
+                CommodityCode::new("AUD"),
+            ))
+            .period(Period::Daily)
+            .rollover(RolloverPolicy::CarryForward)
+            .call()
+            .await
+            .expect("create");
+
+        let txns = TransactionService::new(pool.clone());
+        txns.create(
+            Transaction::builder()
+                .id(bc_models::TransactionId::new())
+                .date(Date::constant(2030, 7, 1))
+                .description("Interest")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(budget_acc)
+                        .amount(Amount::new(dec!(4), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(offset)
+                        .amount(Amount::new(dec!(-4), CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("tx");
+
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+        let status = engine
+            .status_for(&budget, Date::constant(2030, 7, 3))
+            .await
+            .expect("status");
+        assert_eq!(status.rollover, dec!(16));
+        assert_eq!(status.available, dec!(26));
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn future_revision_dormant_until_effective(pool: sqlx::SqlitePool) {
         let accounts = AccountService::new(pool.clone());
