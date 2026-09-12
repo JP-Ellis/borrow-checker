@@ -1,8 +1,8 @@
 //! Reads one numeric cell.
 //!
 //! A cell may carry a *denomination* — a currency symbol, a commodity code,
-//! or a mix such as `A$` — before or after the magnitude. The parsers here
-//! strip it, and [`parse_amount_cell`] also returns it so the row loop can
+//! or a mix such as `A$` — before or after the magnitude.
+//! [`parse_amount_cell`] strips it and returns it so the row loop can
 //! compare it with the commodity the cell is configured to post in.
 
 use std::collections::BTreeSet;
@@ -210,32 +210,6 @@ pub(crate) fn parse_amount_cell(
     Ok((value, split.denomination.map(str::to_owned)))
 }
 
-/// Parses a numeric cell, discarding any denomination it states.
-///
-/// See [`parse_amount_cell`] for the accepted shapes.
-///
-/// # Arguments
-///
-/// * `raw` - The cell text.
-/// * `decimal_sep` - The decimal separator character in use.
-/// * `thousands_sep` - An optional thousands separator to strip.
-///
-/// # Returns
-///
-/// The parsed value.
-///
-/// # Errors
-///
-/// Returns a [`String`] describing why `raw` is not a number.
-#[inline]
-pub(crate) fn parse_number(
-    raw: &str,
-    decimal_sep: char,
-    thousands_sep: Option<char>,
-) -> Result<Decimal, String> {
-    parse_amount_cell(raw, decimal_sep, thousands_sep).map(|(value, _)| value)
-}
-
 /// A cell whose stated denomination differs from the commodity it posts in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DenominationMismatch {
@@ -312,6 +286,15 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+
+    /// Reads a cell for its value alone.
+    fn parse_number(
+        raw: &str,
+        decimal_sep: char,
+        thousands_sep: Option<char>,
+    ) -> Result<Decimal, String> {
+        parse_amount_cell(raw, decimal_sep, thousands_sep).map(|(value, _)| value)
+    }
 
     #[test]
     fn parse_number_strips_currency_symbols() {
