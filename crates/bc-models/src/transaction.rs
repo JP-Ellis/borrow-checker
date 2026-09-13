@@ -6,6 +6,7 @@ use jiff::civil::Date;
 use crate::TagId;
 use crate::metadata::Metadata;
 use crate::money::Amount;
+use crate::quote::Quote;
 
 crate::define_id!(TransactionId, "transaction");
 crate::define_id!(PostingId, "posting");
@@ -26,23 +27,24 @@ pub enum Reconciliation {
     Reconciled,
 }
 
-/// Cost basis for a commodity conversion posting.
+/// Cost basis for a posting: what the leg was acquired for, as a lot.
 ///
-/// `total` is the cost in the *cost commodity* (the commodity given up).
-/// Unit price = `total.value / posting.amount.value` (derive on demand).
-/// `bc-core` must ensure `posting.amount.value != 0` when cost is present.
+/// Beancount's `{105 AUD}` (per unit) or `{{210 AUD}}` (total), with the
+/// optional lot date and label. A leg with a cost weighs at cost for
+/// balancing (see [`crate::weight_of`]). Nothing reads the lot back as
+/// inventory yet; lot booking is a separate feature.
 ///
 /// # Example
 ///
 /// ```
-/// use bc_models::{Cost, Amount, CommodityCode};
+/// use bc_models::{Cost, Amount, CommodityCode, Quote};
 /// use rust_decimal::Decimal;
 ///
 /// let cost = Cost::builder()
-///     .total(Amount::new(Decimal::from(1500), CommodityCode::new("USD")))
+///     .basis(Quote::PerUnit(Amount::new(Decimal::from(105), CommodityCode::new("AUD"))))
 ///     .build();
 ///
-/// assert_eq!(cost.total().value(), Decimal::from(1500));
+/// assert_eq!(cost.basis().amount().value(), Decimal::from(105));
 /// assert!(cost.date().is_none());
 /// ```
 // NOTE: the field docstrings propagate to the setter methods on the builder, so
@@ -50,11 +52,9 @@ pub enum Reconciliation {
 #[derive(bon::Builder, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Cost {
-    /// Total acquisition cost expressed in the *cost commodity* — the asset
-    /// given up or paid. To derive the per-unit price, divide this by the
-    /// posting's `amount.value`; `bc-core` guarantees that value is non-zero
-    /// when a cost is attached.
-    total: Amount,
+    /// The acquisition cost in the commodity given up, per unit of the
+    /// posting's amount or in total, kept in the form the source stated it.
+    basis: Quote,
 
     /// Calendar date assigned to this lot for `FIFO`/`LIFO` inventory tracking.
     /// `None` if lot dating is not required for this position.
@@ -67,11 +67,11 @@ pub struct Cost {
 }
 
 impl Cost {
-    /// Returns the total cost amount.
+    /// Returns the cost basis, per unit or in total.
     #[inline]
     #[must_use]
-    pub fn total(&self) -> &Amount {
-        &self.total
+    pub fn basis(&self) -> &Quote {
+        &self.basis
     }
 
     /// Returns the lot date, if any.
@@ -410,6 +410,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::Quote;
     use crate::TagId;
     use crate::metadata::MetaEntry;
     use crate::metadata::MetaKey;
@@ -515,11 +516,25 @@ mod tests {
     }
 
     #[test]
-    fn cost_stores_total_in_cost_commodity() {
-        let cost = Cost::builder()
-            .total(Amount::new(dec!(1500), CommodityCode::new("USD")))
+    fn cost_keeps_the_stated_form() {
+        let per_unit = Cost::builder()
+            .basis(Quote::PerUnit(Amount::new(
+                dec!(105),
+                CommodityCode::new("AUD"),
+            )))
             .build();
-        assert_eq!(cost.total().value().to_string(), "1500");
+        assert!(!per_unit.basis().is_total());
+        assert_eq!(per_unit.basis().amount().value(), dec!(105));
+
+        let total = Cost::builder()
+            .basis(Quote::Total(Amount::new(
+                dec!(210),
+                CommodityCode::new("AUD"),
+            )))
+            .label("lot-a")
+            .build();
+        assert!(total.basis().is_total());
+        assert_eq!(total.label(), Some("lot-a"));
     }
 
     #[test]
@@ -778,7 +793,10 @@ mod tests {
     fn posting_with_metadata_cost_and_tag_ids_round_trips() {
         let tag_id = TagId::new();
         let cost_basis = Cost::builder()
-            .total(Amount::new(dec!(500), CommodityCode::new("USD")))
+            .basis(Quote::Total(Amount::new(
+                dec!(500),
+                CommodityCode::new("USD"),
+            )))
             .build();
         let posting = Posting::builder()
             .id(PostingId::new())
@@ -796,8 +814,8 @@ mod tests {
             Some("lot purchase memo")
         );
         let cost = posting.cost().expect("cost should be set");
-        assert_eq!(cost.total().value(), dec!(500));
-        assert_eq!(cost.total().commodity().to_string(), "USD");
+        assert_eq!(cost.basis().amount().value(), dec!(500));
+        assert_eq!(cost.basis().amount().commodity().to_string(), "USD");
         assert_eq!(posting.tag_ids().len(), 1);
         assert_eq!(
             posting.tag_ids().first().expect("tag should exist"),

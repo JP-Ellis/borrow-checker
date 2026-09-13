@@ -158,6 +158,7 @@ pub use period::BuildError as PeriodBuildError;
 pub use period::Period;
 pub use profile::ProfileId;
 pub use quote::Quote;
+pub use quote::weight_of;
 pub use source::SourceRef;
 pub use source::SourceRefBuilder;
 pub use source::SourceRefId;

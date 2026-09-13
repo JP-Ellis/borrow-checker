@@ -5,6 +5,7 @@ use rust_decimal::Decimal;
 use crate::money::Amount;
 use crate::money::AmountError;
 use crate::money::CommodityCode;
+use crate::transaction::Cost;
 
 /// A figure stated against a posting's amount, either per unit or in total.
 ///
@@ -28,7 +29,7 @@ use crate::money::CommodityCode;
 /// ```
 #[expect(
     clippy::exhaustive_enums,
-    reason = "the two forms are the whole vocabulary; bc-core and bc-cli match on both and must feel a third"
+    reason = "bc-core and bc-cli match on both and must be forced to handle any third form"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,6 +101,37 @@ impl Quote {
     }
 }
 
+/// Weighs a posting's amount for balancing, by Beancount's rule.
+///
+/// A leg with a cost weighs at cost; otherwise a leg with a price weighs at
+/// price; otherwise the amount is its own weight. The weight is what the
+/// transaction's residual sums, so `10 USD @@ 15 AUD` against `-15 AUD`
+/// balances.
+///
+/// # Arguments
+///
+/// * `amount` - The posting's stated amount.
+/// * `cost` - The posting's cost basis, if any.
+/// * `price` - The posting's price, if any.
+///
+/// # Returns
+///
+/// The weight, in the cost or price commodity when one applies.
+///
+/// # Errors
+///
+/// Returns [`AmountError::Overflow`] if a per-unit product overflows.
+pub fn weight_of(
+    amount: &Amount,
+    cost: Option<&Cost>,
+    price: Option<&Quote>,
+) -> Result<Amount, AmountError> {
+    match cost.map(Cost::basis).or(price) {
+        Some(quote) => quote.weigh(amount.value()),
+        None => Ok(amount.clone()),
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -152,5 +184,24 @@ mod tests {
             let back: Quote = serde_json::from_str(&json).expect("deserialise");
             assert_eq!(back, quote);
         }
+    }
+
+    #[test]
+    fn weight_of_prefers_cost_then_price_then_units() {
+        let units = Amount::new(dec!(2), CommodityCode::new("AAPL"));
+        let cost = crate::Cost::builder()
+            .basis(Quote::PerUnit(aud(dec!(105))))
+            .build();
+        let price = Quote::PerUnit(aud(dec!(150)));
+
+        assert_eq!(
+            weight_of(&units, Some(&cost), Some(&price)).expect("cost"),
+            aud(dec!(210))
+        );
+        assert_eq!(
+            weight_of(&units, None, Some(&price)).expect("price"),
+            aud(dec!(300))
+        );
+        assert_eq!(weight_of(&units, None, None).expect("units"), units);
     }
 }
