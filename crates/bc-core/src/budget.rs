@@ -537,6 +537,12 @@ pub struct BudgetStatus {
     pub rollover: bc_models::Decimal,
     /// `allocated + rollover - actuals`.
     pub available: bc_models::Decimal,
+    /// Native amounts that fed no total, summed by commodity: postings no FX
+    /// rate could value in the target commodity, and every non-dominant
+    /// commodity group of a tracking-only budget, across the window periods
+    /// and the carry chain alike. `available` is exact only when this is
+    /// empty.
+    pub unvalued: bc_models::Balances,
 }
 
 /// Computes budget actuals, rollover, and status for budgets.
@@ -877,6 +883,41 @@ fn apply_rollover_policy(
     }
 }
 
+/// One bucket's actuals after the fold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PeriodActuals {
+    /// Sum of every valued amount, in `commodity`.
+    total: bc_models::Decimal,
+    /// Commodity of `total`, if determinable.
+    commodity: Option<bc_models::CommodityCode>,
+    /// Native amounts counted in no total, by commodity.
+    unvalued: bc_models::Balances,
+}
+
+/// Adds `amount` to `unvalued`, mapping overflow to `BadData`.
+fn add_unvalued(
+    unvalued: &mut bc_models::Balances,
+    amount: &bc_models::Amount,
+) -> crate::BcResult<()> {
+    unvalued.try_add(amount).map_err(|e| {
+        crate::BcError::BadData(format!(
+            "unvalued overflow for '{}': {e}",
+            amount.commodity()
+        ))
+    })
+}
+
+/// Folds every entry of `from` into `into`.
+fn merge_unvalued(
+    into: &mut bc_models::Balances,
+    from: &bc_models::Balances,
+) -> crate::BcResult<()> {
+    for (code, value) in from.iter() {
+        add_unvalued(into, &bc_models::Amount::new(value, code))?;
+    }
+    Ok(())
+}
+
 impl BudgetStatusEngine {
     /// Creates a new [`BudgetStatusEngine`] with the given connection pool and FX service.
     #[must_use]
@@ -960,6 +1001,7 @@ impl BudgetStatusEngine {
         let mut allocated = bc_models::Decimal::ZERO;
         let mut actuals = bc_models::Decimal::ZERO;
         let mut commodity: Option<bc_models::CommodityCode> = None;
+        let mut unvalued = bc_models::Balances::new();
         for (p, bucket) in periods.iter().zip(window_buckets) {
             let seg_start = p.start.max(window.start);
             let seg_end = p.end.min(window.end);
@@ -968,19 +1010,25 @@ impl BudgetStatusEngine {
                     p.revision, p.start, seg_start, seg_end,
                 ))
                 .ok_or_else(|| crate::BcError::BadData("allocated overflow".into()))?;
-            let (a, c) = self.fold_actuals(&account_id, p.revision, bucket, amount_q)?;
+            let period = self.fold_actuals(p.revision, bucket, amount_q)?;
             actuals = actuals
-                .checked_add(a)
+                .checked_add(period.total)
                 .ok_or_else(|| crate::BcError::BadData("actuals overflow".into()))?;
+            merge_unvalued(&mut unvalued, &period.unvalued)?;
             if commodity.is_none() {
-                commodity = c;
+                commodity = period.commodity;
             }
         }
 
         let governing = bc_models::governing_revision(&revisions, window.start).cloned();
         let rollover =
             match first_start.and_then(|fs| bc_models::governing_revision(&revisions, fs)) {
-                Some(dst) => self.fold_rollover(&account_id, dst, &chain_periods, chain_buckets)?,
+                Some(dst) => {
+                    let (carry, chain_unvalued) =
+                        self.fold_rollover(dst, &chain_periods, chain_buckets)?;
+                    merge_unvalued(&mut unvalued, &chain_unvalued)?;
+                    carry
+                }
                 None => bc_models::Decimal::ZERO,
             };
         #[expect(clippy::arithmetic_side_effects, reason = "decimal budget arithmetic")]
@@ -995,6 +1043,7 @@ impl BudgetStatusEngine {
             actuals,
             rollover,
             available,
+            unvalued,
         })
     }
 
@@ -1037,6 +1086,7 @@ impl BudgetStatusEngine {
                     actuals: bc_models::Decimal::ZERO,
                     rollover: bc_models::Decimal::ZERO,
                     available: bc_models::Decimal::ZERO,
+                    unvalued: bc_models::Balances::new(),
                 });
             }
         };
@@ -1185,112 +1235,97 @@ impl BudgetStatusEngine {
         expand_posting_rows(rows, residuals.as_ref())
     }
 
-    /// Folds one bucket of concrete amounts for `rev` into a total.
+    /// Folds one bucket of posting amounts under `rev`.
     ///
-    /// For revisions with a target commodity, foreign amounts are converted
-    /// via the FX service and skipped with a warning if conversion is
-    /// unavailable. For tracking-only revisions, amounts are grouped by
-    /// commodity and the dominant group (by absolute value) is returned.
-    /// Elided legs arrive already expanded to their derived residuals (see
-    /// [`expand_posting_rows`]).
+    /// Under a target commodity every amount is converted with the FX
+    /// service; an amount no rate can value goes to `unvalued`. Under
+    /// tracking-only the amounts are grouped by commodity, the group with
+    /// the largest absolute total is the result, and every other group goes
+    /// to `unvalued` whole. Each amount is filtered by `amount_q` before
+    /// either path (amounts derive from [`expand_posting_rows`], so an
+    /// elided leg's components are matched one by one).
     ///
     /// # Arguments
     ///
-    /// * `account_id` - The budget's account, for log context.
     /// * `rev` - The revision governing this bucket's period.
     /// * `amounts` - The bucket.
     /// * `amount_q` - The user's amount filter, matched exactly in Rust.
-    ///
-    /// # Returns
-    ///
-    /// The total and the commodity it is denominated in.
     ///
     /// # Errors
     ///
     /// Returns [`crate::BcError::BadData`] on decimal overflow.
     fn fold_actuals(
         &self,
-        account_id: &bc_models::AccountId,
         rev: &bc_models::BudgetRevision,
         amounts: &[bc_models::Amount],
         amount_q: Option<&crate::search::AmountQuery>,
-    ) -> crate::BcResult<(bc_models::Decimal, Option<bc_models::CommodityCode>)> {
-        let target_commodity: Option<bc_models::CommodityCode> =
-            rev.target().map(|t| t.commodity().clone());
+    ) -> crate::BcResult<PeriodActuals> {
+        let mut unvalued = bc_models::Balances::new();
+        let matched = amounts
+            .iter()
+            .filter(|&posting_amount| amount_q.is_none_or(|aq| aq.matches(Some(posting_amount))));
 
-        if let Some(ref target) = target_commodity {
-            // Budget has a target commodity: sum native, convert foreign via FX.
+        if let Some(target) = rev.target().map(|t| t.commodity().clone()) {
             let mut total = bc_models::Decimal::ZERO;
-            for posting_amount in amounts {
-                // AMOUNT dimension is matched EXACTLY in Rust (commodity-checked); never
-                // magnitude-compared in SQL.
-                if let Some(aq) = amount_q
-                    && !aq.matches(Some(posting_amount))
-                {
-                    continue;
-                }
-                match self.fx.convert(posting_amount, target) {
+            for posting_amount in matched {
+                match self.fx.convert(posting_amount, &target) {
                     Ok(a) => {
                         total = total.checked_add(a.value()).ok_or_else(|| {
                             crate::BcError::BadData("actuals sum overflow".into())
                         })?;
                     }
-                    Err(e) => {
-                        tracing::warn!(
-                            %account_id,
-                            %e,
-                            "skipping posting: FX conversion unavailable"
-                        );
-                    }
+                    Err(_) => add_unvalued(&mut unvalued, posting_amount)?,
                 }
             }
-            Ok((total, Some(target.clone())))
-        } else {
-            // Tracking-only: group by commodity, return dominant group.
-            let mut groups: std::collections::HashMap<String, bc_models::Decimal> =
-                std::collections::HashMap::new();
-            for posting_amount in amounts {
-                if let Some(aq) = amount_q
-                    && !aq.matches(Some(posting_amount))
-                {
-                    continue;
-                }
-                let entry = groups
-                    .entry(posting_amount.commodity().to_string())
-                    .or_insert(bc_models::Decimal::ZERO);
-                *entry = entry
-                    .checked_add(posting_amount.value())
-                    .ok_or_else(|| crate::BcError::BadData("actuals sum overflow".into()))?;
-            }
-            if groups.is_empty() {
-                return Ok((bc_models::Decimal::ZERO, None));
-            }
-            let group_count = groups.len();
-            #[expect(
-                clippy::expect_used,
-                reason = "groups is non-empty; checked immediately above"
-            )]
-            let (dominant_comm, dominant_total) = groups
-                .into_iter()
-                .max_by(|(_, a), (_, b)| {
-                    a.abs()
-                        .partial_cmp(&b.abs())
-                        .unwrap_or(core::cmp::Ordering::Equal)
-                })
-                .expect("groups is non-empty");
-            if group_count > 1 {
-                tracing::warn!(
-                    %account_id,
-                    commodity = %dominant_comm,
-                    "tracking-only budget has multi-commodity postings; \
-                     reporting dominant commodity only"
-                );
-            }
-            Ok((
-                dominant_total,
-                Some(bc_models::CommodityCode::new(dominant_comm)),
-            ))
+            return Ok(PeriodActuals {
+                total,
+                commodity: Some(target),
+                unvalued,
+            });
         }
+
+        let mut groups: std::collections::HashMap<String, bc_models::Decimal> =
+            std::collections::HashMap::new();
+        for posting_amount in matched {
+            let entry = groups
+                .entry(posting_amount.commodity().to_string())
+                .or_insert(bc_models::Decimal::ZERO);
+            *entry = entry
+                .checked_add(posting_amount.value())
+                .ok_or_else(|| crate::BcError::BadData("actuals sum overflow".into()))?;
+        }
+        let Some(dominant) = groups
+            .iter()
+            .max_by(|(_, a), (_, b)| {
+                a.abs()
+                    .partial_cmp(&b.abs())
+                    .unwrap_or(core::cmp::Ordering::Equal)
+            })
+            .map(|(code, _)| code.clone())
+        else {
+            return Ok(PeriodActuals {
+                total: bc_models::Decimal::ZERO,
+                commodity: None,
+                unvalued,
+            });
+        };
+        let mut total = bc_models::Decimal::ZERO;
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "each group folds into total or unvalued independently; order cannot change either"
+        )]
+        for (code, value) in groups {
+            if code == dominant {
+                total = value;
+            } else {
+                add_unvalued(&mut unvalued, &bc_models::Amount::new(value, code))?;
+            }
+        }
+        Ok(PeriodActuals {
+            total,
+            commodity: Some(bc_models::CommodityCode::new(dominant)),
+            unvalued,
+        })
     }
 
     /// Target pro-rated to the day count of `[seg_start, seg_end)`.
@@ -1334,7 +1369,8 @@ impl BudgetStatusEngine {
         v
     }
 
-    /// Rollover carried into the period governed by `dst`.
+    /// Rollover carried into the period governed by `dst`, and every native
+    /// amount in the chain that fed no total.
     ///
     /// `chain` is every period from [`bc_models::carry_chain_start`] up to the
     /// destination period, chronological, and `buckets` holds each one's
@@ -1351,12 +1387,12 @@ impl BudgetStatusEngine {
     /// actuals overflows (see [`Self::fold_actuals`]).
     fn fold_rollover(
         &self,
-        account_id: &bc_models::AccountId,
         dst: &bc_models::BudgetRevision,
         chain: &[bc_models::ResolvedPeriod<'_>],
         buckets: &[Vec<bc_models::Amount>],
-    ) -> crate::BcResult<bc_models::Decimal> {
+    ) -> crate::BcResult<(bc_models::Decimal, bc_models::Balances)> {
         let mut carry = bc_models::Decimal::ZERO;
+        let mut unvalued = bc_models::Balances::new();
         for (k, (period, bucket)) in chain.iter().zip(buckets).enumerate() {
             let allocated = Self::period_target_prorated(
                 period.revision,
@@ -1364,13 +1400,14 @@ impl BudgetStatusEngine {
                 period.start,
                 period.end,
             );
-            let (spent, _) = self.fold_actuals(account_id, period.revision, bucket, None)?;
+            let spent = self.fold_actuals(period.revision, bucket, None)?;
+            merge_unvalued(&mut unvalued, &spent.unvalued)?;
             #[expect(clippy::arithmetic_side_effects, reason = "decimal budget arithmetic")]
-            let surplus = allocated + carry - spent;
+            let surplus = allocated + carry - spent.total;
             let next = chain.get(k.saturating_add(1)).map_or(dst, |n| n.revision);
             carry = apply_rollover_policy(next, surplus);
         }
-        Ok(carry)
+        Ok((carry, unvalued))
     }
 }
 
@@ -2881,6 +2918,130 @@ mod elided_actuals_tests {
         // 3 of 28 days of February's 200.00 target: 200 * 3 / 28 = 21.428571...
         assert_eq!(status.allocated, dec!(21.43));
         assert_eq!(status.available, dec!(221.43));
+    }
+
+    /// A posting in a commodity `noop_fx` cannot convert to the target is
+    /// excluded from `actuals` and reported in `unvalued`.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn foreign_posting_under_a_target_commodity_is_unvalued(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let budget = monthly_budget(&pool, &food, None).await;
+        insert_tx(
+            &pool,
+            "tx_usd",
+            "2026-03-10",
+            &[
+                ("p_bank", &bank, Some(("-10.00", "USD"))),
+                ("p_food", &food, Some(("10.00", "USD"))),
+            ],
+        )
+        .await;
+
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(status.actuals, dec!(0));
+        assert_eq!(status.unvalued.get("USD"), Some(dec!(10.00)));
+        assert_eq!(status.unvalued.len(), 1);
+    }
+
+    /// An unvalued posting in a carry-chain period surfaces on the status
+    /// whose rollover it fed, with the rollover itself unaffected.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unvalued_posting_in_the_chain_surfaces_on_the_status(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let budget = daily_carry_budget(&pool, &food, RolloverPolicy::CarryForward).await;
+        insert_tx(
+            &pool,
+            "tx_usd",
+            "2026-01-05",
+            &[
+                ("p_bank", &bank, Some(("-7.00", "USD"))),
+                ("p_food", &food, Some(("7.00", "USD"))),
+            ],
+        )
+        .await;
+
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for(&budget, Date::constant(2026, 1, 10))
+            .await
+            .expect("status");
+
+        // Nine empty chain days at 10.00 each; the USD leg counts in none.
+        assert_eq!(status.rollover, dec!(90.00));
+        assert_eq!(status.actuals, dec!(0));
+        assert_eq!(status.unvalued.get("USD"), Some(dec!(7.00)));
+    }
+
+    /// A tracking-only budget reports the dominant commodity as `actuals`
+    /// and every other commodity group as `unvalued`.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tracking_only_reports_non_dominant_groups_as_unvalued(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let (budget, _) = BudgetService::new(pool.clone())
+            .create()
+            .account_id(food.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create budget");
+        insert_tx(
+            &pool,
+            "tx_aud",
+            "2026-03-05",
+            &[
+                ("p_bank_a", &bank, Some(("-40.00", "AUD"))),
+                ("p_food_a", &food, Some(("40.00", "AUD"))),
+            ],
+        )
+        .await;
+        insert_tx(
+            &pool,
+            "tx_usd",
+            "2026-03-06",
+            &[
+                ("p_bank_u", &bank, Some(("-10.00", "USD"))),
+                ("p_food_u", &food, Some(("10.00", "USD"))),
+            ],
+        )
+        .await;
+
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(status.actuals, dec!(40.00));
+        assert_eq!(status.commodity, Some(CommodityCode::new("AUD")));
+        assert_eq!(status.unvalued.get("USD"), Some(dec!(10.00)));
+        assert_eq!(status.unvalued.len(), 1);
+    }
+
+    /// An elided leg whose residual spans two commodities lands the target
+    /// component in `actuals` and the other in `unvalued`.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn multi_commodity_residual_reports_the_foreign_component_as_unvalued(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let wallet = account(&pool, "Wallet", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let budget = monthly_budget(&pool, &food, None).await;
+        insert_tx(
+            &pool,
+            "tx_mc",
+            "2026-03-10",
+            &[
+                ("p_bank", &bank, Some(("-40.00", "AUD"))),
+                ("p_wallet", &wallet, Some(("-10.00", "USD"))),
+                ("p_food", &food, None),
+            ],
+        )
+        .await;
+
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(status.actuals, dec!(40.00));
+        assert_eq!(status.unvalued.get("USD"), Some(dec!(10.00)));
     }
 }
 
