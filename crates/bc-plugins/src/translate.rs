@@ -209,9 +209,10 @@ fn wit_metadata(
 ///
 /// # Errors
 ///
-/// Returns [`bc_core::ImportError::Parse`] when an amount, a balance or a
-/// metadata value does not carry the type the plugin claimed for it, or a
-/// price or cost is negative or does not parse.
+/// Returns [`bc_core::ImportError::Parse`] when an amount, a balance, a
+/// price, a cost or a metadata value does not carry the type the plugin
+/// claimed for it, and [`bc_core::ImportError::BadValue`] naming `price` or
+/// `cost` when that figure is negative.
 fn wit_posting(
     p: wt::RawPosting,
     location: &str,
