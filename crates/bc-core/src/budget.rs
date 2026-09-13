@@ -770,10 +770,6 @@ struct Load<'a> {
 ///
 /// Loads in reign order, then range order within a reign, each clipped to its
 /// reign. Empty intersections are dropped.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into status_for_window in the next commit")
-)]
 fn plan_loads(
     revisions: &[bc_models::BudgetRevision],
     chain: Option<(jiff::civil::Date, jiff::civil::Date)>,
@@ -824,13 +820,61 @@ struct Segment {
 ///
 /// `segments` must be sorted and pairwise disjoint; gaps between segments are
 /// allowed and dates falling in a gap return `None`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into status_for_window in the next commit")
-)]
 fn segment_index(segments: &[Segment], date: jiff::civil::Date) -> Option<usize> {
     let idx = segments.partition_point(|s| s.end <= date);
     segments.get(idx).filter(|s| s.start <= date).map(|_| idx)
+}
+
+/// Segments a status buckets its rows into: the chain periods whole, then the
+/// window periods clipped to `window`.
+///
+/// A row dated in the clipped-off head of the first window period lands in no
+/// segment and is dropped.
+///
+/// # Returns
+///
+/// The segments in date order and the count of leading chain segments.
+fn bucket_segments(
+    chain_periods: &[bc_models::ResolvedPeriod<'_>],
+    periods: &[bc_models::ResolvedPeriod<'_>],
+    window: &bc_models::BudgetWindow,
+) -> (Vec<Segment>, usize) {
+    let mut segments: Vec<Segment> = chain_periods
+        .iter()
+        .map(|p| Segment {
+            start: p.start,
+            end: p.end,
+        })
+        .collect();
+    let chain_len = segments.len();
+    segments.extend(periods.iter().map(|p| Segment {
+        start: p.start.max(window.start),
+        end: p.end.min(window.end),
+    }));
+    (segments, chain_len)
+}
+
+/// The carry `dst` accepts from a `surplus` left by the period before it.
+fn apply_rollover_policy(
+    dst: &bc_models::BudgetRevision,
+    surplus: bc_models::Decimal,
+) -> bc_models::Decimal {
+    match dst.rollover() {
+        bc_models::RolloverPolicy::CarryForward => surplus,
+        bc_models::RolloverPolicy::CapAtTarget => {
+            #[expect(clippy::expect_used, reason = "CapAtTarget validated to have target")]
+            let cap = dst.target().expect("CapAtTarget requires target").value();
+            surplus.max(bc_models::Decimal::ZERO).min(cap)
+        }
+        bc_models::RolloverPolicy::ResetToZero => bc_models::Decimal::ZERO,
+        _ => {
+            tracing::warn!(
+                policy = ?dst.rollover(),
+                "unrecognised rollover policy variant — defaulting to zero"
+            );
+            bc_models::Decimal::ZERO
+        }
+    }
 }
 
 impl BudgetStatusEngine {
@@ -845,7 +889,9 @@ impl BudgetStatusEngine {
     ///
     /// Allocations are summed across all resolved periods overlapping the window, with each
     /// segment pro-rated to its overlap with the window. Actuals are summed only within
-    /// `[window.start, window.end)`. Rollover is carried into the first resolved period.
+    /// `[window.start, window.end)`. Rollover into the first resolved period is folded
+    /// forward from the start of its carry chain, loading each revision reign at most
+    /// twice (once for the chain, once for the window when `query` is set).
     ///
     /// # Errors
     ///
@@ -867,14 +913,54 @@ impl BudgetStatusEngine {
         let svc = BudgetService::new(self.pool.clone());
         let revisions = svc.revisions(budget.id()).await?;
         let account_id = budget.account_id().clone();
+        let filter_accounts = match query {
+            Some(q) => crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?,
+            None => None,
+        };
+        let amount_q = query.and_then(|q| q.amount.as_ref());
 
         let periods = bc_models::periods_overlapping(&revisions, window.start, window.end);
+        let first_start = periods.first().map(|p| p.start);
+        let chain_start = first_start.and_then(|fs| bc_models::carry_chain_start(&revisions, fs));
+        let chain_periods = match (chain_start, first_start) {
+            (Some(cs), Some(fs)) => bc_models::periods_overlapping(&revisions, cs, fs),
+            _ => Vec::new(),
+        };
+
+        let (segments, chain_len) = bucket_segments(&chain_periods, &periods, &window);
+        let mut buckets: Vec<Vec<bc_models::Amount>> = vec![Vec::new(); segments.len()];
+
+        let chain = chain_start.zip(first_start);
+        for load in plan_loads(
+            &revisions,
+            chain,
+            (window.start, window.end),
+            query.is_some(),
+        ) {
+            let amounts = self
+                .fetch_posting_amounts(
+                    &account_id,
+                    load.start,
+                    load.end,
+                    load.tag_filter,
+                    if load.with_query { query } else { None },
+                    filter_accounts.as_ref(),
+                )
+                .await?;
+            for (date, amount) in amounts {
+                if let Some(bucket) =
+                    segment_index(&segments, date).and_then(|i| buckets.get_mut(i))
+                {
+                    bucket.push(amount);
+                }
+            }
+        }
+        let (chain_buckets, window_buckets) = buckets.split_at(chain_len);
 
         let mut allocated = bc_models::Decimal::ZERO;
         let mut actuals = bc_models::Decimal::ZERO;
         let mut commodity: Option<bc_models::CommodityCode> = None;
-        for p in &periods {
-            // Clip to window for actuals and proration.
+        for (p, bucket) in periods.iter().zip(window_buckets) {
             let seg_start = p.start.max(window.start);
             let seg_end = p.end.min(window.end);
             allocated = allocated
@@ -882,9 +968,7 @@ impl BudgetStatusEngine {
                     p.revision, p.start, seg_start, seg_end,
                 ))
                 .ok_or_else(|| crate::BcError::BadData("allocated overflow".into()))?;
-            let (a, c) = self
-                .sum_actuals(&account_id, p.revision, seg_start, seg_end, query)
-                .await?;
+            let (a, c) = self.fold_actuals(&account_id, p.revision, bucket, amount_q)?;
             actuals = actuals
                 .checked_add(a)
                 .ok_or_else(|| crate::BcError::BadData("actuals overflow".into()))?;
@@ -894,13 +978,11 @@ impl BudgetStatusEngine {
         }
 
         let governing = bc_models::governing_revision(&revisions, window.start).cloned();
-        let rollover = match periods.first() {
-            Some(first) => {
-                self.rollover_into(&account_id, &revisions, first.start)
-                    .await?
-            }
-            None => bc_models::Decimal::ZERO,
-        };
+        let rollover =
+            match first_start.and_then(|fs| bc_models::governing_revision(&revisions, fs)) {
+                Some(dst) => self.fold_rollover(&account_id, dst, &chain_periods, chain_buckets)?,
+                None => bc_models::Decimal::ZERO,
+            };
         #[expect(clippy::arithmetic_side_effects, reason = "decimal budget arithmetic")]
         let available = allocated + rollover - actuals;
 
@@ -987,7 +1069,7 @@ impl BudgetStatusEngine {
 
     // TODO: apply spread fields to period attribution (planned follow-on)
     /// Fetches raw rows for postings to `account_id` or any descendant account in
-    /// `[period_start, period_end)`, optionally filtered by tag.
+    /// `[from, to)`, optionally filtered by tag.
     ///
     /// The dynamic SELECT is assembled by [`build_posting_amounts_sql`], whose
     /// clause order the bind chain below relies on exactly. The caller resolves
@@ -1001,8 +1083,8 @@ impl BudgetStatusEngine {
     async fn fetch_posting_rows(
         conn: &mut sqlx::SqliteConnection,
         account_id: &bc_models::AccountId,
-        period_start: jiff::civil::Date,
-        period_end: jiff::civil::Date,
+        from: jiff::civil::Date,
+        to: jiff::civil::Date,
         tag_filter: Option<&bc_models::TagId>,
         query: Option<&crate::search::TransactionQuery>,
         filter_accounts: Option<&HashSet<bc_models::AccountId>>,
@@ -1014,9 +1096,7 @@ impl BudgetStatusEngine {
         if let Some(tag) = tag_filter {
             stmt = stmt.bind(tag.to_string());
         }
-        stmt = stmt
-            .bind(period_start.to_string())
-            .bind(period_end.to_string());
+        stmt = stmt.bind(from.to_string()).bind(to.to_string());
         if let Some(q) = query {
             if let Some(text) = &q.text {
                 let needle = format!(
@@ -1048,8 +1128,8 @@ impl BudgetStatusEngine {
         stmt.fetch_all(conn).await.map_err(Into::into)
     }
 
-    /// Fetches the concrete amounts of every matched posting in
-    /// `[period_start, period_end)`, with elided legs resolved to their residuals.
+    /// Fetches the concrete amounts of every matched posting in `[from, to)`,
+    /// with elided legs resolved to their residuals.
     ///
     /// The row fetch and the residual load run in one read transaction so they
     /// describe the same snapshot: a date amendment landing between them would
@@ -1059,8 +1139,8 @@ impl BudgetStatusEngine {
     /// # Arguments
     ///
     /// * `account_id` - Root of the account subtree to fetch postings for.
-    /// * `period_start` - Inclusive start of the date range.
-    /// * `period_end` - Exclusive end of the date range.
+    /// * `from` - Inclusive start of the load's date range.
+    /// * `to` - Exclusive end of the load's date range.
     /// * `tag_filter` - Restricts to postings or transactions tagged within
     ///   this subtree.
     /// * `query` - Additional filters (text, reconciliation, accounts, tags,
@@ -1075,8 +1155,8 @@ impl BudgetStatusEngine {
     async fn fetch_posting_amounts(
         &self,
         account_id: &bc_models::AccountId,
-        period_start: jiff::civil::Date,
-        period_end: jiff::civil::Date,
+        from: jiff::civil::Date,
+        to: jiff::civil::Date,
         tag_filter: Option<&bc_models::TagId>,
         query: Option<&crate::search::TransactionQuery>,
         filter_accounts: Option<&HashSet<bc_models::AccountId>>,
@@ -1085,8 +1165,8 @@ impl BudgetStatusEngine {
         let rows = Self::fetch_posting_rows(
             &mut tx,
             account_id,
-            period_start,
-            period_end,
+            from,
+            to,
             tag_filter,
             query,
             filter_accounts,
@@ -1094,13 +1174,8 @@ impl BudgetStatusEngine {
         .await?;
         let residuals = if rows.iter().any(|row| row.amount.is_none()) {
             Some(
-                crate::residual::Residuals::for_subtree_in_range(
-                    &mut *tx,
-                    account_id,
-                    period_start,
-                    period_end,
-                )
-                .await?,
+                crate::residual::Residuals::for_subtree_in_range(&mut *tx, account_id, from, to)
+                    .await?,
             )
         } else {
             None
@@ -1110,57 +1185,51 @@ impl BudgetStatusEngine {
         expand_posting_rows(rows, residuals.as_ref())
     }
 
-    /// Sums actuals for `account_id` governed by `rev` in `[period_start, period_end)`.
+    /// Folds one bucket of concrete amounts for `rev` into a total.
     ///
-    /// Returns the total and the commodity it is denominated in.  For revisions with a target
-    /// commodity, foreign postings are converted via the FX service (and skipped with a warning
-    /// if conversion is unavailable).  For tracking-only revisions, postings are grouped by
+    /// For revisions with a target commodity, foreign amounts are converted
+    /// via the FX service and skipped with a warning if conversion is
+    /// unavailable. For tracking-only revisions, amounts are grouped by
     /// commodity and the dominant group (by absolute value) is returned.
-    /// Elided legs in the subtree count at their derived residual (see [`crate::residual`]).
+    /// Elided legs arrive already expanded to their derived residuals (see
+    /// [`expand_posting_rows`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The budget's account, for log context.
+    /// * `rev` - The revision governing this bucket's period.
+    /// * `amounts` - The bucket.
+    /// * `amount_q` - The user's amount filter, matched exactly in Rust.
+    ///
+    /// # Returns
+    ///
+    /// The total and the commodity it is denominated in.
     ///
     /// # Errors
     ///
-    /// Returns [`crate::BcError`] on database or data parse failure.
-    #[inline]
-    async fn sum_actuals(
+    /// Returns [`crate::BcError::BadData`] on decimal overflow.
+    fn fold_actuals(
         &self,
         account_id: &bc_models::AccountId,
         rev: &bc_models::BudgetRevision,
-        period_start: jiff::civil::Date,
-        period_end: jiff::civil::Date,
-        query: Option<&crate::search::TransactionQuery>,
+        amounts: &[bc_models::Amount],
+        amount_q: Option<&crate::search::AmountQuery>,
     ) -> crate::BcResult<(bc_models::Decimal, Option<bc_models::CommodityCode>)> {
-        let filter_accounts = match query {
-            Some(q) => crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?,
-            None => None,
-        };
-        let amounts = self
-            .fetch_posting_amounts(
-                account_id,
-                period_start,
-                period_end,
-                rev.tag_filter(),
-                query,
-                filter_accounts.as_ref(),
-            )
-            .await?;
-
-        let amount_q = query.and_then(|q| q.amount.as_ref());
         let target_commodity: Option<bc_models::CommodityCode> =
             rev.target().map(|t| t.commodity().clone());
 
         if let Some(ref target) = target_commodity {
             // Budget has a target commodity: sum native, convert foreign via FX.
             let mut total = bc_models::Decimal::ZERO;
-            for (_, posting_amount) in amounts {
+            for posting_amount in amounts {
                 // AMOUNT dimension is matched EXACTLY in Rust (commodity-checked); never
                 // magnitude-compared in SQL.
                 if let Some(aq) = amount_q
-                    && !aq.matches(Some(&posting_amount))
+                    && !aq.matches(Some(posting_amount))
                 {
                     continue;
                 }
-                match self.fx.convert(&posting_amount, target) {
+                match self.fx.convert(posting_amount, target) {
                     Ok(a) => {
                         total = total.checked_add(a.value()).ok_or_else(|| {
                             crate::BcError::BadData("actuals sum overflow".into())
@@ -1180,9 +1249,9 @@ impl BudgetStatusEngine {
             // Tracking-only: group by commodity, return dominant group.
             let mut groups: std::collections::HashMap<String, bc_models::Decimal> =
                 std::collections::HashMap::new();
-            for (_, posting_amount) in amounts {
+            for posting_amount in amounts {
                 if let Some(aq) = amount_q
-                    && !aq.matches(Some(&posting_amount))
+                    && !aq.matches(Some(posting_amount))
                 {
                     continue;
                 }
@@ -1265,84 +1334,43 @@ impl BudgetStatusEngine {
         v
     }
 
-    /// Rollover carried into the period beginning at `period_start`.
+    /// Rollover carried into the period governed by `dst`.
     ///
-    /// Walks backward across reign boundaries. Carry occurs only when BOTH the
-    /// source period's revision and the destination period's revision use a
-    /// carrying policy (`CarryForward`/`CapAtTarget`); if either is
-    /// `ResetToZero`, the destination starts at zero. `CapAtTarget` clamps on the
+    /// `chain` is every period from [`bc_models::carry_chain_start`] up to the
+    /// destination period, chronological, and `buckets` holds each one's
+    /// amounts. The fold runs forward: each period's surplus, plus what it
+    /// received, passes through the next period's policy. Carry occurs only
+    /// when BOTH sides of a boundary carry; `carry_chain_start` has already
+    /// cut the chain where that fails, so the fold only applies the
+    /// destination policy at each step. `CapAtTarget` clamps on the
     /// destination side. Stub periods are pro-rated by day count.
-    fn rollover_into<'a>(
-        &'a self,
-        account_id: &'a bc_models::AccountId,
-        revisions: &'a [bc_models::BudgetRevision],
-        period_start: jiff::civil::Date,
-    ) -> core::pin::Pin<
-        Box<dyn core::future::Future<Output = crate::BcResult<bc_models::Decimal>> + Send + 'a>,
-    > {
-        Box::pin(async move {
-            let Some(dst) = bc_models::governing_revision(revisions, period_start) else {
-                return Ok(bc_models::Decimal::ZERO);
-            };
-            if matches!(dst.rollover(), bc_models::RolloverPolicy::ResetToZero) {
-                return Ok(bc_models::Decimal::ZERO);
-            }
-            if matches!(dst.period(), bc_models::Period::Custom { .. }) {
-                return Ok(bc_models::Decimal::ZERO);
-            }
-            // Find the period immediately preceding period_start.
-            let prev_day = period_start
-                .checked_sub(jiff::Span::new().days(1_i32))
-                .map_err(|e| crate::BcError::BadData(format!("period underflow: {e}")))?;
-            let earliest = revisions
-                .first()
-                .map(bc_models::BudgetRevision::effective_from);
-            if earliest.is_none_or(|e| prev_day < e) {
-                return Ok(bc_models::Decimal::ZERO);
-            }
-            // The previous period is the last resolved period strictly before period_start.
-            let prev_periods = bc_models::periods_overlapping(
-                revisions,
-                earliest.unwrap_or(period_start),
-                period_start,
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::BadData`] if folding a chain bucket's
+    /// actuals overflows (see [`Self::fold_actuals`]).
+    fn fold_rollover(
+        &self,
+        account_id: &bc_models::AccountId,
+        dst: &bc_models::BudgetRevision,
+        chain: &[bc_models::ResolvedPeriod<'_>],
+        buckets: &[Vec<bc_models::Amount>],
+    ) -> crate::BcResult<bc_models::Decimal> {
+        let mut carry = bc_models::Decimal::ZERO;
+        for (k, (period, bucket)) in chain.iter().zip(buckets).enumerate() {
+            let allocated = Self::period_target_prorated(
+                period.revision,
+                period.start,
+                period.start,
+                period.end,
             );
-            let Some(prev) = prev_periods.into_iter().rfind(|p| p.end <= period_start) else {
-                return Ok(bc_models::Decimal::ZERO);
-            };
-            // Both-sides rule: source must also carry.
-            if matches!(
-                prev.revision.rollover(),
-                bc_models::RolloverPolicy::ResetToZero
-            ) {
-                return Ok(bc_models::Decimal::ZERO);
-            }
-            let prev_allocated =
-                Self::period_target_prorated(prev.revision, prev.start, prev.start, prev.end);
-            let (prev_actuals, _) = self
-                .sum_actuals(account_id, prev.revision, prev.start, prev.end, None)
-                .await?;
-            let prev_rollover = self
-                .rollover_into(account_id, revisions, prev.start)
-                .await?;
+            let (spent, _) = self.fold_actuals(account_id, period.revision, bucket, None)?;
             #[expect(clippy::arithmetic_side_effects, reason = "decimal budget arithmetic")]
-            let surplus = prev_allocated + prev_rollover - prev_actuals;
-            Ok(match dst.rollover() {
-                bc_models::RolloverPolicy::CarryForward => surplus,
-                bc_models::RolloverPolicy::CapAtTarget => {
-                    #[expect(clippy::expect_used, reason = "CapAtTarget validated to have target")]
-                    let cap = dst.target().expect("CapAtTarget requires target").value();
-                    surplus.max(bc_models::Decimal::ZERO).min(cap)
-                }
-                bc_models::RolloverPolicy::ResetToZero => bc_models::Decimal::ZERO,
-                _ => {
-                    tracing::warn!(
-                        policy = ?dst.rollover(),
-                        "unrecognised rollover policy variant — defaulting to zero"
-                    );
-                    bc_models::Decimal::ZERO
-                }
-            })
-        })
+            let surplus = allocated + carry - spent;
+            let next = chain.get(k.saturating_add(1)).map_or(dst, |n| n.revision);
+            carry = apply_rollover_policy(next, surplus);
+        }
+        Ok(carry)
     }
 }
 
@@ -2103,6 +2131,25 @@ mod elided_actuals_tests {
         budget
     }
 
+    /// A daily 10 AUD budget on `account` from 2026-01-01, under `rollover`.
+    async fn daily_carry_budget(
+        pool: &SqlitePool,
+        account: &AccountId,
+        rollover: RolloverPolicy,
+    ) -> Budget {
+        let (budget, _) = BudgetService::new(pool.clone())
+            .create()
+            .account_id(account.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(dec!(10), CommodityCode::new("AUD")))
+            .period(Period::Daily)
+            .rollover(rollover)
+            .call()
+            .await
+            .expect("create budget");
+        budget
+    }
+
     /// Inserts a transaction and its legs by raw SQL, so an ambiguous
     /// two-elided-leg transaction can be staged without the service's guard.
     async fn insert_tx(pool: &SqlitePool, tx_id: &str, date: &str, legs: &[Leg<'_>]) {
@@ -2557,6 +2604,184 @@ mod elided_actuals_tests {
         );
         let err = result.expect_err("bad date must be rejected");
         assert!(matches!(err, BcError::BadData(_)), "{err:?}");
+    }
+
+    /// 304 daily periods precede 1 November; all carry. One elided leg of
+    /// 7.00 on 5 January is the only spend, so the rollover into November 1
+    /// is 304 × 10 − 7.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn daily_budget_carries_an_elided_leg_from_three_hundred_days_back(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let budget = daily_carry_budget(&pool, &food, RolloverPolicy::CarryForward).await;
+        insert_tx(
+            &pool,
+            "tx_jan",
+            "2026-01-05",
+            &[
+                ("p_bank", &bank, Some(("-7.00", "AUD"))),
+                ("p_food", &food, None),
+            ],
+        )
+        .await;
+
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for(&budget, Date::constant(2026, 11, 1))
+            .await
+            .expect("status");
+
+        assert_eq!(status.allocated, dec!(10.00));
+        assert_eq!(status.actuals, dec!(0));
+        assert_eq!(status.rollover, dec!(3033.00));
+        assert_eq!(status.available, dec!(3043.00));
+    }
+
+    /// The user's account filter narrows the window's actuals but never the
+    /// carry chain: rollover is a property of the budget, not of the view.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn account_filter_narrows_window_actuals_but_not_rollover(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let cafe = account(&pool, "Cafe", AccountType::Expense, Some(&food)).await;
+        let (budget, _) = BudgetService::new(pool.clone())
+            .create()
+            .account_id(food.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(dec!(200), CommodityCode::new("AUD")))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::CarryForward)
+            .call()
+            .await
+            .expect("create budget");
+        // February: 30 on Food, 20 on Cafe → surplus 150; January untouched → 200.
+        insert_tx(
+            &pool,
+            "tx_feb_food",
+            "2026-02-10",
+            &[
+                ("p_b1", &bank, Some(("-30.00", "AUD"))),
+                ("p_f1", &food, Some(("30.00", "AUD"))),
+            ],
+        )
+        .await;
+        insert_tx(
+            &pool,
+            "tx_feb_cafe",
+            "2026-02-11",
+            &[
+                ("p_b2", &bank, Some(("-20.00", "AUD"))),
+                ("p_c2", &cafe, Some(("20.00", "AUD"))),
+            ],
+        )
+        .await;
+        // March: 40 on Food, 15 on Cafe.
+        insert_tx(
+            &pool,
+            "tx_mar_food",
+            "2026-03-03",
+            &[
+                ("p_b3", &bank, Some(("-40.00", "AUD"))),
+                ("p_f3", &food, Some(("40.00", "AUD"))),
+            ],
+        )
+        .await;
+        insert_tx(
+            &pool,
+            "tx_mar_cafe",
+            "2026-03-04",
+            &[
+                ("p_b4", &bank, Some(("-15.00", "AUD"))),
+                ("p_c4", &cafe, Some(("15.00", "AUD"))),
+            ],
+        )
+        .await;
+        let query = crate::search::TransactionQuery {
+            accounts: vec![cafe.clone()],
+            ..Default::default()
+        };
+        let window = bc_models::BudgetWindow::custom(
+            Date::constant(2026, 3, 1),
+            Date::constant(2026, 4, 1),
+            "March",
+        );
+
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for_window(&budget, window, Some(&query))
+            .await
+            .expect("status");
+
+        assert_eq!(status.actuals, dec!(15.00));
+        assert_eq!(status.rollover, dec!(350.00));
+        assert_eq!(status.available, dec!(535.00));
+    }
+
+    /// An uncapped carry would reach 30.00 after three empty days; `CapAtTarget`
+    /// clamps the carry to the 10.00 target at every destination, so it stays
+    /// at 10.00 rather than accumulating.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn cap_at_target_caps_the_carry_at_every_step(pool: SqlitePool) {
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let budget = daily_carry_budget(&pool, &food, RolloverPolicy::CapAtTarget).await;
+
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for(&budget, Date::constant(2026, 1, 4))
+            .await
+            .expect("status");
+
+        assert_eq!(status.allocated, dec!(10.00));
+        assert_eq!(status.actuals, dec!(0));
+        assert_eq!(status.rollover, dec!(10.00));
+        assert_eq!(status.available, dec!(20.00));
+    }
+
+    /// A posting dated before the window's clipped-off period head is dropped
+    /// by `bucket_segments`: it lands in neither the chain (which ends at the
+    /// window period's true start) nor the window segment (clipped to the
+    /// window itself), so it must not surface in either actuals or rollover.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_in_clipped_off_period_head_is_not_counted(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let (budget, _) = BudgetService::new(pool.clone())
+            .create()
+            .account_id(food.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(dec!(200), CommodityCode::new("AUD")))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::CarryForward)
+            .call()
+            .await
+            .expect("create budget");
+        insert_tx(
+            &pool,
+            "tx_feb_head",
+            "2026-02-10",
+            &[
+                ("p_bank", &bank, Some(("-50.00", "AUD"))),
+                ("p_food", &food, None),
+            ],
+        )
+        .await;
+        let window = bc_models::BudgetWindow::custom(
+            Date::constant(2026, 2, 26),
+            Date::constant(2026, 3, 1),
+            "tail of February",
+        );
+
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for_window(&budget, window, None)
+            .await
+            .expect("status");
+
+        // January is a full chain period (target 200, no spend), so it carries
+        // whole into February; the February posting predates the window and
+        // falls in the clipped-off head of February's own period, so it
+        // reaches neither the window's actuals nor the chain's rollover.
+        assert_eq!(status.actuals, dec!(0));
+        assert_eq!(status.rollover, dec!(200.00));
+        // 3 of 28 days of February's 200.00 target: 200 * 3 / 28 = 21.428571...
+        assert_eq!(status.allocated, dec!(21.43));
+        assert_eq!(status.available, dec!(221.43));
     }
 }
 
