@@ -9,12 +9,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use bc_models::ImportBatchId;
 use bc_models::ProfileId;
 
 use crate::BackupKind;
 use crate::BackupService;
 use crate::BcError;
 use crate::BcResult;
+use crate::ImportAbort;
 use crate::ImportOutcome;
 use crate::ImportPlan;
 use crate::ImportProfile;
@@ -116,6 +118,10 @@ pub struct ProfileFailure {
     /// so a caller can keep its exit-code mapping. `None` on every other
     /// stage. Shared, since [`BcError`] does not clone.
     pub source: Option<Arc<BcError>>,
+    /// The batch a committed run opened before it stopped, still holding
+    /// every row written up to the stop; `import discard` undoes it. `None`
+    /// when nothing was written.
+    pub batch_id: Option<ImportBatchId>,
 }
 
 impl ProfileFailure {
@@ -132,6 +138,7 @@ impl ProfileFailure {
             stage,
             message: message.into(),
             source: None,
+            batch_id: None,
         }
     }
 }
@@ -144,6 +151,18 @@ impl From<BcError> for ProfileFailure {
             stage: FailureStage::Engine,
             message: error.to_string(),
             source: Some(Arc::new(error)),
+            batch_id: None,
+        }
+    }
+}
+
+impl From<ImportAbort> for ProfileFailure {
+    /// Wraps a stopped run, keeping its error and the batch it left open.
+    #[inline]
+    fn from(abort: ImportAbort) -> Self {
+        Self {
+            batch_id: abort.batch_id,
+            ..Self::from(*abort.source)
         }
     }
 }
@@ -336,7 +355,7 @@ impl ImportEngine {
         mode: Mode,
     ) -> Result<ProfileRun, ProfileFailure> {
         let Prepared { profile, raws } = prepared;
-        let run = match mode {
+        match mode {
             Mode::DryRun => plan_import(
                 &self.transactions,
                 &self.sources,
@@ -349,7 +368,8 @@ impl ImportEngine {
                 &raws,
             )
             .await
-            .map(ProfileRun::Planned),
+            .map(ProfileRun::Planned)
+            .map_err(ProfileFailure::from),
             Mode::Commit => execute_import(
                 &self.transactions,
                 &self.sources,
@@ -362,9 +382,9 @@ impl ImportEngine {
                 &raws,
             )
             .await
-            .map(ProfileRun::Imported),
-        };
-        run.map_err(ProfileFailure::from)
+            .map(ProfileRun::Imported)
+            .map_err(ProfileFailure::from),
+        }
     }
 
     /// Runs a selection of profiles in name order, taking one `PreImport`
@@ -521,12 +541,35 @@ mod tests {
         Box::new(FailingImporter)
     }
 
+    /// Panics inside `import`, standing in for a plugin trap that unwinds
+    /// instead of returning an error.
+    struct PanickingImporter;
+
+    impl Importer for PanickingImporter {
+        fn name(&self) -> &'static str {
+            "panicking"
+        }
+
+        fn import(&self, _config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+            panic!("trap while parsing")
+        }
+
+        fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
+            Ok(())
+        }
+    }
+
+    fn make_panicking() -> Box<dyn Importer> {
+        Box::new(PanickingImporter)
+    }
+
     /// Everything a test reaches for: the engine, the services it shares,
-    /// and the directory snapshots land in.
+    /// the pool beneath them, and the directory snapshots land in.
     struct Fixture {
         engine: ImportEngine,
         profiles: crate::ImportProfileService,
         batches: crate::ImportBatchService,
+        pool: sqlx::SqlitePool,
         backup_dir: PathBuf,
     }
 
@@ -544,6 +587,7 @@ mod tests {
         let mut importers = ImporterRegistry::new();
         importers.register(ImporterFactory::new("stub", make_stub));
         importers.register(ImporterFactory::new("failing", make_failing));
+        importers.register(ImporterFactory::new("panicking", make_panicking));
 
         let profiles = crate::ImportProfileService::new(pool.clone());
         let batches = crate::ImportBatchService::new(pool.clone());
@@ -556,13 +600,18 @@ mod tests {
             .batches(batches.clone())
             .profiles(profiles.clone())
             .importers(Arc::new(importers))
-            .backup(Arc::new(crate::BackupService::new(pool, db_path, policy)))
+            .backup(Arc::new(crate::BackupService::new(
+                pool.clone(),
+                db_path,
+                policy,
+            )))
             .snapshot_before_write(snapshot_before_write)
             .build();
         Fixture {
             engine,
             profiles,
             batches,
+            pool,
             backup_dir,
         }
     }
@@ -761,6 +810,75 @@ mod tests {
         ));
         assert!(matches!(beta.result, Ok(ProfileRun::Imported(_))));
         assert_eq!(fixture.batches.list().await.expect("list").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_panicking_importer_is_a_failure_at_the_importer_stage() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), false).await;
+        let broken = profile(&fixture, "broken", "panicking").await;
+
+        let result = fixture.engine.run_profile(&broken, Mode::Commit).await;
+
+        let failure = result.result.expect_err("the panic is a failure");
+        assert_eq!(failure.stage, FailureStage::Importer);
+        assert!(
+            failure.message.starts_with("importer task failed: "),
+            "the join error is the message: {failure:?}"
+        );
+        assert!(fixture.batches.list().await.expect("list").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_run_that_stops_after_opening_names_its_batch() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), false).await;
+        profile(&fixture, "alpha", "stub").await;
+        profile(&fixture, "beta", "stub").await;
+        // Every committed run closes its batch last, so failing the close
+        // stops the run after the batch opened and its rows were written.
+        sqlx::query(
+            "CREATE TRIGGER stop_close BEFORE UPDATE OF finished_at ON import_batches \
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END",
+        )
+        .execute(&fixture.pool)
+        .await
+        .expect("create trigger");
+
+        let report = fixture
+            .engine
+            .sync(Selection::All, Mode::Commit)
+            .await
+            .expect("sync");
+
+        let mut open: Vec<String> = fixture
+            .batches
+            .list()
+            .await
+            .expect("list")
+            .into_iter()
+            .map(|batch| batch.id.to_string())
+            .collect();
+        open.sort();
+        assert_eq!(open.len(), 2, "each profile opened its own batch");
+        let mut named = Vec::new();
+        for result in &report.profiles {
+            let failure = result.result.as_ref().expect_err("the close failed");
+            assert_eq!(failure.stage, FailureStage::Engine);
+            assert!(
+                failure.source.is_some(),
+                "the error survives for the exit code: {failure:?}"
+            );
+            named.push(
+                failure
+                    .batch_id
+                    .as_ref()
+                    .expect("the failure names its batch")
+                    .to_string(),
+            );
+        }
+        named.sort();
+        assert_eq!(named, open, "each failure names the batch it left open");
     }
 
     #[tokio::test]

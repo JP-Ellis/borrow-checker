@@ -738,6 +738,35 @@ struct Resolved {
     counts: Counts,
 }
 
+/// A committed run that stopped before it finished.
+///
+/// Every row written before the stop stays written — each in its own
+/// transaction, under the batch this names — so the run is undone with
+/// `import discard`, not by a rollback. `batch_id` is `None` when the stop
+/// came before the batch opened, in which case nothing was written.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct Abort {
+    /// The batch left open, when the run got that far.
+    pub batch_id: Option<ImportBatchId>,
+    /// What stopped the run. Boxed so the `Err` variant stays small.
+    pub source: Box<crate::BcError>,
+}
+
+impl std::fmt::Display for Abort {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(f)
+    }
+}
+
+impl std::error::Error for Abort {
+    #[inline]
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
 /// Imports raw transactions, persisting every resolvable posting.
 ///
 /// Each leg's account **path** is resolved to an id; a leg naming no existing
@@ -777,7 +806,9 @@ struct Resolved {
 ///
 /// # Errors
 ///
-/// Returns [`crate::BcError`] on query, insert, or batch-record failure.
+/// Returns an [`Abort`] on query, insert, or batch-record failure. Rows
+/// already written stay written, each under the batch the abort names, so
+/// the caller can hand that id to `import discard`.
 #[expect(
     clippy::too_many_arguments,
     reason = "one parameter per service the run reads or writes; bundling them \
@@ -794,13 +825,13 @@ pub async fn execute_import(
     profile_id: Option<&bc_models::ProfileId>,
     importer: &str,
     raws: &[RawTransaction],
-) -> BcResult<ImportOutcome> {
+) -> Result<ImportOutcome, Abort> {
     let mut sink = Commit {
         transactions,
         sources,
         batch_id: None,
     };
-    let run = run_with(
+    let run = match run_with(
         &mut sink,
         transactions,
         sources,
@@ -812,11 +843,23 @@ pub async fn execute_import(
         importer,
         raws,
     )
-    .await?;
+    .await
+    {
+        Ok(run) => run,
+        Err(source) => {
+            return Err(Abort {
+                batch_id: sink.batch_id.take(),
+                source: Box::new(source),
+            });
+        }
+    };
 
-    let batch_id = run
-        .batch_id
-        .ok_or_else(|| crate::BcError::BadData("the commit sink opened no batch".to_owned()))?;
+    let batch_id = run.batch_id.ok_or_else(|| Abort {
+        batch_id: None,
+        source: Box::new(crate::BcError::BadData(
+            "the commit sink opened no batch".to_owned(),
+        )),
+    })?;
 
     Ok(ImportOutcome {
         batch_id,
