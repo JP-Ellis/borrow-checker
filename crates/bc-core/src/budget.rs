@@ -737,6 +737,102 @@ fn expand_posting_rows(
     Ok(out)
 }
 
+/// One actuals load: a date range under one revision's tag filter.
+#[derive(Debug, PartialEq, Eq)]
+struct Load<'a> {
+    /// Inclusive start.
+    start: jiff::civil::Date,
+    /// Exclusive end.
+    end: jiff::civil::Date,
+    /// The reign's tag filter.
+    tag_filter: Option<&'a bc_models::TagId>,
+    /// Whether the user's transaction query applies to this load.
+    with_query: bool,
+}
+
+/// Plans the loads a status needs: at most two per reign.
+///
+/// The carry chain is always loaded without the user query, because rollover
+/// is a property of the budget rather than of the current view. The window is
+/// loaded with the query. Without a query the two ranges share one SQL shape
+/// and merge into a single span per reign, so a status with no query issues
+/// exactly one load per reign it touches.
+///
+/// # Arguments
+///
+/// * `revisions` - Revisions sorted ascending by `effective_from`.
+/// * `chain` - `[chain_start, first_window_period_start)`, or `None` when no
+///   carry reaches the window.
+/// * `window` - `[window.start, window.end)`.
+/// * `has_query` - Whether a user query narrows the window loads.
+///
+/// # Returns
+///
+/// Loads in reign order, then range order within a reign, each clipped to its
+/// reign. Empty intersections are dropped.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired into status_for_window in the next commit")
+)]
+fn plan_loads(
+    revisions: &[bc_models::BudgetRevision],
+    chain: Option<(jiff::civil::Date, jiff::civil::Date)>,
+    window: (jiff::civil::Date, jiff::civil::Date),
+    has_query: bool,
+) -> Vec<Load<'_>> {
+    let (window_start, window_end) = window;
+    let ranges: Vec<(jiff::civil::Date, jiff::civil::Date, bool)> = match chain {
+        Some((chain_start, _)) if !has_query => vec![(chain_start, window_end, false)],
+        Some((chain_start, chain_end)) => vec![
+            (chain_start, chain_end, false),
+            (window_start, window_end, true),
+        ],
+        None => vec![(window_start, window_end, has_query)],
+    };
+    let mut out = Vec::new();
+    for (i, rev) in revisions.iter().enumerate() {
+        let reign_start = rev.effective_from();
+        let reign_end = revisions
+            .get(i.saturating_add(1))
+            .map(bc_models::BudgetRevision::effective_from);
+        for &(from, to, with_query) in &ranges {
+            let start = from.max(reign_start);
+            let end = reign_end.map_or(to, |re| to.min(re));
+            if start < end {
+                out.push(Load {
+                    start,
+                    end,
+                    tag_filter: rev.tag_filter(),
+                    with_query,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// A half-open date range whose matched amounts fold together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Segment {
+    /// Inclusive start.
+    start: jiff::civil::Date,
+    /// Exclusive end.
+    end: jiff::civil::Date,
+}
+
+/// Index of the segment containing `date`, if any.
+///
+/// `segments` must be sorted and pairwise disjoint; gaps between segments are
+/// allowed and dates falling in a gap return `None`.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired into status_for_window in the next commit")
+)]
+fn segment_index(segments: &[Segment], date: jiff::civil::Date) -> Option<usize> {
+    let idx = segments.partition_point(|s| s.end <= date);
+    segments.get(idx).filter(|s| s.start <= date).map(|_| idx)
+}
+
 impl BudgetStatusEngine {
     /// Creates a new [`BudgetStatusEngine`] with the given connection pool and FX service.
     #[must_use]
@@ -2461,5 +2557,186 @@ mod elided_actuals_tests {
         );
         let err = result.expect_err("bad date must be rejected");
         assert!(matches!(err, BcError::BadData(_)), "{err:?}");
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod load_plan_tests {
+    use bc_models::BudgetId;
+    use bc_models::BudgetRevision;
+    use bc_models::Period;
+    use bc_models::RolloverPolicy;
+    use bc_models::TagId;
+    use jiff::Timestamp;
+    use jiff::civil::Date;
+    use pretty_assertions::assert_eq;
+
+    use super::Load;
+    use super::Segment;
+    use super::plan_loads;
+    use super::segment_index;
+
+    /// A daily carry-forward revision effective from `eff`, optionally tag-filtered.
+    fn daily_rev(eff: Date, tag: Option<&TagId>) -> BudgetRevision {
+        BudgetRevision::builder()
+            .budget_id(BudgetId::new())
+            .effective_from(eff)
+            .period(Period::Daily)
+            .rollover(RolloverPolicy::CarryForward)
+            .maybe_tag_filter(tag.cloned())
+            .created_at(Timestamp::now())
+            .build()
+    }
+
+    #[test]
+    fn no_query_merges_chain_and_window_into_one_load_per_reign() {
+        // 400 daily periods across two reigns: one load per reign, never per day.
+        let tag = TagId::new();
+        let revs = vec![
+            daily_rev(Date::constant(2026, 1, 1), None),
+            daily_rev(Date::constant(2026, 7, 1), Some(&tag)),
+        ];
+        let loads = plan_loads(
+            &revs,
+            Some((Date::constant(2026, 1, 1), Date::constant(2027, 2, 4))),
+            (Date::constant(2027, 2, 4), Date::constant(2027, 2, 5)),
+            false,
+        );
+        assert_eq!(
+            loads,
+            vec![
+                Load {
+                    start: Date::constant(2026, 1, 1),
+                    end: Date::constant(2026, 7, 1),
+                    tag_filter: None,
+                    with_query: false,
+                },
+                Load {
+                    start: Date::constant(2026, 7, 1),
+                    end: Date::constant(2027, 2, 5),
+                    tag_filter: Some(&tag),
+                    with_query: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn query_splits_the_reign_spanning_the_window_start() {
+        // Reign 1 holds the whole chain and the first half of the window, so
+        // it needs an unfiltered chain load and a filtered window load; reign 2
+        // only overlaps the window.
+        let revs = vec![
+            daily_rev(Date::constant(2026, 1, 1), None),
+            daily_rev(Date::constant(2026, 7, 1), None),
+        ];
+        let loads = plan_loads(
+            &revs,
+            Some((Date::constant(2026, 1, 1), Date::constant(2026, 6, 15))),
+            (Date::constant(2026, 6, 15), Date::constant(2026, 7, 15)),
+            true,
+        );
+        assert_eq!(
+            loads,
+            vec![
+                Load {
+                    start: Date::constant(2026, 1, 1),
+                    end: Date::constant(2026, 6, 15),
+                    tag_filter: None,
+                    with_query: false,
+                },
+                Load {
+                    start: Date::constant(2026, 6, 15),
+                    end: Date::constant(2026, 7, 1),
+                    tag_filter: None,
+                    with_query: true,
+                },
+                Load {
+                    start: Date::constant(2026, 7, 1),
+                    end: Date::constant(2026, 7, 15),
+                    tag_filter: None,
+                    with_query: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn no_chain_plans_the_window_only() {
+        let revs = vec![daily_rev(Date::constant(2026, 1, 1), None)];
+        let loads = plan_loads(
+            &revs,
+            None,
+            (Date::constant(2026, 3, 1), Date::constant(2026, 4, 1)),
+            true,
+        );
+        assert_eq!(
+            loads,
+            vec![Load {
+                start: Date::constant(2026, 3, 1),
+                end: Date::constant(2026, 4, 1),
+                tag_filter: None,
+                with_query: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn reigns_outside_both_ranges_plan_nothing() {
+        // Reign 2 starts after the window ends; reign 1 covers everything.
+        let revs = vec![
+            daily_rev(Date::constant(2026, 1, 1), None),
+            daily_rev(Date::constant(2027, 1, 1), None),
+        ];
+        let loads = plan_loads(
+            &revs,
+            None,
+            (Date::constant(2026, 3, 1), Date::constant(2026, 4, 1)),
+            false,
+        );
+        assert_eq!(loads.len(), 1);
+    }
+
+    #[test]
+    fn empty_window_plans_nothing() {
+        let revs = vec![daily_rev(Date::constant(2026, 1, 1), None)];
+        let loads = plan_loads(
+            &revs,
+            None,
+            (Date::constant(2026, 3, 1), Date::constant(2026, 3, 1)),
+            false,
+        );
+        assert_eq!(loads, Vec::<Load<'_>>::new());
+    }
+
+    #[test]
+    fn segment_index_finds_the_half_open_range_holding_a_date() {
+        let segments = [
+            Segment {
+                start: Date::constant(2026, 1, 1),
+                end: Date::constant(2026, 2, 1),
+            },
+            Segment {
+                start: Date::constant(2026, 3, 1),
+                end: Date::constant(2026, 3, 15),
+            },
+        ];
+        assert_eq!(
+            segment_index(&segments, Date::constant(2026, 1, 1)),
+            Some(0)
+        );
+        assert_eq!(
+            segment_index(&segments, Date::constant(2026, 1, 31)),
+            Some(0)
+        );
+        assert_eq!(segment_index(&segments, Date::constant(2026, 2, 1)), None);
+        assert_eq!(segment_index(&segments, Date::constant(2026, 2, 15)), None);
+        assert_eq!(
+            segment_index(&segments, Date::constant(2026, 3, 14)),
+            Some(1)
+        );
+        assert_eq!(segment_index(&segments, Date::constant(2026, 3, 15)), None);
+        assert_eq!(segment_index(&[], Date::constant(2026, 3, 1)), None);
     }
 }
