@@ -20,12 +20,13 @@ fn loaded_summary() -> BudgetSummary {
         Some(Amount::new(Decimal::new(187_550, 2), "AUD")),
         false,
         1,
+        false,
     )
 }
 
 /// Creates a fixture [`BudgetSummary`] with no budgets — all `None`.
 fn empty_summary() -> BudgetSummary {
-    BudgetSummary::new(None, None, None, false, 0)
+    BudgetSummary::new(None, None, None, false, 0, false)
 }
 
 /// Wraps a scenario in a labelled box with a fresh context.

@@ -20,12 +20,13 @@ fn loaded_summary() -> BudgetSummary {
         Some(Amount::new(Decimal::new(187_550, 2), "AUD")),
         false,
         2,
+        false,
     )
 }
 
 /// Creates a fixture [`BudgetSummary`] flagged with mixed commodities.
 fn mixed_summary() -> BudgetSummary {
-    BudgetSummary::new(None, None, None, true, 0)
+    BudgetSummary::new(None, None, None, true, 0, false)
 }
 
 /// Wraps a scenario in a labelled box.

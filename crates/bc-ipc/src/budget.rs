@@ -158,6 +158,10 @@ pub struct BudgetTreeNode {
     /// Child nodes (empty for leaf rows).
     #[builder(default)]
     pub children: Vec<BudgetTreeNode>,
+    /// Spend within the display window that could not be valued in the
+    /// budget commodity, per commodity. Empty when every posting counted.
+    #[builder(default)]
+    pub unvalued: Vec<Amount>,
 }
 
 /// KPI summary for the budget page header.
@@ -178,6 +182,8 @@ pub struct BudgetSummary {
     pub has_mixed_commodities: bool,
     /// Number of leaf budget lines where `spent > effective_target`.
     pub overspent_count: u32,
+    /// `true` when any leaf budget has unvalued spend.
+    pub has_unvalued: bool,
 }
 
 impl BudgetSummary {
@@ -193,6 +199,7 @@ impl BudgetSummary {
         total_remaining: Option<Amount>,
         has_mixed_commodities: bool,
         overspent_count: u32,
+        has_unvalued: bool,
     ) -> Self {
         Self {
             total_budgeted,
@@ -200,6 +207,7 @@ impl BudgetSummary {
             total_remaining,
             has_mixed_commodities,
             overspent_count,
+            has_unvalued,
         }
     }
 }
@@ -218,6 +226,9 @@ pub struct NativePeriodRow {
     pub effective_target: Option<Amount>,
     /// Actual spend within this native period.
     pub spent: Amount,
+    /// Spend within this native period that could not be valued in the
+    /// budget commodity, per commodity.
+    pub unvalued: Vec<Amount>,
 }
 
 impl NativePeriodRow {
@@ -230,6 +241,7 @@ impl NativePeriodRow {
         period_end: jiff::civil::Date,
         effective_target: Option<Amount>,
         spent: Amount,
+        unvalued: Vec<Amount>,
     ) -> Self {
         Self {
             label: label.into(),
@@ -237,6 +249,7 @@ impl NativePeriodRow {
             period_end,
             effective_target,
             spent,
+            unvalued,
         }
     }
 }
@@ -313,6 +326,7 @@ mod tests {
             jiff::civil::Date::constant(2026, 6, 16),
             Some(Amount::new(Decimal::new(15_000, 2), "AUD")),
             Amount::new(Decimal::new(8_200, 2), "AUD"),
+            vec![],
         );
         let json = serde_json::to_string(&row).expect("ser");
         let back: NativePeriodRow = serde_json::from_str(&json).expect("de");
@@ -328,6 +342,7 @@ mod tests {
             Some(zero.clone()),
             false,
             0,
+            false,
         );
         let json = serde_json::to_string(&summary).expect("ser");
         let back: BudgetSummary = serde_json::from_str(&json).expect("de");
@@ -336,7 +351,7 @@ mod tests {
 
     #[test]
     fn budget_summary_none_totals_roundtrip() {
-        let summary = BudgetSummary::new(None, None, None, true, 0);
+        let summary = BudgetSummary::new(None, None, None, true, 0, false);
         let json = serde_json::to_string(&summary).expect("ser");
         let back: BudgetSummary = serde_json::from_str(&json).expect("de");
         assert_eq!(summary, back);

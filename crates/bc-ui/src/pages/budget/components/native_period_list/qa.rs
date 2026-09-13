@@ -27,6 +27,7 @@ fn row_with_target(
         period_end,
         Some(Amount::new(Decimal::new(target, 2), "AUD")),
         Amount::new(Decimal::new(spent, 2), "AUD"),
+        Vec::new(),
     )
 }
 
@@ -43,6 +44,7 @@ fn row_no_target(
         period_end,
         None,
         Amount::new(Decimal::new(spent, 2), "AUD"),
+        Vec::new(),
     )
 }
 
