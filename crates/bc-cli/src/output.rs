@@ -54,3 +54,13 @@ pub fn format_table(headers: &[&str], rows: &[Vec<String>]) -> String {
     }
     table.to_string()
 }
+
+/// Formats `balances` as `0.5 BTC, 100.00 USD`.
+#[must_use]
+pub fn format_balances(balances: &bc_models::Balances) -> String {
+    balances
+        .iter()
+        .map(|(code, value)| format!("{value} {code}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}

@@ -7,5 +7,5 @@ exit_code: 0
 ----- stdout -----
  BUDGET           | PERIOD                  | ALLOCATED | ACTUALS | AVAILABLE | UNVALUED
 =========================================================================================
- Groceries Budget | 2030-01-01 – 2030-01-31 | 500 AUD   | 0 AUD   | 500 AUD   | —
+ Groceries Budget | 2030-01-01 – 2030-01-31 | 500 AUD   | 0 AUD   | 500 AUD   | 5.00 USD
 ----- stderr -----
