@@ -6,7 +6,9 @@ use jiff::civil::Date;
 use crate::TagId;
 use crate::metadata::Metadata;
 use crate::money::Amount;
+use crate::money::AmountError;
 use crate::quote::Quote;
+use crate::quote::weight_of;
 
 crate::define_id!(TransactionId, "transaction");
 crate::define_id!(PostingId, "posting");
@@ -124,9 +126,13 @@ pub struct Posting {
     /// commodity may be elided in a given transaction.
     amount: Option<Amount>,
 
-    /// Cost basis for a commodity conversion, if applicable. `None` for
-    /// same-commodity postings; required when tracking acquisition cost across
-    /// currency or asset conversions.
+    /// Price annotation: what one unit (`@ 332 AUD`) or the whole leg
+    /// (`@@ 6.37 AUD`) was exchanged for. Used for balancing when no cost is
+    /// set; never booked as inventory. `None` for an unpriced leg.
+    price: Option<Quote>,
+
+    /// Cost basis, if the leg acquired a lot: Beancount's `{105 AUD}` /
+    /// `{{210 AUD}}`. A leg with a cost weighs at cost for balancing.
     cost: Option<Cost>,
 
     /// Free-form typed key-value metadata for this posting leg, in display
@@ -179,6 +185,28 @@ impl Posting {
         self.cost.as_ref()
     }
 
+    /// Returns the price annotation, if any.
+    #[inline]
+    #[must_use]
+    pub fn price(&self) -> Option<&Quote> {
+        self.price.as_ref()
+    }
+
+    /// Returns the amount this leg contributes to balancing.
+    ///
+    /// Beancount's rule, via [`weight_of`]: at cost if a cost is set, else
+    /// at price if a price is set, else the amount itself. `None` when the
+    /// amount is elided.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AmountError::Overflow`] if a per-unit product overflows.
+    pub fn weight(&self) -> Result<Option<Amount>, AmountError> {
+        self.amount()
+            .map(|amount| weight_of(amount, self.cost(), self.price()))
+            .transpose()
+    }
+
     /// Returns this posting's metadata entries.
     #[inline]
     #[must_use]
@@ -210,7 +238,7 @@ impl Posting {
 
 /// A double-entry accounting transaction.
 ///
-/// All postings must sum to zero per commodity (enforced by `bc-core`).
+/// All postings' weights must sum to zero per commodity (enforced by `bc-core`).
 ///
 /// # Builder design — `id` and `created_at` are required
 ///
@@ -366,11 +394,11 @@ impl Transaction {
             .count()
     }
 
-    /// Returns `true` if the transaction balances to zero per commodity once a
-    /// single elided leg (if any) is resolved to the residual. Two or more
-    /// elided legs are ambiguous and never balance. A transaction with no
-    /// concrete (non-elided) legs never balances — a lone elided posting has
-    /// nothing to balance against.
+    /// Returns `true` if the transaction balances to zero per commodity *by
+    /// weight* (see [`Posting::weight`]) once a single elided leg (if any) is
+    /// resolved to the residual. Two or more elided legs are ambiguous and
+    /// never balance. A transaction with no concrete (non-elided) legs never
+    /// balances — a lone elided posting has nothing to balance against.
     #[must_use]
     pub fn balanced(&self) -> bool {
         if self.elided_count() > 1 {
@@ -379,9 +407,12 @@ impl Transaction {
         let mut balances = crate::Balances::new();
         let mut concrete = 0_usize;
         for p in &self.postings {
-            if let Some(a) = p.amount() {
+            let Ok(weight) = p.weight() else {
+                return false;
+            };
+            if let Some(w) = weight {
                 concrete = concrete.saturating_add(1);
-                if balances.try_add(a).is_err() {
+                if balances.try_add(&w).is_err() {
                     return false;
                 }
             }
@@ -410,6 +441,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::AccountId;
     use crate::Quote;
     use crate::TagId;
     use crate::metadata::MetaEntry;
@@ -825,5 +857,128 @@ mod tests {
         let json = serde_json::to_string(&posting).expect("serialize should succeed");
         let back: Posting = serde_json::from_str(&json).expect("deserialize should succeed");
         assert_eq!(posting, back);
+    }
+
+    #[test]
+    fn weight_of_an_elided_leg_is_none() {
+        let p = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .build();
+        assert_eq!(p.weight().expect("weighs"), None);
+    }
+
+    #[test]
+    fn weight_uses_price_when_no_cost() {
+        let p = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .amount(Amount::new(dec!(4.00), CommodityCode::new("USD")))
+            .price(Quote::Total(Amount::new(
+                dec!(6.37),
+                CommodityCode::new("AUD"),
+            )))
+            .build();
+        assert_eq!(
+            p.weight().expect("weighs"),
+            Some(Amount::new(dec!(6.37), CommodityCode::new("AUD")))
+        );
+    }
+
+    #[test]
+    fn balanced_fx_purchase_with_total_price() {
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Software")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .amount(Amount::new(dec!(-6.37), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .amount(Amount::new(dec!(4.00), CommodityCode::new("USD")))
+                    .price(Quote::Total(Amount::new(
+                        dec!(6.37),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .build(),
+            ])
+            .build();
+        assert!(tx.balanced());
+    }
+
+    #[test]
+    fn balanced_sale_at_cost_with_elided_gains() {
+        // -2 AAPL {105 AUD} weighs -210 AUD; +290 AUD cash; gains leg elided.
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 6, 1))
+            .description("Sell 2 AAPL")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .amount(Amount::new(dec!(-2), CommodityCode::new("AAPL")))
+                    .cost(
+                        Cost::builder()
+                            .basis(Quote::PerUnit(Amount::new(
+                                dec!(105),
+                                CommodityCode::new("AUD"),
+                            )))
+                            .build(),
+                    )
+                    .price(Quote::PerUnit(Amount::new(
+                        dec!(150),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .amount(Amount::new(dec!(290), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .build(),
+            ])
+            .build();
+        assert!(tx.balanced());
+    }
+
+    #[test]
+    fn unbalanced_when_only_the_price_side_is_off() {
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Software")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .amount(Amount::new(dec!(-6.37), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .amount(Amount::new(dec!(4.00), CommodityCode::new("USD")))
+                    .price(Quote::Total(Amount::new(
+                        dec!(6.12),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .build(),
+            ])
+            .build();
+        assert!(!tx.balanced());
     }
 }
