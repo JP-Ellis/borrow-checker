@@ -45,6 +45,12 @@
     border-top: 1px solid var(--bc-border);
 }
 
+.unvalued {
+    grid-column: 1 / -1;
+    justify-self: start;
+    padding: var(--bc-space-1) var(--bc-space-4);
+}
+
 .kpi_tile {
     padding: var(--bc-space-3) var(--bc-space-4);
     border-right: 1px solid var(--bc-border);

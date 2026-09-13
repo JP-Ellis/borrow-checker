@@ -93,7 +93,13 @@ fn KpiTileRow(
                 <KpiTile label="Remaining" value=remaining />
                 <KpiTile label="Net" value=net value_class=net_class />
                 {has_unvalued
-                    .then(|| view! { <StatusPill label="unvalued".to_owned() tone=Tone::Warn /> })}
+                    .then(|| {
+                        view! {
+                            <span class=style::unvalued>
+                                <StatusPill label="unvalued".to_owned() tone=Tone::Warn />
+                            </span>
+                        }
+                    })}
             </div>
         }
     }
