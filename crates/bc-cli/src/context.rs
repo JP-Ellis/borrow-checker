@@ -14,7 +14,7 @@ pub struct AppContext {
     /// Raw plugin registry — retains manifest metadata for `plugin list`.
     pub plugin_registry: bc_plugins::PluginRegistry,
     /// Loaded importer plugins (WASM + any native adapters).
-    pub importers: bc_core::ImporterRegistry,
+    pub importers: std::sync::Arc<bc_core::ImporterRegistry>,
     /// Account service.
     pub accounts: bc_core::AccountService,
     /// Commodity registry service.
@@ -40,17 +40,25 @@ pub struct AppContext {
     /// Metadata key registry.
     pub metadata: bc_core::MetadataService,
     /// Backup service (snapshot + restore + rotation).
-    pub backup: bc_core::BackupService,
+    pub backup: std::sync::Arc<bc_core::BackupService>,
     /// Resolved database file path (used by restore to swap the file).
     pub db_path: std::path::PathBuf,
     /// Source-reference service (import provenance / dedup).
+    ///
+    /// No command reads this directly since `import run` moved onto
+    /// `engine`, which holds its own clone; kept for a future command
+    /// that inspects source references outside an import.
+    #[expect(
+        dead_code,
+        reason = "no direct CLI consumer since import run moved onto engine"
+    )]
     pub sources: bc_core::SourceService,
     /// Transfer resolution service (merge / unmerge / suggest).
     pub transfers: bc_core::TransferService,
     /// Import batch provenance service.
     pub batches: bc_core::ImportBatchService,
-    /// Whether to snapshot the database before each import run.
-    pub auto_pre_import: bool,
+    /// Runs import profiles: `import run` and `sync` both go through it.
+    pub engine: bc_core::ImportEngine,
     /// Whether to snapshot the database before discarding an import batch.
     pub auto_pre_discard: bool,
 }
@@ -93,10 +101,34 @@ impl AppContext {
         let plugin_registry =
             bc_plugins::PluginRegistry::load(settings.plugin_paths(), settings.documents_root())
                 .map_err(|e| bc_core::BcError::InvalidInput(e.to_string()))?;
-        let importers = plugin_registry.build_importer_registry();
+        let importers = std::sync::Arc::new(plugin_registry.build_importer_registry());
 
         let commodities = bc_core::CommodityService::new(pool.clone());
         commodities.seed_defaults().await?;
+
+        let transactions = bc_core::TransactionService::new(pool.clone());
+        let sources = bc_core::SourceService::new(pool.clone());
+        let accounts = bc_core::AccountService::new(pool.clone());
+        let tags = bc_core::TagService::new(pool.clone());
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let profiles = bc_core::ImportProfileService::new(pool.clone());
+        let backup = std::sync::Arc::new(bc_core::BackupService::new(
+            pool.clone(),
+            db_path.clone(),
+            policy,
+        ));
+        let engine = bc_core::ImportEngine::builder()
+            .transactions(transactions.clone())
+            .sources(sources.clone())
+            .accounts(accounts.clone())
+            .commodities(commodities.clone())
+            .tags(tags.clone())
+            .batches(batches.clone())
+            .profiles(profiles.clone())
+            .importers(std::sync::Arc::clone(&importers))
+            .backup(std::sync::Arc::clone(&backup))
+            .snapshot_before_write(backup_section.auto_pre_import())
+            .build();
 
         let fx = bc_core::noop_fx();
         Ok(Self {
@@ -106,22 +138,22 @@ impl AppContext {
             fy_start_day: settings.financial_year_start_day(),
             plugin_registry,
             importers,
-            accounts: bc_core::AccountService::new(pool.clone()),
+            accounts,
             commodities,
-            transactions: bc_core::TransactionService::new(pool.clone()),
+            transactions,
             balances: bc_core::BalanceEngine::new(pool.clone()),
-            profiles: bc_core::ImportProfileService::new(pool.clone()),
+            profiles,
             assets: bc_core::AssetService::new(pool.clone()),
             loans: bc_core::LoanService::new(pool.clone()),
             budgets: bc_core::BudgetService::new(pool.clone()),
-            tags: bc_core::TagService::new(pool.clone()),
+            tags,
             metadata: bc_core::MetadataService::new(pool.clone()),
-            backup: bc_core::BackupService::new(pool.clone(), db_path.clone(), policy),
+            backup,
             db_path,
-            sources: bc_core::SourceService::new(pool.clone()),
+            sources,
             transfers: bc_core::TransferService::new(pool.clone()),
-            batches: bc_core::ImportBatchService::new(pool.clone()),
-            auto_pre_import: backup_section.auto_pre_import(),
+            batches,
+            engine,
             auto_pre_discard: backup_section.auto_pre_discard(),
             budget_status: bc_core::BudgetStatusEngine::new(pool, std::sync::Arc::clone(&fx)),
             fx,
