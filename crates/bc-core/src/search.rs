@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 use bc_models::AccountId;
 use bc_models::Amount;
+use bc_models::AmountError;
 use bc_models::CommodityCode;
 use bc_models::Posting;
 use bc_models::PostingId;
@@ -18,6 +19,8 @@ use rust_decimal::prelude::ToPrimitive as _;
 
 use crate::BcResult;
 use crate::db::to_db_str;
+use crate::residual::Residual;
+use crate::residual::residual_of;
 use crate::transaction::Service;
 use crate::transaction::TxRow;
 use crate::transaction::sql_placeholders;
@@ -94,7 +97,9 @@ impl TransactionQuery {
 
 impl AmountQuery {
     /// Returns whether `amount`'s magnitude falls in `[min, max]` and, if a
-    /// commodity is set, matches it. An elided (`None`) amount never matches.
+    /// commodity is set, matches it. An elided (`None`) amount never matches
+    /// here; [`Self::matches_leg`] resolves it through the transaction's
+    /// residual first.
     #[must_use]
     #[expect(
         clippy::shadow_reuse,
@@ -119,6 +124,35 @@ impl AmountQuery {
             return false;
         }
         true
+    }
+
+    /// Returns whether a leg satisfies the query, resolving an elided leg
+    /// through its transaction's `residual`.
+    ///
+    /// A concrete `amount` is matched directly. An elided leg matches when any
+    /// commodity component of an attributable residual does, and never when
+    /// the residual is ambiguous, overflowed, or `None`.
+    ///
+    /// # Arguments
+    ///
+    /// * `amount` - The leg's stored amount, `None` when elided.
+    /// * `residual` - The transaction's derived residual, from
+    ///   [`crate::residual::residual_of`] over every leg.
+    #[must_use]
+    pub fn matches_leg(
+        &self,
+        amount: Option<&Amount>,
+        residual: Option<&Result<Residual, AmountError>>,
+    ) -> bool {
+        if amount.is_some() {
+            return self.matches(amount);
+        }
+        let Some(Ok(Residual::Attributable(balances))) = residual else {
+            return false;
+        };
+        balances
+            .iter()
+            .any(|(code, value)| self.matches(Some(&Amount::new(value, CommodityCode::new(code)))))
     }
 }
 
@@ -152,19 +186,34 @@ pub fn compute_matched_postings(
     }
 
     let tx_level_tag_hit = tags.is_some_and(|set| tx.tag_ids().iter().any(|t| set.contains(t)));
+    // Derived once per transaction; only consulted for an elided leg.
+    let residual = amount.map(|_| residual_of(tx.postings().iter().map(Posting::amount)));
 
     tx.postings()
         .iter()
-        .filter(|p| leg_matches(p, accounts, amount, tags, tx_level_tag_hit))
+        .filter(|p| {
+            leg_matches(
+                p,
+                accounts,
+                amount,
+                residual.as_ref(),
+                tags,
+                tx_level_tag_hit,
+            )
+        })
         .map(|p| p.id().clone())
         .collect()
 }
 
 /// Whether a single posting satisfies every active posting-scoped dimension.
+///
+/// `residual` is the transaction's derived residual, consulted when `posting`
+/// is elided and `amount` is active.
 fn leg_matches(
     posting: &Posting,
     accounts: Option<&HashSet<AccountId>>,
     amount: Option<&AmountQuery>,
+    residual: Option<&Result<Residual, AmountError>>,
     tags: Option<&HashSet<TagId>>,
     tx_level_tag_hit: bool,
 ) -> bool {
@@ -174,7 +223,7 @@ fn leg_matches(
         return false;
     }
     if let Some(q) = amount
-        && !q.matches(posting.amount())
+        && !q.matches_leg(posting.amount(), residual)
     {
         return false;
     }
@@ -336,11 +385,13 @@ impl Service {
             ));
         }
         if query.amount.is_some() {
+            // An elided leg's value is only known after residual derivation in
+            // Rust, so any transaction holding one is a candidate.
             clauses.push(
                 "EXISTS (SELECT 1 FROM postings p WHERE p.transaction_id = t.id \
-                 AND p.amount IS NOT NULL \
-                 AND ABS(CAST(p.amount AS REAL)) >= ? AND ABS(CAST(p.amount AS REAL)) <= ? \
-                 AND (? IS NULL OR p.commodity = ?))"
+                 AND (p.amount IS NULL \
+                      OR (ABS(CAST(p.amount AS REAL)) >= ? AND ABS(CAST(p.amount AS REAL)) <= ? \
+                          AND (? IS NULL OR p.commodity = ?))))"
                     .to_owned(),
             );
         }
@@ -812,7 +863,7 @@ mod match_tests {
     }
 
     #[test]
-    fn elided_amount_never_matches() {
+    fn lone_elided_leg_has_no_residual_to_match() {
         // Direct unit coverage of the `None` short-circuit in `AmountQuery::matches`.
         let q = AmountQuery {
             min: Some(dec!(1)),
@@ -821,8 +872,8 @@ mod match_tests {
         };
         assert!(!q.matches(None));
 
-        // A transaction whose only leg is elided has nothing to match against an
-        // active amount query, so the whole transaction is excluded.
+        // With no concrete leg the residual is empty, so an elided-only
+        // transaction has nothing to match and is excluded.
         let a = AccountId::new();
         let elided = Posting::builder()
             .id(PostingId::new())
@@ -832,6 +883,69 @@ mod match_tests {
         let t = tx(vec![elided], vec![]);
         let matched = compute_matched_postings(&t, None, Some(&q), None);
         assert!(matched.is_empty());
+    }
+
+    #[test]
+    fn elided_leg_matches_through_its_residual() {
+        let bank = AccountId::new();
+        let food = AccountId::new();
+        let elided = Posting::builder()
+            .id(PostingId::new())
+            .account_id(food)
+            .tag_ids(vec![])
+            .build();
+        let want = elided.id().clone();
+        let t = tx(vec![posting(&bank, dec!(-200), vec![]), elided], vec![]);
+
+        // The elided leg derives to +200 AUD; the concrete leg is -200 AUD.
+        // A commodity-scoped window only the derived leg can satisfy.
+        let hit = AmountQuery {
+            min: Some(dec!(100)),
+            max: None,
+            commodity: Some(CommodityCode::new("AUD")),
+        };
+        let matched = compute_matched_postings(&t, None, Some(&hit), None);
+        assert!(
+            matched.contains(&want),
+            "derived 200 AUD must match min 100"
+        );
+
+        let miss = AmountQuery {
+            min: Some(dec!(300)),
+            max: None,
+            commodity: None,
+        };
+        let unmatched = compute_matched_postings(&t, None, Some(&miss), None);
+        assert!(
+            unmatched.is_empty(),
+            "derived 200 AUD must not match min 300"
+        );
+    }
+
+    #[test]
+    fn ambiguous_residual_matches_no_elided_leg() {
+        let bank = AccountId::new();
+        let first = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .tag_ids(vec![])
+            .build();
+        let second = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .tag_ids(vec![])
+            .build();
+        let concrete = posting(&bank, dec!(-200), vec![]);
+        let want = concrete.id().clone();
+        let t = tx(vec![concrete, first, second], vec![]);
+
+        let q = AmountQuery {
+            min: Some(dec!(1)),
+            max: None,
+            commodity: None,
+        };
+        let matched = compute_matched_postings(&t, None, Some(&q), None);
+        assert_eq!(matched.into_iter().collect::<Vec<_>>(), vec![want]);
     }
 
     #[test]
@@ -907,6 +1021,7 @@ mod match_tests {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod search_tests {
+    use bc_models::AccountId;
     use bc_models::AccountKind;
     use bc_models::AccountType;
     use bc_models::Amount;
@@ -1008,6 +1123,79 @@ mod search_tests {
         assert_eq!(out.len(), 2);
         // Empty filter => all legs matched.
         assert!(out.iter().all(|m| m.matched_postings.len() == 2));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amount_filter_finds_a_transaction_only_its_elided_leg_satisfies(
+        pool: sqlx::SqlitePool,
+    ) {
+        // The SQL candidate filter must admit a transaction whose concrete
+        // legs all fall outside the window when its elided leg derives inside
+        // it; the exact match then lands on the elided leg alone.
+        let accts = crate::account::Service::new(pool.clone());
+        let mut ids = Vec::new();
+        for (name, account_type) in [
+            ("Bank", AccountType::Asset),
+            ("Wallet", AccountType::Asset),
+            ("Food", AccountType::Expense),
+        ] {
+            ids.push(
+                accts
+                    .create()
+                    .name(name)
+                    .account_type(account_type)
+                    .kind(AccountKind::DepositAccount)
+                    .call()
+                    .await
+                    .expect(name),
+            );
+        }
+        let [bank, wallet, food]: [AccountId; 3] = ids.try_into().expect("three accounts");
+        let svc = Service::new(pool.clone());
+        let elided_id = PostingId::new();
+        svc.create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 6, 1))
+                .description("Split")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(bank)
+                        .amount(Amount::new(dec!(-150), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(wallet)
+                        .amount(Amount::new(dec!(-50), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(elided_id.clone())
+                        .account_id(food)
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Unreconciled)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("split");
+
+        let query = TransactionQuery {
+            amount: Some(AmountQuery {
+                min: Some(dec!(180)),
+                max: None,
+                commodity: None,
+            }),
+            ..Default::default()
+        };
+        let out = svc.search(&query).await.expect("search");
+
+        let [hit]: [_; 1] = out.try_into().expect("exactly one match");
+        assert_eq!(
+            hit.matched_postings.iter().collect::<Vec<_>>(),
+            vec![&elided_id]
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
