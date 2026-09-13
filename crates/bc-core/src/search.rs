@@ -498,8 +498,7 @@ impl Service {
             let tx = &m.transaction;
             let date = tx.date();
             let mut touches_in_window = false;
-            let residual =
-                crate::residual::residual_of(tx.postings().iter().map(bc_models::Posting::amount));
+            let residual = crate::residual::residual_of_postings(tx.postings());
             for posting in tx.postings() {
                 if posting.account_id() != account_id {
                     continue;
@@ -630,8 +629,7 @@ impl Service {
         for m in &matched {
             let tx = &m.transaction;
             let date = tx.date();
-            let residual =
-                crate::residual::residual_of(tx.postings().iter().map(bc_models::Posting::amount));
+            let residual = crate::residual::residual_of_postings(tx.postings());
             for posting in tx.postings() {
                 if posting.account_id() != account_id {
                     continue;
