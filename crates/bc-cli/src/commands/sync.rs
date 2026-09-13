@@ -83,16 +83,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 struct Row {
     /// The profile's name.
     profile: String,
-    /// The importer it names.
-    ///
-    /// Not read by [`Summary::render`] — the human report identifies a
-    /// profile by name alone — but part of the view `Row` builds over
-    /// [`bc_core::ProfileResult`] and its test fixtures.
-    #[expect(
-        dead_code,
-        reason = "carried for parity with ProfileRef; not yet columned"
-    )]
-    importer: String,
     /// What happened to it.
     outcome: RowOutcome,
 }
@@ -167,7 +157,6 @@ impl From<&bc_core::ProfileResult> for Row {
         };
         Self {
             profile: result.profile.name.clone(),
-            importer: result.profile.importer.clone(),
             outcome,
         }
     }
@@ -434,7 +423,6 @@ mod tests {
     fn imported(name: &str, txns: usize, skipped: usize, warnings: usize) -> Row {
         Row {
             profile: name.to_owned(),
-            importer: "csv".to_owned(),
             outcome: RowOutcome::Imported {
                 new_transactions: txns,
                 attached_postings: 0,
@@ -448,7 +436,6 @@ mod tests {
     fn planned(name: &str, txns: usize, blockers: Vec<(&str, Vec<&str>)>) -> Row {
         Row {
             profile: name.to_owned(),
-            importer: "csv".to_owned(),
             outcome: RowOutcome::Planned {
                 new_transactions: txns,
                 attached_postings: 0,
@@ -470,7 +457,6 @@ mod tests {
     fn failed(name: &str, stage: &str, message: &str) -> Row {
         Row {
             profile: name.to_owned(),
-            importer: "csv".to_owned(),
             outcome: RowOutcome::Failed {
                 stage: stage.to_owned(),
                 message: message.to_owned(),
