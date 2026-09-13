@@ -19,10 +19,10 @@ use crate::host::bindings;
 use crate::plugin_importer::PluginImporter;
 
 /// Current ABI version supported by this host.
-pub const HOST_ABI_VERSION: u32 = 1;
+pub const HOST_ABI_VERSION: u32 = 2;
 
 /// Minimum ABI version that this host supports (hard floor — below this is an error).
-pub const HOST_ABI_MIN: u32 = 1;
+pub const HOST_ABI_MIN: u32 = 2;
 
 /// Minimum ABI version that is in the deprecation grace window.
 ///
@@ -30,7 +30,7 @@ pub const HOST_ABI_MIN: u32 = 1;
 /// are still loaded but emit a warning indicating that support will be dropped
 /// in a future release. Currently this equals [`HOST_ABI_MIN`] (no grace window
 /// exists yet), but the three-tier validation logic is wired up and ready.
-pub const HOST_ABI_DEPRECATED_MIN: u32 = 1;
+pub const HOST_ABI_DEPRECATED_MIN: u32 = 2;
 
 /// Errors that can occur during plugin registry initialisation.
 #[non_exhaustive]

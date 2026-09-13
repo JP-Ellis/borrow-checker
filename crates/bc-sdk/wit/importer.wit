@@ -21,6 +21,28 @@ interface types {
         commodity: string,
     }
 
+    /// A figure stated against a posting's amount, per unit or in total.
+    ///
+    /// Beancount's `@ 332 AUD` is per-unit and `@@ 6.37 AUD` is total; a cost
+    /// basis uses the same pair as `{105 AUD}` and `{{210 AUD}}`. The form is
+    /// carried as stated: a total has no exact per-unit form in general.
+    variant quote {
+        /// One unit of the posting's amount is worth this much.
+        per-unit(amount),
+        /// The whole posting is worth this much. Stated without sign.
+        total(amount),
+    }
+
+    /// A posting's cost basis: what the leg was acquired for, as a lot.
+    record cost {
+        /// The acquisition cost, per unit or in total.
+        basis: quote,
+        /// The lot's acquisition date, if the source states one.
+        date: option<date>,
+        /// The lot's label, if the source states one.
+        label: option<string>,
+    }
+
     /// A typed metadata value.
     ///
     /// A plugin asserts a type here; the host decides what the key's type
@@ -66,6 +88,12 @@ interface types {
         amount: option<amount>,
         /// Per-account running balance after this posting, if reported.
         balance: option<amount>,
+        /// Price annotation as the source stated it (`@` per unit, `@@` total).
+        /// A negative figure is rejected by the host.
+        price: option<quote>,
+        /// Cost basis as the source stated it (`{}` per unit, `{{}}` total).
+        /// A negative figure is rejected by the host.
+        cost: option<cost>,
         /// Tag names for this leg, resolved to ids at persist time.
         tags: list<string>,
         /// Typed key-value metadata for this leg, in display order.

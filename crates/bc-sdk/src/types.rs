@@ -130,6 +130,39 @@ impl Amount {
     }
 }
 
+/// A figure stated against a posting's amount, per unit or in total.
+///
+/// Beancount's `@ 332 AUD` is per-unit and `@@ 6.37 AUD` is total; a cost
+/// basis uses the same pair as `{105 AUD}` and `{{210 AUD}}`. Carry the form
+/// the source stated: a total has no exact per-unit form in general, and the
+/// host weighs either form exactly.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Quote {
+    /// One unit of the posting's amount is worth this much.
+    PerUnit(Amount),
+    /// The whole posting is worth this much. Stated without sign; the host
+    /// gives it the sign of the posting's amount.
+    Total(Amount),
+}
+
+/// A posting's cost basis: what the leg was acquired for, as a lot.
+///
+/// Beancount's `{105 AUD}` (per unit) or `{{210 AUD}}` (total), with the
+/// optional lot date and label. The host weighs a leg at cost for balancing;
+/// it does not book lots.
+#[derive(bon::Builder, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Cost {
+    /// The acquisition cost, per unit or in total.
+    pub basis: Quote,
+    /// The lot's acquisition date, if the source states one.
+    pub date: Option<Date>,
+    /// The lot's label, if the source states one.
+    #[builder(into)]
+    pub label: Option<String>,
+}
+
 /// A typed metadata value an importer states.
 ///
 /// The host decides what a key's type actually is. A value whose type differs
@@ -323,6 +356,12 @@ pub struct RawPosting {
     pub amount: Option<Amount>,
     /// Per-account running balance after this leg, if the source reports it.
     pub balance: Option<Amount>,
+    /// Price annotation as the source stated it (`@` per unit, `@@` total).
+    /// The host rejects a negative figure.
+    pub price: Option<Quote>,
+    /// Cost basis as the source stated it (`{}` per unit, `{{}}` total).
+    /// The host rejects a negative figure.
+    pub cost: Option<Cost>,
     /// Tag names applied to this leg.
     #[builder(default)]
     pub tags: Vec<String>,
@@ -485,13 +524,50 @@ impl From<serde_json::Error> for ImportError {
 // They are used by the #[importer] proc-macro generated code.
 // Bring generated types into scope to avoid absolute paths (clippy::absolute_paths).
 use crate::__bindings::borrow_checker::sdk::types::Amount as WitAmount;
+use crate::__bindings::borrow_checker::sdk::types::Cost as WitCost;
 use crate::__bindings::borrow_checker::sdk::types::Date as WitDate;
 use crate::__bindings::borrow_checker::sdk::types::MetaEntry as WitMetaEntry;
 use crate::__bindings::borrow_checker::sdk::types::MetaValue as WitMetaValue;
+use crate::__bindings::borrow_checker::sdk::types::Quote as WitQuote;
 use crate::__bindings::borrow_checker::sdk::types::RawPosting as WitRawPosting;
 use crate::__bindings::borrow_checker::sdk::types::SourceLocation as WitSourceLocation;
 use crate::__bindings::exports::borrow_checker::sdk::importer::ImportError as WitImportError;
 use crate::__bindings::exports::borrow_checker::sdk::importer::RawTransaction as WitRawTransaction;
+
+#[doc(hidden)]
+impl From<Date> for WitDate {
+    #[inline]
+    fn from(d: Date) -> Self {
+        Self {
+            year: d.year,
+            month: d.month,
+            day: d.day,
+        }
+    }
+}
+
+#[doc(hidden)]
+impl From<Quote> for WitQuote {
+    #[inline]
+    fn from(q: Quote) -> Self {
+        match q {
+            Quote::PerUnit(amount) => Self::PerUnit(amount.into()),
+            Quote::Total(amount) => Self::Total(amount.into()),
+        }
+    }
+}
+
+#[doc(hidden)]
+impl From<Cost> for WitCost {
+    #[inline]
+    fn from(c: Cost) -> Self {
+        Self {
+            basis: c.basis.into(),
+            date: c.date.map(Into::into),
+            label: c.label,
+        }
+    }
+}
 
 #[doc(hidden)]
 impl From<MetaValue> for WitMetaValue {
@@ -501,11 +577,7 @@ impl From<MetaValue> for WitMetaValue {
             MetaValue::Text(text) => Self::Text(text),
             MetaValue::Number(number) => Self::Number(number.to_string()),
             MetaValue::Boolean(flag) => Self::Boolean(flag),
-            MetaValue::Date(date) => Self::Date(WitDate {
-                year: date.year,
-                month: date.month,
-                day: date.day,
-            }),
+            MetaValue::Date(date) => Self::Date(date.into()),
             MetaValue::Timestamp(stamp) => Self::Timestamp(stamp),
             MetaValue::Amount(amount) => Self::Amount(amount.into()),
             MetaValue::Account(path) => Self::Account(path),
@@ -532,6 +604,8 @@ impl From<RawPosting> for WitRawPosting {
             account: p.account,
             amount: p.amount.map(Into::into),
             balance: p.balance.map(Into::into),
+            price: p.price.map(Into::into),
+            cost: p.cost.map(Into::into),
             tags: p.tags,
             metadata: p.metadata.into_iter().map(Into::into).collect(),
         }
@@ -554,11 +628,7 @@ impl From<RawTransaction> for WitRawTransaction {
     #[inline]
     fn from(t: RawTransaction) -> Self {
         Self {
-            date: WitDate {
-                year: t.date.year,
-                month: t.date.month,
-                day: t.date.day,
-            },
+            date: t.date.into(),
             description: t.description,
             reference: t.reference,
             tags: t.tags,
@@ -603,6 +673,9 @@ mod tests {
 
     use super::*;
     use crate::__bindings::borrow_checker::sdk::types::Amount as WitAmount;
+    use crate::__bindings::borrow_checker::sdk::types::Cost as WitCost;
+    use crate::__bindings::borrow_checker::sdk::types::Quote as WitQuote;
+    use crate::__bindings::borrow_checker::sdk::types::RawPosting as WitRawPosting;
 
     #[test]
     fn amount_carries_a_decimal_and_a_commodity() {
@@ -785,5 +858,66 @@ mod tests {
         let wit: WitRawTransaction = tx.into();
         let keys: Vec<&str> = wit.metadata.iter().map(|e| e.key.as_str()).collect();
         assert_eq!(keys, vec!["note", "payee", "note"]);
+    }
+
+    #[test]
+    fn quote_crosses_the_wire_in_its_stated_form() {
+        let per_unit: WitQuote = Quote::PerUnit(Amount::new(dec!(332), "AUD")).into();
+        let WitQuote::PerUnit(amount) = per_unit else {
+            panic!("per-unit form must stay per-unit");
+        };
+        assert_eq!(amount.value, "332");
+        assert_eq!(amount.commodity, "AUD");
+
+        let total: WitQuote = Quote::Total(Amount::new(dec!(6.37), "AUD")).into();
+        let WitQuote::Total(total_amount) = total else {
+            panic!("total form must stay total");
+        };
+        assert_eq!(total_amount.value, "6.37");
+    }
+
+    #[test]
+    fn cost_carries_its_lot_date_and_label() {
+        let cost = Cost::builder()
+            .basis(Quote::PerUnit(Amount::new(dec!(105), "AUD")))
+            .date(Date::new(2024, 3, 1))
+            .label("lot-a")
+            .build();
+        let wit: WitCost = cost.into();
+        assert_eq!(
+            wit.date.map(|d| (d.year, d.month, d.day)),
+            Some((2024_i32, 3_u8, 1_u8))
+        );
+        assert_eq!(wit.label.as_deref(), Some("lot-a"));
+        let WitQuote::PerUnit(amount) = wit.basis else {
+            panic!("per-unit basis");
+        };
+        assert_eq!(amount.value, "105");
+    }
+
+    #[test]
+    fn a_posting_without_annotations_crosses_with_both_absent() {
+        let wit: WitRawPosting = RawPosting::builder()
+            .account("Assets:Bank")
+            .amount(Amount::new(dec!(-6.37), "AUD"))
+            .build()
+            .into();
+        assert!(wit.price.is_none());
+        assert!(wit.cost.is_none());
+    }
+
+    #[test]
+    fn a_priced_posting_crosses_with_its_price() {
+        let wit: WitRawPosting = RawPosting::builder()
+            .account("Expenses:Software")
+            .amount(Amount::new(dec!(4.00), "USD"))
+            .price(Quote::Total(Amount::new(dec!(6.37), "AUD")))
+            .build()
+            .into();
+        let Some(WitQuote::Total(amount)) = wit.price else {
+            panic!("total price crosses");
+        };
+        assert_eq!(amount.value, "6.37");
+        assert_eq!(amount.commodity, "AUD");
     }
 }
