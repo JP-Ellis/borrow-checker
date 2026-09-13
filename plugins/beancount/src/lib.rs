@@ -63,7 +63,9 @@ impl bc_sdk::Importer for BeancountImporter {
     /// includes cannot be read — naming the include that referred to it — if
     /// the includes form a cycle, or if they nest deeper than the loader's
     /// limit. Returns [`ImportError::Parse`] if a file is not valid UTF-8, a
-    /// parse error is encountered, or a transaction directive has no postings.
+    /// parse error is encountered, a transaction directive has no postings,
+    /// or a posting annotation the parser rejects (a lot selection, a
+    /// negative figure) appears.
     #[inline]
     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
         let cfg: Config = config.as_typed()?;
@@ -94,6 +96,8 @@ impl bc_sdk::Importer for BeancountImporter {
                     RawPosting::builder()
                         .account(posting.account)
                         .maybe_amount(amount)
+                        .maybe_price(posting.price)
+                        .maybe_cost(posting.cost)
                         .metadata(meta_entries(posting.metadata))
                         .build(),
                 );
@@ -259,10 +263,12 @@ mod tests {
     use std::io::Write as _;
 
     use bc_sdk::Amount;
+    use bc_sdk::Cost;
     use bc_sdk::Date;
     use bc_sdk::ImportConfig;
     use bc_sdk::Importer as _;
     use bc_sdk::MetaValue;
+    use bc_sdk::Quote;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
@@ -425,6 +431,45 @@ mod tests {
             tx.postings[1].amount,
             Some(Amount::new(dec!(-150.00), "AUD"))
         );
+    }
+
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test code: panicking on wrong index is the desired behaviour"
+    )]
+    fn a_priced_and_a_costed_leg_reach_the_raw_posting() {
+        let input = "2026-06-01 * \"Sell 2 AAPL\"\n  \
+            Assets:Shares  -2 AAPL {105 AUD, 2024-03-01, \"lot-a\"} @ 150 AUD\n  \
+            Assets:Bank  290 AUD\n  \
+            Income:Gains\n";
+        let txs = BeancountImporter
+            .import(test_config(
+                "a_priced_and_a_costed_leg_reach_the_raw_posting",
+                input,
+            ))
+            .expect("import");
+        let tx = txs.first().expect("one transaction");
+        assert_eq!(tx.postings.len(), 3);
+        let shares = &tx.postings[0];
+        assert_eq!(shares.amount, Some(Amount::new(dec!(-2), "AAPL")));
+        assert_eq!(
+            shares.cost,
+            Some(
+                Cost::builder()
+                    .basis(Quote::PerUnit(Amount::new(dec!(105), "AUD")))
+                    .date(Date::new(2024, 3, 1))
+                    .label("lot-a")
+                    .build()
+            )
+        );
+        assert_eq!(
+            shares.price,
+            Some(Quote::PerUnit(Amount::new(dec!(150), "AUD")))
+        );
+        assert_eq!(tx.postings[1].price, None);
+        assert_eq!(tx.postings[1].cost, None);
+        assert_eq!(tx.postings[2].amount, None);
     }
 
     #[test]
