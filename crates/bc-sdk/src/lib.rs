@@ -48,7 +48,7 @@ pub use __bindings::export;
 ///
 /// Plugins embed this value via the `#[bc_sdk::importer]` macro so the host
 /// can cross-check the WASM binary at load time.
-pub const SDK_ABI: u32 = 1;
+pub const SDK_ABI: u32 = 2;
 /// The `#[importer]` attribute macro — apply to `impl Importer for YourType`.
 pub use bc_sdk_macros::importer;
 
@@ -64,11 +64,13 @@ pub mod types;
 /// no direct `rust_decimal` dependency.
 pub use rust_decimal::Decimal;
 pub use types::Amount;
+pub use types::Cost;
 pub use types::Date;
 pub use types::ImportConfig;
 pub use types::ImportError;
 pub use types::MetaEntry;
 pub use types::MetaValue;
+pub use types::Quote;
 pub use types::RawPosting;
 pub use types::RawTransaction;
 pub use types::SourceLocation;

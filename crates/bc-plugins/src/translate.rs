@@ -41,6 +41,66 @@ fn wit_date(d: wt::Date) -> Result<jiff::civil::Date, bc_core::ImportError> {
     })
 }
 
+/// Translates a plugin's stated price or cost figure.
+///
+/// # Arguments
+///
+/// * `what` - `"price"` or `"cost"`, for the diagnostic.
+/// * `q` - The figure as the plugin stated it.
+///
+/// # Returns
+///
+/// The figure in the same form (per unit or total).
+///
+/// # Errors
+///
+/// Returns [`bc_core::ImportError::Parse`] when the amount does not parse,
+/// and [`bc_core::ImportError::BadValue`] naming `what` when it is negative:
+/// a price or cost is stated without sign, so a negative one is a plugin
+/// defect rather than a fact about the leg.
+fn wit_quote(what: &str, q: wt::Quote) -> Result<bc_models::Quote, bc_core::ImportError> {
+    let (amount, total) = match q {
+        wt::Quote::PerUnit(a) => (Amount::try_from(a)?, false),
+        wt::Quote::Total(a) => (Amount::try_from(a)?, true),
+    };
+    if amount.value().is_sign_negative() && !amount.value().is_zero() {
+        return Err(bc_core::ImportError::BadValue {
+            field: what.to_owned(),
+            detail: format!(
+                "plugin returned a negative {what} {} {}",
+                amount.value(),
+                amount.commodity().as_str()
+            ),
+        });
+    }
+    Ok(if total {
+        bc_models::Quote::Total(amount)
+    } else {
+        bc_models::Quote::PerUnit(amount)
+    })
+}
+
+/// Translates a plugin's stated cost basis.
+///
+/// # Arguments
+///
+/// * `c` - The cost as the plugin stated it.
+///
+/// # Returns
+///
+/// The cost basis with its lot date and label.
+///
+/// # Errors
+///
+/// As [`wit_quote`] for the basis, and as [`wit_date`] for the lot date.
+fn wit_cost(c: wt::Cost) -> Result<bc_models::Cost, bc_core::ImportError> {
+    Ok(bc_models::Cost::builder()
+        .basis(wit_quote("cost", c.basis)?)
+        .maybe_date(c.date.map(wit_date).transpose()?)
+        .maybe_label(c.label)
+        .build())
+}
+
 /// Converts one WIT metadata value into the form the import pipeline reads.
 ///
 /// Six of the seven types are self-contained. The seventh names an account by
@@ -150,7 +210,8 @@ fn wit_metadata(
 /// # Errors
 ///
 /// Returns [`bc_core::ImportError::Parse`] when an amount, a balance or a
-/// metadata value does not carry the type the plugin claimed for it.
+/// metadata value does not carry the type the plugin claimed for it, or a
+/// price or cost is negative or does not parse.
 fn wit_posting(
     p: wt::RawPosting,
     location: &str,
@@ -159,6 +220,8 @@ fn wit_posting(
         .account(p.account)
         .maybe_amount(p.amount.map(Amount::try_from).transpose()?)
         .maybe_balance(p.balance.map(Amount::try_from).transpose()?)
+        .maybe_price(p.price.map(|q| wit_quote("price", q)).transpose()?)
+        .maybe_cost(p.cost.map(wit_cost).transpose()?)
         .tags(p.tags)
         .metadata(wit_metadata(p.metadata, location)?)
         .build())
@@ -244,8 +307,14 @@ impl From<wt::ImportError> for bc_core::ImportError {
 mod tests {
     use std::str::FromStr as _;
 
+    use bc_models::Amount;
+    use bc_models::Cost;
+    use bc_models::Quote;
     use pretty_assertions::assert_eq;
+    use rust_decimal_macros::dec;
 
+    use super::wit_cost;
+    use super::wit_quote;
     use crate::host::bindings::borrow_checker::sdk::types as wt;
 
     #[test]
@@ -374,6 +443,8 @@ mod tests {
                     commodity: "AUD".to_owned(),
                 }),
                 balance: None,
+                price: None,
+                cost: None,
                 tags: vec![],
                 metadata: vec![],
             }],
@@ -443,6 +514,8 @@ mod tests {
                 account: "Assets:Bank".to_owned(),
                 amount: None,
                 balance: None,
+                price: None,
+                cost: None,
                 tags: vec![],
                 metadata: vec![],
             }],
@@ -474,6 +547,8 @@ mod tests {
                 account: "Assets:Bank".to_owned(),
                 amount: None,
                 balance: None,
+                price: None,
+                cost: None,
                 tags: vec![],
                 metadata: vec![],
             }],
@@ -511,6 +586,8 @@ mod tests {
                 account: "Assets:Bank".to_owned(),
                 amount: None,
                 balance: None,
+                price: None,
+                cost: None,
                 tags: vec![],
                 metadata: vec![],
             }],
@@ -604,6 +681,8 @@ mod tests {
                 account: "Assets:Bank".to_owned(),
                 amount: None,
                 balance: None,
+                price: None,
+                cost: None,
                 tags: vec![],
                 metadata: vec![],
             }],
@@ -648,6 +727,8 @@ mod tests {
                 account: "Assets:Bank".to_owned(),
                 amount: None,
                 balance: None,
+                price: None,
+                cost: None,
                 tags: vec![],
                 metadata: vec![wit_entry(
                     "note",
@@ -665,5 +746,99 @@ mod tests {
                 bc_models::MetaValue::Text("paid by card".to_owned()),
             )]
         );
+    }
+
+    fn wit_amount(value: &str, commodity: &str) -> wt::Amount {
+        wt::Amount {
+            value: value.to_owned(),
+            commodity: commodity.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_price_crosses_in_its_stated_form() {
+        let per_unit =
+            wit_quote("price", wt::Quote::PerUnit(wit_amount("332", "AUD"))).expect("per-unit");
+        assert_eq!(per_unit, Quote::PerUnit(Amount::new(dec!(332), "AUD")));
+        let total = wit_quote("price", wt::Quote::Total(wit_amount("6.37", "AUD"))).expect("total");
+        assert_eq!(total, Quote::Total(Amount::new(dec!(6.37), "AUD")));
+    }
+
+    #[test]
+    fn a_negative_quote_is_a_bad_value_naming_the_field() {
+        let err =
+            wit_quote("cost", wt::Quote::PerUnit(wit_amount("-105", "AUD"))).expect_err("rejects");
+        let bc_core::ImportError::BadValue { field, detail } = err else {
+            panic!("expected BadValue, got {err:?}");
+        };
+        assert_eq!(field, "cost");
+        assert_eq!(detail, "plugin returned a negative cost -105 AUD");
+    }
+
+    #[test]
+    fn a_cost_keeps_its_lot_date_and_label() {
+        let cost = wit_cost(wt::Cost {
+            basis: wt::Quote::Total(wit_amount("210", "AUD")),
+            date: Some(wt::Date {
+                year: 2024_i32,
+                month: 3_u8,
+                day: 1_u8,
+            }),
+            label: Some("lot-a".to_owned()),
+        })
+        .expect("cost");
+        assert_eq!(
+            cost,
+            Cost::builder()
+                .basis(Quote::Total(Amount::new(dec!(210), "AUD")))
+                .date(jiff::civil::date(2024, 3, 1))
+                .label("lot-a")
+                .build()
+        );
+    }
+
+    #[test]
+    fn a_posting_carries_its_price_and_cost_to_the_core() {
+        let t = wt::RawTransaction {
+            date: wt::Date {
+                year: 2026_i32,
+                month: 1_u8,
+                day: 15_u8,
+            },
+            description: "Software".to_owned(),
+            reference: None,
+            tags: vec![],
+            metadata: vec![],
+            source_location: None,
+            postings: vec![
+                wt::RawPosting {
+                    account: "Expenses:Software".to_owned(),
+                    amount: Some(wit_amount("4.00", "USD")),
+                    balance: None,
+                    price: Some(wt::Quote::Total(wit_amount("6.37", "AUD"))),
+                    cost: None,
+                    tags: vec![],
+                    metadata: vec![],
+                },
+                wt::RawPosting {
+                    account: "Assets:Bank".to_owned(),
+                    amount: Some(wit_amount("-6.37", "AUD")),
+                    balance: None,
+                    price: None,
+                    cost: None,
+                    tags: vec![],
+                    metadata: vec![],
+                },
+            ],
+        };
+        let core = bc_core::RawTransaction::try_from(t).expect("valid");
+        let [software, bank] =
+            <[bc_core::RawPosting; 2]>::try_from(core.postings).expect("two postings");
+        assert_eq!(
+            software.price,
+            Some(Quote::Total(Amount::new(dec!(6.37), "AUD")))
+        );
+        assert!(software.cost.is_none());
+        assert!(bank.price.is_none());
     }
 }
