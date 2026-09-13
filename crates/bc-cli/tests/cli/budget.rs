@@ -29,16 +29,16 @@ fn create_budget_monthly_and_list() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
-/// Helper: create an expense account and return its ID string.
+/// Helper: create an account of the given name and return its ID string.
 #[expect(clippy::expect_used, reason = "test helper panics on setup failure")]
-fn create_expense_account(ctx: &TestContext) -> String {
+fn create_account(ctx: &TestContext, name: &str) -> String {
     let out = ctx
         .command()
         .args([
             "--json",
             "account",
             "create",
-            "Expenses:Groceries",
+            name,
             "--kind",
             "deposit-account",
         ])
@@ -55,6 +55,11 @@ fn create_expense_account(ctx: &TestContext) -> String {
         .and_then(serde_json::Value::as_str)
         .expect("account id")
         .to_owned()
+}
+
+/// Helper: create the standard `Expenses:Groceries` account and return its ID string.
+fn create_expense_account(ctx: &TestContext) -> String {
+    create_account(ctx, "Expenses:Groceries")
 }
 
 /// Helper: create a budget with a target and return its ID string.
@@ -262,27 +267,9 @@ fn budget_status_lists_unvalued_spend() {
     let ctx = TestContext::new();
     let expenses_id = create_expense_account(&ctx);
     let _budget_id = create_budget(&ctx, &expenses_id);
-    let checking_id = {
-        let out = ctx
-            .command()
-            .args([
-                "--json",
-                "account",
-                "create",
-                "Assets:Checking",
-                "--kind",
-                "deposit-account",
-            ])
-            .output()
-            .expect("account create executed");
-        let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
-        json.get("account")
-            .and_then(|account| account.get("id"))
-            .and_then(serde_json::Value::as_str)
-            .expect("account id")
-            .to_owned()
-    };
-    ctx.command()
+    let checking_id = create_account(&ctx, "Assets:Checking");
+    let out = ctx
+        .command()
         .args([
             "transaction",
             "add",
@@ -297,6 +284,11 @@ fn budget_status_lists_unvalued_spend() {
         ])
         .output()
         .expect("add transaction");
+    assert!(
+        out.status.success(),
+        "transaction add should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let mut cmd = ctx.command();
     cmd.args(["budget", "status", "--as-of", "2030-01-15"]);
