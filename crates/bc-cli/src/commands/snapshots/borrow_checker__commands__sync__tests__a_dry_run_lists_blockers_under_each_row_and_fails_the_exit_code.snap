@@ -3,10 +3,10 @@ source: crates/bc-cli/src/commands/sync.rs
 expression: summary.render()
 ---
 profile             txns  attached   skipped  warnings
-amp-saver             31         0         3         0
+amp-saver             31         0         5         0
     unresolved account    Expenses:Food:Cafes
     unresolved account    Income:Interest
     other skips           ambiguous residual ×3
 ubank-everyday       412         0         0         0
 
-2 profiles, 1 blocked. 443 transactions would be imported, 3 postings skipped.
+2 profiles, 1 blocked. 443 transactions would be imported, 5 postings skipped.
