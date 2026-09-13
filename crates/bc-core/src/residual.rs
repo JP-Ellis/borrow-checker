@@ -75,7 +75,7 @@ pub enum Residual {
 #[inline]
 #[expect(
     clippy::module_name_repetitions,
-    reason = "residual_of is the module's sole public function; the brief mandates this exact name for Task 2 and Task 5"
+    reason = "the residual_ prefix is the function's meaning, not a repetition of the module name"
 )]
 pub fn residual_of<'a, I>(amounts: I) -> Result<Residual, AmountError>
 where
@@ -109,7 +109,7 @@ where
 /// overflows.
 #[expect(
     clippy::module_name_repetitions,
-    reason = "the brief mandates this exact name, matching residual_of alongside it"
+    reason = "the residual_ prefix is the function's meaning, not a repetition of the module name"
 )]
 pub fn residual_of_postings<'a, I>(postings: I) -> Result<Residual, AmountError>
 where

@@ -1569,17 +1569,19 @@ fn build_postings(
 ///
 /// # Returns
 ///
-/// The negated sum of the concrete legs' canonical amounts, or `None` when they
-/// are absent, net to zero, name a code that resolves to no registered
-/// commodity, or span several commodities once canonicalised — in all four
-/// cases the document does not determine a single residual amount.
+/// The negated sum of the concrete legs' canonical weights — each leg's cost
+/// basis, else its price, else its amount, as [`bc_models::weight_of`] ranks
+/// them — or `None` when the legs are absent, net to zero, name a code that
+/// resolves to no registered commodity, or span several commodities once
+/// weighed — in all four cases the document does not determine a single
+/// residual amount.
 ///
 /// # Errors
 ///
-/// Returns [`crate::BcError::BadData`] if the concrete legs sum out of
-/// [`rust_decimal::Decimal`]'s range. That is a defect in the row rather than an
-/// undetermined residual, and reporting it as the latter would name a cause the
-/// document does not have.
+/// Returns [`crate::BcError::BadData`] if weighing a leg or summing the weights
+/// leaves [`rust_decimal::Decimal`]'s range. That is a defect in the row rather
+/// than an undetermined residual, and reporting it as the latter would name a
+/// cause the document does not have.
 fn document_residual(
     raw: &RawTransaction,
     commodities: &CommodityResolver,
@@ -1599,8 +1601,12 @@ fn document_residual(
                 return Ok(None);
             }
         };
-        balances.try_sub(&amount).map_err(|e| {
-            crate::BcError::BadData(format!("summing this row's amounts overflowed: {e}"))
+        let price = canonicalise_quote(commodities, "price", posting.price.as_ref(), raw);
+        let cost = canonicalise_cost(commodities, posting.cost.as_ref(), raw);
+        let weight = bc_models::weight_of(&amount, cost.as_ref(), price.as_ref())
+            .map_err(|e| crate::BcError::BadData(format!("weighing this leg overflowed: {e}")))?;
+        balances.try_sub(&weight).map_err(|e| {
+            crate::BcError::BadData(format!("summing this row's weights overflowed: {e}"))
         })?;
     }
     let mut held = balances.into_iter();
@@ -2535,7 +2541,7 @@ where
         let built = row_local_value(
             build_postings(raw, legs, self.commodities, &self.tags),
             raw,
-            "summing the row's amounts",
+            "summing the row's weights",
             legs.len(),
             counts,
         )?;
@@ -5646,6 +5652,50 @@ mod tests {
             .expect("software leg");
         assert_eq!(leg.price(), Some(&quote));
         assert!(stored.balanced(), "{stored:?}");
+    }
+
+    /// When every concrete leg of a row is dropped and the elided leg is
+    /// materialised, the residual is the negated sum of the concrete legs'
+    /// *weights*: `-2 ETH @ 300 AUD` into an account that does not exist leaves
+    /// a gains leg of `600 AUD`, never `2 ETH`.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_materialised_residual_weighs_the_priced_leg(pool: sqlx::SqlitePool) {
+        // Income:Gains exists and is elided; Assets:Crypto does not, so the
+        // priced leg is dropped and the residual is materialised onto Gains.
+        // ETH and AUD are both in the seeded default set.
+        let gains = ensure_path(&pool, "Income:Gains").await;
+        let svcs = services(&pool).await;
+        let row = raw_with(
+            "SELL ETH",
+            vec![
+                RawPosting::builder()
+                    .account("Assets:Crypto")
+                    .amount(Amount::new(dec!(-2), "ETH"))
+                    .price(Quote::PerUnit(Amount::new(dec!(300), "AUD")))
+                    .build(),
+                RawPosting::builder().account("Income:Gains").build(),
+            ],
+        );
+
+        let outcome = run(&svcs, &[row]).await;
+        assert_eq!(outcome.new_transactions, 1);
+        assert_eq!(outcome.skipped_postings, 1, "{:?}", outcome.warnings);
+
+        let owner: TransactionId = owner_of_posting(&pool, &gains)
+            .await
+            .parse()
+            .expect("owning transaction id");
+        let stored = svcs
+            .transactions
+            .find_by_id(&owner)
+            .await
+            .expect("stored transaction");
+        let leg = stored
+            .postings()
+            .iter()
+            .find(|p| *p.account_id() == gains)
+            .expect("gains leg");
+        assert_eq!(leg.amount(), Some(&Amount::new(dec!(600), "AUD")));
     }
 
     /// An unregistered commodity on a quote costs the quote, not the leg: the

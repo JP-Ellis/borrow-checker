@@ -794,7 +794,7 @@ impl Service {
         .remove(&id_str)
         .unwrap_or_default();
 
-        // Load postings with cost and spread columns.
+        // Load postings with price, cost and spread columns.
         let posting_rows: Vec<PostingRow> = sqlx::query_as(
             "SELECT id, account_id, amount, commodity, \
                     price_value, price_commodity, price_kind, \
@@ -4503,7 +4503,7 @@ mod tests {
                 Posting::builder()
                     .id(PostingId::new())
                     .account_id(acc_b.clone())
-                    .amount(Amount::new(dec!(-10), CommodityCode::new("AAPL")))
+                    .amount(Amount::new(dec!(-1500.00), CommodityCode::new("AUD")))
                     .build(),
             ])
             .reconciliation(Reconciliation::Unreconciled)
