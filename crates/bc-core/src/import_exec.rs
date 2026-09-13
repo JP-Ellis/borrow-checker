@@ -512,6 +512,108 @@ impl SkipCause {
     }
 }
 
+/// One reason a plan is not clean: postings the run would skip that the user
+/// can fix before running for real.
+///
+/// This is the dry-run gate, expressed once. Warnings never appear here:
+/// they describe postings that are written, and a gate on them would block
+/// what the design says to warn about.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Blocker {
+    /// Account paths naming no account; `account create` each, then re-run.
+    UnresolvedAccounts(Vec<String>),
+    /// Commodity codes naming no registered commodity; `commodity create`
+    /// each, then re-run.
+    UnresolvedCommodities(Vec<String>),
+    /// Postings charged to every other cause, each with its count. These
+    /// point at a profile defect or a document the importer cannot express.
+    OtherSkips(Vec<(SkipCause, usize)>),
+}
+
+impl Blocker {
+    /// Returns the stable snake-case key a machine-readable report uses.
+    #[must_use]
+    #[inline]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::UnresolvedAccounts(_) => "unresolved_account",
+            Self::UnresolvedCommodities(_) => "unresolved_commodity",
+            Self::OtherSkips(_) => "other_skips",
+        }
+    }
+
+    /// Returns the lower-case heading a human-readable report prints.
+    #[must_use]
+    #[inline]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::UnresolvedAccounts(_) => "unresolved account",
+            Self::UnresolvedCommodities(_) => "unresolved commodity",
+            Self::OtherSkips(_) => "other skips",
+        }
+    }
+
+    /// Returns one line per item: a path, a code, or `<cause> ×<count>`.
+    #[must_use]
+    #[inline]
+    pub fn items(&self) -> Vec<String> {
+        match self {
+            Self::UnresolvedAccounts(paths) => paths.clone(),
+            Self::UnresolvedCommodities(codes) => codes.clone(),
+            Self::OtherSkips(charged) => charged
+                .iter()
+                .map(|(cause, count)| format!("{} ×{count}", cause.label()))
+                .collect(),
+        }
+    }
+}
+
+impl ImportPlan {
+    /// Returns what stops this plan from being clean, in a fixed order:
+    /// unresolved accounts, unresolved commodities, then every other charged
+    /// cause. Empty when the run would skip nothing.
+    #[must_use]
+    #[inline]
+    pub fn blockers(&self) -> Vec<Blocker> {
+        let mut blockers = Vec::new();
+        if !self.unresolved_accounts.is_empty() {
+            blockers.push(Blocker::UnresolvedAccounts(
+                self.unresolved_accounts.clone(),
+            ));
+        }
+        if !self.unresolved_commodities.is_empty() {
+            blockers.push(Blocker::UnresolvedCommodities(
+                self.unresolved_commodities.clone(),
+            ));
+        }
+        let other: Vec<(SkipCause, usize)> = self
+            .charged_by_cause
+            .iter()
+            .filter(|(cause, charged)| {
+                *charged > 0
+                    && !matches!(
+                        cause,
+                        SkipCause::UnresolvedAccount | SkipCause::UnresolvedCommodity
+                    )
+            })
+            .copied()
+            .collect();
+        if !other.is_empty() {
+            blockers.push(Blocker::OtherSkips(other));
+        }
+        blockers
+    }
+
+    /// Returns `true` when the run would skip nothing: [`Self::blockers`] is
+    /// empty.
+    #[must_use]
+    #[inline]
+    pub fn is_clean(&self) -> bool {
+        self.blockers().is_empty()
+    }
+}
+
 /// One leg or row the run could not persist, and why.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6543,5 +6645,130 @@ mod tests {
             None,
             "an account no leg names holds no bucket at all"
         );
+    }
+
+    /// A plan with every count zero and every list empty.
+    fn empty_plan() -> ImportPlan {
+        ImportPlan {
+            new_transactions: 0,
+            attached_postings: 0,
+            skipped_postings: 0,
+            unresolved_account_postings: 0,
+            unresolved_commodity_postings: 0,
+            other_skipped_postings: 0,
+            unresolved_accounts: Vec::new(),
+            unresolved_commodities: Vec::new(),
+            would_create_tags: Vec::new(),
+            account_totals: Vec::new(),
+            charged_by_cause: Vec::new(),
+            diagnostics: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_plan_with_nothing_skipped_is_clean() {
+        let plan = ImportPlan {
+            new_transactions: 3,
+            ..empty_plan()
+        };
+        assert!(plan.blockers().is_empty());
+        assert!(plan.is_clean());
+    }
+
+    #[test]
+    fn unresolved_accounts_block() {
+        let plan = ImportPlan {
+            unresolved_account_postings: 2,
+            skipped_postings: 2,
+            unresolved_accounts: vec!["Expenses:Food:Cafes".to_owned()],
+            charged_by_cause: vec![(SkipCause::UnresolvedAccount, 2)],
+            ..empty_plan()
+        };
+        assert_eq!(
+            plan.blockers(),
+            vec![Blocker::UnresolvedAccounts(vec![
+                "Expenses:Food:Cafes".to_owned()
+            ])]
+        );
+        assert!(!plan.is_clean());
+    }
+
+    #[test]
+    fn unresolved_commodities_block() {
+        let plan = ImportPlan {
+            unresolved_commodity_postings: 1,
+            skipped_postings: 1,
+            unresolved_commodities: vec!["XYZ".to_owned()],
+            charged_by_cause: vec![(SkipCause::UnresolvedCommodity, 1)],
+            ..empty_plan()
+        };
+        assert_eq!(
+            plan.blockers(),
+            vec![Blocker::UnresolvedCommodities(vec!["XYZ".to_owned()])]
+        );
+    }
+
+    #[test]
+    fn other_skips_block_and_exclude_the_two_named_causes() {
+        let plan = ImportPlan {
+            unresolved_account_postings: 1,
+            other_skipped_postings: 3,
+            skipped_postings: 4,
+            unresolved_accounts: vec!["Assets:Nowhere".to_owned()],
+            charged_by_cause: vec![
+                (SkipCause::UnresolvedAccount, 1),
+                (SkipCause::AmbiguousResidual, 3),
+            ],
+            ..empty_plan()
+        };
+        assert_eq!(
+            plan.blockers(),
+            vec![
+                Blocker::UnresolvedAccounts(vec!["Assets:Nowhere".to_owned()]),
+                Blocker::OtherSkips(vec![(SkipCause::AmbiguousResidual, 3)]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_zero_charge_cause_does_not_block() {
+        // A malformed tag is noted but costs no posting; it must not gate.
+        let plan = ImportPlan {
+            charged_by_cause: vec![(SkipCause::MalformedTag, 0)],
+            ..empty_plan()
+        };
+        assert!(plan.is_clean());
+    }
+
+    #[test]
+    fn warnings_never_block() {
+        let plan = ImportPlan {
+            new_transactions: 1,
+            warnings: vec![Warning::PostingIntoArchivedAccount {
+                account_id: AccountId::new(),
+                account_path: "Assets:Old".to_owned(),
+            }],
+            ..empty_plan()
+        };
+        assert!(plan.is_clean());
+    }
+
+    #[test]
+    fn blocker_kind_label_and_items_render_each_variant() {
+        let account = Blocker::UnresolvedAccounts(vec!["A:B".to_owned()]);
+        assert_eq!(account.kind(), "unresolved_account");
+        assert_eq!(account.label(), "unresolved account");
+        assert_eq!(account.items(), vec!["A:B".to_owned()]);
+
+        let commodity = Blocker::UnresolvedCommodities(vec!["XYZ".to_owned()]);
+        assert_eq!(commodity.kind(), "unresolved_commodity");
+        assert_eq!(commodity.label(), "unresolved commodity");
+        assert_eq!(commodity.items(), vec!["XYZ".to_owned()]);
+
+        let other = Blocker::OtherSkips(vec![(SkipCause::AmbiguousResidual, 3)]);
+        assert_eq!(other.kind(), "other_skips");
+        assert_eq!(other.label(), "other skips");
+        assert_eq!(other.items(), vec!["ambiguous residual ×3".to_owned()]);
     }
 }
