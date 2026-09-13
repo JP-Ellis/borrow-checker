@@ -126,6 +126,7 @@ pub use budget::BudgetRevisionBuilder;
 pub use budget::BudgetRevisionId;
 pub use budget::RolloverPolicy;
 pub use budget_timeline::ResolvedPeriod;
+pub use budget_timeline::carry_chain_start;
 pub use budget_timeline::governing_revision;
 pub use budget_timeline::periods_overlapping;
 pub use budget_timeline::snap_to_grid_boundary;
