@@ -748,40 +748,51 @@ mod tests {
         .expect("insert posting");
     }
 
-    /// Inserts a priced posting (`price_kind` is `unit` or `total`).
+    /// Inserts a posting carrying one quote: `prefix` is `price` or `cost`,
+    /// `kind` is `unit` or `total`.
     #[expect(
         clippy::too_many_arguments,
-        reason = "a flat test helper mirroring the posting columns reads more clearly than a builder for a single call site"
+        reason = "a flat test helper mirroring the posting columns reads more clearly than a builder for two call sites"
     )]
-    async fn insert_priced_posting(
+    async fn insert_quoted_posting(
         pool: &sqlx::SqlitePool,
         id: &str,
         tx_id: &str,
         account_id: &str,
         amount: &str,
         commodity: &str,
-        price_value: &str,
-        price_commodity: &str,
-        price_kind: &str,
+        prefix: &str,
+        value: &str,
+        quote_commodity: &str,
+        kind: &str,
         position: i64,
     ) {
-        sqlx::query(
-            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, \
-             price_value, price_commodity, price_kind, position) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(id)
-        .bind(tx_id)
-        .bind(account_id)
-        .bind(amount)
-        .bind(commodity)
-        .bind(price_value)
-        .bind(price_commodity)
-        .bind(price_kind)
-        .bind(position)
-        .execute(pool)
-        .await
-        .expect("insert priced posting");
+        let sql = match prefix {
+            "price" => {
+                "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, \
+                 price_value, price_commodity, price_kind, position) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            }
+            "cost" => {
+                "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, \
+                 cost_value, cost_commodity, cost_kind, position) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            }
+            other => panic!("unknown quote prefix {other}"),
+        };
+        sqlx::query(sql)
+            .bind(id)
+            .bind(tx_id)
+            .bind(account_id)
+            .bind(amount)
+            .bind(commodity)
+            .bind(value)
+            .bind(quote_commodity)
+            .bind(kind)
+            .bind(position)
+            .execute(pool)
+            .await
+            .expect("insert quoted posting");
     }
 
     /// Creates an account and returns its id.
@@ -834,13 +845,14 @@ mod tests {
         let cash = make_account(&pool, "Cash", AccountType::Asset).await;
         let gains = make_account(&pool, "Gains", AccountType::Income).await;
         insert_tx(&pool, "tx_1", "2026-01-01").await;
-        insert_priced_posting(
+        insert_quoted_posting(
             &pool,
             "p_eth",
             "tx_1",
             &wallet.to_string(),
             "-2",
             "ETH",
+            "price",
             "300",
             "AUD",
             "unit",
@@ -867,6 +879,52 @@ mod tests {
         );
         assert_eq!(
             residuals.component("p_gains", "ETH").expect("in scope"),
+            None
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn loader_weighs_a_costed_sibling_in_the_cost_commodity(pool: sqlx::SqlitePool) {
+        // 2 AAPL {{210 AUD}} (weighs 210 AUD) and -200 AUD cash; the elided
+        // fees leg absorbs -10 AUD, in AUD, with no AAPL residual at all.
+        let broker = make_account(&pool, "Broker", AccountType::Asset).await;
+        let cash = make_account(&pool, "Cash", AccountType::Asset).await;
+        let fees = make_account(&pool, "Fees", AccountType::Expense).await;
+        insert_tx(&pool, "tx_1", "2026-01-01").await;
+        insert_quoted_posting(
+            &pool,
+            "p_aapl",
+            "tx_1",
+            &broker.to_string(),
+            "2",
+            "AAPL",
+            "cost",
+            "210",
+            "AUD",
+            "total",
+            0,
+        )
+        .await;
+        insert_posting(
+            &pool,
+            "p_cash",
+            "tx_1",
+            &cash.to_string(),
+            Some("-200"),
+            Some("AUD"),
+            1,
+        )
+        .await;
+        insert_posting(&pool, "p_fees", "tx_1", &fees.to_string(), None, None, 2).await;
+
+        let residuals = Residuals::for_account(&pool, &fees).await.expect("load");
+
+        assert_eq!(
+            residuals.component("p_fees", "AUD").expect("in scope"),
+            Some(dec!(-10))
+        );
+        assert_eq!(
+            residuals.component("p_fees", "AAPL").expect("in scope"),
             None
         );
     }
