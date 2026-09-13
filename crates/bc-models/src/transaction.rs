@@ -238,7 +238,8 @@ impl Posting {
 
 /// A double-entry accounting transaction.
 ///
-/// All postings' weights must sum to zero per commodity (enforced by `bc-core`).
+/// All postings' weights should sum to zero per commodity; `bc-core` warns
+/// on a write that does not (see [`Self::balanced`]).
 ///
 /// # Builder design — `id` and `created_at` are required
 ///
@@ -290,8 +291,9 @@ pub struct Transaction {
     #[builder(into)]
     description: String,
 
-    /// All posting legs of this transaction. Must sum to zero per commodity —
-    /// `bc-core` enforces this invariant before persistence. Defaults to empty.
+    /// All posting legs of this transaction. Their weights should sum to zero
+    /// per commodity — `bc-core` warns on a write that does not. Defaults to
+    /// empty.
     #[builder(default)]
     postings: Vec<Posting>,
 

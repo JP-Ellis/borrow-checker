@@ -2858,7 +2858,6 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn posting_price_and_cost_round_trip(pool: sqlx::SqlitePool) {
-        use jiff::Timestamp;
         let acct_svc = crate::account::Service::new(pool.clone());
         let a = acct_svc
             .create()

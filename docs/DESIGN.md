@@ -128,8 +128,8 @@ ImportBatchDiscarded
 - Import idempotency — per-account source-reference deduplication
 - Future sync — replicate events to a server or mobile device
 
-**Double-entry accounting** is the model: a transaction is a set of postings that
-should sum to zero per commodity, consistent with ledger/beancount semantics.
+**Double-entry accounting** is the model: a transaction is a set of postings whose
+weights should sum to zero per commodity, consistent with ledger/beancount semantics.
 Balance is *derived and advisory*, not an admission requirement — see §4.4.
 
 ### 4.3 Account Model
