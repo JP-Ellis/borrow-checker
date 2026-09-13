@@ -1966,6 +1966,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_dry_run_sweep_names_the_unresolved_account_as_a_blocker() {
+        // The stub posts to `Assets:Bank`, which the fixture never creates.
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, _backup_dir) = context_in(home.path(), false).await;
+
+        let report = ctx
+            .engine
+            .sync(bc_core::ImportSelection::All, bc_core::ImportMode::DryRun)
+            .await
+            .expect("sync");
+        let payload = sync::to_json(&report, true);
+        let first_blocker = payload
+            .get("profiles")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|profiles| profiles.first())
+            .and_then(|profile| profile.get("blockers"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|blockers| blockers.first())
+            .expect("the nightly profile has a blocker");
+
+        assert_eq!(
+            first_blocker.get("kind"),
+            Some(&serde_json::Value::String("unresolved_account".to_owned()))
+        );
+        let items = first_blocker
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .expect("items array");
+        assert!(
+            items.iter().any(|item| item
+                .as_str()
+                .is_some_and(|text| text.contains("Assets:Bank"))),
+            "the blocker must name the missing account: {items:?}"
+        );
+        assert_eq!(payload.get("dry_run"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    #[tokio::test]
     async fn a_sync_element_carries_every_import_run_key() {
         let home = tempfile::tempdir().expect("tempdir");
         let (ctx, _backup_dir) = context_in(home.path(), false).await;
