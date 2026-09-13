@@ -10,9 +10,12 @@ use rust_decimal::prelude::ToPrimitive as _;
 use stylance::import_style;
 
 use crate::components::period_nav;
+use crate::components::status_pill::StatusPill;
+use crate::components::status_pill::Tone;
 use crate::pages::budget::BudgetPageCtx;
 use crate::pages::budget::components::budget_detail::BudgetDetail;
 use crate::pages::budget::components::native_period_list::NativePeriodList;
+use crate::pages::budget::unvalued::unvalued_label;
 
 import_style!(style, "row.module.scss");
 
@@ -309,6 +312,8 @@ pub fn BudgetRow(
                             &currencies.get(),
                         )}
                     </span>
+                    {unvalued_label(&node.unvalued)
+                        .map(|l| view! { <StatusPill label=l tone=Tone::Warn /> })}
                 </div>
 
                 {has_mixed
@@ -380,6 +385,8 @@ pub fn BudgetRow(
                             &currencies.get(),
                         )}
                     </span>
+                    {unvalued_label(&node.unvalued)
+                        .map(|l| view! { <StatusPill label=l tone=Tone::Warn /> })}
                 </div>
 
                 {has_mixed

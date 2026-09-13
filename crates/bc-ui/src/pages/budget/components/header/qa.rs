@@ -29,6 +29,18 @@ fn empty_summary() -> BudgetSummary {
     BudgetSummary::new(None, None, None, false, 0, false)
 }
 
+/// A loaded summary with at least one leaf that has unvalued spend.
+fn unvalued_summary() -> BudgetSummary {
+    BudgetSummary::new(
+        Some(Amount::new(Decimal::new(500_000, 2), "AUD")),
+        Some(Amount::new(Decimal::new(312_450, 2), "AUD")),
+        Some(Amount::new(Decimal::new(187_550, 2), "AUD")),
+        false,
+        1,
+        true,
+    )
+}
+
 /// Wraps a scenario in a labelled box with a fresh context.
 #[component]
 fn Scenario(
@@ -69,6 +81,22 @@ fn LoadedCase() -> impl IntoView {
     provide_context(ctx);
 
     let summary = loaded_summary();
+    let overview: LocalResource<Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError>> =
+        LocalResource::new(move || {
+            let s = summary.clone();
+            async move { Ok::<_, BcError>((s, vec![])) }
+        });
+
+    view! { <BudgetHeader overview=overview /> }
+}
+
+/// Loaded state with a leaf that has unvalued spend.
+#[component]
+fn UnvaluedCase() -> impl IntoView {
+    let ctx = BudgetPageCtx::new();
+    provide_context(ctx);
+
+    let summary = unvalued_summary();
     let overview: LocalResource<Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError>> =
         LocalResource::new(move || {
             let s = summary.clone();
@@ -129,6 +157,9 @@ pub fn BudgetHeaderQa() -> impl IntoView {
             </Scenario>
             <Scenario title="Loaded — with data (1 overspent line)">
                 <LoadedCase />
+            </Scenario>
+            <Scenario title="unvalued spend">
+                <UnvaluedCase />
             </Scenario>
             <Scenario title="Loaded — no budget amounts (None / empty)">
                 <EmptyCase />

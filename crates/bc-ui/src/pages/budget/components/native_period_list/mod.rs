@@ -11,7 +11,10 @@ use rust_decimal::prelude::ToPrimitive as _;
 use stylance::import_style;
 
 use crate::components::period_nav;
+use crate::components::status_pill::StatusPill;
+use crate::components::status_pill::Tone;
 use crate::pages::budget::BudgetPageCtx;
+use crate::pages::budget::unvalued::unvalued_label;
 
 import_style!(pub(crate) style, "native.module.scss");
 
@@ -178,6 +181,8 @@ pub fn NativePeriodList(
                                     let fill_style = format!("width: {fill_pct}%; height: 100%");
                                     let amounts = display_str(&row, pct, &currencies);
                                     let label = row.label.clone();
+                                    let unvalued_pill = unvalued_label(&row.unvalued)
+                                        .map(|l| view! { <StatusPill label=l tone=Tone::Warn /> });
                                     let status_class = match status {
                                         Status::Good => style::status_good,
                                         Status::Warn => style::status_warn,
@@ -199,6 +204,7 @@ pub fn NativePeriodList(
                                                 <div class=bar_class style=fill_style />
                                             </div>
                                             <span class=style::amounts>{amounts}</span>
+                                            {unvalued_pill}
                                         </div>
                                     }
                                 })

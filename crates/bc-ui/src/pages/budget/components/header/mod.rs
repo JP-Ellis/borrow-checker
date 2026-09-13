@@ -10,6 +10,8 @@ use bc_ipc::BudgetTreeNode;
 use leptos::prelude::*;
 use stylance::import_style;
 
+use crate::components::status_pill::StatusPill;
+use crate::components::status_pill::Tone;
 use crate::pages::budget::BudgetPageCtx;
 
 import_style!(style, "header.module.scss");
@@ -82,6 +84,7 @@ fn KpiTileRow(
                 (a.format_short(sym.as_deref(), after), style::kpi_value_good)
             }
         };
+        let has_unvalued = summary.as_ref().is_some_and(|s| s.has_unvalued);
 
         view! {
             <div class=style::kpi_row>
@@ -89,6 +92,8 @@ fn KpiTileRow(
                 <KpiTile label="Spent" value=spent />
                 <KpiTile label="Remaining" value=remaining />
                 <KpiTile label="Net" value=net value_class=net_class />
+                {has_unvalued
+                    .then(|| view! { <StatusPill label="unvalued".to_owned() tone=Tone::Warn /> })}
             </div>
         }
     }
