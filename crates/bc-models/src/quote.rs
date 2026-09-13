@@ -29,7 +29,7 @@ use crate::transaction::Cost;
 /// ```
 #[expect(
     clippy::exhaustive_enums,
-    reason = "bc-core and bc-cli match on both and must be forced to handle any third form"
+    reason = "callers match on both forms and must be forced to handle any third"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
