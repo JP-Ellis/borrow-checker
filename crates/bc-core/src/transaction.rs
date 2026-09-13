@@ -366,6 +366,9 @@ fn budget_leg_carries_tag(
 ///   or a descendant of it (transaction tags flow down; matched over the subtree).
 /// * `query.accounts` — `p.account_id` falls in `global_accounts` (resolved subtree).
 /// * `query.amount` — commodity-exact match via [`crate::search::AmountQuery::matches`].
+///   An elided `p` matches when any commodity component of its derived
+///   residual does, since the tree counts each component as its own amount;
+///   an ambiguous residual matches nothing, as the tree counts nothing for it.
 /// * `query.tags` — the transaction carries a filter tag OR `p` carries one.
 ///
 /// `date_from`/`date_until` are intentionally not checked here — the caller
@@ -397,6 +400,12 @@ fn transaction_matches_query(
     let tx_carries_own_tag =
         tag_subtree.is_some_and(|s| tx.tag_ids().iter().any(|t| s.contains(t)));
 
+    // Derived once per transaction; only consulted for an elided leg under an
+    // amount filter.
+    let residual = query.amount.as_ref().map(|_| {
+        crate::residual::residual_of(tx.postings().iter().map(bc_models::Posting::amount))
+    });
+
     // The transaction is kept iff some budget-subtree posting satisfies the
     // full per-posting conjunction the tree counts on that same posting.
     tx.postings().iter().any(|p| {
@@ -415,7 +424,7 @@ fn transaction_matches_query(
             return false;
         }
         if let Some(aq) = &query.amount
-            && !aq.matches(p.amount())
+            && !elided_or_concrete_matches(aq, p.amount(), residual.as_ref())
         {
             return false;
         }
@@ -427,6 +436,29 @@ fn transaction_matches_query(
         }
         true
     })
+}
+
+/// Whether a budget-subtree leg satisfies `aq`, resolving an elided leg
+/// through its transaction's `residual`.
+///
+/// A concrete `amount` is matched directly. An elided leg matches when any
+/// commodity component of an attributable residual does — the same amounts
+/// the budget tree folds after [`crate::residual::Residuals`] expansion — and
+/// never when the residual is ambiguous or `residual` was not derived.
+fn elided_or_concrete_matches(
+    aq: &crate::search::AmountQuery,
+    amount: Option<&Amount>,
+    residual: Option<&Result<crate::residual::Residual, bc_models::AmountError>>,
+) -> bool {
+    if amount.is_some() {
+        return aq.matches(amount);
+    }
+    let Some(Ok(crate::residual::Residual::Attributable(balances))) = residual else {
+        return false;
+    };
+    balances
+        .iter()
+        .any(|(code, value)| aq.matches(Some(&Amount::new(value, CommodityCode::new(code)))))
 }
 
 /// Named row type for postings loaded during [`Service::find_by_id`].
@@ -5433,6 +5465,88 @@ mod tests {
         assert!(
             ids.contains(&matching_id),
             "tx whose budget leg matches the amount filter must be included"
+        );
+        assert_eq!(txns.len(), 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn list_for_budget_amount_filter_resolves_an_elided_budget_leg(pool: sqlx::SqlitePool) {
+        // Parity regression: the budget tree expands an elided leg into its
+        // residual before applying the amount filter, so a transaction whose
+        // elided budget leg derives to a matching amount is counted. The
+        // drill-down must list it, and must still exclude one whose derived
+        // amount falls below the filter.
+        let accounts = crate::account::Service::new(pool.clone());
+        let gym = accounts
+            .create()
+            .name("Gym")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("gym");
+        let checking = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("checking");
+
+        let svc = Service::new(pool.clone());
+
+        let elided_tx = |id: bc_models::TransactionId, day: i8, bank_amount: Decimal| {
+            Transaction::builder()
+                .id(id)
+                .date(date(2026, 6, day))
+                .description("Elided")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(checking.clone())
+                        .amount(Amount::new(bank_amount, CommodityCode::new("USD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(gym.clone())
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Unreconciled)
+                .created_at(jiff::Timestamp::now())
+                .build()
+        };
+
+        let large_id = bc_models::TransactionId::new();
+        svc.create(elided_tx(large_id.clone(), 3, dec!(-200)))
+            .await
+            .expect("large tx");
+        let small_id = bc_models::TransactionId::new();
+        svc.create(elided_tx(small_id.clone(), 4, dec!(-10)))
+            .await
+            .expect("small tx");
+
+        let query = crate::search::TransactionQuery {
+            amount: Some(crate::search::AmountQuery {
+                min: Some(dec!(100)),
+                commodity: Some(CommodityCode::new("USD")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let txns = svc
+            .list_for_budget(&gym, None, date(2026, 6, 1), date(2026, 7, 1), Some(&query))
+            .await
+            .expect("list");
+
+        let ids: Vec<_> = txns.iter().map(|t| t.id().clone()).collect();
+        assert!(
+            ids.contains(&large_id),
+            "elided budget leg deriving to 200 USD must match the amount filter"
+        );
+        assert!(
+            !ids.contains(&small_id),
+            "elided budget leg deriving to 10 USD must not match the amount filter"
         );
         assert_eq!(txns.len(), 1);
     }
