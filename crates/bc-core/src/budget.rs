@@ -1,5 +1,7 @@
 //! Budget calculation engine: actuals, rollover, and budget status.
 
+use std::collections::HashSet;
+
 use sqlx::SqlitePool;
 
 // MARK: BudgetService
@@ -667,6 +669,9 @@ type PostingRow = (String, Option<String>, Option<String>);
 ///
 /// One amount per concrete row, plus one per commodity component of each
 /// attributable elided row. An ambiguous elided row contributes nothing.
+/// Because expansion precedes the fold, a later amount filter sees each
+/// commodity component of an elided leg as its own amount rather than the
+/// leg as a whole.
 ///
 /// # Errors
 ///
@@ -870,27 +875,24 @@ impl BudgetStatusEngine {
     /// `[period_start, period_end)`, optionally filtered by tag.
     ///
     /// The dynamic SELECT is assembled by [`build_posting_amounts_sql`], whose
-    /// clause order the bind chain below relies on exactly.
+    /// clause order the bind chain below relies on exactly. The caller resolves
+    /// `filter_accounts` up front, so the snapshot transaction holds the only
+    /// pool connection.
     ///
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on database failure.
     #[inline]
     async fn fetch_posting_rows(
-        &self,
         conn: &mut sqlx::SqliteConnection,
         account_id: &bc_models::AccountId,
         period_start: jiff::civil::Date,
         period_end: jiff::civil::Date,
         tag_filter: Option<&bc_models::TagId>,
         query: Option<&crate::search::TransactionQuery>,
+        filter_accounts: Option<&HashSet<bc_models::AccountId>>,
     ) -> crate::BcResult<Vec<PostingRow>> {
-        let filter_accounts = match query {
-            Some(q) => crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?,
-            None => None,
-        };
-
-        let sql = build_posting_amounts_sql(tag_filter, query, filter_accounts.as_ref());
+        let sql = build_posting_amounts_sql(tag_filter, query, filter_accounts);
 
         let mut stmt = sqlx::query_as::<_, PostingRow>(sqlx::AssertSqlSafe(sql));
         stmt = stmt.bind(account_id.to_string());
@@ -911,7 +913,7 @@ impl BudgetStatusEngine {
             if let Some(rec) = q.reconciliation {
                 stmt = stmt.bind(crate::db::to_db_str(rec)?);
             }
-            if let Some(set) = &filter_accounts {
+            if let Some(set) = filter_accounts {
                 let mut ids: Vec<&bc_models::AccountId> = set.iter().collect();
                 ids.sort_by_key(ToString::to_string);
                 for id in ids {
@@ -951,17 +953,21 @@ impl BudgetStatusEngine {
         tag_filter: Option<&bc_models::TagId>,
         query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<Vec<bc_models::Amount>> {
+        let filter_accounts = match query {
+            Some(q) => crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?,
+            None => None,
+        };
         let mut tx = self.pool.begin().await?;
-        let rows = self
-            .fetch_posting_rows(
-                &mut tx,
-                account_id,
-                period_start,
-                period_end,
-                tag_filter,
-                query,
-            )
-            .await?;
+        let rows = Self::fetch_posting_rows(
+            &mut tx,
+            account_id,
+            period_start,
+            period_end,
+            tag_filter,
+            query,
+            filter_accounts.as_ref(),
+        )
+        .await?;
         let residuals = if rows.iter().any(|(_, amount, _)| amount.is_none()) {
             Some(
                 crate::residual::Residuals::for_subtree_in_range(

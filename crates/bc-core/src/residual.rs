@@ -529,12 +529,7 @@ impl Residuals {
     /// That means the caller is consulting a `Residuals` outside the scope it was
     /// loaded for, which would otherwise silently drop the posting from the balance.
     pub(crate) fn component(&self, posting_id: &str, commodity: &str) -> BcResult<Option<Decimal>> {
-        if !self.seen.contains(posting_id) {
-            return Err(BcError::BadData(format!(
-                "residual scope error: posting '{posting_id}' was not covered by this load"
-            )));
-        }
-        Ok(self.entries.get(posting_id).and_then(|b| b.get(commodity)))
+        Ok(self.residual(posting_id)?.and_then(|b| b.get(commodity)))
     }
 
     /// Returns every commodity component of `posting_id`'s residual.
