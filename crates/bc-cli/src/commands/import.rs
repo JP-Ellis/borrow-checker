@@ -92,9 +92,7 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
         sync_report.profiles.into_iter().next().ok_or_else(|| {
             crate::error::CliError::Arg("the engine returned no profile".to_owned())
         })?;
-    let run = result
-        .result
-        .map_err(|failure| crate::error::CliError::Arg(failure.to_string()))?;
+    let run = result.result.map_err(failure_error)?;
 
     match run {
         bc_core::ProfileRun::Planned(plan) => {
@@ -127,6 +125,22 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
         other => Err(crate::error::CliError::Arg(format!(
             "unexpected engine result: {other:?}"
         ))),
+    }
+}
+
+/// Maps a profile's failure to the CLI error `import run` exits with.
+///
+/// An engine-stage failure keeps its [`bc_core::BcError`], so the exit code
+/// stays the one `main` assigns that error (2 for a missing entity, and so
+/// on). The engine shares the error behind an `Arc`; the report is consumed
+/// by then, so the `Arc` is unique and the error comes back out. The
+/// fallback renders the failure as an argument error, exactly as the
+/// importer and unknown-importer stages always do.
+fn failure_error(failure: bc_core::ProfileFailure) -> crate::error::CliError {
+    let message = failure.to_string();
+    match failure.source.map(std::sync::Arc::try_unwrap) {
+        Some(Ok(error)) => crate::error::CliError::Core(error),
+        Some(Err(_)) | None => crate::error::CliError::Arg(message),
     }
 }
 
@@ -1907,6 +1921,47 @@ mod tests {
             pre_import_snapshots(&backup_dir),
             0,
             "a dry run takes no snapshot, whether or not --json is set"
+        );
+    }
+
+    #[test]
+    fn an_engine_failure_keeps_its_core_error() {
+        let failure = bc_core::ProfileFailure::from(bc_core::BcError::NotFound("row".to_owned()));
+
+        let error = super::failure_error(failure);
+
+        assert!(
+            matches!(
+                error,
+                crate::error::CliError::Core(bc_core::BcError::NotFound(_))
+            ),
+            "the exit code main assigns a core error must survive the engine: {error:?}"
+        );
+    }
+
+    #[test]
+    fn an_importer_failure_is_an_argument_error() {
+        let failure =
+            bc_core::ProfileFailure::new(bc_core::FailureStage::Importer, "no such file: nab.csv");
+
+        let error = super::failure_error(failure);
+
+        assert!(
+            matches!(&error, crate::error::CliError::Arg(message) if message == "import error: no such file: nab.csv"),
+            "the message `import run` has always printed must not change: {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_shared_engine_error_falls_back_to_its_message() {
+        let failure = bc_core::ProfileFailure::from(bc_core::BcError::NotFound("row".to_owned()));
+        let _held = failure.clone();
+
+        let error = super::failure_error(failure);
+
+        assert!(
+            matches!(&error, crate::error::CliError::Arg(message) if message == "not found: row"),
+            "a still-shared error cannot be moved out, so the message stands in: {error:?}"
         );
     }
 

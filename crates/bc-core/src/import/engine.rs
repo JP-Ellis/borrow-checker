@@ -13,6 +13,7 @@ use bc_models::ProfileId;
 
 use crate::BackupKind;
 use crate::BackupService;
+use crate::BcError;
 use crate::BcResult;
 use crate::ImportOutcome;
 use crate::ImportPlan;
@@ -101,14 +102,60 @@ impl FailureStage {
 }
 
 /// Why a profile's run produced nothing.
+///
+/// Equality compares `stage` and `message` only: [`BcError`] is not
+/// comparable, and the message is its rendering.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ProfileFailure {
     /// The step that failed.
     pub stage: FailureStage,
     /// The underlying error's message, without a stage prefix.
     pub message: String,
+    /// The engine's own error, on the [`FailureStage::Engine`] stage only,
+    /// so a caller can keep its exit-code mapping. `None` on every other
+    /// stage. Shared, since [`BcError`] does not clone.
+    pub source: Option<Arc<BcError>>,
 }
+
+impl ProfileFailure {
+    /// Builds a failure with no underlying [`BcError`].
+    ///
+    /// # Arguments
+    ///
+    /// * `stage` - The step that failed.
+    /// * `message` - The error's message, without a stage prefix.
+    #[must_use]
+    #[inline]
+    pub fn new(stage: FailureStage, message: impl Into<String>) -> Self {
+        Self {
+            stage,
+            message: message.into(),
+            source: None,
+        }
+    }
+}
+
+impl From<BcError> for ProfileFailure {
+    /// Wraps an engine error, keeping it as the failure's `source`.
+    #[inline]
+    fn from(error: BcError) -> Self {
+        Self {
+            stage: FailureStage::Engine,
+            message: error.to_string(),
+            source: Some(Arc::new(error)),
+        }
+    }
+}
+
+impl PartialEq for ProfileFailure {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.stage == other.stage && self.message == other.message
+    }
+}
+
+impl Eq for ProfileFailure {}
 
 impl std::fmt::Display for ProfileFailure {
     /// Renders the message the CLI has always printed for this failure:
@@ -254,12 +301,14 @@ impl ImportEngine {
         let importer = self
             .importers
             .create_for_name(&profile.importer)
-            .ok_or_else(|| ProfileFailure {
-                stage: FailureStage::UnknownImporter,
-                message: format!(
-                    "unknown importer '{}' for profile '{}'",
-                    profile.importer, profile.name
-                ),
+            .ok_or_else(|| {
+                ProfileFailure::new(
+                    FailureStage::UnknownImporter,
+                    format!(
+                        "unknown importer '{}' for profile '{}'",
+                        profile.importer, profile.name
+                    ),
+                )
             })?;
 
         // The importer is a synchronous Wasmtime call over the profile's
@@ -268,14 +317,13 @@ impl ImportEngine {
         let config = profile.config.clone();
         let raws = tokio::task::spawn_blocking(move || importer.import(&config))
             .await
-            .map_err(|join| ProfileFailure {
-                stage: FailureStage::Importer,
-                message: format!("importer task failed: {join}"),
+            .map_err(|join| {
+                ProfileFailure::new(
+                    FailureStage::Importer,
+                    format!("importer task failed: {join}"),
+                )
             })?
-            .map_err(|error| ProfileFailure {
-                stage: FailureStage::Importer,
-                message: error.to_string(),
-            })?;
+            .map_err(|error| ProfileFailure::new(FailureStage::Importer, error.to_string()))?;
 
         Ok(Prepared { profile, raws })
     }
@@ -316,10 +364,7 @@ impl ImportEngine {
             .await
             .map(ProfileRun::Imported),
         };
-        run.map_err(|error| ProfileFailure {
-            stage: FailureStage::Engine,
-            message: error.to_string(),
-        })
+        run.map_err(ProfileFailure::from)
     }
 
     /// Runs a selection of profiles in name order, taking one `PreImport`
@@ -401,6 +446,7 @@ mod tests {
     use bc_models::CommodityCode;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use pretty_assertions::assert_ne;
     use rust_decimal::Decimal;
 
     use super::*;
@@ -631,11 +677,30 @@ mod tests {
 
     #[test]
     fn an_engine_failure_displays_its_bare_message() {
-        let failure = ProfileFailure {
-            stage: FailureStage::Engine,
-            message: "account 'Assets:Bank' is closed".to_owned(),
-        };
-        assert_eq!(failure.to_string(), "account 'Assets:Bank' is closed");
+        let failure = ProfileFailure::from(BcError::InvalidInput("no such row".to_owned()));
+        assert_eq!(failure.stage, FailureStage::Engine);
+        assert_eq!(failure.to_string(), "invalid input: no such row");
+        assert!(
+            failure.source.is_some(),
+            "the engine stage keeps its error for the caller's exit-code mapping"
+        );
+    }
+
+    #[test]
+    fn only_the_engine_stage_carries_a_source() {
+        let failure = ProfileFailure::new(FailureStage::Importer, "boom");
+        assert_eq!(failure.source.map(|error| error.to_string()), None);
+    }
+
+    #[test]
+    fn failures_compare_by_stage_and_message() {
+        let from_error = ProfileFailure::from(BcError::InvalidInput("x".to_owned()));
+        let bare = ProfileFailure::new(FailureStage::Engine, "invalid input: x");
+        assert_eq!(from_error, bare);
+        assert_ne!(
+            bare,
+            ProfileFailure::new(FailureStage::Importer, "invalid input: x")
+        );
     }
 
     #[test]
