@@ -26,6 +26,7 @@ serde_json   = { workspace = true }
 sqlx         = { workspace = true }
 tempfile     = { workspace = true }
 thiserror    = { workspace = true }
+tokio        = { workspace = true }
 tracing      = { workspace = true }
 
 [dev-dependencies]
@@ -33,7 +34,6 @@ criterion           = { workspace = true }
 pretty_assertions   = { workspace = true }
 rstest              = { workspace = true }
 rust_decimal_macros = { workspace = true }
-tokio               = { workspace = true }
 
 [features]
 # Conversions from bc-core types into bc-ipc DTOs (native/Tauri side only).
