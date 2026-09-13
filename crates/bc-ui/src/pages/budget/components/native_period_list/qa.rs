@@ -1,8 +1,9 @@
 //! QA page for [`super::NativePeriodList`].
 //!
 //! Shows a live component state plus a static fixture preview of all status
-//! colours (good / warn / bad / mute). The live component performs a real IPC
-//! call which fails in the QA harness, showing the error state after loading.
+//! colours (good / warn / bad / mute) and the unvalued-spend row. The live
+//! component performs a real IPC call which fails in the QA harness, showing
+//! the error state after loading.
 
 use bc_ipc::Amount;
 use bc_ipc::NativePeriodRow;
@@ -77,8 +78,9 @@ fn row_with_unvalued(
 ///    fallback while the (always-failing in QA) IPC call is in flight, then
 ///    fall through to the error state.
 /// 2. Inline static rows illustrating the three status colours (good / warn /
-///    bad) and the tracking/no-target (mute) variant, rendered directly without
-///    the async fetch so they are always visible.
+///    bad), the tracking/no-target (mute) variant, and a row with spend the
+///    engine could not value (unvalued), rendered directly without the async
+///    fetch so they are always visible.
 #[component]
 pub fn NativePeriodListQa() -> impl IntoView {
     let ctx = BudgetPageCtx::new();
