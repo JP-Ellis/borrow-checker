@@ -39,6 +39,9 @@ pub struct BudgetTreeItem {
     pub governing: Option<bc_models::BudgetRevision>,
     /// Child budget items (nested under this account in the hierarchy).
     pub children: Vec<BudgetTreeItem>,
+    /// Native amounts in the display window that fed no total, by commodity
+    /// (see [`crate::BudgetStatus::unvalued`]).
+    pub unvalued: bc_models::Balances,
 }
 
 // MARK: BudgetTreeSummary
@@ -56,6 +59,8 @@ pub struct BudgetTreeSummary {
     pub commodity: Option<bc_models::CommodityCode>,
     /// Count of leaf budgets where `actuals > effective_target`.
     pub overspent_count: u32,
+    /// `true` when any leaf budget has a non-empty `unvalued`.
+    pub has_unvalued: bool,
 }
 
 // MARK: BudgetOverview
@@ -165,6 +170,7 @@ impl BudgetTreeService {
                 has_mixed_period,
                 governing: gov.cloned(),
                 children: vec![],
+                unvalued: status.unvalued,
             });
         }
 
@@ -257,6 +263,7 @@ impl BudgetTreeService {
                 effective_target,
                 actuals: status.actuals,
                 commodity: status.commodity,
+                unvalued: status.unvalued,
             });
         }
 
@@ -361,6 +368,8 @@ pub struct NativePeriodStatus {
     pub actuals: Decimal,
     /// Commodity of the actuals.
     pub commodity: Option<bc_models::CommodityCode>,
+    /// Native amounts within the overlap that fed no total, by commodity.
+    pub unvalued: bc_models::Balances,
 }
 
 // MARK: Helpers
@@ -478,11 +487,12 @@ fn merge_amount(amounts: &mut Vec<Amount>, new: Amount) {
 }
 
 /// Computes aggregate KPI values from the full budget tree (all depths).
-fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
+pub(crate) fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
     let mut total_target = Decimal::ZERO;
     let mut total_actuals: Vec<Amount> = Vec::new();
     let mut overspent = 0_u32;
     let mut commodity = None;
+    let mut has_unvalued = false;
 
     accumulate_summary(
         nodes,
@@ -490,6 +500,7 @@ fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
         &mut total_actuals,
         &mut overspent,
         &mut commodity,
+        &mut has_unvalued,
     );
 
     BudgetTreeSummary {
@@ -497,6 +508,7 @@ fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
         total_actuals,
         commodity,
         overspent_count: overspent,
+        has_unvalued,
     }
 }
 
@@ -507,6 +519,7 @@ fn accumulate_summary(
     total_actuals: &mut Vec<Amount>,
     overspent: &mut u32,
     commodity: &mut Option<bc_models::CommodityCode>,
+    has_unvalued: &mut bool,
 ) {
     for node in nodes {
         if node.children.is_empty() {
@@ -524,6 +537,7 @@ fn accumulate_summary(
             if node.effective_target.is_some_and(|t| node_total > t) {
                 *overspent = overspent.saturating_add(1);
             }
+            *has_unvalued |= !node.unvalued.is_empty();
         } else {
             // Parent node: recurse into children only.
             accumulate_summary(
@@ -532,6 +546,7 @@ fn accumulate_summary(
                 total_actuals,
                 overspent,
                 commodity,
+                has_unvalued,
             );
         }
     }

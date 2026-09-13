@@ -249,6 +249,7 @@ fn budget_tree_node_recursive(item: &BudgetTreeItem) -> bc_ipc::BudgetTreeNode {
         .collect();
 
     let gov = item.governing.as_ref();
+    let unvalued = balances_to_amounts(&item.unvalued);
     bc_ipc::BudgetTreeNode::builder()
         .id(item.budget.id().to_string())
         .account_id(item.account.id().to_string())
@@ -269,7 +270,16 @@ fn budget_tree_node_recursive(item: &BudgetTreeItem) -> bc_ipc::BudgetTreeNode {
         .maybe_tag_filter(gov.and_then(|r| r.tag_filter()).map(ToString::to_string))
         .is_tracking_only(gov.is_none_or(bc_models::BudgetRevision::is_tracking_only))
         .children(children)
+        .unvalued(unvalued)
         .build()
+}
+
+/// Renders a [`bc_models::Balances`] as IPC amounts in first-seen order.
+fn balances_to_amounts(balances: &bc_models::Balances) -> Vec<bc_ipc::Amount> {
+    balances
+        .iter()
+        .map(|(code, value)| bc_ipc::Amount::new(value, code))
+        .collect()
 }
 
 /// Returns a short lowercase label for a [`bc_models::Period`] variant.
@@ -330,6 +340,7 @@ impl From<&BudgetTreeSummary> for bc_ipc::BudgetSummary {
             total_remaining,
             has_mixed,
             summary.overspent_count,
+            summary.has_unvalued,
         )
     }
 }
@@ -368,6 +379,7 @@ impl NativePeriodRowExt for bc_ipc::NativePeriodRow {
             status.overlap.native_end,
             effective_target,
             spent,
+            balances_to_amounts(&status.unvalued),
         )
     }
 }
@@ -639,10 +651,12 @@ mod tests {
     use std::collections::HashMap;
 
     use bc_models::Amount;
+    use bc_models::Balances;
     use jiff::Timestamp;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
+    use crate::budget_tree::BudgetTreeItem;
     use crate::budget_tree::BudgetTreeSummary;
     use crate::ipc::AuditEntryExt as _;
     use crate::ipc::TransactionExt;
@@ -809,6 +823,7 @@ mod tests {
             ],
             commodity: None,
             overspent_count: 0,
+            has_unvalued: false,
         };
 
         let ipc_summary = bc_ipc::BudgetSummary::from(&summary);
@@ -1063,5 +1078,56 @@ mod tests {
     #[test]
     fn period_label_names_daily() {
         assert_eq!(super::period_label(&bc_models::Period::Daily), "daily");
+    }
+
+    /// A leaf item's account and budget fixture for node-conversion tests.
+    fn leaf_item(unvalued: Balances, children: Vec<BudgetTreeItem>) -> BudgetTreeItem {
+        let account = bc_models::Account::builder()
+            .name("Food")
+            .account_type(bc_models::AccountType::Expense)
+            .build();
+        let budget = bc_models::Budget::builder()
+            .account_id(account.id().clone())
+            .created_at(Timestamp::now())
+            .build();
+        BudgetTreeItem {
+            budget,
+            account,
+            depth: 0,
+            effective_target: Some(dec!(100)),
+            commodity: Some(bc_models::CommodityCode::new("AUD")),
+            actuals: vec![Amount::new(dec!(40), "AUD")],
+            has_mixed_period: false,
+            governing: None,
+            children,
+            unvalued,
+        }
+    }
+
+    #[test]
+    fn budget_tree_node_carries_unvalued_amounts() {
+        let mut unvalued = Balances::new();
+        unvalued += &Amount::new(dec!(5), "USD");
+        let node = bc_ipc::BudgetTreeNode::from(&leaf_item(unvalued, vec![]));
+
+        assert_eq!(node.unvalued, vec![bc_ipc::Amount::new(dec!(5), "USD")]);
+    }
+
+    #[test]
+    fn budget_summary_has_unvalued_when_any_leaf_does() {
+        let mut unvalued = Balances::new();
+        unvalued += &Amount::new(dec!(5), "USD");
+        let parent = leaf_item(Balances::new(), vec![leaf_item(unvalued, vec![])]);
+        let summary = crate::budget_tree::compute_summary(std::slice::from_ref(&parent));
+
+        assert!(summary.has_unvalued);
+        assert!(bc_ipc::BudgetSummary::from(&summary).has_unvalued);
+    }
+
+    #[test]
+    fn budget_summary_has_no_unvalued_when_every_leaf_is_valued() {
+        let summary = crate::budget_tree::compute_summary(&[leaf_item(Balances::new(), vec![])]);
+
+        assert!(!summary.has_unvalued);
     }
 }
