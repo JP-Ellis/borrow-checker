@@ -59,7 +59,7 @@ pub struct BudgetTreeSummary {
     pub commodity: Option<bc_models::CommodityCode>,
     /// Count of leaf budgets where `actuals > effective_target`.
     pub overspent_count: u32,
-    /// `true` when any leaf budget has a non-empty `unvalued`.
+    /// `true` when any node in the tree has a non-empty `unvalued`.
     pub has_unvalued: bool,
 }
 
@@ -522,6 +522,10 @@ fn accumulate_summary(
     has_unvalued: &mut bool,
 ) {
     for node in nodes {
+        // A parent's status spans its whole account subtree, so it can carry
+        // `unvalued` amounts a child does not (and vice versa); OR across
+        // every node. Numeric sums stay leaf-only to avoid double counting.
+        *has_unvalued |= !node.unvalued.is_empty();
         if node.children.is_empty() {
             // Leaf node: count directly toward totals.
             if let Some(t) = node.effective_target {
@@ -537,7 +541,6 @@ fn accumulate_summary(
             if node.effective_target.is_some_and(|t| node_total > t) {
                 *overspent = overspent.saturating_add(1);
             }
-            *has_unvalued |= !node.unvalued.is_empty();
         } else {
             // Parent node: recurse into children only.
             accumulate_summary(

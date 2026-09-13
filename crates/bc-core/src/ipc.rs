@@ -1130,4 +1130,16 @@ mod tests {
 
         assert!(!summary.has_unvalued);
     }
+
+    #[test]
+    fn budget_summary_has_unvalued_when_only_a_parent_does() {
+        let mut unvalued = Balances::new();
+        unvalued
+            .try_add(&Amount::new(dec!(5.00), "USD"))
+            .expect("valid amount");
+        let parent = leaf_item(unvalued, vec![leaf_item(Balances::new(), vec![])]);
+        let summary = crate::budget_tree::compute_summary(std::slice::from_ref(&parent));
+
+        assert!(summary.has_unvalued);
+    }
 }
