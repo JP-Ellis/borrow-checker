@@ -1284,8 +1284,8 @@ impl BudgetStatusEngine {
             });
         }
 
-        let mut groups: std::collections::HashMap<String, bc_models::Decimal> =
-            std::collections::HashMap::new();
+        let mut groups: std::collections::BTreeMap<String, bc_models::Decimal> =
+            std::collections::BTreeMap::new();
         for posting_amount in matched {
             let entry = groups
                 .entry(posting_amount.commodity().to_string())
@@ -1294,6 +1294,9 @@ impl BudgetStatusEngine {
                 .checked_add(posting_amount.value())
                 .ok_or_else(|| crate::BcError::BadData("actuals sum overflow".into()))?;
         }
+        // A tie in absolute value resolves to the last (highest) commodity
+        // code, since `max_by` keeps the later of two equal elements and
+        // `BTreeMap::iter` yields entries in code order.
         let Some(dominant) = groups
             .iter()
             .max_by(|(_, a), (_, b)| {
@@ -1310,10 +1313,6 @@ impl BudgetStatusEngine {
             });
         };
         let mut total = bc_models::Decimal::ZERO;
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "each group folds into total or unvalued independently; order cannot change either"
-        )]
         for (code, value) in groups {
             if code == dominant {
                 total = value;
