@@ -66,90 +66,68 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 ///
 /// # Errors
 ///
-/// Returns [`crate::error::CliError`] if the profile does not exist, or the
-/// importer fails to source and parse its configured files.
+/// Returns [`crate::error::CliError`] if the profile does not exist, the
+/// snapshot cannot be written, or the profile's run failed (unknown
+/// importer, importer error, engine error).
 #[inline]
 pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
-    // Find the import profile by its unique name.
-    let profile = ctx.profiles.find_by_name(&args.profile).await?;
+    let mode = if args.dry_run {
+        bc_core::ImportMode::DryRun
+    } else {
+        bc_core::ImportMode::Commit
+    };
 
-    // Create the importer.
-    let importer = ctx
-        .importers
-        .create_for_name(&profile.importer)
-        .ok_or_else(|| {
-            crate::error::CliError::Arg(format!(
-                "unknown importer '{}' for profile '{}'",
-                profile.importer, profile.name
-            ))
-        })?;
-
-    // Source and parse the profile's files (the importer reads them itself).
-    // This happens before any snapshot: it reads files and writes nothing, so
-    // a dry run can use it without taking a backup first.
-    let raw_txs = importer
-        .import(&profile.config)
-        .map_err(|e| crate::error::CliError::Arg(format!("import error: {e}")))?;
-
-    if args.dry_run {
-        let plan = bc_core::plan_import(
-            &ctx.transactions,
-            &ctx.sources,
-            &ctx.accounts,
-            &ctx.commodities,
-            &ctx.tags,
-            &ctx.batches,
-            Some(&profile.id),
-            &profile.importer,
-            &raw_txs,
-        )
+    // A one-profile sweep: the engine looks the profile up, takes the
+    // pre-import snapshot when the policy asks for one, and runs it. A
+    // misconfigured profile (wrong date format, an inverted sign convention)
+    // produces plausible-looking wrong data whose source references then
+    // suppress a corrected re-import. Restoring the snapshot is one recovery
+    // path; `import discard` is the other, and unlike a restore it keeps
+    // everything else that has happened since.
+    let sync_report = ctx
+        .engine
+        .sync(bc_core::ImportSelection::One(args.profile), mode)
         .await?;
-        let report = PlanReport::from(&plan);
-        let output = render_dry_run(&report, &profile.name, &profile.importer, ctx.json)?;
+    let result =
+        sync_report.profiles.into_iter().next().ok_or_else(|| {
+            crate::error::CliError::Arg("the engine returned no profile".to_owned())
+        })?;
+    let run = result
+        .result
+        .map_err(|failure| crate::error::CliError::Arg(failure.to_string()))?;
 
-        #[expect(clippy::print_stdout, reason = "CLI output")]
-        {
-            print!("{output}");
+    match run {
+        bc_core::ProfileRun::Planned(plan) => {
+            let report = PlanReport::from(&plan);
+            let output = render_dry_run(
+                &report,
+                &result.profile.name,
+                &result.profile.importer,
+                ctx.json,
+            )?;
+
+            #[expect(clippy::print_stdout, reason = "CLI output")]
+            {
+                print!("{output}");
+            }
+            Ok(())
         }
-        return Ok(());
-    }
+        bc_core::ProfileRun::Imported(outcome) => {
+            let report = Report::from(&outcome);
+            if ctx.json {
+                return crate::output::print_json(&report.to_json(&outcome.batch_id.to_string()));
+            }
 
-    // Snapshot before writing: a misconfigured profile (wrong date format, an
-    // inverted sign convention) produces plausible-looking wrong data whose
-    // source references then suppress a corrected re-import. Restoring is one
-    // recovery path; `import discard` is the other, and unlike a restore it
-    // keeps everything else that has happened since.
-    if ctx.auto_pre_import {
-        let record = ctx
-            .backup
-            .backup(bc_core::BackupKind::PreImport, None)
-            .await?;
-        tracing::info!(path = %record.path.display(), "pre-import snapshot taken");
+            #[expect(clippy::print_stdout, reason = "CLI output")]
+            {
+                print!("{}", report.render());
+            }
+            Ok(())
+        }
+        other => Err(crate::error::CliError::Arg(format!(
+            "unexpected engine result: {other:?}"
+        ))),
     }
-
-    let outcome = bc_core::execute_import(
-        &ctx.transactions,
-        &ctx.sources,
-        &ctx.accounts,
-        &ctx.commodities,
-        &ctx.tags,
-        &ctx.batches,
-        Some(&profile.id),
-        &profile.importer,
-        &raw_txs,
-    )
-    .await?;
-
-    let report = Report::from(&outcome);
-    if ctx.json {
-        return crate::output::print_json(&report.to_json(&outcome.batch_id.to_string()));
-    }
-
-    #[expect(clippy::print_stdout, reason = "CLI output")]
-    {
-        print!("{}", report.render());
-    }
-    Ok(())
 }
 
 /// Executes `import list`.
@@ -1774,8 +1752,9 @@ mod tests {
             .await
             .expect("open database");
 
-        let mut importers = bc_core::ImporterRegistry::new();
-        importers.register(bc_core::ImporterFactory::new("stub", make_stub));
+        let mut importer_registry = bc_core::ImporterRegistry::new();
+        importer_registry.register(bc_core::ImporterFactory::new("stub", make_stub));
+        let importers = std::sync::Arc::new(importer_registry);
 
         let profiles = bc_core::ImportProfileService::new(pool.clone());
         profiles
@@ -1787,6 +1766,29 @@ mod tests {
             .await
             .expect("create profile");
 
+        let transactions = bc_core::TransactionService::new(pool.clone());
+        let sources = bc_core::SourceService::new(pool.clone());
+        let accounts = bc_core::AccountService::new(pool.clone());
+        let tags = bc_core::TagService::new(pool.clone());
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let backup = std::sync::Arc::new(bc_core::BackupService::new(
+            pool.clone(),
+            db_path.clone(),
+            policy,
+        ));
+        let engine = bc_core::ImportEngine::builder()
+            .transactions(transactions.clone())
+            .sources(sources.clone())
+            .accounts(accounts.clone())
+            .commodities(bc_core::CommodityService::new(pool.clone()))
+            .tags(tags.clone())
+            .batches(batches.clone())
+            .profiles(profiles.clone())
+            .importers(std::sync::Arc::clone(&importers))
+            .backup(std::sync::Arc::clone(&backup))
+            .snapshot_before_write(auto_pre_import)
+            .build();
+
         let ctx = crate::context::AppContext {
             json: false,
             fortnightly_anchor: None,
@@ -1795,22 +1797,22 @@ mod tests {
             plugin_registry: bc_plugins::PluginRegistry::load(&[], None)
                 .expect("empty plugin registry"),
             importers,
-            accounts: bc_core::AccountService::new(pool.clone()),
+            accounts,
             commodities: bc_core::CommodityService::new(pool.clone()),
-            transactions: bc_core::TransactionService::new(pool.clone()),
+            transactions,
             balances: bc_core::BalanceEngine::new(pool.clone()),
             profiles,
             assets: bc_core::AssetService::new(pool.clone()),
             loans: bc_core::LoanService::new(pool.clone()),
             budgets: bc_core::BudgetService::new(pool.clone()),
-            tags: bc_core::TagService::new(pool.clone()),
+            tags,
             metadata: bc_core::MetadataService::new(pool.clone()),
-            backup: bc_core::BackupService::new(pool.clone(), db_path.clone(), policy),
+            backup,
             db_path,
-            sources: bc_core::SourceService::new(pool.clone()),
+            sources,
             transfers: bc_core::TransferService::new(pool.clone()),
-            batches: bc_core::ImportBatchService::new(pool.clone()),
-            auto_pre_import,
+            batches,
+            engine,
             auto_pre_discard: true,
             budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
             fx: bc_core::noop_fx(),
