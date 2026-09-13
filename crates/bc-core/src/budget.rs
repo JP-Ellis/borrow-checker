@@ -598,7 +598,7 @@ fn build_posting_amounts_sql(
         );
     }
     sql.push_str(
-        " SELECT p.id, p.amount, p.commodity FROM postings p \
+        " SELECT p.id, t.date AS date, p.amount, p.commodity FROM postings p \
           JOIN transactions t ON t.id = p.transaction_id \
           WHERE p.account_id IN (SELECT id FROM acct_tree) \
             AND t.date >= ? AND t.date < ?",
@@ -650,14 +650,24 @@ fn build_posting_amounts_sql(
     sql
 }
 
-/// One row of the actuals query: posting id, stored amount, stored commodity.
+/// One row of the actuals query.
 ///
-/// Both `Option`s are `None` for an elided leg, whose value is derived from
-/// its transaction's residual rather than read from the row.
-type PostingRow = (String, Option<String>, Option<String>);
+/// `amount` and `commodity` are both `None` for an elided leg, whose value is
+/// derived from its transaction's residual rather than read from the row.
+#[derive(sqlx::FromRow)]
+struct PostingRow {
+    /// Raw posting ID.
+    id: String,
+    /// Transaction date as stored, ISO `YYYY-MM-DD`.
+    date: String,
+    /// Stored amount, or `None` when elided.
+    amount: Option<String>,
+    /// Stored commodity, or `None` when elided.
+    commodity: Option<String>,
+}
 
-/// Turns raw actuals rows into concrete amounts, expanding each elided leg into
-/// its per-commodity residual.
+/// Turns raw actuals rows into dated concrete amounts, expanding each elided
+/// leg into its per-commodity residual.
 ///
 /// # Arguments
 ///
@@ -667,50 +677,59 @@ type PostingRow = (String, Option<String>, Option<String>);
 ///
 /// # Returns
 ///
-/// One amount per concrete row, plus one per commodity component of each
-/// attributable elided row. An ambiguous elided row contributes nothing.
-/// Because expansion precedes the fold, a later amount filter sees each
-/// commodity component of an elided leg as its own amount rather than the
-/// leg as a whole.
+/// One `(date, amount)` per concrete row, plus one per commodity component of
+/// each attributable elided row, all carrying the row's transaction date. An
+/// ambiguous elided row contributes nothing. Because expansion precedes the
+/// fold, a later amount filter sees each commodity component of an elided leg
+/// as its own amount rather than the leg as a whole.
 ///
 /// # Errors
 ///
-/// Returns [`crate::BcError::BadData`] if a stored amount cannot be parsed, if
-/// a row is half-NULL, or if an elided row falls outside `residuals`' scope.
+/// Returns [`crate::BcError::BadData`] if a stored amount or date cannot be
+/// parsed, if a row is half-NULL, or if an elided row falls outside
+/// `residuals`' scope.
 fn expand_posting_rows(
     rows: Vec<PostingRow>,
     residuals: Option<&crate::residual::Residuals>,
-) -> crate::BcResult<Vec<bc_models::Amount>> {
+) -> crate::BcResult<Vec<(jiff::civil::Date, bc_models::Amount)>> {
     let mut out = Vec::with_capacity(rows.len());
-    for (posting_id, amount, commodity) in rows {
-        match (amount, commodity) {
+    for row in rows {
+        let date = row.date.parse::<jiff::civil::Date>().map_err(|e| {
+            crate::BcError::BadData(format!(
+                "invalid posting date '{}' on '{}': {e}",
+                row.date, row.id
+            ))
+        })?;
+        match (row.amount, row.commodity) {
             (Some(amt_str), Some(comm_str)) => {
                 let value = amt_str.parse::<bc_models::Decimal>().map_err(|e| {
                     crate::BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
                 })?;
-                out.push(bc_models::Amount::new(
-                    value,
-                    bc_models::CommodityCode::new(comm_str),
+                out.push((
+                    date,
+                    bc_models::Amount::new(value, bc_models::CommodityCode::new(comm_str)),
                 ));
             }
             (None, None) => {
                 let Some(loaded_residuals) = residuals else {
                     return Err(crate::BcError::BadData(format!(
-                        "elided posting '{posting_id}' reached the fold without a residual load"
+                        "elided posting '{}' reached the fold without a residual load",
+                        row.id
                     )));
                 };
-                if let Some(balances) = loaded_residuals.residual(&posting_id)? {
+                if let Some(balances) = loaded_residuals.residual(&row.id)? {
                     for (code, value) in balances.iter() {
-                        out.push(bc_models::Amount::new(
-                            value,
-                            bc_models::CommodityCode::new(code),
+                        out.push((
+                            date,
+                            bc_models::Amount::new(value, bc_models::CommodityCode::new(code)),
                         ));
                     }
                 }
             }
             _ => {
                 return Err(crate::BcError::BadData(format!(
-                    "posting '{posting_id}' stores an amount without a commodity, or vice versa"
+                    "posting '{}' stores an amount without a commodity, or vice versa",
+                    row.id
                 )));
             }
         }
@@ -941,6 +960,18 @@ impl BudgetStatusEngine {
     /// leave an elided id outside the loaded scope, which
     /// [`expand_posting_rows`] reports as an error rather than dropping.
     ///
+    /// # Arguments
+    ///
+    /// * `account_id` - Root of the account subtree to fetch postings for.
+    /// * `period_start` - Inclusive start of the date range.
+    /// * `period_end` - Exclusive end of the date range.
+    /// * `tag_filter` - Restricts to postings or transactions tagged within
+    ///   this subtree.
+    /// * `query` - Additional filters (text, reconciliation, accounts, tags,
+    ///   amount).
+    /// * `filter_accounts` - Account subtrees from `query`, resolved by the
+    ///   caller so the snapshot transaction holds the only pool connection.
+    ///
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on database failure or unparsable stored data.
@@ -952,11 +983,8 @@ impl BudgetStatusEngine {
         period_end: jiff::civil::Date,
         tag_filter: Option<&bc_models::TagId>,
         query: Option<&crate::search::TransactionQuery>,
-    ) -> crate::BcResult<Vec<bc_models::Amount>> {
-        let filter_accounts = match query {
-            Some(q) => crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?,
-            None => None,
-        };
+        filter_accounts: Option<&HashSet<bc_models::AccountId>>,
+    ) -> crate::BcResult<Vec<(jiff::civil::Date, bc_models::Amount)>> {
         let mut tx = self.pool.begin().await?;
         let rows = Self::fetch_posting_rows(
             &mut tx,
@@ -965,10 +993,10 @@ impl BudgetStatusEngine {
             period_end,
             tag_filter,
             query,
-            filter_accounts.as_ref(),
+            filter_accounts,
         )
         .await?;
-        let residuals = if rows.iter().any(|(_, amount, _)| amount.is_none()) {
+        let residuals = if rows.iter().any(|row| row.amount.is_none()) {
             Some(
                 crate::residual::Residuals::for_subtree_in_range(
                     &mut *tx,
@@ -1006,6 +1034,10 @@ impl BudgetStatusEngine {
         period_end: jiff::civil::Date,
         query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<(bc_models::Decimal, Option<bc_models::CommodityCode>)> {
+        let filter_accounts = match query {
+            Some(q) => crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?,
+            None => None,
+        };
         let amounts = self
             .fetch_posting_amounts(
                 account_id,
@@ -1013,6 +1045,7 @@ impl BudgetStatusEngine {
                 period_end,
                 rev.tag_filter(),
                 query,
+                filter_accounts.as_ref(),
             )
             .await?;
 
@@ -1023,7 +1056,7 @@ impl BudgetStatusEngine {
         if let Some(ref target) = target_commodity {
             // Budget has a target commodity: sum native, convert foreign via FX.
             let mut total = bc_models::Decimal::ZERO;
-            for posting_amount in amounts {
+            for (_, posting_amount) in amounts {
                 // AMOUNT dimension is matched EXACTLY in Rust (commodity-checked); never
                 // magnitude-compared in SQL.
                 if let Some(aq) = amount_q
@@ -1051,7 +1084,7 @@ impl BudgetStatusEngine {
             // Tracking-only: group by commodity, return dominant group.
             let mut groups: std::collections::HashMap<String, bc_models::Decimal> =
                 std::collections::HashMap::new();
-            for posting_amount in amounts {
+            for (_, posting_amount) in amounts {
                 if let Some(aq) = amount_q
                     && !aq.matches(Some(&posting_amount))
                 {
@@ -1910,6 +1943,7 @@ mod elided_actuals_tests {
 
     use super::BudgetService;
     use super::BudgetStatusEngine;
+    use super::PostingRow;
     use super::expand_posting_rows;
     use crate::BcError;
     use crate::account::Service as AccountService;
@@ -2235,6 +2269,17 @@ mod elided_actuals_tests {
         .expect("insert tag");
     }
 
+    /// A raw actuals row dated 2026-03-05, concrete when `amount` is `Some`.
+    fn row(id: &str, amount: Option<(&str, &str)>) -> PostingRow {
+        let (value, commodity) = amount.map_or((None, None), |(a, c)| (Some(a), Some(c)));
+        PostingRow {
+            id: id.into(),
+            date: "2026-03-05".into(),
+            amount: value.map(Into::into),
+            commodity: commodity.map(Into::into),
+        }
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn transaction_tag_admits_an_elided_leg(pool: SqlitePool) {
         let bank = account(&pool, "Bank", AccountType::Asset, None).await;
@@ -2340,20 +2385,34 @@ mod elided_actuals_tests {
 
     #[test]
     fn half_null_row_is_bad_data() {
-        let amount_without_commodity =
-            expand_posting_rows(vec![("p1".into(), Some("1.00".into()), None)], None);
+        let amount_without_commodity = expand_posting_rows(
+            vec![PostingRow {
+                id: "p1".into(),
+                date: "2026-03-05".into(),
+                amount: Some("1.00".into()),
+                commodity: None,
+            }],
+            None,
+        );
         let err = amount_without_commodity.expect_err("half-null row must be rejected");
         assert!(matches!(err, BcError::BadData(_)), "{err:?}");
 
-        let commodity_without_amount =
-            expand_posting_rows(vec![("p1".into(), None, Some("AUD".into()))], None);
+        let commodity_without_amount = expand_posting_rows(
+            vec![PostingRow {
+                id: "p1".into(),
+                date: "2026-03-05".into(),
+                amount: None,
+                commodity: Some("AUD".into()),
+            }],
+            None,
+        );
         let other_err = commodity_without_amount.expect_err("half-null row must be rejected");
         assert!(matches!(other_err, BcError::BadData(_)), "{other_err:?}");
     }
 
     #[test]
     fn elided_row_without_loaded_residuals_is_bad_data() {
-        let result = expand_posting_rows(vec![("p1".into(), None, None)], None);
+        let result = expand_posting_rows(vec![row("p1", None)], None);
         let err = result.expect_err("elided row with no residual load must be rejected");
         assert!(matches!(err, BcError::BadData(_)), "{err:?}");
     }
@@ -2370,9 +2429,37 @@ mod elided_actuals_tests {
         .await
         .expect("load residuals");
 
-        let result = expand_posting_rows(vec![("p1".into(), None, None)], Some(&residuals));
+        let result = expand_posting_rows(vec![row("p1", None)], Some(&residuals));
 
         let err = result.expect_err("posting outside the loaded scope must be rejected");
+        assert!(matches!(err, BcError::BadData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn dated_rows_parse_their_dates() {
+        let amounts = expand_posting_rows(vec![row("p1", Some(("12.50", "AUD")))], None)
+            .expect("concrete row expands");
+        assert_eq!(
+            amounts,
+            vec![(
+                Date::constant(2026, 3, 5),
+                Amount::new(dec!(12.50), CommodityCode::new("AUD")),
+            )]
+        );
+    }
+
+    #[test]
+    fn unparsable_date_is_bad_data() {
+        let result = expand_posting_rows(
+            vec![PostingRow {
+                id: "p1".into(),
+                date: "not-a-date".into(),
+                amount: Some("1.00".into()),
+                commodity: Some("AUD".into()),
+            }],
+            None,
+        );
+        let err = result.expect_err("bad date must be rejected");
         assert!(matches!(err, BcError::BadData(_)), "{err:?}");
     }
 }
