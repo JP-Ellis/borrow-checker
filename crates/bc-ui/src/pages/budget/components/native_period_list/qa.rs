@@ -178,8 +178,13 @@ fn NativePeriodRowPreview(
             let fill_style = format!("width: {pct}%; height: 100%");
             let amounts = super::display_str(&row, false, &[]);
             let label = row.label.clone();
-            let unvalued_pill = unvalued_label(&row.unvalued)
-                .map(|l| view! { <StatusPill label=l tone=Tone::Warn /> });
+            let unvalued_pill = unvalued_label(&row.unvalued).map(|l| {
+                view! {
+                    <span class=style::unvalued>
+                        <StatusPill label=l tone=Tone::Warn />
+                    </span>
+                }
+            });
 
             let status_class = match row_status {
                 super::Status::Good => style::status_good,

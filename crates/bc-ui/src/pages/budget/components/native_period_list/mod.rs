@@ -182,7 +182,13 @@ pub fn NativePeriodList(
                                     let amounts = display_str(&row, pct, &currencies);
                                     let label = row.label.clone();
                                     let unvalued_pill = unvalued_label(&row.unvalued)
-                                        .map(|l| view! { <StatusPill label=l tone=Tone::Warn /> });
+                                        .map(|l| {
+                                            view! {
+                                                <span class=style::unvalued>
+                                                    <StatusPill label=l tone=Tone::Warn />
+                                                </span>
+                                            }
+                                        });
                                     let status_class = match status {
                                         Status::Good => style::status_good,
                                         Status::Warn => style::status_warn,

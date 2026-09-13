@@ -313,7 +313,13 @@ pub fn BudgetRow(
                         )}
                     </span>
                     {unvalued_label(&node.unvalued)
-                        .map(|l| view! { <StatusPill label=l tone=Tone::Warn /> })}
+                        .map(|l| {
+                            view! {
+                                <span class=style::unvalued>
+                                    <StatusPill label=l tone=Tone::Warn />
+                                </span>
+                            }
+                        })}
                 </div>
 
                 {has_mixed
@@ -386,7 +392,13 @@ pub fn BudgetRow(
                         )}
                     </span>
                     {unvalued_label(&node.unvalued)
-                        .map(|l| view! { <StatusPill label=l tone=Tone::Warn /> })}
+                        .map(|l| {
+                            view! {
+                                <span class=style::unvalued>
+                                    <StatusPill label=l tone=Tone::Warn />
+                                </span>
+                            }
+                        })}
                 </div>
 
                 {has_mixed

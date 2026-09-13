@@ -107,6 +107,12 @@
   font-size: var(--bc-text-caption);
 }
 
+.unvalued {
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin-top: var(--bc-space-1);
+}
+
 .badge {
   display: inline-block;
   margin-left: var(--bc-space-2);

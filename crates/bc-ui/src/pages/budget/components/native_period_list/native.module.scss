@@ -17,6 +17,8 @@
 
 .amounts { text-align: right; font-family: var(--bc-font-mono); font-size: var(--bc-text-caption); }
 
+.unvalued { grid-column: 1 / -1; justify-self: start; margin-top: var(--bc-space-1); }
+
 .loading, .error { padding: var(--bc-space-1) var(--bc-space-4); font-size: var(--bc-text-caption); color: var(--bc-ink-mute); }
 
 .error { color: var(--bc-bad); }
