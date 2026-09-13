@@ -28,6 +28,7 @@ use bc_models::AccountId;
 use bc_models::Amount;
 use bc_models::Balances;
 use bc_models::CommodityCode;
+use bc_models::Cost;
 use bc_models::ImportBatchId;
 use bc_models::MetaEntry;
 use bc_models::MetaKey;
@@ -35,6 +36,7 @@ use bc_models::MetaValue;
 use bc_models::Metadata;
 use bc_models::Posting;
 use bc_models::PostingId;
+use bc_models::Quote;
 use bc_models::Reconciliation;
 use bc_models::SourceRef;
 use bc_models::SourceRefId;
@@ -342,7 +344,7 @@ impl Counts {
     /// resolution pass already raised its own warn-once version of that
     /// finding into `self.warnings` before any row was written (see
     /// [`resolve_leg`]), so a second copy from the write-time guard would
-    /// double up. The other three variants get no such treatment upstream —
+    /// double up. The other variants get no such treatment upstream —
     /// `check_postings` raises one per posting it checks — so without this
     /// dedup, importing thousands of postings against one closed or
     /// out-of-list account would report thousands of identical lines.
@@ -380,6 +382,8 @@ enum WarningKey {
     PostingBeforeAccountOpened(AccountId),
     /// Keys a [`Warning::PostingAfterAccountClosed`].
     PostingAfterAccountClosed(AccountId),
+    /// Keys a [`Warning::QuoteInOwnCommodity`].
+    QuoteInOwnCommodity(AccountId),
 }
 
 impl WarningKey {
@@ -401,6 +405,9 @@ impl WarningKey {
             }
             Warning::PostingAfterAccountClosed { ref account_id, .. } => {
                 Some(Self::PostingAfterAccountClosed(account_id.clone()))
+            }
+            Warning::QuoteInOwnCommodity { ref account_id, .. } => {
+                Some(Self::QuoteInOwnCommodity(account_id.clone()))
             }
             Warning::PostingIntoArchivedAccount { .. } => None,
         }
@@ -533,6 +540,10 @@ struct ResolvedLeg {
     account_path: String,
     /// The leg's amount as the document stated it; `None` for the elided residual.
     amount: Option<Amount>,
+    /// The leg's price, commodity canonicalised.
+    price: Option<Quote>,
+    /// The leg's cost basis, commodity canonicalised.
+    cost: Option<Cost>,
     /// The leg's dedup fingerprint, over the document's own values.
     fingerprint: String,
     /// The leg's metadata, with every account path the document stated bound.
@@ -550,6 +561,10 @@ struct LegPlan {
     account_path: String,
     /// The leg's amount as the document stated it; `None` for the elided residual.
     amount: Option<Amount>,
+    /// The leg's price, commodity canonicalised.
+    price: Option<Quote>,
+    /// The leg's cost basis, commodity canonicalised.
+    cost: Option<Cost>,
     /// The leg's dedup fingerprint, over the document's own values.
     fingerprint: String,
     /// The leg's metadata, with every account path the document stated bound.
@@ -579,6 +594,8 @@ impl LegPlan {
             .id(PostingId::new())
             .account_id(self.account_id.clone())
             .maybe_amount(self.amount.clone().or_else(|| residual.cloned()))
+            .maybe_price(self.price.clone())
+            .maybe_cost(self.cost.clone())
             .metadata(self.metadata.clone())
             .tag_ids(resolve_tag_ids(&self.tag_paths, tags))
             .build()
@@ -1199,6 +1216,9 @@ fn resolve_leg(
         );
     }
 
+    let price = canonicalise_quote(commodities, "price", posting.price.as_ref(), raw);
+    let cost = canonicalise_cost(commodities, posting.cost.as_ref(), raw);
+
     Ok(ResolvedLeg {
         // Fingerprinted over the *canonical* code, so a file stating `btc` and a
         // later one stating `BTC` produce one fingerprint, not two, and the
@@ -1212,6 +1232,8 @@ fn resolve_leg(
         account_id,
         account_path: rendered,
         amount,
+        price,
+        cost,
         metadata: resolve_metadata(resolver, location_of(raw), &posting.metadata),
         tag_paths: posting.tags.clone(),
     })
@@ -1253,6 +1275,82 @@ fn canonicalise(commodities: &CommodityResolver, amount: Option<&Amount>) -> Can
     }
 }
 
+/// Rewrites a quote's commodity code to its registered spelling.
+///
+/// An unregistered code costs the quote, not the leg: the leg persists
+/// unpriced (so it weighs as its amount) and the diagnostic names the line.
+///
+/// # Arguments
+///
+/// * `commodities` - The registry snapshot to resolve against.
+/// * `what` - `"price"` or `"cost"`, for the diagnostic.
+/// * `quote` - The quote to canonicalise; `None` when the source stated none.
+/// * `raw` - The transaction the quote belongs to, for the diagnostic.
+///
+/// # Returns
+///
+/// The canonicalised quote, or `None` when there was none or its commodity
+/// could not be resolved.
+fn canonicalise_quote(
+    commodities: &CommodityResolver,
+    what: &str,
+    quote: Option<&Quote>,
+    raw: &RawTransaction,
+) -> Option<Quote> {
+    let stated = quote?;
+    match canonicalise(commodities, Some(stated.amount())) {
+        Canonical::Resolved(Some(amount)) => Some(match *stated {
+            Quote::PerUnit(_) => Quote::PerUnit(amount),
+            Quote::Total(_) => Quote::Total(amount),
+        }),
+        Canonical::Resolved(None) => None,
+        Canonical::Unregistered(code) => {
+            tracing::warn!(
+                location = location_of(raw),
+                commodity = code.as_str(),
+                "{what} names an unregistered commodity; dropping the {what}"
+            );
+            None
+        }
+        Canonical::Blank => {
+            tracing::warn!(
+                location = location_of(raw),
+                "{what} has a blank commodity code; dropping the {what}"
+            );
+            None
+        }
+    }
+}
+
+/// Rewrites a cost's basis commodity to its registered spelling, keeping the
+/// lot date and label.
+///
+/// # Arguments
+///
+/// * `commodities` - The registry snapshot to resolve against.
+/// * `cost` - The cost to canonicalise; `None` when the source stated none.
+/// * `raw` - The transaction the cost belongs to, for the diagnostic.
+///
+/// # Returns
+///
+/// The canonicalised cost, or `None` when there was none or its basis
+/// commodity could not be resolved (see [`canonicalise_quote`]).
+fn canonicalise_cost(
+    commodities: &CommodityResolver,
+    cost: Option<&Cost>,
+    raw: &RawTransaction,
+) -> Option<Cost> {
+    let stated = cost?;
+    let basis = canonicalise_quote(commodities, "cost", Some(stated.basis()), raw)?;
+    Some(
+        Cost::builder()
+            .basis(basis)
+            .maybe_date(stated.date())
+            .maybe_label(stated.label().map(str::to_owned))
+            .build(),
+    )
+}
+
 /// Step 3: claims an occurrence slot for every resolved leg.
 ///
 /// Slots are allocated per `(account, fingerprint)` across **all** legs of the
@@ -1282,6 +1380,8 @@ fn allocate_occurrences(rows: Vec<Vec<ResolvedLeg>>) -> Vec<Vec<LegPlan>> {
                         account_id: leg.account_id,
                         account_path: leg.account_path,
                         amount: leg.amount,
+                        price: leg.price,
+                        cost: leg.cost,
                         fingerprint: leg.fingerprint,
                         metadata: leg.metadata,
                         tag_paths: leg.tag_paths,
@@ -2661,6 +2761,7 @@ mod tests {
     use bc_models::AccountType;
     use bc_models::Amount;
     use bc_models::CommodityCode;
+    use bc_models::Quote;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rust_decimal::Decimal;
@@ -3515,7 +3616,8 @@ mod tests {
                 } => Some(commodity_code.as_str()),
                 Warning::PostingBeforeAccountOpened { .. }
                 | Warning::PostingAfterAccountClosed { .. }
-                | Warning::PostingIntoArchivedAccount { .. } => None,
+                | Warning::PostingIntoArchivedAccount { .. }
+                | Warning::QuoteInOwnCommodity { .. } => None,
             })
             .collect();
         codes.sort_unstable();
@@ -5500,6 +5602,124 @@ mod tests {
         let outcome = import_leg_with_balance(&pool, "Assets:Bank:Checking", ("AUD", "DOGE")).await;
         assert_eq!(outcome.unresolved_commodity_postings, 0);
         assert_eq!(outcome.new_transactions, 1);
+    }
+
+    /// A stated price survives the import and reaches the stored posting, so
+    /// the transaction balances by weight the way the source ledger did. USD
+    /// and AUD are both in the seeded default set, so neither needs registering.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_priced_leg_persists_its_quote_and_balances(pool: sqlx::SqlitePool) {
+        ensure_path(&pool, "Assets:Bank").await;
+        let software = ensure_path(&pool, "Expenses:Software").await;
+        let svcs = services(&pool).await;
+        let quote = Quote::Total(Amount::new(dec!(6.37), "AUD"));
+        let row = raw_with(
+            "SUBSCRIPTION",
+            vec![
+                coded_leg("Assets:Bank", dec!(-6.37), "AUD"),
+                RawPosting::builder()
+                    .account("Expenses:Software")
+                    .amount(Amount::new(dec!(4.00), "USD"))
+                    .price(quote.clone())
+                    .build(),
+            ],
+        );
+
+        let outcome = run(&svcs, &[row]).await;
+        assert_eq!(outcome.new_transactions, 1);
+        assert_eq!(outcome.skipped_postings, 0);
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+
+        let owner: TransactionId = owner_of_posting(&pool, &software)
+            .await
+            .parse()
+            .expect("owning transaction id");
+        let stored = svcs
+            .transactions
+            .find_by_id(&owner)
+            .await
+            .expect("stored transaction");
+        let leg = stored
+            .postings()
+            .iter()
+            .find(|p| *p.account_id() == software)
+            .expect("software leg");
+        assert_eq!(leg.price(), Some(&quote));
+        assert!(stored.balanced(), "{stored:?}");
+    }
+
+    /// An unregistered commodity on a quote costs the quote, not the leg: the
+    /// leg persists unpriced and weighs as its amount.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_unresolved_quote_commodity_drops_the_quote_not_the_leg(pool: sqlx::SqlitePool) {
+        ensure_path(&pool, "Assets:Bank").await;
+        let software = ensure_path(&pool, "Expenses:Software").await;
+        let svcs = services(&pool).await;
+        let row = raw_with(
+            "SUBSCRIPTION",
+            vec![
+                coded_leg("Assets:Bank", dec!(-4), "USD"),
+                RawPosting::builder()
+                    .account("Expenses:Software")
+                    .amount(Amount::new(dec!(4), "USD"))
+                    .price(Quote::Total(Amount::new(dec!(6.37), "DOGE")))
+                    .build(),
+            ],
+        );
+
+        let outcome = run(&svcs, &[row]).await;
+        assert_eq!(outcome.new_transactions, 1);
+        assert_eq!(outcome.unresolved_commodity_postings, 0);
+
+        let owner: TransactionId = owner_of_posting(&pool, &software)
+            .await
+            .parse()
+            .expect("owning transaction id");
+        let stored = svcs
+            .transactions
+            .find_by_id(&owner)
+            .await
+            .expect("stored transaction");
+        let leg = stored
+            .postings()
+            .iter()
+            .find(|p| *p.account_id() == software)
+            .expect("software leg");
+        assert_eq!(leg.price(), None);
+        assert!(stored.balanced(), "{stored:?}");
+    }
+
+    /// A quote in the leg's own commodity reaches the caller as one warning
+    /// per account, the same dedup the other keyed variants get.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_quote_in_the_legs_own_commodity_warns_once_per_account(pool: sqlx::SqlitePool) {
+        ensure_path(&pool, "Assets:Bank").await;
+        let fees = ensure_path(&pool, "Expenses:Fees").await;
+        let svcs = services(&pool).await;
+        let priced = |description: &str| {
+            raw_with(
+                description,
+                vec![
+                    coded_leg("Assets:Bank", dec!(-2606.20), "AUD"),
+                    RawPosting::builder()
+                        .account("Expenses:Fees")
+                        .amount(Amount::new(dec!(7.85), "AUD"))
+                        .price(Quote::PerUnit(Amount::new(dec!(332), "AUD")))
+                        .build(),
+                ],
+            )
+        };
+
+        let outcome = run(&svcs, &[priced("FEE ONE"), priced("FEE TWO")]).await;
+        assert_eq!(outcome.new_transactions, 2);
+        assert_eq!(
+            outcome.warnings,
+            vec![Warning::QuoteInOwnCommodity {
+                account_id: fees,
+                account_path: "Expenses:Fees".to_owned(),
+                commodity_code: "AUD".to_owned(),
+            }]
+        );
     }
 
     /// Reads the rendered paths of every tag attached to the single transaction.

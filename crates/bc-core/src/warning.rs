@@ -59,6 +59,19 @@ pub enum Warning {
         /// The account's colon-joined path, for display.
         account_path: String,
     },
+    /// A posting's price or cost is stated in the posting's own commodity.
+    ///
+    /// Beancount accepts `7.85 AUD @ 332 AUD` and weighs it as
+    /// `7.85 × 332 AUD`; the write does the same, so the residual matches the
+    /// ledger's. The shape is almost always a source error worth fixing.
+    QuoteInOwnCommodity {
+        /// The account holding the posting.
+        account_id: AccountId,
+        /// The account's colon-joined path, for display.
+        account_path: String,
+        /// The commodity both the amount and the quote use.
+        commodity_code: String,
+    },
 }
 
 impl std::fmt::Display for Warning {
@@ -93,6 +106,14 @@ impl std::fmt::Display for Warning {
             Self::PostingIntoArchivedAccount {
                 ref account_path, ..
             } => write!(f, "{account_path} is archived"),
+            Self::QuoteInOwnCommodity {
+                ref account_path,
+                ref commodity_code,
+                ..
+            } => write!(
+                f,
+                "{account_path} is priced in {commodity_code}, its own commodity"
+            ),
         }
     }
 }
@@ -232,6 +253,24 @@ pub(crate) async fn check_postings(
                 });
             }
         }
+
+        // The cost is checked when present, else the price — the same
+        // precedence as the weight, so the warning names the quote that is
+        // actually weighed.
+        if let Some(amount) = posting.amount() {
+            let own = amount.commodity();
+            let quote = posting
+                .cost()
+                .map(bc_models::Cost::basis)
+                .or(posting.price());
+            if quote.is_some_and(|q| q.commodity() == own) {
+                warnings.push(Warning::QuoteInOwnCommodity {
+                    account_id: account_id.clone(),
+                    account_path: guard.path.clone(),
+                    commodity_code: own.as_str().to_owned(),
+                });
+            }
+        }
     }
 
     Ok(warnings)
@@ -322,8 +361,10 @@ async fn load_allowed_codes(
 mod tests {
     use bc_models::Amount;
     use bc_models::CommodityCode;
+    use bc_models::Cost;
     use bc_models::Posting;
     use bc_models::PostingId;
+    use bc_models::Quote;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
@@ -588,6 +629,113 @@ mod tests {
             matches!(warnings[0], Warning::PostingIntoArchivedAccount { .. }),
             "{warnings:?}"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    async fn a_quote_in_the_legs_own_commodity_warns(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let id = accounts
+            .create()
+            .name("Fees")
+            .account_type(bc_models::AccountType::Expense)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+        let posting = Posting::builder()
+            .id(PostingId::new())
+            .account_id(id.clone())
+            .amount(Amount::new(dec!(7.85), "AUD"))
+            .price(Quote::PerUnit(Amount::new(dec!(332), "AUD")))
+            .build();
+
+        let mut conn = pool.acquire().await.expect("acquire");
+        let warnings = check_postings(&mut conn, date(2022, 3, 3), &[posting])
+            .await
+            .expect("check postings");
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(
+            warnings[0],
+            Warning::QuoteInOwnCommodity {
+                account_id: id,
+                account_path: "Fees".to_owned(),
+                commodity_code: "AUD".to_owned(),
+            }
+        );
+        assert_eq!(
+            warnings[0].to_string(),
+            "Fees is priced in AUD, its own commodity"
+        );
+    }
+
+    /// The cost is what the weight uses when both are stated, so it is the
+    /// cost, not the price, that the warning checks.
+    #[sqlx::test(migrations = "./migrations")]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    async fn a_cost_in_the_legs_own_commodity_warns(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let id = accounts
+            .create()
+            .name("Fees")
+            .account_type(bc_models::AccountType::Expense)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+        let posting = Posting::builder()
+            .id(PostingId::new())
+            .account_id(id.clone())
+            .amount(Amount::new(dec!(2), "USD"))
+            .cost(
+                Cost::builder()
+                    .basis(Quote::Total(Amount::new(dec!(3), "USD")))
+                    .build(),
+            )
+            .price(Quote::PerUnit(Amount::new(dec!(1.5), "AUD")))
+            .build();
+
+        let mut conn = pool.acquire().await.expect("acquire");
+        let warnings = check_postings(&mut conn, date(2022, 3, 3), &[posting])
+            .await
+            .expect("check postings");
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(
+            warnings[0],
+            Warning::QuoteInOwnCommodity {
+                account_id: id,
+                account_path: "Fees".to_owned(),
+                commodity_code: "USD".to_owned(),
+            }
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_quote_in_another_commodity_is_silent(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let id = accounts
+            .create()
+            .name("Fees")
+            .account_type(bc_models::AccountType::Expense)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("create account");
+        let posting = Posting::builder()
+            .id(PostingId::new())
+            .account_id(id)
+            .amount(Amount::new(dec!(4), "USD"))
+            .price(Quote::Total(Amount::new(dec!(6.37), "AUD")))
+            .build();
+
+        let mut conn = pool.acquire().await.expect("acquire");
+        let warnings = check_postings(&mut conn, date(2022, 3, 3), &[posting])
+            .await
+            .expect("check postings");
+
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[sqlx::test(migrations = "./migrations")]

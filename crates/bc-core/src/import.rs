@@ -14,8 +14,10 @@ pub(crate) mod profile;
 pub(crate) mod registry;
 
 use bc_models::Amount;
+use bc_models::Cost;
 use bc_models::MetaKey;
 use bc_models::MetaValue;
+use bc_models::Quote;
 use jiff::civil::Date;
 
 /// A metadata value an importer stated, prior to account resolution.
@@ -99,6 +101,10 @@ pub struct RawPosting {
     pub amount: Option<Amount>,
     /// Per-account running balance after this leg, if the source reports it.
     pub balance: Option<Amount>,
+    /// Price annotation as the source stated it (`@` per unit, `@@` total).
+    pub price: Option<Quote>,
+    /// Cost basis as the source stated it (`{}` per unit, `{{}}` total).
+    pub cost: Option<Cost>,
     /// Tag names applied to this leg.
     #[builder(default)]
     pub tags: Vec<String>,
