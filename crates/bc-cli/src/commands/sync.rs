@@ -11,6 +11,7 @@ use std::path::Path;
 
 use crate::commands::import::PlanReport;
 use crate::commands::import::Report;
+use crate::commands::import::failure_error;
 use crate::commands::import::plural;
 use crate::context::AppContext;
 use crate::error::CliError;
@@ -51,8 +52,14 @@ pub struct Args {
 /// be written, or — after the report has printed — any profile failed, or
 /// under `--dry-run` any profile has a blocker. Committed batches stay
 /// committed either way; the report names the snapshot and each batch id.
+///
+/// A single profile's failure is the same error `import run` returns for
+/// it, so an engine-stage error keeps its exit code under either command.
+/// A sweep's failures share one exit code: several profiles have no single
+/// error to forward.
 #[inline]
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
+    let single = args.profile.is_some();
     let selection = match args.profile {
         Some(name) => bc_core::ImportSelection::One(name),
         None => bc_core::ImportSelection::All,
@@ -76,7 +83,16 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         }
     }
 
-    summary.exit_error().map_or(Ok(()), Err)
+    let exit = summary.exit_error();
+    if single
+        && let Some(bc_core::ProfileResult {
+            result: Err(failure),
+            ..
+        }) = report.profiles.into_iter().next()
+    {
+        return Err(failure_error(failure));
+    }
+    exit.map_or(Ok(()), Err)
 }
 
 /// One profile's line in the human report.
@@ -115,12 +131,14 @@ enum RowOutcome {
         /// Each blocker's label and its items.
         blockers: Vec<(String, Vec<String>)>,
     },
-    /// The profile produced nothing.
+    /// The profile produced nothing, or stopped part-way through.
     Failed {
         /// The stage label.
         stage: String,
         /// The failure message.
         message: String,
+        /// The batch a stopped run left open, for `import discard`.
+        batch: Option<String>,
     },
 }
 
@@ -159,12 +177,14 @@ impl From<&Result<bc_core::ProfileRun, bc_core::ProfileFailure>> for RowOutcome 
             Ok(other) => Self::Failed {
                 stage: "engine".to_owned(),
                 message: format!("unexpected engine result: {other:?}"),
+                batch: None,
             },
             // The stage label already names the layer, so the row carries
             // the bare message and not `Display`'s `import error: ` prefix.
             Err(failure) => Self::Failed {
                 stage: failure.stage.label().to_owned(),
                 message: failure.message.clone(),
+                batch: failure.batch_id.as_ref().map(ToString::to_string),
             },
         }
     }
@@ -296,12 +316,21 @@ impl Summary {
                         }
                     }
                 }
-                RowOutcome::Failed { stage, message } => {
+                RowOutcome::Failed {
+                    stage,
+                    message,
+                    batch,
+                } => {
                     let dash = format!("{:>num_width$}", "—");
                     lines.push(format!(
                         "{:<name_width$}  {dash}  {dash}  {dash}  {dash}  failed ({stage}): {message}",
                         row.profile
                     ));
+                    if let Some(open) = batch {
+                        lines.push(format!(
+                            "    batch {open} left open; `import discard {open}` undoes it"
+                        ));
+                    }
                 }
             }
         }
@@ -386,6 +415,7 @@ pub(crate) fn to_json(report: &bc_core::SyncReport, dry_run: bool) -> serde_json
                         serde_json::json!({
                             "stage": "engine",
                             "message": format!("unexpected engine result: {other:?}"),
+                            "batch": serde_json::Value::Null,
                         }),
                     );
                 }
@@ -395,6 +425,7 @@ pub(crate) fn to_json(report: &bc_core::SyncReport, dry_run: bool) -> serde_json
                         serde_json::json!({
                             "stage": failure.stage.label(),
                             "message": failure.message,
+                            "batch": failure.batch_id.as_ref().map(ToString::to_string),
                         }),
                     );
                 }
@@ -468,6 +499,19 @@ mod tests {
             outcome: RowOutcome::Failed {
                 stage: stage.to_owned(),
                 message: message.to_owned(),
+                batch: None,
+            },
+        }
+    }
+
+    /// A run that stopped after opening its batch.
+    fn stopped(name: &str, message: &str, batch: &str) -> Row {
+        Row {
+            profile: name.to_owned(),
+            outcome: RowOutcome::Failed {
+                stage: "engine".to_owned(),
+                message: message.to_owned(),
+                batch: Some(batch.to_owned()),
             },
         }
     }
@@ -508,10 +552,31 @@ mod tests {
         assert!(
             matches!(
                 &outcome,
-                RowOutcome::Failed { stage, message }
+                RowOutcome::Failed { stage, message, batch: None }
                     if stage == "importer" && message == "no such file: nab.csv"
             ),
             "the stage label names the layer; the message must not repeat it"
+        );
+    }
+
+    #[test]
+    fn a_stopped_run_renders_the_batch_it_left_open() {
+        let summary = Summary::new(
+            vec![
+                imported("nab-credit", 88, 0, 0),
+                stopped(
+                    "ubank-everyday",
+                    "database error: disk full",
+                    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                ),
+            ],
+            None,
+            false,
+        );
+        insta::assert_snapshot!(summary.render());
+        assert_eq!(
+            summary.exit_error().map(|e| e.to_string()),
+            Some("1 profile failed".to_owned())
         );
     }
 

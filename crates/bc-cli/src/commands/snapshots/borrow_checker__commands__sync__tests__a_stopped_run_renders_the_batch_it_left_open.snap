@@ -1,0 +1,10 @@
+---
+source: crates/bc-cli/src/commands/sync.rs
+expression: summary.render()
+---
+profile             txns  attached   skipped  warnings  batch
+nab-credit            88         0         0         0  01ARZ3NDEKTSV4RRFFQ69G5FAV
+ubank-everyday         —         —         —         —  failed (engine): database error: disk full
+    batch 01ARZ3NDEKTSV4RRFFQ69G5FAV left open; `import discard 01ARZ3NDEKTSV4RRFFQ69G5FAV` undoes it
+
+2 profiles, 1 failed. 88 transactions imported, 0 postings skipped.

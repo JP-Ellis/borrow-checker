@@ -88,11 +88,24 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
         .engine
         .sync(bc_core::ImportSelection::One(args.profile), mode)
         .await?;
+    // `Selection::One` yields exactly one result once the lookup succeeds;
+    // the guard only keeps the invariant out of `expect`.
     let result =
         sync_report.profiles.into_iter().next().ok_or_else(|| {
             crate::error::CliError::Arg("the engine returned no profile".to_owned())
         })?;
-    let run = result.result.map_err(failure_error)?;
+    let run = match result.result {
+        Ok(run) => run,
+        Err(failure) => {
+            if let Some(batch) = &failure.batch_id {
+                #[expect(clippy::print_stderr, reason = "CLI output")]
+                {
+                    eprintln!("batch {batch} left open; `import discard {batch}` undoes it");
+                }
+            }
+            return Err(failure_error(failure));
+        }
+    };
 
     match run {
         bc_core::ProfileRun::Planned(plan) => {
@@ -128,7 +141,8 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
     }
 }
 
-/// Maps a profile's failure to the CLI error `import run` exits with.
+/// Maps a profile's failure to the CLI error `import run` and
+/// `sync --profile` exit with.
 ///
 /// An engine-stage failure keeps its [`bc_core::BcError`], so the exit code
 /// stays the one `main` assigns that error (2 for a missing entity, and so
@@ -136,7 +150,7 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
 /// by then, so the `Arc` is unique and the error comes back out. The
 /// fallback renders the failure as an argument error, exactly as the
 /// importer and unknown-importer stages always do.
-fn failure_error(failure: bc_core::ProfileFailure) -> crate::error::CliError {
+pub(crate) fn failure_error(failure: bc_core::ProfileFailure) -> crate::error::CliError {
     let message = failure.to_string();
     match failure.source.map(std::sync::Arc::try_unwrap) {
         Some(Ok(error)) => crate::error::CliError::Core(error),
@@ -2046,6 +2060,113 @@ mod tests {
         assert_eq!(
             profile_object.get("ok"),
             Some(&serde_json::Value::Bool(true))
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_over_one_profile_returns_the_engine_error_itself() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, _backup_dir) = context_in(home.path(), false).await;
+        // Failing the batch close stops the run at the engine stage, after
+        // the batch opened. A second handle on the same file plants the
+        // trigger; the context's own pool is not reachable from here.
+        let side = bc_core::open_db_at(&ctx.db_path).await.expect("open");
+        sqlx::query(
+            "CREATE TRIGGER stop_close BEFORE UPDATE OF finished_at ON import_batches \
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END",
+        )
+        .execute(&side)
+        .await
+        .expect("create trigger");
+
+        let error = sync::execute(
+            sync::Args {
+                profile: Some("nightly".to_owned()),
+                all: false,
+                dry_run: false,
+            },
+            &ctx,
+        )
+        .await
+        .expect_err("the close failed");
+
+        assert!(
+            matches!(
+                error,
+                crate::error::CliError::Core(bc_core::BcError::Database(_))
+            ),
+            "one profile's engine error is the command's error, as under `import run`: {error:?}"
+        );
+        let open = ctx.batches.list().await.expect("list");
+        assert_eq!(open.len(), 1, "the batch stays open for `import discard`");
+    }
+
+    #[tokio::test]
+    async fn import_run_that_stops_after_opening_keeps_the_batch_and_the_error() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, _backup_dir) = context_in(home.path(), false).await;
+        let side = bc_core::open_db_at(&ctx.db_path).await.expect("open");
+        sqlx::query(
+            "CREATE TRIGGER stop_close BEFORE UPDATE OF finished_at ON import_batches \
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END",
+        )
+        .execute(&side)
+        .await
+        .expect("create trigger");
+
+        let error = super::execute_run(
+            super::RunArgs {
+                profile: "nightly".to_owned(),
+                dry_run: false,
+            },
+            &ctx,
+        )
+        .await
+        .expect_err("the close failed");
+
+        assert!(
+            matches!(
+                error,
+                crate::error::CliError::Core(bc_core::BcError::Database(_))
+            ),
+            "the engine error keeps its exit code: {error:?}"
+        );
+        let open = ctx.batches.list().await.expect("list");
+        assert_eq!(open.len(), 1, "the batch stays open for `import discard`");
+        assert!(
+            open.first()
+                .is_some_and(|batch| batch.finished_at.is_none()),
+            "and is still marked open"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_over_every_profile_reports_failures_as_one_error() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, _backup_dir) = context_in(home.path(), false).await;
+        let side = bc_core::open_db_at(&ctx.db_path).await.expect("open");
+        sqlx::query(
+            "CREATE TRIGGER stop_close BEFORE UPDATE OF finished_at ON import_batches \
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END",
+        )
+        .execute(&side)
+        .await
+        .expect("create trigger");
+
+        let error = sync::execute(
+            sync::Args {
+                profile: None,
+                all: true,
+                dry_run: false,
+            },
+            &ctx,
+        )
+        .await
+        .expect_err("the close failed");
+
+        assert!(
+            matches!(&error, crate::error::CliError::Arg(message) if message == "1 profile failed"),
+            "a sweep has no single error to forward: {error:?}"
         );
     }
 
