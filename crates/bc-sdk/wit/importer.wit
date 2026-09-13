@@ -25,11 +25,12 @@ interface types {
     ///
     /// Beancount's `@ 332 AUD` is per-unit and `@@ 6.37 AUD` is total; a cost
     /// basis uses the same pair as `{105 AUD}` and `{{210 AUD}}`. The form is
-    /// carried as stated: a total has no exact per-unit form in general.
+    /// carried as stated: a total has no exact per-unit form in general. Both
+    /// forms are stated without sign; the host rejects a negative figure.
     variant quote {
         /// One unit of the posting's amount is worth this much.
         per-unit(amount),
-        /// The whole posting is worth this much. Stated without sign.
+        /// The whole posting is worth this much.
         total(amount),
     }
 

@@ -135,14 +135,14 @@ impl Amount {
 /// Beancount's `@ 332 AUD` is per-unit and `@@ 6.37 AUD` is total; a cost
 /// basis uses the same pair as `{105 AUD}` and `{{210 AUD}}`. Carry the form
 /// the source stated: a total has no exact per-unit form in general, and the
-/// host weighs either form exactly.
+/// host weighs either form exactly. Both forms are stated without sign; the
+/// host rejects a negative figure.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Quote {
     /// One unit of the posting's amount is worth this much.
     PerUnit(Amount),
-    /// The whole posting is worth this much. Stated without sign; the host
-    /// gives it the sign of the posting's amount.
+    /// The whole posting is worth this much.
     Total(Amount),
 }
 
