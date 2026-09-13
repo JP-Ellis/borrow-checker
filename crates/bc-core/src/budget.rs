@@ -1910,8 +1910,11 @@ mod elided_actuals_tests {
 
     use super::BudgetService;
     use super::BudgetStatusEngine;
+    use super::expand_posting_rows;
+    use crate::BcError;
     use crate::account::Service as AccountService;
     use crate::fx::noop_fx;
+    use crate::residual::Residuals;
 
     /// One leg of a fixture transaction: posting id, account, and `None` for an elided amount.
     type Leg<'a> = (&'a str, &'a AccountId, Option<(&'a str, &'a str)>);
@@ -2248,5 +2251,43 @@ mod elided_actuals_tests {
             .expect("status");
 
         assert_eq!(status.actuals, dec!(80.00));
+    }
+
+    #[test]
+    fn half_null_row_is_bad_data() {
+        let amount_without_commodity =
+            expand_posting_rows(vec![("p1".into(), Some("1.00".into()), None)], None);
+        let err = amount_without_commodity.expect_err("half-null row must be rejected");
+        assert!(matches!(err, BcError::BadData(_)), "{err:?}");
+
+        let commodity_without_amount =
+            expand_posting_rows(vec![("p1".into(), None, Some("AUD".into()))], None);
+        let other_err = commodity_without_amount.expect_err("half-null row must be rejected");
+        assert!(matches!(other_err, BcError::BadData(_)), "{other_err:?}");
+    }
+
+    #[test]
+    fn elided_row_without_loaded_residuals_is_bad_data() {
+        let result = expand_posting_rows(vec![("p1".into(), None, None)], None);
+        let err = result.expect_err("elided row with no residual load must be rejected");
+        assert!(matches!(err, BcError::BadData(_)), "{err:?}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn elided_row_outside_residual_scope_is_bad_data(pool: SqlitePool) {
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let residuals = Residuals::for_subtree_in_range(
+            &pool,
+            &food,
+            Date::constant(2026, 3, 1),
+            Date::constant(2026, 4, 1),
+        )
+        .await
+        .expect("load residuals");
+
+        let result = expand_posting_rows(vec![("p1".into(), None, None)], Some(&residuals));
+
+        let err = result.expect_err("posting outside the loaded scope must be rejected");
+        assert!(matches!(err, BcError::BadData(_)), "{err:?}");
     }
 }
