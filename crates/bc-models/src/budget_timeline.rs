@@ -3,6 +3,8 @@
 use jiff::civil::Date;
 
 use crate::BudgetRevision;
+use crate::Period;
+use crate::RolloverPolicy;
 
 /// A budget period resolved against a revision timeline.
 ///
@@ -170,6 +172,52 @@ pub fn periods_overlapping<'a>(
     out
 }
 
+/// Returns the start of the earliest period whose surplus can carry into the
+/// period beginning at `period_start`.
+///
+/// Walks resolved periods backward from `period_start`. A prior period joins
+/// the chain while the period it feeds neither resets nor has a
+/// [`Period::Custom`] grid, and while its own revision does not reset. The
+/// walk ends at the first period that fails either rule.
+///
+/// # Arguments
+///
+/// * `revisions` - Revisions sorted ascending by `effective_from`.
+/// * `period_start` - Start of the destination period.
+///
+/// # Returns
+///
+/// `None` when no carry reaches `period_start`: the destination resets, has a
+/// `Custom` period, is the first period of the timeline, or is preceded by a
+/// resetting period. Rollover is zero in every such case.
+#[must_use]
+#[inline]
+pub fn carry_chain_start(revisions: &[BudgetRevision], period_start: Date) -> Option<Date> {
+    let dst = governing_revision(revisions, period_start)?;
+    if !carries(dst) || matches!(dst.period(), Period::Custom { .. }) {
+        return None;
+    }
+    let earliest = revisions.first()?.effective_from();
+    let prior = periods_overlapping(revisions, earliest, period_start);
+    let mut chain_start = None;
+    for prev in prior.iter().rev().filter(|p| p.end <= period_start) {
+        if !carries(prev.revision) {
+            break;
+        }
+        chain_start = Some(prev.start);
+        // A Custom period accepts no carry, so nothing before it reaches here.
+        if matches!(prev.revision.period(), Period::Custom { .. }) {
+            break;
+        }
+    }
+    chain_start
+}
+
+/// Whether `rev`'s policy passes a surplus on (anything but `ResetToZero`).
+fn carries(rev: &BudgetRevision) -> bool {
+    !matches!(rev.rollover(), RolloverPolicy::ResetToZero)
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -192,6 +240,20 @@ mod tests {
             .rollover(RolloverPolicy::ResetToZero)
             .created_at(Timestamp::now())
             .build()
+    }
+
+    fn rev_with(eff: Date, period: Period, rollover: RolloverPolicy) -> BudgetRevision {
+        BudgetRevision::builder()
+            .budget_id(BudgetId::new())
+            .effective_from(eff)
+            .period(period)
+            .rollover(rollover)
+            .created_at(Timestamp::now())
+            .build()
+    }
+
+    fn ten_days() -> Period {
+        Period::custom(Some(10), None, None).expect("ten days is a valid custom period")
     }
 
     #[test]
@@ -341,6 +403,126 @@ mod tests {
         assert_eq!(
             snap_to_grid_boundary(&revs, date(2026, 1, 22), Some(&r2_id)),
             date(2026, 1, 26)
+        );
+    }
+
+    #[test]
+    fn chain_start_is_none_without_revisions() {
+        assert_eq!(carry_chain_start(&[], date(2026, 6, 1)), None);
+    }
+
+    #[test]
+    fn chain_start_is_none_when_the_destination_resets() {
+        let revs = vec![rev_with(
+            date(2026, 1, 1),
+            Period::Monthly,
+            RolloverPolicy::ResetToZero,
+        )];
+        assert_eq!(carry_chain_start(&revs, date(2026, 4, 1)), None);
+    }
+
+    #[test]
+    fn chain_start_is_none_for_the_first_period() {
+        let revs = vec![rev_with(
+            date(2026, 1, 1),
+            Period::Monthly,
+            RolloverPolicy::CarryForward,
+        )];
+        assert_eq!(carry_chain_start(&revs, date(2026, 1, 1)), None);
+    }
+
+    #[test]
+    fn single_carrying_reign_chains_back_to_effective_from() {
+        let revs = vec![rev_with(
+            date(2026, 1, 1),
+            Period::Monthly,
+            RolloverPolicy::CarryForward,
+        )];
+        assert_eq!(
+            carry_chain_start(&revs, date(2026, 6, 1)),
+            Some(date(2026, 1, 1))
+        );
+    }
+
+    #[test]
+    fn resetting_reign_mid_chain_cuts_at_its_end() {
+        // Jan–Mar reset; Apr onward carries. Rollover into July reaches back
+        // through June, May and April, and stops at March's resetting reign.
+        let revs = vec![
+            rev_with(
+                date(2026, 1, 1),
+                Period::Monthly,
+                RolloverPolicy::ResetToZero,
+            ),
+            rev_with(
+                date(2026, 4, 1),
+                Period::Monthly,
+                RolloverPolicy::CarryForward,
+            ),
+        ];
+        assert_eq!(
+            carry_chain_start(&revs, date(2026, 7, 1)),
+            Some(date(2026, 4, 1))
+        );
+    }
+
+    #[test]
+    fn resetting_source_immediately_before_yields_none() {
+        // Both-sides rule: April carries, but March (the source) resets.
+        let revs = vec![
+            rev_with(
+                date(2026, 1, 1),
+                Period::Monthly,
+                RolloverPolicy::ResetToZero,
+            ),
+            rev_with(
+                date(2026, 4, 1),
+                Period::Monthly,
+                RolloverPolicy::CarryForward,
+            ),
+        ];
+        assert_eq!(carry_chain_start(&revs, date(2026, 4, 1)), None);
+    }
+
+    #[test]
+    fn custom_destination_has_no_chain() {
+        let revs = vec![rev_with(
+            date(2026, 1, 1),
+            ten_days(),
+            RolloverPolicy::CarryForward,
+        )];
+        assert_eq!(carry_chain_start(&revs, date(2026, 1, 21)), None);
+    }
+
+    #[test]
+    fn custom_source_is_the_last_link_in_the_chain() {
+        // Ten-day custom periods from Jan 1 tile [1,11) [11,21) [21,31) and a
+        // stub [31, Feb 1). The stub feeds February; nothing feeds the stub,
+        // because a Custom destination takes no carry.
+        let revs = vec![
+            rev_with(date(2026, 1, 1), ten_days(), RolloverPolicy::CarryForward),
+            rev_with(
+                date(2026, 2, 1),
+                Period::Monthly,
+                RolloverPolicy::CarryForward,
+            ),
+        ];
+        assert_eq!(
+            carry_chain_start(&revs, date(2026, 4, 1)),
+            Some(date(2026, 1, 31))
+        );
+    }
+
+    #[test]
+    fn cap_at_target_counts_as_carrying() {
+        let revs = vec![rev_with(
+            date(2026, 1, 1),
+            Period::Monthly,
+            RolloverPolicy::CapAtTarget,
+        )];
+        assert_eq!(
+            carry_chain_start(&revs, date(2026, 3, 1)),
+            Some(date(2026, 1, 1))
         );
     }
 }
