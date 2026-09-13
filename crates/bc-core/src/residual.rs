@@ -173,6 +173,17 @@ const ELIDED_BY_ACCOUNT: &str = "AND e.account_id = ?1";
 /// Elided-leg predicate scoping the load to one account and a half-open date window.
 const ELIDED_BY_ACCOUNT_IN_RANGE: &str = "AND e.account_id = ?1 AND e.date >= ?2 AND e.date < ?3";
 
+/// Elided-leg predicate scoping the load to an account subtree and a half-open date window.
+///
+/// `?1` is the subtree root. The CTE mirrors `acct_tree` in `budget.rs`, so a
+/// budget's residual load covers exactly the accounts its actuals query does.
+const ELIDED_BY_SUBTREE_IN_RANGE: &str = "AND e.account_id IN ( \
+    WITH RECURSIVE acct_tree(id) AS ( \
+        SELECT ?1 UNION ALL \
+        SELECT a.id FROM accounts a INNER JOIN acct_tree ON a.parent_id = acct_tree.id \
+    ) SELECT id FROM acct_tree) \
+    AND e.date >= ?2 AND e.date < ?3";
+
 /// Elided-leg predicate for the whole-ledger load, which restricts nothing.
 const ELIDED_ALL_ACCOUNTS: &str = "";
 
@@ -286,6 +297,54 @@ impl Residuals {
         let sql = residual_sql(ELIDED_BY_ACCOUNT_IN_RANGE);
         let rows: Vec<ResidualRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(account_id.to_string())
+            .bind(from.to_string())
+            .bind(to.to_string())
+            .fetch_all(executor)
+            .await?;
+
+        Self::from_rows(rows)
+    }
+
+    /// Loads residuals for elided postings anywhere under `root`, dated in `[from, to)`.
+    ///
+    /// The subtree is `root` and every descendant account. As with
+    /// [`Self::for_account_in_range`], the bound restricts which transactions are
+    /// resolved while every leg of each resolved transaction is loaded, so the
+    /// ambiguous two-or-more-elided case is still detected.
+    ///
+    /// # Arguments
+    ///
+    /// * `executor` - Connection, pool, or transaction to query on. Pass the same
+    ///   transaction used to select the elided posting ids, so both describe one
+    ///   snapshot.
+    /// * `root` - Root of the account subtree whose elided postings to resolve.
+    /// * `from` - Inclusive lower bound on the transaction date.
+    /// * `to` - Exclusive upper bound on the transaction date.
+    ///
+    /// # Returns
+    ///
+    /// The residuals, empty if the subtree holds no elided postings in the window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if
+    /// a stored amount cannot be parsed or a total overflows.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired into budget actuals in the next commit")
+    )]
+    pub(crate) async fn for_subtree_in_range<'e, E>(
+        executor: E,
+        root: &AccountId,
+        from: jiff::civil::Date,
+        to: jiff::civil::Date,
+    ) -> BcResult<Self>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        let sql = residual_sql(ELIDED_BY_SUBTREE_IN_RANGE);
+        let rows: Vec<ResidualRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(root.to_string())
             .bind(from.to_string())
             .bind(to.to_string())
             .fetch_all(executor)
@@ -480,6 +539,34 @@ impl Residuals {
             )));
         }
         Ok(self.entries.get(posting_id).and_then(|b| b.get(commodity)))
+    }
+
+    /// Returns every commodity component of `posting_id`'s residual.
+    ///
+    /// # Arguments
+    ///
+    /// * `posting_id` - Id of the elided posting.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(None)` when the posting's transaction was ambiguous, so it holds no
+    /// residual.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if `posting_id` was not covered by this load,
+    /// for the same reason [`Self::component`] does.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired into budget actuals in the next commit")
+    )]
+    pub(crate) fn residual(&self, posting_id: &str) -> BcResult<Option<&Balances>> {
+        if !self.seen.contains(posting_id) {
+            return Err(BcError::BadData(format!(
+                "residual scope error: posting '{posting_id}' was not covered by this load"
+            )));
+        }
+        Ok(self.entries.get(posting_id))
     }
 
     /// Iterates every account holding a residual, with its aggregated balances.
@@ -1305,6 +1392,198 @@ mod tests {
         assert!(
             residuals.component("p_bank_hi", "AUD").is_err(),
             "the upper bound must be exclusive"
+        );
+    }
+
+    /// Creates a child account under `parent` and returns its id.
+    async fn make_child_account(
+        pool: &sqlx::SqlitePool,
+        name: &str,
+        account_type: AccountType,
+        parent: &bc_models::AccountId,
+    ) -> bc_models::AccountId {
+        crate::account::Service::new(pool.clone())
+            .create()
+            .name(name)
+            .account_type(account_type)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(parent)
+            .call()
+            .await
+            .expect("create child account")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn subtree_load_resolves_a_grandchild_elided_leg(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let expenses = make_account(&pool, "Expenses", AccountType::Expense).await;
+        let food = make_child_account(&pool, "Food", AccountType::Expense, &expenses).await;
+        let cafes = make_child_account(&pool, "Cafes", AccountType::Expense, &food).await;
+        insert_tx(&pool, "tx_s1", "2026-03-10").await;
+        insert_posting(
+            &pool,
+            "p_bank",
+            "tx_s1",
+            &bank.to_string(),
+            Some("-12.50"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(&pool, "p_cafes", "tx_s1", &cafes.to_string(), None, None, 1).await;
+
+        let residuals = Residuals::for_subtree_in_range(
+            &pool,
+            &expenses,
+            jiff::civil::date(2026, 3, 1),
+            jiff::civil::date(2026, 4, 1),
+        )
+        .await
+        .expect("load");
+
+        let balances = residuals
+            .residual("p_cafes")
+            .expect("in scope")
+            .expect("attributable");
+        assert_eq!(balances.get("AUD"), Some(dec!(12.50)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn subtree_load_skips_a_sibling_subtree(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        let rent = make_account(&pool, "Rent", AccountType::Expense).await;
+        insert_tx(&pool, "tx_s2", "2026-03-10").await;
+        insert_posting(
+            &pool,
+            "p_bank",
+            "tx_s2",
+            &bank.to_string(),
+            Some("-900.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(&pool, "p_rent", "tx_s2", &rent.to_string(), None, None, 1).await;
+
+        let residuals = Residuals::for_subtree_in_range(
+            &pool,
+            &food,
+            jiff::civil::date(2026, 3, 1),
+            jiff::civil::date(2026, 4, 1),
+        )
+        .await
+        .expect("load");
+
+        assert!(
+            residuals.residual("p_rent").is_err(),
+            "a posting outside the subtree must be out of scope, not merely zero"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn subtree_load_respects_the_half_open_window(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        insert_tx(&pool, "tx_in", "2026-03-31").await;
+        insert_posting(
+            &pool,
+            "p_bank_in",
+            "tx_in",
+            &bank.to_string(),
+            Some("-1.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(
+            &pool,
+            "p_food_in",
+            "tx_in",
+            &food.to_string(),
+            None,
+            None,
+            1,
+        )
+        .await;
+        insert_tx(&pool, "tx_out", "2026-04-01").await;
+        insert_posting(
+            &pool,
+            "p_bank_out",
+            "tx_out",
+            &bank.to_string(),
+            Some("-2.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(
+            &pool,
+            "p_food_out",
+            "tx_out",
+            &food.to_string(),
+            None,
+            None,
+            1,
+        )
+        .await;
+
+        let residuals = Residuals::for_subtree_in_range(
+            &pool,
+            &food,
+            jiff::civil::date(2026, 3, 1),
+            jiff::civil::date(2026, 4, 1),
+        )
+        .await
+        .expect("load");
+
+        assert!(residuals.residual("p_food_in").expect("in scope").is_some());
+        assert!(
+            residuals.residual("p_food_out").is_err(),
+            "the upper bound must be exclusive"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn residual_returns_none_for_an_ambiguous_posting_in_scope(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        let fun = make_account(&pool, "Fun", AccountType::Expense).await;
+        insert_tx(&pool, "tx_amb", "2026-03-10").await;
+        insert_posting(
+            &pool,
+            "p_bank",
+            "tx_amb",
+            &bank.to_string(),
+            Some("-50.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(&pool, "p_food", "tx_amb", &food.to_string(), None, None, 1).await;
+        insert_posting(&pool, "p_fun", "tx_amb", &fun.to_string(), None, None, 2).await;
+
+        let residuals = Residuals::for_subtree_in_range(
+            &pool,
+            &food,
+            jiff::civil::date(2026, 3, 1),
+            jiff::civil::date(2026, 4, 1),
+        )
+        .await
+        .expect("load");
+
+        assert_eq!(residuals.residual("p_food").expect("in scope"), None);
+    }
+
+    /// The subtree-scoped load must drive `postings` by index, like the account-scoped one.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn subtree_scoped_residual_load_uses_an_index(pool: sqlx::SqlitePool) {
+        let plan = query_plan(&pool, &residual_sql(ELIDED_BY_SUBTREE_IN_RANGE)).await;
+
+        let joined = plan.join("\n");
+        assert!(
+            !joined.contains("SCAN e"),
+            "subtree-scoped residual load full-scans postings:\n{joined}"
         );
     }
 
