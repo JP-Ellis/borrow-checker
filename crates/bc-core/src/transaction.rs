@@ -8,6 +8,7 @@ use bc_models::CommodityCode;
 use bc_models::Cost;
 use bc_models::Posting;
 use bc_models::PostingId;
+use bc_models::Quote;
 use bc_models::Reconciliation;
 use bc_models::TagId;
 use bc_models::Transaction;
@@ -452,7 +453,7 @@ fn parse_cost(
         .transpose()?;
     Ok(Some(
         Cost::builder()
-            .total(total)
+            .basis(Quote::Total(total))
             .maybe_date(date)
             .maybe_label(cost_label)
             .build(),
@@ -2246,8 +2247,8 @@ async fn insert_posting_row(
 ) -> BcResult<()> {
     let (cost_value, cost_commodity, cost_date, cost_label) = if let Some(cost) = posting.cost() {
         (
-            Some(cost.total().value().to_string()),
-            Some(cost.total().commodity().as_str().to_owned()),
+            Some(cost.basis().amount().value().to_string()),
+            Some(cost.basis().amount().commodity().as_str().to_owned()),
             cost.date().map(|d| d.to_string()),
             cost.label().map(str::to_owned),
         )
@@ -2302,6 +2303,7 @@ mod tests {
     use bc_models::Metadata;
     use bc_models::Posting;
     use bc_models::PostingId;
+    use bc_models::Quote;
     use bc_models::Reconciliation;
     use bc_models::TagId;
     use bc_models::Transaction;
@@ -2862,7 +2864,7 @@ mod tests {
             .expect("create Cash account should succeed");
 
         let cost = Cost::builder()
-            .total(Amount::new(dec!(1500.00), CommodityCode::new("AUD")))
+            .basis(Quote::Total(Amount::new(dec!(1500.00), "AUD")))
             .label("lot-1")
             .build();
 
@@ -2897,8 +2899,8 @@ mod tests {
             .first()
             .expect("first posting should exist");
         let loaded_cost = first_posting.cost().expect("cost should be present");
-        assert_eq!(loaded_cost.total().value(), dec!(1500.00));
-        assert_eq!(loaded_cost.total().commodity().as_str(), "AUD");
+        assert_eq!(loaded_cost.basis().amount().value(), dec!(1500.00));
+        assert_eq!(loaded_cost.basis().amount().commodity().as_str(), "AUD");
         assert_eq!(loaded_cost.label(), Some("lot-1"));
     }
 
@@ -4447,7 +4449,7 @@ mod tests {
         let svc = Service::new(pool.clone());
 
         let cost = Cost::builder()
-            .total(Amount::new(dec!(1500.00), CommodityCode::new("AUD")))
+            .basis(Quote::Total(Amount::new(dec!(1500.00), "AUD")))
             .label("lot-1")
             .build();
         let posting_with_cost_id = PostingId::new();
@@ -4505,7 +4507,7 @@ mod tests {
             .find(|p| p.id() == &posting_with_cost_id)
             .expect("posting with cost must still exist");
         let saved_cost = cost_posting.cost().expect("cost must survive edit");
-        assert_eq!(saved_cost.total().value(), dec!(1500.00));
+        assert_eq!(saved_cost.basis().amount().value(), dec!(1500.00));
         assert_eq!(saved_cost.label(), Some("lot-1"));
     }
 
