@@ -2007,4 +2007,240 @@ mod elided_actuals_tests {
         assert_eq!(status.actuals, dec!(50.00));
         assert_eq!(status.available, dec!(150.00));
     }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn elided_leg_on_a_child_account_counts_toward_the_parent_budget(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let cafes = account(&pool, "Cafes", AccountType::Expense, Some(&food)).await;
+        let budget = monthly_budget(&pool, &food, None).await;
+        insert_tx(
+            &pool,
+            "tx_c1",
+            "2026-03-10",
+            &[
+                ("p_bank", &bank, Some(("-4.50", "AUD"))),
+                ("p_cafes", &cafes, None),
+            ],
+        )
+        .await;
+
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(status.actuals, dec!(4.50));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn two_elided_legs_contribute_nothing_without_error(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let fun = account(&pool, "Fun", AccountType::Expense, None).await;
+        let budget = monthly_budget(&pool, &food, None).await;
+        insert_tx(
+            &pool,
+            "tx_amb",
+            "2026-03-10",
+            &[
+                ("p_bank", &bank, Some(("-50.00", "AUD"))),
+                ("p_food", &food, None),
+                ("p_fun", &fun, None),
+            ],
+        )
+        .await;
+
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(status.actuals, dec!(0));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn concrete_and_elided_legs_sum_together(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let budget = monthly_budget(&pool, &food, None).await;
+        insert_tx(
+            &pool,
+            "tx_concrete",
+            "2026-03-02",
+            &[
+                ("p_food_a", &food, Some(("20.00", "AUD"))),
+                ("p_bank_a", &bank, None),
+            ],
+        )
+        .await;
+        insert_tx(
+            &pool,
+            "tx_elided",
+            "2026-03-20",
+            &[
+                ("p_bank_b", &bank, Some(("-30.00", "AUD"))),
+                ("p_food_b", &food, None),
+            ],
+        )
+        .await;
+
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(status.actuals, dec!(50.00));
+    }
+
+    /// Under `noop_fx` the USD component has no rate; PR 3 (#504) surfaces it.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn multi_commodity_residual_counts_the_target_component(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let wallet = account(&pool, "Wallet", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let budget = monthly_budget(&pool, &food, None).await;
+        insert_tx(
+            &pool,
+            "tx_mc",
+            "2026-03-10",
+            &[
+                ("p_bank", &bank, Some(("-40.00", "AUD"))),
+                ("p_wallet", &wallet, Some(("-10.00", "USD"))),
+                ("p_food", &food, None),
+            ],
+        )
+        .await;
+
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(status.actuals, dec!(40.00));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn elided_leg_outside_the_period_is_not_counted(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let budget = monthly_budget(&pool, &food, None).await;
+        insert_tx(
+            &pool,
+            "tx_feb",
+            "2026-02-28",
+            &[
+                ("p_bank", &bank, Some(("-50.00", "AUD"))),
+                ("p_food", &food, None),
+            ],
+        )
+        .await;
+
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(status.actuals, dec!(0));
+    }
+
+    /// Inserts a tag row.
+    async fn insert_tag(pool: &SqlitePool, tag: &TagId, name: &str) {
+        sqlx::query(
+            "INSERT INTO tags (id, name, created_at) VALUES (?, ?, '2026-01-01T00:00:00Z')",
+        )
+        .bind(tag.to_string())
+        .bind(name)
+        .execute(pool)
+        .await
+        .expect("insert tag");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn transaction_tag_admits_an_elided_leg(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let organic = TagId::new();
+        insert_tag(&pool, &organic, "organic").await;
+        let budget = monthly_budget(&pool, &food, Some(&organic)).await;
+        insert_tx(
+            &pool,
+            "tx_tag",
+            "2026-03-10",
+            &[
+                ("p_bank", &bank, Some(("-25.00", "AUD"))),
+                ("p_food", &food, None),
+            ],
+        )
+        .await;
+        sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES ('tx_tag', ?)")
+            .bind(organic.to_string())
+            .execute(&pool)
+            .await
+            .expect("tag transaction");
+
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(status.actuals, dec!(25.00));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn sibling_posting_tag_does_not_admit_an_elided_leg(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let organic = TagId::new();
+        insert_tag(&pool, &organic, "organic").await;
+        let budget = monthly_budget(&pool, &food, Some(&organic)).await;
+        insert_tx(
+            &pool,
+            "tx_sib",
+            "2026-03-10",
+            &[
+                ("p_bank", &bank, Some(("-25.00", "AUD"))),
+                ("p_food", &food, None),
+            ],
+        )
+        .await;
+        sqlx::query("INSERT INTO posting_tags (posting_id, tag_id) VALUES ('p_bank', ?)")
+            .bind(organic.to_string())
+            .execute(&pool)
+            .await
+            .expect("tag sibling posting");
+
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(status.actuals, dec!(0));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amount_filter_matches_the_derived_amount(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let budget = monthly_budget(&pool, &food, None).await;
+        insert_tx(
+            &pool,
+            "tx_small",
+            "2026-03-05",
+            &[
+                ("p_bank_s", &bank, Some(("-5.00", "AUD"))),
+                ("p_food_s", &food, None),
+            ],
+        )
+        .await;
+        insert_tx(
+            &pool,
+            "tx_large",
+            "2026-03-06",
+            &[
+                ("p_bank_l", &bank, Some(("-80.00", "AUD"))),
+                ("p_food_l", &food, None),
+            ],
+        )
+        .await;
+        let amount = crate::search::AmountQuery {
+            min: Some(dec!(50)),
+            ..Default::default()
+        };
+        let query = crate::search::TransactionQuery {
+            amount: Some(amount),
+            ..Default::default()
+        };
+        let window = bc_models::BudgetWindow::custom(
+            Date::constant(2026, 3, 1),
+            Date::constant(2026, 4, 1),
+            "March",
+        );
+
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for_window(&budget, window, Some(&query))
+            .await
+            .expect("status");
+
+        assert_eq!(status.actuals, dec!(80.00));
+    }
 }
