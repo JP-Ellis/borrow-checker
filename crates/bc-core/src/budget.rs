@@ -554,7 +554,7 @@ impl core::fmt::Debug for BudgetStatusEngine {
     }
 }
 
-/// Builds the dynamic SELECT for [`BudgetStatusEngine::fetch_posting_amounts`].
+/// Builds the dynamic SELECT for [`BudgetStatusEngine::fetch_posting_rows`].
 ///
 /// Assembles the account-subtree (and optional tag-subtree) CTEs plus the date
 /// range and every active non-amount filter clause, in the exact order their
@@ -596,7 +596,7 @@ fn build_posting_amounts_sql(
         );
     }
     sql.push_str(
-        " SELECT p.amount, p.commodity FROM postings p \
+        " SELECT p.id, p.amount, p.commodity FROM postings p \
           JOIN transactions t ON t.id = p.transaction_id \
           WHERE p.account_id IN (SELECT id FROM acct_tree) \
             AND t.date >= ? AND t.date < ?",
@@ -646,6 +646,71 @@ fn build_posting_amounts_sql(
     }
 
     sql
+}
+
+/// One row of the actuals query: posting id, stored amount, stored commodity.
+///
+/// Both `Option`s are `None` for an elided leg, whose value is derived from
+/// its transaction's residual rather than read from the row.
+type PostingRow = (String, Option<String>, Option<String>);
+
+/// Turns raw actuals rows into concrete amounts, expanding each elided leg into
+/// its per-commodity residual.
+///
+/// # Arguments
+///
+/// * `rows` - Rows from [`BudgetStatusEngine::fetch_posting_rows`].
+/// * `residuals` - Loaded for exactly the subtree and date range `rows` came
+///   from. `None` is only valid when no row is elided.
+///
+/// # Returns
+///
+/// One amount per concrete row, plus one per commodity component of each
+/// attributable elided row. An ambiguous elided row contributes nothing.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError::BadData`] if a stored amount cannot be parsed, if
+/// a row is half-NULL, or if an elided row falls outside `residuals`' scope.
+fn expand_posting_rows(
+    rows: Vec<PostingRow>,
+    residuals: Option<&crate::residual::Residuals>,
+) -> crate::BcResult<Vec<bc_models::Amount>> {
+    let mut out = Vec::with_capacity(rows.len());
+    for (posting_id, amount, commodity) in rows {
+        match (amount, commodity) {
+            (Some(amt_str), Some(comm_str)) => {
+                let value = amt_str.parse::<bc_models::Decimal>().map_err(|e| {
+                    crate::BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
+                })?;
+                out.push(bc_models::Amount::new(
+                    value,
+                    bc_models::CommodityCode::new(comm_str),
+                ));
+            }
+            (None, None) => {
+                let Some(loaded_residuals) = residuals else {
+                    return Err(crate::BcError::BadData(format!(
+                        "elided posting '{posting_id}' reached the fold without a residual load"
+                    )));
+                };
+                if let Some(balances) = loaded_residuals.residual(&posting_id)? {
+                    for (code, value) in balances.iter() {
+                        out.push(bc_models::Amount::new(
+                            value,
+                            bc_models::CommodityCode::new(code),
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(crate::BcError::BadData(format!(
+                    "posting '{posting_id}' stores an amount without a commodity, or vice versa"
+                )));
+            }
+        }
+    }
+    Ok(out)
 }
 
 impl BudgetStatusEngine {
@@ -801,8 +866,8 @@ impl BudgetStatusEngine {
     }
 
     // TODO: apply spread fields to period attribution (planned follow-on)
-    /// Fetches raw `(amount, commodity)` pairs for postings to `account_id` or any
-    /// descendant account in `[period_start, period_end)`, optionally filtered by tag.
+    /// Fetches raw rows for postings to `account_id` or any descendant account in
+    /// `[period_start, period_end)`, optionally filtered by tag.
     ///
     /// The dynamic SELECT is assembled by [`build_posting_amounts_sql`], whose
     /// clause order the bind chain below relies on exactly.
@@ -811,14 +876,15 @@ impl BudgetStatusEngine {
     ///
     /// Returns [`crate::BcError`] on database failure.
     #[inline]
-    async fn fetch_posting_amounts(
+    async fn fetch_posting_rows(
         &self,
+        conn: &mut sqlx::SqliteConnection,
         account_id: &bc_models::AccountId,
         period_start: jiff::civil::Date,
         period_end: jiff::civil::Date,
         tag_filter: Option<&bc_models::TagId>,
         query: Option<&crate::search::TransactionQuery>,
-    ) -> crate::BcResult<Vec<(String, String)>> {
+    ) -> crate::BcResult<Vec<PostingRow>> {
         let filter_accounts = match query {
             Some(q) => crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?,
             None => None,
@@ -826,7 +892,7 @@ impl BudgetStatusEngine {
 
         let sql = build_posting_amounts_sql(tag_filter, query, filter_accounts.as_ref());
 
-        let mut stmt = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql));
+        let mut stmt = sqlx::query_as::<_, PostingRow>(sqlx::AssertSqlSafe(sql));
         stmt = stmt.bind(account_id.to_string());
         if let Some(tag) = tag_filter {
             stmt = stmt.bind(tag.to_string());
@@ -862,7 +928,56 @@ impl BudgetStatusEngine {
             }
         }
 
-        stmt.fetch_all(&self.pool).await.map_err(Into::into)
+        stmt.fetch_all(conn).await.map_err(Into::into)
+    }
+
+    /// Fetches the concrete amounts of every matched posting in
+    /// `[period_start, period_end)`, with elided legs resolved to their residuals.
+    ///
+    /// The row fetch and the residual load run in one read transaction so they
+    /// describe the same snapshot: a date amendment landing between them would
+    /// leave an elided id outside the loaded scope, which
+    /// [`expand_posting_rows`] reports as an error rather than dropping.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database failure or unparsable stored data.
+    #[inline]
+    async fn fetch_posting_amounts(
+        &self,
+        account_id: &bc_models::AccountId,
+        period_start: jiff::civil::Date,
+        period_end: jiff::civil::Date,
+        tag_filter: Option<&bc_models::TagId>,
+        query: Option<&crate::search::TransactionQuery>,
+    ) -> crate::BcResult<Vec<bc_models::Amount>> {
+        let mut tx = self.pool.begin().await?;
+        let rows = self
+            .fetch_posting_rows(
+                &mut tx,
+                account_id,
+                period_start,
+                period_end,
+                tag_filter,
+                query,
+            )
+            .await?;
+        let residuals = if rows.iter().any(|(_, amount, _)| amount.is_none()) {
+            Some(
+                crate::residual::Residuals::for_subtree_in_range(
+                    &mut *tx,
+                    account_id,
+                    period_start,
+                    period_end,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        // Nothing was written, so the snapshot is released rather than committed.
+        tx.rollback().await?;
+        expand_posting_rows(rows, residuals.as_ref())
     }
 
     /// Sums actuals for `account_id` governed by `rev` in `[period_start, period_end)`.
@@ -871,6 +986,7 @@ impl BudgetStatusEngine {
     /// commodity, foreign postings are converted via the FX service (and skipped with a warning
     /// if conversion is unavailable).  For tracking-only revisions, postings are grouped by
     /// commodity and the dominant group (by absolute value) is returned.
+    /// Elided legs in the subtree count at their derived residual (see [`crate::residual`]).
     ///
     /// # Errors
     ///
@@ -884,7 +1000,7 @@ impl BudgetStatusEngine {
         period_end: jiff::civil::Date,
         query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<(bc_models::Decimal, Option<bc_models::CommodityCode>)> {
-        let rows = self
+        let amounts = self
             .fetch_posting_amounts(
                 account_id,
                 period_start,
@@ -901,12 +1017,7 @@ impl BudgetStatusEngine {
         if let Some(ref target) = target_commodity {
             // Budget has a target commodity: sum native, convert foreign via FX.
             let mut total = bc_models::Decimal::ZERO;
-            for (amt_str, comm_str) in rows {
-                let value = amt_str.parse::<bc_models::Decimal>().map_err(|e| {
-                    crate::BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
-                })?;
-                let posting_commodity = bc_models::CommodityCode::new(&comm_str);
-                let posting_amount = bc_models::Amount::new(value, posting_commodity);
+            for posting_amount in amounts {
                 // AMOUNT dimension is matched EXACTLY in Rust (commodity-checked); never
                 // magnitude-compared in SQL.
                 if let Some(aq) = amount_q
@@ -934,20 +1045,17 @@ impl BudgetStatusEngine {
             // Tracking-only: group by commodity, return dominant group.
             let mut groups: std::collections::HashMap<String, bc_models::Decimal> =
                 std::collections::HashMap::new();
-            for (amt_str, comm_str) in rows {
-                let value = amt_str.parse::<bc_models::Decimal>().map_err(|e| {
-                    crate::BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
-                })?;
-                if let Some(aq) = amount_q {
-                    let posting_amount =
-                        bc_models::Amount::new(value, bc_models::CommodityCode::new(&comm_str));
-                    if !aq.matches(Some(&posting_amount)) {
-                        continue;
-                    }
+            for posting_amount in amounts {
+                if let Some(aq) = amount_q
+                    && !aq.matches(Some(&posting_amount))
+                {
+                    continue;
                 }
-                let entry = groups.entry(comm_str).or_insert(bc_models::Decimal::ZERO);
+                let entry = groups
+                    .entry(posting_amount.commodity().to_string())
+                    .or_insert(bc_models::Decimal::ZERO);
                 *entry = entry
-                    .checked_add(value)
+                    .checked_add(posting_amount.value())
                     .ok_or_else(|| crate::BcError::BadData("actuals sum overflow".into()))?;
             }
             if groups.is_empty() {
@@ -1774,5 +1882,129 @@ mod budget_service_tests {
         assert_eq!(status.allocated, Decimal::ZERO);
         assert_eq!(status.actuals, Decimal::ZERO);
         assert_eq!(status.available, Decimal::ZERO);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod elided_actuals_tests {
+    use bc_models::AccountId;
+    use bc_models::AccountKind;
+    use bc_models::AccountType;
+    use bc_models::Amount;
+    use bc_models::Budget;
+    use bc_models::CommodityCode;
+    use bc_models::Period;
+    use bc_models::RolloverPolicy;
+    use bc_models::TagId;
+    use jiff::civil::Date;
+    use pretty_assertions::assert_eq;
+    use rust_decimal_macros::dec;
+    use sqlx::SqlitePool;
+
+    use super::BudgetService;
+    use super::BudgetStatusEngine;
+    use crate::account::Service as AccountService;
+    use crate::fx::noop_fx;
+
+    /// One leg of a fixture transaction: posting id, account, and `None` for an elided amount.
+    type Leg<'a> = (&'a str, &'a AccountId, Option<(&'a str, &'a str)>);
+
+    /// Creates an account, optionally under `parent`.
+    async fn account(
+        pool: &SqlitePool,
+        name: &str,
+        account_type: AccountType,
+        parent: Option<&AccountId>,
+    ) -> AccountId {
+        AccountService::new(pool.clone())
+            .create()
+            .name(name)
+            .account_type(account_type)
+            .kind(AccountKind::DepositAccount)
+            .maybe_parent_id(parent)
+            .call()
+            .await
+            .expect("create account")
+    }
+
+    /// A monthly 200 AUD budget on `account` from 2026-01-01, optionally tag-filtered.
+    async fn monthly_budget(
+        pool: &SqlitePool,
+        account: &AccountId,
+        tag_filter: Option<&TagId>,
+    ) -> Budget {
+        let (budget, _) = BudgetService::new(pool.clone())
+            .create()
+            .account_id(account.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(dec!(200), CommodityCode::new("AUD")))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .maybe_tag_filter(tag_filter.cloned())
+            .call()
+            .await
+            .expect("create budget");
+        budget
+    }
+
+    /// Inserts a transaction and its legs by raw SQL, so an ambiguous
+    /// two-elided-leg transaction can be staged without the service's guard.
+    async fn insert_tx(pool: &SqlitePool, tx_id: &str, date: &str, legs: &[Leg<'_>]) {
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+             VALUES (?, ?, 'fixture', 'unreconciled', '2026-01-01T00:00:00Z')",
+        )
+        .bind(tx_id)
+        .bind(date)
+        .execute(pool)
+        .await
+        .expect("insert transaction");
+        for (position, (posting_id, account_id, amount)) in legs.iter().enumerate() {
+            let (amt, comm) = amount.map_or((None, None), |(a, c)| (Some(a), Some(c)));
+            sqlx::query(
+                "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(*posting_id)
+            .bind(tx_id)
+            .bind(account_id.to_string())
+            .bind(amt)
+            .bind(comm)
+            .bind(i64::try_from(position).expect("position fits i64"))
+            .execute(pool)
+            .await
+            .expect("insert posting");
+        }
+    }
+
+    /// Status of `budget` for March 2026 under `noop_fx`, with no user query.
+    async fn march_actuals(pool: &SqlitePool, budget: &Budget) -> super::BudgetStatus {
+        BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for(budget, Date::constant(2026, 3, 15))
+            .await
+            .expect("status")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn elided_leg_on_the_budgeted_account_counts_its_residual(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let budget = monthly_budget(&pool, &food, None).await;
+        insert_tx(
+            &pool,
+            "tx_e1",
+            "2026-03-10",
+            &[
+                ("p_bank", &bank, Some(("-50.00", "AUD"))),
+                ("p_food", &food, None),
+            ],
+        )
+        .await;
+
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(status.actuals, dec!(50.00));
+        assert_eq!(status.available, dec!(150.00));
     }
 }
