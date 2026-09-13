@@ -234,9 +234,8 @@ impl Service {
             let asset_posting_id = PostingId::new();
             sqlx::query(
                 "INSERT INTO postings \
-                (id, transaction_id, account_id, amount, commodity, position, \
-                cost_total_value, cost_total_commodity, cost_date, cost_label) \
-                VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL)",
+                (id, transaction_id, account_id, amount, commodity, position) \
+                VALUES (?, ?, ?, ?, ?, 0)",
             )
             .bind(asset_posting_id.to_string())
             .bind(tx_id.to_string())
@@ -255,9 +254,8 @@ impl Service {
             let neg_change = -change;
             sqlx::query(
                 "INSERT INTO postings \
-                (id, transaction_id, account_id, amount, commodity, position, \
-                cost_total_value, cost_total_commodity, cost_date, cost_label) \
-                VALUES (?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL)",
+                (id, transaction_id, account_id, amount, commodity, position) \
+                VALUES (?, ?, ?, ?, ?, 1)",
             )
             .bind(counterpart_posting_id.to_string())
             .bind(tx_id.to_string())
@@ -625,9 +623,8 @@ impl Service {
         let expense_posting_id = PostingId::new();
         sqlx::query(
             "INSERT INTO postings \
-             (id, transaction_id, account_id, amount, commodity, position, \
-              cost_total_value, cost_total_commodity, cost_date, cost_label) \
-             VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL)",
+             (id, transaction_id, account_id, amount, commodity, position) \
+             VALUES (?, ?, ?, ?, ?, 0)",
         )
         .bind(expense_posting_id.to_string())
         .bind(tx_id.to_string())
@@ -646,9 +643,8 @@ impl Service {
         let neg_amount = -amount_clamped;
         sqlx::query(
             "INSERT INTO postings \
-             (id, transaction_id, account_id, amount, commodity, position, \
-              cost_total_value, cost_total_commodity, cost_date, cost_label) \
-             VALUES (?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL)",
+             (id, transaction_id, account_id, amount, commodity, position) \
+             VALUES (?, ?, ?, ?, ?, 1)",
         )
         .bind(asset_posting_id.to_string())
         .bind(tx_id.to_string())

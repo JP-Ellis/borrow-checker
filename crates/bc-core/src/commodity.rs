@@ -241,8 +241,10 @@ impl Service {
                 .fetch_one(&mut *tx)
                 .await?;
         let postings: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM postings WHERE commodity = ? OR cost_total_commodity = ?",
+            "SELECT COUNT(*) FROM postings \
+             WHERE commodity = ? OR cost_commodity = ? OR price_commodity = ?",
         )
+        .bind(code)
         .bind(code)
         .bind(code)
         .fetch_one(&mut *tx)

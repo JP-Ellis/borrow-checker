@@ -170,15 +170,28 @@ CREATE TABLE postings (
     -- `transactions`, SQLite applies it post-join and a six-month window costs the
     -- same as a ten-year one.
     date                 TEXT,
-    -- cost basis fields (all NULL if no commodity conversion)
-    cost_total_value     TEXT,             -- decimal string
-    cost_total_commodity TEXT,             -- CommodityCode of the cost commodity; not FK
-    cost_date            TEXT,             -- YYYY-MM-DD
-    cost_label           TEXT,
+    -- price annotation: Beancount `@` (kind 'unit') or `@@` (kind 'total');
+    -- all three NULL when the leg is unpriced
+    price_value          TEXT,             -- decimal string
+    price_commodity      TEXT,             -- CommodityCode; not FK
+    price_kind           TEXT,             -- 'unit' | 'total'
+    -- cost basis: Beancount `{}` (kind 'unit') or `{{}}` (kind 'total');
+    -- value/commodity/kind all NULL when the leg carries no lot
+    cost_value           TEXT,             -- decimal string
+    cost_commodity       TEXT,             -- CommodityCode; not FK
+    cost_kind            TEXT,             -- 'unit' | 'total'
+    cost_date            TEXT,             -- YYYY-MM-DD lot date
+    cost_label           TEXT,             -- lot label
     -- accrual spread date range; spread_until is inclusive
     spread_from          TEXT,             -- YYYY-MM-DD
     spread_until         TEXT,             -- YYYY-MM-DD
-    CHECK ((amount IS NULL) = (commodity IS NULL))
+    CHECK ((amount IS NULL) = (commodity IS NULL)),
+    CHECK (price_kind IS NULL OR price_kind IN ('unit', 'total')),
+    CHECK ((price_value IS NULL) = (price_commodity IS NULL)
+       AND (price_value IS NULL) = (price_kind IS NULL)),
+    CHECK (cost_kind IS NULL OR cost_kind IN ('unit', 'total')),
+    CHECK ((cost_value IS NULL) = (cost_commodity IS NULL)
+       AND (cost_value IS NULL) = (cost_kind IS NULL))
 );
 CREATE INDEX idx_postings_transaction             ON postings (transaction_id);
 CREATE INDEX idx_postings_account_commodity_date   ON postings (account_id, commodity, date);

@@ -28,6 +28,7 @@ pub mod ipc;
 pub(crate) mod loan;
 pub(crate) mod metadata;
 pub(crate) mod period_overlap;
+pub(crate) mod quote;
 pub(crate) mod report;
 pub mod residual;
 pub mod search;
