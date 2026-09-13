@@ -196,7 +196,7 @@ one of seven value types (`text`, `number`, `boolean`, `date`, `timestamp`,
 as text and flagged rather than rejected.
 
 The line between a field and a key is what business logic reads: `date`,
-`description`, `reconciliation`, `Posting::amount` and `cost` stay structural
+`description`, `reconciliation`, `Posting::amount`, `price` and `cost` stay structural
 because they carry invariants or drive computation. Beancount draws the same
 line — `cost` and `price` are syntax, metadata is the escape hatch.
 
@@ -221,6 +221,18 @@ rate is ever consulted (FX conversion is #233). `balanced()` is unchanged and
 still reports false when more than one commodity remains, so a
 multi-commodity residual is flagged while still counting toward balances —
 warn, don't block.
+
+**A leg is weighed, not just summed.** `Posting::price` (`@`/`@@`) and
+`Posting::cost` (`{}`/`{{}}`) are each a `Quote`, kept in the form the source
+stated — per unit or total — because neither converts to the other exactly.
+For balancing and the residual a leg contributes its *weight*
+(`Posting::weight`): at cost if a cost is set, else at price if a price is
+set, else the amount itself, exactly Beancount's rule. So `4.00 USD @@ 6.37 AUD` against `-6.37 AUD` balances, and `-2 ETH @ 300 AUD` funds an elided
+gains leg in AUD. Account balances still move by the amount: the ETH account
+holds ETH. A quote in the leg's own commodity is weighed as written and
+warned about (`Warning::QuoteInOwnCommodity`). A cost is stored on the leg
+and weighed; nothing reads it back as inventory — lot booking is its own
+feature.
 
 Two or more elided legs cannot be written through the app — validation rejects
 that shape (see **Storing is permissive** below). The balance engine still
