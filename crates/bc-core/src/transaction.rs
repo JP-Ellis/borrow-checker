@@ -8,7 +8,6 @@ use bc_models::CommodityCode;
 use bc_models::Cost;
 use bc_models::Posting;
 use bc_models::PostingId;
-use bc_models::Quote;
 use bc_models::Reconciliation;
 use bc_models::TagId;
 use bc_models::Transaction;
@@ -40,13 +39,21 @@ struct ListPostingRow {
     amount: Option<String>,
     /// Commodity code string; `None` iff `amount` is `None`.
     commodity: Option<String>,
-    /// Decimal string for the cost basis total value; NULL if no cost basis.
-    cost_total_value: Option<String>,
-    /// Commodity code for the cost basis total; NULL when `cost_total_value` is NULL.
-    cost_total_commodity: Option<String>,
-    /// Optional cost acquisition date in ISO 8601 format.
+    /// Decimal string for the price value; NULL when unpriced.
+    price_value: Option<String>,
+    /// Commodity the price is stated in; NULL iff `price_value` is NULL.
+    price_commodity: Option<String>,
+    /// `unit` or `total`; NULL iff `price_value` is NULL.
+    price_kind: Option<String>,
+    /// Decimal string for the cost basis value; NULL when no lot.
+    cost_value: Option<String>,
+    /// Commodity the cost is stated in; NULL iff `cost_value` is NULL.
+    cost_commodity: Option<String>,
+    /// `unit` or `total`; NULL iff `cost_value` is NULL.
+    cost_kind: Option<String>,
+    /// Lot date, ISO 8601.
     cost_date: Option<String>,
-    /// Optional cost lot label.
+    /// Lot label.
     cost_label: Option<String>,
     /// Start of the accrual spread window in ISO 8601 format; NULL if no spread.
     spread_from: Option<String>,
@@ -417,49 +424,6 @@ fn transaction_matches_query(
     })
 }
 
-/// Parses a `Cost` from the four nullable cost columns on a posting row.
-///
-/// Returns `None` if `total_value` is `None` (no cost basis recorded).
-///
-/// # Errors
-///
-/// Returns [`BcError::BadData`] if any stored value cannot be parsed.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "all parameters come from owned DB rows; passing by value is ergonomic at call sites"
-)]
-fn parse_cost(
-    total_value: Option<String>,
-    total_commodity: Option<String>,
-    cost_date: Option<String>,
-    cost_label: Option<String>,
-) -> BcResult<Option<Cost>> {
-    let Some(value_str) = total_value else {
-        return Ok(None);
-    };
-    let commodity_str = total_commodity.ok_or_else(|| {
-        BcError::BadData("cost_total_commodity is NULL with non-NULL cost_total_value".into())
-    })?;
-    let value = value_str
-        .parse::<Decimal>()
-        .map_err(|e| BcError::BadData(format!("invalid cost_total_value '{value_str}': {e}")))?;
-    let total = Amount::new(value, CommodityCode::new(commodity_str));
-    let date = cost_date
-        .as_deref()
-        .map(|s| {
-            s.parse::<Date>()
-                .map_err(|e| BcError::BadData(format!("invalid cost_date '{s}': {e}")))
-        })
-        .transpose()?;
-    Ok(Some(
-        Cost::builder()
-            .basis(Quote::Total(total))
-            .maybe_date(date)
-            .maybe_label(cost_label)
-            .build(),
-    ))
-}
-
 /// Named row type for postings loaded during [`Service::find_by_id`].
 ///
 /// Does not include `transaction_id` since we already know it from context.
@@ -473,13 +437,21 @@ struct PostingRow {
     amount: Option<String>,
     /// Commodity code string; `None` iff `amount` is `None`.
     commodity: Option<String>,
-    /// Decimal string for the cost basis total value; NULL if no cost basis.
-    cost_total_value: Option<String>,
-    /// Commodity code for the cost basis total; NULL when `cost_total_value` is NULL.
-    cost_total_commodity: Option<String>,
-    /// Optional cost acquisition date in ISO 8601 format.
+    /// Decimal string for the price value; NULL when unpriced.
+    price_value: Option<String>,
+    /// Commodity the price is stated in; NULL iff `price_value` is NULL.
+    price_commodity: Option<String>,
+    /// `unit` or `total`; NULL iff `price_value` is NULL.
+    price_kind: Option<String>,
+    /// Decimal string for the cost basis value; NULL when no lot.
+    cost_value: Option<String>,
+    /// Commodity the cost is stated in; NULL iff `cost_value` is NULL.
+    cost_commodity: Option<String>,
+    /// `unit` or `total`; NULL iff `cost_value` is NULL.
+    cost_kind: Option<String>,
+    /// Lot date, ISO 8601.
     cost_date: Option<String>,
-    /// Optional cost lot label.
+    /// Lot label.
     cost_label: Option<String>,
     /// Start of the accrual spread window in ISO 8601 format; NULL if no spread.
     spread_from: Option<String>,
@@ -820,7 +792,8 @@ impl Service {
         // Load postings with cost and spread columns.
         let posting_rows: Vec<PostingRow> = sqlx::query_as(
             "SELECT id, account_id, amount, commodity, \
-                    cost_total_value, cost_total_commodity, cost_date, cost_label, \
+                    price_value, price_commodity, price_kind, \
+                    cost_value, cost_commodity, cost_kind, cost_date, cost_label, \
                     spread_from, spread_until \
              FROM postings WHERE transaction_id = ? ORDER BY position ASC",
         )
@@ -871,9 +844,16 @@ impl Service {
                     }
                     _ => None,
                 };
-                let cost = parse_cost(
-                    row.cost_total_value,
-                    row.cost_total_commodity,
+                let price = crate::quote::parse_quote(
+                    "price",
+                    row.price_value,
+                    row.price_commodity,
+                    row.price_kind,
+                )?;
+                let cost = crate::quote::parse_cost(
+                    row.cost_value,
+                    row.cost_commodity,
+                    row.cost_kind,
                     row.cost_date,
                     row.cost_label,
                 )?;
@@ -901,6 +881,7 @@ impl Service {
                     .id(posting_id)
                     .account_id(acc_id)
                     .maybe_amount(amount)
+                    .maybe_price(price)
                     .maybe_cost(cost)
                     .metadata(p_metadata)
                     .maybe_spread_from(spread_from)
@@ -973,9 +954,9 @@ impl Service {
         .await?;
 
         // Insert negated postings for the reversal. Each is a fresh leg with a
-        // new id carrying the original's cost, spread and metadata: a reversal
-        // describes the same real-world event, so its annotations travel with
-        // it.
+        // new id carrying the original's price, cost, spread and metadata: a
+        // reversal describes the same real-world event, so its annotations
+        // travel with it.
         for (index, posting) in original.postings().iter().enumerate() {
             let negated = posting
                 .amount()
@@ -992,6 +973,7 @@ impl Service {
                 .id(PostingId::new())
                 .account_id(posting.account_id().clone())
                 .maybe_amount(negated)
+                .maybe_price(posting.price().cloned())
                 .maybe_cost(posting.cost().cloned())
                 .metadata(posting.metadata().clone())
                 .maybe_spread_from(posting.spread_from())
@@ -1058,7 +1040,8 @@ impl Service {
         // Load all postings in one query.
         let posting_rows: Vec<ListPostingRow> = sqlx::query_as(
             "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, \
-                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
+                    p.price_value, p.price_commodity, p.price_kind, \
+                    p.cost_value, p.cost_commodity, p.cost_kind, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
              ORDER BY p.transaction_id, p.position ASC",
@@ -1110,9 +1093,16 @@ impl Service {
                 }
                 _ => None,
             };
-            let cost = parse_cost(
-                row.cost_total_value,
-                row.cost_total_commodity,
+            let price = crate::quote::parse_quote(
+                "price",
+                row.price_value,
+                row.price_commodity,
+                row.price_kind,
+            )?;
+            let cost = crate::quote::parse_cost(
+                row.cost_value,
+                row.cost_commodity,
+                row.cost_kind,
                 row.cost_date,
                 row.cost_label,
             )?;
@@ -1138,6 +1128,7 @@ impl Service {
                 .id(posting_id)
                 .account_id(acc_id)
                 .maybe_amount(amount)
+                .maybe_price(price)
                 .maybe_cost(cost)
                 .metadata(p_metadata)
                 .maybe_spread_from(spread_from)
@@ -1305,7 +1296,8 @@ impl Service {
 
         let posting_query = format!(
             "SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, \
-                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
+                    p.price_value, p.price_commodity, p.price_kind, \
+                    p.cost_value, p.cost_commodity, p.cost_kind, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
              WHERE p.transaction_id IN ({placeholders}) \
@@ -1365,9 +1357,16 @@ impl Service {
                 }
                 _ => None,
             };
-            let cost = parse_cost(
-                row.cost_total_value,
-                row.cost_total_commodity,
+            let price = crate::quote::parse_quote(
+                "price",
+                row.price_value,
+                row.price_commodity,
+                row.price_kind,
+            )?;
+            let cost = crate::quote::parse_cost(
+                row.cost_value,
+                row.cost_commodity,
+                row.cost_kind,
                 row.cost_date,
                 row.cost_label,
             )?;
@@ -1393,6 +1392,7 @@ impl Service {
                 .id(posting_id)
                 .account_id(acc_id)
                 .maybe_amount(amount)
+                .maybe_price(price)
                 .maybe_cost(cost)
                 .metadata(p_metadata)
                 .maybe_spread_from(spread_from)
@@ -1592,7 +1592,8 @@ impl Service {
                  SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
              ) \
              SELECT p.id, p.transaction_id, p.account_id, p.amount, p.commodity, \
-                    p.cost_total_value, p.cost_total_commodity, p.cost_date, p.cost_label, \
+                    p.price_value, p.price_commodity, p.price_kind, \
+                    p.cost_value, p.cost_commodity, p.cost_kind, p.cost_date, p.cost_label, \
                     p.spread_from, p.spread_until \
              FROM postings p \
              WHERE p.transaction_id IN \
@@ -1654,9 +1655,16 @@ impl Service {
                 }
                 _ => None,
             };
-            let cost = parse_cost(
-                row.cost_total_value,
-                row.cost_total_commodity,
+            let price = crate::quote::parse_quote(
+                "price",
+                row.price_value,
+                row.price_commodity,
+                row.price_kind,
+            )?;
+            let cost = crate::quote::parse_cost(
+                row.cost_value,
+                row.cost_commodity,
+                row.cost_kind,
                 row.cost_date,
                 row.cost_label,
             )?;
@@ -1682,6 +1690,7 @@ impl Service {
                 .id(posting_id)
                 .account_id(acc_id)
                 .maybe_amount(amount)
+                .maybe_price(price)
                 .maybe_cost(cost)
                 .metadata(p_metadata)
                 .maybe_spread_from(spread_from)
@@ -2245,23 +2254,19 @@ async fn insert_posting_row(
     posting: &Posting,
     position: i64,
 ) -> BcResult<()> {
-    let (cost_value, cost_commodity, cost_date, cost_label) = if let Some(cost) = posting.cost() {
-        (
-            Some(cost.basis().amount().value().to_string()),
-            Some(cost.basis().amount().commodity().as_str().to_owned()),
-            cost.date().map(|d| d.to_string()),
-            cost.label().map(str::to_owned),
-        )
-    } else {
-        (None, None, None, None)
-    };
+    let (price_value, price_commodity, price_kind) = crate::quote::quote_columns(posting.price());
+    let (cost_value, cost_commodity, cost_kind) =
+        crate::quote::quote_columns(posting.cost().map(Cost::basis));
+    let cost_date = posting.cost().and_then(Cost::date).map(|d| d.to_string());
+    let cost_label = posting.cost().and_then(|c| c.label()).map(str::to_owned);
 
     sqlx::query(
         "INSERT INTO postings \
          (id, transaction_id, account_id, amount, commodity, position, \
-          cost_total_value, cost_total_commodity, cost_date, cost_label, \
+          price_value, price_commodity, price_kind, \
+          cost_value, cost_commodity, cost_kind, cost_date, cost_label, \
           spread_from, spread_until) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(posting.id().to_string()) //  1. id
     .bind(transaction_id.to_string()) //  2. transaction_id
@@ -2269,12 +2274,16 @@ async fn insert_posting_row(
     .bind(posting.amount().map(|a| a.value().to_string())) //  4. amount
     .bind(posting.amount().map(|a| a.commodity().as_str().to_owned())) //  5. commodity
     .bind(position) //  6. position
-    .bind(cost_value) //  7. cost_total_value
-    .bind(cost_commodity) //  8. cost_total_commodity
-    .bind(cost_date) //  9. cost_date
-    .bind(cost_label) // 10. cost_label
-    .bind(posting.spread_from().map(|d| d.to_string())) // 11. spread_from
-    .bind(posting.spread_until().map(|d| d.to_string())) // 12. spread_until
+    .bind(price_value) //  7. price_value
+    .bind(price_commodity) //  8. price_commodity
+    .bind(price_kind) //  9. price_kind
+    .bind(cost_value) // 10. cost_value
+    .bind(cost_commodity) // 11. cost_commodity
+    .bind(cost_kind) // 12. cost_kind
+    .bind(cost_date) // 13. cost_date
+    .bind(cost_label) // 14. cost_label
+    .bind(posting.spread_from().map(|d| d.to_string())) // 15. spread_from
+    .bind(posting.spread_until().map(|d| d.to_string())) // 16. spread_until
     .execute(&mut **db_tx)
     .await?;
 
@@ -2843,10 +2852,10 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn posting_cost_round_trips(pool: sqlx::SqlitePool) {
+    async fn posting_price_and_cost_round_trip(pool: sqlx::SqlitePool) {
         use jiff::Timestamp;
         let acct_svc = crate::account::Service::new(pool.clone());
-        let acc_a = acct_svc
+        let a = acct_svc
             .create()
             .name("Brokerage")
             .account_type(AccountType::Asset)
@@ -2854,7 +2863,7 @@ mod tests {
             .call()
             .await
             .expect("create Brokerage account should succeed");
-        let acc_b = acct_svc
+        let b = acct_svc
             .create()
             .name("Cash")
             .account_type(AccountType::Asset)
@@ -2864,8 +2873,9 @@ mod tests {
             .expect("create Cash account should succeed");
 
         let cost = Cost::builder()
-            .basis(Quote::Total(Amount::new(dec!(1500.00), "AUD")))
-            .label("lot-1")
+            .basis(Quote::PerUnit(Amount::new(dec!(105), "AUD")))
+            .date(date(2024, 3, 1))
+            .label("lot-a")
             .build();
 
         let svc = Service::new(pool.clone());
@@ -2873,35 +2883,51 @@ mod tests {
             .id(bc_models::TransactionId::new())
             .date(date(2026, 1, 15))
             .description("Buy shares")
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
-                    .account_id(acc_a)
-                    .amount(Amount::new(dec!(10), CommodityCode::new("AAPL")))
-                    .cost(cost)
+                    .account_id(a.clone())
+                    .amount(Amount::new(dec!(-2), CommodityCode::new("AAPL")))
+                    .cost(cost.clone())
+                    .price(Quote::Total(Amount::new(dec!(300), "AUD")))
                     .build(),
                 Posting::builder()
                     .id(PostingId::new())
-                    .account_id(acc_b)
-                    .amount(Amount::new(dec!(-10), CommodityCode::new("AAPL")))
+                    .account_id(b.clone())
+                    .amount(Amount::new(dec!(210), CommodityCode::new("AUD")))
                     .build(),
             ])
-            .reconciliation(Reconciliation::Reconciled)
-            .created_at(Timestamp::now())
             .build();
 
-        let id = tx.id().clone();
-        svc.create(tx).await.expect("create should succeed");
+        let id = svc.create(tx).await.expect("create").into_inner();
 
-        let found = svc.find_by_id(&id).await.expect("find should succeed");
-        let first_posting = found
-            .postings()
-            .first()
-            .expect("first posting should exist");
-        let loaded_cost = first_posting.cost().expect("cost should be present");
-        assert_eq!(loaded_cost.basis().amount().value(), dec!(1500.00));
-        assert_eq!(loaded_cost.basis().amount().commodity().as_str(), "AUD");
-        assert_eq!(loaded_cost.label(), Some("lot-1"));
+        let loaded = svc.find_by_id(&id).await.expect("find");
+        let first = loaded.postings().first().expect("first posting");
+        let second = loaded.postings().get(1).expect("second posting");
+        assert_eq!(first.cost(), Some(&cost));
+        assert_eq!(
+            first.price(),
+            Some(&Quote::Total(Amount::new(dec!(300), "AUD")))
+        );
+        assert!(second.price().is_none());
+        assert!(second.cost().is_none());
+
+        let listed = svc.list().await.expect("list");
+        let listed_tx = listed
+            .iter()
+            .find(|t| t.id() == &id)
+            .expect("transaction should be in the list");
+        let listed_first = listed_tx.postings().first().expect("first posting");
+        let listed_second = listed_tx.postings().get(1).expect("second posting");
+        assert_eq!(listed_first.cost(), Some(&cost));
+        assert_eq!(
+            listed_first.price(),
+            Some(&Quote::Total(Amount::new(dec!(300), "AUD")))
+        );
+        assert!(listed_second.price().is_none());
+        assert!(listed_second.cost().is_none());
     }
 
     #[sqlx::test(migrations = "./migrations")]
