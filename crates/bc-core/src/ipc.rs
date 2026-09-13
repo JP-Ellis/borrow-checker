@@ -513,8 +513,7 @@ impl TransactionExt for bc_ipc::Transaction {
         forest: &bc_models::TagForest,
     ) -> Self {
         let tx_tag_ids = tx.tag_ids();
-        let residual =
-            crate::residual::residual_of(tx.postings().iter().map(bc_models::Posting::amount));
+        let residual = crate::residual::residual_of_postings(tx.postings());
         let postings = tx
             .postings()
             .iter()

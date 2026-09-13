@@ -134,8 +134,7 @@ pub async fn category_totals(
 
     for m in &matched {
         let tx = &m.transaction;
-        let residual =
-            crate::residual::residual_of(tx.postings().iter().map(bc_models::Posting::amount));
+        let residual = crate::residual::residual_of_postings(tx.postings());
         if matches!(residual, Ok(crate::residual::Residual::Ambiguous)) {
             ambiguous_transactions = ambiguous_transactions.saturating_add(1);
         }

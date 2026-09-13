@@ -13,6 +13,7 @@ use bc_models::AccountId;
 use bc_models::Amount;
 use bc_models::AmountError;
 use bc_models::Balances;
+use bc_models::Posting;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
@@ -42,7 +43,7 @@ pub enum Residual {
 ///
 /// # Arguments
 ///
-/// * `amounts` - One entry per leg: `Some` for a concrete amount, `None` for an
+/// * `amounts` - One entry per leg: `Some` for a concrete weight, `None` for an
 ///   elided leg. Order is irrelevant.
 ///
 /// # Returns
@@ -96,8 +97,57 @@ where
     }
 }
 
-/// One row of the set-based residual query.
-type ResidualRow = (String, String, String, Option<String>, Option<String>);
+/// Computes a transaction's residual from its postings' weights.
+///
+/// Each leg contributes [`Posting::weight`] — at cost, else at price, else its
+/// amount — so a priced or costed leg funds the residual in the quote's
+/// commodity, as Beancount does.
+///
+/// # Errors
+///
+/// Returns [`AmountError::Overflow`] if a weight or a per-commodity total
+/// overflows.
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the brief mandates this exact name, matching residual_of alongside it"
+)]
+pub fn residual_of_postings<'a, I>(postings: I) -> Result<Residual, AmountError>
+where
+    I: IntoIterator<Item = &'a Posting>,
+{
+    let weights = postings
+        .into_iter()
+        .map(Posting::weight)
+        .collect::<Result<Vec<_>, _>>()?;
+    residual_of(weights.iter().map(Option::as_ref))
+}
+
+/// One leg of the set-based residual query.
+#[derive(sqlx::FromRow)]
+struct ResidualRow {
+    /// Id of the transaction the leg belongs to.
+    transaction_id: String,
+    /// Id of the leg's posting.
+    id: String,
+    /// Id of the account the leg posts to.
+    account_id: String,
+    /// The leg's stored amount, `None` when elided.
+    amount: Option<String>,
+    /// The leg's amount's commodity code, `None` when elided.
+    commodity: Option<String>,
+    /// The leg's price value, `None` when unpriced.
+    price_value: Option<String>,
+    /// The leg's price commodity, `None` when unpriced.
+    price_commodity: Option<String>,
+    /// The leg's price kind (`unit` or `total`), `None` when unpriced.
+    price_kind: Option<String>,
+    /// The leg's cost basis value, `None` when uncosted.
+    cost_value: Option<String>,
+    /// The leg's cost basis commodity, `None` when uncosted.
+    cost_commodity: Option<String>,
+    /// The leg's cost basis kind (`unit` or `total`), `None` when uncosted.
+    cost_kind: Option<String>,
+}
 
 /// Residuals of elided postings, resolved in one pass.
 ///
@@ -146,7 +196,9 @@ const ELIDED_ALL_ACCOUNTS: &str = "";
 /// The complete query text.
 fn residual_sql(elided_predicate: &str) -> String {
     format!(
-        "SELECT sib.transaction_id, sib.id, sib.account_id, sib.amount, sib.commodity
+        "SELECT sib.transaction_id, sib.id, sib.account_id, sib.amount, sib.commodity, \
+                sib.price_value, sib.price_commodity, sib.price_kind, \
+                sib.cost_value, sib.cost_commodity, sib.cost_kind
          FROM postings sib
          WHERE sib.transaction_id IN (
              SELECT e.transaction_id
@@ -288,40 +340,59 @@ impl Residuals {
         // inferred by `BalanceEngine::residual_commodities`.
         let mut by_transaction: BTreeMap<String, Vec<(String, String, Option<Amount>)>> =
             BTreeMap::new();
-        for (transaction_id, posting_id, acct_id, amount, commodity) in rows {
-            let parsed = match (amount, commodity) {
+        for row in rows {
+            let weight = match (row.amount, row.commodity) {
                 (Some(value), Some(code)) => {
                     let decimal = value.parse::<Decimal>().map_err(|e| {
                         BcError::BadData(format!("invalid posting amount '{value}': {e}"))
                     })?;
-                    Some(Amount::new(decimal, code))
+                    let amount = Amount::new(decimal, code);
+                    let price = crate::quote::parse_quote(
+                        "price",
+                        row.price_value,
+                        row.price_commodity,
+                        row.price_kind,
+                    )?;
+                    let cost = crate::quote::parse_cost(
+                        row.cost_value,
+                        row.cost_commodity,
+                        row.cost_kind,
+                        None,
+                        None,
+                    )?;
+                    Some(
+                        bc_models::weight_of(&amount, cost.as_ref(), price.as_ref()).map_err(
+                            |e| BcError::BadData(format!("posting weight overflow: {e}")),
+                        )?,
+                    )
                 }
                 _ => None,
             };
-            by_transaction
-                .entry(transaction_id)
-                .or_default()
-                .push((posting_id, acct_id, parsed));
+            by_transaction.entry(row.transaction_id).or_default().push((
+                row.id,
+                row.account_id,
+                weight,
+            ));
         }
 
         let mut entries: HashMap<String, Balances> = HashMap::new();
         let mut by_account: HashMap<String, Balances> = HashMap::new();
         let mut seen: HashSet<String> = HashSet::new();
         for legs in by_transaction.values() {
-            let residual = residual_of(legs.iter().map(|(_, _, amount)| amount.as_ref()))
+            let residual = residual_of(legs.iter().map(|(_, _, weight)| weight.as_ref()))
                 .map_err(|e| BcError::BadData(format!("residual overflow: {e}")))?;
             // Record the scope before branching: an ambiguous transaction's elided
             // legs were still loaded, and must not read as out-of-scope.
-            for (posting_id, _, amount) in legs {
-                if amount.is_none() {
+            for (posting_id, _, weight) in legs {
+                if weight.is_none() {
                     seen.insert(posting_id.clone());
                 }
             }
             let Residual::Attributable(balances) = residual else {
                 continue;
             };
-            for (posting_id, acct_id, amount) in legs {
-                if amount.is_none() {
+            for (posting_id, acct_id, weight) in legs {
+                if weight.is_none() {
                     entries.insert(posting_id.clone(), balances.clone());
                     let totals = by_account.entry(acct_id.clone()).or_default();
                     for (code, value) in balances.iter() {
@@ -434,9 +505,13 @@ impl Residuals {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use bc_models::AccountId;
     use bc_models::AccountKind;
     use bc_models::AccountType;
     use bc_models::Amount;
+    use bc_models::Posting;
+    use bc_models::PostingId;
+    use bc_models::Quote;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use rust_decimal_macros::dec;
@@ -673,6 +748,42 @@ mod tests {
         .expect("insert posting");
     }
 
+    /// Inserts a priced posting (`price_kind` is `unit` or `total`).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a flat test helper mirroring the posting columns reads more clearly than a builder for a single call site"
+    )]
+    async fn insert_priced_posting(
+        pool: &sqlx::SqlitePool,
+        id: &str,
+        tx_id: &str,
+        account_id: &str,
+        amount: &str,
+        commodity: &str,
+        price_value: &str,
+        price_commodity: &str,
+        price_kind: &str,
+        position: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, \
+             price_value, price_commodity, price_kind, position) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(tx_id)
+        .bind(account_id)
+        .bind(amount)
+        .bind(commodity)
+        .bind(price_value)
+        .bind(price_commodity)
+        .bind(price_kind)
+        .bind(position)
+        .execute(pool)
+        .await
+        .expect("insert priced posting");
+    }
+
     /// Creates an account and returns its id.
     async fn make_account(
         pool: &sqlx::SqlitePool,
@@ -713,6 +824,72 @@ mod tests {
             Some(dec!(-50.00))
         );
         assert_eq!(residuals.total_in("AUD").expect("total"), dec!(-50.00));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn loader_weighs_a_priced_sibling_in_the_price_commodity(pool: sqlx::SqlitePool) {
+        // -2 ETH @ 300 AUD (weighs -600 AUD) and +590 AUD cash; the elided
+        // gains leg absorbs +10 AUD, in AUD, with no ETH residual at all.
+        let wallet = make_account(&pool, "Wallet", AccountType::Asset).await;
+        let cash = make_account(&pool, "Cash", AccountType::Asset).await;
+        let gains = make_account(&pool, "Gains", AccountType::Income).await;
+        insert_tx(&pool, "tx_1", "2026-01-01").await;
+        insert_priced_posting(
+            &pool,
+            "p_eth",
+            "tx_1",
+            &wallet.to_string(),
+            "-2",
+            "ETH",
+            "300",
+            "AUD",
+            "unit",
+            0,
+        )
+        .await;
+        insert_posting(
+            &pool,
+            "p_cash",
+            "tx_1",
+            &cash.to_string(),
+            Some("590"),
+            Some("AUD"),
+            1,
+        )
+        .await;
+        insert_posting(&pool, "p_gains", "tx_1", &gains.to_string(), None, None, 2).await;
+
+        let residuals = Residuals::for_account(&pool, &gains).await.expect("load");
+
+        assert_eq!(
+            residuals.component("p_gains", "AUD").expect("in scope"),
+            Some(dec!(10))
+        );
+        assert_eq!(
+            residuals.component("p_gains", "ETH").expect("in scope"),
+            None
+        );
+    }
+
+    #[test]
+    fn residual_of_postings_uses_weights() {
+        let usd = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .amount(Amount::new(dec!(4.00), "USD"))
+            .price(Quote::Total(Amount::new(dec!(6.37), "AUD")))
+            .build();
+        let bank = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .build();
+        let Residual::Attributable(balances) =
+            residual_of_postings([&usd, &bank]).expect("residual")
+        else {
+            panic!("expected attributable");
+        };
+        assert_eq!(balances.get("AUD"), Some(dec!(-6.37)));
+        assert_eq!(balances.get("USD"), None);
     }
 
     #[sqlx::test(migrations = "./migrations")]

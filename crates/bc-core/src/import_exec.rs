@@ -2137,9 +2137,9 @@ impl Plan {
     /// An elided leg is not weightless: the balance engine derives its value
     /// from its siblings, so a report that left the bucket empty would say an
     /// account nets to zero when the import is about to move it. This is
-    /// [`crate::residual::residual_of`], the very function the balance read path
-    /// derives its own residuals through, so the reported figure and the
-    /// balance the user later reads cannot drift apart.
+    /// [`crate::residual::residual_of_postings`], the very function the balance
+    /// read path derives its own residuals through, so the reported figure and
+    /// the balance the user later reads cannot drift apart.
     ///
     /// # Arguments
     ///
@@ -2157,7 +2157,7 @@ impl Plan {
         // attach can still meet one stored beside one appended, and the balance
         // engine attributes that residual to neither. `residual_of` classifies
         // it as `Ambiguous` and nothing is folded, exactly as the read path does.
-        match crate::residual::residual_of(postings.into_iter().map(Posting::amount)) {
+        match crate::residual::residual_of_postings(postings) {
             Ok(crate::residual::Residual::Attributable(balances)) => Some(balances),
             Ok(crate::residual::Residual::NotElided | crate::residual::Residual::Ambiguous) => None,
             Err(error) => {
