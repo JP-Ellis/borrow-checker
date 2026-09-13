@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use bc_models::ProfileId;
 
+use crate::BackupKind;
 use crate::BackupService;
+use crate::BcResult;
 use crate::ImportOutcome;
 use crate::ImportPlan;
 use crate::ImportProfile;
@@ -78,7 +80,7 @@ pub enum ProfileRun {
 pub enum FailureStage {
     /// The profile names an importer the registry does not hold.
     UnknownImporter,
-    /// [`crate::Importer::import`] failed: unreadable or unparseable files.
+    /// [`crate::Importer::import`] failed: unreadable or unparsable files.
     Importer,
     /// [`plan_import`] or [`execute_import`] returned an error.
     Engine,
@@ -288,6 +290,63 @@ impl ImportEngine {
         run.map_err(|error| ProfileFailure {
             stage: FailureStage::Engine,
             message: error.to_string(),
+        })
+    }
+
+    /// Runs a selection of profiles in name order, taking one `PreImport`
+    /// snapshot before the first write when the policy asks for one, and
+    /// continuing past any profile that fails.
+    ///
+    /// A committed profile stays committed when a later one fails: each has
+    /// its own batch, so `import discard` undoes one without the others, and
+    /// the report carries the snapshot path for a wholesale restore.
+    ///
+    /// # Arguments
+    ///
+    /// * `selection` - One profile by name, or every profile.
+    /// * `mode` - Whether to write. [`Mode::DryRun`] never snapshots.
+    ///
+    /// # Returns
+    ///
+    /// One [`ProfileResult`] per profile, in the order they ran.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] when the selection cannot be resolved (a
+    /// name that matches no profile, or a profile listing failure) or the
+    /// snapshot cannot be written. A profile's own failure is not an error;
+    /// it is carried in its [`ProfileResult`].
+    #[inline]
+    pub async fn sync(&self, selection: Selection, mode: Mode) -> BcResult<SyncReport> {
+        let profiles = match selection {
+            Selection::One(name) => vec![self.profiles.find_by_name(&name).await?],
+            Selection::All => {
+                let mut all = self.profiles.list_all().await?;
+                all.sort_by(|left, right| left.name.cmp(&right.name));
+                all
+            }
+        };
+
+        // One snapshot for the whole sweep, and none when nothing will be
+        // written: a dry run has nothing to protect, and an empty selection
+        // would copy the database for no reason.
+        let snapshot = if mode == Mode::Commit && self.snapshot_before_write && !profiles.is_empty()
+        {
+            let record = self.backup.backup(BackupKind::PreImport, None).await?;
+            tracing::info!(path = %record.path.display(), "pre-import snapshot taken");
+            Some(record.path)
+        } else {
+            None
+        };
+
+        let mut results = Vec::with_capacity(profiles.len());
+        for profile in &profiles {
+            results.push(self.run_profile(profile, mode).await);
+        }
+
+        Ok(SyncReport {
+            snapshot,
+            profiles: results,
         })
     }
 }
@@ -535,5 +594,165 @@ mod tests {
         assert_eq!(FailureStage::UnknownImporter.label(), "unknown_importer");
         assert_eq!(FailureStage::Importer.label(), "importer");
         assert_eq!(FailureStage::Engine.label(), "engine");
+    }
+
+    /// Names in the order the report lists them.
+    fn names(report: &SyncReport) -> Vec<&str> {
+        report
+            .profiles
+            .iter()
+            .map(|result| result.profile.name.as_str())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn sync_all_orders_profiles_by_name() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), false).await;
+        profile(&fixture, "zeta", "stub").await;
+        profile(&fixture, "alpha", "stub").await;
+        profile(&fixture, "mid", "stub").await;
+
+        let report = fixture
+            .engine
+            .sync(Selection::All, Mode::DryRun)
+            .await
+            .expect("sync");
+
+        assert_eq!(names(&report), vec!["alpha", "mid", "zeta"]);
+    }
+
+    #[tokio::test]
+    async fn sync_all_continues_past_a_failed_profile() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), false).await;
+        profile(&fixture, "alpha", "failing").await;
+        profile(&fixture, "beta", "stub").await;
+
+        let report = fixture
+            .engine
+            .sync(Selection::All, Mode::Commit)
+            .await
+            .expect("sync");
+
+        assert_eq!(names(&report), vec!["alpha", "beta"]);
+        let alpha = report.profiles.first().expect("alpha ran");
+        let beta = report.profiles.get(1).expect("beta ran");
+        assert!(matches!(
+            alpha.result,
+            Err(ProfileFailure {
+                stage: FailureStage::Importer,
+                ..
+            })
+        ));
+        assert!(matches!(beta.result, Ok(ProfileRun::Imported(_))));
+        assert_eq!(fixture.batches.list().await.expect("list").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_commit_takes_one_snapshot_for_many_profiles() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), true).await;
+        profile(&fixture, "a", "stub").await;
+        profile(&fixture, "b", "stub").await;
+        profile(&fixture, "c", "stub").await;
+
+        let report = fixture
+            .engine
+            .sync(Selection::All, Mode::Commit)
+            .await
+            .expect("sync");
+
+        assert_eq!(pre_import_snapshots(&fixture.backup_dir), 1);
+        assert!(report.snapshot.is_some());
+        assert_eq!(fixture.batches.list().await.expect("list").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn sync_dry_run_takes_no_snapshot() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), true).await;
+        profile(&fixture, "a", "stub").await;
+
+        let report = fixture
+            .engine
+            .sync(Selection::All, Mode::DryRun)
+            .await
+            .expect("sync");
+
+        assert_eq!(pre_import_snapshots(&fixture.backup_dir), 0);
+        assert_eq!(report.snapshot, None);
+    }
+
+    #[tokio::test]
+    async fn sync_commit_without_the_setting_takes_no_snapshot() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), false).await;
+        profile(&fixture, "a", "stub").await;
+
+        let report = fixture
+            .engine
+            .sync(Selection::All, Mode::Commit)
+            .await
+            .expect("sync");
+
+        assert_eq!(pre_import_snapshots(&fixture.backup_dir), 0);
+        assert_eq!(report.snapshot, None);
+    }
+
+    #[tokio::test]
+    async fn sync_commit_over_no_profiles_takes_no_snapshot() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), true).await;
+
+        let report = fixture
+            .engine
+            .sync(Selection::All, Mode::Commit)
+            .await
+            .expect("sync");
+
+        assert!(report.profiles.is_empty());
+        assert_eq!(report.snapshot, None);
+        assert_eq!(pre_import_snapshots(&fixture.backup_dir), 0);
+    }
+
+    #[tokio::test]
+    async fn sync_one_runs_only_that_profile() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), true).await;
+        profile(&fixture, "alpha", "stub").await;
+        profile(&fixture, "beta", "stub").await;
+
+        let report = fixture
+            .engine
+            .sync(Selection::One("beta".to_owned()), Mode::Commit)
+            .await
+            .expect("sync");
+
+        assert_eq!(names(&report), vec!["beta"]);
+        assert_eq!(pre_import_snapshots(&fixture.backup_dir), 1);
+        assert_eq!(fixture.batches.list().await.expect("list").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_one_with_an_unknown_name_is_an_error() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), true).await;
+
+        let error = fixture
+            .engine
+            .sync(Selection::One("nobody".to_owned()), Mode::Commit)
+            .await
+            .expect_err("no such profile");
+
+        assert!(
+            matches!(error, crate::BcError::NotFound(_)),
+            "a mistyped name is the caller's error, not a per-profile failure: {error:?}"
+        );
+        assert_eq!(
+            pre_import_snapshots(&fixture.backup_dir),
+            0,
+            "the lookup fails before the snapshot, so a typo costs nothing"
+        );
     }
 }
