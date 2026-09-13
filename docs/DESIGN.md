@@ -205,10 +205,10 @@ An earlier `Pending / Cleared / Voided` conflated three separate concerns:
 finalisation is now *structural* (derived balance), voiding is a reversal link,
 and reconciliation is what remains. `Flagged` is an attention marker.
 
-**Balance is derived, never stored.** `balanced()` sums postings to zero per
-commodity after resolving an elided leg. It is false when there are no concrete
-legs, when the residual is non-zero for any commodity, or when two or more legs
-are elided.
+**Balance is derived, never stored.** `balanced()` sums posting weights to
+zero per commodity after resolving an elided leg. It is false when there are no
+concrete legs, when the residual is non-zero for any commodity, or when two or
+more legs are elided.
 
 That derivation extends to *account balances*, not only `balanced()`. An elided
 leg absorbs its transaction's residual — the negation of its sibling legs' sum —
@@ -227,12 +227,13 @@ warn, don't block.
 stated — per unit or total — because neither converts to the other exactly.
 For balancing and the residual a leg contributes its *weight*
 (`Posting::weight`): at cost if a cost is set, else at price if a price is
-set, else the amount itself, exactly Beancount's rule. So `4.00 USD @@ 6.37 AUD` against `-6.37 AUD` balances, and `-2 ETH @ 300 AUD` funds an elided
-gains leg in AUD. Account balances still move by the amount: the ETH account
-holds ETH. A quote in the leg's own commodity is weighed as written and
-warned about (`Warning::QuoteInOwnCommodity`). A cost is stored on the leg
-and weighed; nothing reads it back as inventory — lot booking is its own
-feature.
+set, else the amount itself, exactly Beancount's rule. So
+`4.00 USD @@ 6.37 AUD` against `-6.37 AUD` balances, and `-2 ETH @ 300 AUD`
+funds an elided gains leg in AUD. Account balances still move by the amount:
+the ETH account holds ETH. A quote in the leg's own commodity is weighed as
+written and warned about (`Warning::QuoteInOwnCommodity`). A cost is stored on
+the leg and weighed; nothing reads it back as inventory — lot booking is its
+own feature.
 
 Two or more elided legs cannot be written through the app — validation rejects
 that shape (see **Storing is permissive** below). The balance engine still
