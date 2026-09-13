@@ -382,8 +382,10 @@ enum WarningKey {
     PostingBeforeAccountOpened(AccountId),
     /// Keys a [`Warning::PostingAfterAccountClosed`].
     PostingAfterAccountClosed(AccountId),
-    /// Keys a [`Warning::QuoteInOwnCommodity`].
-    QuoteInOwnCommodity(AccountId),
+    /// Keys a [`Warning::QuoteInOwnCommodity`] by account *and* code, for
+    /// the same reason as `CommodityOutsideAccountList`: an account quoted in
+    /// its own AUD and in its own USD is two distinct facts.
+    QuoteInOwnCommodity(AccountId, String),
 }
 
 impl WarningKey {
@@ -406,9 +408,14 @@ impl WarningKey {
             Warning::PostingAfterAccountClosed { ref account_id, .. } => {
                 Some(Self::PostingAfterAccountClosed(account_id.clone()))
             }
-            Warning::QuoteInOwnCommodity { ref account_id, .. } => {
-                Some(Self::QuoteInOwnCommodity(account_id.clone()))
-            }
+            Warning::QuoteInOwnCommodity {
+                ref account_id,
+                ref commodity_code,
+                ..
+            } => Some(Self::QuoteInOwnCommodity(
+                account_id.clone(),
+                commodity_code.clone(),
+            )),
             Warning::PostingIntoArchivedAccount { .. } => None,
         }
     }
@@ -1303,6 +1310,7 @@ fn canonicalise_quote(
             Quote::PerUnit(_) => Quote::PerUnit(amount),
             Quote::Total(_) => Quote::Total(amount),
         }),
+        // `stated.amount()` is always `Some`, so the elided case cannot occur.
         Canonical::Resolved(None) => None,
         Canonical::Unregistered(code) => {
             tracing::warn!(
@@ -5740,35 +5748,53 @@ mod tests {
     }
 
     /// A quote in the leg's own commodity reaches the caller as one warning
-    /// per account, the same dedup the other keyed variants get.
+    /// per account and commodity, the same dedup `CommodityOutsideAccountList`
+    /// gets: repeats of one code collapse, but a second code is a second fact.
     #[sqlx::test(migrations = "./migrations")]
-    async fn a_quote_in_the_legs_own_commodity_warns_once_per_account(pool: sqlx::SqlitePool) {
+    async fn a_quote_in_the_legs_own_commodity_warns_once_per_account_and_code(
+        pool: sqlx::SqlitePool,
+    ) {
         ensure_path(&pool, "Assets:Bank").await;
         let fees = ensure_path(&pool, "Expenses:Fees").await;
         let svcs = services(&pool).await;
-        let priced = |description: &str| {
+        let priced = |description: &str, code: &str| {
             raw_with(
                 description,
                 vec![
-                    coded_leg("Assets:Bank", dec!(-2606.20), "AUD"),
+                    coded_leg("Assets:Bank", dec!(-2606.20), code),
                     RawPosting::builder()
                         .account("Expenses:Fees")
-                        .amount(Amount::new(dec!(7.85), "AUD"))
-                        .price(Quote::PerUnit(Amount::new(dec!(332), "AUD")))
+                        .amount(Amount::new(dec!(7.85), code))
+                        .price(Quote::PerUnit(Amount::new(dec!(332), code)))
                         .build(),
                 ],
             )
         };
 
-        let outcome = run(&svcs, &[priced("FEE ONE"), priced("FEE TWO")]).await;
-        assert_eq!(outcome.new_transactions, 2);
+        let outcome = run(
+            &svcs,
+            &[
+                priced("FEE ONE", "AUD"),
+                priced("FEE TWO", "AUD"),
+                priced("FEE THREE", "USD"),
+            ],
+        )
+        .await;
+        assert_eq!(outcome.new_transactions, 3);
         assert_eq!(
             outcome.warnings,
-            vec![Warning::QuoteInOwnCommodity {
-                account_id: fees,
-                account_path: "Expenses:Fees".to_owned(),
-                commodity_code: "AUD".to_owned(),
-            }]
+            vec![
+                Warning::QuoteInOwnCommodity {
+                    account_id: fees.clone(),
+                    account_path: "Expenses:Fees".to_owned(),
+                    commodity_code: "AUD".to_owned(),
+                },
+                Warning::QuoteInOwnCommodity {
+                    account_id: fees,
+                    account_path: "Expenses:Fees".to_owned(),
+                    commodity_code: "USD".to_owned(),
+                },
+            ]
         );
     }
 

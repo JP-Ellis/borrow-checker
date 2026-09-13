@@ -112,7 +112,7 @@ impl std::fmt::Display for Warning {
                 ..
             } => write!(
                 f,
-                "{account_path} is priced in {commodity_code}, its own commodity"
+                "{account_path} is quoted in {commodity_code}, its own commodity"
             ),
         }
     }
@@ -666,7 +666,7 @@ mod tests {
         );
         assert_eq!(
             warnings[0].to_string(),
-            "Fees is priced in AUD, its own commodity"
+            "Fees is quoted in AUD, its own commodity"
         );
     }
 
