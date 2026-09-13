@@ -365,6 +365,37 @@ impl Summary {
     }
 }
 
+/// One blocker for `--json`.
+///
+/// `items` are the identifiers a script acts on: account paths and
+/// commodity codes as strings, and for `other_skips` a `{cause, count}`
+/// object per cause — the human line's `<cause> ×<count>` is not for
+/// parsing.
+fn blocker_to_json(blocker: &bc_core::Blocker) -> serde_json::Value {
+    let items = match blocker {
+        bc_core::Blocker::OtherSkips(charged) => charged
+            .iter()
+            .map(|(cause, count)| {
+                serde_json::json!({
+                    "cause": cause.label(),
+                    "count": count,
+                })
+            })
+            .collect(),
+        bc_core::Blocker::UnresolvedAccounts(_)
+        | bc_core::Blocker::UnresolvedCommodities(_)
+        | _ => blocker
+            .items()
+            .into_iter()
+            .map(serde_json::Value::String)
+            .collect(),
+    };
+    serde_json::json!({
+        "kind": blocker.kind(),
+        "items": serde_json::Value::Array(items),
+    })
+}
+
 /// Builds the `--json` payload: the per-profile object is the `import run`
 /// payload for that mode, so a script that reads one reads the other.
 pub(crate) fn to_json(report: &bc_core::SyncReport, dry_run: bool) -> serde_json::Value {
@@ -396,15 +427,7 @@ pub(crate) fn to_json(report: &bc_core::SyncReport, dry_run: bool) -> serde_json
                     map.insert(
                         "blockers".to_owned(),
                         serde_json::Value::Array(
-                            plan.blockers()
-                                .iter()
-                                .map(|blocker| {
-                                    serde_json::json!({
-                                        "kind": blocker.kind(),
-                                        "items": blocker.items(),
-                                    })
-                                })
-                                .collect(),
+                            plan.blockers().iter().map(blocker_to_json).collect(),
                         ),
                     );
                 }
@@ -472,13 +495,15 @@ mod tests {
         }
     }
 
-    fn planned(name: &str, txns: usize, blockers: Vec<(&str, Vec<&str>)>) -> Row {
+    /// `skipped` is given, not derived: an `other skips` item carries its
+    /// own `×N`, so the count is not the number of items.
+    fn planned(name: &str, txns: usize, skipped: usize, blockers: Vec<(&str, Vec<&str>)>) -> Row {
         Row {
             profile: name.to_owned(),
             outcome: RowOutcome::Planned {
                 new_transactions: txns,
                 attached_postings: 0,
-                skipped_postings: blockers.iter().map(|(_, items)| items.len()).sum(),
+                skipped_postings: skipped,
                 warnings: 0,
                 blockers: blockers
                     .into_iter()
@@ -560,6 +585,42 @@ mod tests {
     }
 
     #[test]
+    fn other_skips_serialise_as_cause_and_count() {
+        let blocker = bc_core::Blocker::OtherSkips(vec![
+            (bc_core::SkipCause::AmbiguousResidual, 3_usize),
+            (bc_core::SkipCause::BlankCommodity, 1_usize),
+        ]);
+
+        let json = super::blocker_to_json(&blocker);
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "other_skips",
+                "items": [
+                    {"cause": "ambiguous residual", "count": 3_usize},
+                    {"cause": "blank commodity code", "count": 1_usize},
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn unresolved_accounts_serialise_as_paths() {
+        let blocker = bc_core::Blocker::UnresolvedAccounts(vec!["Expenses:Food".to_owned()]);
+
+        let json = super::blocker_to_json(&blocker);
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "unresolved_account",
+                "items": ["Expenses:Food"],
+            })
+        );
+    }
+
+    #[test]
     fn a_stopped_run_renders_the_batch_it_left_open() {
         let summary = Summary::new(
             vec![
@@ -620,6 +681,7 @@ mod tests {
                 planned(
                     "amp-saver",
                     31,
+                    5,
                     vec![
                         (
                             "unresolved account",
@@ -628,7 +690,7 @@ mod tests {
                         ("other skips", vec!["ambiguous residual ×3"]),
                     ],
                 ),
-                planned("ubank-everyday", 412, vec![]),
+                planned("ubank-everyday", 412, 0, vec![]),
             ],
             None,
             true,
@@ -642,7 +704,7 @@ mod tests {
 
     #[test]
     fn a_clean_dry_run_exits_zero() {
-        let summary = Summary::new(vec![planned("a", 1, vec![])], None, true);
+        let summary = Summary::new(vec![planned("a", 1, 0, vec![])], None, true);
         assert!(summary.exit_error().is_none());
     }
 
@@ -650,7 +712,7 @@ mod tests {
     fn blocked_and_failed_are_both_named_in_the_exit_error() {
         let summary = Summary::new(
             vec![
-                planned("a", 1, vec![("unresolved account", vec!["X:Y"])]),
+                planned("a", 1, 1, vec![("unresolved account", vec!["X:Y"])]),
                 failed("b", "importer", "boom"),
                 failed("c", "engine", "boom"),
             ],
