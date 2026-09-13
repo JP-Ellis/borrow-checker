@@ -1,0 +1,606 @@
+//! `sync` — run one import profile or every profile through the shared engine.
+//!
+//! `import run` is the detailed single-profile tool; this is the sweep: one
+//! row per profile, blockers under each row in a dry run, a totals line, and
+//! the snapshot path when one was taken. The rows are a view over
+//! [`bc_core::SyncReport`] that tests can build directly, since the engine's
+//! result types are `#[non_exhaustive]`.
+
+use std::fmt::Write as _;
+use std::path::Path;
+
+use crate::commands::import::PlanReport;
+use crate::commands::import::Report;
+use crate::commands::import::plural;
+use crate::context::AppContext;
+use crate::error::CliError;
+use crate::error::CliResult;
+
+/// Arguments for `sync`.
+#[non_exhaustive]
+#[derive(Debug, clap::Args)]
+#[command(group = clap::ArgGroup::new("target").required(true))]
+pub struct Args {
+    /// Run one profile, by name.
+    #[arg(long, value_name = "NAME", group = "target")]
+    pub profile: Option<String>,
+
+    /// Run every profile, in name order.
+    #[arg(long, group = "target")]
+    pub all: bool,
+
+    /// Report what each profile would do, without writing anything.
+    ///
+    /// Takes no snapshot and opens no batch. Exits non-zero when any profile
+    /// has a blocker — an unresolved account, an unresolved commodity, or a
+    /// posting skipped for any other cause — so a script can gate on it.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// Executes `sync`.
+///
+/// # Arguments
+///
+/// * `args` - The parsed arguments.
+/// * `ctx` - The shared application context.
+///
+/// # Errors
+///
+/// Returns [`CliError`] if `--profile` names no profile, the snapshot cannot
+/// be written, or — after the report has printed — any profile failed, or
+/// under `--dry-run` any profile has a blocker. Committed batches stay
+/// committed either way; the report names the snapshot and each batch id.
+#[inline]
+pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
+    let selection = match args.profile {
+        Some(name) => bc_core::ImportSelection::One(name),
+        None => bc_core::ImportSelection::All,
+    };
+    let mode = if args.dry_run {
+        bc_core::ImportMode::DryRun
+    } else {
+        bc_core::ImportMode::Commit
+    };
+
+    let report = ctx.engine.sync(selection, mode).await?;
+    let rows: Vec<Row> = report.profiles.iter().map(Row::from).collect();
+    let summary = Summary::new(rows, report.snapshot.as_deref(), args.dry_run);
+
+    if ctx.json {
+        crate::output::print_json(&to_json(&report, args.dry_run))?;
+    } else {
+        #[expect(clippy::print_stdout, reason = "CLI output")]
+        {
+            print!("{}", summary.render());
+        }
+    }
+
+    summary.exit_error().map_or(Ok(()), Err)
+}
+
+/// One profile's line in the human report.
+struct Row {
+    /// The profile's name.
+    profile: String,
+    /// The importer it names.
+    ///
+    /// Not read by [`Summary::render`] — the human report identifies a
+    /// profile by name alone — but part of the view `Row` builds over
+    /// [`bc_core::ProfileResult`] and its test fixtures.
+    #[expect(
+        dead_code,
+        reason = "carried for parity with ProfileRef; not yet columned"
+    )]
+    importer: String,
+    /// What happened to it.
+    outcome: RowOutcome,
+}
+
+/// The three shapes a profile's row can take.
+enum RowOutcome {
+    /// A committed run.
+    Imported {
+        /// Transactions created.
+        new_transactions: usize,
+        /// Legs attached to earlier runs' transactions.
+        attached_postings: usize,
+        /// Postings skipped, whatever the cause.
+        skipped_postings: usize,
+        /// Advisory warnings raised.
+        warnings: usize,
+        /// The batch id, for `import discard`.
+        batch: String,
+    },
+    /// A dry run.
+    Planned {
+        /// Transactions the run would create.
+        new_transactions: usize,
+        /// Legs it would attach.
+        attached_postings: usize,
+        /// Postings it would skip.
+        skipped_postings: usize,
+        /// Advisory warnings raised (a lower bound; see `import run`).
+        warnings: usize,
+        /// Each blocker's label and its items.
+        blockers: Vec<(String, Vec<String>)>,
+    },
+    /// The profile produced nothing.
+    Failed {
+        /// The stage label.
+        stage: String,
+        /// The failure message.
+        message: String,
+    },
+}
+
+impl From<&bc_core::ProfileResult> for Row {
+    #[inline]
+    fn from(result: &bc_core::ProfileResult) -> Self {
+        let outcome = match &result.result {
+            Ok(bc_core::ProfileRun::Imported(outcome)) => RowOutcome::Imported {
+                new_transactions: outcome.new_transactions,
+                attached_postings: outcome.attached_postings,
+                skipped_postings: outcome.skipped_postings,
+                warnings: outcome.warnings.len(),
+                batch: outcome.batch_id.to_string(),
+            },
+            Ok(bc_core::ProfileRun::Planned(plan)) => RowOutcome::Planned {
+                new_transactions: plan.new_transactions,
+                attached_postings: plan.attached_postings,
+                skipped_postings: plan.skipped_postings,
+                warnings: plan.warnings.len(),
+                blockers: plan
+                    .blockers()
+                    .iter()
+                    .map(|blocker| (blocker.label().to_owned(), blocker.items()))
+                    .collect(),
+            },
+            Ok(other) => RowOutcome::Failed {
+                stage: "engine".to_owned(),
+                message: format!("unexpected engine result: {other:?}"),
+            },
+            Err(failure) => RowOutcome::Failed {
+                stage: failure.stage.label().to_owned(),
+                message: failure.to_string(),
+            },
+        };
+        Self {
+            profile: result.profile.name.clone(),
+            importer: result.profile.importer.clone(),
+            outcome,
+        }
+    }
+}
+
+/// The whole human report: rows, the snapshot, and the exit policy.
+struct Summary {
+    /// One per profile, in the order they ran.
+    rows: Vec<Row>,
+    /// The pre-import snapshot, when one was taken.
+    snapshot: Option<String>,
+    /// Whether this was a dry run, which changes the columns and the exit rule.
+    dry_run: bool,
+}
+
+/// Width of the numeric columns.
+const NUM_WIDTH: usize = 8;
+
+impl Summary {
+    /// Builds the summary.
+    fn new(rows: Vec<Row>, snapshot: Option<&Path>, dry_run: bool) -> Self {
+        Self {
+            rows,
+            snapshot: snapshot.map(|path| path.display().to_string()),
+            dry_run,
+        }
+    }
+
+    /// Profiles that produced nothing.
+    fn failed(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| matches!(row.outcome, RowOutcome::Failed { .. }))
+            .count()
+    }
+
+    /// Planned profiles with at least one blocker.
+    fn blocked(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| matches!(&row.outcome, RowOutcome::Planned { blockers, .. } if !blockers.is_empty()))
+            .count()
+    }
+
+    /// The error `execute` returns after printing, or `None` for exit 0.
+    ///
+    /// A failed profile fails the command in either mode. A blocker fails it
+    /// only under `--dry-run`: that is the gate a script sequences before the
+    /// real sweep. A committed profile that skipped legs is reported, not
+    /// fatal — the re-run after `account create` attaches them.
+    fn exit_error(&self) -> Option<CliError> {
+        let failed = self.failed();
+        let blocked = if self.dry_run { self.blocked() } else { 0 };
+        let mut parts = Vec::new();
+        if failed > 0 {
+            parts.push(format!("{} failed", plural(failed, "profile")));
+        }
+        if blocked > 0 {
+            parts.push(format!("{} blocked", plural(blocked, "profile")));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(CliError::Arg(parts.join(", ")))
+        }
+    }
+
+    /// Renders the report, newline-terminated.
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "write! to a String is infallible; there is no error to surface from a \
+                   function returning String rather than fmt::Result"
+    )]
+    fn render(&self) -> String {
+        // Implicit format arguments capture locals, not consts.
+        let num_width = NUM_WIDTH;
+        let name_width = self
+            .rows
+            .iter()
+            .map(|row| row.profile.chars().count())
+            .max()
+            .unwrap_or(7)
+            .max(7);
+
+        let mut lines: Vec<String> = Vec::new();
+        let mut header = format!(
+            "{:<name_width$}  {:>num_width$}  {:>num_width$}  {:>num_width$}  {:>num_width$}",
+            "profile", "txns", "attached", "skipped", "warnings"
+        );
+        if !self.dry_run {
+            header.push_str("  batch");
+        }
+        lines.push(header);
+
+        let mut total_txns = 0_usize;
+        let mut total_skipped = 0_usize;
+        for row in &self.rows {
+            match &row.outcome {
+                RowOutcome::Imported {
+                    new_transactions,
+                    attached_postings,
+                    skipped_postings,
+                    warnings,
+                    batch,
+                } => {
+                    total_txns = total_txns.saturating_add(*new_transactions);
+                    total_skipped = total_skipped.saturating_add(*skipped_postings);
+                    lines.push(format!(
+                        "{:<name_width$}  {new_transactions:>num_width$}  {attached_postings:>num_width$}  {skipped_postings:>num_width$}  {warnings:>num_width$}  {batch}",
+                        row.profile
+                    ));
+                }
+                RowOutcome::Planned {
+                    new_transactions,
+                    attached_postings,
+                    skipped_postings,
+                    warnings,
+                    blockers,
+                } => {
+                    total_txns = total_txns.saturating_add(*new_transactions);
+                    total_skipped = total_skipped.saturating_add(*skipped_postings);
+                    lines.push(format!(
+                        "{:<name_width$}  {new_transactions:>num_width$}  {attached_postings:>num_width$}  {skipped_postings:>num_width$}  {warnings:>num_width$}",
+                        row.profile
+                    ));
+                    for (label, items) in blockers {
+                        for item in items {
+                            lines.push(format!("    {label:<22}{item}"));
+                        }
+                    }
+                }
+                RowOutcome::Failed { stage, message } => {
+                    let dash = format!("{:>num_width$}", "—");
+                    lines.push(format!(
+                        "{:<name_width$}  {dash}  {dash}  {dash}  {dash}  failed ({stage}): {message}",
+                        row.profile
+                    ));
+                }
+            }
+        }
+
+        lines.push(String::new());
+        let verb = if self.dry_run {
+            "would be imported"
+        } else {
+            "imported"
+        };
+        let mut total = plural(self.rows.len(), "profile");
+        let failed = self.failed();
+        if failed > 0 {
+            let _ = write!(total, ", {failed} failed");
+        }
+        let blocked = self.blocked();
+        if self.dry_run && blocked > 0 {
+            let _ = write!(total, ", {blocked} blocked");
+        }
+        let _ = write!(
+            total,
+            ". {} {verb}, {} skipped.",
+            plural(total_txns, "transaction"),
+            plural(total_skipped, "posting")
+        );
+        lines.push(total);
+        if let Some(snapshot) = &self.snapshot {
+            lines.push(format!("snapshot: {snapshot}"));
+        }
+        lines.push(String::new());
+        lines.join("\n")
+    }
+}
+
+/// Builds the `--json` payload: the per-profile object is the `import run`
+/// payload for that mode, so a script that reads one reads the other.
+pub(crate) fn to_json(report: &bc_core::SyncReport, dry_run: bool) -> serde_json::Value {
+    let profiles: Vec<serde_json::Value> = report
+        .profiles
+        .iter()
+        .map(|result| {
+            let mut object = serde_json::json!({
+                "profile": result.profile.name,
+                "importer": result.profile.importer,
+                "ok": result.result.is_ok(),
+                "failure": serde_json::Value::Null,
+            });
+            let Some(map) = object.as_object_mut() else {
+                return object;
+            };
+            match &result.result {
+                Ok(bc_core::ProfileRun::Imported(outcome)) => {
+                    let payload = Report::from(outcome).to_json(&outcome.batch_id.to_string());
+                    if let Some(fields) = payload.as_object() {
+                        map.extend(fields.clone());
+                    }
+                }
+                Ok(bc_core::ProfileRun::Planned(plan)) => {
+                    let payload = PlanReport::from(plan).to_json();
+                    if let Some(fields) = payload.as_object() {
+                        map.extend(fields.clone());
+                    }
+                    map.insert(
+                        "blockers".to_owned(),
+                        serde_json::Value::Array(
+                            plan.blockers()
+                                .iter()
+                                .map(|blocker| {
+                                    serde_json::json!({
+                                        "kind": blocker.kind(),
+                                        "items": blocker.items(),
+                                    })
+                                })
+                                .collect(),
+                        ),
+                    );
+                }
+                Ok(other) => {
+                    map.insert("ok".to_owned(), serde_json::Value::Bool(false));
+                    map.insert(
+                        "failure".to_owned(),
+                        serde_json::json!({
+                            "stage": "engine",
+                            "message": format!("unexpected engine result: {other:?}"),
+                        }),
+                    );
+                }
+                Err(failure) => {
+                    map.insert(
+                        "failure".to_owned(),
+                        serde_json::json!({
+                            "stage": failure.stage.label(),
+                            "message": failure.message,
+                        }),
+                    );
+                }
+            }
+            object
+        })
+        .collect();
+
+    serde_json::json!({
+        "dry_run": dry_run,
+        "snapshot": report.snapshot.as_ref().map(|path| path.display().to_string()),
+        "profiles": profiles,
+    })
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use clap::Parser as _;
+    use pretty_assertions::assert_eq;
+
+    use super::Args;
+    use super::Row;
+    use super::RowOutcome;
+    use super::Summary;
+
+    /// Wrapper so `Args` can be parsed on its own.
+    #[derive(Debug, clap::Parser)]
+    struct Wrapper {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    fn imported(name: &str, txns: usize, skipped: usize, warnings: usize) -> Row {
+        Row {
+            profile: name.to_owned(),
+            importer: "csv".to_owned(),
+            outcome: RowOutcome::Imported {
+                new_transactions: txns,
+                attached_postings: 0,
+                skipped_postings: skipped,
+                warnings,
+                batch: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+            },
+        }
+    }
+
+    fn planned(name: &str, txns: usize, blockers: Vec<(&str, Vec<&str>)>) -> Row {
+        Row {
+            profile: name.to_owned(),
+            importer: "csv".to_owned(),
+            outcome: RowOutcome::Planned {
+                new_transactions: txns,
+                attached_postings: 0,
+                skipped_postings: blockers.iter().map(|(_, items)| items.len()).sum(),
+                warnings: 0,
+                blockers: blockers
+                    .into_iter()
+                    .map(|(label, items)| {
+                        (
+                            label.to_owned(),
+                            items.into_iter().map(str::to_owned).collect(),
+                        )
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    fn failed(name: &str, stage: &str, message: &str) -> Row {
+        Row {
+            profile: name.to_owned(),
+            importer: "csv".to_owned(),
+            outcome: RowOutcome::Failed {
+                stage: stage.to_owned(),
+                message: message.to_owned(),
+            },
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::assertions_on_result_states,
+        reason = "Wrapper derives Debug for the CLI, which makes unwrap_err's bound \
+                   satisfiable here; is_err reads as a parse-rejection check, not a \
+                   value inspection"
+    )]
+    fn profile_and_all_are_mutually_exclusive() {
+        assert!(Wrapper::try_parse_from(["bc", "--profile", "a", "--all"]).is_err());
+    }
+
+    #[test]
+    #[expect(
+        clippy::assertions_on_result_states,
+        reason = "Wrapper derives Debug for the CLI, which makes unwrap/unwrap_err's bound \
+                   satisfiable here; is_ok/is_err read as parse-outcome checks, not value \
+                   inspection"
+    )]
+    fn one_of_profile_or_all_is_required() {
+        assert!(Wrapper::try_parse_from(["bc"]).is_err());
+        assert!(Wrapper::try_parse_from(["bc", "--all"]).is_ok());
+        assert!(Wrapper::try_parse_from(["bc", "--profile", "a", "--dry-run"]).is_ok());
+    }
+
+    #[test]
+    fn a_clean_commit_sweep_renders_rows_totals_and_the_snapshot() {
+        let summary = Summary::new(
+            vec![
+                imported("nab-credit", 88, 0, 0),
+                imported("ubank-everyday", 412, 0, 2),
+            ],
+            Some(std::path::Path::new(
+                "/backups/db.2026-09-13.pre-import.sqlite",
+            )),
+            false,
+        );
+        insta::assert_snapshot!(summary.render());
+        assert!(summary.exit_error().is_none());
+    }
+
+    #[test]
+    fn a_failed_profile_renders_and_fails_the_exit_code() {
+        let summary = Summary::new(
+            vec![
+                failed(
+                    "nab-credit",
+                    "importer",
+                    "import error: no such file: nab.csv",
+                ),
+                imported("ubank-everyday", 412, 0, 0),
+            ],
+            Some(std::path::Path::new("/backups/db.pre-import.sqlite")),
+            false,
+        );
+        insta::assert_snapshot!(summary.render());
+        assert_eq!(
+            summary.exit_error().map(|e| e.to_string()),
+            Some("1 profile failed".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_dry_run_lists_blockers_under_each_row_and_fails_the_exit_code() {
+        let summary = Summary::new(
+            vec![
+                planned(
+                    "amp-saver",
+                    31,
+                    vec![
+                        (
+                            "unresolved account",
+                            vec!["Expenses:Food:Cafes", "Income:Interest"],
+                        ),
+                        ("other skips", vec!["ambiguous residual ×3"]),
+                    ],
+                ),
+                planned("ubank-everyday", 412, vec![]),
+            ],
+            None,
+            true,
+        );
+        insta::assert_snapshot!(summary.render());
+        assert_eq!(
+            summary.exit_error().map(|e| e.to_string()),
+            Some("1 profile blocked".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_clean_dry_run_exits_zero() {
+        let summary = Summary::new(vec![planned("a", 1, vec![])], None, true);
+        assert!(summary.exit_error().is_none());
+    }
+
+    #[test]
+    fn blocked_and_failed_are_both_named_in_the_exit_error() {
+        let summary = Summary::new(
+            vec![
+                planned("a", 1, vec![("unresolved account", vec!["X:Y"])]),
+                failed("b", "importer", "boom"),
+                failed("c", "engine", "boom"),
+            ],
+            None,
+            true,
+        );
+        assert_eq!(
+            summary.exit_error().map(|e| e.to_string()),
+            Some("2 profiles failed, 1 profile blocked".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_commit_sweep_ignores_skips_for_the_exit_code() {
+        // Warn, don't block: a committed profile that skipped legs is reported,
+        // and the re-run after `account create` attaches them.
+        let summary = Summary::new(vec![imported("a", 10, 4, 0)], None, false);
+        assert!(summary.exit_error().is_none());
+    }
+
+    #[test]
+    fn an_empty_sweep_renders_a_zero_total() {
+        let summary = Summary::new(Vec::new(), None, false);
+        insta::assert_snapshot!(summary.render());
+        assert!(summary.exit_error().is_none());
+    }
+}

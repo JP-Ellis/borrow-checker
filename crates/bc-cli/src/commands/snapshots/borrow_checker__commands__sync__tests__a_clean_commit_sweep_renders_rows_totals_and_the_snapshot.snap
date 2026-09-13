@@ -1,0 +1,10 @@
+---
+source: crates/bc-cli/src/commands/sync.rs
+expression: summary.render()
+---
+profile             txns  attached   skipped  warnings  batch
+nab-credit            88         0         0         0  01ARZ3NDEKTSV4RRFFQ69G5FAV
+ubank-everyday       412         0         0         2  01ARZ3NDEKTSV4RRFFQ69G5FAV
+
+2 profiles. 500 transactions imported, 0 postings skipped.
+snapshot: /backups/db.2026-09-13.pre-import.sqlite

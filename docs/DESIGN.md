@@ -311,7 +311,7 @@ Snapshots are taken via SQLite `VACUUM INTO` to a temp file, then atomically ren
 | `manual` | User-initiated, from the CLI or the GUI Settings panel |
 | `pre-migration` | Automatic, taken before applying schema migrations when `auto_pre_migration` is enabled and the database file already existed and was non-empty |
 | `pre-restore` | Automatic safety snapshot taken just before a restore swap; deliberately skips rotation so it can never prune the very backup being restored |
-| `pre-import` | Automatic, taken before an import run when `auto_pre_import` is enabled |
+| `pre-import` | Automatic, taken before an import run — once per `sync` sweep, not once per profile — when `auto_pre_import` is enabled |
 | `pre-discard` | Automatic, taken before an `import discard` run when `auto_pre_discard` is enabled |
 
 **Retention** is a conservative union, configured in the `[backup]` section (`dir`, `retain_count` default 5, `retain_days` unset, `auto_pre_migration` default true, `auto_pre_import` default true, `auto_pre_discard` default true): a backup is kept if it is among the `retain_count` newest **or** newer than `retain_days`; it is pruned only if it satisfies neither. When both limits are unset, nothing is pruned. On disk, `retain_count = 0` is the sentinel for "unlimited" (an absent key falls back to the default of 5). Routine `pre-import` and `pre-discard` snapshots share this retention pool with manual and `pre-migration` backups, so a series of import or discard runs can crowd out older manual backups under the same union; per-kind retention is tracked as #344.
@@ -621,6 +621,7 @@ borrow-checker profile [create|list|show|edit|remove]
 borrow-checker import run --profile <name> [--dry-run]
 borrow-checker import list
 borrow-checker import discard <batch-id>
+borrow-checker sync --profile <name> | --all [--dry-run]
 borrow-checker export --format <ledger|beancount> --output <file>
 borrow-checker report [net-worth|summary|categories]
 borrow-checker budget [list|create|archive|status|update]
@@ -631,6 +632,8 @@ borrow-checker completions <bash|elvish|fish|powershell|zsh>
 Importers source their own files from the profile config (see §5.2), so `import run` takes no file argument and no account argument: each `RawPosting` names its own account path, resolved to an id in `bc-core` at persistence time (see §5.2, §5.3). `import` is a subcommand group: `run` executes a profile, `list` shows every run newest first with its outcome, and `discard <batch-id>` undoes one (see §5.3) — reported the same way `run` is, with `--json` covering all three.
 
 `run --dry-run` resolves the profile and reports what it would do without writing: the account paths that would not resolve, the commodity codes that are not registered, the rows that would be skipped and why, the tags that would be created, and the per-account totals that would post. It is the same run with its writes diverted, not a second implementation, so it cannot drift from what `run` does. The report leads with what is broken rather than what would succeed, because it exists for profile tuning; `--json` covers it as it does the other three, minus the `batch_id` key, since a dry run opens no batch and so leaves nothing to `list` or `discard`.
+
+`sync` is the sweep over the same engine: `--profile <name>` runs one profile, `--all` runs every profile in name order, and `--dry-run` plans each without writing. A committing sweep takes one `pre-import` snapshot before its first write, not one per profile, and still opens one batch per profile so any one import stays independently discardable. A profile whose importer fails is recorded and the sweep continues; the command then exits non-zero after printing, naming the snapshot and every batch id. Under `--dry-run` it also exits non-zero when any profile has a *blocker* — an unresolved account, an unresolved commodity, or a posting skipped for any other cause — which is the gate a bootstrap script sequences before the real sweep. Warnings never block. `import run` and `sync --profile` do the same work; `import run` prints the detailed per-profile plan, `sync` one row per profile, and `--json` on `sync` embeds the `import run` payload per profile so the two read alike.
 
 Import profiles are created and edited from the CLI. `profile create` takes the
 importer's opaque config as a TOML or JSON file (`--config <FILE>`, or `-` for
