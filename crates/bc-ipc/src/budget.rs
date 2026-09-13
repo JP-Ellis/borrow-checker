@@ -182,7 +182,7 @@ pub struct BudgetSummary {
     pub has_mixed_commodities: bool,
     /// Number of leaf budget lines where `spent > effective_target`.
     pub overspent_count: u32,
-    /// `true` when any leaf budget has unvalued spend.
+    /// `true` when any node in the tree has unvalued spend.
     pub has_unvalued: bool,
 }
 
