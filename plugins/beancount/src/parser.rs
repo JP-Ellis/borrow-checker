@@ -548,17 +548,23 @@ fn parse_meta_value(raw: &str) -> MetaValue {
 /// an amount section but a malformed number or missing currency still
 /// errors.
 ///
+/// The text after the account is read as units (`N CCY`), an optional cost
+/// block (`{N CCY, YYYY-MM-DD, "label"}` in any order, or `{{…}}` for a
+/// total), and an optional price (`@ N CCY` per unit, `@@ N CCY` total).
+///
 /// # Arguments
 ///
 /// * `line` - A trimmed posting line (without leading whitespace).
 ///
 /// # Returns
 ///
-/// A [`Posting`] with an account and an optional amount/currency.
+/// A [`Posting`] with an account, an optional amount/currency, and the price
+/// and cost annotations the leg states.
 ///
 /// # Errors
 ///
-/// Returns an error if the posting has a malformed amount or currency.
+/// Returns an error if the posting has a malformed amount, currency, price
+/// or cost block.
 fn parse_posting(line: &str) -> Result<Posting, String> {
     let line_no_comment = line.split(';').next().unwrap_or(line).trim_end();
 
@@ -572,6 +578,8 @@ fn parse_posting(line: &str) -> Result<Posting, String> {
         return Ok(Posting {
             account: line_no_comment.trim().to_owned(),
             amount: None,
+            price: None,
+            cost: None,
             metadata: Vec::new(),
         });
     };
@@ -582,17 +590,18 @@ fn parse_posting(line: &str) -> Result<Posting, String> {
         .trim()
         .to_owned();
     let rest = line_no_comment.get(split_pos..).unwrap_or_default().trim();
+    let Annotations { units, cost, price } = split_annotations(rest, line_no_comment)?;
 
-    let last_space = rest
+    let last_space = units
         .rfind(' ')
-        .ok_or_else(|| format!("posting missing currency: '{rest}'"))?;
+        .ok_or_else(|| format!("posting missing currency: '{units}'"))?;
 
-    let amount_str = rest.get(..last_space).unwrap_or_default().trim();
+    let amount_str = units.get(..last_space).unwrap_or_default().trim();
     // `last_space` is the byte index of ' ', so `last_space + 1` points to the
     // next character. Since ' ' is a single-byte ASCII codepoint the resulting
     // index is always on a UTF-8 boundary; we use `.get()` for safety.
     let currency_start = last_space.saturating_add(1);
-    let currency = rest
+    let currency = units
         .get(currency_start..)
         .unwrap_or_default()
         .trim()
@@ -600,11 +609,231 @@ fn parse_posting(line: &str) -> Result<Posting, String> {
     let value = number::parse_number(amount_str)
         .map_err(|e| format!("bad posting amount '{amount_str}' in: '{line_no_comment}': {e}"))?;
 
+    let cost = cost
+        .map(|(inner, total)| parse_cost_block(inner, total, line_no_comment))
+        .transpose()?;
+    let price = price
+        .map(|(text, total)| parse_price(text, total, line_no_comment))
+        .transpose()?;
+
     Ok(Posting {
         account,
         amount: Some(PostingAmount { value, currency }),
+        price,
+        cost,
         metadata: Vec::new(),
     })
+}
+
+/// The three parts of a posting's amount text, still unparsed.
+///
+/// Each annotation is its inner text plus whether it is the total form
+/// (`{{…}}` / `@@`).
+struct Annotations<'a> {
+    /// The `N CCY` units text.
+    units: &'a str,
+    /// The text between the braces of a cost block, and whether it is `{{…}}`.
+    cost: Option<(&'a str, bool)>,
+    /// The text after the price marker, and whether it is `@@`.
+    price: Option<(&'a str, bool)>,
+}
+
+/// Splits a posting's amount text into units, cost block and price.
+///
+/// Beancount orders them `UNITS [{COST} | {{COST}}] [@ PRICE | @@ PRICE]`.
+///
+/// # Arguments
+///
+/// * `rest` - The trimmed text after the account.
+/// * `line` - The posting line without its comment, for diagnostics.
+///
+/// # Returns
+///
+/// The [`Annotations`] of the text.
+///
+/// # Errors
+///
+/// Returns an error if a cost block is not closed, or text follows the cost
+/// block that is not a price.
+fn split_annotations<'a>(rest: &'a str, line: &str) -> Result<Annotations<'a>, String> {
+    let (units, after_units) = match rest.find('{') {
+        Some(open) => (
+            rest.get(..open).unwrap_or_default().trim(),
+            rest.get(open..).unwrap_or_default(),
+        ),
+        None => match rest.find(" @") {
+            Some(at) => (
+                rest.get(..at).unwrap_or_default().trim(),
+                rest.get(at..).unwrap_or_default().trim_start(),
+            ),
+            None => (rest, ""),
+        },
+    };
+
+    let (cost, after_cost) = if let Some(inner_start) = after_units.strip_prefix("{{") {
+        let close = inner_start
+            .find("}}")
+            .ok_or_else(|| format!("cost block is not closed in: '{line}'"))?;
+        let after = inner_start
+            .get(close.saturating_add(2)..)
+            .unwrap_or_default()
+            .trim();
+        (
+            Some((inner_start.get(..close).unwrap_or_default().trim(), true)),
+            after,
+        )
+    } else if let Some(inner_start) = after_units.strip_prefix('{') {
+        let close = inner_start
+            .find('}')
+            .ok_or_else(|| format!("cost block is not closed in: '{line}'"))?;
+        let after = inner_start
+            .get(close.saturating_add(1)..)
+            .unwrap_or_default()
+            .trim();
+        (
+            Some((inner_start.get(..close).unwrap_or_default().trim(), false)),
+            after,
+        )
+    } else {
+        (None, after_units)
+    };
+
+    let price = if let Some(text) = after_cost.strip_prefix("@@") {
+        Some((text.trim(), true))
+    } else if let Some(text) = after_cost.strip_prefix('@') {
+        Some((text.trim(), false))
+    } else if after_cost.is_empty() {
+        None
+    } else {
+        return Err(format!(
+            "unexpected '{after_cost}' after the cost block in: '{line}'"
+        ));
+    };
+
+    Ok(Annotations { units, cost, price })
+}
+
+/// Reads an `N CCY` figure where `N` may be a number expression.
+///
+/// # Arguments
+///
+/// * `text` - The figure text.
+///
+/// # Returns
+///
+/// The amount, or `None` when `text` is not `N CCY`.
+fn amount_with_currency(text: &str) -> Option<bc_sdk::Amount> {
+    let (value, currency) = text.rsplit_once(' ')?;
+    let currency = currency.trim();
+    if !is_currency(currency) {
+        return None;
+    }
+    let value = number::parse_number(value).ok()?;
+    Some(bc_sdk::Amount::new(value, currency))
+}
+
+/// Reads the text after `@` or `@@`.
+///
+/// # Arguments
+///
+/// * `text` - The figure text after the marker.
+/// * `total` - `true` for `@@`.
+/// * `line` - The posting line without its comment, for diagnostics.
+///
+/// # Returns
+///
+/// The price in its stated form.
+///
+/// # Errors
+///
+/// Returns an error if the text is not `N CCY` or the figure is negative.
+fn parse_price(text: &str, total: bool, line: &str) -> Result<bc_sdk::Quote, String> {
+    let amount = amount_with_currency(text)
+        .ok_or_else(|| format!("bad price '{text}' in: '{line}': expected 'N CCY'"))?;
+    if amount.value.is_sign_negative() && !amount.value.is_zero() {
+        return Err(format!("negative price not allowed in: '{line}'"));
+    }
+    Ok(if total {
+        bc_sdk::Quote::Total(amount)
+    } else {
+        bc_sdk::Quote::PerUnit(amount)
+    })
+}
+
+/// Reads the inside of a `{…}` or `{{…}}` cost block.
+///
+/// Components are comma-separated and may come in any order: one `N CCY`
+/// amount, one `YYYY-MM-DD` date, one `"label"`. A block without an amount
+/// (or with Beancount's `*` merge marker) selects a lot from inventory,
+/// which needs booking this importer does not do.
+///
+/// # Arguments
+///
+/// * `inner` - The text between the braces.
+/// * `total` - `true` for `{{…}}`.
+/// * `line` - The posting line without its comment, for diagnostics.
+///
+/// # Returns
+///
+/// The cost basis with its lot date and label.
+///
+/// # Errors
+///
+/// Returns an error for a lot selection, a negative amount, a repeated
+/// component, or a component that is none of the three.
+fn parse_cost_block(inner: &str, total: bool, line: &str) -> Result<bc_sdk::Cost, String> {
+    let mut amount: Option<bc_sdk::Amount> = None;
+    let mut lot_date: Option<bc_sdk::Date> = None;
+    let mut label: Option<String> = None;
+    let mut selects_lot = false;
+
+    for component in inner.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+        if component == "*" {
+            selects_lot = true;
+        } else if component.starts_with('"') {
+            let mut input = component;
+            let text = quoted_string(&mut input).map_err(|_e| {
+                format!(
+                    "bad cost component '{component}' in: '{line}': expected 'N CCY', a YYYY-MM-DD date or a \"label\""
+                )
+            })?;
+            if label.replace(text).is_some() {
+                return Err(format!("cost block has two labels in: '{line}'"));
+            }
+        } else if component.len() == 10
+            && let Ok(parsed) = date(&mut { component })
+        {
+            if lot_date.replace(parsed).is_some() {
+                return Err(format!("cost block has two dates in: '{line}'"));
+            }
+        } else if let Some(parsed) = amount_with_currency(component) {
+            if amount.replace(parsed).is_some() {
+                return Err(format!("cost block has two amounts in: '{line}'"));
+            }
+        } else {
+            return Err(format!(
+                "bad cost component '{component}' in: '{line}': expected 'N CCY', a YYYY-MM-DD date or a \"label\""
+            ));
+        }
+    }
+
+    let Some(amount) = amount.filter(|_| !selects_lot) else {
+        return Err(format!(
+            "lot selection needs inventory booking, not supported yet (#518) in: '{line}'"
+        ));
+    };
+    if amount.value.is_sign_negative() && !amount.value.is_zero() {
+        return Err(format!("negative cost not allowed in: '{line}'"));
+    }
+    Ok(bc_sdk::Cost::builder()
+        .basis(if total {
+            bc_sdk::Quote::Total(amount)
+        } else {
+            bc_sdk::Quote::PerUnit(amount)
+        })
+        .maybe_date(lot_date)
+        .maybe_label(label)
+        .build())
 }
 
 /// Parses a strict `YYYY-MM-DD` date into a [`bc_sdk::Date`].
@@ -678,7 +907,12 @@ fn quoted_string(input: &mut &str) -> ModalResult<String> {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use bc_sdk::Amount;
+    use bc_sdk::Cost;
+    use bc_sdk::Date;
+    use bc_sdk::Quote;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
@@ -1414,15 +1648,168 @@ mod tests {
         );
     }
 
-    /// A price annotation is not read yet; the rejection names it so the
-    /// stopping line is recognisable.
+    fn units(value: Decimal, currency: &str) -> Option<PostingAmount> {
+        Some(PostingAmount {
+            value,
+            currency: currency.to_owned(),
+        })
+    }
+
+    #[rstest]
+    #[case::per_unit(
+        "Assets:Crypto  -2 ETH @ 300 AUD",
+        units(dec!(-2), "ETH"),
+        Some(Quote::PerUnit(Amount::new(dec!(300), "AUD")))
+    )]
+    #[case::total(
+        "Expenses:Software  4.00 USD @@ 6.37 AUD",
+        units(dec!(4.00), "USD"),
+        Some(Quote::Total(Amount::new(dec!(6.37), "AUD")))
+    )]
+    #[case::expression_units(
+        "Assets:Crypto  (1 + 1) ETH @ 300 AUD",
+        units(dec!(2), "ETH"),
+        Some(Quote::PerUnit(Amount::new(dec!(300), "AUD")))
+    )]
+    #[case::expression_price(
+        "Assets:Crypto  2 ETH @ (600 / 2) AUD",
+        units(dec!(2), "ETH"),
+        Some(Quote::PerUnit(Amount::new(dec!(300), "AUD")))
+    )]
+    #[case::comment_after(
+        "Assets:Crypto  2 ETH @ 300 AUD ; bought",
+        units(dec!(2), "ETH"),
+        Some(Quote::PerUnit(Amount::new(dec!(300), "AUD")))
+    )]
+    #[case::unpriced("Assets:Bank  -6.37 AUD", units(dec!(-6.37), "AUD"), None)]
+    fn a_price_is_read_in_its_stated_form(
+        #[case] line: &str,
+        #[case] amount: Option<PostingAmount>,
+        #[case] price: Option<Quote>,
+    ) {
+        let posting = parse_posting(line).expect("parses");
+        assert_eq!(posting.amount, amount);
+        assert_eq!(posting.price, price);
+        assert_eq!(posting.cost, None);
+    }
+
+    #[rstest]
+    #[case::per_unit(
+        "Assets:Shares  2 AAPL {105 AUD}",
+        Cost::builder().basis(Quote::PerUnit(Amount::new(dec!(105), "AUD"))).build()
+    )]
+    #[case::total(
+        "Assets:Shares  2 AAPL {{210 AUD}}",
+        Cost::builder().basis(Quote::Total(Amount::new(dec!(210), "AUD"))).build()
+    )]
+    #[case::with_date(
+        "Assets:Shares  2 AAPL {105 AUD, 2024-03-01}",
+        Cost::builder()
+            .basis(Quote::PerUnit(Amount::new(dec!(105), "AUD")))
+            .date(Date::new(2024, 3, 1))
+            .build()
+    )]
+    #[case::with_label_then_date(
+        "Assets:Shares  2 AAPL {\"lot-a\", 2024-03-01, 105 AUD}",
+        Cost::builder()
+            .basis(Quote::PerUnit(Amount::new(dec!(105), "AUD")))
+            .date(Date::new(2024, 3, 1))
+            .label("lot-a")
+            .build()
+    )]
+    #[case::total_with_label(
+        "Assets:Shares  2 AAPL {{210 AUD, \"lot-a\"}}",
+        Cost::builder()
+            .basis(Quote::Total(Amount::new(dec!(210), "AUD")))
+            .label("lot-a")
+            .build()
+    )]
+    fn a_cost_block_is_read_in_any_component_order(#[case] line: &str, #[case] cost: Cost) {
+        let posting = parse_posting(line).expect("parses");
+        assert_eq!(posting.amount, units(dec!(2), "AAPL"));
+        assert_eq!(posting.cost, Some(cost));
+        assert_eq!(posting.price, None);
+    }
+
     #[test]
-    fn a_priced_posting_names_the_annotation() {
-        let err = parse_posting("Assets:Bank  10.00 USD @@ 15.00 AUD").expect_err("rejects");
+    fn a_sale_carries_both_cost_and_price() {
+        let posting = parse_posting("Assets:Shares  -2 AAPL {105 AUD, 2024-03-01} @ 150 AUD")
+            .expect("parses");
+        assert_eq!(posting.amount, units(dec!(-2), "AAPL"));
         assert_eq!(
-            err,
-            "bad posting amount '10.00 USD @@ 15.00' in: 'Assets:Bank  10.00 USD @@ 15.00 AUD': unexpected 'USD @@ 15.00' after the number"
+            posting.cost,
+            Some(
+                Cost::builder()
+                    .basis(Quote::PerUnit(Amount::new(dec!(105), "AUD")))
+                    .date(Date::new(2024, 3, 1))
+                    .build()
+            )
         );
+        assert_eq!(
+            posting.price,
+            Some(Quote::PerUnit(Amount::new(dec!(150), "AUD")))
+        );
+    }
+
+    #[rstest]
+    #[case::empty_block(
+        "Assets:Shares  -2 AAPL {}",
+        "lot selection needs inventory booking, not supported yet (#518) in: 'Assets:Shares  -2 AAPL {}'"
+    )]
+    #[case::date_only(
+        "Assets:Shares  -2 AAPL {2024-03-01}",
+        "lot selection needs inventory booking, not supported yet (#518) in: 'Assets:Shares  -2 AAPL {2024-03-01}'"
+    )]
+    #[case::label_only(
+        "Assets:Shares  -2 AAPL {\"lot-a\"}",
+        "lot selection needs inventory booking, not supported yet (#518) in: 'Assets:Shares  -2 AAPL {\"lot-a\"}'"
+    )]
+    #[case::merge_marker(
+        "Assets:Shares  -2 AAPL {105 AUD, *}",
+        "lot selection needs inventory booking, not supported yet (#518) in: 'Assets:Shares  -2 AAPL {105 AUD, *}'"
+    )]
+    #[case::negative_price(
+        "Assets:Crypto  2 ETH @ -300 AUD",
+        "negative price not allowed in: 'Assets:Crypto  2 ETH @ -300 AUD'"
+    )]
+    #[case::negative_cost(
+        "Assets:Shares  2 AAPL {-105 AUD}",
+        "negative cost not allowed in: 'Assets:Shares  2 AAPL {-105 AUD}'"
+    )]
+    #[case::two_amounts(
+        "Assets:Shares  2 AAPL {105 AUD, 106 AUD}",
+        "cost block has two amounts in: 'Assets:Shares  2 AAPL {105 AUD, 106 AUD}'"
+    )]
+    #[case::two_dates(
+        "Assets:Shares  2 AAPL {105 AUD, 2024-03-01, 2024-03-02}",
+        "cost block has two dates in: 'Assets:Shares  2 AAPL {105 AUD, 2024-03-01, 2024-03-02}'"
+    )]
+    #[case::two_labels(
+        "Assets:Shares  2 AAPL {105 AUD, \"a\", \"b\"}",
+        "cost block has two labels in: 'Assets:Shares  2 AAPL {105 AUD, \"a\", \"b\"}'"
+    )]
+    #[case::unclosed(
+        "Assets:Shares  2 AAPL {105 AUD",
+        "cost block is not closed in: 'Assets:Shares  2 AAPL {105 AUD'"
+    )]
+    #[case::bad_cost_amount(
+        "Assets:Shares  2 AAPL {105}",
+        "bad cost component '105' in: 'Assets:Shares  2 AAPL {105}': expected 'N CCY', a YYYY-MM-DD date or a \"label\""
+    )]
+    #[case::price_missing_currency(
+        "Assets:Crypto  2 ETH @ 300",
+        "bad price '300' in: 'Assets:Crypto  2 ETH @ 300': expected 'N CCY'"
+    )]
+    #[case::trailing_text(
+        "Assets:Crypto  2 ETH @ 300 AUD extra",
+        "bad price '300 AUD extra' in: 'Assets:Crypto  2 ETH @ 300 AUD extra': expected 'N CCY'"
+    )]
+    #[case::text_after_cost(
+        "Assets:Shares  2 AAPL {105 AUD} extra",
+        "unexpected 'extra' after the cost block in: 'Assets:Shares  2 AAPL {105 AUD} extra'"
+    )]
+    fn an_annotation_error_names_the_line(#[case] line: &str, #[case] expected: &str) {
+        assert_eq!(parse_posting(line).expect_err("rejects"), expected);
     }
 
     #[test]

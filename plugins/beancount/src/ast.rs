@@ -200,6 +200,10 @@ pub(crate) struct Posting {
     /// The explicit amount, or `None` if the posting elides it (Beancount
     /// derives the elided amount so the transaction balances).
     pub amount: Option<PostingAmount>,
+    /// The `@` / `@@` price annotation, if the leg states one.
+    pub price: Option<bc_sdk::Quote>,
+    /// The `{}` / `{{}}` cost basis, if the leg states one.
+    pub cost: Option<bc_sdk::Cost>,
     /// This leg's own `key: value` metadata lines, in source order.
     pub metadata: Vec<MetaEntry>,
 }
