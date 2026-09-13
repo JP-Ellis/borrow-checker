@@ -94,9 +94,9 @@ pub(crate) fn spread_pair(posting: &Posting) -> Option<(Date, Date)> {
 /// Merges `updated` with fields from `current` that the edit DTO cannot express.
 ///
 /// The `edit` path receives a `Transaction` built from an `EditTransaction` DTO
-/// whose `EditPosting` has no `cost` field. Without merging, calling
+/// whose `EditPosting` has no `cost` or `price` field. Without merging, calling
 /// `apply_transaction_projection` with the DTO-derived value would silently wipe
-/// cost columns.
+/// cost and price columns.
 ///
 /// This function returns a new `Transaction` that carries all of `updated`'s
 /// editable fields (date, description, `metadata`, `tag_ids`, posting
@@ -105,8 +105,8 @@ pub(crate) fn spread_pair(posting: &Posting) -> Option<(Date, Date)> {
 /// - `reconciliation`: always taken from `current`; the edit path never changes it
 ///   (reconciliation is owned by `Service::reconcile`, which enforces the balance
 ///   guard). The DTO's `reconciliation` field is echoed but ignored here.
-/// - per-posting `cost`: taken from the matching `current` posting (by ID); new
-///   postings (ID not in `current`) keep `None`.
+/// - per-posting `cost` and `price`: taken from the matching `current` posting
+///   (by ID); new postings (ID not in `current`) keep `None`.
 ///
 /// # Arguments
 ///
@@ -128,11 +128,16 @@ fn merge_preserving(current: &Transaction, updated: &Transaction) -> Transaction
                 .get(p.id())
                 .and_then(|cp| cp.cost())
                 .cloned();
+            let carried_price = current_postings
+                .get(p.id())
+                .and_then(|cp| cp.price())
+                .cloned();
             Posting::builder()
                 .id(p.id().clone())
                 .account_id(p.account_id().clone())
                 .maybe_amount(p.amount().cloned())
                 .maybe_cost(carried_cost)
+                .maybe_price(carried_price)
                 .metadata(p.metadata().clone())
                 .tag_ids(p.tag_ids().to_vec())
                 .maybe_spread_from(p.spread_from())
@@ -4453,7 +4458,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn edit_preserves_cost(pool: sqlx::SqlitePool) {
+    async fn edit_preserves_cost_and_price(pool: sqlx::SqlitePool) {
         let acct_svc = crate::AccountService::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -4493,6 +4498,7 @@ mod tests {
                     .account_id(acc_a.clone())
                     .amount(Amount::new(dec!(10), CommodityCode::new("AAPL")))
                     .cost(cost)
+                    .price(Quote::PerUnit(Amount::new(dec!(150), "AUD")))
                     .build(),
                 Posting::builder()
                     .id(PostingId::new())
@@ -4535,6 +4541,10 @@ mod tests {
         let saved_cost = cost_posting.cost().expect("cost must survive edit");
         assert_eq!(saved_cost.basis().amount().value(), dec!(1500.00));
         assert_eq!(saved_cost.label(), Some("lot-1"));
+        assert_eq!(
+            cost_posting.price(),
+            Some(&Quote::PerUnit(Amount::new(dec!(150), "AUD")))
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
