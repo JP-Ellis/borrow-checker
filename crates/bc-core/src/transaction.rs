@@ -365,10 +365,9 @@ fn budget_leg_carries_tag(
 /// * `tag_filter` (budget revision) — `p` or its transaction carries that tag
 ///   or a descendant of it (transaction tags flow down; matched over the subtree).
 /// * `query.accounts` — `p.account_id` falls in `global_accounts` (resolved subtree).
-/// * `query.amount` — commodity-exact match via [`crate::search::AmountQuery::matches`].
-///   An elided `p` matches when any commodity component of its derived
-///   residual does, since the tree counts each component as its own amount;
-///   an ambiguous residual matches nothing, as the tree counts nothing for it.
+/// * `query.amount` — commodity-exact match via
+///   [`crate::search::AmountQuery::matches_leg`]; an elided `p` is resolved
+///   through the transaction's residual, as the tree expands it before folding.
 /// * `query.tags` — the transaction carries a filter tag OR `p` carries one.
 ///
 /// `date_from`/`date_until` are intentionally not checked here — the caller
@@ -424,7 +423,7 @@ fn transaction_matches_query(
             return false;
         }
         if let Some(aq) = &query.amount
-            && !elided_or_concrete_matches(aq, p.amount(), residual.as_ref())
+            && !aq.matches_leg(p.amount(), residual.as_ref())
         {
             return false;
         }
@@ -436,29 +435,6 @@ fn transaction_matches_query(
         }
         true
     })
-}
-
-/// Whether a budget-subtree leg satisfies `aq`, resolving an elided leg
-/// through its transaction's `residual`.
-///
-/// A concrete `amount` is matched directly. An elided leg matches when any
-/// commodity component of an attributable residual does — the same amounts
-/// the budget tree folds after [`crate::residual::Residuals`] expansion — and
-/// never when the residual is ambiguous or `residual` was not derived.
-fn elided_or_concrete_matches(
-    aq: &crate::search::AmountQuery,
-    amount: Option<&Amount>,
-    residual: Option<&Result<crate::residual::Residual, bc_models::AmountError>>,
-) -> bool {
-    if amount.is_some() {
-        return aq.matches(amount);
-    }
-    let Some(Ok(crate::residual::Residual::Attributable(balances))) = residual else {
-        return false;
-    };
-    balances
-        .iter()
-        .any(|(code, value)| aq.matches(Some(&Amount::new(value, CommodityCode::new(code)))))
 }
 
 /// Named row type for postings loaded during [`Service::find_by_id`].
