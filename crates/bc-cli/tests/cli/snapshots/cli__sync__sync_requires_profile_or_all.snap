@@ -1,0 +1,14 @@
+---
+source: crates/bc-cli/tests/cli/sync.rs
+expression: output
+---
+success: false
+exit_code: 2
+----- stdout -----
+----- stderr -----
+error: the following required arguments were not provided:
+  <--profile <NAME>|--all>
+
+Usage: borrow-checker sync <--profile <NAME>|--all>
+
+For more information, try '--help'.

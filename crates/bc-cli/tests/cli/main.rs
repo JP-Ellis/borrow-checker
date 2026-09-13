@@ -19,6 +19,7 @@ mod meta;
 mod profile;
 mod report;
 mod restore;
+mod sync;
 mod transaction;
 mod transfer;
 

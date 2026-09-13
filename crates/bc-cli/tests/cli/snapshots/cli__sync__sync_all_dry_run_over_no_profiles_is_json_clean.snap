@@ -1,0 +1,13 @@
+---
+source: crates/bc-cli/tests/cli/sync.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "dry_run": true,
+  "profiles": [],
+  "snapshot": null
+}
+----- stderr -----

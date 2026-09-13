@@ -15,6 +15,7 @@ use crate::commands::plugin;
 use crate::commands::profile;
 use crate::commands::report;
 use crate::commands::restore;
+use crate::commands::sync;
 use crate::commands::tag;
 use crate::commands::transaction;
 use crate::commands::transfer;
@@ -78,6 +79,8 @@ pub enum Commands {
     Transaction(transaction::Args),
     /// Manage imports.
     Import(import::Args),
+    /// Run one import profile or every profile through the shared engine.
+    Sync(sync::Args),
     /// Export all accounts and transactions to a file or stdout.
     Export(export::Args),
     /// Generate financial reports.

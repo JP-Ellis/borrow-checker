@@ -532,7 +532,7 @@ fn list_to_json(batches: &[bc_core::ImportBatch]) -> serde_json::Value {
 /// # Returns
 ///
 /// A phrase such as `1 posting`, `4 postings`, or `2 unregistered commodities`.
-fn plural(count: usize, noun: &str) -> String {
+pub(crate) fn plural(count: usize, noun: &str) -> String {
     if count == 1 {
         return format!("{count} {noun}");
     }
@@ -551,7 +551,7 @@ fn plural(count: usize, noun: &str) -> String {
 ///
 /// A view over [`bc_core::ImportOutcome`], which is `#[non_exhaustive]` and so
 /// cannot be constructed in tests; this can.
-struct Report<'out> {
+pub(crate) struct Report<'out> {
     /// Transactions created by the run.
     new_transactions: usize,
     /// Postings appended to transactions an earlier run created.
@@ -711,7 +711,7 @@ impl Report<'_> {
     /// # Returns
     ///
     /// The payload `--json` prints.
-    fn to_json(&self, batch: &str) -> serde_json::Value {
+    pub(crate) fn to_json(&self, batch: &str) -> serde_json::Value {
         serde_json::json!({
             "batch": batch,
             "new_transactions": self.new_transactions,
@@ -740,7 +740,7 @@ impl Report<'_> {
 /// Owned rather than borrowing [`bc_core::Diagnostic`] fields: that type is
 /// `#[non_exhaustive]`, so `bc-cli` cannot construct one, and test fixtures
 /// need to build these directly.
-struct PlanDiagnostic {
+pub(crate) struct PlanDiagnostic {
     /// Where the document says this came from.
     location: String,
     /// Why it was skipped.
@@ -756,7 +756,7 @@ struct PlanDiagnostic {
 /// data rather than borrowing it: the diagnostics are grouped and counted
 /// during rendering, so a borrowing view would tie the grouped form's
 /// lifetime to the plan for no gain.
-struct PlanReport {
+pub(crate) struct PlanReport {
     /// Transactions the run would create.
     new_transactions: usize,
     /// Legs it would book onto transactions an earlier run created.
@@ -858,7 +858,7 @@ impl PlanReport {
     /// # Returns
     ///
     /// The payload `--json` prints for a dry run.
-    fn to_json(&self) -> serde_json::Value {
+    pub(crate) fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "dry_run": true,
             "warnings": self
@@ -1252,6 +1252,7 @@ mod tests {
     use super::plural;
     use super::render_dry_run;
     use super::render_plan;
+    use crate::commands::sync;
 
     /// Wrapper needed because `Args` is a subcommand arg group.
     #[derive(clap::Parser)]
@@ -1778,7 +1779,7 @@ mod tests {
         ));
         let engine = bc_core::ImportEngine::builder()
             .transactions(transactions.clone())
-            .sources(sources.clone())
+            .sources(sources)
             .accounts(accounts.clone())
             .commodities(bc_core::CommodityService::new(pool.clone()))
             .tags(tags.clone())
@@ -1809,7 +1810,6 @@ mod tests {
             metadata: bc_core::MetadataService::new(pool.clone()),
             backup,
             db_path,
-            sources,
             transfers: bc_core::TransferService::new(pool.clone()),
             batches,
             engine,
@@ -1907,6 +1907,52 @@ mod tests {
             pre_import_snapshots(&backup_dir),
             0,
             "a dry run takes no snapshot, whether or not --json is set"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sync_element_carries_every_import_run_key() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, _backup_dir) = context_in(home.path(), false).await;
+
+        let report = ctx
+            .engine
+            .sync(
+                bc_core::ImportSelection::One("nightly".to_owned()),
+                bc_core::ImportMode::Commit,
+            )
+            .await
+            .expect("sync");
+        let payload = sync::to_json(&report, false);
+        let profile_object = payload
+            .get("profiles")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|profiles| profiles.first())
+            .and_then(serde_json::Value::as_object)
+            .expect("one profile object");
+
+        let result = report.profiles.first().expect("one profile");
+        let run = result.result.as_ref().expect("an outcome");
+        assert!(
+            matches!(run, bc_core::ProfileRun::Imported(_)),
+            "a commit sweep yields an outcome"
+        );
+        if let bc_core::ProfileRun::Imported(outcome) = run {
+            let run_payload = Report::from(outcome).to_json(&outcome.batch_id.to_string());
+            for key in run_payload.as_object().expect("object").keys() {
+                assert!(
+                    profile_object.contains_key(key),
+                    "sync element is missing import run key {key}"
+                );
+            }
+        }
+        assert_eq!(
+            profile_object.get("profile"),
+            Some(&serde_json::Value::String("nightly".to_owned()))
+        );
+        assert_eq!(
+            profile_object.get("ok"),
+            Some(&serde_json::Value::Bool(true))
         );
     }
 

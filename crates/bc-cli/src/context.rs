@@ -43,16 +43,6 @@ pub struct AppContext {
     pub backup: std::sync::Arc<bc_core::BackupService>,
     /// Resolved database file path (used by restore to swap the file).
     pub db_path: std::path::PathBuf,
-    /// Source-reference service (import provenance / dedup).
-    ///
-    /// No command reads this directly since `import run` moved onto
-    /// `engine`, which holds its own clone; kept for a future command
-    /// that inspects source references outside an import.
-    #[expect(
-        dead_code,
-        reason = "no direct CLI consumer since import run moved onto engine"
-    )]
-    pub sources: bc_core::SourceService,
     /// Transfer resolution service (merge / unmerge / suggest).
     pub transfers: bc_core::TransferService,
     /// Import batch provenance service.
@@ -119,7 +109,7 @@ impl AppContext {
         ));
         let engine = bc_core::ImportEngine::builder()
             .transactions(transactions.clone())
-            .sources(sources.clone())
+            .sources(sources)
             .accounts(accounts.clone())
             .commodities(commodities.clone())
             .tags(tags.clone())
@@ -150,7 +140,6 @@ impl AppContext {
             metadata: bc_core::MetadataService::new(pool.clone()),
             backup,
             db_path,
-            sources,
             transfers: bc_core::TransferService::new(pool.clone()),
             batches,
             engine,

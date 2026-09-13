@@ -16,6 +16,7 @@ pub mod plugin;
 pub mod profile;
 pub mod report;
 pub mod restore;
+pub mod sync;
 pub mod tag;
 pub mod transaction;
 pub mod transfer;

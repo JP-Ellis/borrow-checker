@@ -1,0 +1,10 @@
+---
+source: crates/bc-cli/src/commands/sync.rs
+expression: summary.render()
+---
+profile             txns  attached   skipped  warnings  batch
+nab-credit             —         —         —         —  failed (importer): import error: no such file: nab.csv
+ubank-everyday       412         0         0         0  01ARZ3NDEKTSV4RRFFQ69G5FAV
+
+2 profiles, 1 failed. 412 transactions imported, 0 postings skipped.
+snapshot: /backups/db.pre-import.sqlite

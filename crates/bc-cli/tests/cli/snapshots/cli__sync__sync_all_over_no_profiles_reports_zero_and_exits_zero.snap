@@ -1,0 +1,11 @@
+---
+source: crates/bc-cli/tests/cli/sync.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+profile      txns  attached   skipped  warnings  batch
+
+0 profiles. 0 transactions imported, 0 postings skipped.
+----- stderr -----

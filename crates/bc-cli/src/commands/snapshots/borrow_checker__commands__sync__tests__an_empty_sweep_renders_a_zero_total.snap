@@ -1,0 +1,7 @@
+---
+source: crates/bc-cli/src/commands/sync.rs
+expression: summary.render()
+---
+profile      txns  attached   skipped  warnings  batch
+
+0 profiles. 0 transactions imported, 0 postings skipped.

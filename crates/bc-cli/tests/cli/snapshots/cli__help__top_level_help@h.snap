@@ -15,6 +15,7 @@ Commands:
   backup             Snapshot the database to a backup file
   transaction        Manage transactions
   import             Manage imports
+  sync               Run one import profile or every profile through the shared engine
   export             Export all accounts and transactions to a file or stdout
   report             Generate financial reports
   restore            Restore the database from a backup file
