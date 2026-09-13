@@ -140,7 +140,7 @@ async fn net_worth(ctx: &AppContext, commodity: &str) -> CliResult<()> {
     let view = NetWorthView::new(&report);
 
     if ctx.json {
-        return crate::output::print_json(&view.to_json());
+        return crate::output::print_json(&view.to_json()?);
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
@@ -415,14 +415,11 @@ impl<'a> NetWorthView<'a> {
     }
 
     /// The JSON form: per-holding rows plus the converted and unvalued totals.
-    fn to_json(&self) -> serde_json::Value {
-        let balances = |balances: &bc_models::Balances| -> serde_json::Value {
-            balances
-                .iter()
-                .map(|(code, value)| (code.to_owned(), serde_json::Value::from(value.to_string())))
-                .collect::<serde_json::Map<_, _>>()
-                .into()
-        };
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::CliError::Json`] if a balance fails to serialise.
+    fn to_json(&self) -> CliResult<serde_json::Value> {
         let accounts: Vec<serde_json::Value> = self
             .report
             .rows
@@ -447,13 +444,13 @@ impl<'a> NetWorthView<'a> {
                 })
             })
             .collect();
-        serde_json::json!({
+        Ok(serde_json::json!({
             "accounts": accounts,
             "total": self.report.total.value().to_string(),
             "commodity": self.report.total.commodity(),
-            "converted": balances(&self.report.converted),
-            "unvalued": balances(&self.report.unvalued),
-        })
+            "converted": serde_json::to_value(&self.report.converted)?,
+            "unvalued": serde_json::to_value(&self.report.unvalued)?,
+        }))
     }
 }
 
@@ -653,7 +650,11 @@ mod tests {
 
     #[test]
     fn net_worth_json_matches_its_snapshot() {
-        insta::assert_json_snapshot!(NetWorthView::new(&net_worth_report()).to_json());
+        insta::assert_json_snapshot!(
+            NetWorthView::new(&net_worth_report())
+                .to_json()
+                .expect("valid json")
+        );
     }
 
     #[test]
