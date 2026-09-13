@@ -37,7 +37,8 @@ pub enum Quote {
     /// One unit of the posting's amount is worth this much: `@ 332 AUD`, `{105 AUD}`.
     PerUnit(Amount),
     /// The whole posting is worth this much: `@@ 6.37 AUD`, `{{210 AUD}}`.
-    /// Stated without sign; the weight takes the sign of the posting's amount.
+    /// Read without sign: the weight is its magnitude under the sign of the
+    /// posting's amount.
     Total(Amount),
 }
 
@@ -73,8 +74,9 @@ impl Quote {
     ///
     /// # Returns
     ///
-    /// `units × per_unit` for [`Self::PerUnit`]; the total carrying the sign
-    /// of `units` for [`Self::Total`], zero when `units` is zero.
+    /// `units × per_unit` for [`Self::PerUnit`]; the total's magnitude
+    /// carrying the sign of `units` for [`Self::Total`], zero when `units` is
+    /// zero.
     ///
     /// # Errors
     ///
@@ -86,14 +88,12 @@ impl Quote {
                 .checked_mul(per_unit.value())
                 .ok_or(AmountError::Overflow)?,
             Self::Total(ref total) => {
+                let mut magnitude = total.value().abs();
                 if units.is_zero() {
                     Decimal::ZERO
-                } else if units.is_sign_negative() {
-                    Decimal::ZERO
-                        .checked_sub(total.value())
-                        .ok_or(AmountError::Overflow)?
                 } else {
-                    total.value()
+                    magnitude.set_sign_negative(units.is_sign_negative());
+                    magnitude
                 }
             }
         };
@@ -152,6 +152,8 @@ mod tests {
     #[case::total_positive(Quote::Total(aud(dec!(6.37))), dec!(4.00), dec!(6.37))]
     #[case::total_negative(Quote::Total(aud(dec!(6.37))), dec!(-4.00), dec!(-6.37))]
     #[case::total_zero(Quote::Total(aud(dec!(6.37))), dec!(0), dec!(0))]
+    #[case::signed_total_positive(Quote::Total(aud(dec!(-6.37))), dec!(4.00), dec!(6.37))]
+    #[case::signed_total_negative(Quote::Total(aud(dec!(-6.37))), dec!(-4.00), dec!(-6.37))]
     fn weigh_follows_the_units_sign(
         #[case] quote: Quote,
         #[case] units: Decimal,
