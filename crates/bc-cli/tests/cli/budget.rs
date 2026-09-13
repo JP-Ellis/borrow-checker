@@ -254,3 +254,51 @@ fn budget_status_with_target() {
     cmd.args(["budget", "status", "--as-of", "2030-01-15"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+/// A posting in a commodity with no rate to the budget's commodity is left
+/// out of ACTUALS and listed under UNVALUED.
+#[test]
+fn budget_status_lists_unvalued_spend() {
+    let ctx = TestContext::new();
+    let expenses_id = create_expense_account(&ctx);
+    let _budget_id = create_budget(&ctx, &expenses_id);
+    let checking_id = {
+        let out = ctx
+            .command()
+            .args([
+                "--json",
+                "account",
+                "create",
+                "Assets:Checking",
+                "--kind",
+                "deposit-account",
+            ])
+            .output()
+            .expect("account create executed");
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+        json.get("account")
+            .and_then(|account| account.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .expect("account id")
+            .to_owned()
+    };
+    ctx.command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2030-01-10",
+            "--description",
+            "Imported lunch",
+            "--posting",
+            &format!("{checking_id}:-5.00:USD"),
+            "--posting",
+            &format!("{expenses_id}:5.00:USD"),
+        ])
+        .output()
+        .expect("add transaction");
+
+    let mut cmd = ctx.command();
+    cmd.args(["budget", "status", "--as-of", "2030-01-15"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}

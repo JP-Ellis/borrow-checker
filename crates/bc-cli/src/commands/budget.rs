@@ -421,11 +421,30 @@ async fn status(ctx: &AppContext, as_of_str: Option<String>) -> CliResult<()> {
                 .as_ref()
                 .and_then(bc_models::BudgetRevision::name)
                 .map_or_else(|| s.budget.account_id().to_string(), str::to_owned);
-            vec![name_str, period_str, alloc_str, actuals_str, avail_str]
+            let unvalued_str = if s.unvalued.is_empty() {
+                "\u{2014}".to_owned()
+            } else {
+                crate::output::format_balances(&s.unvalued)
+            };
+            vec![
+                name_str,
+                period_str,
+                alloc_str,
+                actuals_str,
+                avail_str,
+                unvalued_str,
+            ]
         })
         .collect();
     crate::output::print_table(
-        &["BUDGET", "PERIOD", "ALLOCATED", "ACTUALS", "AVAILABLE"],
+        &[
+            "BUDGET",
+            "PERIOD",
+            "ALLOCATED",
+            "ACTUALS",
+            "AVAILABLE",
+            "UNVALUED",
+        ],
         &rows,
     );
     Ok(())

@@ -353,15 +353,6 @@ impl<'a> NetWorthView<'a> {
         }
     }
 
-    /// Formats `balances` as `0.5 BTC, 100.00 USD`.
-    fn list(balances: &bc_models::Balances) -> String {
-        balances
-            .iter()
-            .map(|(code, value)| format!("{value} {code}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-
     /// Formats the report as a table, the total, and any notes.
     #[expect(
         clippy::let_underscore_must_use,
@@ -405,7 +396,7 @@ impl<'a> NetWorthView<'a> {
             let _ = writeln!(
                 out,
                 "\nnote: the total includes holdings converted at a rate: {}",
-                Self::list(&self.report.converted)
+                crate::output::format_balances(&self.report.converted)
             );
         }
         if !self.report.unvalued.is_empty() {
@@ -417,7 +408,7 @@ impl<'a> NetWorthView<'a> {
                 } else {
                     ""
                 },
-                Self::list(&self.report.unvalued)
+                crate::output::format_balances(&self.report.unvalued)
             );
         }
         out
