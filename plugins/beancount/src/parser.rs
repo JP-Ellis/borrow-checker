@@ -760,6 +760,49 @@ fn parse_price(text: &str, total: bool, line: &str) -> Result<bc_sdk::Quote, Str
     })
 }
 
+/// Splits a cost block's inner text into components on top-level commas.
+///
+/// A comma flanked by an ASCII digit on both sides is a digit-group
+/// separator (Beancount's lexer reads `1,502.50` as one `NUMBER` token, and
+/// [`number::parse_number`] already accepts it), so it stays inside its
+/// component rather than splitting it.
+///
+/// # Arguments
+///
+/// * `inner` - The text between the cost block's braces.
+///
+/// # Returns
+///
+/// The trimmed, non-empty components, in their written order.
+fn cost_components(inner: &str) -> Vec<&str> {
+    let mut components = Vec::new();
+    let mut start = 0;
+    for (index, ch) in inner.char_indices() {
+        if ch != ',' {
+            continue;
+        }
+        let prev_digit = inner[..index]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_digit());
+        let next_digit = inner[index.saturating_add(1)..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit());
+        if prev_digit && next_digit {
+            continue;
+        }
+        components.push(&inner[start..index]);
+        start = index.saturating_add(1);
+    }
+    components.push(&inner[start..]);
+    components
+        .into_iter()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
 /// Reads the inside of a `{…}` or `{{…}}` cost block.
 ///
 /// Components are comma-separated and may come in any order: one `N CCY`
@@ -787,7 +830,7 @@ fn parse_cost_block(inner: &str, total: bool, line: &str) -> Result<bc_sdk::Cost
     let mut label: Option<String> = None;
     let mut selects_lot = false;
 
-    for component in inner.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+    for component in cost_components(inner) {
         if component == "*" {
             selects_lot = true;
         } else if component.starts_with('"') {
@@ -797,6 +840,11 @@ fn parse_cost_block(inner: &str, total: bool, line: &str) -> Result<bc_sdk::Cost
                     "bad cost component '{component}' in: '{line}': expected 'N CCY', a YYYY-MM-DD date or a \"label\""
                 )
             })?;
+            if !input.trim().is_empty() {
+                return Err(format!(
+                    "bad cost component '{component}' in: '{line}': expected 'N CCY', a YYYY-MM-DD date or a \"label\""
+                ));
+            }
             if label.replace(text).is_some() {
                 return Err(format!("cost block has two labels in: '{line}'"));
             }
@@ -1724,6 +1772,17 @@ mod tests {
             .label("lot-a")
             .build()
     )]
+    #[case::digit_group_in_amount(
+        "Assets:Shares  2 AAPL {1,502.50 AUD}",
+        Cost::builder().basis(Quote::PerUnit(Amount::new(dec!(1502.50), "AUD"))).build()
+    )]
+    #[case::digit_group_in_total_with_date(
+        "Assets:Shares  2 AAPL {{3,005.00 AUD, 2024-03-01}}",
+        Cost::builder()
+            .basis(Quote::Total(Amount::new(dec!(3005.00), "AUD")))
+            .date(Date::new(2024, 3, 1))
+            .build()
+    )]
     fn a_cost_block_is_read_in_any_component_order(#[case] line: &str, #[case] cost: Cost) {
         let posting = parse_posting(line).expect("parses");
         assert_eq!(posting.amount, units(dec!(2), "AAPL"));
@@ -1807,6 +1866,18 @@ mod tests {
     #[case::text_after_cost(
         "Assets:Shares  2 AAPL {105 AUD} extra",
         "unexpected 'extra' after the cost block in: 'Assets:Shares  2 AAPL {105 AUD} extra'"
+    )]
+    #[case::label_with_trailing_junk(
+        "Assets:Shares  2 AAPL {\"lot-a\" junk, 105 AUD}",
+        "bad cost component '\"lot-a\" junk' in: 'Assets:Shares  2 AAPL {\"lot-a\" junk, 105 AUD}': expected 'N CCY', a YYYY-MM-DD date or a \"label\""
+    )]
+    #[case::unclosed_total(
+        "Assets:Shares  2 AAPL {{210 AUD",
+        "cost block is not closed in: 'Assets:Shares  2 AAPL {{210 AUD'"
+    )]
+    #[case::unterminated_label(
+        "Assets:Shares  2 AAPL {105 AUD, \"unterminated}",
+        "bad cost component '\"unterminated' in: 'Assets:Shares  2 AAPL {105 AUD, \"unterminated}': expected 'N CCY', a YYYY-MM-DD date or a \"label\""
     )]
     fn an_annotation_error_names_the_line(#[case] line: &str, #[case] expected: &str) {
         assert_eq!(parse_posting(line).expect_err("rejects"), expected);
