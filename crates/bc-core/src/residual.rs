@@ -329,10 +329,6 @@ impl Residuals {
     ///
     /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if
     /// a stored amount cannot be parsed or a total overflows.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into budget actuals in the next commit")
-    )]
     pub(crate) async fn for_subtree_in_range<'e, E>(
         executor: E,
         root: &AccountId,
@@ -556,10 +552,6 @@ impl Residuals {
     ///
     /// Returns [`BcError::BadData`] if `posting_id` was not covered by this load,
     /// for the same reason [`Self::component`] does.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into budget actuals in the next commit")
-    )]
     pub(crate) fn residual(&self, posting_id: &str) -> BcResult<Option<&Balances>> {
         if !self.seen.contains(posting_id) {
             return Err(BcError::BadData(format!(
