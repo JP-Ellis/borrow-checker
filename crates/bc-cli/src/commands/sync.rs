@@ -127,15 +127,25 @@ enum RowOutcome {
 impl From<&bc_core::ProfileResult> for Row {
     #[inline]
     fn from(result: &bc_core::ProfileResult) -> Self {
-        let outcome = match &result.result {
-            Ok(bc_core::ProfileRun::Imported(outcome)) => RowOutcome::Imported {
+        Self {
+            profile: result.profile.name.clone(),
+            outcome: RowOutcome::from(&result.result),
+        }
+    }
+}
+
+impl From<&Result<bc_core::ProfileRun, bc_core::ProfileFailure>> for RowOutcome {
+    #[inline]
+    fn from(result: &Result<bc_core::ProfileRun, bc_core::ProfileFailure>) -> Self {
+        match result {
+            Ok(bc_core::ProfileRun::Imported(outcome)) => Self::Imported {
                 new_transactions: outcome.new_transactions,
                 attached_postings: outcome.attached_postings,
                 skipped_postings: outcome.skipped_postings,
                 warnings: outcome.warnings.len(),
                 batch: outcome.batch_id.to_string(),
             },
-            Ok(bc_core::ProfileRun::Planned(plan)) => RowOutcome::Planned {
+            Ok(bc_core::ProfileRun::Planned(plan)) => Self::Planned {
                 new_transactions: plan.new_transactions,
                 attached_postings: plan.attached_postings,
                 skipped_postings: plan.skipped_postings,
@@ -146,18 +156,16 @@ impl From<&bc_core::ProfileResult> for Row {
                     .map(|blocker| (blocker.label().to_owned(), blocker.items()))
                     .collect(),
             },
-            Ok(other) => RowOutcome::Failed {
+            Ok(other) => Self::Failed {
                 stage: "engine".to_owned(),
                 message: format!("unexpected engine result: {other:?}"),
             },
-            Err(failure) => RowOutcome::Failed {
+            // The stage label already names the layer, so the row carries
+            // the bare message and not `Display`'s `import error: ` prefix.
+            Err(failure) => Self::Failed {
                 stage: failure.stage.label().to_owned(),
-                message: failure.to_string(),
+                message: failure.message.clone(),
             },
-        };
-        Self {
-            profile: result.profile.name.clone(),
-            outcome,
         }
     }
 }
@@ -489,6 +497,25 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_row_carries_the_bare_message() {
+        let result = Err(bc_core::ProfileFailure::new(
+            bc_core::FailureStage::Importer,
+            "no such file: nab.csv",
+        ));
+
+        let outcome = RowOutcome::from(&result);
+
+        assert!(
+            matches!(
+                &outcome,
+                RowOutcome::Failed { stage, message }
+                    if stage == "importer" && message == "no such file: nab.csv"
+            ),
+            "the stage label names the layer; the message must not repeat it"
+        );
+    }
+
+    #[test]
     fn a_clean_commit_sweep_renders_rows_totals_and_the_snapshot() {
         let summary = Summary::new(
             vec![
@@ -508,11 +535,7 @@ mod tests {
     fn a_failed_profile_renders_and_fails_the_exit_code() {
         let summary = Summary::new(
             vec![
-                failed(
-                    "nab-credit",
-                    "importer",
-                    "import error: no such file: nab.csv",
-                ),
+                failed("nab-credit", "importer", "no such file: nab.csv"),
                 imported("ubank-everyday", 412, 0, 0),
             ],
             Some(std::path::Path::new("/backups/db.pre-import.sqlite")),
