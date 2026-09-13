@@ -4,6 +4,7 @@ use core::ops::AddAssign;
 use core::ops::SubAssign;
 
 use rust_decimal::Decimal;
+use serde::ser::SerializeMap as _;
 
 use crate::Amount;
 use crate::AmountError;
@@ -222,6 +223,23 @@ impl IntoIterator for Balances {
     }
 }
 
+impl serde::Serialize for Balances {
+    /// Serialises as a map from commodity code to decimal value, in
+    /// first-seen order, so a consumer reads `{"USD": "5.50"}` rather than
+    /// a list of pairs.
+    #[inline]
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.entries.len()))?;
+        for (code, value) in &self.entries {
+            map.serialize_entry(code.as_str(), value)?;
+        }
+        map.end()
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -290,5 +308,14 @@ mod tests {
         let mut b = Balances::new();
         b += &Amount::new(rust_decimal::Decimal::MAX, "AUD");
         b += &Amount::new(dec!(1), "AUD");
+    }
+
+    #[test]
+    fn serialises_as_a_code_to_value_map() {
+        let mut b = Balances::new();
+        b += &Amount::new(dec!(10), "AUD");
+        b += &Amount::new(dec!(5.50), "USD");
+        let json = serde_json::to_string(&b).expect("serialise");
+        assert_eq!(json, r#"{"AUD":"10","USD":"5.50"}"#);
     }
 }
