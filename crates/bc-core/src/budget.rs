@@ -1943,11 +1943,27 @@ mod elided_actuals_tests {
         account: &AccountId,
         tag_filter: Option<&TagId>,
     ) -> Budget {
+        budget_with_target(
+            pool,
+            account,
+            tag_filter,
+            Some(Amount::new(dec!(200), CommodityCode::new("AUD"))),
+        )
+        .await
+    }
+
+    /// Creates a monthly budget on `account`; `None` for `target` makes it tracking-only.
+    async fn budget_with_target(
+        pool: &SqlitePool,
+        account: &AccountId,
+        tag_filter: Option<&TagId>,
+        target: Option<Amount>,
+    ) -> Budget {
         let (budget, _) = BudgetService::new(pool.clone())
             .create()
             .account_id(account.clone())
             .effective_from(Date::constant(2026, 1, 1))
-            .target(Amount::new(dec!(200), CommodityCode::new("AUD")))
+            .maybe_target(target)
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
             .maybe_tag_filter(tag_filter.cloned())
@@ -2115,6 +2131,75 @@ mod elided_actuals_tests {
         let status = march_actuals(&pool, &budget).await;
 
         assert_eq!(status.actuals, dec!(40.00));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tracking_only_budget_reports_the_dominant_residual_component(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let wallet = account(&pool, "Wallet", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let budget = budget_with_target(&pool, &food, None, None).await;
+        insert_tx(
+            &pool,
+            "tx_track",
+            "2026-03-10",
+            &[
+                ("p_bank", &bank, Some(("-40.00", "AUD"))),
+                ("p_wallet", &wallet, Some(("-95.00", "USD"))),
+                ("p_food", &food, None),
+            ],
+        )
+        .await;
+
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(status.actuals, dec!(95.00));
+        assert_eq!(status.commodity, Some(CommodityCode::new("USD")));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn account_filter_narrows_rows_inside_the_residual_scope(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let cafes = account(&pool, "Cafes", AccountType::Expense, Some(&food)).await;
+        let groceries = account(&pool, "Groceries", AccountType::Expense, Some(&food)).await;
+        let budget = monthly_budget(&pool, &food, None).await;
+        insert_tx(
+            &pool,
+            "tx_cafe",
+            "2026-03-05",
+            &[
+                ("p_bank_c", &bank, Some(("-7.00", "AUD"))),
+                ("p_cafes", &cafes, None),
+            ],
+        )
+        .await;
+        insert_tx(
+            &pool,
+            "tx_groc",
+            "2026-03-06",
+            &[
+                ("p_bank_g", &bank, Some(("-60.00", "AUD"))),
+                ("p_groceries", &groceries, None),
+            ],
+        )
+        .await;
+        let query = crate::search::TransactionQuery {
+            accounts: vec![cafes.clone()],
+            ..Default::default()
+        };
+        let window = bc_models::BudgetWindow::custom(
+            Date::constant(2026, 3, 1),
+            Date::constant(2026, 4, 1),
+            "March",
+        );
+
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for_window(&budget, window, Some(&query))
+            .await
+            .expect("status");
+
+        assert_eq!(status.actuals, dec!(7.00));
     }
 
     #[sqlx::test(migrations = "./migrations")]
