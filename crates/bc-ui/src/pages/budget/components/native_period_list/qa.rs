@@ -11,7 +11,10 @@ use rust_decimal::Decimal;
 
 use super::NativePeriodList;
 use super::style;
+use crate::components::status_pill::StatusPill;
+use crate::components::status_pill::Tone;
 use crate::pages::budget::BudgetPageCtx;
+use crate::pages::budget::unvalued::unvalued_label;
 
 /// Builds a fixture [`NativePeriodRow`] with an explicit target.
 fn row_with_target(
@@ -45,6 +48,25 @@ fn row_no_target(
         None,
         Amount::new(Decimal::new(spent, 2), "AUD"),
         Vec::new(),
+    )
+}
+
+/// Builds a fixture [`NativePeriodRow`] with a target and spend no rate could value.
+fn row_with_unvalued(
+    label: &str,
+    period_start: jiff::civil::Date,
+    period_end: jiff::civil::Date,
+    spent: i64,
+    target: i64,
+    unvalued: i64,
+) -> NativePeriodRow {
+    NativePeriodRow::new(
+        label,
+        period_start,
+        period_end,
+        Some(Amount::new(Decimal::new(target, 2), "AUD")),
+        Amount::new(Decimal::new(spent, 2), "AUD"),
+        vec![Amount::new(Decimal::new(unvalued, 2), "USD")],
     )
 }
 
@@ -90,6 +112,14 @@ pub fn NativePeriodListQa() -> impl IntoView {
         jiff::civil::Date::constant(2026, 6, 9),
         12_400,
     );
+    let row_unvalued = row_with_unvalued(
+        "w27 · 30 Jun–6 Jul",
+        jiff::civil::Date::constant(2026, 6, 30),
+        jiff::civil::Date::constant(2026, 7, 7),
+        12_000,
+        50_000,
+        4_500,
+    );
 
     view! {
         <div style="padding: 24px; max-width: 900px">
@@ -105,7 +135,10 @@ pub fn NativePeriodListQa() -> impl IntoView {
             <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-6); margin-bottom: var(--bc-space-3)">
                 "static fixture rows: good / warn / bad / mute (depth=1)"
             </p>
-            <NativePeriodRowPreview rows=vec![row_good, row_warn, row_bad, row_mute] depth=1 />
+            <NativePeriodRowPreview
+                rows=vec![row_good, row_warn, row_bad, row_mute, row_unvalued]
+                depth=1
+            />
 
             <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
                 "depth=2 indentation"
@@ -145,6 +178,8 @@ fn NativePeriodRowPreview(
             let fill_style = format!("width: {pct}%; height: 100%");
             let amounts = super::display_str(&row, false, &[]);
             let label = row.label.clone();
+            let unvalued_pill = unvalued_label(&row.unvalued)
+                .map(|l| view! { <StatusPill label=l tone=Tone::Warn /> });
 
             let status_class = match row_status {
                 super::Status::Good => style::status_good,
@@ -168,6 +203,7 @@ fn NativePeriodRowPreview(
                         <div class=bar_class style=fill_style />
                     </div>
                     <span class=style::amounts>{amounts}</span>
+                    {unvalued_pill}
                 </div>
             }
         })

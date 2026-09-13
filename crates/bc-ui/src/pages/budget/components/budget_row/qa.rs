@@ -66,6 +66,22 @@ pub fn BudgetRowQa() -> impl IntoView {
     /* mixed-period badge: leaf with has_mixed_period */
     let leaf_mixed = leaf_with_target("rent", "Rent", 150_000, 200_000, true);
 
+    /* leaf-unvalued: an AUD budget with a USD posting no rate could value */
+    let leaf_unvalued = BudgetTreeNode::builder()
+        .id("imports")
+        .account_id("everyday")
+        .account_name("Everyday")
+        .depth(0)
+        .name("Imports")
+        .spent(Amount::new(Decimal::new(12_000, 2), "AUD"))
+        .effective_target(Amount::new(Decimal::new(50_000, 2), "AUD"))
+        .native_period_label("monthly")
+        .has_mixed_period(false)
+        .rollover(RolloverPolicy::ResetToZero)
+        .is_tracking_only(false)
+        .unvalued(vec![Amount::new(Decimal::new(4_500, 2), "USD")])
+        .build();
+
     /* parent-with-children: aggregates groceries + dining */
     let parent_node = BudgetTreeNode::builder()
         .id("food")
@@ -119,6 +135,11 @@ pub fn BudgetRowQa() -> impl IntoView {
                 "mixed-period badge (click badge to expand)"
             </p>
             <BudgetRow node=leaf_mixed />
+
+            <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
+                "leaf-unvalued (amber pill lists the excluded spend)"
+            </p>
+            <BudgetRow node=leaf_unvalued />
 
             <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
                 "parent-with-children (click chevron to collapse)"

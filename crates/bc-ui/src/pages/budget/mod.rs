@@ -11,6 +11,7 @@
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod components;
 pub(crate) mod query;
+pub(crate) mod unvalued;
 
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::BcError;
