@@ -18,6 +18,7 @@ use crate::ImportOutcome;
 use crate::ImportPlan;
 use crate::ImportProfile;
 use crate::ImporterRegistry;
+use crate::RawTransaction;
 use crate::execute_import;
 use crate::plan_import;
 
@@ -142,6 +143,18 @@ pub struct SyncReport {
     pub profiles: Vec<ProfileResult>,
 }
 
+/// A profile whose importer has parsed its files, ready to plan or import.
+///
+/// Splitting the run here lets [`ImportEngine::sync`] take its snapshot
+/// after the parse and before the write, so a profile that fails to parse
+/// costs no database copy.
+struct Prepared<'a> {
+    /// The profile being run.
+    profile: &'a ImportProfile,
+    /// What its importer yielded.
+    raws: Vec<RawTransaction>,
+}
+
 /// Runs import profiles through the shared engine.
 ///
 /// Holds every service a run reads or writes, the importer registry, and the
@@ -221,18 +234,23 @@ impl ImportEngine {
     /// The profile's plan, outcome, or failure.
     #[inline]
     pub async fn run_profile(&self, profile: &ImportProfile, mode: Mode) -> ProfileResult {
+        let result = match self.prepare(profile).await {
+            Ok(prepared) => self.finish(prepared, mode).await,
+            Err(failure) => Err(failure),
+        };
         ProfileResult {
             profile: ProfileRef::from(profile),
-            result: self.run_inner(profile, mode).await,
+            result,
         }
     }
 
-    /// The body of [`Self::run_profile`], with `?` available.
-    async fn run_inner(
+    /// The read-only half of a run: resolves the importer and parses the
+    /// profile's files. Nothing is written, so a failure here costs nothing
+    /// to recover from.
+    async fn prepare<'a>(
         &self,
-        profile: &ImportProfile,
-        mode: Mode,
-    ) -> Result<ProfileRun, ProfileFailure> {
+        profile: &'a ImportProfile,
+    ) -> Result<Prepared<'a>, ProfileFailure> {
         let importer = self
             .importers
             .create_for_name(&profile.importer)
@@ -259,6 +277,17 @@ impl ImportEngine {
                 message: error.to_string(),
             })?;
 
+        Ok(Prepared { profile, raws })
+    }
+
+    /// The writing half of a run: plans the parsed rows, or imports them
+    /// under one batch, by `mode`.
+    async fn finish(
+        &self,
+        prepared: Prepared<'_>,
+        mode: Mode,
+    ) -> Result<ProfileRun, ProfileFailure> {
+        let Prepared { profile, raws } = prepared;
         let run = match mode {
             Mode::DryRun => plan_import(
                 &self.transactions,
@@ -306,6 +335,10 @@ impl ImportEngine {
     /// * `selection` - One profile by name, or every profile.
     /// * `mode` - Whether to write. [`Mode::DryRun`] never snapshots.
     ///
+    /// The snapshot is taken after the first profile parses and before it
+    /// writes, so a sweep whose every profile fails to parse leaves nothing
+    /// behind.
+    ///
     /// # Returns
     ///
     /// One [`ProfileResult`] per profile, in the order they ran.
@@ -327,21 +360,28 @@ impl ImportEngine {
             }
         };
 
-        // One snapshot for the whole sweep, and none when nothing will be
-        // written: a dry run has nothing to protect, and an empty selection
-        // would copy the database for no reason.
-        let snapshot = if mode == Mode::Commit && self.snapshot_before_write && !profiles.is_empty()
-        {
-            let record = self.backup.backup(BackupKind::PreImport, None).await?;
-            tracing::info!(path = %record.path.display(), "pre-import snapshot taken");
-            Some(record.path)
-        } else {
-            None
-        };
-
+        // One snapshot for the whole sweep, taken lazily before the first
+        // write: a dry run has nothing to protect, and a sweep whose every
+        // profile fails to parse would otherwise leave an orphan copy in the
+        // retention pool for a run that changed nothing.
+        let mut snapshot = None;
         let mut results = Vec::with_capacity(profiles.len());
         for profile in &profiles {
-            results.push(self.run_profile(profile, mode).await);
+            let result = match self.prepare(profile).await {
+                Ok(prepared) => {
+                    if mode == Mode::Commit && self.snapshot_before_write && snapshot.is_none() {
+                        let record = self.backup.backup(BackupKind::PreImport, None).await?;
+                        tracing::info!(path = %record.path.display(), "pre-import snapshot taken");
+                        snapshot = Some(record.path);
+                    }
+                    self.finish(prepared, mode).await
+                }
+                Err(failure) => Err(failure),
+            };
+            results.push(ProfileResult {
+                profile: ProfileRef::from(profile),
+                result,
+            });
         }
 
         Ok(SyncReport {
@@ -590,6 +630,15 @@ mod tests {
     }
 
     #[test]
+    fn an_engine_failure_displays_its_bare_message() {
+        let failure = ProfileFailure {
+            stage: FailureStage::Engine,
+            message: "account 'Assets:Bank' is closed".to_owned(),
+        };
+        assert_eq!(failure.to_string(), "account 'Assets:Bank' is closed");
+    }
+
+    #[test]
     fn failure_stage_labels_are_stable() {
         assert_eq!(FailureStage::UnknownImporter.label(), "unknown_importer");
         assert_eq!(FailureStage::Importer.label(), "importer");
@@ -666,6 +715,58 @@ mod tests {
         assert_eq!(pre_import_snapshots(&fixture.backup_dir), 1);
         assert!(report.snapshot.is_some());
         assert_eq!(fixture.batches.list().await.expect("list").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_failed_parse_takes_no_snapshot() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), true).await;
+        profile(&fixture, "broken", "failing").await;
+
+        let report = fixture
+            .engine
+            .sync(Selection::All, Mode::Commit)
+            .await
+            .expect("sync");
+
+        assert!(matches!(
+            report.profiles.first().map(|result| &result.result),
+            Some(Err(ProfileFailure {
+                stage: FailureStage::Importer,
+                ..
+            }))
+        ));
+        assert_eq!(report.snapshot, None);
+        assert_eq!(
+            pre_import_snapshots(&fixture.backup_dir),
+            0,
+            "a sweep that wrote nothing must not leave an orphan copy in the retention pool"
+        );
+        assert!(fixture.batches.list().await.expect("list").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_sweep_snapshots_once_before_the_first_write() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), true).await;
+        profile(&fixture, "a-broken", "failing").await;
+        profile(&fixture, "b-good", "stub").await;
+        profile(&fixture, "c-good", "stub").await;
+
+        let report = fixture
+            .engine
+            .sync(Selection::All, Mode::Commit)
+            .await
+            .expect("sync");
+
+        assert_eq!(names(&report), vec!["a-broken", "b-good", "c-good"]);
+        assert!(report.snapshot.is_some());
+        assert_eq!(
+            pre_import_snapshots(&fixture.backup_dir),
+            1,
+            "the failed first profile defers the snapshot; the two writes share one"
+        );
+        assert_eq!(fixture.batches.list().await.expect("list").len(), 2);
     }
 
     #[tokio::test]

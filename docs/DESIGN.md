@@ -324,7 +324,7 @@ Snapshots are taken via SQLite `VACUUM INTO` to a temp file, then atomically ren
 | `manual` | User-initiated, from the CLI or the GUI Settings panel |
 | `pre-migration` | Automatic, taken before applying schema migrations when `auto_pre_migration` is enabled and the database file already existed and was non-empty |
 | `pre-restore` | Automatic safety snapshot taken just before a restore swap; deliberately skips rotation so it can never prune the very backup being restored |
-| `pre-import` | Automatic, taken before an import run — once per `sync` sweep, not once per profile — when `auto_pre_import` is enabled |
+| `pre-import` | Automatic, taken before a `sync` sweep's first write — once per sweep, not once per profile, and not at all when nothing parses — when `auto_pre_import` is enabled |
 | `pre-discard` | Automatic, taken before an `import discard` run when `auto_pre_discard` is enabled |
 
 **Retention** is a conservative union, configured in the `[backup]` section (`dir`, `retain_count` default 5, `retain_days` unset, `auto_pre_migration` default true, `auto_pre_import` default true, `auto_pre_discard` default true): a backup is kept if it is among the `retain_count` newest **or** newer than `retain_days`; it is pruned only if it satisfies neither. When both limits are unset, nothing is pruned. On disk, `retain_count = 0` is the sentinel for "unlimited" (an absent key falls back to the default of 5). Routine `pre-import` and `pre-discard` snapshots share this retention pool with manual and `pre-migration` backups, so a series of import or discard runs can crowd out older manual backups under the same union; per-kind retention is tracked as #344.
