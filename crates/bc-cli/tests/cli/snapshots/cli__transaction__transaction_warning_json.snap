@@ -21,6 +21,7 @@ exit_code: 0
       "cost": null,
       "id": "[POSTING_ID]",
       "metadata": [],
+      "price": null,
       "spread_from": null,
       "spread_until": null,
       "tag_ids": []
@@ -34,6 +35,7 @@ exit_code: 0
       "cost": null,
       "id": "[POSTING_ID]",
       "metadata": [],
+      "price": null,
       "spread_from": null,
       "spread_until": null,
       "tag_ids": []
