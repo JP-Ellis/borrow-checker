@@ -417,7 +417,24 @@ fn leading_marker_guess(input: &str) -> Option<&str> {
 }
 
 /// Parses one marked amount into `(value, canonical_code)`.
-fn parse_marked_amount(
+///
+/// Shared by the amount box (units and price) and the cost chip's basis, so
+/// every field that takes a marked amount reports the same messages.
+///
+/// # Arguments
+///
+/// * `currencies` - The set of known commodities used to resolve markers.
+/// * `input` - The raw text, e.g. `A$105` or `AUD 105`.
+///
+/// # Returns
+///
+/// The value and the canonical currency code.
+///
+/// # Errors
+///
+/// A message naming the missing, unknown or ambiguous marker, `empty
+/// amount`, or the decimal parse failure.
+pub fn parse_marked_amount(
     currencies: &[CommodityInfo],
     input: &str,
 ) -> Result<(Decimal, String), String> {
