@@ -162,19 +162,146 @@ fn parse_figure(text: &str) -> Result<(Figure, &str), String> {
     ))
 }
 
+/// The wording for every form of lot selection (`{}`, `{2024-03-01}`, `*`),
+/// none of which the store can honour without inventory booking.
+const LOT_SELECTION: &str = "lot selection needs inventory booking, not supported yet (#518)";
+
 /// Parses a cost block starting at the `{` of `text`, returning the block
 /// and the text after its closing brace.
-fn parse_cost_block(_text: &str) -> Result<(CostBlock, &str), String> {
-    Err("cost block is not supported yet".into())
+fn parse_cost_block(text: &str) -> Result<(CostBlock, &str), String> {
+    let (kind, inner_start) = if text.starts_with("{{") {
+        (Kind::Total, 2)
+    } else {
+        (Kind::PerUnit, 1)
+    };
+    #[expect(
+        clippy::string_slice,
+        reason = "inner_start is 1 or 2, both valid char boundaries"
+    )]
+    let inner = &text[inner_start..];
+    let close = find_unquoted(inner, '}').ok_or_else(|| "cost block is not closed".to_owned())?;
+    #[expect(
+        clippy::string_slice,
+        reason = "close is a char boundary from char_indices()"
+    )]
+    let body = &inner[..close];
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "close + 1 cannot overflow; close < len(inner)"
+    )]
+    #[expect(
+        clippy::string_slice,
+        reason = "close + 1 is a valid char boundary from char_indices()"
+    )]
+    let mut after = &inner[close + 1..];
+    if kind == Kind::Total {
+        after = after
+            .strip_prefix('}')
+            .ok_or_else(|| "cost block is not closed".to_owned())?;
+    }
+
+    let mut basis_opt: Option<Figure> = None;
+    let mut date: Option<jiff::civil::Date> = None;
+    let mut label: Option<String> = None;
+    let mut components = split_components(body).into_iter();
+    while let Some(component) = components.next() {
+        if component == "*" {
+            return Err(LOT_SELECTION.into());
+        }
+        if let Some(unquoted) = component
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+        {
+            if label.is_some() {
+                return Err("cost block has two labels".into());
+            }
+            label = Some(unquoted.to_owned());
+        } else if let Ok(value) = Decimal::from_str(&component) {
+            if basis_opt.is_some() {
+                return Err("cost block has two amounts".into());
+            }
+            let code = components
+                .next()
+                .filter(|c| !c.is_empty())
+                .ok_or_else(|| format!("cost amount '{component}' has no commodity"))?;
+            basis_opt = Some(Figure { value, code });
+        } else if let Ok(parsed) = jiff::civil::Date::from_str(&component) {
+            if date.is_some() {
+                return Err("cost block has two dates".into());
+            }
+            date = Some(parsed);
+        } else {
+            if label.is_some() {
+                return Err("cost block has two labels".into());
+            }
+            label = Some(component);
+        }
+    }
+
+    let basis = basis_opt.ok_or_else(|| LOT_SELECTION.to_owned())?;
+    if basis.value.is_sign_negative() && !basis.value.is_zero() {
+        return Err("negative cost not allowed".into());
+    }
+    Ok((
+        CostBlock {
+            kind,
+            basis,
+            date,
+            label,
+        },
+        after,
+    ))
+}
+
+/// Byte offset of the first `needle` outside `"…"`, or `None` when it is
+/// absent or a quote is left open.
+fn find_unquoted(text: &str, needle: char) -> Option<usize> {
+    let mut in_quotes = false;
+    for (idx, c) in text.char_indices() {
+        if c == '"' {
+            in_quotes = !in_quotes;
+        } else if c == needle && !in_quotes {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+/// Splits a block body on `,` and `:` outside `"…"`, trimming each piece
+/// and dropping empty ones.
+fn split_components(body: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for c in body.chars() {
+        match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                current.push(c);
+            }
+            ',' | ':' if !in_quotes => {
+                parts.push(core::mem::take(&mut current));
+            }
+            _ => current.push(c),
+        }
+    }
+    parts.push(current);
+    parts
+        .into_iter()
+        .map(|p| p.trim().to_owned())
+        .filter(|p| !p.is_empty())
+        .collect()
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use rust_decimal_macros::dec;
 
+    use super::CostBlock;
     use super::Figure;
     use super::Kind;
     use super::Leg;
@@ -231,6 +358,109 @@ mod tests {
     #[case::trailing_after_price("4:USD@6:AUD extra", "unexpected 'extra' after the price")]
     #[case::cost_after_price("4:USD@6:AUD{5:AUD}", "cost block must come before the price")]
     fn errors_name_the_problem(#[case] text: &str, #[case] expected: &str) {
+        let err = parse_leg(text).expect_err("rejects");
+        assert!(err.contains(expected), "got: {err}");
+    }
+
+    #[rstest]
+    #[case::per_unit_colon("2:AAPL{105:AUD}", Kind::PerUnit, None, None)]
+    #[case::total("2:AAPL{{210:AUD}}", Kind::Total, None, None)]
+    #[case::colon_date_label(
+        "2:AAPL{105:AUD:2024-03-01:lot-a}",
+        Kind::PerUnit,
+        Some(date(2024, 3, 1)),
+        Some("lot-a")
+    )]
+    #[case::comma_date_label(
+        "2:AAPL{105:AUD,2024-03-01,lot-a}",
+        Kind::PerUnit,
+        Some(date(2024, 3, 1)),
+        Some("lot-a")
+    )]
+    #[case::mixed_any_order(
+        "2:AAPL{lot-a,105:AUD:2024-03-01}",
+        Kind::PerUnit,
+        Some(date(2024, 3, 1)),
+        Some("lot-a")
+    )]
+    #[case::label_only("2:AAPL{105:AUD:lot-a}", Kind::PerUnit, None, Some("lot-a"))]
+    #[case::spaces(
+        "2:AAPL{ 105:AUD , 2024-03-01 , lot-a }",
+        Kind::PerUnit,
+        Some(date(2024, 3, 1)),
+        Some("lot-a")
+    )]
+    #[case::quoted_label("2:AAPL{105:AUD,\"lot-a\"}", Kind::PerUnit, None, Some("lot-a"))]
+    #[case::quoted_label_with_comma("2:AAPL{105:AUD,\"a, b\"}", Kind::PerUnit, None, Some("a, b"))]
+    #[case::quoted_label_with_colon("2:AAPL{105:AUD,\"x:y\"}", Kind::PerUnit, None, Some("x:y"))]
+    #[case::quoted_label_with_brace(
+        "2:AAPL{105:AUD,\"lot}1\"}",
+        Kind::PerUnit,
+        None,
+        Some("lot}1")
+    )]
+    #[case::trailing_separator("2:AAPL{105:AUD,}", Kind::PerUnit, None, None)]
+    fn cost_forms_parse(
+        #[case] text: &str,
+        #[case] kind: Kind,
+        #[case] lot_date: Option<jiff::civil::Date>,
+        #[case] label: Option<&str>,
+    ) {
+        let leg = parse_leg(text).expect("parses");
+        let value = if kind == Kind::Total {
+            dec!(210)
+        } else {
+            dec!(105)
+        };
+        assert_eq!(
+            leg.cost,
+            Some(CostBlock {
+                kind,
+                basis: fig(value, "AUD"),
+                date: lot_date,
+                label: label.map(ToOwned::to_owned),
+            })
+        );
+    }
+
+    #[test]
+    fn cost_and_price_together() {
+        let leg = parse_leg("-2:AAPL{105:AUD:2024-03-01:lot-a}@150:AUD").expect("parses");
+        assert_eq!(leg.units, fig(dec!(-2), "AAPL"));
+        assert_eq!(leg.cost.as_ref().map(|c| c.basis.value), Some(dec!(105)));
+        assert_eq!(leg.price.as_ref().map(|p| p.figure.value), Some(dec!(150)));
+    }
+
+    #[rstest]
+    #[case::empty(
+        "2:AAPL{}",
+        "lot selection needs inventory booking, not supported yet (#518)"
+    )]
+    #[case::date_only(
+        "2:AAPL{2024-03-01}",
+        "lot selection needs inventory booking, not supported yet (#518)"
+    )]
+    #[case::label_only_no_amount(
+        "2:AAPL{lot-a}",
+        "lot selection needs inventory booking, not supported yet (#518)"
+    )]
+    #[case::star(
+        "2:AAPL{105:AUD,*}",
+        "lot selection needs inventory booking, not supported yet (#518)"
+    )]
+    #[case::negative("2:AAPL{-105:AUD}", "negative cost not allowed")]
+    #[case::two_amounts("2:AAPL{105:AUD,106:AUD}", "cost block has two amounts")]
+    #[case::two_dates("2:AAPL{105:AUD,2024-03-01,2024-03-02}", "cost block has two dates")]
+    #[case::two_labels("2:AAPL{105:AUD,lot-a,lot-b}", "cost block has two labels")]
+    #[case::amount_without_code("2:AAPL{105}", "cost amount '105' has no commodity")]
+    #[case::unclosed_single("2:AAPL{105:AUD", "cost block is not closed")]
+    #[case::unclosed_double("2:AAPL{{210:AUD}", "cost block is not closed")]
+    #[case::unclosed_quote("2:AAPL{105:AUD,\"lot}", "cost block is not closed")]
+    #[case::trailing_after_block(
+        "2:AAPL{105:AUD} extra",
+        "unexpected 'extra' after the cost block"
+    )]
+    fn cost_errors_name_the_problem(#[case] text: &str, #[case] expected: &str) {
         let err = parse_leg(text).expect_err("rejects");
         assert!(err.contains(expected), "got: {err}");
     }
