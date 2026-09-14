@@ -89,6 +89,9 @@ mod components_tests {
         pub mod audit {
             include!("components/transaction_row/audit.rs");
         }
+        pub mod cost {
+            include!("components/transaction_row/cost.rs");
+        }
     }
     pub mod account_picker {
         pub mod matching {

@@ -75,6 +75,10 @@ pub mod posting_row;
 /// Pure helpers for rendering and seeding per-posting accrual spreads.
 pub mod spread;
 
+/// Pure helpers for the cost chip: buffer/[`bc_ipc::Cost`] conversion and
+/// chip/quote text.
+pub mod cost;
+
 // MARK: WASM bindings
 
 #[cfg(target_arch = "wasm32")]
