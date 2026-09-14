@@ -16,7 +16,7 @@ use crate::components::tag_picker::TagPicker;
 use crate::components::transaction_row::edit_ctx::TxEditCtx;
 use crate::components::transaction_row::editable;
 use crate::components::transaction_row::editable::EditableTransaction;
-use crate::components::transaction_row::editable::parse_amount;
+use crate::components::transaction_row::editable::parse_leg;
 use crate::components::transaction_row::spread;
 use crate::components::transaction_row::spread::SpreadDisplay;
 
@@ -179,11 +179,11 @@ pub fn PostingLine(
                 .unwrap_or_default()
         });
         let mut cls = style::p_row.to_owned();
-        match parse_amount(&currencies.get(), amount_str.trim()) {
-            Ok((v, _)) if v < Decimal::ZERO => {
+        match parse_leg(&currencies.get(), amount_str.trim()) {
+            Ok(leg) if leg.value < Decimal::ZERO => {
                 cls = format!("{} {}", cls, style::p_out);
             }
-            Ok((v, _)) if v > Decimal::ZERO => {
+            Ok(leg) if leg.value > Decimal::ZERO => {
                 cls = format!("{} {}", cls, style::p_in);
             }
             _ => {}
