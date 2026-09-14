@@ -235,7 +235,8 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
                 .filter_map(|p| {
                     let a = p.amount()?;
                     (a.value() > rust_decimal::Decimal::ZERO)
-                        .then(|| format!("{} {}", a.value(), a.commodity().as_str()))
+                        .then(|| leg::render_leg(p))
+                        .flatten()
                 })
                 .collect();
             let amounts_str = amounts.join(", ");
