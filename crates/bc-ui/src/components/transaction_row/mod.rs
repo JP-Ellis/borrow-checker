@@ -341,7 +341,7 @@ pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount
 pub fn headline_price(tx: &Transaction, perspective: &RowPerspective) -> Option<Quote> {
     let mut legs = match perspective {
         RowPerspective::Account { account_id } => focal_on_account(tx, account_id)
-            .filter(|p| p.amount.stored().is_some())
+            .filter(|p| p.amount.display_amount().is_some())
             .collect::<Vec<_>>()
             .into_iter(),
         RowPerspective::Global => tx
@@ -1438,6 +1438,19 @@ mod tests {
             posting("b", "aud", Some(-737)),
         ]);
         assert_eq!(headline_price(&two_positive, &RowPerspective::Global), None);
+    }
+
+    #[test]
+    fn headline_price_is_none_when_an_elided_leg_shares_the_account() {
+        let t = tx(vec![
+            priced("a", "usd", Decimal::new(400, 2), "USD", total_aud(637)),
+            derived_posting("c", "usd", 100),
+            posting("b", "aud", Some(-737)),
+        ]);
+        let usd = RowPerspective::Account {
+            account_id: "usd".to_owned(),
+        };
+        assert_eq!(headline_price(&t, &usd), None);
     }
 
     #[test]
