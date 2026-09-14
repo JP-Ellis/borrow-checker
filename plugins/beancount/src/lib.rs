@@ -63,9 +63,12 @@ impl bc_sdk::Importer for BeancountImporter {
     /// includes cannot be read — naming the include that referred to it — if
     /// the includes form a cycle, or if they nest deeper than the loader's
     /// limit. Returns [`ImportError::Parse`] if a file is not valid UTF-8, a
-    /// parse error is encountered, a transaction directive has no postings,
-    /// or a posting annotation the parser rejects (a lot selection, a
-    /// negative figure) appears.
+    /// parse error is encountered, or a posting annotation the parser rejects
+    /// (a lot selection, a negative figure) appears.
+    ///
+    /// A transaction directive with no postings is skipped with a warning
+    /// naming its line: Beancount accepts one, and it carries nothing an
+    /// import could post.
     #[inline]
     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
         let cfg: Config = config.as_typed()?;
@@ -81,10 +84,11 @@ impl bc_sdk::Importer for BeancountImporter {
             };
 
             if tx.postings.is_empty() {
-                return Err(ImportError::Parse(format!(
-                    "{file}:{}: transaction has no postings",
-                    tx.line
-                )));
+                bc_sdk::warn!(
+                    "transaction has no postings, skipping it";
+                    location = format!("{file}:{}", tx.line)
+                );
+                continue;
             }
 
             let mut postings = Vec::with_capacity(tx.postings.len());
@@ -504,17 +508,24 @@ mod tests {
     }
 
     #[test]
-    fn import_transaction_with_no_postings_returns_error() {
-        // A transaction directive with zero postings is invalid; the importer
-        // must return an error rather than panic.
-        let input = "2025-01-15 * \"Payee\" \"No postings\"\n";
-        let result = BeancountImporter.import(test_config(
-            "import_transaction_with_no_postings_returns_error",
-            input,
-        ));
-        assert!(
-            result.is_err(),
-            "expected error for zero-posting transaction"
+    fn import_transaction_with_no_postings_is_skipped() {
+        // Beancount accepts a transaction directive with zero postings, and a
+        // ledger extracted from statements can hold hundreds of them. One
+        // must not stop the import of everything around it.
+        let input = "2025-01-15 * \"Payee\" \"No postings\"\n\
+                     2025-01-16 * \"Generic Store\" \"Groceries\"\n  \
+                     Expenses:Food   50.00 AUD\n  \
+                     Assets:Bank   -50.00 AUD\n";
+        let txs = BeancountImporter
+            .import(test_config(
+                "import_transaction_with_no_postings_is_skipped",
+                input,
+            ))
+            .expect("the empty directive is skipped, not fatal");
+        assert_eq!(txs.len(), 1);
+        assert_eq!(
+            txs.first().expect("one transaction").description,
+            "Groceries"
         );
     }
 
