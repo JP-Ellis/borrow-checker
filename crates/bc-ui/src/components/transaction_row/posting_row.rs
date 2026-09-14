@@ -162,7 +162,6 @@ pub fn PostingLine(
     // MARK: Local UI state.
     let show_fields = RwSignal::new(false);
     let editing_spread = RwSignal::new(false);
-    let cost_error = RwSignal::new(Option::<String>::None);
 
     // MARK: Delete handler.
     let remove = move |_| {
@@ -252,11 +251,11 @@ pub fn PostingLine(
 
     // MARK: Weight hint — shown only when the leg carries a price or cost.
     let hint = move || -> Option<(String, bool)> {
-        if let Some(e) = cost_error.get() {
-            return Some((e, true));
-        }
         working.with(|w| {
             let p = w.postings.iter().find(|p| p.uid == uid)?;
+            if let Some(e) = &p.cost_error {
+                return Some((e.clone(), true));
+            }
             if p.is_elided() {
                 return None;
             }
@@ -432,7 +431,7 @@ pub fn PostingLine(
                         compact=true
                     />
 
-                    <CostChip uid=uid cost_error=cost_error />
+                    <CostChip uid=uid />
 
                     {move || {
                         fields_visible()

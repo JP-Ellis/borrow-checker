@@ -64,6 +64,12 @@ pub struct EditablePosting {
     pub spread_until: Option<jiff::civil::Date>,
     /// Cost basis (`{}` / `{{}}`), edited through the cost chip, or `None`.
     pub cost: Option<Cost>,
+    /// The cost chip's parse error while its buffers do not describe a cost.
+    ///
+    /// `cost` keeps the last valid basis meanwhile, so this is what stops
+    /// [`EditableTransaction::to_edit_transaction`] and [`derive_balance`]
+    /// from treating the stale value as the leg's cost.
+    pub cost_error: Option<String>,
 }
 
 impl EditablePosting {
@@ -127,6 +133,7 @@ impl EditablePosting {
             spread_from: p.spread_from,
             spread_until: p.spread_until,
             cost: p.cost.clone(),
+            cost_error: None,
         }
     }
 
@@ -239,6 +246,7 @@ impl EditableTransaction {
             spread_from: None,
             spread_until: None,
             cost: None,
+            cost_error: None,
         });
         uid
     }
@@ -274,6 +282,12 @@ impl EditableTransaction {
         for (index, p) in self.postings.iter().enumerate() {
             if p.account_id.trim().is_empty() {
                 return Err(EditError::MissingAccount { index });
+            }
+            if let Some(message) = &p.cost_error {
+                return Err(EditError::Cost {
+                    index,
+                    message: message.clone(),
+                });
             }
             let (amount, price) = if p.is_elided() {
                 elided = elided.saturating_add(1);
@@ -527,6 +541,13 @@ pub enum EditError {
         /// Parser message.
         message: String,
     },
+    /// A posting's cost chip holds text that does not describe a cost.
+    Cost {
+        /// Index of the offending posting.
+        index: usize,
+        /// Parser message.
+        message: String,
+    },
     /// A posting has no account selected.
     MissingAccount {
         /// Index of the offending posting.
@@ -558,6 +579,9 @@ impl fmt::Display for EditError {
                     "invalid amount on posting {}: {message}",
                     index.saturating_add(1)
                 )
+            }
+            Self::Cost { index, message } => {
+                write!(f, "posting {} cost: {message}", index.saturating_add(1))
             }
             Self::MissingAccount { index } => {
                 write!(f, "posting {} has no account", index.saturating_add(1))
@@ -617,6 +641,9 @@ pub fn derive_balance(working: &EditableTransaction, currencies: &[CommodityInfo
     let elided = working.postings.iter().filter(|p| p.is_elided()).count();
     if elided >= 2 {
         return BalanceState::Ambiguous;
+    }
+    if working.postings.iter().any(|p| p.cost_error.is_some()) {
+        return BalanceState::Invalid;
     }
     // Per-commodity running totals in first-seen order, mirroring `Balances`.
     let mut totals: Vec<(String, Decimal)> = Vec::new();
@@ -962,6 +989,7 @@ pub mod tests {
             spread_from: None,
             spread_until: None,
             cost: None,
+            cost_error: None,
         }
     }
 
@@ -1259,6 +1287,14 @@ pub mod tests {
             &registry(),
         );
         assert_eq!(s, BalanceState::Invalid);
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn balance_cost_error_is_invalid() {
+        let mut w = et(vec![ep("AUD 1.00", "AUD"), ep("AUD -1.00", "AUD")]);
+        w.postings[0].cost_error = Some("unknown currency 'X$'".to_owned());
+        assert_eq!(derive_balance(&w, &registry()), BalanceState::Invalid);
     }
 
     #[test]
@@ -1578,6 +1614,24 @@ pub mod tests {
         assert!(matches!(
             w.to_edit_transaction(&registry()),
             Err(EditError::Amount { index: 0, .. })
+        ));
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn to_edit_cost_error_errors_even_with_a_valid_stale_cost() {
+        let mut w = et(vec![
+            ep_cost(
+                "AAPL 2",
+                "AAPL",
+                Cost::new(per_unit_aud(10_500), None, None),
+            ),
+            ep("AUD -210.00", "AUD"),
+        ]);
+        w.postings[0].cost_error = Some("unknown currency 'X$'".to_owned());
+        assert!(matches!(
+            w.to_edit_transaction(&registry_shares()),
+            Err(EditError::Cost { index: 0, .. })
         ));
     }
 
