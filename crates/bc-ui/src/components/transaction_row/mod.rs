@@ -439,10 +439,10 @@ fn inclusive_days(a: jiff::civil::Date, b: jiff::civil::Date) -> i64 {
 
 /// Returns whether `tx` is structurally balanced.
 ///
-/// Mirrors `bc_models::Transaction::balanced`: false with no concrete legs or
-/// two-or-more elided legs; a single elided leg auto-balances; otherwise every
-/// commodity's concrete legs must sum to zero **by weight** (cost, else
-/// price, else units).
+/// Mirrors `bc_models::Transaction::balanced`: false with no concrete legs,
+/// two-or-more elided legs, or a stored leg whose weight overflows; a single
+/// elided leg auto-balances; otherwise every commodity's concrete legs must
+/// sum to zero **by weight** (cost, else price, else units).
 ///
 /// # Arguments
 ///
@@ -455,6 +455,13 @@ fn inclusive_days(a: jiff::civil::Date, b: jiff::civil::Date) -> i64 {
 pub fn is_balanced(tx: &Transaction) -> bool {
     let elided = tx.postings.iter().filter(|p| p.amount.is_elided()).count();
     if elided >= 2 {
+        return false;
+    }
+    let overflowed = tx
+        .postings
+        .iter()
+        .any(|p| p.amount.stored().is_some() && p.weight().is_none());
+    if overflowed {
         return false;
     }
     let mut totals: BTreeMap<String, Decimal> = BTreeMap::new();
@@ -1422,6 +1429,16 @@ mod tests {
     fn fx_purchase_with_wrong_price_is_unbalanced() {
         let t = tx(vec![
             priced("a", "usd", Decimal::new(400, 2), "USD", total_aud(600)),
+            posting("b", "aud", Some(-637)),
+        ]);
+        assert!(!is_balanced(&t));
+    }
+
+    #[test]
+    fn overflowing_weight_is_unbalanced() {
+        let overflowing_price = Quote::PerUnit(Amount::new(Decimal::MAX, "AUD"));
+        let t = tx(vec![
+            priced("a", "usd", Decimal::TWO, "USD", overflowing_price),
             posting("b", "aud", Some(-637)),
         ]);
         assert!(!is_balanced(&t));
