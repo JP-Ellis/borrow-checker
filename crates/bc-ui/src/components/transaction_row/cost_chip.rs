@@ -22,14 +22,13 @@ use crate::components::transaction_row::editable::EditablePosting;
 /// buffer by an `Effect` on every change, so the weight hint and the balance
 /// line follow the typing. Blur, Enter and Escape close the editor, but only
 /// when the basis parses; a negative or unparsable basis keeps the editor
-/// open with the error under the amount box until it is fixed or cleared
-/// with the × control. A blank basis clears the cost.
+/// open, writes the message to the leg's `cost_error` (which the row shows
+/// under the amount box and which blocks saving) until it is fixed or
+/// cleared with the × control. A blank basis clears the cost.
 ///
 /// # Arguments
 ///
 /// * `uid` - Stable identity of the posting in the buffer.
-/// * `cost_error` - Set by the forward-sync effect when the buffers fail to
-///   parse; read by the caller to surface the message under the amount box.
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -38,8 +37,6 @@ use crate::components::transaction_row::editable::EditablePosting;
 pub fn CostChip(
     /// Stable identity of this posting in the buffer.
     uid: u64,
-    /// Set when the buffers fail to parse; cleared on a valid parse.
-    cost_error: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let ctx = expect_context::<TxEditCtx>();
     let working = ctx.working;
@@ -62,7 +59,7 @@ pub fn CostChip(
     let show_date = RwSignal::new(false);
     let show_label = RwSignal::new(false);
 
-    // MARK: Forward sync — buffers → working.cost.
+    // MARK: Forward sync — buffers → working.cost / working.cost_error.
     Effect::new(move |_| {
         let parsed = cost_from_buffers(
             &currencies.get(),
@@ -75,20 +72,27 @@ pub fn CostChip(
         else {
             return;
         };
-        match parsed {
-            Ok(cost) => {
-                cost_error.set(None);
-                let changed =
-                    working.with_untracked(|w| w.postings.get(i).is_some_and(|p| p.cost != cost));
-                if changed {
-                    working.update(|w| {
-                        if let Some(p) = w.postings.get_mut(i) {
-                            p.cost = cost;
-                        }
-                    });
+        // A parse failure leaves the last valid `cost` in place and records
+        // the message beside it; the save path refuses the leg while it is
+        // set. Write only on a change so a no-op sync does not dirty the row.
+        let (cost, cost_error) = match parsed {
+            Ok(cost) => (Some(cost), None),
+            Err(message) => (None, Some(message)),
+        };
+        let changed = working.with_untracked(|w| {
+            w.postings.get(i).is_some_and(|p| {
+                cost.as_ref().is_some_and(|c| p.cost != *c) || p.cost_error != cost_error
+            })
+        });
+        if changed {
+            working.update(|w| {
+                if let Some(p) = w.postings.get_mut(i) {
+                    if let Some(c) = cost {
+                        p.cost = c;
+                    }
+                    p.cost_error = cost_error;
                 }
-            }
-            Err(message) => cost_error.set(Some(message)),
+            });
         }
     });
 
@@ -117,6 +121,14 @@ pub fn CostChip(
         }
     });
 
+    let has_error = move || {
+        working.with_untracked(|w| {
+            w.postings
+                .iter()
+                .find(|p| p.uid == uid)
+                .is_some_and(|p| p.cost_error.is_some())
+        })
+    };
     let has_cost = move || {
         working.with(|w| {
             w.postings
@@ -160,7 +172,7 @@ pub fn CostChip(
     };
     let close_key = move |ev: leptos::ev::KeyboardEvent| {
         let key = ev.key();
-        if (key == "Enter" || key == "Escape") && cost_error.get_untracked().is_none() {
+        if (key == "Enter" || key == "Escape") && !has_error() {
             editing.set(false);
         }
     };
@@ -187,7 +199,7 @@ pub fn CostChip(
             })
             .and_then(|element| element.closest(&selector).ok().flatten())
             .is_some();
-        if !staying && cost_error.get_untracked().is_none() {
+        if !staying && !has_error() {
             editing.set(false);
         }
     };

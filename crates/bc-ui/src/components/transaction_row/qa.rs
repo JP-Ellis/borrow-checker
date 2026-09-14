@@ -380,6 +380,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
                 spread_from: None,
                 spread_until: None,
                 cost: None,
+                cost_error: None,
             },
             EditablePosting {
                 id: Some("p-2".to_owned()),
@@ -394,6 +395,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
                 spread_from: None,
                 spread_until: None,
                 cost: None,
+                cost_error: None,
             },
         ],
     };
