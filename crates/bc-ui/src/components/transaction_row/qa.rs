@@ -4,8 +4,11 @@
 use bc_ipc::AccountRef;
 use bc_ipc::Amount;
 use bc_ipc::AuditEntry;
+use bc_ipc::CommodityInfo;
+use bc_ipc::Cost;
 use bc_ipc::Posting;
 use bc_ipc::PostingAmount;
+use bc_ipc::Quote;
 use bc_ipc::Reconciliation;
 use bc_ipc::TagInfo;
 use bc_ipc::Transaction;
@@ -18,6 +21,7 @@ use super::posting_row::PostingsList;
 use crate::components::transaction_row::edit_ctx::TxEditCtx;
 use crate::components::transaction_row::editable::EditablePosting;
 use crate::components::transaction_row::editable::EditableTransaction;
+use crate::currency_ctx::CurrencyStore;
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
 
@@ -97,6 +101,34 @@ fn qa_accounts() -> Vec<AccountRef> {
         AccountRef::new("misc", "Expenses :: Misc"),
         AccountRef::new("salary", "Income :: Salary"),
         AccountRef::new("insurance", "Expenses :: Insurance"),
+        AccountRef::new("cash-usd", "Assets :: Cash :: USD"),
+        AccountRef::new("brokerage", "Assets :: Brokerage"),
+    ]
+}
+
+/// Served commodity set for QA — resolves the `AUD`/`USD` symbols and the
+/// share-count formatting `AAPL` needs.
+fn qa_currencies() -> Vec<CommodityInfo> {
+    vec![
+        CommodityInfo::new(
+            "c-aud",
+            "AUD",
+            Some("A$".to_owned()),
+            vec![],
+            2,
+            true,
+            false,
+        ),
+        CommodityInfo::new(
+            "c-usd",
+            "USD",
+            Some("US$".to_owned()),
+            vec![],
+            2,
+            true,
+            false,
+        ),
+        CommodityInfo::new("c-aapl", "AAPL", None, vec![], 0, false, true),
     ]
 }
 
@@ -266,6 +298,57 @@ fn nameless_tx() -> Transaction {
     )
 }
 
+/// An FX purchase: 4.00 USD bought for 6.37 AUD, stated as a total price.
+fn fx_tx() -> Transaction {
+    let usd = Posting::new(
+        "p-1",
+        AccountRef::new("cash-usd", "Assets :: Cash :: USD"),
+        PostingAmount::Stored(Amount::new(Decimal::new(400, 2), "USD")),
+        vec![],
+        vec![],
+        None,
+        None,
+    )
+    .with_price(Some(Quote::Total(Amount::new(Decimal::new(637, 2), "AUD"))));
+    tx(
+        "tx-fx",
+        "FX top-up",
+        "",
+        Reconciliation::Unreconciled,
+        vec![],
+        vec![usd, leg("p-2", "checking", "Assets :: Checking", -637)],
+    )
+}
+
+/// A lot purchase: 2 AAPL at A$105 each, dated and labelled.
+fn lot_tx() -> Transaction {
+    let shares = Posting::new(
+        "p-1",
+        AccountRef::new("brokerage", "Assets :: Brokerage"),
+        PostingAmount::Stored(Amount::new(Decimal::TWO, "AAPL")),
+        vec![],
+        vec![],
+        None,
+        None,
+    )
+    .with_cost(Some(Cost::new(
+        Quote::PerUnit(Amount::new(Decimal::new(10_500, 2), "AUD")),
+        Some(jiff::civil::Date::constant(2024, 3, 1)),
+        Some("lot-a".to_owned()),
+    )));
+    tx(
+        "tx-lot",
+        "Demo Broker",
+        "Buy shares",
+        Reconciliation::Unreconciled,
+        vec![],
+        vec![
+            shares,
+            leg("p-2", "checking", "Assets :: Checking", -21_000),
+        ],
+    )
+}
+
 /* ── showcase components ─────────────────────────────────────────────────── */
 
 /// Renders the editable [`PostingsList`] against a seeded working buffer.
@@ -347,6 +430,8 @@ pub fn PostingsListEditQa() -> impl IntoView {
 /// - >2-leg split (Reconciled) — three posting rows
 /// - Single elided leg (Reconciled) — ghost/inferred amount in the amount field
 /// - Flagged — status pill renders in the warning (Flagged) state
+/// - Priced leg (Unreconciled) — weight hint for a `@@` total price
+/// - Costed leg (Unreconciled) — weight hint and the cost chip for a `{}` lot
 #[component]
 pub fn ExpandedDetailQa() -> impl IntoView {
     let account = |id: &str| RowPerspective::Account {
@@ -429,18 +514,38 @@ pub fn ExpandedDetailQa() -> impl IntoView {
                 accounts=qa_accounts()
                 all_tags=qa_tags()
             />
+
+            <h3>"Expanded — priced leg (weight hint, USD @@ AUD)"</h3>
+            <TransactionRow
+                tx=fx_tx()
+                perspective=account("cash-usd")
+                expanded=exp()
+                accounts=qa_accounts()
+                all_tags=qa_tags()
+            />
+
+            <h3>"Expanded — costed leg (weight hint, cost chip)"</h3>
+            <TransactionRow
+                tx=lot_tx()
+                perspective=account("brokerage")
+                expanded=exp()
+                accounts=qa_accounts()
+                all_tags=qa_tags()
+            />
         </div>
     }
 }
 
 /// Renders [`TransactionRow`] across perspectives and states for inspection.
 ///
-/// Covers the Account perspective (balanced, split, unbalanced, single-elided),
-/// the Budget perspective (prorated spread headline), the Global perspective,
-/// flagged and unreconciled glyphs, and a payee/description-less em-dash row.
-/// Also renders all expanded-detail states via [`ExpandedDetailQa`].
+/// Covers the Account perspective (balanced, split, unbalanced, single-elided,
+/// priced, costed), the Budget perspective (prorated spread headline), the
+/// Global perspective, flagged and unreconciled glyphs, and a
+/// payee/description-less em-dash row. Also renders all expanded-detail
+/// states via [`ExpandedDetailQa`].
 #[component]
 pub fn TransactionRowQa() -> impl IntoView {
+    provide_context(CurrencyStore(RwSignal::new(qa_currencies())));
     let account = |id: &str| RowPerspective::Account {
         account_id: id.to_owned(),
     };
@@ -481,6 +586,12 @@ pub fn TransactionRowQa() -> impl IntoView {
 
             <h3>"Payee-less + description-less (em-dash)"</h3>
             <TransactionRow tx=nameless_tx() perspective=account("checking") />
+
+            <h3>"Account — priced leg (USD @@ AUD)"</h3>
+            <TransactionRow tx=fx_tx() perspective=account("cash-usd") />
+
+            <h3>"Account — costed leg (AAPL {AUD})"</h3>
+            <TransactionRow tx=lot_tx() perspective=account("brokerage") />
             <ExpandedDetailQa />
         </div>
     }
