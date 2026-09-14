@@ -39,8 +39,9 @@ pub struct BudgetTreeItem {
     pub governing: Option<bc_models::BudgetRevision>,
     /// Child budget items (nested under this account in the hierarchy).
     pub children: Vec<BudgetTreeItem>,
-    /// Native amounts in the display window that fed no total, by commodity
-    /// (see [`crate::BudgetStatus::unvalued`]).
+    /// Native amounts that fed no total, by commodity, across the display
+    /// window and the carry chain that produced its rollover (see
+    /// [`crate::BudgetStatus::unvalued`]).
     pub unvalued: bc_models::Balances,
 }
 
@@ -59,7 +60,10 @@ pub struct BudgetTreeSummary {
     pub commodity: Option<bc_models::CommodityCode>,
     /// Count of leaf budgets where `actuals > effective_target`.
     pub overspent_count: u32,
-    /// `true` when any node in the tree has a non-empty `unvalued`.
+    /// `true` when any node in the tree has a non-empty `unvalued`. A flag
+    /// rather than a sum: budgets in one tree can target different
+    /// commodities, so a tree-wide total has no single denomination; each
+    /// node's `unvalued` carries the amounts.
     pub has_unvalued: bool,
 }
 
@@ -368,7 +372,8 @@ pub struct NativePeriodStatus {
     pub actuals: Decimal,
     /// Commodity of the actuals.
     pub commodity: Option<bc_models::CommodityCode>,
-    /// Native amounts within the overlap that fed no total, by commodity.
+    /// Native amounts that fed no total, by commodity, across the overlap
+    /// and the carry chain that produced its rollover.
     pub unvalued: bc_models::Balances,
 }
 
