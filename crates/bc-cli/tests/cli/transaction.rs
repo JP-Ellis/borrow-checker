@@ -221,6 +221,34 @@ fn add_priced_and_costed_leg_json() {
 }
 
 #[test]
+fn add_costed_sale_then_list() {
+    // The sale leg is negative, and the table shows it anyway: its cost and
+    // price are the record of the trade.
+    let ctx = TestContext::new();
+    let (checking_id, _) = setup_accounts(&ctx);
+    let brokerage_id = setup_brokerage(&ctx);
+    ctx.command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "Sell shares",
+            "--posting",
+            &format!("{checking_id}:210:AUD"),
+            "--posting",
+            &format!("{brokerage_id}:-2:AAPL{{105:AUD:2024-03-01:lot-a}}@150:AUD"),
+        ])
+        .output()
+        .expect("add");
+
+    let mut cmd = ctx.command();
+    cmd.args(["transaction", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
 fn add_leg_quoted_in_its_own_commodity_warns() {
     // A fee stated as N AUD @ P AUD is what Beancount weighs as N × P AUD;
     // the write succeeds and the warning names the account on stderr.
