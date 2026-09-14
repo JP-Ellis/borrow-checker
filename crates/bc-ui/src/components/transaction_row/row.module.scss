@@ -280,10 +280,10 @@
   flex-direction: column;
 }
 
-/* Grid: [40px gutter] [account flex] [116px amount] [20px del] */
+/* Grid: [40px gutter] [account flex] [200px amount] [20px del] */
 .p_row {
   display: grid;
-  grid-template-columns: 40px 1fr 116px 20px;
+  grid-template-columns: 40px 1fr 200px 20px;
   gap: var(--bc-space-3);
   align-items: baseline;
   padding: var(--bc-space-2) 0;
@@ -414,11 +414,29 @@
   text-align: right;
 }
 
+.amt_wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--bc-space-05);
+}
+
+/* What the leg contributes to balancing when it carries a price or cost. */
+.weight_hint {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  font-variant-numeric: tabular-nums;
+  color: var(--bc-ink-dim);
+  white-space: nowrap;
+}
+
+.weight_hint_bad { color: var(--bc-warn); }
+
 /* MARK: Balance line */
 
 .balance {
   display: grid;
-  grid-template-columns: 40px 1fr 116px 20px;
+  grid-template-columns: 40px 1fr 200px 20px;
   gap: var(--bc-space-3);
   padding-top: var(--bc-space-2);
   border-top: 1px dashed var(--bc-border);
@@ -624,4 +642,73 @@
   opacity: 0.55;
 
   &:hover { opacity: 1; }
+}
+
+/* MARK: Cost editor */
+
+/* The opened form of the cost chip; same silhouette as .spread_edit. */
+.cost_edit {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--bc-space-1);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-accent);
+  border: 1px solid color-mix(in oklch, var(--bc-accent) 30%, var(--bc-border));
+  background: var(--bc-accent-soft);
+  border-radius: var(--bc-radius-control);
+  padding: var(--bc-space-1) var(--bc-space-2);
+}
+
+.cost_edit_lbl { color: color-mix(in oklch, var(--bc-accent) 75%, var(--bc-ink-dim)); }
+
+.cost_edit_input {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-accent);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--bc-radius-tag);
+  padding: 0 var(--bc-space-05);
+
+  &:hover { background: color-mix(in oklch, var(--bc-accent) 8%, transparent); }
+  &:focus {
+    outline: none;
+    background: var(--bc-bg);
+    box-shadow: inset 0 0 0 1px var(--bc-accent);
+  }
+  &::placeholder { color: color-mix(in oklch, var(--bc-accent) 45%, transparent); font-style: italic; }
+}
+
+.cost_edit_basis { width: 10ch; }
+.cost_edit_date  { width: 10ch; }
+.cost_edit_label { width: 8ch; }
+
+/* `{ }` / `{{ }}` segment. */
+.cost_seg {
+  display: inline-flex;
+  border: 1px solid color-mix(in oklch, var(--bc-accent) 40%, var(--bc-border));
+  border-radius: var(--bc-radius-tag);
+  overflow: hidden;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+}
+
+.cost_seg_btn {
+  padding: 0 var(--bc-space-1);
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.cost_seg_on { background: var(--bc-accent); color: var(--bc-bg); }
+
+.cost_more {
+  font-size: var(--bc-text-eyebrow);
+  color: color-mix(in oklch, var(--bc-accent) 70%, var(--bc-ink-dim));
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 var(--bc-space-05);
 }

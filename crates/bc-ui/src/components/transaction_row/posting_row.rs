@@ -12,10 +12,13 @@ use crate::components::chip::Chip;
 use crate::components::meta_editor::MetaEditor;
 use crate::components::meta_editor::model::MetaRow;
 use crate::components::num::format_amount;
+use crate::components::num::meta::display_meta_for;
 use crate::components::tag_picker::TagPicker;
+use crate::components::transaction_row::cost_chip::CostChip;
 use crate::components::transaction_row::edit_ctx::TxEditCtx;
 use crate::components::transaction_row::editable;
 use crate::components::transaction_row::editable::EditableTransaction;
+use crate::components::transaction_row::editable::leg_weight;
 use crate::components::transaction_row::editable::parse_leg;
 use crate::components::transaction_row::spread;
 use crate::components::transaction_row::spread::SpreadDisplay;
@@ -159,6 +162,7 @@ pub fn PostingLine(
     // MARK: Local UI state.
     let show_fields = RwSignal::new(false);
     let editing_spread = RwSignal::new(false);
+    let cost_error = RwSignal::new(Option::<String>::None);
 
     // MARK: Delete handler.
     let remove = move |_| {
@@ -244,6 +248,43 @@ pub fn PostingLine(
         } else {
             style::amt_cell.to_owned()
         }
+    };
+
+    // MARK: Weight hint — shown only when the leg carries a price or cost.
+    let hint = move || -> Option<(String, bool)> {
+        if let Some(e) = cost_error.get() {
+            return Some((e, true));
+        }
+        working.with(|w| {
+            let p = w.postings.iter().find(|p| p.uid == uid)?;
+            if p.is_elided() {
+                return None;
+            }
+            let currencies = currencies.get();
+            let leg = match editable::parse_leg(&currencies, &p.amount) {
+                Ok(leg) => leg,
+                Err(message) => return Some((message, true)),
+            };
+            if p.cost.is_none() && leg.price.is_none() {
+                return None;
+            }
+            match leg_weight(p, &currencies) {
+                Ok(Some(weight)) => {
+                    let meta = display_meta_for(&weight.currency_code, &currencies);
+                    let at_cost = if p.cost.is_some() && leg.price.is_some() {
+                        " at cost"
+                    } else {
+                        ""
+                    };
+                    Some((
+                        format!("= {}{at_cost}", format_amount(&weight.value, &meta)),
+                        false,
+                    ))
+                }
+                Ok(None) => None,
+                Err(message) => Some((message, true)),
+            }
+        })
     };
 
     // MARK: Amount update handler.
@@ -391,6 +432,8 @@ pub fn PostingLine(
                         compact=true
                     />
 
+                    <CostChip uid=uid cost_error=cost_error />
+
                     {move || {
                         fields_visible()
                             .then(|| {
@@ -501,22 +544,41 @@ pub fn PostingLine(
             </div>
 
             <div class=amt_cell_class>
-                <input
-                    class=format!("{} {} {}", style::amt_input, style::f, style::f_num)
-                    prop:value=move || {
-                        working
-                            .with(|w| {
-                                w.postings
-                                    .iter()
-                                    .find(|p| p.uid == uid)
-                                    .map(|p| p.amount.clone())
-                                    .unwrap_or_default()
+                <div class=style::amt_wrap>
+                    <input
+                        class=format!("{} {} {}", style::amt_input, style::f, style::f_num)
+                        prop:value=move || {
+                            working
+                                .with(|w| {
+                                    w.postings
+                                        .iter()
+                                        .find(|p| p.uid == uid)
+                                        .map(|p| p.amount.clone())
+                                        .unwrap_or_default()
+                                })
+                        }
+                        on:input=set_amount
+                        placeholder=ghost_placeholder
+                        data-testid="posting-amount"
+                    />
+                    {move || {
+                        hint()
+                            .map(|(text, bad)| {
+                                view! {
+                                    <span
+                                        class=if bad {
+                                            format!("{} {}", style::weight_hint, style::weight_hint_bad)
+                                        } else {
+                                            style::weight_hint.to_owned()
+                                        }
+                                        data-testid="posting-weight"
+                                    >
+                                        {text}
+                                    </span>
+                                }
                             })
-                    }
-                    on:input=set_amount
-                    placeholder=ghost_placeholder
-                    data-testid="posting-amount"
-                />
+                    }}
+                </div>
             </div>
 
             <button
