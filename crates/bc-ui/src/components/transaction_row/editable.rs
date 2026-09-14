@@ -13,9 +13,11 @@ use core::fmt;
 
 use bc_ipc::Amount;
 use bc_ipc::CommodityInfo;
+use bc_ipc::Cost;
 use bc_ipc::EditPosting;
 use bc_ipc::EditTransaction;
 use bc_ipc::Posting;
+use bc_ipc::Quote;
 use bc_ipc::Reconciliation;
 use bc_ipc::Transaction;
 use rust_decimal::Decimal;
@@ -59,6 +61,8 @@ pub struct EditablePosting {
     pub spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end date, if set.
     pub spread_until: Option<jiff::civil::Date>,
+    /// Cost basis (`{}` / `{{}}`), edited through the cost chip, or `None`.
+    pub cost: Option<Cost>,
 }
 
 impl EditablePosting {
@@ -82,10 +86,26 @@ impl EditablePosting {
             uid,
             account_id: p.account.id.clone(),
             account_name: p.account.name.clone(),
-            amount: p
-                .amount
-                .stored()
-                .map_or_else(String::new, |a| format!("{} {}", a.currency_code, a.value)),
+            amount: p.amount.stored().map_or_else(String::new, |stored| {
+                let mut s = format!("{} {}", stored.currency_code, stored.value);
+                if let Some(q) = &p.price {
+                    // `Quote` is `#[non_exhaustive]`; a future variant renders
+                    // no price rather than failing to compile.
+                    let marker_amount = match q {
+                        Quote::PerUnit(price) => Some(("@", price)),
+                        Quote::Total(price) => Some(("@@", price)),
+                        _ => None,
+                    };
+                    if let Some((marker, price)) = marker_amount {
+                        #[expect(
+                            clippy::format_push_string,
+                            reason = "one small append; `write!` would need an infallible-Result dance for no benefit"
+                        )]
+                        s.push_str(&format!(" {marker} {} {}", price.currency_code, price.value));
+                    }
+                }
+                s
+            }),
             currency: p
                 .amount
                 .stored()
@@ -105,6 +125,7 @@ impl EditablePosting {
             tags: p.tags.clone(),
             spread_from: p.spread_from,
             spread_until: p.spread_until,
+            cost: p.cost.clone(),
         }
     }
 
@@ -216,6 +237,7 @@ impl EditableTransaction {
             tags: vec![],
             spread_from: None,
             spread_until: None,
+            cost: None,
         });
         uid
     }
@@ -252,23 +274,27 @@ impl EditableTransaction {
             if p.account_id.trim().is_empty() {
                 return Err(EditError::MissingAccount { index });
             }
-            let amount = if p.is_elided() {
+            let (amount, price) = if p.is_elided() {
                 elided = elided.saturating_add(1);
-                None
+                (None, None)
             } else {
-                let (value, code) = parse_amount(currencies, &p.amount)
+                let leg = parse_leg(currencies, &p.amount)
                     .map_err(|message| EditError::Amount { index, message })?;
-                Some(Amount::new(value, code))
+                (Some(Amount::new(leg.value, leg.code)), leg.price)
             };
-            postings.push(EditPosting::new(
-                p.id.clone(),
-                p.account_id.clone(),
-                amount,
-                emit_rows(&p.metadata),
-                p.tags.clone(),
-                p.spread_from,
-                p.spread_until,
-            ));
+            postings.push(
+                EditPosting::new(
+                    p.id.clone(),
+                    p.account_id.clone(),
+                    amount,
+                    emit_rows(&p.metadata),
+                    p.tags.clone(),
+                    p.spread_from,
+                    p.spread_until,
+                )
+                .with_price(price)
+                .with_cost(p.cost.clone()),
+            );
         }
         if elided >= 2 {
             return Err(EditError::Ambiguous);
@@ -286,30 +312,114 @@ impl EditableTransaction {
     }
 }
 
-/// Parses a marked amount string into `(value, canonical_code)`.
+/// A parsed amount box: units, their currency, and an optional price.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedLeg {
+    /// The units, signed.
+    pub value: Decimal,
+    /// Canonical currency code of the units.
+    pub code: String,
+    /// Price annotation (`@` per unit, `@@` total), if typed.
+    pub price: Option<Quote>,
+}
+
+/// Parses the amount box: a marked amount, then optionally `@@` or `@` and
+/// a second marked amount.
 ///
-/// Requires a resolvable currency marker (`$100`, `AUD 100`, `100 AUD`); a bare
-/// number is an error. The numeric remainder may carry comma/space grouping.
+/// Requires a resolvable currency marker on each amount (`$100`, `AUD 100`,
+/// `100 AUD`); a bare number is an error. The numeric parts may carry
+/// comma/space grouping. A cost block is never accepted here — the cost chip
+/// is its only editor.
 ///
 /// # Arguments
 ///
 /// * `currencies` - The set of known commodities to match against.
-/// * `input` - The raw amount text.
+/// * `input` - The raw amount-box text.
 ///
 /// # Returns
 ///
-/// A `(value, canonical_code)` pair on success.
+/// The parsed units and price.
 ///
 /// # Errors
 ///
-/// Returns a human-readable message when the marker is missing/unknown/ambiguous
-/// or the numeric part does not parse.
-pub fn parse_amount(
+/// Returns a human-readable message when a marker is missing/unknown/ambiguous,
+/// a number does not parse, the price is negative or missing after `@`, the
+/// text contains `{`, or anything follows the price.
+pub fn parse_leg(currencies: &[CommodityInfo], input: &str) -> Result<ParsedLeg, String> {
+    if input.contains('{') {
+        return Err("set the cost with the { cost chip".to_owned());
+    }
+    let (units_text, price_part) = match input.split_once("@@") {
+        Some((u, rest)) => (u, Some((true, rest))),
+        None => match input.split_once('@') {
+            Some((u, rest)) => (u, Some((false, rest))),
+            None => (input, None),
+        },
+    };
+    let (value, code) = parse_marked_amount(currencies, units_text)?;
+    let price = match price_part {
+        None => None,
+        Some((is_total, rest)) => {
+            if rest.trim().is_empty() {
+                return Err("price needs an amount (e.g. @ A$300)".to_owned());
+            }
+            if let Some(at) = rest.find('@') {
+                #[expect(
+                    clippy::string_slice,
+                    reason = "`at` is the byte index of an ASCII '@'"
+                )]
+                let tail = rest[at..].trim();
+                return Err(format!("unexpected '{tail}' after the price"));
+            }
+            let (p_value, p_code) = parse_marked_amount(currencies, rest)?;
+            if p_value.is_sign_negative() {
+                return Err("negative price not allowed".to_owned());
+            }
+            let amount = Amount::new(p_value, p_code);
+            Some(if is_total {
+                Quote::Total(amount)
+            } else {
+                Quote::PerUnit(amount)
+            })
+        }
+    };
+    Ok(ParsedLeg { value, code, price })
+}
+
+/// Guesses the marker a caller was attempting when [`split_marked_amount`]
+/// gives up entirely (`MarkerError::Missing`): the run of non-numeric
+/// characters leading the (optionally signed) input, if any.
+///
+/// `split_marked_amount` only ever recognises a *registered* glued marker, so
+/// an unrecognised one (`X$6.37`) falls all the way through to `Missing`
+/// rather than `Unknown` — this recovers the intended "unknown currency"
+/// message for that shape. A bare number (`6.37`) has no such prefix and
+/// keeps the generic "needs a currency" message.
+fn leading_marker_guess(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    let unsigned = trimmed.strip_prefix(['-', '+']).unwrap_or(trimmed);
+    let raw_prefix: String = unsigned
+        .chars()
+        .take_while(|c| !c.is_ascii_digit() && *c != '.')
+        .collect();
+    let prefix = raw_prefix.trim();
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix.to_owned())
+    }
+}
+
+/// Parses one marked amount into `(value, canonical_code)`.
+fn parse_marked_amount(
     currencies: &[CommodityInfo],
     input: &str,
 ) -> Result<(Decimal, String), String> {
     let (number, code) = split_marked_amount(currencies, input).map_err(|e| match e {
-        MarkerError::Missing => "amount needs a currency (e.g. A$100)".to_owned(),
+        MarkerError::Missing => leading_marker_guess(input).map_or_else(
+            || "amount needs a currency (e.g. A$100)".to_owned(),
+            |m| format!("unknown currency '{m}'"),
+        ),
         MarkerError::Unknown(m) => format!("unknown currency '{m}'"),
         MarkerError::Ambiguous(m) => format!("ambiguous currency '{m}'"),
     })?;
@@ -322,6 +432,39 @@ pub fn parse_amount(
     }
     let value = cleaned.parse::<Decimal>().map_err(|e| e.to_string())?;
     Ok((value, code))
+}
+
+/// Weighs a working-buffer leg for balancing: cost beats price beats units.
+///
+/// # Arguments
+///
+/// * `p` - The leg.
+/// * `currencies` - The set of known commodities used to resolve markers.
+///
+/// # Returns
+///
+/// `Ok(None)` for an elided leg; otherwise the weight.
+///
+/// # Errors
+///
+/// The `parse_leg` message when the amount box does not parse, or
+/// `"amount overflows"` when a per-unit product overflows.
+pub fn leg_weight(
+    p: &EditablePosting,
+    currencies: &[CommodityInfo],
+) -> Result<Option<Amount>, String> {
+    if p.is_elided() {
+        return Ok(None);
+    }
+    let leg = parse_leg(currencies, &p.amount)?;
+    let quote = p.cost.as_ref().map(|c| &c.basis).or(leg.price.as_ref());
+    match quote {
+        Some(q) => q
+            .weigh(leg.value)
+            .map(Some)
+            .ok_or_else(|| "amount overflows".to_owned()),
+        None => Ok(Some(Amount::new(leg.value, leg.code))),
+    }
 }
 
 /// Parses a comma-separated tag buffer into a list of trimmed, non-empty tags.
@@ -362,7 +505,7 @@ pub enum EditError {
     /// A present-amount posting has no currency.
     ///
     /// Kept for API compatibility; superseded by the marker requirement in
-    /// [`parse_amount`] which errors before this variant can be constructed.
+    /// [`parse_leg`] which errors before this variant can be constructed.
     #[expect(
         dead_code,
         reason = "marker requirement supersedes this path; kept for API safety"
@@ -428,9 +571,8 @@ pub enum BalanceState {
 /// are ambiguous; a single elided leg infers the remainder; otherwise the
 /// concrete legs must net to zero.
 ///
-/// Totals are accumulated **per commodity**, mirroring `bc_models::Balances`, so
-/// a transaction whose concrete legs span several commodities yields one entry
-/// per commodity rather than a sum of unlike units. No rate is ever consulted.
+/// Totals are the per-commodity sums of each leg's weight ([`leg_weight`]), so
+/// a priced leg lands in its price commodity.
 ///
 /// # Arguments
 ///
@@ -450,15 +592,15 @@ pub fn derive_balance(working: &EditableTransaction, currencies: &[CommodityInfo
     let mut totals: Vec<(String, Decimal)> = Vec::new();
     let mut any = false;
     for p in working.postings.iter().filter(|p| !p.is_elided()) {
-        match parse_amount(currencies, &p.amount) {
-            Ok((v, code)) => {
-                match totals.iter_mut().find(|(c, _)| *c == code) {
-                    Some((_, running)) => *running = running.saturating_add(v),
-                    None => totals.push((code, v)),
+        match leg_weight(p, currencies) {
+            Ok(Some(w)) => {
+                match totals.iter_mut().find(|(c, _)| *c == w.currency_code) {
+                    Some((_, running)) => *running = running.saturating_add(w.value),
+                    None => totals.push((w.currency_code, w.value)),
                 }
                 any = true;
             }
-            Err(_) => return BalanceState::Invalid,
+            Ok(None) | Err(_) => return BalanceState::Invalid,
         }
     }
     if !any {
@@ -544,13 +686,16 @@ pub mod tests {
     use bc_ipc::AccountRef;
     use bc_ipc::Amount;
     use bc_ipc::CommodityInfo;
+    use bc_ipc::Cost;
     use bc_ipc::Posting;
     use bc_ipc::PostingAmount;
+    use bc_ipc::Quote;
     use bc_ipc::Reconciliation;
     use bc_ipc::Transaction;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
     use pretty_assertions::assert_ne;
+    use rstest::rstest;
     use rust_decimal::Decimal;
 
     use super::BalanceState;
@@ -559,7 +704,8 @@ pub mod tests {
     use super::EditableTransaction;
     use super::derive_balance;
     use super::ghost_amounts;
-    use super::parse_amount;
+    use super::leg_weight;
+    use super::parse_leg;
     use super::parse_tags;
     use crate::components::meta_editor::model::MetaDraft;
     use crate::components::meta_editor::model::emit_rows;
@@ -785,7 +931,34 @@ pub mod tests {
             tags: vec![],
             spread_from: None,
             spread_until: None,
+            cost: None,
         }
+    }
+
+    /// Registry entry for a non-ISO commodity with no symbol.
+    fn registry_shares() -> Vec<CommodityInfo> {
+        let mut r = registry();
+        r.push(CommodityInfo::new(
+            "c9",
+            "AAPL",
+            None,
+            vec![],
+            0,
+            false,
+            true,
+        ));
+        r
+    }
+
+    fn ep_cost(amount: &str, currency: &str, cost: Cost) -> EditablePosting {
+        EditablePosting {
+            cost: Some(cost),
+            ..ep(amount, currency)
+        }
+    }
+
+    fn per_unit_aud(cents: i64) -> Quote {
+        Quote::PerUnit(Amount::new(Decimal::new(cents, 2), "AUD"))
     }
 
     /// Builds an elided [`EditablePosting`] (blank amount) seeded with a
@@ -816,15 +989,15 @@ pub mod tests {
     )]
     fn parse_amount_handles_sign_commas_spaces() {
         assert_eq!(
-            parse_amount(&registry(), "AUD -1,234.50").map(|(v, _)| v),
+            parse_leg(&registry(), "AUD -1,234.50").map(|l| l.value),
             Ok(Decimal::new(-123_450, 2))
         );
         assert_eq!(
-            parse_amount(&registry(), "AUD 8420.00").map(|(v, _)| v),
+            parse_leg(&registry(), "AUD 8420.00").map(|l| l.value),
             Ok(Decimal::new(842_000, 2))
         );
-        assert!(parse_amount(&registry(), "").is_err());
-        assert!(parse_amount(&registry(), "abc").is_err());
+        assert!(parse_leg(&registry(), "").is_err());
+        assert!(parse_leg(&registry(), "abc").is_err());
     }
 
     #[test]
@@ -833,9 +1006,9 @@ pub mod tests {
         reason = "is_err is the correct check for the missing-marker case"
     )]
     fn parse_amount_requires_marker() {
-        assert!(parse_amount(&registry(), "100").is_err());
+        assert!(parse_leg(&registry(), "100").is_err());
         assert_eq!(
-            parse_amount(&registry(), "A$100"),
+            parse_leg(&registry(), "A$100").map(|l| (l.value, l.code)),
             Ok((rust_decimal::Decimal::new(100, 0), "AUD".to_owned()))
         );
     }
@@ -849,7 +1022,139 @@ pub mod tests {
     fn from_transaction_seeds_marked_amount() {
         let t = sample_two_posting_tx();
         let e = EditableTransaction::from(&t);
-        assert!(parse_amount(&registry(), &e.postings[0].amount).is_ok());
+        assert!(parse_leg(&registry(), &e.postings[0].amount).is_ok());
+    }
+
+    #[test]
+    fn parse_leg_plain_amount_has_no_price() {
+        let leg = parse_leg(&registry(), "AUD -1,234.50").expect("parses");
+        assert_eq!(leg.value, Decimal::new(-123_450, 2));
+        assert_eq!(leg.code, "AUD");
+        assert_eq!(leg.price, None);
+    }
+
+    #[test]
+    fn parse_leg_reads_a_total_price() {
+        let leg = parse_leg(&registry_multi(), "US$4.00 @@ A$6.37").expect("parses");
+        assert_eq!(leg.code, "USD");
+        assert_eq!(
+            leg.price,
+            Some(Quote::Total(Amount::new(Decimal::new(637, 2), "AUD")))
+        );
+    }
+
+    #[test]
+    fn parse_leg_reads_a_per_unit_price() {
+        let leg = parse_leg(&registry_multi(), "USD 4.00 @ AUD 1.59").expect("parses");
+        assert_eq!(leg.price, Some(per_unit_aud(159)));
+    }
+
+    #[rstest]
+    #[case::negative_price("US$4.00 @@ A$-6.37", "negative price not allowed")]
+    #[case::missing_price_total("US$4.00 @@", "price needs an amount (e.g. @ A$300)")]
+    #[case::missing_price_unit("US$4.00 @ ", "price needs an amount (e.g. @ A$300)")]
+    #[case::cost_block("AAPL 2 {A$105}", "set the cost with the { cost chip")]
+    #[case::two_prices("US$4.00 @ A$1.59 @ A$2", "unexpected '@ A$2' after the price")]
+    #[case::unknown_price_marker("US$4.00 @@ X$6.37", "unknown currency 'X$'")]
+    #[case::bare_price("US$4.00 @@ 6.37", "amount needs a currency (e.g. A$100)")]
+    fn parse_leg_errors(#[case] input: &str, #[case] message: &str) {
+        assert_eq!(parse_leg(&registry_multi(), input), Err(message.to_owned()));
+    }
+
+    #[test]
+    fn leg_weight_prefers_cost_then_price_then_units() {
+        let r = registry_shares();
+        let costed = ep_cost(
+            "AAPL 2",
+            "AAPL",
+            Cost::new(per_unit_aud(10_500), None, None),
+        );
+        assert_eq!(
+            leg_weight(&costed, &r),
+            Ok(Some(Amount::new(Decimal::new(21_000, 2), "AUD")))
+        );
+        let priced = ep("AAPL -2 @ A$150", "AAPL");
+        assert_eq!(
+            leg_weight(&priced, &r),
+            Ok(Some(Amount::new(Decimal::new(-300, 0), "AUD")))
+        );
+        let plain = ep("AAPL 2", "AAPL");
+        assert_eq!(
+            leg_weight(&plain, &r),
+            Ok(Some(Amount::new(Decimal::TWO, "AAPL")))
+        );
+        assert_eq!(leg_weight(&ep("", "AAPL"), &r), Ok(None));
+    }
+
+    #[test]
+    fn balance_fx_shape_weighs_at_price() {
+        let s = derive_balance(
+            &et(vec![ep("US$4.00 @@ A$6.37", "USD"), ep("A$-6.37", "AUD")]),
+            &registry_multi(),
+        );
+        assert_eq!(s, BalanceState::Balanced);
+    }
+
+    #[test]
+    fn balance_crypto_shape_infers_gains_in_price_commodity() {
+        let mut r = registry();
+        r.push(CommodityInfo::new(
+            "c8",
+            "ETH",
+            None,
+            vec![],
+            8,
+            false,
+            true,
+        ));
+        let s = derive_balance(
+            &et(vec![
+                ep("ETH -2 @ A$300", "ETH"),
+                ep("A$500", "AUD"),
+                ep("", "AUD"),
+            ]),
+            &r,
+        );
+        assert_eq!(
+            s,
+            BalanceState::Inferred {
+                remainder: vec![Amount::new(Decimal::new(100, 0), "AUD")]
+            }
+        );
+    }
+
+    #[test]
+    fn balance_sale_weighs_at_cost_not_price() {
+        let r = registry_shares();
+        let s = derive_balance(
+            &et(vec![
+                ep_cost(
+                    "AAPL -2 @ A$150",
+                    "AAPL",
+                    Cost::new(per_unit_aud(10_500), None, None),
+                ),
+                ep("A$300", "AUD"),
+                ep("", "AUD"),
+            ]),
+            &r,
+        );
+        assert_eq!(
+            s,
+            BalanceState::Inferred {
+                remainder: vec![Amount::new(Decimal::new(-90, 0), "AUD")]
+            }
+        );
+    }
+
+    #[test]
+    fn balance_overflowing_weight_is_invalid() {
+        let r = registry_shares();
+        let huge = ep_cost(
+            "AAPL 2",
+            "AAPL",
+            Cost::new(Quote::PerUnit(Amount::new(Decimal::MAX, "AUD")), None, None),
+        );
+        assert_eq!(derive_balance(&et(vec![huge]), &r), BalanceState::Invalid);
     }
 
     #[test]
@@ -1360,5 +1665,46 @@ pub mod tests {
                 bc_ipc::MetaValueDto::Text("not-a-date".to_owned())
             )]
         );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn from_posting_renders_price_and_copies_cost() {
+        let cost = Cost::new(per_unit_aud(10_500), None, Some("lot-a".to_owned()));
+        let p = Posting::new(
+            "p1",
+            AccountRef::new("brok", "Brokerage"),
+            PostingAmount::Stored(Amount::new(Decimal::new(400, 2), "USD")),
+            vec![],
+            vec![],
+            None,
+            None,
+        )
+        .with_price(Some(Quote::Total(Amount::new(Decimal::new(637, 2), "AUD"))))
+        .with_cost(Some(cost.clone()));
+        let e = EditablePosting::from_posting(&p, 0);
+        assert_eq!(e.amount, "USD 4.00 @@ AUD 6.37");
+        assert_eq!(e.cost, Some(cost.clone()));
+
+        let edit = et(vec![e, ep("A$-6.37", "AUD")])
+            .to_edit_transaction(&registry_multi())
+            .expect("serialises");
+        assert_eq!(
+            edit.postings[0].price,
+            Some(Quote::Total(Amount::new(Decimal::new(637, 2), "AUD")))
+        );
+        assert_eq!(edit.postings[0].cost, Some(cost));
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn elided_leg_keeps_its_cost_and_weighs_none() {
+        let e = ep_cost("", "AAPL", Cost::new(per_unit_aud(10_500), None, None));
+        assert_eq!(leg_weight(&e, &registry_shares()), Ok(None));
+        let edit = et(vec![ep("A$-210", "AUD"), e])
+            .to_edit_transaction(&registry_shares())
+            .expect("serialises");
+        assert_eq!(edit.postings[1].amount, None);
+        assert!(edit.postings[1].cost.is_some());
     }
 }

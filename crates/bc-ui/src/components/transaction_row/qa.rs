@@ -296,6 +296,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
                 tags: vec![],
                 spread_from: None,
                 spread_until: None,
+                cost: None,
             },
             EditablePosting {
                 id: Some("p-2".to_owned()),
@@ -309,6 +310,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
                 tags: vec![],
                 spread_from: None,
                 spread_until: None,
+                cost: None,
             },
         ],
     };
