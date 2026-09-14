@@ -104,6 +104,10 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
         clippy::wildcard_enum_match_arm,
         reason = "Event is #[non_exhaustive]; catch-all arm required for exhaustiveness against future variants"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match arm per event variant; splitting it would scatter the audit vocabulary"
+    )]
     fn from_event(
         ts: jiff::Timestamp,
         event: &Event,
@@ -177,9 +181,21 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                     None => "spread cleared".to_owned(),
                 },
             ),
-            Event::PostingAnnotationChanged { .. } => {
-                ("annotation", "price or cost changed".to_owned())
-            }
+            Event::PostingAnnotationChanged {
+                price_from,
+                price_to,
+                cost_from,
+                cost_to,
+                ..
+            } => (
+                "annotation",
+                annotation_message(
+                    price_from.as_ref(),
+                    price_to.as_ref(),
+                    cost_from.as_ref(),
+                    cost_to.as_ref(),
+                ),
+            ),
             Event::PostingAdded { account, .. } => ("split", format!("+leg {account}")),
             Event::PostingRemoved { .. } => ("split", "removed leg".to_owned()),
             Event::TransactionSourceAttached {
@@ -210,6 +226,62 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
             }
         };
         bc_ipc::AuditEntry::new(ts, kind.to_owned(), message)
+    }
+}
+
+/// Renders a [`Event::PostingAnnotationChanged`] for the audit log: each
+/// half that changed, in Beancount form (`price @ 1.50 AUD`, `cost {105
+/// AUD}`), or `cleared` for a half that was removed.
+fn annotation_message(
+    price_from: Option<&bc_models::Quote>,
+    price_to: Option<&bc_models::Quote>,
+    cost_from: Option<&bc_models::Cost>,
+    cost_to: Option<&bc_models::Cost>,
+) -> String {
+    let mut parts = Vec::with_capacity(2);
+    if price_from != price_to {
+        parts.push(match price_to {
+            Some(q) => format!("price {}", render_quote(q, "@", "@@")),
+            None => "price cleared".to_owned(),
+        });
+    }
+    if cost_from != cost_to {
+        parts.push(match cost_to {
+            Some(c) => format!("cost {}", render_cost(c)),
+            None => "cost cleared".to_owned(),
+        });
+    }
+    if parts.is_empty() {
+        return "price or cost changed".to_owned();
+    }
+    parts.join(", ")
+}
+
+/// Renders a quote as `<marker> <value> <commodity>`, choosing `per_unit` or
+/// `total` as the marker by the quote's form.
+fn render_quote(quote: &bc_models::Quote, per_unit: &str, total: &str) -> String {
+    let marker = if quote.is_total() { total } else { per_unit };
+    let amount = quote.amount();
+    format!("{marker} {} {}", amount.value(), amount.commodity())
+}
+
+/// Renders a cost basis as a Beancount cost block: `{105 AUD, 2024-03-01,
+/// "lot-a"}`, doubled braces for a total.
+fn render_cost(cost: &bc_models::Cost) -> String {
+    let basis = cost.basis();
+    let amount = basis.amount();
+    let mut parts = vec![format!("{} {}", amount.value(), amount.commodity())];
+    if let Some(date) = cost.date() {
+        parts.push(date.to_string());
+    }
+    if let Some(label) = cost.label() {
+        parts.push(format!("\"{label}\""));
+    }
+    let inner = parts.join(", ");
+    if basis.is_total() {
+        format!("{{{{{inner}}}}}")
+    } else {
+        format!("{{{inner}}}")
     }
 }
 
@@ -705,6 +777,48 @@ mod tests {
         let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &HashMap::new());
         assert_eq!(entry.kind, "recat");
         assert!(!entry.message.is_empty());
+    }
+
+    #[test]
+    fn annotation_audit_entry_renders_each_changed_half() {
+        let cost = bc_models::Cost::builder()
+            .basis(bc_models::Quote::Total(Amount::new(dec!(210), "AUD")))
+            .date(jiff::civil::date(2024, 3, 1))
+            .label("lot-a")
+            .build();
+        let event = crate::Event::PostingAnnotationChanged {
+            id: bc_models::TransactionId::new(),
+            posting_id: bc_models::PostingId::new(),
+            price_from: Some(bc_models::Quote::PerUnit(Amount::new(dec!(1.50), "AUD"))),
+            price_to: None,
+            cost_from: None,
+            cost_to: Some(cost),
+        };
+        let entry = bc_ipc::AuditEntry::from_event(Timestamp::now(), &event, &HashMap::new());
+        assert_eq!(entry.kind, "annotation");
+        assert_eq!(
+            entry.message,
+            "price cleared, cost {{210 AUD, 2024-03-01, \"lot-a\"}}"
+        );
+    }
+
+    #[test]
+    fn annotation_audit_entry_skips_the_unchanged_half() {
+        let price = Some(bc_models::Quote::Total(Amount::new(dec!(6.37), "AUD")));
+        let event = crate::Event::PostingAnnotationChanged {
+            id: bc_models::TransactionId::new(),
+            posting_id: bc_models::PostingId::new(),
+            price_from: price.clone(),
+            price_to: price,
+            cost_from: None,
+            cost_to: Some(
+                bc_models::Cost::builder()
+                    .basis(bc_models::Quote::PerUnit(Amount::new(dec!(105), "AUD")))
+                    .build(),
+            ),
+        };
+        let entry = bc_ipc::AuditEntry::from_event(Timestamp::now(), &event, &HashMap::new());
+        assert_eq!(entry.message, "cost {105 AUD}");
     }
 
     #[test]
