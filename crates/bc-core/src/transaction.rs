@@ -207,6 +207,16 @@ fn diff_posting(id: &TransactionId, prev: &Posting, posting: &Posting) -> Vec<Ev
             after: posting.metadata().clone(),
         });
     }
+    if prev.price() != posting.price() || prev.cost() != posting.cost() {
+        events.push(Event::PostingAnnotationChanged {
+            id: id.clone(),
+            posting_id: posting.id().clone(),
+            price_from: prev.price().cloned(),
+            price_to: posting.price().cloned(),
+            cost_from: prev.cost().cloned(),
+            cost_to: posting.cost().cloned(),
+        });
+    }
 
     events
 }
@@ -284,6 +294,8 @@ pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> 
                 posting_id: posting.id().clone(),
                 account: posting.account_id().clone(),
                 amount: posting.amount().cloned(),
+                price: posting.price().cloned(),
+                cost: posting.cost().cloned(),
             }),
             Some(prev) => events.extend(diff_posting(&id, prev, posting)),
         }
@@ -4291,6 +4303,7 @@ mod tests {
     trait TxTestExt {
         fn with_metadata(self, metadata: Metadata) -> Self;
         fn with_first_posting_metadata(self, metadata: Metadata) -> Self;
+        fn with_postings(self, postings: Vec<Posting>) -> Self;
         fn recategorise_first(self, account: AccountId) -> Self;
         fn push_leg(self) -> Self;
         fn recategorise_posting(self, target: &PostingId, account: AccountId) -> Self;
@@ -4325,6 +4338,19 @@ mod tests {
                         .build()
                 })
                 .collect();
+            Transaction::builder()
+                .id(self.id().clone())
+                .date(self.date())
+                .description(self.description().to_owned())
+                .metadata(self.metadata().clone())
+                .postings(postings)
+                .reconciliation(self.reconciliation())
+                .tag_ids(self.tag_ids().to_vec())
+                .created_at(*self.created_at())
+                .build()
+        }
+
+        fn with_postings(self, postings: Vec<Posting>) -> Self {
             Transaction::builder()
                 .id(self.id().clone())
                 .date(self.date())
@@ -4780,6 +4806,71 @@ mod tests {
                 .count(),
             1,
             "one leg changed, so one posting event"
+        );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    fn diff_emits_an_annotation_event_when_price_changes() {
+        let current = sample_tx();
+        let leg = current.postings()[0].clone();
+        let priced = Posting::builder()
+            .id(leg.id().clone())
+            .account_id(leg.account_id().clone())
+            .maybe_amount(leg.amount().cloned())
+            .price(Quote::Total(Amount::new(dec!(6.37), "AUD")))
+            .tag_ids(leg.tag_ids().to_vec())
+            .build();
+        let updated = current
+            .clone()
+            .with_postings(vec![priced, current.postings()[1].clone()]);
+
+        assert_eq!(
+            diff_transaction(&current, &updated),
+            vec![Event::PostingAnnotationChanged {
+                id: current.id().clone(),
+                posting_id: leg.id().clone(),
+                price_from: None,
+                price_to: Some(Quote::Total(Amount::new(dec!(6.37), "AUD"))),
+                cost_from: None,
+                cost_to: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn diff_emits_no_annotation_event_when_unchanged() {
+        let tx = sample_tx();
+        assert!(diff_transaction(&tx, &tx).is_empty());
+    }
+
+    #[test]
+    fn diff_records_price_and_cost_on_an_added_leg() {
+        let current = sample_tx();
+        let cost = Cost::builder()
+            .basis(Quote::PerUnit(Amount::new(dec!(105), "AUD")))
+            .build();
+        let added = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .amount(Amount::new(dec!(2), CommodityCode::new("AAPL")))
+            .cost(cost.clone())
+            .build();
+        let mut postings = current.postings().to_vec();
+        postings.push(added.clone());
+        let updated = current.clone().with_postings(postings);
+
+        let events = diff_transaction(&current, &updated);
+        assert_eq!(
+            events,
+            vec![Event::PostingAdded {
+                id: current.id().clone(),
+                posting_id: added.id().clone(),
+                account: added.account_id().clone(),
+                amount: added.amount().cloned(),
+                price: None,
+                cost: Some(cost),
+            }]
         );
     }
 

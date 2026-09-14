@@ -6,6 +6,7 @@ use bc_models::AccountType;
 use bc_models::Amount;
 use bc_models::BudgetId;
 use bc_models::BudgetRevisionId;
+use bc_models::Cost;
 use bc_models::DepreciationId;
 use bc_models::EventId;
 use bc_models::ImportBatchId;
@@ -15,6 +16,7 @@ use bc_models::MetaType;
 use bc_models::Metadata;
 use bc_models::Period;
 use bc_models::PostingId;
+use bc_models::Quote;
 use bc_models::Reconciliation;
 use bc_models::RolloverPolicy;
 use bc_models::SourceRefId;
@@ -223,6 +225,24 @@ pub enum Event {
         /// Spread `(from, until)` after the change, or `None` if cleared.
         to: Option<(jiff::civil::Date, jiff::civil::Date)>,
     },
+    /// A posting's price or cost basis was set, changed or cleared.
+    ///
+    /// Both pairs are carried even when only one changed, so a replay can
+    /// restore the leg's whole annotation from this one event.
+    PostingAnnotationChanged {
+        /// The owning transaction's ID.
+        id: TransactionId,
+        /// The posting whose annotation changed.
+        posting_id: PostingId,
+        /// Price before the change, or `None` if unset.
+        price_from: Option<Quote>,
+        /// Price after the change, or `None` if cleared.
+        price_to: Option<Quote>,
+        /// Cost basis before the change, or `None` if unset.
+        cost_from: Option<Cost>,
+        /// Cost basis after the change, or `None` if cleared.
+        cost_to: Option<Cost>,
+    },
     /// A posting (leg) was added to a transaction (also covers splits).
     PostingAdded {
         /// The owning transaction's ID.
@@ -233,6 +253,10 @@ pub enum Event {
         account: AccountId,
         /// The new posting's amount, or `None` if elided.
         amount: Option<Amount>,
+        /// The new posting's price annotation, if any.
+        price: Option<Quote>,
+        /// The new posting's cost basis, if any.
+        cost: Option<Cost>,
     },
     /// A posting (leg) was removed from a transaction.
     PostingRemoved {
@@ -565,6 +589,7 @@ impl Event {
             Self::PostingAmountChanged { .. } => "PostingAmountChanged",
             Self::PostingMetadataChanged { .. } => "PostingMetadataChanged",
             Self::PostingSpreadChanged { .. } => "PostingSpreadChanged",
+            Self::PostingAnnotationChanged { .. } => "PostingAnnotationChanged",
             Self::PostingAdded { .. } => "PostingAdded",
             Self::PostingRemoved { .. } => "PostingRemoved",
             Self::AssetValuationRecorded { .. } => "AssetValuationRecorded",
@@ -609,6 +634,7 @@ impl Event {
             | Self::PostingAmountChanged { id, .. }
             | Self::PostingMetadataChanged { id, .. }
             | Self::PostingSpreadChanged { id, .. }
+            | Self::PostingAnnotationChanged { id, .. }
             | Self::PostingAdded { id, .. }
             | Self::PostingRemoved { id, .. } => id.to_string(),
             Self::TransactionReversed { original_id, .. } => original_id.to_string(),

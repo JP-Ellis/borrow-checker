@@ -177,6 +177,9 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                     None => "spread cleared".to_owned(),
                 },
             ),
+            Event::PostingAnnotationChanged { .. } => {
+                ("annotation", "price or cost changed".to_owned())
+            }
             Event::PostingAdded { account, .. } => ("split", format!("+leg {account}")),
             Event::PostingRemoved { .. } => ("split", "removed leg".to_owned()),
             Event::TransactionSourceAttached {
