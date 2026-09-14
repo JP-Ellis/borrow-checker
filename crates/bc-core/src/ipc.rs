@@ -560,6 +560,8 @@ impl TransactionExt for bc_ipc::Transaction {
                     p.spread_from(),
                     p.spread_until(),
                 )
+                .with_price(p.price().map(bc_ipc::Quote::from))
+                .with_cost(p.cost().map(bc_ipc::Cost::from))
             })
             .collect();
 
@@ -1073,6 +1075,72 @@ mod tests {
             dto.postings[2].amount,
             bc_ipc::PostingAmount::Ambiguous
         ));
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    fn transaction_ext_carries_price_and_cost() {
+        let acct = bc_models::AccountId::new();
+        let account = bc_models::Account::builder()
+            .id(acct.clone())
+            .name("Brokerage")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .build();
+        let map = HashMap::from([(acct.to_string(), &account)]);
+        let forest = bc_models::TagForest::default();
+        let cost = bc_models::Cost::builder()
+            .basis(bc_models::Quote::PerUnit(bc_models::Amount::new(
+                dec!(105),
+                "AUD",
+            )))
+            .label("lot-a")
+            .build();
+        let tx = bc_models::Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(jiff::civil::Date::constant(2024, 3, 1))
+            .description("buy")
+            .postings(vec![
+                bc_models::Posting::builder()
+                    .id(bc_models::PostingId::new())
+                    .account_id(acct.clone())
+                    .amount(Amount::new(dec!(2), "AAPL"))
+                    .cost(cost)
+                    .price(bc_models::Quote::PerUnit(bc_models::Amount::new(
+                        dec!(150),
+                        "AUD",
+                    )))
+                    .build(),
+                bc_models::Posting::builder()
+                    .id(bc_models::PostingId::new())
+                    .account_id(acct.clone())
+                    .amount(Amount::new(dec!(-210), "AUD"))
+                    .build(),
+            ])
+            .reconciliation(bc_models::Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+
+        let ipc =
+            <bc_ipc::Transaction as TransactionExt>::from_model_with_accounts(&tx, &map, &forest);
+        let leg = &ipc.postings[0];
+        assert_eq!(
+            leg.price,
+            Some(bc_ipc::Quote::PerUnit(bc_ipc::Amount::new(
+                dec!(150),
+                "AUD"
+            )))
+        );
+        assert_eq!(
+            leg.cost,
+            Some(bc_ipc::Cost::new(
+                bc_ipc::Quote::PerUnit(bc_ipc::Amount::new(dec!(105), "AUD")),
+                None,
+                Some("lot-a".to_owned()),
+            ))
+        );
+        assert_eq!(leg.weight(), Some(bc_ipc::Amount::new(dec!(210), "AUD")));
+        assert_eq!(ipc.postings[1].price, None);
     }
 
     #[test]
