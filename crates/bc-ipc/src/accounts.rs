@@ -7,6 +7,8 @@ use serde::Serialize;
 
 use crate::MetaEntryDto;
 use crate::money::Amount;
+use crate::quote::Cost;
+use crate::quote::Quote;
 
 /// The five canonical account types in double-entry accounting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +332,10 @@ pub struct Posting {
     pub spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end date (inclusive — the last day of the spread). `None` means no spreading applied.
     pub spread_until: Option<jiff::civil::Date>,
+    /// Price annotation (`@` per unit, `@@` total), or `None`.
+    pub price: Option<Quote>,
+    /// Cost basis (`{}` per unit, `{{}}` total), or `None`.
+    pub cost: Option<Cost>,
 }
 
 impl Posting {
@@ -363,6 +369,48 @@ impl Posting {
             tags,
             spread_from,
             spread_until,
+            price: None,
+            cost: None,
+        }
+    }
+
+    /// Sets the price annotation, returning `self` for chaining.
+    ///
+    /// # Arguments
+    ///
+    /// * `price` - Per-unit or total price, or `None` to clear.
+    #[must_use]
+    #[inline]
+    pub fn with_price(mut self, price: Option<Quote>) -> Self {
+        self.price = price;
+        self
+    }
+
+    /// Sets the cost basis, returning `self` for chaining.
+    ///
+    /// # Arguments
+    ///
+    /// * `cost` - The cost basis, or `None` to clear.
+    #[must_use]
+    #[inline]
+    pub fn with_cost(mut self, cost: Option<Cost>) -> Self {
+        self.cost = cost;
+        self
+    }
+
+    /// Weighs this leg for balancing, by Beancount's rule.
+    ///
+    /// # Returns
+    ///
+    /// `None` when the amount is not [`PostingAmount::Stored`]; otherwise the
+    /// cost's `weigh(units)`, else the price's, else the amount itself. `None`
+    /// also when a per-unit product overflows.
+    #[must_use]
+    pub fn weight(&self) -> Option<Amount> {
+        let amount = self.amount.stored()?;
+        match self.cost.as_ref().map(|c| &c.basis).or(self.price.as_ref()) {
+            Some(quote) => quote.weigh(amount.value),
+            None => Some(amount.clone()),
         }
     }
 }
@@ -475,8 +523,7 @@ impl Transaction {
 
 /// The user-supplied fields for a new posting leg.
 ///
-/// Omits `account_path` (derived by the backend from the account record) and
-/// cost basis fields (out of scope for v0).
+/// Omits `account_path` (derived by the backend from the account record).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct NewPosting {
@@ -494,6 +541,10 @@ pub struct NewPosting {
     pub spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end date (inclusive — the last day of the spread). `None` means no spreading.
     pub spread_until: Option<jiff::civil::Date>,
+    /// Price annotation (`@` per unit, `@@` total), or `None`.
+    pub price: Option<Quote>,
+    /// Cost basis (`{}` per unit, `{{}}` total), or `None`.
+    pub cost: Option<Cost>,
 }
 
 impl NewPosting {
@@ -524,7 +575,33 @@ impl NewPosting {
             tags,
             spread_from,
             spread_until,
+            price: None,
+            cost: None,
         }
+    }
+
+    /// Sets the price annotation, returning `self` for chaining.
+    ///
+    /// # Arguments
+    ///
+    /// * `price` - Per-unit or total price, or `None` to clear.
+    #[must_use]
+    #[inline]
+    pub fn with_price(mut self, price: Option<Quote>) -> Self {
+        self.price = price;
+        self
+    }
+
+    /// Sets the cost basis, returning `self` for chaining.
+    ///
+    /// # Arguments
+    ///
+    /// * `cost` - The cost basis, or `None` to clear.
+    #[must_use]
+    #[inline]
+    pub fn with_cost(mut self, cost: Option<Cost>) -> Self {
+        self.cost = cost;
+        self
     }
 }
 
@@ -604,6 +681,10 @@ pub struct EditPosting {
     pub spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end (exclusive), or `None`.
     pub spread_until: Option<jiff::civil::Date>,
+    /// Price annotation (`@` per unit, `@@` total), or `None`.
+    pub price: Option<Quote>,
+    /// Cost basis (`{}` per unit, `{{}}` total), or `None`.
+    pub cost: Option<Cost>,
 }
 
 impl EditPosting {
@@ -637,7 +718,33 @@ impl EditPosting {
             tags,
             spread_from,
             spread_until,
+            price: None,
+            cost: None,
         }
+    }
+
+    /// Sets the price annotation, returning `self` for chaining.
+    ///
+    /// # Arguments
+    ///
+    /// * `price` - Per-unit or total price, or `None` to clear.
+    #[must_use]
+    #[inline]
+    pub fn with_price(mut self, price: Option<Quote>) -> Self {
+        self.price = price;
+        self
+    }
+
+    /// Sets the cost basis, returning `self` for chaining.
+    ///
+    /// # Arguments
+    ///
+    /// * `cost` - The cost basis, or `None` to clear.
+    #[must_use]
+    #[inline]
+    pub fn with_cost(mut self, cost: Option<Cost>) -> Self {
+        self.cost = cost;
+        self
     }
 }
 
@@ -1074,6 +1181,8 @@ mod tests {
     use super::*;
     use crate::Amount;
     use crate::MetaValueDto;
+    use crate::quote::Cost;
+    use crate::quote::Quote;
 
     /// A one-entry metadata list carrying `key` as text.
     fn meta(key: &str, text: &str) -> Vec<MetaEntryDto> {
@@ -1393,6 +1502,8 @@ mod tests {
                 tags: vec![],
                 spread_from: None,
                 spread_until: None,
+                price: None,
+                cost: None,
             }],
         };
         let json = serde_json::to_string(&dto).expect("ser");
@@ -1516,6 +1627,85 @@ mod tests {
         let stats_with_real = stats.with_real_balances(real.clone(), real.clone());
         assert_eq!(stats_with_real.real_opening, Some(real.clone()));
         assert_eq!(stats_with_real.real_closing, Some(real));
+    }
+
+    fn stored_posting(units: Decimal, code: &str) -> Posting {
+        Posting::new(
+            "p1",
+            AccountRef::new("acct", "Assets :: Brokerage"),
+            PostingAmount::Stored(Amount::new(units, code)),
+            vec![],
+            vec![],
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn weight_without_annotation_is_the_amount() {
+        let p = stored_posting(Decimal::TWO, "AAPL");
+        assert_eq!(p.weight(), Some(Amount::new(Decimal::TWO, "AAPL")));
+    }
+
+    #[test]
+    fn weight_uses_price_when_no_cost() {
+        let p = stored_posting(Decimal::new(400, 2), "USD")
+            .with_price(Some(Quote::Total(Amount::new(Decimal::new(637, 2), "AUD"))));
+        assert_eq!(p.weight(), Some(Amount::new(Decimal::new(637, 2), "AUD")));
+    }
+
+    #[test]
+    fn weight_prefers_cost_over_price() {
+        let p = stored_posting(-Decimal::TWO, "AAPL")
+            .with_cost(Some(Cost::new(
+                Quote::PerUnit(Amount::new(Decimal::new(10_500, 2), "AUD")),
+                None,
+                None,
+            )))
+            .with_price(Some(Quote::PerUnit(Amount::new(
+                Decimal::new(15_000, 2),
+                "AUD",
+            ))));
+        assert_eq!(
+            p.weight(),
+            Some(Amount::new(Decimal::new(-21_000, 2), "AUD"))
+        );
+    }
+
+    #[test]
+    fn weight_of_an_elided_leg_is_none() {
+        let derived = Posting::new(
+            "p1",
+            AccountRef::new("acct", "Assets :: Cash"),
+            PostingAmount::Derived(vec![Amount::new(Decimal::ONE, "AUD")]),
+            vec![],
+            vec![],
+            None,
+            None,
+        )
+        .with_price(Some(Quote::PerUnit(Amount::new(Decimal::ONE, "AUD"))));
+        assert_eq!(derived.weight(), None);
+        let ambiguous = Posting::new(
+            "p2",
+            AccountRef::new("acct", "Assets :: Cash"),
+            PostingAmount::Ambiguous,
+            vec![],
+            vec![],
+            None,
+            None,
+        );
+        assert_eq!(ambiguous.weight(), None);
+    }
+
+    #[test]
+    fn edit_posting_setters_round_trip() {
+        let price = Some(Quote::PerUnit(Amount::new(Decimal::ONE, "AUD")));
+        let e = EditPosting::new(None, "acct", None, vec![], vec![], None, None)
+            .with_price(price.clone());
+        assert_eq!(e.price, price);
+        assert_eq!(e.cost, None);
+        let n = NewPosting::new("acct", None, vec![], vec![], None, None).with_price(price.clone());
+        assert_eq!(n.price, price);
     }
 }
 
