@@ -20,8 +20,10 @@ use crate::components::transaction_row::editable::EditablePosting;
 ///
 /// Local buffers mirror the spread editor: strings synced into the working
 /// buffer by an `Effect` on every change, so the weight hint and the balance
-/// line follow the typing. Blur, Enter and Escape close the editor; a blank
-/// basis clears the cost.
+/// line follow the typing. Blur, Enter and Escape close the editor, but only
+/// when the basis parses; a negative or unparsable basis keeps the editor
+/// open with the error under the amount box until it is fixed or cleared
+/// with the × control. A blank basis clears the cost.
 ///
 /// # Arguments
 ///
@@ -158,7 +160,7 @@ pub fn CostChip(
     };
     let close_key = move |ev: leptos::ev::KeyboardEvent| {
         let key = ev.key();
-        if key == "Enter" || key == "Escape" {
+        if (key == "Enter" || key == "Escape") && cost_error.get_untracked().is_none() {
             editing.set(false);
         }
     };
@@ -185,7 +187,7 @@ pub fn CostChip(
             })
             .and_then(|element| element.closest(&selector).ok().flatten())
             .is_some();
-        if !staying {
+        if !staying && cost_error.get_untracked().is_none() {
             editing.set(false);
         }
     };
