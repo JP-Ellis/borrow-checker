@@ -196,7 +196,9 @@ fn parse_price(text: &str, kind: Kind) -> Result<Price, String> {
 }
 
 /// Parses `AMOUNT:CCY` at the start of `text`, returning the figure and
-/// whatever follows the code. The code ends at whitespace, `{` or `@`.
+/// whatever follows the code. The code ends at whitespace or one of
+/// `{ @ : , } "`, so a stray one of those is reported by the caller instead
+/// of being folded into the commodity code.
 fn parse_figure(text: &str) -> Result<(Figure, &str), String> {
     #[expect(clippy::shadow_reuse, reason = "trim yields the same string")]
     let text = text.trim();
@@ -206,7 +208,7 @@ fn parse_figure(text: &str) -> Result<(Figure, &str), String> {
     let value = Decimal::from_str(value_str.trim())
         .map_err(|e| format!("invalid amount '{}': {e}", value_str.trim()))?;
     let code_end = after_colon
-        .find(|c: char| c.is_whitespace() || c == '{' || c == '@')
+        .find(|c: char| c.is_whitespace() || matches!(c, '{' | '@' | ':' | ',' | '}' | '"'))
         .unwrap_or(after_colon.len());
     #[expect(
         clippy::string_slice,
@@ -279,10 +281,25 @@ fn parse_cost_block(text: &str) -> Result<(CostBlock, &str), String> {
             .strip_prefix('"')
             .and_then(|s| s.strip_suffix('"'))
         {
+            if unquoted.contains('"') {
+                return Err(format!("bad cost component '{component}'"));
+            }
             if label.is_some() {
                 return Err("cost block has two labels".into());
             }
             label = Some(unquoted.to_owned());
+        } else if component.contains('"') {
+            return Err(format!("bad cost component '{component}'"));
+        } else if looks_like_date(&component) {
+            if component.len() != 10 {
+                return Err(format!("bad cost date '{component}'"));
+            }
+            let parsed = jiff::civil::Date::from_str(&component)
+                .map_err(|_err| format!("bad cost date '{component}'"))?;
+            if date.is_some() {
+                return Err("cost block has two dates".into());
+            }
+            date = Some(parsed);
         } else if let Ok(value) = Decimal::from_str(&component) {
             if basis_opt.is_some() {
                 return Err("cost block has two amounts".into());
@@ -291,12 +308,14 @@ fn parse_cost_block(text: &str) -> Result<(CostBlock, &str), String> {
                 .next()
                 .filter(|c| !c.is_empty())
                 .ok_or_else(|| format!("cost amount '{component}' has no commodity"))?;
-            basis_opt = Some(Figure { value, code });
-        } else if let Ok(parsed) = jiff::civil::Date::from_str(&component) {
-            if date.is_some() {
-                return Err("cost block has two dates".into());
+            if code.starts_with('"')
+                || code == "*"
+                || Decimal::from_str(&code).is_ok()
+                || jiff::civil::Date::from_str(&code).is_ok()
+            {
+                return Err(format!("cost amount '{component}' has no commodity"));
             }
-            date = Some(parsed);
+            basis_opt = Some(Figure { value, code });
         } else {
             if label.is_some() {
                 return Err("cost block has two labels".into());
@@ -318,6 +337,17 @@ fn parse_cost_block(text: &str) -> Result<(CostBlock, &str), String> {
         },
         after,
     ))
+}
+
+/// Whether a bare cost component opens like an ISO date: four ASCII digits
+/// then `-`. Used to tell a malformed date apart from a label that merely
+/// starts with digits.
+fn looks_like_date(component: &str) -> bool {
+    let bytes = component.as_bytes();
+    bytes.get(4) == Some(&b'-')
+        && bytes
+            .get(..4)
+            .is_some_and(|d| d.iter().all(u8::is_ascii_digit))
 }
 
 /// Byte offset of the first `needle` outside `"…"`, or `None` when it is
@@ -425,6 +455,10 @@ mod tests {
     #[case::price_without_figure("4:USD@", "expected AMOUNT:COMMODITY after '@'")]
     #[case::trailing_after_price("4:USD@6:AUD extra", "unexpected 'extra' after the price")]
     #[case::cost_after_price("4:USD@6:AUD{5:AUD}", "cost block must come before the price")]
+    #[case::stray_colon_after_units("5:AUD:", "unexpected ':' after the amount")]
+    #[case::empty_code_double_colon("5::AUD", "expected AMOUNT:COMMODITY")]
+    #[case::code_swallows_colons("-2:AAPL:105:AUD", "unexpected ':105:AUD' after the amount")]
+    #[case::code_swallows_quote("5:AUD\"x\"", "unexpected '\"x\"' after the amount")]
     fn errors_name_the_problem(#[case] text: &str, #[case] expected: &str) {
         let err = parse_leg(text).expect_err("rejects");
         assert!(err.contains(expected), "got: {err}");
@@ -468,6 +502,12 @@ mod tests {
         Some("lot}1")
     )]
     #[case::trailing_separator("2:AAPL{105:AUD,}", Kind::PerUnit, None, None)]
+    #[case::quoted_label_looks_like_bad_date(
+        "2:AAPL{105:AUD,\"2024-13-01\"}",
+        Kind::PerUnit,
+        None,
+        Some("2024-13-01")
+    )]
     fn cost_forms_parse(
         #[case] text: &str,
         #[case] kind: Kind,
@@ -528,6 +568,15 @@ mod tests {
         "2:AAPL{105:AUD} extra",
         "unexpected 'extra' after the cost block"
     )]
+    #[case::cost_code_is_date("2:AAPL{105,2024-03-01,lot-a}", "cost amount '105' has no commodity")]
+    #[case::cost_code_is_star("2:AAPL{105:*}", "cost amount '105' has no commodity")]
+    #[case::cost_code_is_quoted("2:AAPL{105:\"AUD\"}", "cost amount '105' has no commodity")]
+    #[case::cost_code_is_number("2:AAPL{105:106:AUD}", "cost amount '105' has no commodity")]
+    #[case::bad_date_month("2:AAPL{105:AUD,2024-13-01}", "bad cost date '2024-13-01'")]
+    #[case::bad_date_short("2:AAPL{105:AUD,2024-3-1}", "bad cost date '2024-3-1'")]
+    #[case::bad_date_datetime("2:AAPL{105:AUD,2024-03-01T00}", "bad cost date '2024-03-01T00'")]
+    #[case::unmatched_quote_suffix("2:AAPL{105:AUD,\"a\"b}", "bad cost component '\"a\"b'")]
+    #[case::doubled_quotes("2:AAPL{105:AUD,\"a\"\"b\"}", "bad cost component '\"a\"\"b\"'")]
     fn cost_errors_name_the_problem(#[case] text: &str, #[case] expected: &str) {
         let err = parse_leg(text).expect_err("rejects");
         assert!(err.contains(expected), "got: {err}");
