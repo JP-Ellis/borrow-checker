@@ -260,14 +260,13 @@ fn budget_status_with_target() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
-/// A posting in a commodity with no rate to the budget's commodity is left
-/// out of ACTUALS and listed under UNVALUED.
-#[test]
-fn budget_status_lists_unvalued_spend() {
-    let ctx = TestContext::new();
-    let expenses_id = create_expense_account(&ctx);
-    let _budget_id = create_budget(&ctx, &expenses_id);
-    let checking_id = create_account(&ctx, "Assets:Checking");
+/// Helper: seed a budgeted expense account with one USD posting the AUD
+/// budget cannot value.
+#[expect(clippy::expect_used, reason = "test helper panics on setup failure")]
+fn seed_unvalued_spend(ctx: &TestContext) {
+    let expenses_id = create_expense_account(ctx);
+    let _budget_id = create_budget(ctx, &expenses_id);
+    let checking_id = create_account(ctx, "Assets:Checking");
     let out = ctx
         .command()
         .args([
@@ -289,8 +288,43 @@ fn budget_status_lists_unvalued_spend() {
         "transaction add should succeed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+/// A posting in a commodity with no rate to the budget's commodity is left
+/// out of ACTUALS and listed under UNVALUED.
+#[test]
+fn budget_status_lists_unvalued_spend() {
+    let ctx = TestContext::new();
+    seed_unvalued_spend(&ctx);
 
     let mut cmd = ctx.command();
     cmd.args(["budget", "status", "--as-of", "2030-01-15"]);
     cmd_snapshot!(ctx, &mut cmd);
+}
+
+/// `--json` carries `unvalued` as a commodity-to-value map beside the
+/// actuals it was left out of.
+#[test]
+fn budget_status_json_carries_unvalued() {
+    let ctx = TestContext::new();
+    seed_unvalued_spend(&ctx);
+
+    let out = ctx
+        .command()
+        .args(["--json", "budget", "status", "--as-of", "2030-01-15"])
+        .output()
+        .expect("budget status");
+    assert!(
+        out.status.success(),
+        "budget status should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let statuses: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    let status = statuses.get(0).expect("one budget status");
+
+    assert_eq!(status.get("actuals"), Some(&serde_json::json!("0")));
+    assert_eq!(
+        status.get("unvalued"),
+        Some(&serde_json::json!({ "USD": "5.00" }))
+    );
 }
