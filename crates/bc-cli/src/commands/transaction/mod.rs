@@ -232,9 +232,13 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
             let amounts: Vec<String> = tx
                 .postings()
                 .iter()
+                // The column names what the transaction moved: the positive
+                // legs, plus any leg whose cost or price would otherwise be
+                // seen only in `--json`, such as a sale.
                 .filter_map(|p| {
                     let a = p.amount()?;
-                    (a.value() > rust_decimal::Decimal::ZERO)
+                    let annotated = p.cost().is_some() || p.price().is_some();
+                    (annotated || a.value() > rust_decimal::Decimal::ZERO)
                         .then(|| leg::render_leg(p))
                         .flatten()
                 })
