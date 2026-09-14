@@ -6,10 +6,8 @@ use bc_ipc::CommodityInfo;
 use bc_ipc::Cost;
 use bc_ipc::Quote;
 use jiff::civil::Date;
-use rust_decimal::Decimal;
 
-use crate::components::transaction_row::currency::MarkerError;
-use crate::components::transaction_row::currency::split_marked_amount;
+use crate::components::transaction_row::editable::parse_marked_amount;
 
 /// The cost editor's string buffers, one per input.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -82,16 +80,7 @@ pub fn cost_from_buffers(
     if basis.trim().is_empty() {
         return Ok(None);
     }
-    let (number, code) = split_marked_amount(currencies, basis).map_err(|e| match e {
-        MarkerError::Missing => "amount needs a currency (e.g. A$100)".to_owned(),
-        MarkerError::Unknown(m) => format!("unknown currency '{m}'"),
-        MarkerError::Ambiguous(m) => format!("ambiguous currency '{m}'"),
-    })?;
-    let cleaned: String = number
-        .chars()
-        .filter(|c| *c != ',' && !c.is_whitespace())
-        .collect();
-    let value = cleaned.parse::<Decimal>().map_err(|e| e.to_string())?;
+    let (value, code) = parse_marked_amount(currencies, basis)?;
     if value.is_sign_negative() {
         return Err("negative cost not allowed".to_owned());
     }
@@ -227,6 +216,7 @@ mod tests {
     #[case::negative("A$-105", "", "negative cost not allowed")]
     #[case::bad_date("A$105", "2024-13-01", "cost date must be YYYY-MM-DD")]
     #[case::no_marker("105", "", "amount needs a currency (e.g. A$100)")]
+    #[case::unknown_marker("X$105", "", "unknown currency 'X$'")]
     fn buffer_errors(#[case] basis: &str, #[case] date: &str, #[case] message: &str) {
         assert_eq!(
             cost_from_buffers(&registry(), false, basis, date, ""),
