@@ -57,13 +57,14 @@ style/             # Global SCSS + Stylance bundle output (NOT inside src/)
 
 ## File Colocation Rule
 
-Every component lives in its own directory with exactly these co-located files:
+Every component lives in its own directory with at minimum these co-located files:
 
 ```text
 transaction_row/
   mod.rs              # Component definition
   row.module.scss     # Scoped styles (imported via import_style!)
   qa.rs               # QA showcase page (cfg(debug_assertions) only)
+  *.rs                # Helper modules split out of mod.rs as it grows
 ```
 
 - `import_style!(style, "row.module.scss")` loads the CSS module as a Rust struct.

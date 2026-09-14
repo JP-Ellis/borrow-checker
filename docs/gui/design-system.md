@@ -43,7 +43,7 @@ These patterns are the design target for components not yet built. Implement the
 
 **Account row** — institution logo (24px circle), account name (sans, label weight), masked number (mono, mute), balance (Num component, right-aligned). Separator: 1px `--bc-border`.
 
-**Transaction row** — date (mono, mute, ISO format), description (sans), category tag (TagToken), amount (Num). Expandable inline for split transactions.
+**Transaction row** — date (mono, mute, ISO format), description (sans), category tag (TagToken), amount (Num) with a second line under the amount for the price annotation and the split/unbalanced pills. Expandable inline for split transactions.
 
 **Envelope row** — envelope name (sans), allocated/spent bar (full-width, `--bc-accent` fill, `--bc-surface-accent` track, 3px height), remaining amount (Num, right-aligned). Tree indent via `--bc-space-4` per level.
 
