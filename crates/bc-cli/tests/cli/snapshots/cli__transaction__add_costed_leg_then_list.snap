@@ -1,0 +1,11 @@
+---
+source: crates/bc-cli/tests/cli/transaction.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+ ID                                     | DATE       | DESCRIPTION | AMOUNTS                               | META
+==================================================================================================================
+ [TRANSACTION_ID] | 2026-03-01 | Buy shares  | 2 AAPL {105 AUD, 2024-03-01, "lot-a"} |
+----- stderr -----

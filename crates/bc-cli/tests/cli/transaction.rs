@@ -132,6 +132,157 @@ fn transaction_warning() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
+/// Creates a brokerage account and returns its ID.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn setup_brokerage(ctx: &TestContext) -> String {
+    let out = ctx
+        .command()
+        .args(["--json", "account", "create", "Assets:Brokerage"])
+        .output()
+        .expect("create brokerage");
+    parse_account_id(&out.stdout)
+}
+
+#[test]
+fn add_priced_leg_then_list() {
+    // A foreign-currency purchase: the USD leg weighs at its @@ total, so
+    // the transaction balances against the AUD leg.
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    ctx.command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "Online purchase",
+            "--posting",
+            &format!("{checking_id}:-6.37:AUD"),
+            "--posting",
+            &format!("{expenses_id}:4.00:USD@@6.37:AUD"),
+        ])
+        .output()
+        .expect("add");
+
+    let mut cmd = ctx.command();
+    cmd.args(["transaction", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn add_costed_leg_then_list() {
+    let ctx = TestContext::new();
+    let (checking_id, _) = setup_accounts(&ctx);
+    let brokerage_id = setup_brokerage(&ctx);
+    ctx.command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "Buy shares",
+            "--posting",
+            &format!("{checking_id}:-210:AUD"),
+            "--posting",
+            &format!("{brokerage_id}:2:AAPL{{105:AUD,2024-03-01,lot-a}}"),
+        ])
+        .output()
+        .expect("add");
+
+    let mut cmd = ctx.command();
+    cmd.args(["transaction", "list"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn add_priced_and_costed_leg_json() {
+    let ctx = TestContext::new();
+    let (checking_id, _) = setup_accounts(&ctx);
+    let brokerage_id = setup_brokerage(&ctx);
+    let mut cmd = ctx.command();
+    cmd.args([
+        "--json",
+        "transaction",
+        "add",
+        "--date",
+        "2026-03-01",
+        "--description",
+        "Sell shares",
+        "--posting",
+        // Cost beats price for weighing: the AAPL leg weighs -210 AUD, so
+        // 210 AUD balances it and the @150 price is carried as stated.
+        &format!("{checking_id}:210:AUD"),
+        "--posting",
+        &format!("{brokerage_id}:-2:AAPL{{105:AUD:2024-03-01:lot-a}}@150:AUD"),
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn add_leg_quoted_in_its_own_commodity_warns() {
+    // A fee stated as N AUD @ P AUD is what Beancount weighs as N × P AUD;
+    // the write succeeds and the warning names the account on stderr.
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "add",
+        "--date",
+        "2026-03-01",
+        "--description",
+        "Fee",
+        "--posting",
+        &format!("{checking_id}:-10:AUD"),
+        "--posting",
+        &format!("{expenses_id}:5:AUD@2:AUD"),
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn add_rejects_negative_price() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "add",
+        "--date",
+        "2026-03-01",
+        "--description",
+        "Bad price",
+        "--posting",
+        &format!("{checking_id}:-6.37:AUD"),
+        "--posting",
+        &format!("{expenses_id}:4.00:USD@@-6.37:AUD"),
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn add_rejects_lot_selection() {
+    let ctx = TestContext::new();
+    let (checking_id, _) = setup_accounts(&ctx);
+    let brokerage_id = setup_brokerage(&ctx);
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "add",
+        "--date",
+        "2026-03-01",
+        "--description",
+        "Sell shares",
+        "--posting",
+        &format!("{checking_id}:300:AUD"),
+        "--posting",
+        &format!("{brokerage_id}:-2:AAPL{{}}"),
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
 #[test]
 fn transaction_warning_json() {
     // Same write as `transaction_warning`, but under `--json`: the warning
