@@ -2715,6 +2715,105 @@ mod elided_actuals_tests {
         assert_eq!(status.available, dec!(535.00));
     }
 
+    /// Tags a transaction.
+    async fn tag_tx(pool: &SqlitePool, tx_id: &str, tag: &TagId) {
+        sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
+            .bind(tx_id)
+            .bind(tag.to_string())
+            .execute(pool)
+            .await
+            .expect("tag transaction");
+    }
+
+    /// A carry chain spanning two reigns with different tag filters, read
+    /// through a window with a user query: the chain loads under each reign's
+    /// own tag filter and never the query, while the window loads under both.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn chain_across_tag_filtered_reigns_with_a_window_query(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let cafe = account(&pool, "Cafe", AccountType::Expense, Some(&food)).await;
+        let home = TagId::new();
+        let work = TagId::new();
+        insert_tag(&pool, &home, "home").await;
+        insert_tag(&pool, &work, "work").await;
+        let svc = BudgetService::new(pool.clone());
+        let target = || Amount::new(dec!(100), CommodityCode::new("AUD"));
+        // January is governed by a `home`-filtered reign, February onward by a
+        // `work`-filtered one; both carry.
+        let (budget, _) = svc
+            .create()
+            .account_id(food.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(target())
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::CarryForward)
+            .tag_filter(home.clone())
+            .call()
+            .await
+            .expect("create budget");
+        svc.revise(
+            budget.id(),
+            bc_models::BudgetRevision::builder()
+                .budget_id(budget.id().clone())
+                .effective_from(Date::constant(2026, 2, 1))
+                .target(target())
+                .period(Period::Monthly)
+                .rollover(RolloverPolicy::CarryForward)
+                .tag_filter(work.clone())
+                .created_at(jiff::Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("revise");
+        // (tx, date, account, amount, tag). January: only `home` counts → 30,
+        // surplus 70. February: only `work` counts → 40, surplus 100 + 70 − 40
+        // = 130. March under the Cafe query: only the `work`-tagged Cafe
+        // posting counts → 25.
+        let fixtures: [(&str, &str, &AccountId, &str, &TagId); 6] = [
+            ("tx_jan_home", "2026-01-10", &food, "30.00", &home),
+            ("tx_jan_work", "2026-01-11", &food, "20.00", &work),
+            ("tx_feb_work", "2026-02-10", &food, "40.00", &work),
+            ("tx_feb_home", "2026-02-11", &food, "10.00", &home),
+            ("tx_mar_cafe_work", "2026-03-03", &cafe, "25.00", &work),
+            ("tx_mar_food_work", "2026-03-04", &food, "5.00", &work),
+        ];
+        for (tx_id, date, acct, amount, tag) in fixtures {
+            let negated = format!("-{amount}");
+            let p_bank = format!("{tx_id}_bank");
+            let p_spend = format!("{tx_id}_spend");
+            insert_tx(
+                &pool,
+                tx_id,
+                date,
+                &[
+                    (&p_bank, &bank, Some((&negated, "AUD"))),
+                    (&p_spend, acct, Some((amount, "AUD"))),
+                ],
+            )
+            .await;
+            tag_tx(&pool, tx_id, tag).await;
+        }
+        let query = crate::search::TransactionQuery {
+            accounts: vec![cafe.clone()],
+            ..Default::default()
+        };
+        let window = bc_models::BudgetWindow::custom(
+            Date::constant(2026, 3, 1),
+            Date::constant(2026, 4, 1),
+            "March",
+        );
+
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for_window(&budget, window, Some(&query))
+            .await
+            .expect("status");
+
+        assert_eq!(status.actuals, dec!(25.00));
+        assert_eq!(status.rollover, dec!(130.00));
+        assert_eq!(status.available, dec!(205.00));
+    }
+
     /// An uncapped carry would reach 30.00 after three empty days; `CapAtTarget`
     /// clamps the carry to the 10.00 target at every destination, so it stays
     /// at 10.00 rather than accumulating.
