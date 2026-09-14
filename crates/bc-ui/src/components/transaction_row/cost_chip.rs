@@ -2,6 +2,7 @@
 
 use bc_ipc::Amount;
 use leptos::prelude::*;
+use leptos::web_sys;
 
 use super::style;
 use crate::components::ChipVariant;
@@ -75,13 +76,15 @@ pub fn CostChip(
         match parsed {
             Ok(cost) => {
                 cost_error.set(None);
-                working.update(|w| {
-                    if let Some(p) = w.postings.get_mut(i)
-                        && p.cost != cost
-                    {
-                        p.cost = cost;
-                    }
-                });
+                let changed =
+                    working.with_untracked(|w| w.postings.get(i).is_some_and(|p| p.cost != cost));
+                if changed {
+                    working.update(|w| {
+                        if let Some(p) = w.postings.get_mut(i) {
+                            p.cost = cost;
+                        }
+                    });
+                }
             }
             Err(message) => cost_error.set(Some(message)),
         }
@@ -140,21 +143,19 @@ pub fn CostChip(
         })
     };
 
-    let open = move |_| {
+    let open_editor = move || {
         show_date.set(!date.get_untracked().is_empty());
         show_label.set(!label.get_untracked().is_empty());
         editing.set(true);
     };
+    let open = move |_| open_editor();
     let open_key = move |ev: leptos::ev::KeyboardEvent| {
         let key = ev.key();
         if key == "Enter" || key == " " {
             ev.prevent_default();
-            show_date.set(!date.get_untracked().is_empty());
-            show_label.set(!label.get_untracked().is_empty());
-            editing.set(true);
+            open_editor();
         }
     };
-    let close = move |_| editing.set(false);
     let close_key = move |ev: leptos::ev::KeyboardEvent| {
         let key = ev.key();
         if key == "Enter" || key == "Escape" {
@@ -167,6 +168,27 @@ pub fn CostChip(
         label.set(String::new());
         editing.set(false);
     });
+
+    // The segment toggle, `+ date` and `+ label` buttons are focusable controls
+    // inside the editor, so focus leaving one of them for another is not a
+    // reason to close — only focus leaving the whole editor wrapper is. Mirrors
+    // `crate::components::meta_editor`'s key-cell focusout guard. `uid` (not a
+    // captured `String`) keeps this closure `Copy`, matching `open`/`close`
+    // above, so it can be reused across every reactive re-render of the editor.
+    let editor_id = format!("cost-edit-{uid}");
+    let on_editor_focusout = move |ev: web_sys::FocusEvent| {
+        let selector = format!("#cost-edit-{uid}");
+        let staying = ev
+            .related_target()
+            .and_then(|target| {
+                web_sys::wasm_bindgen::JsCast::dyn_into::<web_sys::Element>(target).ok()
+            })
+            .and_then(|element| element.closest(&selector).ok().flatten())
+            .is_some();
+        if !staying {
+            editing.set(false);
+        }
+    };
 
     view! {
         {move || {
@@ -203,8 +225,9 @@ pub fn CostChip(
                 .then(|| {
                     view! {
                         <div
+                            id=editor_id.clone()
                             class=style::cost_edit
-                            on:focusout=close
+                            on:focusout=on_editor_focusout
                             data-testid="posting-cost-editor"
                         >
                             <span class=style::cost_seg>
