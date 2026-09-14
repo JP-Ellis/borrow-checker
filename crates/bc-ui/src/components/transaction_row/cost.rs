@@ -17,10 +17,6 @@ use crate::components::transaction_row::currency::split_marked_amount;
     clippy::module_name_repetitions,
     reason = "CostBuffers reads naturally at call sites"
 )]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "wired into the cost editor in a later task")
-)]
 pub struct CostBuffers {
     /// `true` for `{{ }}` (total), `false` for `{ }` (per unit).
     pub is_total: bool,
@@ -40,10 +36,6 @@ impl CostBuffers {
     ///
     /// * `cost` - The stored cost, or `None` for blank buffers.
     #[must_use]
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(dead_code, reason = "wired into the cost editor in a later task")
-    )]
     pub fn from_cost(cost: Option<&Cost>) -> Self {
         let Some(c) = cost else {
             return Self::default();
@@ -79,10 +71,6 @@ impl CostBuffers {
 #[expect(
     clippy::module_name_repetitions,
     reason = "cost_from_buffers reads naturally at call sites"
-)]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "wired into the cost editor in a later task")
 )]
 pub fn cost_from_buffers(
     currencies: &[CommodityInfo],
@@ -141,10 +129,6 @@ pub fn cost_from_buffers(
 #[expect(
     clippy::module_name_repetitions,
     reason = "cost_chip_text reads naturally at call sites"
-)]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "wired into the cost chip in a later task")
 )]
 pub fn cost_chip_text(cost: &Cost, fmt: impl Fn(&Amount) -> String) -> String {
     let mut parts = vec![fmt(cost.basis.amount())];

@@ -72,6 +72,10 @@ pub mod edit_ctx;
 #[cfg(target_arch = "wasm32")]
 pub mod posting_row;
 
+/// The cost chip on a posting row and its inline editor.
+#[cfg(target_arch = "wasm32")]
+pub mod cost_chip;
+
 /// Pure helpers for rendering and seeding per-posting accrual spreads.
 pub mod spread;
 
