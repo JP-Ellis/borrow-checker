@@ -158,8 +158,9 @@ pub struct BudgetTreeNode {
     /// Child nodes (empty for leaf rows).
     #[builder(default)]
     pub children: Vec<BudgetTreeNode>,
-    /// Spend within the display window that could not be valued in the
-    /// budget commodity, per commodity. Empty when every posting counted.
+    /// Spend that could not be valued in the budget commodity, per
+    /// commodity, across the display window and the carry chain behind its
+    /// rollover. Empty when every posting counted.
     #[builder(default)]
     pub unvalued: Vec<Amount>,
 }
@@ -182,7 +183,9 @@ pub struct BudgetSummary {
     pub has_mixed_commodities: bool,
     /// Number of leaf budget lines where `spent > effective_target`.
     pub overspent_count: u32,
-    /// `true` when any node in the tree has unvalued spend.
+    /// `true` when any node in the tree has unvalued spend. A flag rather
+    /// than a sum: the tree's budgets can target different commodities, so
+    /// the amounts live on each node's `unvalued`.
     pub has_unvalued: bool,
 }
 
@@ -226,8 +229,9 @@ pub struct NativePeriodRow {
     pub effective_target: Option<Amount>,
     /// Actual spend within this native period.
     pub spent: Amount,
-    /// Spend within this native period that could not be valued in the
-    /// budget commodity, per commodity.
+    /// Spend that could not be valued in the budget commodity, per
+    /// commodity, across this native period and the carry chain behind its
+    /// rollover.
     pub unvalued: Vec<Amount>,
 }
 
