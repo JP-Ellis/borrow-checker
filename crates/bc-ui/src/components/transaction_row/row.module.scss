@@ -127,6 +127,26 @@
 .amt_neg { color: var(--bc-bad); }
 .amt_neu { color: var(--bc-ink-mute); }
 
+/* Two-line amount cell: the headline on top, the price annotation and the
+   split / unbalanced pills beneath in the muted mono caption style. */
+.amt_stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.2;
+}
+
+.amt_sub {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  font-variant-numeric: tabular-nums;
+  color: var(--bc-ink-dim);
+  white-space: nowrap;
+}
+
 .chevron {
   font-family: var(--bc-font-mono);
   font-size: var(--bc-text-caption);
@@ -162,7 +182,7 @@
   border-radius: var(--bc-radius-pill);
   border: 1px solid var(--bc-border);
   color: var(--bc-ink-mute);
-  margin-left: var(--bc-space-2);
+  margin-left: 0;
 }
 
 .pill_unbalanced {
@@ -171,7 +191,7 @@
   border-radius: var(--bc-radius-pill);
   background: color-mix(in srgb, var(--bc-warn) 14%, transparent);
   color: var(--bc-warn);
-  margin-left: var(--bc-space-2);
+  margin-left: 0;
 }
 
 /* MARK: Detail panel */

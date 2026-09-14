@@ -169,10 +169,6 @@ pub fn cost_chip_text(cost: &Cost, fmt: impl Fn(&Amount) -> String) -> String {
 /// * `quote` - The price.
 /// * `fmt` - Amount formatter.
 #[must_use]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "wired into the collapsed row in a later task")
-)]
 pub fn quote_text(quote: &Quote, fmt: impl Fn(&Amount) -> String) -> String {
     let marker = if quote.is_total() { "@@" } else { "@" };
     format!("{marker} {}", fmt(quote.amount()))
