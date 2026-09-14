@@ -26,6 +26,7 @@ use crate::components::meta_editor::model::MetaRow;
 use crate::components::meta_editor::model::emit_rows;
 use crate::components::meta_editor::model::rows_from_entries;
 use crate::components::transaction_row::currency::MarkerError;
+use crate::components::transaction_row::currency::resolve_marker;
 use crate::components::transaction_row::currency::split_marked_amount;
 
 /// A single posting in the working buffer.
@@ -390,23 +391,28 @@ pub fn parse_leg(currencies: &[CommodityInfo], input: &str) -> Result<ParsedLeg,
 /// gives up entirely (`MarkerError::Missing`): the run of non-numeric
 /// characters leading the (optionally signed) input, if any.
 ///
-/// `split_marked_amount` only ever recognises a *registered* glued marker, so
-/// an unrecognised one (`X$6.37`) falls all the way through to `Missing`
-/// rather than `Unknown` — this recovers the intended "unknown currency"
-/// message for that shape. A bare number (`6.37`) has no such prefix and
-/// keeps the generic "needs a currency" message.
-fn leading_marker_guess(input: &str) -> Option<String> {
+/// `split_marked_amount` only accepts a glued marker immediately followed by
+/// a number, so a *registered* marker typed alone (`"AAPL"`, mid-edit, no
+/// amount yet) falls through to `Missing` exactly like a *genuinely
+/// unregistered* one (`"X$6.37"`) — this only extracts the candidate text;
+/// [`parse_marked_amount`] then runs it back through [`resolve_marker`] to
+/// tell the two apart. A bare number (`6.37`) has no such prefix.
+fn leading_marker_guess(input: &str) -> Option<&str> {
     let trimmed = input.trim();
     let unsigned = trimmed.strip_prefix(['-', '+']).unwrap_or(trimmed);
-    let raw_prefix: String = unsigned
-        .chars()
-        .take_while(|c| !c.is_ascii_digit() && *c != '.')
-        .collect();
-    let prefix = raw_prefix.trim();
+    let end = unsigned
+        .char_indices()
+        .find(|&(_, c)| c.is_ascii_digit() || c == '.')
+        .map_or(unsigned.len(), |(i, _)| i);
+    #[expect(
+        clippy::string_slice,
+        reason = "`end` is a char boundary: either `unsigned.len()` or the byte index of an ASCII digit/dot"
+    )]
+    let prefix = unsigned[..end].trim();
     if prefix.is_empty() {
         None
     } else {
-        Some(prefix.to_owned())
+        Some(prefix)
     }
 }
 
@@ -416,10 +422,17 @@ fn parse_marked_amount(
     input: &str,
 ) -> Result<(Decimal, String), String> {
     let (number, code) = split_marked_amount(currencies, input).map_err(|e| match e {
-        MarkerError::Missing => leading_marker_guess(input).map_or_else(
-            || "amount needs a currency (e.g. A$100)".to_owned(),
-            |m| format!("unknown currency '{m}'"),
-        ),
+        MarkerError::Missing => {
+            // `split_marked_amount` gave up on the whole input, not just a
+            // marker — check whether it merely lacks an amount (a registered
+            // marker typed alone) before naming a bad marker.
+            match leading_marker_guess(input).map(|m| resolve_marker(currencies, m)) {
+                Some(Err(MarkerError::Unknown(m))) => format!("unknown currency '{m}'"),
+                None | Some(Ok(_) | Err(MarkerError::Missing | MarkerError::Ambiguous(_))) => {
+                    "amount needs a currency (e.g. A$100)".to_owned()
+                }
+            }
+        }
         MarkerError::Unknown(m) => format!("unknown currency '{m}'"),
         MarkerError::Ambiguous(m) => format!("ambiguous currency '{m}'"),
     })?;
@@ -1059,6 +1072,19 @@ pub mod tests {
     #[case::bare_price("US$4.00 @@ 6.37", "amount needs a currency (e.g. A$100)")]
     fn parse_leg_errors(#[case] input: &str, #[case] message: &str) {
         assert_eq!(parse_leg(&registry_multi(), input), Err(message.to_owned()));
+    }
+
+    #[test]
+    fn parse_leg_registered_marker_alone_is_missing_amount_not_unknown() {
+        // "AAPL" typed alone (mid-edit, no number yet) is a registered marker,
+        // unlike the genuinely unregistered "X$" in `case::unknown_price_marker`
+        // above — both fall through `split_marked_amount` to the same
+        // `MarkerError::Missing`, but only the unregistered one should be
+        // reported as an unknown currency.
+        assert_eq!(
+            parse_leg(&registry_shares(), "AAPL"),
+            Err("amount needs a currency (e.g. A$100)".to_owned())
+        );
     }
 
     #[test]
