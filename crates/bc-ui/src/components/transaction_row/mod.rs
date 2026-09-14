@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use bc_ipc::AccountRef;
 use bc_ipc::Amount;
 use bc_ipc::Posting;
+use bc_ipc::Quote;
 use bc_ipc::Transaction;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
@@ -317,6 +318,47 @@ pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount
     }
 }
 
+/// The price annotation to show under the headline amount, if the headline
+/// comes from exactly one leg and that leg carries one.
+///
+/// `Account` looks at the focal legs, `Global` at the positive stored legs
+/// (the same legs `headline_amount` sums); `Budget` prorates and has no
+/// single price.
+///
+/// # Arguments
+///
+/// * `tx` - The transaction.
+/// * `perspective` - The row's perspective.
+///
+/// # Returns
+///
+/// The one leg's price, or `None`.
+#[must_use]
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(dead_code, reason = "wired into the collapsed row in the next commit")
+)]
+pub fn headline_price(tx: &Transaction, perspective: &RowPerspective) -> Option<Quote> {
+    let mut legs = match perspective {
+        RowPerspective::Account { account_id } => focal_on_account(tx, account_id)
+            .filter(|p| p.amount.stored().is_some())
+            .collect::<Vec<_>>()
+            .into_iter(),
+        RowPerspective::Global => tx
+            .postings
+            .iter()
+            .filter(|p| p.amount.stored().is_some_and(|a| a.value > Decimal::ZERO))
+            .collect::<Vec<_>>()
+            .into_iter(),
+        RowPerspective::Budget { .. } => return None,
+    };
+    let only = legs.next()?;
+    if legs.next().is_some() {
+        return None;
+    }
+    only.price.clone()
+}
+
 /// Sums a sequence of amounts, taking the currency from the first one.
 ///
 /// Returns an [`Amount`] with zero value and empty currency code when the
@@ -395,7 +437,8 @@ fn inclusive_days(a: jiff::civil::Date, b: jiff::civil::Date) -> i64 {
 ///
 /// Mirrors `bc_models::Transaction::balanced`: false with no concrete legs or
 /// two-or-more elided legs; a single elided leg auto-balances; otherwise every
-/// commodity's concrete legs must sum to zero.
+/// commodity's concrete legs must sum to zero **by weight** (cost, else
+/// price, else units).
 ///
 /// # Arguments
 ///
@@ -410,14 +453,14 @@ pub fn is_balanced(tx: &Transaction) -> bool {
     if elided >= 2 {
         return false;
     }
-    let mut totals: BTreeMap<&str, Decimal> = BTreeMap::new();
-    for a in tx.postings.iter().filter_map(|p| p.amount.stored()) {
+    let mut totals: BTreeMap<String, Decimal> = BTreeMap::new();
+    for a in tx.postings.iter().filter_map(Posting::weight) {
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "balance check: summing monetary values of the same commodity within a single transaction"
         )]
         {
-            *totals.entry(a.currency_code.as_str()).or_default() += a.value;
+            *totals.entry(a.currency_code.clone()).or_default() += a.value;
         }
     }
     if totals.is_empty() {
@@ -1182,6 +1225,7 @@ mod tests {
     use bc_ipc::Amount;
     use bc_ipc::Posting;
     use bc_ipc::PostingAmount;
+    use bc_ipc::Quote;
     use bc_ipc::Reconciliation;
     use bc_ipc::Transaction;
     use jiff::civil::Date;
@@ -1190,6 +1234,7 @@ mod tests {
 
     use super::RowPerspective;
     use super::headline_amount;
+    use super::headline_price;
     use super::is_balanced;
     use super::prorated_value;
 
@@ -1236,6 +1281,25 @@ mod tests {
             postings,
             vec![],
         )
+    }
+
+    /// Builds a posting whose units carry a price annotation.
+    fn priced(id: &str, acct: &str, units: Decimal, code: &str, price: Quote) -> Posting {
+        Posting::new(
+            id,
+            AccountRef::new(acct, acct),
+            PostingAmount::Stored(Amount::new(units, code)),
+            vec![],
+            vec![],
+            None,
+            None,
+        )
+        .with_price(Some(price))
+    }
+
+    /// Builds a total-price [`Quote`] in AUD cents.
+    fn total_aud(cents: i64) -> Quote {
+        Quote::Total(Amount::new(Decimal::new(cents, 2), "AUD"))
     }
 
     #[test]
@@ -1309,6 +1373,71 @@ mod tests {
             posting("b", "groceries", None),
         ]);
         assert!(!is_balanced(&t));
+    }
+
+    #[test]
+    fn fx_purchase_balances_at_price() {
+        let t = tx(vec![
+            priced("a", "usd", Decimal::new(400, 2), "USD", total_aud(637)),
+            posting("b", "aud", Some(-637)),
+        ]);
+        assert!(is_balanced(&t));
+    }
+
+    #[test]
+    fn fx_purchase_with_wrong_price_is_unbalanced() {
+        let t = tx(vec![
+            priced("a", "usd", Decimal::new(400, 2), "USD", total_aud(600)),
+            posting("b", "aud", Some(-637)),
+        ]);
+        assert!(!is_balanced(&t));
+    }
+
+    #[test]
+    fn headline_price_for_one_priced_focal_leg() {
+        let t = tx(vec![
+            priced("a", "usd", Decimal::new(400, 2), "USD", total_aud(637)),
+            posting("b", "aud", Some(-637)),
+        ]);
+        let usd = RowPerspective::Account {
+            account_id: "usd".to_owned(),
+        };
+        assert_eq!(headline_price(&t, &usd), Some(total_aud(637)));
+        let aud = RowPerspective::Account {
+            account_id: "aud".to_owned(),
+        };
+        assert_eq!(headline_price(&t, &aud), None);
+    }
+
+    #[test]
+    fn headline_price_is_none_when_several_legs_sum() {
+        let t = tx(vec![
+            priced("a", "usd", Decimal::new(400, 2), "USD", total_aud(637)),
+            priced("c", "usd", Decimal::new(100, 2), "USD", total_aud(159)),
+            posting("b", "aud", Some(-796)),
+        ]);
+        let usd = RowPerspective::Account {
+            account_id: "usd".to_owned(),
+        };
+        assert_eq!(headline_price(&t, &usd), None);
+    }
+
+    #[test]
+    fn headline_price_global_uses_the_single_positive_leg() {
+        let t = tx(vec![
+            priced("a", "usd", Decimal::new(400, 2), "USD", total_aud(637)),
+            posting("b", "aud", Some(-637)),
+        ]);
+        assert_eq!(
+            headline_price(&t, &RowPerspective::Global),
+            Some(total_aud(637))
+        );
+        let two_positive = tx(vec![
+            priced("a", "usd", Decimal::new(400, 2), "USD", total_aud(637)),
+            posting("c", "aud", Some(100)),
+            posting("b", "aud", Some(-737)),
+        ]);
+        assert_eq!(headline_price(&two_positive, &RowPerspective::Global), None);
     }
 
     #[test]
