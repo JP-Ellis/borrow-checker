@@ -604,15 +604,21 @@ pub fn TransactionRow(
             }
         }
     };
-    let price_str: Option<String> = headline_price(&tx, &perspective).map(|q| {
-        let meta = crate::components::num::meta::display_meta_for(
-            &q.amount().currency_code,
-            &currencies.get_untracked(),
-        );
-        crate::components::transaction_row::cost::quote_text(&q, |a| {
-            crate::components::num::format_amount(&a.value, &meta)
-        })
-    });
+    let price_str = {
+        let tx = tx.clone();
+        let perspective = perspective.clone();
+        move || {
+            headline_price(&tx, &perspective).map(|q| {
+                let meta = crate::components::num::meta::display_meta_for(
+                    &q.amount().currency_code,
+                    &currencies.get(),
+                );
+                crate::components::transaction_row::cost::quote_text(&q, |a| {
+                    crate::components::num::format_amount(&a.value, &meta)
+                })
+            })
+        }
+    };
     let amt_class = match amount.value.cmp(&Decimal::ZERO) {
         core::cmp::Ordering::Greater => style::amt_pos,
         core::cmp::Ordering::Less => style::amt_neg,
@@ -721,30 +727,33 @@ pub fn TransactionRow(
             <span class=format!("{} {}", style::amount, amt_class)>
                 <span class=style::amt_stack>
                     <span>{amount_str}</span>
-                    {(price_str.is_some() || split || unbalanced)
-                        .then(|| {
-                            view! {
-                                <span class=style::amt_sub>
-                                    {price_str.clone()}
-                                    {split
-                                        .then(|| {
-                                            view! {
-                                                <span class=style::pill_split>
-                                                    "split \u{00b7} " {split_count}
-                                                </span>
-                                            }
-                                        })}
-                                    {unbalanced
-                                        .then(|| {
-                                            view! {
-                                                <span class=style::pill_unbalanced>
-                                                    "\u{26A0} unbalanced"
-                                                </span>
-                                            }
-                                        })}
-                                </span>
-                            }
-                        })}
+                    {move || {
+                        let price = price_str();
+                        (price.is_some() || split || unbalanced)
+                            .then(|| {
+                                view! {
+                                    <span class=style::amt_sub>
+                                        {price}
+                                        {split
+                                            .then(|| {
+                                                view! {
+                                                    <span class=style::pill_split>
+                                                        "split \u{00b7} " {split_count}
+                                                    </span>
+                                                }
+                                            })}
+                                        {unbalanced
+                                            .then(|| {
+                                                view! {
+                                                    <span class=style::pill_unbalanced>
+                                                        "\u{26A0} unbalanced"
+                                                    </span>
+                                                }
+                                            })}
+                                    </span>
+                                }
+                            })
+                    }}
                 </span>
             </span>
             <span class=style::chevron aria-hidden="true">
