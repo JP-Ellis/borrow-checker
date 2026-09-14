@@ -324,6 +324,18 @@ fn validate_postings(postings: &[Posting]) -> BcResult<()> {
             "a lone elided posting carries no amount".into(),
         ));
     }
+    for p in postings {
+        if p.price()
+            .is_some_and(|q| q.amount().value().is_sign_negative())
+        {
+            return Err(BcError::BadData("negative price not allowed".into()));
+        }
+        if p.cost()
+            .is_some_and(|c| c.basis().amount().value().is_sign_negative())
+        {
+            return Err(BcError::BadData("negative cost not allowed".into()));
+        }
+    }
     Ok(())
 }
 
@@ -568,7 +580,8 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if the posting list is empty, contains two
-    /// or more elided amounts, or is a single lone elided posting.
+    /// or more elided amounts, is a single lone elided posting, or a price or
+    /// cost is negative.
     /// Returns [`BcError`] on event append or database insert failure.
     #[inline]
     pub async fn create(&self, tx: Transaction) -> BcResult<crate::Warned<TransactionId>> {
@@ -605,7 +618,8 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if the posting list is empty, contains two
-    /// or more elided amounts, or is a single lone elided posting.
+    /// or more elided amounts, is a single lone elided posting, or a price or
+    /// cost is negative.
     /// Returns [`BcError`] on event append or database insert failure.
     pub(crate) async fn create_in_tx(
         &self,
@@ -1872,7 +1886,8 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if the posting list is empty, contains two
-    /// or more elided amounts, or is a single lone elided posting.
+    /// or more elided amounts, is a single lone elided posting, or a price or
+    /// cost is negative.
     /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
     /// Returns [`BcError`] on event append or database update failure.
     #[inline]
@@ -1932,8 +1947,9 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if the posting list is empty, has ≥2 elided
-    /// amounts, or is a lone elided posting. Returns [`BcError::NotFound`] if no
-    /// transaction with that ID exists. Returns [`BcError`] on DB failure.
+    /// amounts, is a lone elided posting, or a price or cost is negative.
+    /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
+    /// Returns [`BcError`] on DB failure.
     #[inline]
     pub async fn edit(&self, updated: Transaction) -> BcResult<crate::Warned<()>> {
         validate_postings(updated.postings())?;
@@ -3580,6 +3596,39 @@ mod tests {
             matches!(result, Err(BcError::BadData(_))),
             "lone elided posting should be rejected"
         );
+    }
+
+    #[test]
+    fn validate_rejects_a_negative_price() {
+        let bad = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .amount(Amount::new(dec!(4), CommodityCode::new("USD")))
+            .price(Quote::Total(Amount::new(dec!(-6.37), "AUD")))
+            .build();
+        let other = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .amount(Amount::new(dec!(-4), CommodityCode::new("USD")))
+            .build();
+        let err = validate_postings(&[bad, other]).expect_err("negative price is bad data");
+        assert_eq!(err.to_string(), "data error: negative price not allowed");
+    }
+
+    #[test]
+    fn validate_rejects_a_negative_cost() {
+        let bad = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .amount(Amount::new(dec!(2), CommodityCode::new("AAPL")))
+            .cost(
+                Cost::builder()
+                    .basis(Quote::PerUnit(Amount::new(dec!(-105), "AUD")))
+                    .build(),
+            )
+            .build();
+        let err = validate_postings(&[bad]).expect_err("negative cost is bad data");
+        assert_eq!(err.to_string(), "data error: negative cost not allowed");
     }
 
     #[sqlx::test(migrations = "./migrations")]
