@@ -269,6 +269,28 @@ fn parse_cost_block(text: &str) -> Result<(CostBlock, &str), String> {
             .ok_or_else(|| "cost block is not closed".to_owned())?;
     }
 
+    let (basis_opt, date, label) = read_components(body)?;
+    let basis = basis_opt.ok_or_else(|| LOT_SELECTION.to_owned())?;
+    if basis.value.is_sign_negative() && !basis.value.is_zero() {
+        return Err("negative cost not allowed".into());
+    }
+    Ok((
+        CostBlock {
+            kind,
+            basis,
+            date,
+            label,
+        },
+        after,
+    ))
+}
+
+/// Reads a block body's components, classified by shape: at most one
+/// amount with its code, one date and one label, in any order.
+#[expect(clippy::type_complexity, reason = "three optional parts of one block")]
+fn read_components(
+    body: &str,
+) -> Result<(Option<Figure>, Option<jiff::civil::Date>, Option<String>), String> {
     let mut basis_opt: Option<Figure> = None;
     let mut date: Option<jiff::civil::Date> = None;
     let mut label: Option<String> = None;
@@ -317,6 +339,13 @@ fn parse_cost_block(text: &str) -> Result<(CostBlock, &str), String> {
             }
             basis_opt = Some(Figure { value, code });
         } else {
+            // A bare label never holds whitespace: `105 AUD` is an amount
+            // written the Beancount way, and the fix is the colon form.
+            if component.contains(char::is_whitespace) {
+                return Err(format!(
+                    "bad cost component '{component}': expected AMOUNT:CCY, a YYYY-MM-DD date or a label"
+                ));
+            }
             if label.is_some() {
                 return Err("cost block has two labels".into());
             }
@@ -324,19 +353,7 @@ fn parse_cost_block(text: &str) -> Result<(CostBlock, &str), String> {
         }
     }
 
-    let basis = basis_opt.ok_or_else(|| LOT_SELECTION.to_owned())?;
-    if basis.value.is_sign_negative() && !basis.value.is_zero() {
-        return Err("negative cost not allowed".into());
-    }
-    Ok((
-        CostBlock {
-            kind,
-            basis,
-            date,
-            label,
-        },
-        after,
-    ))
+    Ok((basis_opt, date, label))
 }
 
 /// Whether a bare cost component opens like an ISO date: four ASCII digits
@@ -577,6 +594,11 @@ mod tests {
     #[case::bad_date_datetime("2:AAPL{105:AUD,2024-03-01T00}", "bad cost date '2024-03-01T00'")]
     #[case::unmatched_quote_suffix("2:AAPL{105:AUD,\"a\"b}", "bad cost component '\"a\"b'")]
     #[case::doubled_quotes("2:AAPL{105:AUD,\"a\"\"b\"}", "bad cost component '\"a\"\"b\"'")]
+    #[case::space_separated_amount("2:AAPL{105 AUD}", "bad cost component '105 AUD'")]
+    #[case::space_separated_amount_with_date(
+        "2:AAPL{105 AUD, 2024-03-01}",
+        "bad cost component '105 AUD'"
+    )]
     fn cost_errors_name_the_problem(#[case] text: &str, #[case] expected: &str) {
         let err = parse_leg(text).expect_err("rejects");
         assert!(err.contains(expected), "got: {err}");
