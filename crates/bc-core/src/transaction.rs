@@ -91,22 +91,12 @@ pub(crate) fn spread_pair(posting: &Posting) -> Option<(Date, Date)> {
     }
 }
 
-/// Merges `updated` with fields from `current` that the edit DTO cannot express.
+/// Merges an edit into the stored transaction.
 ///
-/// The `edit` path receives a `Transaction` built from an `EditTransaction` DTO
-/// whose `EditPosting` has no `cost` or `price` field. Without merging, calling
-/// `apply_transaction_projection` with the DTO-derived value would silently wipe
-/// cost and price columns.
-///
-/// This function returns a new `Transaction` that carries all of `updated`'s
-/// editable fields (date, description, `metadata`, `tag_ids`, posting
-/// account/amount/metadata/tags/spread) while carrying forward from `current`:
-/// - `metadata`: taken from `updated` (the DTO is authoritative).
-/// - `reconciliation`: always taken from `current`; the edit path never changes it
-///   (reconciliation is owned by `Service::reconcile`, which enforces the balance
-///   guard). The DTO's `reconciliation` field is echoed but ignored here.
-/// - per-posting `cost` and `price`: taken from the matching `current` posting
-///   (by ID); new postings (ID not in `current`) keep `None`.
+/// Every editable field comes from `updated`; only `reconciliation` is taken
+/// from `current`, because the edit path never changes it (reconciliation is
+/// owned by `Service::reconcile`, which enforces the balance guard). The
+/// DTO's `reconciliation` is echoed but ignored here.
 ///
 /// # Arguments
 ///
@@ -117,40 +107,11 @@ pub(crate) fn spread_pair(posting: &Posting) -> Option<(Date, Date)> {
 ///
 /// A merged `Transaction` suitable for both diffing and projection rewrite.
 fn merge_preserving(current: &Transaction, updated: &Transaction) -> Transaction {
-    let current_postings: std::collections::HashMap<&PostingId, &Posting> =
-        current.postings().iter().map(|p| (p.id(), p)).collect();
-
-    let merged_postings: Vec<Posting> = updated
-        .postings()
-        .iter()
-        .map(|p| {
-            let carried_cost = current_postings
-                .get(p.id())
-                .and_then(|cp| cp.cost())
-                .cloned();
-            let carried_price = current_postings
-                .get(p.id())
-                .and_then(|cp| cp.price())
-                .cloned();
-            Posting::builder()
-                .id(p.id().clone())
-                .account_id(p.account_id().clone())
-                .maybe_amount(p.amount().cloned())
-                .maybe_cost(carried_cost)
-                .maybe_price(carried_price)
-                .metadata(p.metadata().clone())
-                .tag_ids(p.tag_ids().to_vec())
-                .maybe_spread_from(p.spread_from())
-                .maybe_spread_until(p.spread_until())
-                .build()
-        })
-        .collect();
-
     Transaction::builder()
         .id(updated.id().clone())
         .date(updated.date())
         .description(updated.description().to_owned())
-        .postings(merged_postings)
+        .postings(updated.postings().to_vec())
         .reconciliation(current.reconciliation())
         .tag_ids(updated.tag_ids().to_vec())
         .metadata(updated.metadata().clone())
@@ -4540,7 +4501,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn edit_preserves_cost_and_price(pool: sqlx::SqlitePool) {
+    async fn edit_states_cost_and_price(pool: sqlx::SqlitePool) {
         let acct_svc = crate::AccountService::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -4561,26 +4522,22 @@ mod tests {
 
         let svc = Service::new(pool.clone());
 
-        let cost = Cost::builder()
-            .basis(Quote::Total(Amount::new(dec!(1500.00), "AUD")))
-            .label("lot-1")
-            .build();
-        let posting_with_cost_id = PostingId::new();
+        let leg_id = PostingId::new();
         let original = Transaction::builder()
             .id(TransactionId::new())
             .date(date(2026, 3, 1))
             .description("Buy shares")
-            .metadata(Metadata::new(vec![MetaEntry::new(
-                key("cleared"),
-                MetaValue::Date(date(2026, 3, 3)),
-            )]))
             .postings(vec![
                 Posting::builder()
-                    .id(posting_with_cost_id.clone())
+                    .id(leg_id.clone())
                     .account_id(acc_a.clone())
                     .amount(Amount::new(dec!(10), CommodityCode::new("AAPL")))
-                    .cost(cost)
-                    .price(Quote::PerUnit(Amount::new(dec!(150), "AUD")))
+                    .cost(
+                        Cost::builder()
+                            .basis(Quote::Total(Amount::new(dec!(1500.00), "AUD")))
+                            .label("lot-1")
+                            .build(),
+                    )
                     .build(),
                 Posting::builder()
                     .id(PostingId::new())
@@ -4591,41 +4548,55 @@ mod tests {
             .reconciliation(Reconciliation::Unreconciled)
             .created_at(Timestamp::now())
             .build();
+        let tx_id = svc.create(original).await.expect("create").into_inner();
 
-        let tx_id = svc
-            .create(original.clone())
-            .await
-            .expect("create")
-            .into_inner();
-
-        // Edit: only change the description — metadata echoed from current,
-        // posting cost must survive.
-        let current = svc.find_by_id(&tx_id).await.expect("load current");
+        // An edit that states a price and no cost: the cost is gone, the
+        // price is stored — nothing is carried from the previous state.
+        let current = svc.find_by_id(&tx_id).await.expect("load");
+        let repriced = current.postings().iter().map(|p| {
+            let b = Posting::builder()
+                .id(p.id().clone())
+                .account_id(p.account_id().clone())
+                .maybe_amount(p.amount().cloned())
+                .metadata(p.metadata().clone())
+                .tag_ids(p.tag_ids().to_vec());
+            if p.id() == &leg_id {
+                b.price(Quote::PerUnit(Amount::new(dec!(150), "AUD")))
+                    .build()
+            } else {
+                b.build()
+            }
+        });
         let edited = Transaction::builder()
             .id(tx_id.clone())
             .date(current.date())
-            .description("Buy more shares")
+            .description(current.description().to_owned())
             .metadata(current.metadata().clone())
-            .postings(current.postings().to_vec())
+            .postings(repriced.collect())
             .reconciliation(current.reconciliation())
             .tag_ids(current.tag_ids().to_vec())
             .created_at(*current.created_at())
             .build();
-
         svc.edit(edited).await.expect("edit ok");
 
         let reloaded = svc.find_by_id(&tx_id).await.expect("reload");
-        let cost_posting = reloaded
+        let leg = reloaded
             .postings()
             .iter()
-            .find(|p| p.id() == &posting_with_cost_id)
-            .expect("posting with cost must still exist");
-        let saved_cost = cost_posting.cost().expect("cost must survive edit");
-        assert_eq!(saved_cost.basis().amount().value(), dec!(1500.00));
-        assert_eq!(saved_cost.label(), Some("lot-1"));
+            .find(|p| p.id() == &leg_id)
+            .expect("leg survives");
+        assert_eq!(leg.cost(), None, "an edit that omits the cost clears it");
         assert_eq!(
-            cost_posting.price(),
+            leg.price(),
             Some(&Quote::PerUnit(Amount::new(dec!(150), "AUD")))
+        );
+
+        let trail = svc.audit_trail(&tx_id).await.expect("audit");
+        assert!(
+            trail
+                .iter()
+                .any(|(_, event)| event.kind() == "PostingAnnotationChanged"),
+            "the change is in the log"
         );
     }
 
