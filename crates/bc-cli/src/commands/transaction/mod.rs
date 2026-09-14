@@ -11,7 +11,6 @@ use clap::Subcommand;
 use crate::context::AppContext;
 use crate::error::CliResult;
 
-#[expect(dead_code, reason = "wired into parse_posting_spec in the next commit")]
 mod leg;
 
 /// Arguments for the `transaction` subcommand.
@@ -42,11 +41,16 @@ pub enum Command {
         /// and is inferred from the value for a key not yet registered.
         #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
         meta: Vec<String>,
-        /// Posting in `ACCOUNT_ID:AMOUNT:COMMODITY` format. Repeat for each posting.
-        /// Must include at least two postings that balance to zero.
+        /// Posting `ACCOUNT_ID:AMOUNT:COMMODITY`, optionally followed by a
+        /// cost block and a price: `ID:2:AAPL{105:AUD:2024-03-01:lot-a}@150:AUD`,
+        /// `ID:4.00:USD@@6.37:AUD`, `ID:2:AAPL{{210:AUD}}`. Cost components may
+        /// be separated by `:` or `,` in any order; wrap a label in `"…"` to
+        /// keep `,`, `:` or `}` inside it. Quote the value when it holds a
+        /// comma, or the shell brace-expands it. Repeat for each posting; at
+        /// least two are required.
         #[arg(
             long = "posting",
-            value_name = "ACCOUNT:AMOUNT:COMMODITY",
+            value_name = "ACCOUNT:AMOUNT:COMMODITY[{COST}][@PRICE]",
             num_args = 1
         )]
         postings: Vec<String>,
@@ -115,18 +119,16 @@ where
     Ok(json)
 }
 
-/// Parses a posting specification `ACCOUNT_ID:AMOUNT:COMMODITY`.
+/// Parses a posting specification `ACCOUNT_ID:LEG`, where `LEG` is
+/// `AMOUNT:COMMODITY` with an optional cost block and price — see
+/// [`leg::parse_leg`].
 ///
 /// # Errors
 ///
-/// Returns [`crate::error::CliError::Arg`] if the spec is malformed or the
-/// amount cannot be parsed as a [`rust_decimal::Decimal`].
+/// Returns [`crate::error::CliError::Arg`] if the account ID or the leg is
+/// malformed.
 fn parse_posting_spec(spec: &str) -> crate::error::CliResult<bc_models::Posting> {
-    // `rsplitn` splits right-to-left so index 0 is the rightmost segment.
-    let mut parts = spec.rsplitn(3, ':');
-    let (Some(commodity), Some(amount_str), Some(account_id_str)) =
-        (parts.next(), parts.next(), parts.next())
-    else {
+    let Some((account_id_str, leg_text)) = spec.split_once(':') else {
         return Err(crate::error::CliError::Arg(format!(
             "invalid posting '{spec}': expected ACCOUNT_ID:AMOUNT:COMMODITY"
         )));
@@ -135,18 +137,38 @@ fn parse_posting_spec(spec: &str) -> crate::error::CliResult<bc_models::Posting>
     let account_id = bc_models::AccountId::from_str(account_id_str).map_err(|e| {
         crate::error::CliError::Arg(format!("invalid account ID '{account_id_str}': {e}"))
     })?;
-    let value = amount_str
-        .parse::<rust_decimal::Decimal>()
-        .map_err(|e| crate::error::CliError::Arg(format!("invalid amount '{amount_str}': {e}")))?;
+    let leg = leg::parse_leg(leg_text)
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid posting '{spec}': {e}")))?;
+
+    let cost = leg.cost.map(|block| {
+        bc_models::Cost::builder()
+            .basis(quote_of(block.kind, block.basis))
+            .maybe_date(block.date)
+            .maybe_label(block.label)
+            .build()
+    });
+    let price = leg.price.map(|price| quote_of(price.kind, price.figure));
 
     Ok(bc_models::Posting::builder()
         .id(bc_models::PostingId::new())
         .account_id(account_id)
-        .amount(bc_models::Amount::new(
-            value,
-            bc_models::CommodityCode::new(commodity),
-        ))
+        .amount(amount_of(leg.units))
+        .maybe_cost(cost)
+        .maybe_price(price)
         .build())
+}
+
+/// Builds the model amount for a parsed figure.
+fn amount_of(figure: leg::Figure) -> bc_models::Amount {
+    bc_models::Amount::new(figure.value, bc_models::CommodityCode::new(figure.code))
+}
+
+/// Builds the model quote for a parsed figure of the given kind.
+fn quote_of(kind: leg::Kind, figure: leg::Figure) -> bc_models::Quote {
+    match kind {
+        leg::Kind::PerUnit => bc_models::Quote::PerUnit(amount_of(figure)),
+        leg::Kind::Total => bc_models::Quote::Total(amount_of(figure)),
+    }
 }
 
 /// Executes the `transaction` subcommand.
@@ -400,6 +422,8 @@ async fn reverse(ctx: &AppContext, id: String) -> CliResult<()> {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use rust_decimal_macros::dec;
+
     use super::parse_posting_spec;
 
     #[test]
@@ -418,10 +442,89 @@ mod tests {
         clippy::unwrap_used,
         reason = "test — asserting error path, panics are acceptable"
     )]
-    fn posting_spec_too_few_segments_returns_error() {
-        // Only one colon — missing commodity.
-        let err = parse_posting_spec("someaccount:50.00").unwrap_err();
+    fn posting_spec_without_colon_returns_error() {
+        // No colon at all.
+        let err = parse_posting_spec("someaccount").unwrap_err();
         assert!(err.to_string().contains("ACCOUNT_ID:AMOUNT:COMMODITY"));
+    }
+
+    #[test]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test — asserting error path, panics are acceptable"
+    )]
+    fn posting_spec_too_few_segments_returns_error() {
+        // Only one colon — missing commodity; fails on the account ID first.
+        let err = parse_posting_spec("someaccount:50.00").unwrap_err();
+        assert!(err.to_string().contains("invalid account ID"));
+    }
+
+    #[test]
+    fn posting_spec_with_total_price() {
+        let account_id = bc_models::AccountId::new().to_string();
+        let posting =
+            parse_posting_spec(&format!("{account_id}:4.00:USD@@6.37:AUD")).expect("valid spec");
+        pretty_assertions::assert_eq!(
+            posting.price(),
+            Some(&bc_models::Quote::Total(bc_models::Amount::new(
+                dec!(6.37),
+                bc_models::CommodityCode::new("AUD")
+            )))
+        );
+        assert!(posting.cost().is_none());
+    }
+
+    #[test]
+    fn posting_spec_with_cost_date_label_and_price() {
+        let account_id = bc_models::AccountId::new().to_string();
+        let posting = parse_posting_spec(&format!(
+            "{account_id}:-2:AAPL{{105:AUD:2024-03-01:lot-a}}@150:AUD"
+        ))
+        .expect("valid spec");
+        let cost = posting.cost().expect("cost set");
+        pretty_assertions::assert_eq!(
+            cost.basis(),
+            &bc_models::Quote::PerUnit(bc_models::Amount::new(
+                dec!(105),
+                bc_models::CommodityCode::new("AUD")
+            ))
+        );
+        pretty_assertions::assert_eq!(cost.date(), Some(jiff::civil::date(2024, 3, 1)));
+        pretty_assertions::assert_eq!(cost.label(), Some("lot-a"));
+        pretty_assertions::assert_eq!(
+            posting.price(),
+            Some(&bc_models::Quote::PerUnit(bc_models::Amount::new(
+                dec!(150),
+                bc_models::CommodityCode::new("AUD")
+            )))
+        );
+    }
+
+    #[test]
+    fn posting_spec_total_cost_maps_to_total_quote() {
+        let account_id = bc_models::AccountId::new().to_string();
+        let posting =
+            parse_posting_spec(&format!("{account_id}:2:AAPL{{{{210:AUD}}}}")).expect("valid spec");
+        pretty_assertions::assert_eq!(
+            posting.cost().map(bc_models::Cost::basis),
+            Some(&bc_models::Quote::Total(bc_models::Amount::new(
+                dec!(210),
+                bc_models::CommodityCode::new("AUD")
+            )))
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test — asserting error path, panics are acceptable"
+    )]
+    fn posting_spec_leg_error_names_the_spec() {
+        let account_id = bc_models::AccountId::new().to_string();
+        let spec = format!("{account_id}:2:AAPL@-150:AUD");
+        let err = parse_posting_spec(&spec).unwrap_err().to_string();
+        assert!(err.contains("negative price not allowed"), "got: {err}");
+        assert!(err.contains(&spec), "got: {err}");
     }
 
     #[test]
