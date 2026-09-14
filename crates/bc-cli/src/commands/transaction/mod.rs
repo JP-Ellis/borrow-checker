@@ -1,3 +1,7 @@
+#![expect(
+    clippy::mod_module_files,
+    reason = "module split into transaction/mod.rs and transaction/leg.rs"
+)]
 //! Transaction management sub-commands: list, add, amend, reverse.
 
 use core::str::FromStr as _;
@@ -6,6 +10,9 @@ use clap::Subcommand;
 
 use crate::context::AppContext;
 use crate::error::CliResult;
+
+#[expect(dead_code, reason = "wired into parse_posting_spec in the next commit")]
+mod leg;
 
 /// Arguments for the `transaction` subcommand.
 #[non_exhaustive]
