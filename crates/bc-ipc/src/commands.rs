@@ -126,6 +126,9 @@ pub const SUGGEST_TRANSFERS: &str = "suggest_transfers";
 /// Command: run a structured transaction search.
 pub const SEARCH_TRANSACTIONS: &str = "search_transactions";
 
+/// Command: fetch one page of the account register with running balances.
+pub const REGISTER_PAGE: &str = "register_page";
+
 /// Argument struct for the `reverse_transaction` command.
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(serde::Serialize)]
@@ -162,11 +165,20 @@ pub(crate) struct SearchTransactionsArgs<'a> {
     pub filter: &'a crate::Filter,
 }
 
+/// Argument struct for the `register_page` command.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(serde::Serialize)]
+pub(crate) struct RegisterPageArgs<'a> {
+    /// The page request.
+    pub request: &'a crate::RegisterRequest,
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
 
+    use super::RegisterPageArgs;
     use super::RenameMetadataKeyArgs;
     use super::RetypeMetadataKeyArgs;
     use super::ReverseTransactionArgs;
@@ -212,5 +224,24 @@ mod tests {
         let args = SearchTransactionsArgs { filter: &filter };
         let json = serde_json::to_value(&args).expect("serialize");
         assert!(json.get("filter").is_some());
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code")]
+    fn register_page_args_serialize_under_request_key() {
+        let request = crate::RegisterRequest::new(
+            crate::Filter::default(),
+            "acct-1".to_owned(),
+            false,
+            Some(crate::RegisterCursor::new(
+                jiff::civil::date(2026, 6, 1),
+                "tx-9".to_owned(),
+            )),
+            100,
+        );
+        let json = serde_json::to_value(RegisterPageArgs { request: &request }).expect("serialize");
+        assert_eq!(json["request"]["account_id"], "acct-1");
+        assert_eq!(json["request"]["limit"], 100_u32);
+        assert_eq!(json["request"]["cursor"]["id"], "tx-9");
     }
 }

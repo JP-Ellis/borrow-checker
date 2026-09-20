@@ -898,6 +898,151 @@ impl FilteredTransaction {
     }
 }
 
+/// Position of the last row of a register page: the next page starts after it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RegisterCursor {
+    /// Date of the last row.
+    pub date: Date,
+    /// Transaction id of the last row.
+    pub id: String,
+}
+
+impl RegisterCursor {
+    /// Creates a new [`RegisterCursor`].
+    ///
+    /// # Arguments
+    ///
+    /// * `date` - Date of the last row.
+    /// * `id` - Transaction id of the last row.
+    #[must_use]
+    #[inline]
+    pub fn new(date: Date, id: String) -> Self {
+        Self { date, id }
+    }
+}
+
+/// One page of the register for a sidebar account.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RegisterRequest {
+    /// The global filter; the UI has already resolved the display window into
+    /// its date bounds (none for all time).
+    pub filter: Filter,
+    /// The account whose page is shown.
+    pub account_id: String,
+    /// `true` folds the account's subtree into the scope.
+    pub include_descendants: bool,
+    /// Resume after this row; `None` for the first page.
+    pub cursor: Option<RegisterCursor>,
+    /// Maximum rows to return.
+    pub limit: u32,
+}
+
+impl RegisterRequest {
+    /// Creates a new [`RegisterRequest`].
+    ///
+    /// # Arguments
+    ///
+    /// * `filter` - The global filter with the display window resolved.
+    /// * `account_id` - The account whose page is shown.
+    /// * `include_descendants` - Whether the subtree joins the scope.
+    /// * `cursor` - Resume point, `None` for the first page.
+    /// * `limit` - Maximum rows to return.
+    #[must_use]
+    #[inline]
+    pub fn new(
+        filter: Filter,
+        account_id: String,
+        include_descendants: bool,
+        cursor: Option<RegisterCursor>,
+        limit: u32,
+    ) -> Self {
+        Self {
+            filter,
+            account_id,
+            include_descendants,
+            cursor,
+            limit,
+        }
+    }
+}
+
+/// A register row: the matched transaction plus the scope's running balances
+/// after it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RegisterRow {
+    /// The whole matched transaction (never pruned server-side).
+    pub transaction: Transaction,
+    /// Posting ids of the legs that matched the posting-scoped predicates.
+    pub matched_postings: Vec<String>,
+    /// Real scope balance after this transaction, in the row's focal
+    /// commodity; `None` when the transaction moved two or more commodities on
+    /// the scope.
+    pub balance_after: Option<Amount>,
+    /// Running sum of the matching rows' focal movements up to and including
+    /// this one, anchored at the oldest match; `None` under the same condition.
+    pub filtered_sum_after: Option<Amount>,
+}
+
+impl RegisterRow {
+    /// Creates a new [`RegisterRow`].
+    ///
+    /// # Arguments
+    ///
+    /// * `transaction` - The matched transaction.
+    /// * `matched_postings` - Ids of the matching legs.
+    /// * `balance_after` - Real scope balance after this row.
+    /// * `filtered_sum_after` - Running sum over matching rows.
+    #[must_use]
+    #[inline]
+    pub fn new(
+        transaction: Transaction,
+        matched_postings: Vec<String>,
+        balance_after: Option<Amount>,
+        filtered_sum_after: Option<Amount>,
+    ) -> Self {
+        Self {
+            transaction,
+            matched_postings,
+            balance_after,
+            filtered_sum_after,
+        }
+    }
+}
+
+/// A page of register rows.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RegisterPage {
+    /// The rows, newest first.
+    pub rows: Vec<RegisterRow>,
+    /// Total matching rows across every page.
+    pub total: u32,
+    /// Cursor for the next page; `None` when this page reached the end.
+    pub next_cursor: Option<RegisterCursor>,
+}
+
+impl RegisterPage {
+    /// Creates a new [`RegisterPage`].
+    ///
+    /// # Arguments
+    ///
+    /// * `rows` - The rows, newest first.
+    /// * `total` - Total matching rows.
+    /// * `next_cursor` - Resume point for the next page.
+    #[must_use]
+    #[inline]
+    pub fn new(rows: Vec<RegisterRow>, total: u32, next_cursor: Option<RegisterCursor>) -> Self {
+        Self {
+            rows,
+            total,
+            next_cursor,
+        }
+    }
+}
+
 /// Windowed account statistics for the dashboard.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -921,6 +1066,9 @@ pub struct AccountStats {
     /// Real (unfiltered) running balance at the window end; `Some` only when a
     /// filter was active.
     pub real_closing: Option<Amount>,
+    /// Earliest posting date over the scope, unwindowed; `None` for an
+    /// account with no postings. Spans the all-time sparkline.
+    pub first_activity: Option<Date>,
 }
 
 impl AccountStats {
@@ -953,6 +1101,7 @@ impl AccountStats {
             tx_count,
             real_opening: None,
             real_closing: None,
+            first_activity: None,
         }
     }
 
@@ -971,6 +1120,18 @@ impl AccountStats {
     pub fn with_real_balances(mut self, opening: Amount, closing: Amount) -> Self {
         self.real_opening = Some(opening);
         self.real_closing = Some(closing);
+        self
+    }
+
+    /// Attaches the scope's earliest posting date.
+    ///
+    /// # Arguments
+    ///
+    /// * `first_activity` - Earliest posting date, or `None` with no postings.
+    #[must_use]
+    #[inline]
+    pub fn with_first_activity(mut self, first_activity: Option<Date>) -> Self {
+        self.first_activity = first_activity;
         self
     }
 }

@@ -30,12 +30,15 @@ use crate::NativePeriodRow;
 use crate::NewTransaction;
 use crate::PluginInfo;
 use crate::Reconciliation;
+use crate::RegisterPage;
+use crate::RegisterRequest;
 use crate::RolloverPolicy;
 use crate::SettingsInfo;
 use crate::TagInfo;
 use crate::Transaction;
 use crate::TransferSuggestion;
 use crate::commands;
+use crate::commands::RegisterPageArgs;
 use crate::commands::ReverseTransactionArgs;
 use crate::commands::SearchTransactionsArgs;
 
@@ -1054,6 +1057,24 @@ pub async fn search_transactions(filter: &Filter) -> Result<Vec<FilteredTransact
     tauri_sys::core::invoke_result::<Vec<FilteredTransaction>, BcError>(
         commands::SEARCH_TRANSACTIONS,
         SearchTransactionsArgs { filter },
+    )
+    .await
+}
+
+/// Fetches one page of the register for an account, with running balances.
+///
+/// # Arguments
+///
+/// * `request` - Filter, scope, cursor and limit.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the Tauri invoke fails.
+#[inline]
+pub async fn register_page(request: &RegisterRequest) -> Result<RegisterPage, BcError> {
+    tauri_sys::core::invoke_result::<RegisterPage, BcError>(
+        commands::REGISTER_PAGE,
+        RegisterPageArgs { request },
     )
     .await
 }
