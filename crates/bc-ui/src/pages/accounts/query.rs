@@ -9,7 +9,7 @@ use bc_ipc::Period;
 use bc_ipc::Transaction;
 use jiff::civil::Date;
 
-use crate::components::period_nav::period_end;
+use crate::components::period_nav::DisplayWindow;
 use crate::components::period_nav::window_containing;
 
 /// Builds the filter actually sent to `search_transactions` for the register.
@@ -18,25 +18,25 @@ use crate::components::period_nav::window_containing;
 /// sidebar account: the backend narrows to rows touching a filter account (and
 /// attributes those legs as matched), and [`touches_account`] further narrows
 /// to the viewed account client-side. The date range is resolved as: if the
-/// user filter sets either date bound, keep it verbatim (the `PeriodNav` window
-/// is overridden); otherwise inject the half-open window
-/// `[window_start, period_end)`.
+/// user filter sets either date bound, keep it verbatim (the `PeriodNav`
+/// window is overridden); otherwise inject `window`'s bounds (`None` for both
+/// in all time).
 ///
 /// # Arguments
 ///
 /// * `user` - The active global filter.
-/// * `period` - The register's period granularity.
-/// * `window_start` - The register's display-window start.
+/// * `window` - The register's display window.
 ///
 /// # Returns
 ///
 /// The effective filter to search with.
 #[must_use]
-pub fn effective_filter(user: &Filter, period: &Period, window_start: Date) -> Filter {
+pub fn effective_filter(user: &Filter, window: &DisplayWindow) -> Filter {
     let mut eff = user.clone();
     if eff.date_from.is_none() && eff.date_until.is_none() {
-        eff.date_from = Some(window_start);
-        eff.date_until = Some(period_end(period, window_start));
+        let (from, until) = window.bounds();
+        eff.date_from = from;
+        eff.date_until = until;
     }
     eff
 }
@@ -71,25 +71,28 @@ pub fn filter_has_non_date_dim(filter: &Filter) -> bool {
         || filter.reconciliation.is_some()
 }
 
-/// The overarching sparkline span length for a `PeriodNav` view at `period`.
-///
-/// The trend shows the current period plus a few of context, scaled by
-/// granularity, so that the finer bucketing (see
-/// [`bc_ipc::sparkline_bucketing_for`]) yields a readable density.
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "the wildcard absorbs Daily and Weekly (both take the two-week context window) plus any future #[non_exhaustive] bc_ipc::Period variant, which defaults to the same window"
-)]
-fn nav_span_len(period: &Period) -> jiff::Span {
-    match period {
-        Period::Fortnightly => jiff::Span::new().weeks(8_i64),
-        Period::Monthly => jiff::Span::new().weeks(13_i64),
-        Period::Quarterly | Period::FinancialQuarter { .. } => jiff::Span::new().months(6_i64),
-        Period::CalendarYear | Period::FinancialYear { .. } => jiff::Span::new().months(12_i64),
-        // Daily, Weekly, and future #[non_exhaustive] variants: a two-week
-        // window of context.
-        _ => jiff::Span::new().days(14_i64),
+/// Context length of the sparkline for a window; all time takes the monthly span.
+fn nav_span_len(window: &DisplayWindow) -> jiff::Span {
+    match window.period() {
+        Some(Period::Fortnightly) => jiff::Span::new().weeks(8_i64),
+        Some(Period::Quarterly | Period::FinancialQuarter { .. }) => {
+            jiff::Span::new().months(6_i64)
+        }
+        Some(Period::CalendarYear | Period::FinancialYear { .. }) => {
+            jiff::Span::new().months(12_i64)
+        }
+        Some(Period::Daily | Period::Weekly) => jiff::Span::new().days(14_i64),
+        // Monthly, all time, and future #[non_exhaustive] variants.
+        _ => jiff::Span::new().weeks(13_i64),
     }
+}
+
+/// Exclusive end of the nav span: the window end, or tomorrow for all time.
+fn nav_end(window: &DisplayWindow, today: Date) -> Date {
+    window
+        .bounds()
+        .1
+        .unwrap_or_else(|| today.saturating_add(jiff::Span::new().days(1_i64)))
 }
 
 /// Resolves the overarching sparkline span `[start, end)` for the active filter.
@@ -100,7 +103,10 @@ fn nav_span_len(period: &Period) -> jiff::Span {
 /// * both bounds → the exact filter range;
 /// * `after:` only → `[date_from, nav_end)`;
 /// * `before:` only → a nav-length span ending at `date_until`;
-/// * no date bound → the `PeriodNav` span ending at the page window end.
+/// * no date bound, all time → `[first_activity, nav_end)` (or the fallback
+///   nav-length span when there is no activity yet);
+/// * no date bound, a period window → the `PeriodNav` span ending at the
+///   window end.
 ///
 /// Nothing constrains `date_from <= date_until`, so an inverted filter range
 /// yields an inverted (empty) span. Callers must treat `start >= end` as
@@ -109,20 +115,27 @@ fn nav_span_len(period: &Period) -> jiff::Span {
 /// # Arguments
 ///
 /// * `user` - The active global filter.
-/// * `period` - The page period granularity.
-/// * `window_start` - The page display-window start.
+/// * `window` - The page's display window.
+/// * `first_activity` - The ledger's earliest transaction date, if any.
+/// * `today` - Today's date; only consulted for an unbounded all-time span.
 ///
 /// # Returns
 ///
 /// The `[start, end)` span to bucket.
 #[must_use]
-pub fn sparkline_span(user: &Filter, period: &Period, window_start: Date) -> (Date, Date) {
-    let nav_end = period_end(period, window_start);
-    match (user.date_from, user.date_until) {
-        (Some(from), Some(until)) => (from, until),
-        (Some(from), None) => (from, nav_end),
-        (None, Some(until)) => (until.saturating_sub(nav_span_len(period)), until),
-        (None, None) => (nav_end.saturating_sub(nav_span_len(period)), nav_end),
+pub fn sparkline_span(
+    user: &Filter,
+    window: &DisplayWindow,
+    first_activity: Option<Date>,
+    today: Date,
+) -> (Date, Date) {
+    let end = nav_end(window, today);
+    match (user.date_from, user.date_until, window, first_activity) {
+        (Some(from), Some(until), _, _) => (from, until),
+        (Some(from), None, _, _) => (from, end),
+        (None, Some(until), _, _) => (until.saturating_sub(nav_span_len(window)), until),
+        (None, None, DisplayWindow::AllTime, Some(first)) => (first, end),
+        (None, None, _, _) => (end.saturating_sub(nav_span_len(window)), end),
     }
 }
 
@@ -159,14 +172,15 @@ fn coverage_count(bucket: &Period, span_start: Date, as_of: Date) -> u32 {
 /// Resolves the sparkline `(bucket, count, span_end)` for the active filter.
 ///
 /// Composes stage 1 ([`sparkline_span`]) and stage 2
-/// ([`bc_ipc::sparkline_bucketing_for`]). For an **explicit-filter** span (either
-/// date bound set) the nominal count is bumped via [`coverage_count`] so the
-/// oldest calendar-snapped bucket reaches the resolved span start (which is
-/// `date_from` when set, and the nav-length lookback from `date_until`
-/// otherwise); without the bump the leading postings would fall outside every
-/// bucket and be dropped from the date-clamped fetch, desyncing the sparkline
-/// from the balance tiles. `PeriodNav` spans are calendar-aligned and keep the
-/// nominal stage-2 count unchanged.
+/// ([`bc_ipc::sparkline_bucketing_for`]). For an **unaligned** span (either
+/// filter date bound set, or the all-time window) the nominal count is bumped
+/// via [`coverage_count`] so the oldest calendar-snapped bucket reaches the
+/// resolved span start (`date_from`, the nav-length lookback from
+/// `date_until`, or `first_activity` for all time); without the bump the
+/// leading postings would fall outside every bucket and be dropped from the
+/// date-clamped fetch, desyncing the sparkline from the balance tiles.
+/// `PeriodNav` spans are calendar-aligned and keep the nominal stage-2 count
+/// unchanged.
 ///
 /// An inverted filter range (`date_from > date_until`) matches nothing, so the
 /// count is `0` and callers must render an empty sparkline rather than fetching.
@@ -177,8 +191,9 @@ fn coverage_count(bucket: &Period, span_start: Date, as_of: Date) -> u32 {
 /// # Arguments
 ///
 /// * `user` - The active global filter.
-/// * `period` - The page period granularity.
-/// * `window_start` - The page display-window start.
+/// * `window` - The page's display window.
+/// * `first_activity` - The ledger's earliest transaction date, if any.
+/// * `today` - Today's date; only consulted for an unbounded all-time span.
 ///
 /// # Returns
 ///
@@ -187,16 +202,19 @@ fn coverage_count(bucket: &Period, span_start: Date, as_of: Date) -> u32 {
 #[must_use]
 pub fn sparkline_bucketing(
     user: &Filter,
-    period: &Period,
-    window_start: Date,
+    window: &DisplayWindow,
+    first_activity: Option<Date>,
+    today: Date,
 ) -> (Period, u32, Date) {
-    let (span_start, span_end) = sparkline_span(user, period, window_start);
+    let (span_start, span_end) = sparkline_span(user, window, first_activity, today);
     if span_start >= span_end {
         return (Period::Daily, 0, span_end);
     }
     let (bucket, nominal) = bc_ipc::sparkline_bucketing_for(span_start, span_end);
-    let explicit = user.date_from.is_some() || user.date_until.is_some();
-    let count = if explicit {
+    let unaligned = user.date_from.is_some()
+        || user.date_until.is_some()
+        || matches!(window, DisplayWindow::AllTime);
+    let count = if unaligned {
         let as_of = span_end.saturating_sub(jiff::Span::new().days(1_i64));
         nominal.max(coverage_count(&bucket, span_start, as_of))
     } else {
@@ -227,6 +245,8 @@ mod tests {
     use super::effective_filter;
     use super::sparkline_bucketing;
     use super::touches_account;
+    use crate::components::period_nav::DisplayWindow;
+    use crate::components::period_nav::period_end;
     use crate::components::period_nav::window_containing;
 
     /// Oldest calendar-snapped bucket start for `count` `bucket`-wide buckets whose
@@ -240,13 +260,21 @@ mod tests {
         start
     }
 
+    /// Shorthand for a monthly [`DisplayWindow`] starting at `start`.
+    fn monthly(start: Date) -> DisplayWindow {
+        DisplayWindow::Period {
+            period: Period::Monthly,
+            start,
+        }
+    }
+
     #[test]
     fn keeps_accounts_and_injects_window_when_no_date_bound() {
         let mut user = bc_ipc::Filter::default();
         user.accounts = vec!["a1".to_owned()];
         user.text = Some("coles".to_owned());
 
-        let eff = effective_filter(&user, &Period::Monthly, Date::constant(2026, 6, 1));
+        let eff = effective_filter(&user, &monthly(Date::constant(2026, 6, 1)));
 
         /* Account dimension is preserved so it intersects with the sidebar. */
         assert_eq!(eff.accounts, vec!["a1".to_owned()]);
@@ -257,11 +285,21 @@ mod tests {
     }
 
     #[test]
+    fn all_time_injects_no_dates() {
+        let mut user = bc_ipc::Filter::default();
+        user.text = Some("coles".to_owned());
+        let eff = effective_filter(&user, &DisplayWindow::AllTime);
+        assert_eq!(eff.date_from, None);
+        assert_eq!(eff.date_until, None);
+        assert_eq!(eff.text.as_deref(), Some("coles"));
+    }
+
+    #[test]
     fn keeps_filter_dates_and_ignores_window() {
         let mut user = bc_ipc::Filter::default();
         user.date_from = Some(Date::constant(2026, 3, 10));
 
-        let eff = effective_filter(&user, &Period::Monthly, Date::constant(2026, 6, 1));
+        let eff = effective_filter(&user, &monthly(Date::constant(2026, 6, 1)));
 
         /* Filter date present → window is NOT injected on either side. */
         assert_eq!(eff.date_from, Some(Date::constant(2026, 3, 10)));
@@ -342,8 +380,11 @@ mod tests {
     fn sparkline_span_nav_source_reproduces_year_density() {
         let user = bc_ipc::Filter::default();
         /* CalendarYear window starting 2025-01-01. */
-        let (start, end) =
-            super::sparkline_span(&user, &bc_ipc::Period::CalendarYear, date(2025, 1, 1));
+        let window = DisplayWindow::Period {
+            period: bc_ipc::Period::CalendarYear,
+            start: date(2025, 1, 1),
+        };
+        let (start, end) = super::sparkline_span(&user, &window, None, date(2025, 1, 1));
         assert_eq!(end, date(2026, 1, 1));
         /* 12-month span → Monthly × 12 via stage 2. */
         assert_eq!(
@@ -357,7 +398,8 @@ mod tests {
         let mut user = bc_ipc::Filter::default();
         user.date_from = Some(date(2025, 3, 1));
         user.date_until = Some(date(2025, 4, 15));
-        let (start, end) = super::sparkline_span(&user, &bc_ipc::Period::Monthly, date(2025, 1, 1));
+        let (start, end) =
+            super::sparkline_span(&user, &monthly(date(2025, 1, 1)), None, date(2025, 1, 1));
         assert_eq!((start, end), (date(2025, 3, 1), date(2025, 4, 15)));
     }
 
@@ -365,23 +407,72 @@ mod tests {
     fn sparkline_span_after_only_ends_at_nav_end() {
         let mut user = bc_ipc::Filter::default();
         user.date_from = Some(date(2025, 2, 10));
-        let (start, end) = super::sparkline_span(&user, &bc_ipc::Period::Monthly, date(2025, 6, 1));
+        let (start, end) =
+            super::sparkline_span(&user, &monthly(date(2025, 6, 1)), None, date(2025, 6, 1));
         assert_eq!(start, date(2025, 2, 10));
-        assert_eq!(
-            end,
-            super::period_end(&bc_ipc::Period::Monthly, date(2025, 6, 1))
-        );
+        assert_eq!(end, period_end(&bc_ipc::Period::Monthly, date(2025, 6, 1)));
     }
 
     #[test]
     fn sparkline_span_before_only_uses_nav_length_ending_at_until() {
         let mut user = bc_ipc::Filter::default();
         user.date_until = Some(date(2025, 6, 1));
-        let (start, end) =
-            super::sparkline_span(&user, &bc_ipc::Period::CalendarYear, date(2025, 1, 1));
+        let window = DisplayWindow::Period {
+            period: bc_ipc::Period::CalendarYear,
+            start: date(2025, 1, 1),
+        };
+        let (start, end) = super::sparkline_span(&user, &window, None, date(2025, 1, 1));
         assert_eq!(end, date(2025, 6, 1));
         /* Year granularity → ~12-month lookback ending at `until`. */
         assert_eq!(start, date(2024, 6, 1));
+    }
+
+    #[test]
+    fn all_time_span_is_first_activity_to_tomorrow() {
+        let today = Date::constant(2026, 9, 20);
+        let span = super::sparkline_span(
+            &bc_ipc::Filter::default(),
+            &DisplayWindow::AllTime,
+            Some(Date::constant(2015, 3, 10)),
+            today,
+        );
+        assert_eq!(
+            span,
+            (Date::constant(2015, 3, 10), Date::constant(2026, 9, 21))
+        );
+    }
+
+    #[test]
+    fn all_time_span_without_activity_falls_back_to_thirteen_weeks() {
+        let today = Date::constant(2026, 9, 20);
+        let span = super::sparkline_span(
+            &bc_ipc::Filter::default(),
+            &DisplayWindow::AllTime,
+            None,
+            today,
+        );
+        assert_eq!(
+            span,
+            (
+                Date::constant(2026, 9, 21).saturating_sub(Span::new().weeks(13_i64)),
+                Date::constant(2026, 9, 21)
+            )
+        );
+    }
+
+    #[test]
+    fn all_time_bucketing_reaches_first_activity() {
+        let today = Date::constant(2026, 9, 20);
+        let first = Date::constant(2015, 3, 10);
+        let (bucket, count, end) = sparkline_bucketing(
+            &bc_ipc::Filter::default(),
+            &DisplayWindow::AllTime,
+            Some(first),
+            today,
+        );
+        assert_eq!(bucket, Period::CalendarYear);
+        assert_eq!(end, Date::constant(2026, 9, 21));
+        assert!(oldest_bucket_start(&bucket, count, today) <= first);
     }
 
     #[test]
@@ -394,7 +485,7 @@ mod tests {
         user.date_until = Some(date(2025, 2, 11));
 
         let (bucket, count, span_end) =
-            sparkline_bucketing(&user, &bc_ipc::Period::Monthly, date(2025, 1, 1));
+            sparkline_bucketing(&user, &monthly(date(2025, 1, 1)), None, date(2025, 1, 1));
 
         assert_eq!(bucket, bc_ipc::Period::Weekly);
         /* Nominal ceil(41/7) = 6 would undershoot; coverage bumps to 7. */
@@ -415,7 +506,7 @@ mod tests {
         user.date_until = Some(date(2025, 8, 20));
 
         let (bucket, count, span_end) =
-            sparkline_bucketing(&user, &bc_ipc::Period::Monthly, date(2025, 1, 1));
+            sparkline_bucketing(&user, &monthly(date(2025, 1, 1)), None, date(2025, 1, 1));
 
         assert_eq!(bucket, bc_ipc::Period::Monthly);
         assert_eq!(count, 8);
@@ -429,8 +520,11 @@ mod tests {
         /* No explicit date bound → nav path keeps the stage-2 nominal count
          * unchanged (calendar-aligned span already covers exactly). */
         let user = bc_ipc::Filter::default();
-        let (bucket, count, _) =
-            sparkline_bucketing(&user, &bc_ipc::Period::CalendarYear, date(2025, 1, 1));
+        let window = DisplayWindow::Period {
+            period: bc_ipc::Period::CalendarYear,
+            start: date(2025, 1, 1),
+        };
+        let (bucket, count, _) = sparkline_bucketing(&user, &window, None, date(2025, 1, 1));
         assert_eq!((bucket, count), (bc_ipc::Period::Monthly, 12));
     }
 
@@ -460,9 +554,13 @@ mod tests {
         #[case] expected_count: u32,
     ) {
         let user = bc_ipc::Filter::default();
-        let window_start = window_containing(&period, date(2025, 6, 15));
+        let today = date(2025, 6, 15);
+        let window = DisplayWindow::Period {
+            start: window_containing(&period, today),
+            period,
+        };
 
-        let (bucket, count, _) = sparkline_bucketing(&user, &period, window_start);
+        let (bucket, count, _) = sparkline_bucketing(&user, &window, None, today);
 
         assert_eq!((bucket, count), (expected_bucket, expected_count));
     }
@@ -476,7 +574,7 @@ mod tests {
         user.date_until = Some(date(2025, 1, 1));
 
         let (bucket, count, span_end) =
-            sparkline_bucketing(&user, &Period::Monthly, date(2025, 1, 1));
+            sparkline_bucketing(&user, &monthly(date(2025, 1, 1)), None, date(2025, 1, 1));
 
         assert_eq!(count, 0);
         assert_eq!(bucket, Period::Daily);
@@ -490,7 +588,8 @@ mod tests {
         user.date_from = Some(date(2025, 3, 1));
         user.date_until = Some(date(2025, 3, 1));
 
-        let (_, count, _) = sparkline_bucketing(&user, &Period::Monthly, date(2025, 1, 1));
+        let (_, count, _) =
+            sparkline_bucketing(&user, &monthly(date(2025, 1, 1)), None, date(2025, 1, 1));
 
         assert_eq!(count, 0);
     }
