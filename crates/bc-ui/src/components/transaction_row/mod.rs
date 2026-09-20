@@ -591,6 +591,10 @@ pub fn TransactionRow(
     /// non-matching legs are dimmed as an open-time hint.
     #[prop(optional)]
     matched_postings: Option<Vec<String>>,
+    /// Running balance for the register's balance column; `None` omits the
+    /// column (budget and global perspectives).
+    #[prop(optional)]
+    balance: Option<Signal<Option<crate::components::balance_cell::BalanceCell>>>,
 ) -> impl IntoView {
     let local_expanded = RwSignal::new(false);
     let expanded: Signal<bool> = expanded.unwrap_or_else(|| local_expanded.into());
@@ -679,6 +683,8 @@ pub fn TransactionRow(
     let toggle_click = toggle;
     let toggle_key = toggle;
 
+    let has_balance = balance.is_some();
+
     view! {
         <div
             class=move || {
@@ -688,6 +694,9 @@ pub fn TransactionRow(
                 }
                 if expanded.get() {
                     cls.push(style::row_expanded);
+                }
+                if has_balance {
+                    cls.push(style::row_with_balance);
                 }
                 cls.join(" ")
             }
@@ -767,6 +776,14 @@ pub fn TransactionRow(
                     }}
                 </span>
             </span>
+            {balance
+                .map(|cell| {
+                    view! {
+                        <span class=style::balance_col>
+                            <crate::components::balance_cell::BalanceCellView cell=cell />
+                        </span>
+                    }
+                })}
             <span class=style::chevron aria-hidden="true">
                 {move || if expanded.get() { "\u{2193}" } else { "\u{203A}" }}
             </span>
