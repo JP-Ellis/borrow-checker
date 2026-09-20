@@ -88,6 +88,17 @@ impl LoadedRegister {
         }
     }
 
+    /// Empties the register (e.g. no account selected) and bumps the
+    /// generation, so a response already in flight from before the clear is
+    /// dropped instead of repopulating it.
+    pub fn clear(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.rows.clear();
+        self.total = 0;
+        self.next_cursor = None;
+        self.loading = false;
+    }
+
     /// `true` once every matching row is loaded.
     ///
     /// A default, never-reset register also reports `true`: it has no
@@ -316,6 +327,24 @@ mod tests {
         assert_eq!(r.begin_extend(), None, "in flight");
         r.fail(g1);
         assert!(r.begin_extend().is_some());
+    }
+
+    #[test]
+    fn clear_drops_a_response_in_flight_before_it() {
+        let mut r = LoadedRegister::default();
+        let (g0, _) = r.begin_reset();
+
+        // Deselecting the account (e.g. navigating to an id-less route)
+        // clears the register while g0's request is still in flight.
+        r.clear();
+        assert!(r.generation > g0);
+
+        // g0's late response must not repopulate the cleared register.
+        assert!(!r.apply_reset(g0, page(&["a"], 5, true)));
+        assert!(r.rows.is_empty());
+        assert_eq!(r.total, 0);
+        assert!(r.next_cursor.is_none());
+        assert!(!r.loading);
     }
 
     #[rstest]
