@@ -243,10 +243,10 @@ describe('Accounts — period view', () => {
 
     it('anchors the window to the ledger\'s latest activity, not the selected account\'s', async () => {
         // Transport has transactions in every historical seeded month but NONE
-        // in the current month (see crates/bc-seed/src/main.rs). The window is
-        // seeded once per mount from `latest_activity()` across the whole
-        // ledger — Checking has current-month activity — so Transport opens on
-        // an empty current month rather than jumping to its own last active
+        // in the current month (see crates/bc-seed/src/main.rs). The page now
+        // opens in all time (the period select is the `WindowNav` control),
+        // so switching to a period lands on the one containing today — an
+        // empty current month for Transport rather than its own last active
         // month. Stepping back one period reaches its rows.
         await openAccount('Transport');
 
