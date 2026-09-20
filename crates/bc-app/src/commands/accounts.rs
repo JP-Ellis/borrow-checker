@@ -444,6 +444,11 @@ pub async fn get_account_stats(
     };
 
     let ids = scope_ids(&state, &id, include_descendants).await?;
+    let first_activity = state
+        .transactions
+        .earliest_activity_date_for_set(&ids)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
     // Real (unfiltered) window stats — cheap SQL, always computed so the
     // filtered branch can attach them for reference.
@@ -461,7 +466,8 @@ pub async fn get_account_stats(
             bc_ipc::Amount::from(&real.opening),
             bc_ipc::Amount::from(&real.closing),
             real.tx_count,
-        ));
+        )
+        .with_first_activity(first_activity));
     };
 
     let query = bc_core::search::TransactionQuery::try_from(active_filter)?;
@@ -482,7 +488,8 @@ pub async fn get_account_stats(
     .with_real_balances(
         bc_ipc::Amount::from(&real.opening),
         bc_ipc::Amount::from(&real.closing),
-    ))
+    )
+    .with_first_activity(first_activity))
 }
 
 /// Returns the most recent transaction date across the whole ledger, or `None`.
@@ -563,6 +570,87 @@ pub async fn search_transactions(
             )
         })
         .collect())
+}
+
+/// Fetches one page of the register for an account, with running balances.
+///
+/// # Arguments
+///
+/// * `request` - Filter, scope, cursor and limit.
+/// * `state` - Tauri managed application state.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed id, or
+/// [`bc_ipc::BcError::Internal`] if a service call fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn register_page(
+    request: bc_ipc::RegisterRequest,
+    state: State<'_, AppState>,
+) -> Result<bc_ipc::RegisterPage, bc_ipc::BcError> {
+    let id = request
+        .account_id
+        .parse::<bc_models::AccountId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
+    let scope = scope_ids(&state, &id, request.include_descendants).await?;
+    let cursor = request
+        .cursor
+        .as_ref()
+        .map(|c| {
+            c.id.parse::<bc_models::TransactionId>()
+                .map(|tx_id| bc_core::search::RegisterCursor {
+                    date: c.date,
+                    id: tx_id,
+                })
+                .map_err(|e| bc_ipc::BcError::Validation(format!("invalid cursor id: {e}")))
+        })
+        .transpose()?;
+    let query = bc_core::search::TransactionQuery::try_from(request.filter)?;
+
+    let accounts = state
+        .accounts
+        .list_active()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let account_map = accounts
+        .iter()
+        .map(|a| (a.id().to_string(), a))
+        .collect::<std::collections::HashMap<_, _>>();
+    let forest = state
+        .tags
+        .forest()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
+    let page = state
+        .transactions
+        .register_page(&query, &scope, cursor.as_ref(), request.limit)
+        .await?;
+
+    Ok(bc_ipc::RegisterPage::new(
+        page.rows
+            .into_iter()
+            .map(|r| {
+                bc_ipc::RegisterRow::new(
+                    bc_ipc::Transaction::from_model_with_accounts(
+                        &r.transaction,
+                        &account_map,
+                        &forest,
+                    ),
+                    r.matched_postings.iter().map(ToString::to_string).collect(),
+                    r.balance_after.as_ref().map(bc_ipc::Amount::from),
+                    r.filtered_sum_after.as_ref().map(bc_ipc::Amount::from),
+                )
+            })
+            .collect(),
+        page.total,
+        page.next_cursor
+            .map(|c| bc_ipc::RegisterCursor::new(c.date, c.id.to_string())),
+    ))
 }
 
 // MARK: Metadata helpers
