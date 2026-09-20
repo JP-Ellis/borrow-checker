@@ -1,9 +1,13 @@
 //! Balance calculation engine.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::collections::HashMap;
 
 use bc_models::AccountId;
 use bc_models::Amount;
+use bc_models::Balances;
+use bc_models::CommodityCode;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
@@ -49,6 +53,54 @@ pub struct PeriodStats {
     /// Count of distinct in-window transactions involving the account
     /// (commodity-agnostic; matches the register's row count).
     pub tx_count: u32,
+}
+
+/// Per-transaction running balances of an account scope, in every commodity
+/// the scope holds.
+///
+/// Chronological order is the reverse of the register's display order
+/// `(date DESC, id ASC)`, i.e. `(date ASC, id DESC)`.
+#[derive(Clone, Debug, Default)]
+pub struct ScopeLedger {
+    /// Scope balance after each transaction, keyed by transaction id.
+    after: HashMap<String, Balances>,
+    /// Net movement of the scope within each transaction, keyed by transaction id.
+    deltas: HashMap<String, Balances>,
+    /// Commodities touched on the scope by each transaction, including ones
+    /// whose net movement is zero (an internal transfer still has a commodity).
+    commodities: HashMap<String, BTreeSet<String>>,
+}
+
+impl ScopeLedger {
+    /// Scope balance in `commodity` immediately after `tx_id`; zero for an
+    /// unknown transaction.
+    #[must_use]
+    pub fn balance_after(&self, tx_id: &str, commodity: &str) -> Decimal {
+        self.after
+            .get(tx_id)
+            .and_then(|b| b.get(commodity))
+            .unwrap_or(Decimal::ZERO)
+    }
+
+    /// Net movement of the scope in `commodity` within `tx_id`; zero for an
+    /// unknown transaction.
+    #[must_use]
+    pub fn delta(&self, tx_id: &str, commodity: &str) -> Decimal {
+        self.deltas
+            .get(tx_id)
+            .and_then(|b| b.get(commodity))
+            .unwrap_or(Decimal::ZERO)
+    }
+
+    /// The single commodity `tx_id` moved on the scope, or `None` when it moved
+    /// none or several.
+    #[must_use]
+    pub fn focal_commodity(&self, tx_id: &str) -> Option<&str> {
+        let set = self.commodities.get(tx_id)?;
+        (set.len() == 1)
+            .then(|| set.iter().next().map(String::as_str))
+            .flatten()
+    }
 }
 
 /// How a [`NetWorthRow`] entered its report's total.
@@ -148,6 +200,18 @@ const TX_COUNT_SQL: &str = "SELECT COUNT(DISTINCT p.transaction_id)
      WHERE p.account_id IN (SELECT value FROM json_each(?))
        AND p.date >= ?
        AND p.date  < ?";
+
+/// Every concrete leg of a set of accounts, with its transaction and date.
+const SCOPE_CONCRETE_SQL: &str = "SELECT p.transaction_id, p.date, p.commodity, p.amount
+     FROM postings p
+     WHERE p.account_id IN (SELECT value FROM json_each(?))
+       AND p.amount IS NOT NULL";
+
+/// Every elided leg of a set of accounts, with its transaction and date.
+const SCOPE_ELIDED_SQL: &str = "SELECT p.id, p.transaction_id, p.date
+     FROM postings p
+     WHERE p.account_id IN (SELECT value FROM json_each(?))
+       AND p.amount IS NULL";
 
 /// Serialises account ids as the JSON array `json_each`-driven queries expect.
 ///
@@ -304,6 +368,84 @@ impl Engine {
             BcError::BadData("balance overflow: sum exceeds Decimal range".into())
         })?;
         Ok(Amount::new(total, commodity))
+    }
+
+    /// Builds the per-transaction running balances of the accounts in `ids`.
+    ///
+    /// One pass over the scope's postings: concrete legs plus the residual of
+    /// each elided leg. Cost is linear in the scope's posting count.
+    ///
+    /// # Arguments
+    ///
+    /// * `ids` - The accounts folded together (one account, or a subtree).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database failure, an unparsable stored value, or
+    /// a running total overflowing [`Decimal`].
+    pub async fn scope_ledger(&self, ids: &[AccountId]) -> BcResult<ScopeLedger> {
+        let ids_param = ids_json(ids)?;
+        let concrete: Vec<(String, String, String, String)> = sqlx::query_as(SCOPE_CONCRETE_SQL)
+            .bind(&ids_param)
+            .fetch_all(&self.pool)
+            .await?;
+        let elided: Vec<(String, String, String)> = sqlx::query_as(SCOPE_ELIDED_SQL)
+            .bind(&ids_param)
+            .fetch_all(&self.pool)
+            .await?;
+
+        // (date, tx_id, commodity, delta) for every leg, before ordering.
+        let mut legs: Vec<(jiff::civil::Date, String, String, Decimal)> =
+            Vec::with_capacity(concrete.len().saturating_add(elided.len()));
+        for (tx_id, date_str, commodity, amount) in concrete {
+            let date = date_str
+                .parse::<jiff::civil::Date>()
+                .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
+            let value = amount
+                .parse::<Decimal>()
+                .map_err(|e| BcError::BadData(format!("invalid amount '{amount}': {e}")))?;
+            legs.push((date, tx_id, commodity, value));
+        }
+        if !elided.is_empty() {
+            let residuals = crate::residual::Residuals::for_accounts(&self.pool, ids).await?;
+            for (posting_id, tx_id, date_str) in elided {
+                let date = date_str
+                    .parse::<jiff::civil::Date>()
+                    .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
+                let Some(balances) = residuals.residual(&posting_id)? else {
+                    continue; // ambiguous transaction: no residual to attribute
+                };
+                for (commodity, value) in balances.iter() {
+                    legs.push((date, tx_id.clone(), commodity.to_owned(), value));
+                }
+            }
+        }
+
+        // Chronological: date ascending, then id descending (reverse of the
+        // register's display order).
+        legs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+
+        let mut ledger = ScopeLedger::default();
+        let mut running = Balances::new();
+        for (_, tx_id, commodity, value) in legs {
+            let amount = Amount::new(value, CommodityCode::new(&commodity));
+            running
+                .try_add(&amount)
+                .map_err(|e| BcError::BadData(format!("running balance overflow: {e}")))?;
+            let delta = ledger.deltas.entry(tx_id.clone()).or_default();
+            delta
+                .try_add(&amount)
+                .map_err(|e| BcError::BadData(format!("delta overflow: {e}")))?;
+            ledger
+                .commodities
+                .entry(tx_id.clone())
+                .or_default()
+                .insert(commodity);
+            // Overwrite on every leg so the last leg of a transaction leaves
+            // the balance after the whole transaction.
+            ledger.after.insert(tx_id, running.clone());
+        }
+        Ok(ledger)
     }
 
     /// Computes net worth in `commodity` across all active asset and liability accounts.
@@ -4035,5 +4177,65 @@ mod tests {
             rollup.get(&a).and_then(|bal| bal.get("AUD")),
             Some(dec!(10.00))
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn scope_ledger_runs_chronologically_with_residuals(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        let b = bank.to_string();
+        let f = food.to_string();
+        // Same date; tx_1 < tx_2 so display order (date DESC, id ASC) puts
+        // tx_2 below tx_1, making tx_2 the earlier one chronologically.
+        insert_tx(&pool, "tx_2", "2026-02-01").await;
+        insert_posting(&pool, "p21", "tx_2", &b, Some("100.00"), Some("AUD"), 0).await;
+        insert_posting(&pool, "p22", "tx_2", &f, Some("-100.00"), Some("AUD"), 1).await;
+        insert_tx(&pool, "tx_1", "2026-02-01").await;
+        insert_posting(&pool, "p11", "tx_1", &f, Some("30.00"), Some("AUD"), 0).await;
+        insert_posting(&pool, "p12", "tx_1", &b, None, None, 1).await; // elided → -30
+        insert_tx(&pool, "tx_c", "2026-01-15").await;
+        insert_posting(&pool, "pc1", "tx_c", &b, Some("5.00"), Some("AUD"), 0).await;
+        insert_posting(&pool, "pc2", "tx_c", &f, Some("-5.00"), Some("AUD"), 1).await;
+
+        let ledger = Engine::new(pool.clone())
+            .scope_ledger(&[bank])
+            .await
+            .expect("ledger");
+
+        assert_eq!(ledger.balance_after("tx_c", "AUD"), dec!(5.00));
+        assert_eq!(ledger.balance_after("tx_2", "AUD"), dec!(105.00));
+        assert_eq!(ledger.balance_after("tx_1", "AUD"), dec!(75.00));
+        assert_eq!(ledger.delta("tx_1", "AUD"), dec!(-30.00));
+        assert_eq!(ledger.focal_commodity("tx_2"), Some("AUD"));
+        assert_eq!(ledger.balance_after("missing", "AUD"), Decimal::ZERO);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn scope_ledger_focal_commodity_is_none_when_mixed(pool: sqlx::SqlitePool) {
+        let broker = make_account(&pool, "Broker", AccountType::Asset).await;
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let k = broker.to_string();
+        insert_tx(&pool, "tx_buy", "2026-03-01").await;
+        insert_posting(&pool, "q1", "tx_buy", &k, Some("10"), Some("XYZ"), 0).await;
+        insert_posting(&pool, "q2", "tx_buy", &k, Some("-500.00"), Some("AUD"), 1).await;
+        insert_posting(
+            &pool,
+            "q3",
+            "tx_buy",
+            &bank.to_string(),
+            Some("0.00"),
+            Some("AUD"),
+            2,
+        )
+        .await;
+
+        let ledger = Engine::new(pool.clone())
+            .scope_ledger(&[broker])
+            .await
+            .expect("ledger");
+
+        assert_eq!(ledger.focal_commodity("tx_buy"), None);
+        assert_eq!(ledger.balance_after("tx_buy", "XYZ"), dec!(10));
+        assert_eq!(ledger.balance_after("tx_buy", "AUD"), dec!(-500.00));
     }
 }

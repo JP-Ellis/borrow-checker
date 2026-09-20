@@ -171,13 +171,6 @@ pub(crate) struct Residuals {
 const ELIDED_BY_ACCOUNT: &str = "AND e.account_id = ?1";
 
 /// Elided-leg predicate scoping the load to a set of accounts, passed as a JSON array.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by for_accounts, called by Engine::scope_ledger in Task 2"
-    )
-)]
 const ELIDED_BY_ACCOUNTS: &str = "AND e.account_id IN (SELECT value FROM json_each(?1))";
 
 /// Elided-leg predicate scoping the load to one account and a half-open date window.
@@ -263,13 +256,6 @@ impl Residuals {
     /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if
     /// a stored amount cannot be parsed, a total overflows, or the id list
     /// cannot be serialised.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "called by Engine::scope_ledger in Task 2 to load residuals for a paginated register"
-        )
-    )]
     pub(crate) async fn for_accounts(pool: &SqlitePool, ids: &[AccountId]) -> BcResult<Self> {
         let rows: Vec<ResidualRow> =
             sqlx::query_as(sqlx::AssertSqlSafe(residual_sql(ELIDED_BY_ACCOUNTS)))
