@@ -967,8 +967,8 @@ impl Service {
 
     /// Returns `id` followed by every active descendant.
     ///
-    /// Archived accounts are excluded together with their subtrees, so a
-    /// roll-up over the result matches the sidebar's active-account set.
+    /// Archived accounts are skipped; their active descendants are kept, so
+    /// a roll-up over the result matches the sidebar's active-account set.
     ///
     /// # Arguments
     ///
@@ -3368,11 +3368,34 @@ mod tests {
             .call()
             .await
             .expect("archived");
+        let archived_mid = svc
+            .create()
+            .name("Defunct")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&root)
+            .call()
+            .await
+            .expect("archived_mid");
+        let under_archived = svc
+            .create()
+            .name("Survivor")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&archived_mid)
+            .call()
+            .await
+            .expect("under_archived");
         sqlx::query("UPDATE accounts SET archived_at = '2026-01-01T00:00:00Z' WHERE id = ?")
             .bind(archived.to_string())
             .execute(&pool)
             .await
             .expect("archive");
+        sqlx::query("UPDATE accounts SET archived_at = '2026-01-01T00:00:00Z' WHERE id = ?")
+            .bind(archived_mid.to_string())
+            .execute(&pool)
+            .await
+            .expect("archive archived_mid");
 
         let ids = svc.subtree_ids(&root).await.expect("subtree");
 
@@ -3380,6 +3403,14 @@ mod tests {
         assert!(ids.contains(&child));
         assert!(ids.contains(&grandchild));
         assert!(!ids.contains(&archived));
-        assert_eq!(ids.len(), 3);
+        assert!(
+            !ids.contains(&archived_mid),
+            "an archived account itself is excluded from the result"
+        );
+        assert!(
+            ids.contains(&under_archived),
+            "an active descendant under an archived intermediate is still kept"
+        );
+        assert_eq!(ids.len(), 4);
     }
 }

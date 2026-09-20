@@ -2247,14 +2247,11 @@ impl Service {
         if ids.is_empty() {
             return Ok(None);
         }
-        let strings: Vec<String> = ids.iter().map(ToString::to_string).collect();
-        let ids_json = serde_json::to_string(&strings)
-            .map_err(|e| BcError::BadData(format!("account id list serialisation: {e}")))?;
         let row: Option<(Option<String>,)> = sqlx::query_as(
             "SELECT MAX(p.date) FROM postings p \
              WHERE p.account_id IN (SELECT value FROM json_each(?))",
         )
-        .bind(ids_json)
+        .bind(crate::balance::ids_json(ids)?)
         .fetch_optional(&self.pool)
         .await?;
         Self::parse_optional_date(row.and_then(|(d,)| d))
