@@ -7,11 +7,15 @@ use bc_ipc::FilteredTransaction;
 use bc_ipc::Posting;
 use bc_ipc::PostingAmount;
 use bc_ipc::Reconciliation;
+use bc_ipc::RegisterCursor;
+use bc_ipc::RegisterRow;
 use bc_ipc::Transaction;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
 use super::TransactionRegister;
+use crate::pages::accounts::register_pages::BalanceMode;
+use crate::pages::accounts::register_pages::LoadedRegister;
 
 /// Returns sample transactions for the Smart Access account QA showcase.
 fn sample_transactions() -> Vec<FilteredTransaction> {
@@ -170,26 +174,62 @@ fn partially_matched_transaction() -> FilteredTransaction {
     FilteredTransaction::new(tx, matched)
 }
 
+/// Builds a [`LoadedRegister`] from sample [`FilteredTransaction`]s, all with
+/// the same fake AUD balance and no further pages.
+fn loaded_register(transactions: Vec<FilteredTransaction>) -> LoadedRegister {
+    let rows: Vec<RegisterRow> = transactions
+        .into_iter()
+        .map(|ft| {
+            RegisterRow::new(
+                ft.transaction,
+                ft.matched_postings,
+                Some(Amount::new(Decimal::new(12_345, 2), "AUD")),
+                None,
+            )
+        })
+        .collect();
+    let total = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+    LoadedRegister {
+        rows,
+        total,
+        next_cursor: None,
+        loading: false,
+        generation: 0,
+    }
+}
+
 /// Renders a [`TransactionRegister`] whose sole row is a partial-match
 /// transaction — expanding it demonstrates the non-matching leg rendering
 /// dimmed in the detail editor.
 #[component]
 fn DimmedRegisterShowcase() -> impl IntoView {
     let window = RwSignal::new(crate::components::period_nav::DisplayWindow::AllTime);
+    let loaded = loaded_register(vec![partially_matched_transaction()]);
 
     view! {
         <TransactionRegister
-            transactions=Signal::derive(|| vec![partially_matched_transaction()])
+            register=Signal::derive(move || loaded.clone())
+            on_load_more=Callback::new(|()| {})
+            balance_mode=RwSignal::new(BalanceMode::Real)
             viewing_account_id="cb-smart-access"
             window=window
         />
     }
 }
 
-/// Renders [`TransactionRegister`] with full and empty data sets.
+/// Renders [`TransactionRegister`] with full and empty data sets, and one with
+/// more pages remaining to show the load-more button.
 #[component]
 pub fn TransactionRegisterQa() -> impl IntoView {
     let window = RwSignal::new(crate::components::period_nav::DisplayWindow::AllTime);
+    let typical = loaded_register(sample_transactions());
+    let empty = loaded_register(Vec::new());
+    let mut paged = loaded_register(sample_transactions());
+    paged.total = 250;
+    paged.next_cursor = Some(RegisterCursor::new(
+        jiff::civil::Date::constant(2026, 1, 1),
+        "x".to_owned(),
+    ));
 
     view! {
         <div style="display:flex;flex-direction:column;gap:32px;padding:24px">
@@ -199,7 +239,9 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                     "typical — Smart Access transactions (use j/k/Enter to navigate)"
                 </p>
                 <TransactionRegister
-                    transactions=Signal::derive(sample_transactions)
+                    register=Signal::derive(move || typical.clone())
+                    on_load_more=Callback::new(|()| {})
+                    balance_mode=RwSignal::new(BalanceMode::Real)
                     viewing_account_id="cb-smart-access"
                     window=window
                 />
@@ -210,7 +252,22 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                     "empty — no transactions"
                 </p>
                 <TransactionRegister
-                    transactions=Signal::derive(Vec::new)
+                    register=Signal::derive(move || empty.clone())
+                    on_load_more=Callback::new(|()| {})
+                    balance_mode=RwSignal::new(BalanceMode::Real)
+                    viewing_account_id="cb-smart-access"
+                    window=window
+                />
+            </section>
+
+            <section>
+                <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
+                    "paged — more rows remain, showing the load-more button"
+                </p>
+                <TransactionRegister
+                    register=Signal::derive(move || paged.clone())
+                    on_load_more=Callback::new(|()| {})
+                    balance_mode=RwSignal::new(BalanceMode::Real)
                     viewing_account_id="cb-smart-access"
                     window=window
                 />
