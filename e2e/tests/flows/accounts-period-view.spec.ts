@@ -12,8 +12,9 @@
  * plus the current month, so stepping the window always crosses a
  * transaction boundary. Transport, however, has transactions in every
  * historical month but NONE in the current month — a real seeded account
- * with no current-period activity — which is used to verify the
- * auto-jump-to-latest-activity behaviour on first load.
+ * with no current-period activity — which is used to verify that the
+ * window is anchored to the ledger's latest activity, not the selected
+ * account's.
  */
 import { browser, $ } from '@wdio/globals';
 
@@ -22,8 +23,9 @@ import { browser, $ } from '@wdio/globals';
 /**
  * Navigate to Accounts → `name` via the top-bar nav and sidebar. Always goes
  * through the bare `/accounts` route first, which unmounts/remounts the
- * Accounts page component — this is what makes the "first selection since
- * mount" auto-jump behaviour observable for whichever account is clicked.
+ * Accounts page component — so every test starts from a freshly seeded
+ * window (the page seeds it once per mount from the ledger's latest
+ * activity).
  */
 async function openAccount(name: string): Promise<void> {
     const navAccounts = await $('[data-testid="nav-accounts"]');
@@ -239,24 +241,33 @@ describe('Accounts — period view', () => {
         expect(quarterlyTxCount).toBeGreaterThanOrEqual(Number(initialTxCount));
     });
 
-    it('auto-jumps to the most recent active period on first load for an account with no current-period activity', async () => {
+    it('anchors the window to the ledger\'s latest activity, not the selected account\'s', async () => {
         // Transport has transactions in every historical seeded month but NONE
-        // in the current month (see crates/bc-seed/src/main.rs) — the
-        // default "today" window would show an empty register were it not
-        // for the account_latest_activity auto-jump on first selection.
+        // in the current month (see crates/bc-seed/src/main.rs). The window is
+        // seeded once per mount from `latest_activity()` across the whole
+        // ledger — Checking has current-month activity — so Transport opens on
+        // an empty current month rather than jumping to its own last active
+        // month. Stepping back one period reaches its rows.
         await openAccount('Transport');
+
+        await browser.waitUntil(
+            async () => (await statValue('transactions')) === '0',
+            { timeoutMsg: 'Dashboard tx-count did not settle on 0 for the current month within 15 s' },
+        );
+        expect(await periodNavLabel()).toBe(currentMonthLabel());
+        expect(await registerRowCount()).toBe(0);
+
+        const prevBtn = await $('[aria-label="previous period"]');
+        await prevBtn.waitForDisplayed();
+        await prevBtn.click();
 
         await waitForRegisterRows();
         const rows = await registerRowCount();
-        expect(rows).toBeGreaterThan(0);
+        expect(await periodNavLabel()).not.toBe(currentMonthLabel());
 
-        const label = await periodNavLabel();
-        expect(label).not.toBe(currentMonthLabel());
-
-        // Dashboard should reflect the same non-empty, jumped-to window.
-        const txCount = await statValue('transactions');
-        expect(txCount).not.toBe('0');
-        expect(txCount).not.toBe('—');
-        expect(rows.toString()).toBe(txCount);
+        await browser.waitUntil(
+            async () => (await statValue('transactions')) === rows.toString(),
+            { timeoutMsg: 'Dashboard tx-count did not match the register after stepping back' },
+        );
     });
 });
