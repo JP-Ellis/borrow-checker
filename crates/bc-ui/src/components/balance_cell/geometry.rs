@@ -92,6 +92,8 @@ mod tests {
     // straddling axis −150..100: zero at 60 %
     #[case(dec!(-120), dec!(-150), dec!(100), 60.0_f64, 12.0_f64, 48.0_f64)]
     #[case(dec!(80), dec!(-150), dec!(100), 60.0_f64, 60.0_f64, 32.0_f64)]
+    // zero value on mixed-sign axis: bar has no width
+    #[case(dec!(0), dec!(-100), dec!(100), 50.0_f64, 50.0_f64, 0.0_f64)]
     // all-positive axis: zero line at the left edge
     #[case(dec!(50), dec!(0), dec!(200), 0.0_f64, 0.0_f64, 25.0_f64)]
     // all-negative axis: zero line at the right edge
