@@ -185,13 +185,18 @@ pub fn Accounts() -> impl IntoView {
     });
 
     // Seed the window once from the ledger's most recent transaction, so a
-    // backfilled database opens on its last month rather than today.
+    // backfilled database opens on its last month rather than today. A
+    // navigation made before the response lands wins over the seed.
+    let unseeded_window = window_start.get_untracked();
     leptos::task::spawn_local(async move {
         if let Ok(Some(latest)) = bc_ipc::client::latest_activity().await {
-            let period = display_period.get_untracked();
             // The component may already be disposed by the time this
-            // response lands; `try_set` is a silent no-op then instead of
-            // panicking on a dropped signal.
+            // response lands; the `try_` accessors are silent no-ops then
+            // instead of panicking on a dropped signal.
+            if window_start.try_get_untracked() != Some(unseeded_window) {
+                return;
+            }
+            let period = display_period.get_untracked();
             window_start.try_set(crate::components::period_nav::window_containing(
                 &period, latest,
             ));
