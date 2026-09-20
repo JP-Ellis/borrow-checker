@@ -233,7 +233,7 @@ pub fn AccountFullQa() -> impl IntoView {
                     window=window.read_only().into()
                 />
                 <TransactionRegister
-                    register=Signal::derive(move || register.clone())
+                    register=RwSignal::new(register).read_only().into()
                     on_load_more=Callback::new(|()| {})
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     viewing_account_id="cb-smart-access"

@@ -166,12 +166,12 @@ pub fn Accounts() -> impl IntoView {
     // Reset: replace what is loaded, asking for at least as many rows as are on screen.
     Effect::new(move |_| {
         let Some((filter, id, rollup)) = request_base.get() else {
-            register.set(LoadedRegister::default());
+            register.try_update(LoadedRegister::clear);
             return;
         };
-        let (generation, limit) = register
-            .try_update(LoadedRegister::begin_reset)
-            .unwrap_or((0, 0));
+        let Some((generation, limit)) = register.try_update(LoadedRegister::begin_reset) else {
+            return;
+        };
         let request = bc_ipc::RegisterRequest::new(filter, id, rollup, None, limit);
         leptos::task::spawn_local(async move {
             match bc_ipc::client::register_page(&request).await {
