@@ -87,6 +87,11 @@ pub struct AccountNode {
     pub mask: Option<String>,
     /// Current balance in the account's default commodity, or `None` if no commodity is configured.
     pub balance: Option<Amount>,
+    /// Per-commodity totals over this account and every descendant, own
+    /// postings included. The first entry is the account's own default
+    /// commodity when it has one, then first-seen order. Empty when the
+    /// subtree holds no postings.
+    pub rollup: Vec<Amount>,
     /// `Some(parent_id)` for child accounts, `None` for top-level groups.
     pub parent_id: Option<String>,
     /// Account type (asset, liability, equity, income, or expense).
@@ -135,12 +140,25 @@ impl AccountNode {
             name: name.into(),
             mask: mask.map(Into::into),
             balance,
+            rollup: Vec::new(),
             parent_id: parent_id.map(Into::into),
             account_type,
             tags,
             opened_on,
             closed_on,
         }
+    }
+
+    /// Returns this node with `rollup` replaced.
+    ///
+    /// # Arguments
+    ///
+    /// * `rollup` - Per-commodity subtree totals.
+    #[must_use]
+    #[inline]
+    pub fn with_rollup(mut self, rollup: Vec<Amount>) -> Self {
+        self.rollup = rollup;
+        self
     }
 }
 
@@ -1187,6 +1205,32 @@ mod tests {
     /// A one-entry metadata list carrying `key` as text.
     fn meta(key: &str, text: &str) -> Vec<MetaEntryDto> {
         vec![MetaEntryDto::new(key, MetaValueDto::Text(text.to_owned()))]
+    }
+
+    #[test]
+    fn with_rollup_sets_field_and_new_leaves_it_empty() {
+        let mut node = AccountNode::new(
+            "assets",
+            "Assets",
+            None::<&str>,
+            None,
+            None::<&str>,
+            AccountType::Asset,
+            vec![],
+            None,
+            None,
+        );
+        assert!(node.rollup.is_empty());
+
+        node = node.with_rollup(vec![
+            Amount::new(Decimal::new(10_500, 2), "AUD"),
+            Amount::new(Decimal::new(3_000, 2), "USD"),
+        ]);
+        assert_eq!(node.rollup.len(), 2);
+        assert_eq!(
+            node.rollup.first().map(|a| &a.currency_code),
+            Some(&String::from("AUD"))
+        );
     }
 
     #[test]
