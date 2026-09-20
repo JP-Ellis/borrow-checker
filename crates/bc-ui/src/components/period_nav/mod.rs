@@ -241,10 +241,6 @@ pub fn window_containing(period: &Period, date: jiff::civil::Date) -> jiff::civi
 /// `true` if `date` is not within the window beginning at `window_start`.
 #[must_use]
 #[inline]
-#[cfg_attr(
-    not(any(test, target_arch = "wasm32")),
-    expect(dead_code, reason = "used by out-of-period toast notifications")
-)]
 pub fn is_outside_window(
     period: &Period,
     window_start: jiff::civil::Date,
@@ -398,6 +394,67 @@ pub fn step_window(
     }
 }
 
+// MARK: DisplayWindow
+
+/// The register's display window: every transaction, or one calendar period.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(dead_code, reason = "used by WindowNav and page state in later tasks")
+)]
+pub enum DisplayWindow {
+    /// No date bound; the whole ledger.
+    AllTime,
+    /// The period of `period` granularity that begins at `start`.
+    Period {
+        /// Granularity.
+        period: Period,
+        /// First day of the window.
+        start: Date,
+    },
+}
+
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(dead_code, reason = "used by WindowNav and page state in later tasks")
+)]
+impl DisplayWindow {
+    /// Half-open `[from, until)` date bounds; both `None` for all time.
+    #[must_use]
+    pub fn bounds(&self) -> (Option<Date>, Option<Date>) {
+        match self {
+            Self::AllTime => (None, None),
+            Self::Period { period, start } => (Some(*start), Some(period_end(period, *start))),
+        }
+    }
+
+    /// `true` when `date` falls inside the window (always, for all time).
+    #[must_use]
+    pub fn contains(&self, date: Date) -> bool {
+        match self {
+            Self::AllTime => true,
+            Self::Period { period, start } => !is_outside_window(period, *start, date),
+        }
+    }
+
+    /// Human-readable label: `"all time"` or the period's [`window_label`].
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::AllTime => "all time".to_owned(),
+            Self::Period { period, start } => window_label(period, *start),
+        }
+    }
+
+    /// The granularity, or `None` for all time.
+    #[must_use]
+    pub fn period(&self) -> Option<&Period> {
+        match self {
+            Self::AllTime => None,
+            Self::Period { period, .. } => Some(period),
+        }
+    }
+}
 // MARK: Formatting helpers
 
 /// Returns the 3-letter month abbreviation (title case) for a 1-based month number.
@@ -1035,5 +1092,35 @@ mod tests {
             is_outside_window(&Period::CalendarYear, window_start, date),
             expected
         );
+    }
+
+    // MARK: DisplayWindow
+
+    #[test]
+    fn all_time_has_no_bounds_and_contains_everything() {
+        let w = DisplayWindow::AllTime;
+        assert_eq!(w.bounds(), (None, None));
+        assert!(w.contains(Date::constant(1990, 1, 1)));
+        assert_eq!(w.label(), "all time");
+        assert_eq!(w.period(), None);
+    }
+
+    #[test]
+    fn period_window_bounds_are_half_open() {
+        let w = DisplayWindow::Period {
+            period: Period::Monthly,
+            start: Date::constant(2026, 6, 1),
+        };
+        assert_eq!(
+            w.bounds(),
+            (
+                Some(Date::constant(2026, 6, 1)),
+                Some(Date::constant(2026, 7, 1))
+            )
+        );
+        assert!(w.contains(Date::constant(2026, 6, 30)));
+        assert!(!w.contains(Date::constant(2026, 7, 1)));
+        assert_eq!(w.label(), "June 2026");
+        assert_eq!(w.period(), Some(&Period::Monthly));
     }
 }
