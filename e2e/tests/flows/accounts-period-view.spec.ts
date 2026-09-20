@@ -1,10 +1,10 @@
 /**
  * Flow tests for the period-scoped accounts register and dashboard.
  *
- * The accounts page shares a single display window (`window_start` +
- * granularity) between the transaction register and the per-account
- * dashboard, driven by the `WindowNav` control rendered in the register
- * header (`aria-label="previous period"` / `"next period"` buttons, plus a
+ * The accounts page shares a single `DisplayWindow` (all time, or a period)
+ * between the transaction register and the per-account dashboard, driven by
+ * the `WindowNav` control rendered in the register header
+ * (`aria-label="previous period"` / `"next period"` buttons, plus a
  * granularity `<select>` whose first option is "all time"). The page opens
  * in all time, where the step buttons are absent; selecting a period from
  * there lands on the period containing today.
@@ -85,6 +85,26 @@ async function statValue(label: string): Promise<string> {
 }
 
 /**
+ * Waits until the register's row count agrees with the dashboard's
+ * "transactions" stat. The register keeps its previous rows on screen until
+ * its own `register_page` IPC lands, while the dashboard stat comes from a
+ * separate, faster IPC — so right after a window change the stat can already
+ * reflect the new window while the register still shows the old one. Reads
+ * both values once per poll into locals so a value changing between the two
+ * reads can't produce a spurious match.
+ */
+async function waitForRegisterToMatchStat(): Promise<void> {
+    await browser.waitUntil(
+        async () => {
+            const tx = await statValue('transactions');
+            const rows = await registerRowCount();
+            return tx !== '' && tx !== '—' && rows.toString() === tx;
+        },
+        { timeoutMsg: 'Register row count did not settle to match the dashboard transactions stat' },
+    );
+}
+
+/**
  * Reads the dashboard's closing-balance headline. It is rendered as
  * `<span>{balance}</span><span>"// closing"</span>` — the value precedes its
  * label, so this walks backwards from the `"// closing"` marker span.
@@ -128,6 +148,7 @@ async function selectGranularity(value: string): Promise<void> {
         },
         { timeoutMsg: `Window label did not leave "all time" after selecting ${value}` },
     );
+    await waitForRegisterToMatchStat();
 }
 
 /** Full English month name + year, matching bc-ui's `window_label` format for `Period::Monthly`. */
@@ -185,10 +206,7 @@ describe('Accounts — period view', () => {
         );
         // The register and dashboard re-fetch independently; wait for them to
         // agree so a stale register row mid-re-render can't race the reads.
-        await browser.waitUntil(
-            async () => (await registerRowCount()).toString() === (await statValue('transactions')),
-            { timeoutMsg: 'Register row count did not settle to match the dashboard after stepping' },
-        );
+        await waitForRegisterToMatchStat();
 
         const steppedRows = await registerRowCount();
         const steppedTxCount = await statValue('transactions');
@@ -215,10 +233,7 @@ describe('Accounts — period view', () => {
         // The register re-fetches independently of the dashboard stat, so wait
         // for its row count to settle back too before asserting — otherwise a
         // stale row lingering mid-re-render races the read below.
-        await browser.waitUntil(
-            async () => (await registerRowCount()).toString() === initialTxCount,
-            { timeoutMsg: 'Register row count did not return to its original value' },
-        );
+        await waitForRegisterToMatchStat();
 
         expect((await registerRowCount()).toString()).toBe(initialTxCount);
         expect(await closingBalance()).toBe(initialClosing);
@@ -250,13 +265,10 @@ describe('Accounts — period view', () => {
         // A calendar quarter spans (at least) the same days as the calendar
         // month it was snapped from, so the tx-count/register row count for
         // the quarter must be at least as large as the original month's.
-        await browser.waitUntil(
-            async () => {
-                const tx = await statValue('transactions');
-                return tx !== '' && tx !== '—';
-            },
-            { timeoutMsg: 'Dashboard tx-count did not refresh after the granularity change' },
-        );
+        // The register keeps its previous (monthly) rows on screen until its
+        // own IPC lands, so wait for it to agree with the stat before reading
+        // either.
+        await waitForRegisterToMatchStat();
         const quarterlyTxCount = Number(await statValue('transactions'));
         const quarterlyRows = await registerRowCount();
         expect(quarterlyRows.toString()).toBe(quarterlyTxCount.toString());
