@@ -19,6 +19,34 @@ use tauri::State;
 
 use crate::AppState;
 
+// MARK: Scope helper
+
+/// Resolves the account set a command operates on.
+///
+/// # Arguments
+///
+/// * `state` - Tauri managed application state.
+/// * `id` - The selected account.
+/// * `include_descendants` - When set, the account plus its active subtree.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Internal`] if the subtree lookup fails.
+async fn scope_ids(
+    state: &AppState,
+    id: &bc_models::AccountId,
+    include_descendants: bool,
+) -> Result<Vec<bc_models::AccountId>, bc_ipc::BcError> {
+    if !include_descendants {
+        return Ok(vec![id.clone()]);
+    }
+    state
+        .accounts
+        .subtree_ids(id)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
+}
+
 // MARK: Command handlers
 
 /// List all accounts as a tree of nodes.
@@ -52,15 +80,50 @@ pub async fn list_accounts(
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
+    let rollups = state
+        .balance_engine
+        .rollup_balances()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+
     let nodes = accounts
         .iter()
         .map(|account| {
             let balance = balances.get(account.id()).map(bc_ipc::Amount::from);
-            bc_ipc::AccountNode::from_model(account, &forest, balance)
+            let default_code = balance.as_ref().map(|b| b.currency_code.clone());
+            let rollup = rollups
+                .get(account.id())
+                .map(|b| ordered_amounts(b, default_code.as_deref()))
+                .unwrap_or_default();
+            bc_ipc::AccountNode::from_model(account, &forest, balance).with_rollup(rollup)
         })
         .collect::<Vec<_>>();
 
     Ok(nodes)
+}
+
+/// Flattens `balances` into IPC amounts, moving `default_code` to the front.
+///
+/// # Arguments
+///
+/// * `balances` - Per-commodity totals in first-seen order.
+/// * `default_code` - The account's own default commodity, if any.
+fn ordered_amounts(
+    balances: &bc_models::Balances,
+    default_code: Option<&str>,
+) -> Vec<bc_ipc::Amount> {
+    let mut out: Vec<bc_ipc::Amount> = balances
+        .iter()
+        .map(|(code, value)| bc_ipc::Amount::new(value, code))
+        .collect();
+    if let Some(code) = default_code
+        && let Some(pos) = out.iter().position(|a| a.currency_code == code)
+        && pos != 0
+    {
+        let first = out.remove(pos);
+        out.insert(0, first);
+    }
+    out
 }
 
 /// List transactions for the given account within a date window.
@@ -329,6 +392,7 @@ pub async fn reverse_transaction(
 ///
 /// * `account_id` - The account to query.
 /// * `commodity`  - Optional commodity code override. Defaults to the account's first commodity.
+/// * `include_descendants` - Fold the account's active subtree into the stats.
 /// * `date_from`  - The inclusive start of the date window.
 /// * `date_until` - The exclusive end of the date window.
 /// * `filter`     - Active global filter, or `None` for the unfiltered fast path. When
@@ -348,6 +412,7 @@ pub async fn reverse_transaction(
 pub async fn get_account_stats(
     account_id: String,
     commodity: Option<String>,
+    include_descendants: bool,
     date_from: jiff::civil::Date,
     date_until: jiff::civil::Date,
     filter: Option<bc_ipc::Filter>,
@@ -367,11 +432,13 @@ pub async fn get_account_stats(
             .unwrap_or_default(),
     };
 
+    let ids = scope_ids(&state, &id, include_descendants).await?;
+
     // Real (unfiltered) window stats — cheap SQL, always computed so the
     // filtered branch can attach them for reference.
     let real = state
         .balance_engine
-        .account_period_stats(&id, &commodity_code, date_from, date_until)
+        .account_period_stats_for_set(&ids, &commodity_code, date_from, date_until)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
@@ -389,7 +456,7 @@ pub async fn get_account_stats(
     let query = bc_core::search::TransactionQuery::try_from(active_filter)?;
     let filtered = state
         .transactions
-        .filtered_period_stats(&id, &commodity_code, &query, date_from, date_until)
+        .filtered_period_stats(&ids, &commodity_code, &query, date_from, date_until)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
@@ -412,6 +479,7 @@ pub async fn get_account_stats(
 /// # Arguments
 ///
 /// * `account_id` - The account to query.
+/// * `include_descendants` - Fold the account's active subtree into the query.
 /// * `state`      - Tauri managed application state.
 ///
 /// # Errors
@@ -424,14 +492,40 @@ pub async fn get_account_stats(
 #[tauri::command(rename_all = "snake_case")]
 pub async fn account_latest_activity(
     account_id: String,
+    include_descendants: bool,
     state: State<'_, AppState>,
 ) -> Result<Option<jiff::civil::Date>, bc_ipc::BcError> {
     let id = account_id
         .parse::<bc_models::AccountId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
+    let ids = scope_ids(&state, &id, include_descendants).await?;
     state
         .transactions
-        .latest_activity_date(&id)
+        .latest_activity_date_for_set(&ids)
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
+}
+
+/// Returns the most recent transaction date across the whole ledger, or `None`.
+///
+/// # Arguments
+///
+/// * `state` - Tauri managed application state.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Internal`] if the query fails.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn latest_activity(
+    state: State<'_, AppState>,
+) -> Result<Option<jiff::civil::Date>, bc_ipc::BcError> {
+    state
+        .transactions
+        .latest_activity_date_all()
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
 }
@@ -696,6 +790,7 @@ pub async fn get_transaction_audit(
 ///
 /// * `account_id` - The account to query.
 /// * `commodity`  - Optional commodity code. Defaults to the account's first commodity.
+/// * `include_descendants` - Fold the account's active subtree into the buckets.
 /// * `count`      - Optional bucket count (default 6).
 /// * `period`     - Optional bucket period (default Monthly).
 /// * `as_of`      - Optional reference date; the most recent bucket contains this
@@ -716,10 +811,15 @@ pub async fn get_transaction_audit(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Tauri command parameters mirror the IPC contract's flat args struct one-for-one"
+)]
 #[tauri::command(rename_all = "snake_case")]
 pub async fn get_account_sparkline(
     account_id: String,
     commodity: Option<String>,
+    include_descendants: bool,
     count: Option<u32>,
     period: Option<bc_ipc::Period>,
     as_of: Option<jiff::civil::Date>,
@@ -742,6 +842,8 @@ pub async fn get_account_sparkline(
             .unwrap_or_default(),
     };
 
+    let ids = scope_ids(&state, &id, include_descendants).await?;
+
     let bucket_count = count
         .and_then(|c| NonZeroUsize::new(usize::try_from(c).unwrap_or(0)))
         .unwrap_or_else(|| {
@@ -759,7 +861,7 @@ pub async fn get_account_sparkline(
     let buckets = match filter {
         None => state
             .balance_engine
-            .posting_buckets(&id, &commodity_code, &model_period, bucket_count, anchor)
+            .posting_buckets_for_set(&ids, &commodity_code, &model_period, bucket_count, anchor)
             .await
             .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?,
         Some(active_filter) => {
@@ -767,7 +869,7 @@ pub async fn get_account_sparkline(
             state
                 .transactions
                 .filtered_posting_buckets(
-                    &id,
+                    &ids,
                     &commodity_code,
                     &query,
                     &model_period,
