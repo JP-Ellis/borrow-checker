@@ -1,8 +1,11 @@
-//! QA showcase for the shared [`PeriodNav`](super::PeriodNav) component.
+//! QA showcase for the shared [`PeriodNav`](super::PeriodNav) and
+//! [`WindowNav`](super::WindowNav) components.
 
 use leptos::prelude::*;
 
+use super::DisplayWindow;
 use super::PeriodNav;
+use super::WindowNav;
 
 /// Renders `PeriodNav` in default and compact variants for visual QA.
 #[component]
@@ -15,6 +18,16 @@ pub fn PeriodNavQa() -> impl IntoView {
             <PeriodNav period=period window_start=start />
             <h2>"PeriodNav — compact"</h2>
             <PeriodNav period=period window_start=start compact=true />
+            <h2>"WindowNav — all time default"</h2>
+            <WindowNav window=RwSignal::new(DisplayWindow::AllTime) />
+            <h2>"WindowNav — period"</h2>
+            <WindowNav
+                window=RwSignal::new(DisplayWindow::Period {
+                    period: bc_ipc::Period::Monthly,
+                    start: jiff::civil::Date::constant(2026, 6, 1),
+                })
+                compact=true
+            />
         </div>
     }
 }
