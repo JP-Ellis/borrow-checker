@@ -14,6 +14,8 @@ pub(crate) mod dashboard;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod period_notify;
 pub(crate) mod query;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod rollup;
 pub(crate) mod tree;
 
 #[cfg(target_arch = "wasm32")]

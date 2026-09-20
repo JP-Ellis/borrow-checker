@@ -2,6 +2,8 @@
 //!
 //! Assembles the full accounts view: sidebar + dashboard hero + transaction register.
 
+use std::collections::HashSet;
+
 use bc_ipc::AccountNode;
 use bc_ipc::AccountRef;
 use bc_ipc::AccountType;
@@ -195,6 +197,7 @@ pub fn AccountFullQa() -> impl IntoView {
                 nodes=sample_accounts()
                 selected_id=selected_id.read_only().into()
                 collapsed=collapsed
+                expanded=RwSignal::new(HashSet::new())
             />
             <div class=style::content>
                 <AccountDashboard
