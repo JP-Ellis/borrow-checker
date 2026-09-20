@@ -910,6 +910,70 @@ mod tests {
         assert_eq!(super::spark_label(start, &bc_models::Period::Weekly), "w09");
     }
 
+    /// Builds a [`bc_models::Balances`] from `(commodity, amount)` pairs, added
+    /// in order so the first pair is first-seen.
+    fn balances_of(pairs: &[(&str, &str)]) -> bc_models::Balances {
+        let mut balances = bc_models::Balances::new();
+        for (code, value) in pairs {
+            let amount = bc_models::Amount::new(
+                value
+                    .parse()
+                    .expect("test amount literal is a valid decimal"),
+                *code,
+            );
+            balances
+                .try_add(&amount)
+                .expect("test amounts do not overflow");
+        }
+        balances
+    }
+
+    #[test]
+    fn ordered_amounts_moves_the_default_code_to_the_front() {
+        let balances = balances_of(&[("AUD", "100.00"), ("USD", "50.00"), ("EUR", "25.00")]);
+        let out = super::ordered_amounts(&balances, Some("USD"));
+        assert_eq!(
+            out.iter()
+                .map(|a| a.currency_code.as_str())
+                .collect::<Vec<_>>(),
+            vec!["USD", "AUD", "EUR"],
+            "the default commodity moves to the front; the rest keep their relative order"
+        );
+    }
+
+    #[test]
+    fn ordered_amounts_is_a_no_op_when_the_default_is_already_first() {
+        let balances = balances_of(&[("AUD", "100.00"), ("USD", "50.00")]);
+        let out = super::ordered_amounts(&balances, Some("AUD"));
+        assert_eq!(
+            out.iter()
+                .map(|a| a.currency_code.as_str())
+                .collect::<Vec<_>>(),
+            vec!["AUD", "USD"],
+            "already-first default code leaves first-seen order untouched"
+        );
+    }
+
+    #[test]
+    fn ordered_amounts_preserves_first_seen_order_without_a_default() {
+        let balances = balances_of(&[("AUD", "100.00"), ("USD", "50.00"), ("EUR", "25.00")]);
+        let out = super::ordered_amounts(&balances, None);
+        assert_eq!(
+            out.iter()
+                .map(|a| a.currency_code.as_str())
+                .collect::<Vec<_>>(),
+            vec!["AUD", "USD", "EUR"],
+            "no default code means first-seen order is left alone"
+        );
+    }
+
+    #[test]
+    fn ordered_amounts_of_empty_balances_is_empty() {
+        let balances = bc_models::Balances::new();
+        assert_eq!(super::ordered_amounts(&balances, Some("AUD")), vec![]);
+        assert_eq!(super::ordered_amounts(&balances, None), vec![]);
+    }
+
     #[test]
     fn metadata_from_preserves_order_and_drops_the_flag() {
         let entries = vec![
