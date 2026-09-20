@@ -19,6 +19,17 @@
   flex-shrink: 0;
 }
 
+.rollup_toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink-soft);
+  cursor: pointer;
+  margin-inline-start: var(--bc-space-4);
+}
+
 /* MARK: Wide — three inline buttons */
 
 .actions_inline {
