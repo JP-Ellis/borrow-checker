@@ -402,6 +402,18 @@ Multiple profiles can reference the same importer with different configuration. 
 > if a sibling leg later changed — fingerprinting a computed value would make
 > the dedup key itself unstable.
 >
+> The key identifies the statement *row*, not its content. It takes only what
+> distinguishes one row from another on a statement — date, narration, amount,
+> reference — and leaves out everything a document may also state about the
+> leg: price, cost basis, metadata, tags. A source is treated as immutable
+> institution data that later exports repeat; corrections belong in the app,
+> where an edited posting keeps its reference and is recognised on the next
+> re-import. A source whose content changed between imports is therefore not
+> an amendment: a row whose identity is unchanged dedups and keeps the stored
+> posting as the user left it, and a row whose identity changed is a new row.
+> Loosening the key per profile (#272) fits this reading; tightening it would
+> only turn recognised rows into duplicates.
+>
 > A transaction's legs can therefore arrive across several import runs: one
 > pass books the legs whose accounts already exist, and a later pass — after
 > the missing accounts are created — attaches the rest to the same
