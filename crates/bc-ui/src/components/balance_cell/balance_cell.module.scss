@@ -1,0 +1,48 @@
+.cell {
+  position: relative;
+  display: block;
+  min-width: 0;
+  height: 100%;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.012em;
+  text-align: right;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.zero {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--bc-ink-dim);
+}
+
+.bar {
+  position: absolute;
+  top: 15%;
+  bottom: 15%;
+  opacity: 0.22;
+  border-radius: 1px;
+  transition:
+    left var(--bc-duration-fast) var(--bc-ease-out),
+    width var(--bc-duration-fast) var(--bc-ease-out);
+}
+
+.text {
+  position: relative;
+  padding: 0 var(--bc-space-1);
+}
+
+.positive { color: var(--bc-good); background-color: var(--bc-good); }
+.negative { color: var(--bc-bad);  background-color: var(--bc-bad); }
+.neutral  { color: var(--bc-ink-mute); background-color: transparent; }
+
+/* the text must not inherit the bar's background */
+.text.positive, .text.negative, .text.neutral { background-color: transparent; }

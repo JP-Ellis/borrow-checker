@@ -14,10 +14,6 @@ use rust_decimal::prelude::ToPrimitive as _;
     clippy::module_name_repetitions,
     reason = "BarGeometry is the correct name per the task brief"
 )]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "used by balance_cell component in Task 15")
-)]
 pub struct BarGeometry {
     /// Position of the zero line.
     pub zero_pct: f64,
@@ -47,10 +43,6 @@ pub struct BarGeometry {
 #[expect(
     clippy::module_name_repetitions,
     reason = "bar_geometry is the correct name per the task brief"
-)]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "used by balance_cell component in Task 15")
 )]
 pub fn bar_geometry(value: Decimal, lo: Decimal, hi: Decimal) -> BarGeometry {
     let span = hi.saturating_sub(lo).to_f64().unwrap_or(0.0_f64);
