@@ -23,6 +23,7 @@ import_style!(style, "register.module.scss");
 /// * `viewing_account_id` - The account whose page is currently shown.
 /// * `on_change` - Optional callback invoked after any mutation (e.g. reverse)
 ///   so the parent can refresh its transaction list.
+/// * `busy` - `true` while `transactions` still shows a previous window.
 #[component]
 #[expect(
     clippy::needless_pass_by_value,
@@ -46,6 +47,11 @@ pub fn TransactionRegister(
     accounts: Vec<AccountRef>,
     /// Page-level display window (shared with the dashboard).
     window: RwSignal<crate::components::period_nav::DisplayWindow>,
+    /// `true` while `transactions` still shows a previous window; rendered as
+    /// `aria-busy` so assistive tech and the e2e suite can tell stale rows
+    /// from settled ones.
+    #[prop(optional, into)]
+    busy: Signal<bool>,
 ) -> impl IntoView {
     let accounts = StoredValue::new(accounts);
 
@@ -119,6 +125,7 @@ pub fn TransactionRegister(
             on:keydown=on_keydown
             tabindex="0"
             aria-label="transaction register"
+            aria-busy=move || if busy.get() { "true" } else { "false" }
         >
             <div class=style::header>
                 <crate::components::period_nav::WindowNav

@@ -18,9 +18,9 @@ use crate::components::period_nav::window_containing;
 /// sidebar account: the backend narrows to rows touching a filter account (and
 /// attributes those legs as matched), and [`touches_account`] further narrows
 /// to the viewed account client-side. The date range is resolved as: if the
-/// user filter sets either date bound, keep it verbatim (the `PeriodNav`
-/// window is overridden); otherwise inject `window`'s bounds (`None` for both
-/// in all time).
+/// user filter sets either date bound, keep it verbatim (the display window
+/// is overridden); otherwise inject `window`'s bounds (`None` for both in all
+/// time).
 ///
 /// # Arguments
 ///
@@ -71,6 +71,29 @@ pub fn filter_has_non_date_dim(filter: &Filter) -> bool {
         || filter.reconciliation.is_some()
 }
 
+/// `true` while a window-tagged resource does not yet answer for `current`.
+///
+/// A `LocalResource` keeps serving its previous value while a refetch is in
+/// flight, so the page tags each result with the window it was fetched for
+/// and compares that tag here. Nothing loaded is busy; an error is not, as
+/// nothing further will arrive for it.
+///
+/// # Arguments
+///
+/// * `loaded` - The resource's current value, if any.
+/// * `current` - The page's display window.
+#[must_use]
+pub fn awaiting_window<T, E>(
+    loaded: Option<&Result<(DisplayWindow, T), E>>,
+    current: &DisplayWindow,
+) -> bool {
+    match loaded {
+        None => true,
+        Some(Err(_)) => false,
+        Some(Ok((fetched, _))) => fetched != current,
+    }
+}
+
 /// Context length of the sparkline for a window; all time takes the monthly span.
 fn nav_span_len(window: &DisplayWindow) -> jiff::Span {
     match window.period() {
@@ -116,7 +139,8 @@ fn nav_end(window: &DisplayWindow, today: Date) -> Date {
 ///
 /// * `user` - The active global filter.
 /// * `window` - The page's display window.
-/// * `first_activity` - The ledger's earliest transaction date, if any.
+/// * `first_activity` - Earliest transaction date of the viewed account scope
+///   (the account, plus its descendants under roll-up), if any.
 /// * `today` - Today's date; only consulted for an unbounded all-time span.
 ///
 /// # Returns
@@ -192,7 +216,8 @@ fn coverage_count(bucket: &Period, span_start: Date, as_of: Date) -> u32 {
 ///
 /// * `user` - The active global filter.
 /// * `window` - The page's display window.
-/// * `first_activity` - The ledger's earliest transaction date, if any.
+/// * `first_activity` - Earliest transaction date of the viewed account scope
+///   (the account, plus its descendants under roll-up), if any.
 /// * `today` - Today's date; only consulted for an unbounded all-time span.
 ///
 /// # Returns
@@ -242,6 +267,7 @@ mod tests {
     use rstest::rstest;
     use rust_decimal::Decimal;
 
+    use super::awaiting_window;
     use super::effective_filter;
     use super::sparkline_bucketing;
     use super::touches_account;
@@ -282,6 +308,21 @@ mod tests {
         assert_eq!(eff.date_from, Some(Date::constant(2026, 6, 1)));
         /* Monthly period_end is exclusive: first day of next month. */
         assert_eq!(eff.date_until, Some(Date::constant(2026, 7, 1)));
+    }
+
+    #[test]
+    fn awaiting_window_until_the_loaded_tag_matches() {
+        type Loaded = Result<(DisplayWindow, ()), ()>;
+        let current = monthly(Date::constant(2026, 6, 1));
+        let fresh: Loaded = Ok((current.clone(), ()));
+        let stale: Loaded = Ok((DisplayWindow::AllTime, ()));
+        let failed: Loaded = Err(());
+
+        assert!(awaiting_window::<(), ()>(None, &current));
+        assert!(awaiting_window(Some(&stale), &current));
+        assert!(!awaiting_window(Some(&fresh), &current));
+        /* An error will never be followed by a value for this window. */
+        assert!(!awaiting_window(Some(&failed), &current));
     }
 
     #[test]
