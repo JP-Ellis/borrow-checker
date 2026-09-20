@@ -177,7 +177,10 @@ pub fn Accounts() -> impl IntoView {
     leptos::task::spawn_local(async move {
         if let Ok(Some(latest)) = bc_ipc::client::latest_activity().await {
             let period = display_period.get_untracked();
-            window_start.set(crate::components::period_nav::window_containing(
+            // The component may already be disposed by the time this
+            // response lands; `try_set` is a silent no-op then instead of
+            // panicking on a dropped signal.
+            window_start.try_set(crate::components::period_nav::window_containing(
                 &period, latest,
             ));
         }
