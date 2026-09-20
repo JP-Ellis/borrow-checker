@@ -11,6 +11,7 @@
 pub(crate) mod components;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod dashboard;
+pub(crate) mod figure;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod period_notify;
 pub(crate) mod query;
