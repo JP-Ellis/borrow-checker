@@ -117,31 +117,46 @@ const BALANCE_SQL: &str = "SELECT p.amount
      WHERE p.account_id = ?
        AND p.commodity  = ?";
 
-/// Concrete legs of one account in one commodity, over a half-open date window.
+/// Concrete legs of a set of accounts in one commodity over a half-open date window.
+///
+/// The first parameter is a JSON array of account ids, expanded through
+/// `json_each` so one prepared statement serves any set size.
 const WINDOW_CONCRETE_SQL: &str = "SELECT p.date, p.amount
      FROM postings p
-     WHERE p.account_id = ?
+     WHERE p.account_id IN (SELECT value FROM json_each(?))
        AND p.commodity  = ?
        AND p.date      >= ?
        AND p.date       < ?";
 
-/// Elided legs of one account over a half-open date window.
+/// Elided legs of a set of accounts over a half-open date window.
 ///
 /// Commodity-agnostic: an elided leg carries neither amount nor commodity, so its
 /// value comes from the transaction's residual rather than from this row.
-const WINDOW_ELIDED_SQL: &str = "SELECT p.id, p.date
+/// Returns the owning account so the residual can be resolved per account.
+const WINDOW_ELIDED_SQL: &str = "SELECT p.id, p.date, p.account_id
      FROM postings p
-     WHERE p.account_id = ?
+     WHERE p.account_id IN (SELECT value FROM json_each(?))
        AND p.amount IS NULL
        AND p.date >= ?
        AND p.date  < ?";
 
-/// Distinct transactions touching one account over a half-open date window.
+/// Distinct transactions touching any account of a set over a half-open date window.
 const TX_COUNT_SQL: &str = "SELECT COUNT(DISTINCT p.transaction_id)
      FROM postings p
-     WHERE p.account_id = ?
+     WHERE p.account_id IN (SELECT value FROM json_each(?))
        AND p.date >= ?
        AND p.date  < ?";
+
+/// Serialises account ids as the JSON array `WINDOW_*_SQL` and `TX_COUNT_SQL` expect.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if serialisation fails.
+fn ids_json(ids: &[AccountId]) -> BcResult<String> {
+    let strings: Vec<String> = ids.iter().map(ToString::to_string).collect();
+    serde_json::to_string(&strings)
+        .map_err(|e| BcError::BadData(format!("account id list serialisation: {e}")))
+}
 
 /// Builds `count` contiguous period buckets ending with the period containing
 /// `as_of`, oldest-first. Each bucket is a half-open `[start, end)` range one
@@ -472,13 +487,14 @@ impl Engine {
         Ok(holdings)
     }
 
-    /// Fetches all postings for `account_id` in `commodity` within `[from, to)`.
+    /// Fetches all postings for the accounts in `ids` in `commodity` within `[from, to)`.
     ///
     /// Returns `(transaction_date, amount)` pairs — both parsed from their stored strings.
     ///
     /// # Arguments
     ///
-    /// * `account_id` - The account to query.
+    /// * `ids` - The accounts to query; a transaction with legs in several of them
+    ///   contributes each leg.
     /// * `commodity`  - Commodity code (e.g. `"AUD"`).
     /// * `from`       - Inclusive start date.
     /// * `to`         - Exclusive end date.
@@ -492,11 +508,13 @@ impl Engine {
     /// Returns [`BcError`] on database or parse failure.
     async fn fetch_postings_in_range(
         &self,
-        account_id: &AccountId,
+        ids: &[AccountId],
         commodity: &str,
         from: jiff::civil::Date,
         to: jiff::civil::Date,
     ) -> BcResult<Vec<(jiff::civil::Date, Decimal)>> {
+        let ids_param = ids_json(ids)?;
+
         // One deferred transaction across all three queries below. The elided-id
         // query and the residual load must agree on which postings exist: a date
         // amendment landing between them would leave an id absent from the loaded
@@ -505,7 +523,7 @@ impl Engine {
         let mut tx = self.pool.begin().await?;
 
         let rows: Vec<(String, String)> = sqlx::query_as(WINDOW_CONCRETE_SQL)
-            .bind(account_id.to_string())
+            .bind(&ids_param)
             .bind(commodity)
             .bind(from.to_string())
             .bind(to.to_string())
@@ -528,25 +546,44 @@ impl Engine {
         // Elided legs have a NULL commodity, so the query above cannot match
         // them. Fetch them separately and resolve each one's residual; a
         // residual carries its transaction's date, so ordering is unaffected.
-        let elided: Vec<(String, String)> = sqlx::query_as(WINDOW_ELIDED_SQL)
-            .bind(account_id.to_string())
+        let elided: Vec<(String, String, String)> = sqlx::query_as(WINDOW_ELIDED_SQL)
+            .bind(&ids_param)
             .bind(from.to_string())
             .bind(to.to_string())
             .fetch_all(&mut *tx)
             .await?;
 
         if !elided.is_empty() {
-            let residuals =
-                crate::residual::Residuals::for_account_in_range(&mut *tx, account_id, from, to)
-                    .await?;
-            for (posting_id, date_str) in elided {
-                let Some(value) = residuals.component(&posting_id, commodity)? else {
-                    continue;
-                };
-                let date = date_str
-                    .parse::<jiff::civil::Date>()
-                    .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
-                out.push((date, value));
+            // Residuals are loaded per owning account; group the elided legs first
+            // so each account's residuals are loaded once.
+            let mut by_account: std::collections::BTreeMap<String, Vec<(String, String)>> =
+                std::collections::BTreeMap::new();
+            for (posting_id, date_str, account_id) in elided {
+                by_account
+                    .entry(account_id)
+                    .or_default()
+                    .push((posting_id, date_str));
+            }
+            for (account_str, legs) in by_account {
+                let account_id = account_str.parse::<AccountId>().map_err(|e| {
+                    BcError::BadData(format!("invalid account id '{account_str}': {e}"))
+                })?;
+                let residuals = crate::residual::Residuals::for_account_in_range(
+                    &mut *tx,
+                    &account_id,
+                    from,
+                    to,
+                )
+                .await?;
+                for (posting_id, date_str) in legs {
+                    let Some(value) = residuals.component(&posting_id, commodity)? else {
+                        continue;
+                    };
+                    let date = date_str
+                        .parse::<jiff::civil::Date>()
+                        .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
+                    out.push((date, value));
+                }
             }
         }
 
@@ -554,6 +591,44 @@ impl Engine {
         tx.rollback().await?;
 
         Ok(out)
+    }
+
+    /// Returns the total inflow and outflow for the accounts in `ids` in `commodity`
+    /// over `[from, to)`.
+    ///
+    /// - `inflow` — sum of all positive postings (money entering the accounts).
+    /// - `outflow` — absolute sum of all negative postings (money leaving).
+    ///
+    /// Both values are non-negative. A transfer between two accounts of `ids`
+    /// contributes both an inflow and an outflow.
+    ///
+    /// # Arguments
+    ///
+    /// * `ids` - The accounts to fold together.
+    /// * `commodity`  - Commodity code (e.g. `"AUD"`).
+    /// * `from`       - Inclusive start date.
+    /// * `to`         - Exclusive end date.
+    ///
+    /// # Returns
+    ///
+    /// `(inflow, outflow)` as [`Amount`] values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or parse failure.
+    #[inline]
+    pub async fn posting_flows_for_set(
+        &self,
+        ids: &[AccountId],
+        commodity: &str,
+        from: jiff::civil::Date,
+        to: jiff::civil::Date,
+    ) -> BcResult<(Amount, Amount)> {
+        let rows = self
+            .fetch_postings_in_range(ids, commodity, from, to)
+            .await?;
+
+        Self::sum_flows(&rows, commodity)
     }
 
     /// Returns the total inflow and outflow for `account_id` in `commodity` over `[from, to)`.
@@ -585,11 +660,8 @@ impl Engine {
         from: jiff::civil::Date,
         to: jiff::civil::Date,
     ) -> BcResult<(Amount, Amount)> {
-        let rows = self
-            .fetch_postings_in_range(account_id, commodity, from, to)
-            .await?;
-
-        Self::sum_flows(&rows, commodity)
+        self.posting_flows_for_set(core::slice::from_ref(account_id), commodity, from, to)
+            .await
     }
 
     /// Splits signed posting amounts into non-negative `(inflow, outflow)` totals.
@@ -644,17 +716,17 @@ impl Engine {
     /// agrees with the register even when a transaction has multiple postings to
     /// the account or spans several commodities.
     ///
-    /// Counts distinct `transaction_id`s among the account's own postings in the
-    /// window, rather than joining back to `transactions`: `postings.date` mirrors
+    /// Counts distinct transactions with at least one posting to any account in
+    /// `ids`, rather than joining back to `transactions`: `postings.date` mirrors
     /// its transaction's date via the `postings_date_*` triggers, and
     /// `postings.transaction_id` is a NOT NULL foreign key, so this is exactly the
-    /// set of transactions with at least one posting to the account in `[from,
+    /// set of transactions with at least one posting to `ids` in `[from,
     /// until)` — identical to the old `transactions`-driven query, but sargable on
     /// `idx_postings_account_date`.
     ///
     /// # Arguments
     ///
-    /// * `account_id` - The account to query.
+    /// * `ids` - The accounts to query.
     /// * `from`       - Inclusive lower bound on the posting date.
     /// * `until`      - Exclusive upper bound on the posting date.
     ///
@@ -667,18 +739,77 @@ impl Engine {
     /// Returns [`BcError`] on database failure.
     async fn count_transactions_in_range(
         &self,
-        account_id: &AccountId,
+        ids: &[AccountId],
         from: jiff::civil::Date,
         until: jiff::civil::Date,
     ) -> BcResult<u32> {
         let (count,): (i64,) = sqlx::query_as(TX_COUNT_SQL)
-            .bind(account_id.to_string())
+            .bind(ids_json(ids)?)
             .bind(from.to_string())
             .bind(until.to_string())
             .fetch_one(&self.pool)
             .await?;
 
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    /// Computes [`PeriodStats`] over the union of `ids` in `commodity` for `[from, until)`.
+    ///
+    /// Flows are summed leg by leg, so a transfer between two accounts of the
+    /// set contributes both an inflow and an outflow; `tx_count` counts each
+    /// transaction once.
+    ///
+    /// # Arguments
+    ///
+    /// * `ids` - The accounts to fold together (typically a subtree).
+    /// * `commodity` - Commodity code (e.g. `"AUD"`).
+    /// * `from` - Inclusive window start.
+    /// * `until` - Exclusive window end.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or parse failure, or if a running
+    /// balance would overflow [`Decimal`]'s range.
+    #[inline]
+    pub async fn account_period_stats_for_set(
+        &self,
+        ids: &[AccountId],
+        commodity: &str,
+        from: jiff::civil::Date,
+        until: jiff::civil::Date,
+    ) -> BcResult<PeriodStats> {
+        let genesis = jiff::civil::Date::MIN;
+
+        let in_window = self
+            .fetch_postings_in_range(ids, commodity, from, until)
+            .await?;
+        let (income, expenses) = Self::sum_flows(&in_window, commodity)?;
+
+        let (open_in, open_out) = self
+            .posting_flows_for_set(ids, commodity, genesis, from)
+            .await?;
+        let opening = open_in
+            .value()
+            .checked_sub(open_out.value())
+            .ok_or_else(|| BcError::BadData("opening balance overflow".into()))?;
+        let net = income
+            .value()
+            .checked_sub(expenses.value())
+            .ok_or_else(|| BcError::BadData("net overflow".into()))?;
+        let closing = opening
+            .checked_add(net)
+            .ok_or_else(|| BcError::BadData("closing balance overflow".into()))?;
+
+        let tx_count = self.count_transactions_in_range(ids, from, until).await?;
+
+        Ok(PeriodStats {
+            income,
+            expenses,
+            net: Amount::new(net, commodity),
+            opening: Amount::new(opening, commodity),
+            closing: Amount::new(closing, commodity),
+            tx_count,
+        })
     }
 
     /// Computes [`PeriodStats`] for `account_id` in `commodity` over `[from, until)`.
@@ -702,50 +833,19 @@ impl Engine {
         from: jiff::civil::Date,
         until: jiff::civil::Date,
     ) -> BcResult<PeriodStats> {
-        let genesis = jiff::civil::Date::MIN;
-
-        let in_window = self
-            .fetch_postings_in_range(account_id, commodity, from, until)
-            .await?;
-        let (income, expenses) = Self::sum_flows(&in_window, commodity)?;
-
-        let (open_in, open_out) = self
-            .posting_flows(account_id, commodity, genesis, from)
-            .await?;
-        let opening = open_in
-            .value()
-            .checked_sub(open_out.value())
-            .ok_or_else(|| BcError::BadData("opening balance overflow".into()))?;
-        let net = income
-            .value()
-            .checked_sub(expenses.value())
-            .ok_or_else(|| BcError::BadData("net overflow".into()))?;
-        let closing = opening
-            .checked_add(net)
-            .ok_or_else(|| BcError::BadData("closing balance overflow".into()))?;
-
-        let tx_count = self
-            .count_transactions_in_range(account_id, from, until)
-            .await?;
-
-        Ok(PeriodStats {
-            income,
-            expenses,
-            net: Amount::new(net, commodity),
-            opening: Amount::new(opening, commodity),
-            closing: Amount::new(closing, commodity),
-            tx_count,
-        })
+        self.account_period_stats_for_set(core::slice::from_ref(account_id), commodity, from, until)
+            .await
     }
 
-    /// Returns `count` contiguous period buckets ending with the period containing `as_of`.
+    /// Returns `count` contiguous period buckets ending with the period containing `as_of`,
+    /// over the union of `ids`.
     ///
     /// Buckets are returned oldest-first. Each bucket covers exactly one `period`
     /// length. Postings are fetched in a single query and assigned to buckets in Rust.
     ///
     /// # Arguments
     ///
-    /// * `account_id` - The account to query.
+    /// * `ids` - The accounts to fold together (typically a subtree).
     /// * `commodity`  - Commodity code (e.g. `"AUD"`).
     /// * `period`     - Bucket width. Use [`bc_models::Period::Monthly`] for a 6-month sparkline.
     /// * `count`      - Number of buckets to return.
@@ -759,9 +859,9 @@ impl Engine {
     ///
     /// Returns [`BcError`] on database or parse failure.
     #[inline]
-    pub async fn posting_buckets(
+    pub async fn posting_buckets_for_set(
         &self,
-        account_id: &AccountId,
+        ids: &[AccountId],
         commodity: &str,
         period: &bc_models::Period,
         count: core::num::NonZeroUsize,
@@ -779,7 +879,7 @@ impl Engine {
 
         // One query for all postings across the full range.
         let all_postings = self
-            .fetch_postings_in_range(account_id, commodity, earliest_start, latest_end)
+            .fetch_postings_in_range(ids, commodity, earliest_start, latest_end)
             .await?;
 
         // Distribute postings into per-range Decimal accumulators.
@@ -816,6 +916,45 @@ impl Engine {
                 outflow: Amount::new(outflow, commodity),
             })
             .collect())
+    }
+
+    /// Returns `count` contiguous period buckets ending with the period containing `as_of`.
+    ///
+    /// Buckets are returned oldest-first. Each bucket covers exactly one `period`
+    /// length. Postings are fetched in a single query and assigned to buckets in Rust.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account to query.
+    /// * `commodity`  - Commodity code (e.g. `"AUD"`).
+    /// * `period`     - Bucket width. Use [`bc_models::Period::Monthly`] for a 6-month sparkline.
+    /// * `count`      - Number of buckets to return.
+    /// * `as_of`      - Reference date; the most recent bucket contains this date.
+    ///
+    /// # Returns
+    ///
+    /// [`Vec<PostingBucket>`] ordered oldest-first. Length equals `count`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or parse failure.
+    #[inline]
+    pub async fn posting_buckets(
+        &self,
+        account_id: &AccountId,
+        commodity: &str,
+        period: &bc_models::Period,
+        count: core::num::NonZeroUsize,
+        as_of: jiff::civil::Date,
+    ) -> BcResult<Vec<PostingBucket>> {
+        self.posting_buckets_for_set(
+            core::slice::from_ref(account_id),
+            commodity,
+            period,
+            count,
+            as_of,
+        )
+        .await
     }
 
     /// Returns the commodity code of the first (default) commodity for `account_id`, or `None`.
@@ -1946,6 +2085,97 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn period_stats_for_set_unions_accounts_and_dedups_transactions(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let mk = |name: &'static str, ty: AccountType| {
+            let svc = acct_svc.clone();
+            async move {
+                svc.create()
+                    .name(name)
+                    .account_type(ty)
+                    .kind(AccountKind::DepositAccount)
+                    .call()
+                    .await
+                    .expect(name)
+            }
+        };
+        let cheque = mk("Cheque", AccountType::Asset).await;
+        let savings = mk("Savings", AccountType::Asset).await;
+        let income = mk("Income", AccountType::Income).await;
+
+        // tx_1 (Jan 10): income -> cheque 100
+        // tx_2 (Jan 20): cheque -> savings 40  (both legs inside the set)
+        // tx_0 (Dec 1, before window): income -> savings 10
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES \
+            ('tx_0', '2025-12-01', 'o', 'reconciled', '2025-12-01T00:00:00Z'), \
+            ('tx_1', '2026-01-10', 'a', 'reconciled', '2026-01-10T00:00:00Z'), \
+            ('tx_2', '2026-01-20', 'b', 'reconciled', '2026-01-20T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("txs");
+        for (id, tx, acct, amt, pos) in [
+            ("p0a", "tx_0", &savings, "10.00", 0_i32),
+            ("p0b", "tx_0", &income, "-10.00", 1_i32),
+            ("p1a", "tx_1", &cheque, "100.00", 0_i32),
+            ("p1b", "tx_1", &income, "-100.00", 1_i32),
+            ("p2a", "tx_2", &savings, "40.00", 0_i32),
+            ("p2b", "tx_2", &cheque, "-40.00", 1_i32),
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES (?, ?, ?, '{amt}', 'AUD', ?)"
+            )))
+                .bind(id)
+                .bind(tx)
+                .bind(acct.to_string())
+                .bind(pos)
+                .execute(&pool)
+                .await
+                .expect("posting");
+        }
+
+        let engine = Engine::new(pool.clone());
+        let stats = engine
+            .account_period_stats_for_set(
+                &[cheque.clone(), savings.clone()],
+                "AUD",
+                date(2026, 1, 1),
+                date(2026, 2, 1),
+            )
+            .await
+            .expect("stats");
+
+        assert_eq!(stats.opening.value(), dec!(10.00));
+        assert_eq!(stats.income.value(), dec!(140.00));
+        assert_eq!(stats.expenses.value(), dec!(40.00));
+        assert_eq!(stats.closing.value(), dec!(110.00));
+        // tx_2 touches both accounts and must count once.
+        assert_eq!(stats.tx_count, 2);
+
+        let buckets = engine
+            .posting_buckets_for_set(
+                &[cheque, savings],
+                "AUD",
+                &Period::Monthly,
+                NonZeroUsize::new(2).expect("2 > 0"),
+                date(2026, 1, 15),
+            )
+            .await
+            .expect("buckets");
+        assert_eq!(buckets.len(), 2);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "test assertions on known-length vec"
+        )]
+        {
+            assert_eq!(buckets[0].inflow.value(), dec!(10.00));
+            assert_eq!(buckets[1].inflow.value(), dec!(140.00));
+            assert_eq!(buckets[1].outflow.value(), dec!(40.00));
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn account_period_stats_tx_count_is_distinct_transactions(pool: sqlx::SqlitePool) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let wallet = acct_svc
@@ -2728,9 +2958,13 @@ mod tests {
         let plan = query_plan(&pool, TX_COUNT_SQL).await;
 
         let joined = plan.join("\n");
+        // The ids array is expanded via `json_each`, which SQLite necessarily scans
+        // (it is a virtual table, not an index) — that scan is over the small id
+        // list, not over `postings`. What must stay index-driven is the per-id
+        // lookup into `postings`.
         assert!(
-            !joined.contains("SCAN"),
-            "transaction count query scans a table instead of seeking an index:\n{joined}"
+            !joined.contains("SCAN p"),
+            "transaction count query scans the postings table instead of seeking an index:\n{joined}"
         );
         assert!(
             joined.contains("idx_postings_account_date"),
