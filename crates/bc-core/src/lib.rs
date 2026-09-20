@@ -52,6 +52,7 @@ pub use balance::Engine as BalanceEngine;
 pub use balance::NetWorth;
 pub use balance::NetWorthRow;
 pub use balance::PostingBucket;
+pub use balance::ScopeLedger;
 pub use balance::Valuation;
 pub use bc_models::BudgetWindow;
 pub use bc_models::governing_revision;
