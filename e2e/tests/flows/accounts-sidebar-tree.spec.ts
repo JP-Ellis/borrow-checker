@@ -60,6 +60,29 @@ function chevron(name: string): ReturnType<typeof $> {
     return $(`button[aria-label="toggle ${name}"]`);
 }
 
+/**
+ * Opens the branch named `name` and waits until its chevron reports so.
+ *
+ * The click is retried while `aria-expanded` stays `"false"`: right after a
+ * mount the sidebar is still settling, and a pointer click computed against
+ * the earlier layout can miss the chevron. Reading the state before every
+ * click keeps the retry from toggling an open branch shut.
+ */
+async function expandBranch(name: string): Promise<void> {
+    const button = await chevron(name);
+    await button.waitForDisplayed();
+    await browser.waitUntil(
+        async () => {
+            if ((await chevron(name).getAttribute('aria-expanded')) === 'true') {
+                return true;
+            }
+            await chevron(name).click();
+            return false;
+        },
+        { interval: 1000, timeoutMsg: `${name} chevron never reported aria-expanded="true"` },
+    );
+}
+
 /** Whether an account named `name` is currently rendered in the sidebar. */
 async function sidebarShows(name: string): Promise<boolean> {
     const sidebarNav = await $('nav[aria-label="account navigation"]');
@@ -125,18 +148,12 @@ describe('Accounts — sidebar tree', () => {
         const utilities = await chevron('Utilities');
         await utilities.waitForDisplayed();
         expect(await utilities.getAttribute('aria-expanded')).toBe('false');
-        await utilities.click();
 
-        await browser.waitUntil(
-            async () => (await chevron('Utilities').getAttribute('aria-expanded')) === 'true',
-            { timeoutMsg: 'Utilities chevron did not report aria-expanded="true" after a click' },
-        );
+        await expandBranch('Utilities');
         expect(await sidebarShows('Water')).toBe(true);
         expect(await sidebarShows('Sewer')).toBe(false);
 
-        const water = await chevron('Water');
-        await water.waitForDisplayed();
-        await water.click();
+        await expandBranch('Water');
         await browser.waitUntil(
             async () => sidebarShows('Sewer'),
             { timeoutMsg: 'Sewer did not appear after expanding Water' },
@@ -164,9 +181,7 @@ describe('Accounts — sidebar tree', () => {
     it('persists an expanded branch across a remount', async () => {
         await openAccountsPage();
 
-        const utilities = await chevron('Utilities');
-        await utilities.waitForDisplayed();
-        await utilities.click();
+        await expandBranch('Utilities');
         await browser.waitUntil(
             async () => sidebarShows('Water'),
             { timeoutMsg: 'Water did not appear after expanding Utilities' },
