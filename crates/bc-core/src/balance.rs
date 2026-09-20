@@ -149,12 +149,15 @@ const TX_COUNT_SQL: &str = "SELECT COUNT(DISTINCT p.transaction_id)
        AND p.date >= ?
        AND p.date  < ?";
 
-/// Serialises account ids as the JSON array `WINDOW_*_SQL` and `TX_COUNT_SQL` expect.
+/// Serialises account ids as the JSON array `json_each`-driven queries expect.
+///
+/// Shared by every query that scopes a set of accounts through `json_each`,
+/// in this module and in [`crate::transaction`].
 ///
 /// # Errors
 ///
 /// Returns [`BcError::BadData`] if serialisation fails.
-fn ids_json(ids: &[AccountId]) -> BcResult<String> {
+pub(crate) fn ids_json(ids: &[AccountId]) -> BcResult<String> {
     let strings: Vec<String> = ids.iter().map(ToString::to_string).collect();
     serde_json::to_string(&strings)
         .map_err(|e| BcError::BadData(format!("account id list serialisation: {e}")))
@@ -1274,8 +1277,7 @@ impl Engine {
         .fetch_all(&self.pool)
         .await?;
 
-        let mut own: std::collections::HashMap<String, bc_models::Balances> =
-            std::collections::HashMap::new();
+        let mut own: BTreeMap<String, bc_models::Balances> = BTreeMap::new();
         for (acc_id, commodity, amt_str) in posting_rows {
             let value = amt_str
                 .parse::<Decimal>()
@@ -1305,16 +1307,20 @@ impl Engine {
             }
         }
 
-        // Fold each account's own totals into itself and every ancestor.
+        // Fold each account's own totals into itself and every ancestor. `own`
+        // is a `BTreeMap`, so accounts are visited in a fixed order and each
+        // parent's roll-up folds its children's commodities in a stable order.
         let mut rolled: std::collections::HashMap<String, bc_models::Balances> =
             std::collections::HashMap::new();
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "each account's totals are added to a fixed ancestor chain via commutative addition; order is irrelevant"
-        )]
         for (acc_id, balances) in &own {
             let mut cursor = Some(acc_id.clone());
+            // Guards against a corrupt `parent_id` cycle, which would
+            // otherwise loop forever; a real tree never revisits an id.
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             while let Some(id) = cursor {
+                if !seen.insert(id.clone()) {
+                    break;
+                }
                 // An archived account in the middle of the chain is skipped
                 // as a *result* entry, but the walk still passes through it
                 // to reach any active ancestor above it.
@@ -3869,6 +3875,18 @@ mod tests {
         assert_eq!(assets_bal.get("USD"), Some(dec!(30.00)));
         assert_eq!(assets_bal.len(), 2);
 
+        // `own` is a `BTreeMap` keyed by account id, so the fold visits
+        // children in a fixed order and a multi-commodity parent's `iter()`
+        // order is stable across calls, rather than varying with hash
+        // iteration order as it would with a `HashMap`.
+        let rollup_again = engine.rollup_balances().await.expect("second rollup");
+        let assets_bal_again = rollup_again.get(&assets).expect("assets present again");
+        assert_eq!(
+            assets_bal.iter().collect::<Vec<_>>(),
+            assets_bal_again.iter().collect::<Vec<_>>(),
+            "a multi-commodity parent's roll-up order must be stable across calls"
+        );
+
         let bank_bal = rollup.get(&bank).expect("bank present");
         assert_eq!(bank_bal.get("AUD"), Some(dec!(105.00)));
         assert_eq!(bank_bal.get("USD"), None);
@@ -3960,5 +3978,62 @@ mod tests {
         assert_eq!(savings_bal.get("AUD"), Some(dec!(100.00)));
 
         assert!(!rollup.contains_key(&bank));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rollup_balances_returns_on_a_parent_id_cycle(pool: sqlx::SqlitePool) {
+        // A corrupt `parent_id` cycle (A -> B -> A) should never hang the
+        // ancestor walk; the `seen` guard must break out once an id repeats.
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let a = acct_svc
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("a");
+        let b = acct_svc
+            .create()
+            .name("B")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&a)
+            .call()
+            .await
+            .expect("b");
+        sqlx::query("UPDATE accounts SET parent_id = ? WHERE id = ?")
+            .bind(b.to_string())
+            .bind(a.to_string())
+            .execute(&pool)
+            .await
+            .expect("corrupt parent_id into a cycle");
+
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES \
+            ('tx_1', '2026-01-01', 'a', 'reconciled', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("tx");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES \
+            ('p1', 'tx_1', ?, '10.00', 'AUD', 0)",
+        )
+        .bind(a.to_string())
+        .execute(&pool)
+        .await
+        .expect("posting");
+
+        let engine = Engine::new(pool.clone());
+        let rollup = engine
+            .rollup_balances()
+            .await
+            .expect("rollup must return despite the parent_id cycle");
+
+        assert_eq!(
+            rollup.get(&a).and_then(|bal| bal.get("AUD")),
+            Some(dec!(10.00))
+        );
     }
 }

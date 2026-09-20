@@ -541,6 +541,7 @@ impl Service {
         q.date_until = Some(until);
         let matched = self.search(&q).await?;
 
+        let id_set: HashSet<&AccountId> = ids.iter().collect();
         let mut opening = Decimal::ZERO;
         let mut income = Decimal::ZERO;
         let mut expenses = Decimal::ZERO;
@@ -552,7 +553,7 @@ impl Service {
             let mut touches_in_window = false;
             let residual = crate::residual::residual_of_postings(tx.postings());
             for posting in tx.postings() {
-                if !ids.contains(posting.account_id()) {
+                if !id_set.contains(posting.account_id()) {
                     continue;
                 }
                 if date >= from && date < until {
@@ -676,6 +677,7 @@ impl Service {
         q.date_until = Some(latest_end);
         let matched = self.search(&q).await?;
 
+        let id_set: HashSet<&AccountId> = ids.iter().collect();
         // Per-bucket (inflow, outflow) accumulators aligned with `ranges`.
         let mut acc: Vec<(Decimal, Decimal)> = vec![(Decimal::ZERO, Decimal::ZERO); ranges.len()];
 
@@ -684,7 +686,7 @@ impl Service {
             let date = tx.date();
             let residual = crate::residual::residual_of_postings(tx.postings());
             for posting in tx.postings() {
-                if !ids.contains(posting.account_id()) {
+                if !id_set.contains(posting.account_id()) {
                     continue;
                 }
                 let value = if let Some(amount) = posting.amount() {
