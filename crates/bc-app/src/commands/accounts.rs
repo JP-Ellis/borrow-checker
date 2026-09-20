@@ -104,6 +104,14 @@ pub async fn list_accounts(
 
 /// Flattens `balances` into IPC amounts, moving `default_code` to the front.
 ///
+/// Without a default commodity (e.g. a root with no own postings, only a
+/// roll-up), the remainder is sorted by commodity code rather than left in
+/// first-seen order: a root's own `balance` is `None` in that case, so there
+/// is no default to anchor on, and first-seen order over a `HashMap`-derived
+/// [`bc_models::Balances`] is not guaranteed stable across fetches — a
+/// sorted tiebreak keeps the sidebar figure and sparkline currency from
+/// flipping between calls.
+///
 /// # Arguments
 ///
 /// * `balances` - Per-commodity totals in first-seen order.
@@ -116,12 +124,15 @@ fn ordered_amounts(
         .iter()
         .map(|(code, value)| bc_ipc::Amount::new(value, code))
         .collect();
-    if let Some(code) = default_code
-        && let Some(pos) = out.iter().position(|a| a.currency_code == code)
-        && pos != 0
-    {
-        let first = out.remove(pos);
-        out.insert(0, first);
+    if let Some(code) = default_code {
+        if let Some(pos) = out.iter().position(|a| a.currency_code == code)
+            && pos != 0
+        {
+            let first = out.remove(pos);
+            out.insert(0, first);
+        }
+    } else {
+        out.sort_unstable_by(|a, b| a.currency_code.cmp(&b.currency_code));
     }
     out
 }
@@ -955,15 +966,17 @@ mod tests {
     }
 
     #[test]
-    fn ordered_amounts_preserves_first_seen_order_without_a_default() {
-        let balances = balances_of(&[("AUD", "100.00"), ("USD", "50.00"), ("EUR", "25.00")]);
+    fn ordered_amounts_sorts_by_code_without_a_default() {
+        let balances = balances_of(&[("USD", "50.00"), ("AUD", "100.00"), ("EUR", "25.00")]);
         let out = super::ordered_amounts(&balances, None);
         assert_eq!(
             out.iter()
                 .map(|a| a.currency_code.as_str())
                 .collect::<Vec<_>>(),
-            vec!["AUD", "USD", "EUR"],
-            "no default code means first-seen order is left alone"
+            vec!["AUD", "EUR", "USD"],
+            "no default code means the remainder is sorted, not left in \
+             first-seen order, so a root with no own balance does not flip \
+             between fetches"
         );
     }
 
