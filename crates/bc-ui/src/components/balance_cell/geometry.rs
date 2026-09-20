@@ -12,7 +12,7 @@ use rust_decimal::prelude::ToPrimitive as _;
 )]
 #[expect(
     clippy::module_name_repetitions,
-    reason = "BarGeometry is the correct name per the task brief"
+    reason = "this module is the geometry namespace; the type is the bar geometry itself"
 )]
 pub struct BarGeometry {
     /// Position of the zero line.
@@ -42,7 +42,7 @@ pub struct BarGeometry {
 )]
 #[expect(
     clippy::module_name_repetitions,
-    reason = "bar_geometry is the correct name per the task brief"
+    reason = "this module is the geometry namespace; the function computes the bar geometry itself"
 )]
 pub fn bar_geometry(value: Decimal, lo: Decimal, hi: Decimal) -> BarGeometry {
     let span = hi.saturating_sub(lo).to_f64().unwrap_or(0.0_f64);

@@ -32,6 +32,8 @@ pub struct LoadedRegister {
     pub next_cursor: Option<RegisterCursor>,
     /// A request is in flight.
     pub loading: bool,
+    /// The most recent request failed and has not yet been retried by a reset.
+    pub failed: bool,
     /// Bumped by every reset.
     pub generation: u32,
 }
@@ -42,14 +44,18 @@ impl LoadedRegister {
     pub fn begin_reset(&mut self) -> (u32, u32) {
         self.generation = self.generation.wrapping_add(1);
         self.loading = true;
+        self.failed = false;
         let loaded = u32::try_from(self.rows.len()).unwrap_or(u32::MAX);
         (self.generation, PAGE_SIZE.max(loaded))
     }
 
-    /// Starts an extend, or `None` while a request is in flight or the end
-    /// has been reached. Returns the current generation and the cursor.
+    /// Starts an extend, or `None` while a request is in flight, the end has
+    /// been reached, or the last request failed. A failed extend is retried
+    /// only by a reset, not by the scroll handler that keeps calling this —
+    /// otherwise a persistent backend error would re-fire one IPC call per
+    /// scroll event.
     pub fn begin_extend(&mut self) -> Option<(u32, RegisterCursor)> {
-        if self.loading {
+        if self.loading || self.failed {
             return None;
         }
         let cursor = self.next_cursor.clone()?;
@@ -81,10 +87,11 @@ impl LoadedRegister {
         true
     }
 
-    /// Clears `loading` after a failed request of `generation`.
+    /// Clears `loading` and sets `failed` after a failed request of `generation`.
     pub fn fail(&mut self, generation: u32) {
         if generation == self.generation {
             self.loading = false;
+            self.failed = true;
         }
     }
 
@@ -97,6 +104,7 @@ impl LoadedRegister {
         self.total = 0;
         self.next_cursor = None;
         self.loading = false;
+        self.failed = false;
     }
 
     /// `true` once every matching row is loaded.
@@ -319,14 +327,43 @@ mod tests {
     }
 
     #[test]
-    fn extend_is_blocked_while_loading_and_fail_unblocks() {
+    fn extend_is_blocked_while_loading() {
         let mut r = LoadedRegister::default();
         let (g0, _) = r.begin_reset();
         r.apply_reset(g0, page(&["a"], 3, true));
         let (g1, _) = r.begin_extend().expect("first extend");
         assert_eq!(r.begin_extend(), None, "in flight");
+        // A successful response (rather than a failure) clears `loading`
+        // without setting `failed`, so another extend is allowed again.
+        assert!(r.apply_extend(g1, page(&["b"], 3, false)));
+        assert_eq!(r.begin_extend(), None, "fully loaded");
+    }
+
+    #[test]
+    fn fail_blocks_further_extends() {
+        let mut r = LoadedRegister::default();
+        let (g0, _) = r.begin_reset();
+        r.apply_reset(g0, page(&["a"], 3, true));
+        let (g1, _) = r.begin_extend().expect("first extend");
         r.fail(g1);
-        assert!(r.begin_extend().is_some());
+        assert!(r.failed);
+        // A persistent backend error must not be retried by the scroll
+        // handler that keeps calling begin_extend.
+        assert_eq!(r.begin_extend(), None);
+        assert_eq!(r.begin_extend(), None);
+    }
+
+    #[test]
+    fn reset_clears_a_previous_failure() {
+        let mut r = LoadedRegister::default();
+        let (g0, _) = r.begin_reset();
+        r.apply_reset(g0, page(&["a"], 3, true));
+        let (g1, _) = r.begin_extend().expect("first extend");
+        r.fail(g1);
+        assert!(r.failed);
+
+        r.begin_reset();
+        assert!(!r.failed);
     }
 
     #[test]

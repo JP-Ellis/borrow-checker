@@ -194,6 +194,7 @@ fn loaded_register(transactions: Vec<FilteredTransaction>) -> LoadedRegister {
         total,
         next_cursor: None,
         loading: false,
+        failed: false,
         generation: 0,
     }
 }
