@@ -14,6 +14,7 @@ pub(crate) mod dashboard;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod period_notify;
 pub(crate) mod query;
+pub(crate) mod tree;
 
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::NewTransaction;

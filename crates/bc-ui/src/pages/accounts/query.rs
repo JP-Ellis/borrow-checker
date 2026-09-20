@@ -2,6 +2,8 @@
 //! filter (date range resolved) and narrowing results to the viewed account.
 //! Kept target-agnostic so it is native-testable.
 
+use std::collections::HashSet;
+
 use bc_ipc::Filter;
 use bc_ipc::Period;
 use bc_ipc::Transaction;
@@ -39,15 +41,15 @@ pub fn effective_filter(user: &Filter, period: &Period, window_start: Date) -> F
     eff
 }
 
-/// Returns `true` when `tx` has at least one posting on `account_id`.
+/// Returns `true` when any posting of `tx` lands on an account in `ids`.
 ///
 /// # Arguments
 ///
 /// * `tx` - The transaction to test.
-/// * `account_id` - The viewed account id.
+/// * `ids` - The viewed account, or its subtree when roll-up is on.
 #[must_use]
-pub fn touches_account(tx: &Transaction, account_id: &str) -> bool {
-    tx.postings.iter().any(|p| p.account.id == account_id)
+pub fn touches_account(tx: &Transaction, ids: &HashSet<String>) -> bool {
+    tx.postings.iter().any(|p| ids.contains(&p.account.id))
 }
 
 /// Returns `true` when the filter carries any non-date dimension
@@ -206,6 +208,8 @@ pub fn sparkline_bucketing(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::collections::HashSet;
+
     use bc_ipc::AccountRef;
     use bc_ipc::Amount;
     use bc_ipc::Period;
@@ -301,15 +305,17 @@ mod tests {
     #[test]
     fn touches_account_true_when_posting_matches() {
         let tx = transaction_with_posting_on("cb-smart-access");
+        let ids: HashSet<String> = ["cb-smart-access".to_owned()].into_iter().collect();
 
-        assert!(touches_account(&tx, "cb-smart-access"));
+        assert!(touches_account(&tx, &ids));
     }
 
     #[test]
     fn touches_account_false_when_no_posting_matches() {
         let tx = transaction_with_posting_on("cb-smart-access");
+        let ids: HashSet<String> = ["groceries".to_owned()].into_iter().collect();
 
-        assert!(!touches_account(&tx, "groceries"));
+        assert!(!touches_account(&tx, &ids));
     }
 
     #[test]
