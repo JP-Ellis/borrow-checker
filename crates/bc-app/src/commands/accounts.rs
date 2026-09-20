@@ -485,38 +485,6 @@ pub async fn get_account_stats(
     ))
 }
 
-/// Returns the most recent transaction date for `account_id`, or `None`.
-///
-/// # Arguments
-///
-/// * `account_id` - The account to query.
-/// * `include_descendants` - Fold the account's active subtree into the query.
-/// * `state`      - Tauri managed application state.
-///
-/// # Errors
-///
-/// Returns [`bc_ipc::BcError`] if the ID is invalid or the query fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
-pub async fn account_latest_activity(
-    account_id: String,
-    include_descendants: bool,
-    state: State<'_, AppState>,
-) -> Result<Option<jiff::civil::Date>, bc_ipc::BcError> {
-    let id = account_id
-        .parse::<bc_models::AccountId>()
-        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
-    let ids = scope_ids(&state, &id, include_descendants).await?;
-    state
-        .transactions
-        .latest_activity_date_for_set(&ids)
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
-}
-
 /// Returns the most recent transaction date across the whole ledger, or `None`.
 ///
 /// # Arguments
