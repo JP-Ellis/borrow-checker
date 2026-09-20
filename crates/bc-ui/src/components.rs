@@ -4,6 +4,7 @@
 //! atoms — resist inventing alternatives.
 
 pub mod account_picker;
+pub mod balance_cell;
 pub mod chip;
 #[cfg(target_arch = "wasm32")]
 pub use chip::Variant as ChipVariant;

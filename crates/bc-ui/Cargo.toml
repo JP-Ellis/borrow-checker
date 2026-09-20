@@ -67,8 +67,9 @@ web-sys                  = {
 }
 
 [dev-dependencies]
-pretty_assertions = { workspace = true }
-rstest            = { workspace = true }
+pretty_assertions   = { workspace = true }
+rstest              = { workspace = true }
+rust_decimal_macros = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 jiff = { workspace = true, features = ["js"] }
