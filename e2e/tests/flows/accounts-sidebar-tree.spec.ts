@@ -31,17 +31,23 @@ async function resetSidebarPrefs(): Promise<void> {
 }
 
 /**
- * Mounts the bare `/accounts` route via the top-bar nav. Going through the
- * nav link unmounts and remounts the page, so the sidebar re-reads its
- * persisted expansion set and the toggle re-reads its persisted state.
+ * Mounts the bare `/accounts` route fresh. The page is left first, via the
+ * budget tab, so the accounts route is unmounted even when the session is
+ * already on it; a nav click that lands on the current route changes
+ * nothing, and one from `/accounts/:id` swaps the DOM under a handle taken
+ * too early. Each hop waits for its exact URL before the next.
  */
 async function openAccountsPage(): Promise<void> {
-    const navAccounts = await $('[data-testid="nav-accounts"]');
-    await navAccounts.waitForDisplayed();
-    await navAccounts.click();
-
+    const mainNav = await $('nav[aria-label="main navigation"]');
+    await (await mainNav.$('a=budget')).click();
     await browser.waitUntil(
-        async () => (await browser.getUrl()).includes('/accounts'),
+        async () => (await browser.getUrl()).endsWith('/budget'),
+        { timeoutMsg: 'URL did not reach /budget within 5 s' },
+    );
+
+    await (await $('[data-testid="nav-accounts"]')).click();
+    await browser.waitUntil(
+        async () => (await browser.getUrl()).endsWith('/accounts'),
         { timeoutMsg: 'URL did not reach /accounts within 5 s' },
     );
 
@@ -107,7 +113,12 @@ describe('Accounts — sidebar tree', () => {
         await openAccountsPage();
 
         // Roots open on first load, so depth 1 is visible and depth 2 is not.
-        expect(await sidebarShows('Utilities')).toBe(true);
+        // The root seed is an effect off the account list, so it can land a
+        // tick after the first sidebar link renders.
+        await browser.waitUntil(
+            async () => sidebarShows('Utilities'),
+            { timeoutMsg: 'Utilities did not appear under the seeded Expenses root' },
+        );
         expect(await sidebarShows('Water')).toBe(false);
         expect(await sidebarShows('Sewer')).toBe(false);
 
@@ -171,7 +182,10 @@ describe('Accounts — sidebar tree', () => {
 
     it('keeps every root collapsed across a remount', async () => {
         await openAccountsPage();
-        expect(await sidebarShows('Checking')).toBe(true);
+        await browser.waitUntil(
+            async () => sidebarShows('Checking'),
+            { timeoutMsg: 'Checking did not appear under the seeded Assets root' },
+        );
 
         // Collapse each open root in turn. A collapsed root takes its subtree
         // out of the DOM, so this loop ends with no open chevron anywhere.
