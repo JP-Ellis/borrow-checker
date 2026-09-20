@@ -1,20 +1,20 @@
 /**
  * Flow tests for the period-scoped accounts register and dashboard.
  *
- * The accounts page now shares a single display window (`window_start` +
+ * The accounts page shares a single display window (`window_start` +
  * granularity) between the transaction register and the per-account
- * dashboard, driven by the `PeriodNav` stepper rendered in the register
+ * dashboard, driven by the `WindowNav` control rendered in the register
  * header (`aria-label="previous period"` / `"next period"` buttons, plus a
- * granularity `<select>`).
+ * granularity `<select>` whose first option is "all time"). The page opens
+ * in all time, where the step buttons are absent; selecting a period from
+ * there lands on the period containing today.
  *
  * Seed data (see crates/bc-seed/src/main.rs) is generated relative to
  * "today" — Checking has transactions in every one of the last 6 months
  * plus the current month, so stepping the window always crosses a
  * transaction boundary. Transport, however, has transactions in every
  * historical month but NONE in the current month — a real seeded account
- * with no current-period activity — which is used to verify that the
- * window is anchored to the ledger's latest activity, not the selected
- * account's.
+ * with no current-period activity.
  */
 import { browser, $ } from '@wdio/globals';
 
@@ -99,22 +99,32 @@ async function closingBalance(): Promise<string> {
 }
 
 /**
- * Reads the shared `PeriodNav` window label — the text node rendered between
- * the "previous period" and "next period" buttons.
+ * Reads the shared `WindowNav` window label — the `<span>` that is the first
+ * child of the granularity select's parent `div`. In all time the step
+ * buttons are absent, so the label can't be read by walking between them.
  */
 async function periodNavLabel(): Promise<string> {
     return browser.execute(() => {
-        const prev = document.querySelector('[aria-label="previous period"]');
-        const next = document.querySelector('[aria-label="next period"]');
-        if (!prev || !next) return '';
-        let node = prev.nextElementSibling;
-        while (node && node !== next) {
-            const text = node.textContent?.trim();
-            if (text) return text;
-            node = node.nextElementSibling;
-        }
-        return '';
+        const select = document.querySelector('[aria-label="transaction register"] select');
+        const row = select?.parentElement;
+        const label = row ? Array.from(row.children).find(el => el.tagName === 'SPAN') : null;
+        return label?.textContent?.trim() ?? '';
     });
+}
+
+/**
+ * Selects a granularity in the register header's `WindowNav`. The page opens
+ * in all time, where the step buttons are absent, so every stepping test
+ * enters a period first.
+ */
+async function selectGranularity(value: string): Promise<void> {
+    const select = await $('[aria-label="transaction register"] select');
+    await select.waitForDisplayed();
+    await select.selectByAttribute('value', value);
+    await browser.waitUntil(
+        async () => (await periodNavLabel()) !== 'all time' && (await periodNavLabel()) !== '',
+        { timeoutMsg: `Window label did not leave "all time" after selecting ${value}` },
+    );
 }
 
 /** Full English month name + year, matching bc-ui's `window_label` format for `Period::Monthly`. */
@@ -133,6 +143,11 @@ describe('Accounts — period view', () => {
     it('steps the register and dashboard together when the period changes', async () => {
         await openAccount('Checking');
         await waitForRegisterRows();
+        await selectGranularity('monthly');
+        await browser.waitUntil(
+            async () => (await statValue('transactions')) !== '',
+            { timeoutMsg: 'Dashboard tx-count did not populate after selecting monthly' },
+        );
 
         const initialRows = await registerRowCount();
         const initialTxCount = await statValue('transactions');
@@ -206,6 +221,7 @@ describe('Accounts — period view', () => {
     it('re-scopes the register and dashboard when the granularity select changes', async () => {
         await openAccount('Checking');
         await waitForRegisterRows();
+        await selectGranularity('monthly');
 
         const initialLabel = await periodNavLabel();
         const initialTxCount = await statValue('transactions');
@@ -241,33 +257,27 @@ describe('Accounts — period view', () => {
         expect(quarterlyTxCount).toBeGreaterThanOrEqual(Number(initialTxCount));
     });
 
-    it('anchors the window to the ledger\'s latest activity, not the selected account\'s', async () => {
-        // Transport has transactions in every historical seeded month but NONE
-        // in the current month (see crates/bc-seed/src/main.rs). The page now
-        // opens in all time (the period select is the `WindowNav` control),
-        // so switching to a period lands on the one containing today — an
-        // empty current month for Transport rather than its own last active
-        // month. Stepping back one period reaches its rows.
+    it('opens in all time and shows every transaction', async () => {
+        // Transport has no current-month activity; in all time its whole
+        // history is on screen without any stepping.
         await openAccount('Transport');
+        await waitForRegisterRows();
 
+        expect(await periodNavLabel()).toBe('all time');
+        expect(await $('[aria-label="previous period"]').isExisting()).toBe(false);
+
+        await browser.waitUntil(
+            async () => (await registerRowCount()).toString() === (await statValue('transactions')),
+            { timeoutMsg: 'Register row count did not match the all-time transaction stat' },
+        );
+        expect(await registerRowCount()).toBeGreaterThan(0);
+
+        // Leaving all time lands on the current month; Transport is empty there.
+        await selectGranularity('monthly');
+        expect(await periodNavLabel()).toBe(currentMonthLabel());
         await browser.waitUntil(
             async () => (await statValue('transactions')) === '0',
-            { timeoutMsg: 'Dashboard tx-count did not settle on 0 for the current month within 15 s' },
-        );
-        expect(await periodNavLabel()).toBe(currentMonthLabel());
-        expect(await registerRowCount()).toBe(0);
-
-        const prevBtn = await $('[aria-label="previous period"]');
-        await prevBtn.waitForDisplayed();
-        await prevBtn.click();
-
-        await waitForRegisterRows();
-        const rows = await registerRowCount();
-        expect(await periodNavLabel()).not.toBe(currentMonthLabel());
-
-        await browser.waitUntil(
-            async () => (await statValue('transactions')) === rows.toString(),
-            { timeoutMsg: 'Dashboard tx-count did not match the register after stepping back' },
+            { timeoutMsg: 'Dashboard tx-count did not settle on 0 for the current month' },
         );
     });
 });
