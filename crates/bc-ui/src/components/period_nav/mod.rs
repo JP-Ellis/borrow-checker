@@ -422,10 +422,6 @@ impl DisplayWindow {
 
     /// `true` when `date` falls inside the window (always, for all time).
     #[must_use]
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(dead_code, reason = "used by register/balance queries in a later task")
-    )]
     pub fn contains(&self, date: Date) -> bool {
         match self {
             Self::AllTime => true,
