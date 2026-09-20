@@ -2257,6 +2257,36 @@ impl Service {
         Self::parse_optional_date(row.and_then(|(d,)| d))
     }
 
+    /// Returns the earliest transaction date touching any account in `ids`.
+    ///
+    /// An empty slice yields `None`. Unwindowed: this is the scope's first
+    /// activity ever, used to span an all-time sparkline.
+    ///
+    /// # Arguments
+    ///
+    /// * `ids` - The accounts to inspect (typically a subtree).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database failure or an unparsable stored date.
+    #[inline]
+    pub async fn earliest_activity_date_for_set(
+        &self,
+        ids: &[AccountId],
+    ) -> BcResult<Option<jiff::civil::Date>> {
+        if ids.is_empty() {
+            return Ok(None);
+        }
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT MIN(p.date) FROM postings p \
+             WHERE p.account_id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(crate::balance::ids_json(ids)?)
+        .fetch_optional(&self.pool)
+        .await?;
+        Self::parse_optional_date(row.and_then(|(d,)| d))
+    }
+
     /// Returns the most recent transaction date in the ledger, or `None`
     /// when there are no transactions.
     ///
@@ -3273,6 +3303,64 @@ mod tests {
         );
         assert_eq!(
             svc.latest_activity_date_for_set(&[]).await.expect("none"),
+            None
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn earliest_activity_date_for_set_takes_min_over_scope(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let a = acct_svc
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("a");
+        let b = acct_svc
+            .create()
+            .name("B")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("b");
+        let svc = Service::new(pool.clone());
+        assert_eq!(
+            svc.earliest_activity_date_for_set(core::slice::from_ref(&a))
+                .await
+                .expect("empty"),
+            None
+        );
+
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES \
+            ('tx_1', '2026-01-10', 'a', 'reconciled', '2026-01-10T00:00:00Z'), \
+            ('tx_2', '2025-03-05', 'b', 'reconciled', '2025-03-05T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("txs");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p1', 'tx_1', ?, '1.00', 'AUD', 0)")
+            .bind(a.to_string()).execute(&pool).await.expect("p1");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p2', 'tx_2', ?, '1.00', 'AUD', 0)")
+            .bind(b.to_string()).execute(&pool).await.expect("p2");
+
+        assert_eq!(
+            svc.earliest_activity_date_for_set(core::slice::from_ref(&a))
+                .await
+                .expect("a"),
+            Some(jiff::civil::date(2026, 1, 10))
+        );
+        assert_eq!(
+            svc.earliest_activity_date_for_set(&[a, b])
+                .await
+                .expect("ab"),
+            Some(jiff::civil::date(2025, 3, 5))
+        );
+        assert_eq!(
+            svc.earliest_activity_date_for_set(&[]).await.expect("none"),
             None
         );
     }
