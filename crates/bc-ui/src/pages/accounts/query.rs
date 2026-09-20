@@ -1,25 +1,21 @@
 //! Pure query helpers for the accounts register: building the effective search
-//! filter (date range resolved) and narrowing results to the viewed account.
+//! filter (date range resolved) for the register backend and the sparkline.
 //! Kept target-agnostic so it is native-testable.
-
-use std::collections::HashSet;
 
 use bc_ipc::Filter;
 use bc_ipc::Period;
-use bc_ipc::Transaction;
 use jiff::civil::Date;
 
 use crate::components::period_nav::DisplayWindow;
 use crate::components::period_nav::window_containing;
 
-/// Builds the filter actually sent to `search_transactions` for the register.
+/// Builds the filter sent alongside `RegisterRequest`.
 ///
-/// The global filter's `accounts` dimension is kept and intersected with the
-/// sidebar account: the backend narrows to rows touching a filter account (and
-/// attributes those legs as matched), and [`touches_account`] further narrows
-/// to the viewed account client-side. The date range is resolved as: if the
-/// user filter sets either date bound, keep it verbatim (the display window
-/// is overridden); otherwise inject `window`'s bounds (`None` for both in all
+/// The global filter's `accounts` dimension is kept: the backend intersects it
+/// with the viewed account (and its subtree, when roll-up is on) and scopes
+/// the page server-side. The date range is resolved as: if the user filter
+/// sets either date bound, keep it verbatim (the display window is
+/// overridden); otherwise inject `window`'s bounds (`None` for both in all
 /// time).
 ///
 /// # Arguments
@@ -39,17 +35,6 @@ pub fn effective_filter(user: &Filter, window: &DisplayWindow) -> Filter {
         eff.date_until = until;
     }
     eff
-}
-
-/// Returns `true` when any posting of `tx` lands on an account in `ids`.
-///
-/// # Arguments
-///
-/// * `tx` - The transaction to test.
-/// * `ids` - The viewed account, or its subtree when roll-up is on.
-#[must_use]
-pub fn touches_account(tx: &Transaction, ids: &HashSet<String>) -> bool {
-    tx.postings.iter().any(|p| ids.contains(&p.account.id))
 }
 
 /// Returns `true` when the filter carries any non-date dimension
@@ -251,26 +236,16 @@ pub fn sparkline_bucketing(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::collections::HashSet;
-
-    use bc_ipc::AccountRef;
-    use bc_ipc::Amount;
     use bc_ipc::Period;
-    use bc_ipc::Posting;
-    use bc_ipc::PostingAmount;
-    use bc_ipc::Reconciliation;
-    use bc_ipc::Transaction;
     use jiff::Span;
     use jiff::civil::Date;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
-    use rust_decimal::Decimal;
 
     use super::awaiting_window;
     use super::effective_filter;
     use super::sparkline_bucketing;
-    use super::touches_account;
     use crate::components::period_nav::DisplayWindow;
     use crate::components::period_nav::period_end;
     use crate::components::period_nav::window_containing;
@@ -345,56 +320,6 @@ mod tests {
         /* Filter date present → window is NOT injected on either side. */
         assert_eq!(eff.date_from, Some(Date::constant(2026, 3, 10)));
         assert_eq!(eff.date_until, None);
-    }
-
-    /// Builds a two-posting transaction, one leg on `account_id`, one on
-    /// `"other-account"`.
-    fn transaction_with_posting_on(account_id: &str) -> Transaction {
-        Transaction::new(
-            "tx-1",
-            Date::constant(2026, 6, 1),
-            "",
-            vec![],
-            Reconciliation::Reconciled,
-            vec![],
-            vec![
-                Posting::new(
-                    "posting-1",
-                    AccountRef::new(account_id, "Account One"),
-                    PostingAmount::Stored(Amount::new(Decimal::new(-1_000, 2), "AUD")),
-                    vec![],
-                    vec![],
-                    None,
-                    None,
-                ),
-                Posting::new(
-                    "posting-2",
-                    AccountRef::new("other-account", "Account Two"),
-                    PostingAmount::Stored(Amount::new(Decimal::new(1_000, 2), "AUD")),
-                    vec![],
-                    vec![],
-                    None,
-                    None,
-                ),
-            ],
-            vec![],
-        )
-    }
-
-    #[test]
-    fn touches_account_true_when_posting_matches() {
-        let tx = transaction_with_posting_on("cb-smart-access");
-        let ids: HashSet<String> = ["cb-smart-access".to_owned()].into_iter().collect();
-
-        assert!(touches_account(&tx, &ids));
-    }
-
-    #[test]
-    fn touches_account_false_when_no_posting_matches() {
-        let tx = transaction_with_posting_on("cb-smart-access");
-        let ids: HashSet<String> = ["groceries".to_owned()].into_iter().collect();
-
-        assert!(!touches_account(&tx, &ids));
     }
 
     #[test]

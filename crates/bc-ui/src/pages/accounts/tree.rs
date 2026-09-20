@@ -68,30 +68,6 @@ pub fn ancestors_of(nodes: &[AccountNode], id: &str) -> Vec<String> {
     out
 }
 
-/// Returns `id` plus every descendant id.
-///
-/// # Arguments
-///
-/// * `nodes` - The flat account list.
-/// * `id` - The subtree root.
-#[must_use]
-pub fn descendants_of(nodes: &[AccountNode], id: &str) -> HashSet<String> {
-    let mut out: HashSet<String> = HashSet::new();
-    let mut frontier = vec![id.to_owned()];
-    while let Some(current) = frontier.pop() {
-        if !out.insert(current.clone()) {
-            continue;
-        }
-        frontier.extend(
-            nodes
-                .iter()
-                .filter(|n| n.parent_id.as_deref() == Some(current.as_str()))
-                .map(|n| n.id.clone()),
-        );
-    }
-    out
-}
-
 /// Returns the top-level accounts in sidebar order: by type (asset,
 /// liability, equity, income, expense), then by name.
 ///
@@ -162,15 +138,6 @@ mod tests {
             node("b", "B", Some("a"), AccountType::Asset),
         ];
         assert_eq!(ancestors_of(&nodes, "a"), vec!["b".to_owned()]);
-    }
-
-    #[test]
-    fn descendants_are_inclusive() {
-        let set = descendants_of(&fixture(), "bank");
-        let mut got: Vec<&str> = set.iter().map(String::as_str).collect();
-        got.sort_unstable();
-        assert_eq!(got, vec!["bank", "cheque", "savings"]);
-        assert_eq!(descendants_of(&fixture(), "food").len(), 1);
     }
 
     #[test]
