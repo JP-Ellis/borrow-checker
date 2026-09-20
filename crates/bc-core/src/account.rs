@@ -965,6 +965,34 @@ impl Service {
         account_rows.into_iter().map(Account::try_from).collect()
     }
 
+    /// Returns `id` followed by every active descendant.
+    ///
+    /// Archived accounts are excluded together with their subtrees, so a
+    /// roll-up over the result matches the sidebar's active-account set.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The subtree root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database read failure.
+    #[inline]
+    pub async fn subtree_ids(&self, id: &AccountId) -> BcResult<Vec<AccountId>> {
+        let mut conn = self.pool.acquire().await?;
+        let mut ids = vec![id.clone()];
+        for d in descendants_of(&mut conn, id).await? {
+            if d.archived_at.is_some() {
+                continue;
+            }
+            let parsed =
+                d.id.parse::<AccountId>()
+                    .map_err(|e| BcError::BadData(format!("invalid account id '{}': {e}", d.id)))?;
+            ids.push(parsed);
+        }
+        Ok(ids)
+    }
+
     /// Materialises every path in `specs`, creating only what is missing.
     ///
     /// Every path is resolved and created in one pass over a single snapshot, so
@@ -3300,5 +3328,58 @@ mod tests {
         svc.set_opened_on(&checking, None)
             .await
             .expect("clearing declares nothing, so it cannot invert the window");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn subtree_ids_is_inclusive_and_skips_archived(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let root = svc
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("root");
+        let child = svc
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&root)
+            .call()
+            .await
+            .expect("child");
+        let grandchild = svc
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&child)
+            .call()
+            .await
+            .expect("grandchild");
+        let archived = svc
+            .create()
+            .name("Old")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&root)
+            .call()
+            .await
+            .expect("archived");
+        sqlx::query("UPDATE accounts SET archived_at = '2026-01-01T00:00:00Z' WHERE id = ?")
+            .bind(archived.to_string())
+            .execute(&pool)
+            .await
+            .expect("archive");
+
+        let ids = svc.subtree_ids(&root).await.expect("subtree");
+
+        assert_eq!(ids.first(), Some(&root));
+        assert!(ids.contains(&child));
+        assert!(ids.contains(&grandchild));
+        assert!(!ids.contains(&archived));
+        assert_eq!(ids.len(), 3);
     }
 }
