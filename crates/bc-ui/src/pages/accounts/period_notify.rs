@@ -24,13 +24,9 @@ pub(crate) fn notify_if_out_of_period(
     window: RwSignal<DisplayWindow>,
     date: jiff::civil::Date,
 ) {
-    let (visible, period) = window.with_untracked(|w| (w.contains(date), w.period().cloned()));
-    let Some(period) = period else {
+    let Some(period) = window.with_untracked(|w| w.period_excluding(date).cloned()) else {
         return;
     };
-    if visible {
-        return;
-    }
     let current = window.with_untracked(DisplayWindow::label);
     let message = format!("Transaction saved on {date} — outside the current view ({current}).");
     let on_activate = Callback::new(move |()| {

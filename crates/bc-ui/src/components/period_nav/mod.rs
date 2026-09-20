@@ -446,7 +446,19 @@ impl DisplayWindow {
             Self::Period { period, .. } => Some(period),
         }
     }
+
+    /// The granularity to re-anchor on when `date` is not on screen: `None`
+    /// for all time (everything is on screen) or when the period window
+    /// already contains `date`.
+    #[must_use]
+    pub fn period_excluding(&self, date: Date) -> Option<&Period> {
+        if self.contains(date) {
+            return None;
+        }
+        self.period()
+    }
 }
+
 // MARK: Formatting helpers
 
 /// Returns the 3-letter month abbreviation (title case) for a 1-based month number.
@@ -1265,5 +1277,30 @@ mod tests {
         assert!(!w.contains(Date::constant(2026, 7, 1)));
         assert_eq!(w.label(), "June 2026");
         assert_eq!(w.period(), Some(&Period::Monthly));
+    }
+
+    #[test]
+    fn all_time_never_excludes_a_date() {
+        let w = DisplayWindow::AllTime;
+        assert_eq!(w.period_excluding(Date::constant(1990, 1, 1)), None);
+        assert_eq!(w.period_excluding(Date::constant(2099, 12, 31)), None);
+    }
+
+    #[test]
+    fn period_window_excludes_dates_outside_its_half_open_range() {
+        let w = DisplayWindow::Period {
+            period: Period::Monthly,
+            start: Date::constant(2026, 6, 1),
+        };
+        assert_eq!(w.period_excluding(Date::constant(2026, 6, 1)), None);
+        assert_eq!(w.period_excluding(Date::constant(2026, 6, 30)), None);
+        assert_eq!(
+            w.period_excluding(Date::constant(2026, 5, 31)),
+            Some(&Period::Monthly)
+        );
+        assert_eq!(
+            w.period_excluding(Date::constant(2026, 7, 1)),
+            Some(&Period::Monthly)
+        );
     }
 }
