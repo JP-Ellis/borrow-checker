@@ -7,6 +7,7 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use stylance::import_style;
 
+use crate::pages::accounts::figure::RowFigure;
 use crate::pages::accounts::tree::children_of;
 use crate::pages::accounts::tree::ordered_roots;
 
@@ -245,30 +246,20 @@ fn SidebarRow(
     let own = node.balance.clone();
     let rollup = node.rollup.clone();
 
-    // (formatted figure, is_negative, extra commodity count)
     let figure = Memo::new(move |_| {
-        let shown = if include_descendants.get() {
-            rollup.first().cloned()
-        } else {
-            own.clone()
-        };
-        let extra = if include_descendants.get() {
-            rollup.len().saturating_sub(1)
-        } else {
-            0
-        };
-        match shown {
-            None => ("\u{2014}".to_owned(), false, extra),
-            Some(b) => {
-                let (sym, after) =
-                    crate::currency_ctx::short_symbol(&b.currency_code, &currencies.get());
-                (
-                    b.format_short(sym.as_deref(), after),
-                    b.value < rust_decimal::Decimal::ZERO,
-                    extra,
-                )
-            }
-        }
+        crate::pages::accounts::figure::row_figure(own.as_ref(), &rollup, include_descendants.get())
+    });
+    let label = Memo::new(move |_| {
+        figure.with(|f| {
+            f.amount.as_ref().map_or_else(
+                || "\u{2014}".to_owned(),
+                |b| {
+                    let (sym, after) =
+                        crate::currency_ctx::short_symbol(&b.currency_code, &currencies.get());
+                    b.format_short(sym.as_deref(), after)
+                },
+            )
+        })
     });
     let is_active = Signal::derive(move || selected_id.get().as_deref() == Some(id.as_str()));
     let href = format!("/accounts/{}", node.id);
@@ -286,11 +277,11 @@ fn SidebarRow(
         >
             <span class=style::row_name>{node.name.clone()}</span>
             <span class=move || {
-                if figure.with(|f| f.1) { style::bal_neg } else { style::bal }
+                if figure.with(RowFigure::is_negative) { style::bal_neg } else { style::bal }
             }>
-                {move || figure.with(|f| f.0.clone())}
+                {move || label.get()}
                 {move || {
-                    let extra = figure.with(|f| f.2);
+                    let extra = figure.with(|f| f.extra);
                     (extra > 0)
                         .then(|| view! { <span class=style::badge>{format!("+{extra}")}</span> })
                 }}
