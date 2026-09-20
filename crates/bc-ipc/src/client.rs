@@ -280,6 +280,8 @@ struct GetAccountStatsArgs<'a> {
     account_id: &'a str,
     /// Optional commodity code override.
     commodity: Option<&'a str>,
+    /// Fold the account's subtree into the result.
+    include_descendants: bool,
     /// Start of the date range (inclusive).
     date_from: jiff::civil::Date,
     /// End of the date range (exclusive).
@@ -295,6 +297,8 @@ struct GetAccountSparklineArgs<'a> {
     account_id: &'a str,
     /// Optional commodity code override.
     commodity: Option<&'a str>,
+    /// Fold the account's subtree into the result.
+    include_descendants: bool,
     /// Number of buckets to return.
     count: u32,
     /// Time-bucket granularity.
@@ -313,6 +317,8 @@ struct GetAccountSparklineArgs<'a> {
 /// # Arguments
 ///
 /// * `account_id` - Account to query.
+/// * `commodity` - Commodity code override; `None` lets the backend pick the account's default.
+/// * `include_descendants` - Fold the account's subtree into the result.
 /// * `date_from` - Inclusive window start.
 /// * `date_until` - Exclusive window end.
 /// * `filter` - Active global filter, or `None` for the unfiltered fast path.
@@ -323,6 +329,8 @@ struct GetAccountSparklineArgs<'a> {
 #[inline]
 pub async fn get_account_stats(
     account_id: &str,
+    commodity: Option<&str>,
+    include_descendants: bool,
     date_from: jiff::civil::Date,
     date_until: jiff::civil::Date,
     filter: Option<&crate::Filter>,
@@ -331,7 +339,8 @@ pub async fn get_account_stats(
         commands::GET_ACCOUNT_STATS,
         GetAccountStatsArgs {
             account_id,
-            commodity: None,
+            commodity,
+            include_descendants,
             date_from,
             date_until,
             filter,
@@ -345,9 +354,16 @@ pub async fn get_account_stats(
 struct AccountLatestActivityArgs<'a> {
     /// Account ID to query.
     account_id: &'a str,
+    /// Fold the account's subtree into the result.
+    include_descendants: bool,
 }
 
 /// Returns the most recent transaction date for `account_id`, or `None`.
+///
+/// # Arguments
+///
+/// * `account_id` - Account to query.
+/// * `include_descendants` - Fold the account's subtree into the result.
 ///
 /// # Errors
 ///
@@ -355,10 +371,14 @@ struct AccountLatestActivityArgs<'a> {
 #[inline]
 pub async fn account_latest_activity(
     account_id: &str,
+    include_descendants: bool,
 ) -> Result<Option<jiff::civil::Date>, BcError> {
     tauri_sys::core::invoke_result::<Option<jiff::civil::Date>, BcError>(
         commands::ACCOUNT_LATEST_ACTIVITY,
-        AccountLatestActivityArgs { account_id },
+        AccountLatestActivityArgs {
+            account_id,
+            include_descendants,
+        },
     )
     .await
 }
@@ -368,6 +388,8 @@ pub async fn account_latest_activity(
 /// # Arguments
 ///
 /// * `account_id` - Account ID to query.
+/// * `commodity` - Commodity code override; `None` lets the backend pick the account's default.
+/// * `include_descendants` - Fold the account's subtree into the result.
 /// * `period` - Time-bucket granularity.
 /// * `count` - Number of buckets to return.
 /// * `as_of` - Reference date; the most recent bucket contains this date.
@@ -379,6 +401,8 @@ pub async fn account_latest_activity(
 #[inline]
 pub async fn get_account_sparkline(
     account_id: &str,
+    commodity: Option<&str>,
+    include_descendants: bool,
     period: crate::Period,
     count: u32,
     as_of: jiff::civil::Date,
@@ -388,12 +412,28 @@ pub async fn get_account_sparkline(
         commands::GET_ACCOUNT_SPARKLINE,
         GetAccountSparklineArgs {
             account_id,
-            commodity: None,
+            commodity,
+            include_descendants,
             count,
             period,
             as_of,
             filter,
         },
+    )
+    .await
+}
+
+/// Returns the most recent transaction date across the whole ledger, or `None`
+/// when the ledger is empty.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the Tauri invoke fails.
+#[inline]
+pub async fn latest_activity() -> Result<Option<jiff::civil::Date>, BcError> {
+    tauri_sys::core::invoke_result::<Option<jiff::civil::Date>, BcError>(
+        commands::LATEST_ACTIVITY,
+        NoArgs {},
     )
     .await
 }
