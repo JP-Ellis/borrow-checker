@@ -1,6 +1,7 @@
 //! Structured transaction search: query types, per-leg match attribution, and
 //! the `Service::search` query surface.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use bc_models::AccountId;
@@ -247,6 +248,52 @@ pub struct MatchedTransaction {
     pub matched_postings: HashSet<PostingId>,
 }
 
+/// Position of the last row of a register page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "constructed only inside bc-core (register_page); a new field is a compile error at every call site, which is the point"
+)]
+pub struct RegisterCursor {
+    /// Date of the last row.
+    pub date: Date,
+    /// Id of the last row.
+    pub id: TransactionId,
+}
+
+/// A register row: the matched transaction plus the scope's balances after it.
+#[derive(Clone, Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "constructed only inside bc-core (register_page); a new field is a compile error at every call site, which is the point"
+)]
+pub struct RegisterRow {
+    /// The whole matched transaction.
+    pub transaction: Transaction,
+    /// Legs that matched the posting-scoped predicates.
+    pub matched_postings: HashSet<PostingId>,
+    /// Real scope balance after this row in its focal commodity; `None` when
+    /// the row moved several commodities on the scope.
+    pub balance_after: Option<Amount>,
+    /// Running sum of matching rows' focal movements, oldest match first.
+    pub filtered_sum_after: Option<Amount>,
+}
+
+/// One page of the register.
+#[derive(Clone, Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "constructed only inside bc-core (register_page); a new field is a compile error at every call site, which is the point"
+)]
+pub struct RegisterPage {
+    /// Rows in display order (`date DESC, id ASC`).
+    pub rows: Vec<RegisterRow>,
+    /// Matching rows across every page.
+    pub total: u32,
+    /// Resume point, `None` at the end.
+    pub next_cursor: Option<RegisterCursor>,
+}
+
 /// Escapes SQL `LIKE` *wildcard* metacharacters (`\`, `%`, `_`) in `input` so a
 /// user-typed needle is matched literally inside a `LIKE ... ESCAPE '\'` pattern.
 ///
@@ -347,6 +394,161 @@ pub(crate) async fn resolve_tag_subtree(
     Ok(set)
 }
 
+/// Builds the candidate statement: one `WHERE` clause per active dimension, in
+/// a fixed order that the bind sequence below mirrors.
+///
+/// `scope`, when set, adds the register's account intersection — a row must
+/// have a leg on one of these accounts in addition to satisfying the query's
+/// own `accounts` union.
+///
+/// # Arguments
+///
+/// * `query` - The parsed query.
+/// * `account_set` - The query's resolved account subtrees, or `None` when inactive.
+/// * `scope` - The register's scope accounts, or `None` for a plain search.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError`] if the reconciliation status cannot be encoded.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one clause block plus one bind block per dimension; splitting them would separate each clause from its binds"
+)]
+fn candidate_statement(
+    query: &TransactionQuery,
+    account_set: Option<&HashSet<AccountId>>,
+    scope: Option<&[AccountId]>,
+) -> BcResult<sqlx::query::QueryAs<'static, sqlx::Sqlite, TxRow, sqlx::sqlite::SqliteArguments>> {
+    let mut clauses: Vec<String> = Vec::new();
+    if query.date_from.is_some() {
+        clauses.push("t.date >= ?".to_owned());
+    }
+    if query.date_until.is_some() {
+        clauses.push("t.date < ?".to_owned());
+    }
+    if query.text.is_some() {
+        clauses.push("lower(t.description) LIKE ? ESCAPE '\\'".to_owned());
+    }
+    if query.reconciliation.is_some() {
+        clauses.push("t.reconciliation = ?".to_owned());
+    }
+    if let Some(set) = account_set {
+        let placeholders = sql_placeholders(set.len());
+        clauses.push(format!(
+            "EXISTS (SELECT 1 FROM postings p WHERE p.transaction_id = t.id AND p.account_id IN ({placeholders}))"
+        ));
+    }
+    if query.amount.is_some() {
+        // An elided leg's value is only known after residual derivation in
+        // Rust, so any transaction holding one is a candidate.
+        clauses.push(
+            "EXISTS (SELECT 1 FROM postings p WHERE p.transaction_id = t.id \
+             AND (p.amount IS NULL \
+                  OR (ABS(CAST(p.amount AS REAL)) >= ? AND ABS(CAST(p.amount AS REAL)) <= ? \
+                      AND (? IS NULL OR p.commodity = ?))))"
+                .to_owned(),
+        );
+    }
+    if !query.tags.is_empty() {
+        let placeholders = sql_placeholders(query.tags.len());
+        clauses.push(format!(
+            "(EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = t.id AND tt.tag_id IN ({placeholders})) \
+              OR EXISTS (SELECT 1 FROM posting_tags pt JOIN postings p ON pt.posting_id = p.id \
+                         WHERE p.transaction_id = t.id AND pt.tag_id IN ({placeholders})))"
+        ));
+    }
+    if let Some(scope_accounts) = scope {
+        let placeholders = sql_placeholders(scope_accounts.len());
+        clauses.push(format!(
+            "EXISTS (SELECT 1 FROM postings p WHERE p.transaction_id = t.id AND p.account_id IN ({placeholders}))"
+        ));
+    }
+
+    let where_sql = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
+    };
+    let sql = format!(
+        "SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
+         FROM transactions t {where_sql} ORDER BY t.date DESC, t.id ASC"
+    );
+
+    // Bind values in clause order.
+    let mut stmt = sqlx::query_as::<_, TxRow>(sqlx::AssertSqlSafe(sql));
+    if let Some(from) = query.date_from {
+        stmt = stmt.bind(from.to_string());
+    }
+    if let Some(until) = query.date_until {
+        stmt = stmt.bind(until.to_string());
+    }
+    if let Some(text) = &query.text {
+        // Fold the needle with `to_ascii_lowercase` to match SQLite's `lower()`,
+        // which is ASCII-only. Using Rust's full-Unicode `to_lowercase` here
+        // would desync the two sides (needle `É`->`é` vs column `É`->`É`) and
+        // silently miss non-ASCII text. Consequence: non-ASCII letters are
+        // matched case-sensitively; proper Unicode folding would need an
+        // ICU-backed collation (deferred, see #242).
+        let needle = format!("%{}%", escape_like(&text.to_ascii_lowercase()));
+        stmt = stmt.bind(needle);
+    }
+    if let Some(rec) = query.reconciliation {
+        stmt = stmt.bind(to_db_str(rec)?);
+    }
+    if let Some(set) = account_set {
+        let mut ids: Vec<&AccountId> = set.iter().collect();
+        ids.sort_by_key(ToString::to_string);
+        for id in ids {
+            stmt = stmt.bind(id.to_string());
+        }
+    }
+    if let Some(amount) = &query.amount {
+        // Bind as REAL magnitudes; this is only a coarse candidate filter —
+        // `compute_matched_postings` (Decimal-exact) is the source of truth.
+        // Widen by a small epsilon so Decimal->f64 rounding can never make
+        // the SQL bound narrower than the exact Decimal comparison: the
+        // coarse filter must only ever over-match, never drop a real match.
+        const AMOUNT_EPSILON: f64 = 0.0001;
+        #[expect(
+            clippy::float_arithmetic,
+            reason = "widening a coarse SQL bound by a fixed epsilon; exactness lives in compute_matched_postings"
+        )]
+        let min = amount
+            .min
+            .and_then(|d| d.to_f64())
+            .map_or(f64::MIN, |v| v - AMOUNT_EPSILON);
+        #[expect(
+            clippy::float_arithmetic,
+            reason = "widening a coarse SQL bound by a fixed epsilon; exactness lives in compute_matched_postings"
+        )]
+        let max = amount
+            .max
+            .and_then(|d| d.to_f64())
+            .map_or(f64::MAX, |v| v + AMOUNT_EPSILON);
+        let commodity = amount.commodity.as_ref().map(|c| c.as_str().to_owned());
+        stmt = stmt
+            .bind(min)
+            .bind(max)
+            .bind(commodity.clone())
+            .bind(commodity);
+    }
+    if !query.tags.is_empty() {
+        for t in &query.tags {
+            stmt = stmt.bind(t.to_string());
+        }
+        for t in &query.tags {
+            stmt = stmt.bind(t.to_string());
+        }
+    }
+    if let Some(scope_accounts) = scope {
+        for id in scope_accounts {
+            stmt = stmt.bind(id.to_string());
+        }
+    }
+
+    Ok(stmt)
+}
+
 impl Service {
     /// Runs a structured transaction query, returning whole matched transactions
     /// with per-leg match attribution (see [`compute_matched_postings`]).
@@ -356,134 +558,15 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on database or data-parse failure.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "assembling dynamic candidate SQL with a clause per active dimension inherently requires several bind/clause blocks"
-    )]
     pub async fn search(&self, query: &TransactionQuery) -> BcResult<Vec<MatchedTransaction>> {
         // 1. Resolve account subtrees to a concrete id set.
         let account_set = resolve_account_subtrees(self.pool(), &query.accounts).await?;
 
-        // 2. Build candidate SQL with a WHERE clause per active dimension.
-        let mut clauses: Vec<String> = Vec::new();
-        if query.date_from.is_some() {
-            clauses.push("t.date >= ?".to_owned());
-        }
-        if query.date_until.is_some() {
-            clauses.push("t.date < ?".to_owned());
-        }
-        if query.text.is_some() {
-            clauses.push("lower(t.description) LIKE ? ESCAPE '\\'".to_owned());
-        }
-        if query.reconciliation.is_some() {
-            clauses.push("t.reconciliation = ?".to_owned());
-        }
-        if let Some(set) = &account_set {
-            let placeholders = sql_placeholders(set.len());
-            clauses.push(format!(
-                "EXISTS (SELECT 1 FROM postings p WHERE p.transaction_id = t.id AND p.account_id IN ({placeholders}))"
-            ));
-        }
-        if query.amount.is_some() {
-            // An elided leg's value is only known after residual derivation in
-            // Rust, so any transaction holding one is a candidate.
-            clauses.push(
-                "EXISTS (SELECT 1 FROM postings p WHERE p.transaction_id = t.id \
-                 AND (p.amount IS NULL \
-                      OR (ABS(CAST(p.amount AS REAL)) >= ? AND ABS(CAST(p.amount AS REAL)) <= ? \
-                          AND (? IS NULL OR p.commodity = ?))))"
-                    .to_owned(),
-            );
-        }
-        if !query.tags.is_empty() {
-            let placeholders = sql_placeholders(query.tags.len());
-            clauses.push(format!(
-                "(EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = t.id AND tt.tag_id IN ({placeholders})) \
-                  OR EXISTS (SELECT 1 FROM posting_tags pt JOIN postings p ON pt.posting_id = p.id \
-                             WHERE p.transaction_id = t.id AND pt.tag_id IN ({placeholders})))"
-            ));
-        }
-
-        let where_sql = if clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", clauses.join(" AND "))
-        };
-        let sql = format!(
-            "SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
-             FROM transactions t {where_sql} ORDER BY t.date DESC, t.id ASC"
-        );
-
-        // 3. Bind values in clause order.
-        let mut stmt = sqlx::query_as::<_, TxRow>(sqlx::AssertSqlSafe(sql));
-        if let Some(from) = query.date_from {
-            stmt = stmt.bind(from.to_string());
-        }
-        if let Some(until) = query.date_until {
-            stmt = stmt.bind(until.to_string());
-        }
-        if let Some(text) = &query.text {
-            // Fold the needle with `to_ascii_lowercase` to match SQLite's `lower()`,
-            // which is ASCII-only. Using Rust's full-Unicode `to_lowercase` here
-            // would desync the two sides (needle `É`->`é` vs column `É`->`É`) and
-            // silently miss non-ASCII text. Consequence: non-ASCII letters are
-            // matched case-sensitively; proper Unicode folding would need an
-            // ICU-backed collation (deferred, see #242).
-            let needle = format!("%{}%", escape_like(&text.to_ascii_lowercase()));
-            stmt = stmt.bind(needle);
-        }
-        if let Some(rec) = query.reconciliation {
-            stmt = stmt.bind(to_db_str(rec)?);
-        }
-        if let Some(set) = &account_set {
-            let mut ids: Vec<&AccountId> = set.iter().collect();
-            ids.sort_by_key(ToString::to_string);
-            for id in ids {
-                stmt = stmt.bind(id.to_string());
-            }
-        }
-        if let Some(amount) = &query.amount {
-            // Bind as REAL magnitudes; this is only a coarse candidate filter —
-            // `compute_matched_postings` (Decimal-exact) is the source of truth.
-            // Widen by a small epsilon so Decimal->f64 rounding can never make
-            // the SQL bound narrower than the exact Decimal comparison: the
-            // coarse filter must only ever over-match, never drop a real match.
-            const AMOUNT_EPSILON: f64 = 0.0001;
-            #[expect(
-                clippy::float_arithmetic,
-                reason = "widening a coarse SQL bound by a fixed epsilon; exactness lives in compute_matched_postings"
-            )]
-            let min = amount
-                .min
-                .and_then(|d| d.to_f64())
-                .map_or(f64::MIN, |v| v - AMOUNT_EPSILON);
-            #[expect(
-                clippy::float_arithmetic,
-                reason = "widening a coarse SQL bound by a fixed epsilon; exactness lives in compute_matched_postings"
-            )]
-            let max = amount
-                .max
-                .and_then(|d| d.to_f64())
-                .map_or(f64::MAX, |v| v + AMOUNT_EPSILON);
-            let commodity = amount.commodity.as_ref().map(|c| c.as_str().to_owned());
-            stmt = stmt
-                .bind(min)
-                .bind(max)
-                .bind(commodity.clone())
-                .bind(commodity);
-        }
-        if !query.tags.is_empty() {
-            for t in &query.tags {
-                stmt = stmt.bind(t.to_string());
-            }
-            for t in &query.tags {
-                stmt = stmt.bind(t.to_string());
-            }
-        }
-
+        // 2. Build and run the candidate statement.
+        let stmt = candidate_statement(query, account_set.as_ref(), None)?;
         let tx_rows = stmt.fetch_all(self.pool()).await?;
 
-        // 4. Hydrate whole transactions, then attribute matched legs in Rust.
+        // 3. Hydrate whole transactions, then attribute matched legs in Rust.
         let hydrated: Vec<Transaction> = self.assemble_transactions(tx_rows).await?.collect();
         let tag_set: Option<HashSet<TagId>> =
             (!query.tags.is_empty()).then(|| query.tags.iter().cloned().collect());
@@ -504,6 +587,176 @@ impl Service {
             })
             .collect();
         Ok(out)
+    }
+
+    /// Returns one page of the register for `scope`: the query's matches that
+    /// also touch a scope account, sliced after `cursor`, each row carrying the
+    /// scope's real balance and the filtered running sum after it.
+    ///
+    /// The `amount` dimension is exact only after hydration, so with it active
+    /// every candidate is hydrated before slicing; otherwise only the page is.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - The parsed filter.
+    /// * `scope` - The viewed account, or its subtree with roll-up on.
+    /// * `cursor` - Resume after this row; `None` for the first page.
+    /// * `limit` - Maximum rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database or data-parse failure.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "candidate fetch, exact filter, slice, hydrate and two balance passes are one pipeline over shared locals"
+    )]
+    pub async fn register_page(
+        &self,
+        query: &TransactionQuery,
+        scope: &[AccountId],
+        cursor: Option<&RegisterCursor>,
+        limit: u32,
+    ) -> BcResult<RegisterPage> {
+        let account_set = resolve_account_subtrees(self.pool(), &query.accounts).await?;
+        let tag_set: Option<HashSet<TagId>> =
+            (!query.tags.is_empty()).then(|| query.tags.iter().cloned().collect());
+        let candidates: Vec<TxRow> = candidate_statement(query, account_set.as_ref(), Some(scope))?
+            .fetch_all(self.pool())
+            .await?;
+
+        // Exact membership. `ordered` is (id, date) in display order; `hydrated`
+        // holds every candidate only on the amount path.
+        let mut hydrated: Option<HashMap<String, (Transaction, HashSet<PostingId>)>> = None;
+        let ordered: Vec<(String, Date)> = if query.amount.is_some() {
+            let mut map = HashMap::new();
+            let mut keep = Vec::new();
+            // Cloned: `candidates` is still needed below when `hydrated` turns
+            // out `None` on this arm's sibling branch (never at runtime here,
+            // but the borrow checker cannot see that across the `match`).
+            for tx in self.assemble_transactions(candidates.clone()).await? {
+                let matched = compute_matched_postings(
+                    &tx,
+                    account_set.as_ref(),
+                    query.amount.as_ref(),
+                    tag_set.as_ref(),
+                );
+                if matched.is_empty() {
+                    continue;
+                }
+                keep.push((tx.id().to_string(), tx.date()));
+                map.insert(tx.id().to_string(), (tx, matched));
+            }
+            hydrated = Some(map);
+            keep
+        } else {
+            candidates
+                .iter()
+                .map(|row| {
+                    let date = row.1.parse::<Date>().map_err(|e| {
+                        crate::BcError::BadData(format!("invalid date '{}': {e}", row.1))
+                    })?;
+                    Ok((row.0.clone(), date))
+                })
+                .collect::<BcResult<Vec<_>>>()?
+        };
+        let total = u32::try_from(ordered.len()).unwrap_or(u32::MAX);
+
+        // Slice after the cursor in display order: earlier date, or same date and later id.
+        let start = cursor.map_or(0, |c| {
+            let cid = c.id.to_string();
+            ordered
+                .iter()
+                .position(|(id, date)| *date < c.date || (*date == c.date && *id > cid))
+                .unwrap_or(ordered.len())
+        });
+        let end = start
+            .saturating_add(usize::try_from(limit).unwrap_or(usize::MAX))
+            .min(ordered.len());
+        let page_ids: Vec<(String, Date)> = ordered.get(start..end).unwrap_or_default().to_vec();
+        let next_cursor = (end < ordered.len())
+            .then(|| page_ids.last())
+            .flatten()
+            .map(|(id, date)| {
+                id.parse::<TransactionId>()
+                    .map(|parsed| RegisterCursor {
+                        date: *date,
+                        id: parsed,
+                    })
+                    .map_err(|e| {
+                        crate::BcError::BadData(format!("invalid transaction id '{id}': {e}"))
+                    })
+            })
+            .transpose()?;
+
+        // Hydrate the page (unless the amount path already did).
+        let mut page_txs: HashMap<String, (Transaction, HashSet<PostingId>)> =
+            if let Some(mut map) = hydrated {
+                page_ids
+                    .iter()
+                    .filter_map(|(id, _)| map.remove_entry(id))
+                    .collect()
+            } else {
+                let wanted: HashSet<&str> = page_ids.iter().map(|(id, _)| id.as_str()).collect();
+                let rows: Vec<TxRow> = candidates
+                    .into_iter()
+                    .filter(|r| wanted.contains(r.0.as_str()))
+                    .collect();
+                self.assemble_transactions(rows)
+                    .await?
+                    .map(|tx| {
+                        let matched = compute_matched_postings(
+                            &tx,
+                            account_set.as_ref(),
+                            None,
+                            tag_set.as_ref(),
+                        );
+                        (tx.id().to_string(), (tx, matched))
+                    })
+                    .collect()
+            };
+
+        // Balances: one pass over the scope, then the filtered sum over every
+        // match in chronological order (reverse of display order).
+        let ledger = crate::balance::Engine::new(self.pool().clone())
+            .scope_ledger(scope)
+            .await?;
+        let mut sums: HashMap<String, Decimal> = HashMap::new();
+        let mut filtered_sum: HashMap<String, Decimal> = HashMap::new();
+        for (id, _) in ordered.iter().rev() {
+            let Some(commodity) = ledger.focal_commodity(id) else {
+                continue;
+            };
+            let entry = sums.entry(commodity.to_owned()).or_insert(Decimal::ZERO);
+            *entry = entry
+                .checked_add(ledger.delta(id, commodity))
+                .ok_or_else(|| {
+                    crate::BcError::BadData("filtered sum overflow: exceeds Decimal range".into())
+                })?;
+            filtered_sum.insert(id.clone(), *entry);
+        }
+
+        let rows = page_ids
+            .iter()
+            .filter_map(|(id, _)| page_txs.remove(id).map(|pair| (id, pair)))
+            .map(|(id, (transaction, matched_postings))| {
+                let focal = ledger.focal_commodity(id);
+                let balance_after = focal.map(|c| Amount::new(ledger.balance_after(id, c), c));
+                let filtered_sum_after =
+                    focal.and_then(|c| filtered_sum.get(id).map(|v| Amount::new(*v, c)));
+                RegisterRow {
+                    transaction,
+                    matched_postings,
+                    balance_after,
+                    filtered_sum_after,
+                }
+            })
+            .collect();
+
+        Ok(RegisterPage {
+            rows,
+            total,
+            next_cursor,
+        })
     }
 
     /// Computes filtered [`PeriodStats`](crate::balance::PeriodStats) for
@@ -2914,6 +3167,197 @@ mod search_tests {
             .await
             .expect("resolve");
         assert_eq!(empty, None);
+    }
+
+    /// Two deposit accounts and the transaction service, as most tests need.
+    async fn two_accounts(pool: &sqlx::SqlitePool) -> (AccountId, AccountId, Service) {
+        let accts = crate::account::Service::new(pool.clone());
+        let a = accts
+            .create()
+            .name("A")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("A");
+        let b = accts
+            .create()
+            .name("B")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("B");
+        (a, b, Service::new(pool.clone()))
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn register_page_paginates_without_gap_or_duplicate(pool: sqlx::SqlitePool) {
+        let (a, b, svc) = two_accounts(&pool).await;
+        // Five rows, two sharing a date so the cursor's id tie-break is exercised.
+        for (i, d) in [
+            date(2026, 6, 1),
+            date(2026, 6, 2),
+            date(2026, 6, 3),
+            date(2026, 6, 3),
+            date(2026, 6, 4),
+        ]
+        .iter()
+        .enumerate()
+        {
+            svc.create(tx_on(&a, &b, *d, &format!("row {i}"), dec!(10)))
+                .await
+                .expect("create");
+        }
+        let q = TransactionQuery::default();
+
+        let p1 = svc
+            .register_page(&q, core::slice::from_ref(&a), None, 2)
+            .await
+            .expect("p1");
+        assert_eq!(p1.total, 5);
+        assert_eq!(p1.rows.len(), 2);
+        let c1 = p1.next_cursor.clone().expect("more");
+        let p2 = svc
+            .register_page(&q, core::slice::from_ref(&a), Some(&c1), 2)
+            .await
+            .expect("p2");
+        let c2 = p2.next_cursor.clone().expect("more");
+        let p3 = svc
+            .register_page(&q, core::slice::from_ref(&a), Some(&c2), 2)
+            .await
+            .expect("p3");
+        assert_eq!(p3.rows.len(), 1);
+        assert_eq!(p3.next_cursor, None);
+
+        let mut ids: Vec<String> = p1
+            .rows
+            .iter()
+            .chain(&p2.rows)
+            .chain(&p3.rows)
+            .map(|r| r.transaction.id().to_string())
+            .collect();
+        let all = svc.search(&q).await.expect("all");
+        let expected: Vec<String> = all.iter().map(|m| m.transaction.id().to_string()).collect();
+        assert_eq!(ids, expected, "pages concatenate to the full search order");
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 5);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn register_page_scopes_to_the_account(pool: sqlx::SqlitePool) {
+        let (a, b, svc) = two_accounts(&pool).await;
+        let accts = crate::account::Service::new(pool.clone());
+        let c = accts
+            .create()
+            .name("C")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("C");
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "on a", dec!(10)))
+            .await
+            .expect("t1");
+        svc.create(tx_on(&c, &b, date(2026, 6, 2), "on c", dec!(20)))
+            .await
+            .expect("t2");
+
+        let page = svc
+            .register_page(
+                &TransactionQuery::default(),
+                core::slice::from_ref(&a),
+                None,
+                50,
+            )
+            .await
+            .expect("page");
+        assert_eq!(page.total, 1);
+        assert_eq!(
+            page.rows
+                .first()
+                .expect("one row")
+                .transaction
+                .description(),
+            "on a"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn register_page_balances_match_engine_and_filtered_sum(pool: sqlx::SqlitePool) {
+        let (a, b, svc) = two_accounts(&pool).await;
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "coles", dec!(100)))
+            .await
+            .expect("t1");
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "rent", dec!(-40)))
+            .await
+            .expect("t2");
+        svc.create(tx_on(&a, &b, date(2026, 6, 3), "coles again", dec!(-10)))
+            .await
+            .expect("t3");
+
+        // Unfiltered: newest row's balance is the engine's current balance.
+        let page = svc
+            .register_page(
+                &TransactionQuery::default(),
+                core::slice::from_ref(&a),
+                None,
+                50,
+            )
+            .await
+            .expect("page");
+        let engine_balance = Engine::new(pool.clone())
+            .balance_for(&a, "AUD")
+            .await
+            .expect("balance");
+        let newest = page.rows.first().expect("row 0");
+        let oldest = page.rows.get(2).expect("row 2");
+        assert_eq!(
+            newest.balance_after.as_ref().expect("focal").value(),
+            engine_balance.value()
+        );
+        assert_eq!(
+            newest.balance_after.as_ref().expect("focal").value(),
+            dec!(50)
+        );
+        assert_eq!(
+            oldest.balance_after.as_ref().expect("focal").value(),
+            dec!(100)
+        );
+
+        // Text filter: real balance stays real; filtered sum anchors at the oldest match.
+        let query = TransactionQuery {
+            text: Some("coles".to_owned()),
+            ..Default::default()
+        };
+        let filtered_page = svc
+            .register_page(&query, core::slice::from_ref(&a), None, 50)
+            .await
+            .expect("page");
+        assert_eq!(filtered_page.total, 2);
+        let newest_match = filtered_page.rows.first().expect("row 0");
+        let oldest_match = filtered_page.rows.get(1).expect("row 1");
+        assert_eq!(
+            newest_match.balance_after.as_ref().expect("focal").value(),
+            dec!(50)
+        );
+        assert_eq!(
+            newest_match
+                .filtered_sum_after
+                .as_ref()
+                .expect("focal")
+                .value(),
+            dec!(90)
+        );
+        assert_eq!(
+            oldest_match
+                .filtered_sum_after
+                .as_ref()
+                .expect("focal")
+                .value(),
+            dec!(100)
+        );
     }
 }
 
