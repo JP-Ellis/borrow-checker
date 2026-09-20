@@ -1,8 +1,9 @@
 //! Seed a SQLite database with a realistic 6-month dataset for E2E tests.
 //!
 //! Creates a full account hierarchy, account-anchored budgets with initial
-//! revisions, and ~79 transactions covering 6 historical months plus the
-//! current month.
+//! revisions, and 278 transactions covering 6 historical months plus the
+//! current month — including a 150-transaction `Assets:Archive` account used
+//! by the register lazy-loading E2E spec.
 //!
 //! Usage:
 //!   bc-seed [--db-path <PATH>] [--force].
@@ -358,6 +359,18 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await?;
 
+    // 150 transactions, used by the register lazy-loading E2E spec to force
+    // more than one page (`PAGE_SIZE = 100`) without perturbing any other
+    // account's transaction count or balance.
+    let archive_id = accounts
+        .create()
+        .name("Archive")
+        .account_type(AccountType::Asset)
+        .kind(AccountKind::DepositAccount)
+        .parent_id(&assets_id)
+        .call()
+        .await?;
+
     let _car_id = accounts
         .create()
         .name("Car")
@@ -388,6 +401,18 @@ async fn main() -> anyhow::Result<()> {
     let opening_balance_id = accounts
         .create()
         .name("OpeningBalance")
+        .account_type(AccountType::Equity)
+        .kind(AccountKind::DepositAccount)
+        .parent_id(&equity_id)
+        .call()
+        .await?;
+
+    // Dedicated counter account for the Archive paging fixture below, kept
+    // separate from `OpeningBalance` so that account's 4 postings / $950.00
+    // balance never shifts.
+    let archive_opening_id = accounts
+        .create()
+        .name("ArchiveOpening")
         .account_type(AccountType::Equity)
         .kind(AccountKind::DepositAccount)
         .parent_id(&equity_id)
@@ -692,7 +717,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // =========================================================================
-    // TRANSACTIONS (~79 total across 6 historical months + current month)
+    // TRANSACTIONS (278 total across 6 historical months + current month,
+    // including the 150-transaction Archive account below)
     // =========================================================================
 
     macro_rules! txn {
@@ -2036,14 +2062,50 @@ async fn main() -> anyhow::Result<()> {
         vec![tag_recurring.clone()]
     );
 
+    // -------------------------------------------------------------------------
+    // Archive account (150 transactions) — exists purely to force the
+    // register past `PAGE_SIZE` for the lazy-loading E2E spec. Postings are
+    // balanced against `ArchiveOpening` (a dedicated equity account, not
+    // `OpeningBalance`), so no other account's transaction count or balance
+    // shifts. Spread across the 7 seeded months (day 1-28, safe for every
+    // month length) rather than piled on one date.
+    // -------------------------------------------------------------------------
+    let mut archive_count = 0_u32;
+    let mut archive_amount_is_small = true;
+    'archive: for months_ago in (0_i64..=6_i64).rev() {
+        for day in 1_i8..=28_i8 {
+            if archive_count >= 150_u32 {
+                break 'archive;
+            }
+            archive_count = archive_count.saturating_add(1);
+            let amount = if archive_amount_is_small {
+                dec!(10.00)
+            } else {
+                dec!(25.00)
+            };
+            archive_amount_is_small = !archive_amount_is_small;
+            txn!(
+                month_day(months_ago, day),
+                "Archive Co",
+                format!("Archive deposit {archive_count:03}"),
+                Reconciliation::Reconciled,
+                &archive_id,
+                amount,
+                &archive_opening_id,
+                -amount
+            );
+        }
+    }
+
     println!("Done.");
     println!("Created database at {}", args.db_path.display());
-    println!("Accounts:     26 (5 root + 21 leaf)");
+    println!("Accounts:     29 (5 root + 24 leaf)");
     println!("Budgets:       7 (one per expense leaf account)");
     println!("Tags:         13 (9 roots + 4 children; recurring/business/shared/…)");
     println!("Revisions:     9 (7 initial + 2 mid-year bumps for groceries and electricity)");
     println!(
-        "Transactions: ~81 (cleared, pending, voided across 6 historical months + current month)"
+        "Transactions: 278 (cleared, pending, voided across 6 historical months + \
+         current month, including 150 in the paging-fixture Archive account)"
     );
 
     // -------------------------------------------------------------------------
