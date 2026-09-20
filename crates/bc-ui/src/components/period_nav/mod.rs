@@ -413,10 +413,6 @@ pub enum DisplayWindow {
 impl DisplayWindow {
     /// Half-open `[from, until)` date bounds; both `None` for all time.
     #[must_use]
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(dead_code, reason = "used by register/balance queries in a later task")
-    )]
     pub fn bounds(&self) -> (Option<Date>, Option<Date>) {
         match self {
             Self::AllTime => (None, None),
