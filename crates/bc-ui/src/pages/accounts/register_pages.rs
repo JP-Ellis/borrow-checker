@@ -10,17 +10,9 @@ use bc_ipc::RegisterRow;
 use rust_decimal::Decimal;
 
 /// Rows fetched per request.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "consumed by the page in Task 18")
-)]
 pub const PAGE_SIZE: u32 = 100;
 
 /// `localStorage` key holding the balance mode's [`BalanceMode::as_str`] value.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "consumed by the page in Task 18")
-)]
 pub const BALANCE_MODE_KEY: &str = "accounts.balance_mode";
 
 /// Everything the register has loaded so far.

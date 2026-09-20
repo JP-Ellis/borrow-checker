@@ -32,7 +32,7 @@ import_style!(style, "register.module.scss");
 ///   so the parent can refresh its transaction list.
 /// * `accounts` - All selectable accounts for the per-row recategorise picker.
 /// * `window` - Page-level display window (shared with the dashboard).
-/// * `busy` - `true` while `transactions` still shows a previous window.
+/// * `busy` - `true` while `register` still shows a previous request.
 #[component]
 #[expect(
     clippy::needless_pass_by_value,
@@ -60,7 +60,7 @@ pub fn TransactionRegister(
     accounts: Vec<AccountRef>,
     /// Page-level display window (shared with the dashboard).
     window: RwSignal<DisplayWindow>,
-    /// `true` while `transactions` still shows a previous window; rendered as
+    /// `true` while `register` still shows a previous request; rendered as
     /// `aria-busy` so assistive tech and the e2e suite can tell stale rows
     /// from settled ones.
     #[prop(optional, into)]

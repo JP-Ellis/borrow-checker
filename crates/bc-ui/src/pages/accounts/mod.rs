@@ -21,9 +21,6 @@ pub(crate) mod rollup;
 pub(crate) mod tree;
 
 #[cfg(target_arch = "wasm32")]
-use std::collections::HashSet;
-
-#[cfg(target_arch = "wasm32")]
 use bc_ipc::NewTransaction;
 #[cfg(target_arch = "wasm32")]
 use components::add_transaction::AddTransactionForm;
@@ -43,6 +40,11 @@ use leptos::web_sys;
 use leptos_router::hooks::use_params_map;
 #[cfg(target_arch = "wasm32")]
 use stylance::import_style;
+
+#[cfg(target_arch = "wasm32")]
+use crate::pages::accounts::register_pages::BalanceMode;
+#[cfg(target_arch = "wasm32")]
+use crate::pages::accounts::register_pages::LoadedRegister;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "accounts.module.scss");
@@ -96,11 +98,6 @@ pub fn Accounts() -> impl IntoView {
 
     let main_ref = NodeRef::<leptos::html::Div>::new();
     let dashboard_scrolled = RwSignal::new(false);
-    let on_scroll = move |_: web_sys::Event| {
-        if let Some(el) = main_ref.get() {
-            dashboard_scrolled.set(el.scroll_top() > 180_i32);
-        }
-    };
 
     // MARK: Live data
 
@@ -150,36 +147,100 @@ pub fn Accounts() -> impl IntoView {
     // AccountDashboard. Opens on the whole ledger; nothing picks a period.
     let window = RwSignal::new(crate::components::period_nav::DisplayWindow::AllTime);
 
-    // Re-fetches whenever the selected account, data_version, or the
-    // displayed window changes.
-    // Note: `LocalResource::new` requires `Fn() -> Future`, which async closures
-    // (`async move ||`) do not satisfy when they capture from the environment;
-    // the `move || async move {}` form is required here.
-    let transactions_resource = LocalResource::new(move || async move {
+    // MARK: Register paging
+
+    let register = RwSignal::new(LoadedRegister::default());
+
+    // Everything a page request needs except cursor and limit. `None` while no
+    // account is selected. Tracks every reset trigger.
+    let request_base = Signal::derive(move || {
         data_version.get();
+        let id = selected_id.get()?;
         let win = window.get();
-        let Some(id) = selected_id.get() else {
-            return Ok::<_, bc_ipc::BcError>((win, Vec::new()));
-        };
         let eff = filter_store
             .filter
-            .with_untracked(|f| crate::pages::accounts::query::effective_filter(f, &win));
-        // Re-subscribe to the filter signal so edits re-run the resource.
-        filter_store.filter.track();
-        let scope: HashSet<String> = if include_descendants.get() {
-            accounts_resource.get().and_then(Result::ok).map_or_else(
-                || [id.clone()].into_iter().collect(),
-                |nodes| tree::descendants_of(&nodes, &id),
-            )
-        } else {
-            [id.clone()].into_iter().collect()
+            .with(|f| crate::pages::accounts::query::effective_filter(f, &win));
+        Some((eff, id, include_descendants.get()))
+    });
+
+    // Reset: replace what is loaded, asking for at least as many rows as are on screen.
+    Effect::new(move |_| {
+        let Some((filter, id, rollup)) = request_base.get() else {
+            register.set(LoadedRegister::default());
+            return;
         };
-        let all = bc_ipc::client::search_transactions(&eff).await?;
-        let rows = all
-            .into_iter()
-            .filter(|ft| crate::pages::accounts::query::touches_account(&ft.transaction, &scope))
-            .collect::<Vec<_>>();
-        Ok((win, rows))
+        let (generation, limit) = register
+            .try_update(LoadedRegister::begin_reset)
+            .unwrap_or((0, 0));
+        let request = bc_ipc::RegisterRequest::new(filter, id, rollup, None, limit);
+        leptos::task::spawn_local(async move {
+            match bc_ipc::client::register_page(&request).await {
+                Ok(page) => {
+                    register.try_update(|r| r.apply_reset(generation, page));
+                }
+                Err(e) => {
+                    leptos::logging::warn!("register page failed: {e:?}");
+                    register.try_update(|r| r.fail(generation));
+                }
+            }
+        });
+    });
+
+    // Extend: append the next page. A no-op while loading or at the end.
+    let load_more = Callback::new(move |()| {
+        let Some((filter, id, rollup)) = request_base.get_untracked() else {
+            return;
+        };
+        let Some((generation, cursor)) =
+            register.try_update(LoadedRegister::begin_extend).flatten()
+        else {
+            return;
+        };
+        let request = bc_ipc::RegisterRequest::new(
+            filter,
+            id,
+            rollup,
+            Some(cursor),
+            crate::pages::accounts::register_pages::PAGE_SIZE,
+        );
+        leptos::task::spawn_local(async move {
+            match bc_ipc::client::register_page(&request).await {
+                Ok(page) => {
+                    register.try_update(|r| r.apply_extend(generation, page));
+                }
+                Err(e) => {
+                    leptos::logging::warn!("register page failed: {e:?}");
+                    register.try_update(|r| r.fail(generation));
+                }
+            }
+        });
+    });
+
+    let on_scroll = move |_: web_sys::Event| {
+        if let Some(el) = main_ref.get() {
+            dashboard_scrolled.set(el.scroll_top() > 180_i32);
+            // Ask for the next page two viewports before the bottom, so it
+            // lands before the user reaches the sentinel.
+            let remaining = el
+                .scroll_height()
+                .saturating_sub(el.scroll_top())
+                .saturating_sub(el.client_height());
+            if remaining < el.client_height().saturating_mul(2_i32) {
+                load_more.run(());
+            }
+        }
+    };
+
+    // Balance column mode, remembered per browser.
+    let balance_mode = RwSignal::new(
+        crate::storage::get(crate::pages::accounts::register_pages::BALANCE_MODE_KEY)
+            .map_or(BalanceMode::Real, |s| BalanceMode::parse(&s)),
+    );
+    Effect::new(move |_| {
+        crate::storage::set(
+            crate::pages::accounts::register_pages::BALANCE_MODE_KEY,
+            balance_mode.get().as_str(),
+        );
     });
 
     // Resolved account statistics for the selected account, recomputed against
@@ -187,10 +248,10 @@ pub fn Accounts() -> impl IntoView {
     // page-level display window). Shared by the sticky bar and the dashboard
     // so both headlines stay in lockstep.
     //
-    // Both resources return the window they answered for. A `LocalResource`
+    // The resource returns the window it answered for. A `LocalResource`
     // keeps serving its previous value while a refetch is in flight, so the
-    // window tag is the only way to tell "fresh" from "stale" data; the
-    // `*_busy` signals below compare it with the current window.
+    // window tag is the only way to tell "fresh" from "stale" data;
+    // `stats_busy` below compares it with the current window.
     let stats_resource = LocalResource::new(move || async move {
         data_version.get();
         let win = window.get();
@@ -243,19 +304,10 @@ pub fn Accounts() -> impl IntoView {
             .with(|r| crate::pages::accounts::query::awaiting_window(r.as_ref(), &current))
     });
 
-    // Derive a flat signal from the resource for TransactionRegister.
-    let transactions_signal = Signal::derive(move || {
-        transactions_resource
-            .get()
-            .and_then(Result::ok)
-            .map(|(_, rows)| rows)
-            .unwrap_or_default()
-    });
-    let register_busy = Signal::derive(move || {
-        let current = window.get();
-        transactions_resource
-            .with(|r| crate::pages::accounts::query::awaiting_window(r.as_ref(), &current))
-    });
+    // The store sets `loading` on every reset and drops responses from an
+    // older generation, so while it is set the rows on screen belong to a
+    // previous request.
+    let register_busy = Signal::derive(move || register.with(|r| r.loading));
 
     // Derive selected node as a Signal so StickyAccountBar can receive it.
     let selected_node = Signal::derive(move || {
@@ -449,7 +501,9 @@ pub fn Accounts() -> impl IntoView {
                             }}
 
                             <TransactionRegister
-                                transactions=transactions_signal
+                                register=register.read_only().into()
+                                on_load_more=load_more
+                                balance_mode=balance_mode
                                 viewing_account_id=node_id_register
                                 accounts=account_refs
                                 window=window
