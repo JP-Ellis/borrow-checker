@@ -2287,20 +2287,6 @@ impl Service {
         Self::parse_optional_date(row.and_then(|(d,)| d))
     }
 
-    /// Returns the most recent transaction date in the ledger, or `None`
-    /// when there are no transactions.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BcError`] on database failure or an unparsable stored date.
-    #[inline]
-    pub async fn latest_activity_date_all(&self) -> BcResult<Option<jiff::civil::Date>> {
-        let row: Option<(Option<String>,)> = sqlx::query_as("SELECT MAX(date) FROM transactions")
-            .fetch_optional(&self.pool)
-            .await?;
-        Self::parse_optional_date(row.and_then(|(d,)| d))
-    }
-
     /// Parses an optional stored `YYYY-MM-DD` string.
     fn parse_optional_date(raw: Option<String>) -> BcResult<Option<jiff::civil::Date>> {
         match raw {
@@ -3242,68 +3228,6 @@ mod tests {
         assert_eq!(
             svc.latest_activity_date(&acc_a).await.expect("query"),
             Some(date(2026, 6, 30))
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn latest_activity_all_and_for_set(pool: sqlx::SqlitePool) {
-        let acct_svc = crate::account::Service::new(pool.clone());
-        let a = acct_svc
-            .create()
-            .name("A")
-            .account_type(AccountType::Asset)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("a");
-        let b = acct_svc
-            .create()
-            .name("B")
-            .account_type(AccountType::Asset)
-            .kind(AccountKind::DepositAccount)
-            .call()
-            .await
-            .expect("b");
-        let svc = Service::new(pool.clone());
-
-        assert_eq!(svc.latest_activity_date_all().await.expect("empty"), None);
-
-        sqlx::query(
-            "INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES \
-            ('tx_1', '2026-01-10', 'a', 'reconciled', '2026-01-10T00:00:00Z'), \
-            ('tx_2', '2026-03-05', 'b', 'reconciled', '2026-03-05T00:00:00Z')",
-        )
-        .execute(&pool)
-        .await
-        .expect("txs");
-        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p1', 'tx_1', ?, '1.00', 'AUD', 0)")
-            .bind(a.to_string())
-            .execute(&pool)
-            .await
-            .expect("p1");
-        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p2', 'tx_2', ?, '1.00', 'AUD', 0)")
-            .bind(b.to_string())
-            .execute(&pool)
-            .await
-            .expect("p2");
-
-        assert_eq!(
-            svc.latest_activity_date_all().await.expect("all"),
-            Some(date(2026, 3, 5))
-        );
-        assert_eq!(
-            svc.latest_activity_date_for_set(core::slice::from_ref(&a))
-                .await
-                .expect("a"),
-            Some(date(2026, 1, 10))
-        );
-        assert_eq!(
-            svc.latest_activity_date_for_set(&[a, b]).await.expect("ab"),
-            Some(date(2026, 3, 5))
-        );
-        assert_eq!(
-            svc.latest_activity_date_for_set(&[]).await.expect("none"),
-            None
         );
     }
 

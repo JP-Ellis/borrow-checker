@@ -80,9 +80,9 @@ fn sample_stats_filtered() -> bc_ipc::AccountStats {
 ///
 /// # Period coverage
 ///
-/// The sparkline granularity now follows the page `period_window` prop (there
-/// are no per-sparkline controls). The first two sections render Monthly; the
-/// third renders Calendar year to exercise the "Last 12 Months" title path.
+/// The sparkline granularity now follows the page `window` prop (there are no
+/// per-sparkline controls). The first two sections render Monthly; the third
+/// renders Calendar year to exercise the "Last 12 Months" title path.
 ///
 /// Note: the sparkline resource always resolves to an error in this QA harness
 /// because there is no real IPC connection, so the trend chart renders empty.
@@ -91,9 +91,20 @@ fn sample_stats_filtered() -> bc_ipc::AccountStats {
 /// real-balance path.
 #[component]
 pub fn AccountDashboardQa() -> impl IntoView {
-    let monthly = Signal::derive(|| bc_ipc::Period::Monthly);
-    let yearly = Signal::derive(|| bc_ipc::Period::CalendarYear);
-    let window_start = Signal::derive(|| jiff::Zoned::now().date());
+    let monthly = Signal::derive(|| crate::components::period_nav::DisplayWindow::Period {
+        period: bc_ipc::Period::Monthly,
+        start: crate::components::period_nav::window_containing(
+            &bc_ipc::Period::Monthly,
+            jiff::Zoned::now().date(),
+        ),
+    });
+    let yearly = Signal::derive(|| crate::components::period_nav::DisplayWindow::Period {
+        period: bc_ipc::Period::CalendarYear,
+        start: crate::components::period_nav::window_containing(
+            &bc_ipc::Period::CalendarYear,
+            jiff::Zoned::now().date(),
+        ),
+    });
 
     view! {
         <div style="display:flex;flex-direction:column;gap:48px;padding:24px">
@@ -105,8 +116,7 @@ pub fn AccountDashboardQa() -> impl IntoView {
                 <AccountDashboard
                     node=asset_node()
                     stats=Signal::derive(|| Some(sample_stats()))
-                    period_window=monthly
-                    window_start=window_start
+                    window=monthly
                 />
             </section>
 
@@ -117,8 +127,7 @@ pub fn AccountDashboardQa() -> impl IntoView {
                 <AccountDashboard
                     node=liability_node()
                     stats=Signal::derive(|| Some(sample_stats_filtered()))
-                    period_window=monthly
-                    window_start=window_start
+                    window=monthly
                 />
             </section>
 
@@ -126,12 +135,7 @@ pub fn AccountDashboardQa() -> impl IntoView {
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
                     "no mask, no tags, no parent (calendar year)"
                 </p>
-                <AccountDashboard
-                    node=no_mask_node()
-                    stats=Signal::derive(|| None)
-                    period_window=yearly
-                    window_start=window_start
-                />
+                <AccountDashboard node=no_mask_node() stats=Signal::derive(|| None) window=yearly />
             </section>
 
         </div>

@@ -44,10 +44,8 @@ pub fn TransactionRegister(
     /// All selectable accounts for the per-row recategorise picker.
     #[prop(optional)]
     accounts: Vec<AccountRef>,
-    /// Page-level period granularity (shared with the dashboard).
-    period: RwSignal<bc_ipc::Period>,
-    /// Page-level display-window start.
-    window_start: RwSignal<jiff::civil::Date>,
+    /// Page-level display window (shared with the dashboard).
+    window: RwSignal<crate::components::period_nav::DisplayWindow>,
 ) -> impl IntoView {
     let accounts = StoredValue::new(accounts);
 
@@ -112,12 +110,7 @@ pub fn TransactionRegister(
 
     let toasts = crate::components::toast::use_toasts();
     let on_saved_cb = Callback::new(move |date: jiff::civil::Date| {
-        crate::pages::accounts::period_notify::notify_if_out_of_period(
-            toasts,
-            period.get_untracked(),
-            window_start,
-            date,
-        );
+        crate::pages::accounts::period_notify::notify_if_out_of_period(toasts, window, date);
     });
 
     view! {
@@ -128,9 +121,8 @@ pub fn TransactionRegister(
             aria-label="transaction register"
         >
             <div class=style::header>
-                <crate::components::period_nav::PeriodNav
-                    period=period
-                    window_start=window_start
+                <crate::components::period_nav::WindowNav
+                    window=window
                     compact=true
                     disabled=period_locked
                 />

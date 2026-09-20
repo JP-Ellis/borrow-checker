@@ -492,30 +492,6 @@ pub async fn get_account_stats(
     .with_first_activity(first_activity))
 }
 
-/// Returns the most recent transaction date across the whole ledger, or `None`.
-///
-/// # Arguments
-///
-/// * `state` - Tauri managed application state.
-///
-/// # Errors
-///
-/// Returns [`bc_ipc::BcError::Internal`] if the query fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
-pub async fn latest_activity(
-    state: State<'_, AppState>,
-) -> Result<Option<jiff::civil::Date>, bc_ipc::BcError> {
-    state
-        .transactions
-        .latest_activity_date_all()
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
-}
-
 /// Runs a structured transaction search.
 ///
 /// # Arguments
