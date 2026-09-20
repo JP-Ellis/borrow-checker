@@ -1,5 +1,7 @@
 //! Balance calculation engine.
 
+use std::collections::BTreeMap;
+
 use bc_models::AccountId;
 use bc_models::Amount;
 use rust_decimal::Decimal;
@@ -556,8 +558,7 @@ impl Engine {
         if !elided.is_empty() {
             // Residuals are loaded per owning account; group the elided legs first
             // so each account's residuals are loaded once.
-            let mut by_account: std::collections::BTreeMap<String, Vec<(String, String)>> =
-                std::collections::BTreeMap::new();
+            let mut by_account: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
             for (posting_id, date_str, account_id) in elided {
                 by_account
                     .entry(account_id)
@@ -2173,6 +2174,104 @@ mod tests {
             assert_eq!(buckets[1].inflow.value(), dec!(140.00));
             assert_eq!(buckets[1].outflow.value(), dec!(40.00));
         }
+    }
+
+    /// Two accounts in the set each carry their own elided leg, in separate
+    /// transactions, with different concrete legs so the two residuals differ.
+    /// If `fetch_postings_in_range` resolved every elided leg against a single
+    /// account's residual history instead of grouping per owning account, one
+    /// account's posting id would be absent from the other's `Residuals` and
+    /// silently skipped, understating that account's flows.
+    #[sqlx::test(migrations = "./migrations")]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "decimal/count sums in a test assertion, not production arithmetic"
+    )]
+    async fn period_stats_for_set_resolves_residuals_per_account(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let mk = |name: &'static str, ty: AccountType| {
+            let svc = acct_svc.clone();
+            async move {
+                svc.create()
+                    .name(name)
+                    .account_type(ty)
+                    .kind(AccountKind::DepositAccount)
+                    .call()
+                    .await
+                    .expect(name)
+            }
+        };
+        let bank_a = mk("BankA", AccountType::Asset).await;
+        let bank_b = mk("BankB", AccountType::Asset).await;
+        let food = mk("Food", AccountType::Expense).await;
+
+        // tx_ra: Food +80.00 (concrete), BankA elided -> residual -80.00
+        // tx_rb: Food +30.00 (concrete), BankB elided -> residual -30.00
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES \
+            ('tx_ra', '2026-01-05', 'Groceries A', 'unreconciled', '2026-01-05T00:00:00Z'), \
+            ('tx_rb', '2026-01-20', 'Groceries B', 'unreconciled', '2026-01-20T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("txs");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_ra_food', 'tx_ra', ?, '80.00', 'AUD', 0)")
+            .bind(food.to_string())
+            .execute(&pool)
+            .await
+            .expect("concrete leg A");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_ra_bank', 'tx_ra', ?, NULL, NULL, 1)")
+            .bind(bank_a.to_string())
+            .execute(&pool)
+            .await
+            .expect("elided leg A");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_rb_food', 'tx_rb', ?, '30.00', 'AUD', 0)")
+            .bind(food.to_string())
+            .execute(&pool)
+            .await
+            .expect("concrete leg B");
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('p_rb_bank', 'tx_rb', ?, NULL, NULL, 1)")
+            .bind(bank_b.to_string())
+            .execute(&pool)
+            .await
+            .expect("elided leg B");
+
+        let engine = Engine::new(pool.clone());
+        let from = date(2026, 1, 1);
+        let until = date(2026, 2, 1);
+
+        let a_stats = engine
+            .account_period_stats(&bank_a, "AUD", from, until)
+            .await
+            .expect("bank_a stats");
+        let b_stats = engine
+            .account_period_stats(&bank_b, "AUD", from, until)
+            .await
+            .expect("bank_b stats");
+        assert_eq!(a_stats.expenses.value(), dec!(80.00));
+        assert_eq!(b_stats.expenses.value(), dec!(30.00));
+
+        let set_stats = engine
+            .account_period_stats_for_set(&[bank_a, bank_b], "AUD", from, until)
+            .await
+            .expect("set stats");
+
+        // Each residual must resolve against its own account: a misattribution
+        // would drop one of the two distinct amounts instead of summing both.
+        assert_eq!(set_stats.expenses.value(), dec!(110.00));
+        assert_eq!(
+            set_stats.expenses.value(),
+            a_stats.expenses.value() + b_stats.expenses.value(),
+        );
+        assert_eq!(
+            set_stats.income.value(),
+            a_stats.income.value() + b_stats.income.value()
+        );
+        assert_eq!(
+            set_stats.closing.value(),
+            a_stats.closing.value() + b_stats.closing.value(),
+        );
+        assert_eq!(set_stats.tx_count, a_stats.tx_count + b_stats.tx_count);
     }
 
     #[sqlx::test(migrations = "./migrations")]
