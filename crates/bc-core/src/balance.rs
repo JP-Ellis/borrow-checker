@@ -1098,15 +1098,28 @@ impl Engine {
     pub async fn rollup_balances(
         &self,
     ) -> BcResult<std::collections::HashMap<AccountId, bc_models::Balances>> {
-        let account_rows: Vec<(String, Option<String>)> =
-            sqlx::query_as("SELECT id, parent_id FROM accounts WHERE archived_at IS NULL")
+        // Parent links are fetched for *every* account, active or archived: an
+        // archived account can still sit between two active ones in the tree
+        // (e.g. Assets -> Bank (archived) -> Savings), and the ancestor walk
+        // below must pass through it to reach Assets. `active_ids` is the
+        // separate gate that keeps an archived account out of the result and
+        // out of its own postings/residuals contribution.
+        let account_rows: Vec<(String, Option<String>, bool)> =
+            sqlx::query_as("SELECT id, parent_id, archived_at IS NULL FROM accounts")
                 .fetch_all(&self.pool)
                 .await?;
         if account_rows.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
-        let parent_of: std::collections::HashMap<String, Option<String>> =
-            account_rows.into_iter().collect();
+        let mut parent_of: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
+        let mut active_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (id, parent, is_active) in account_rows {
+            if is_active {
+                active_ids.insert(id.clone());
+            }
+            parent_of.insert(id, parent);
+        }
 
         // Own concrete postings, summed per (account, commodity) in SQL is
         // unavailable (amounts are TEXT), so fetch and sum in Rust.
@@ -1141,7 +1154,7 @@ impl Engine {
             reason = "each residual is folded into its own account's entry via commutative addition; order is irrelevant"
         )]
         for (acc_id, balances) in residuals.totals_by_account()? {
-            if !parent_of.contains_key(&acc_id) {
+            if !active_ids.contains(&acc_id) {
                 continue;
             }
             let entry = own.entry(acc_id).or_default();
@@ -1162,11 +1175,16 @@ impl Engine {
         for (acc_id, balances) in &own {
             let mut cursor = Some(acc_id.clone());
             while let Some(id) = cursor {
-                let entry = rolled.entry(id.clone()).or_default();
-                for (code, value) in balances.iter() {
-                    entry
-                        .try_add(&Amount::new(value, code))
-                        .map_err(|e| BcError::BadData(format!("rollup overflow: {e}")))?;
+                // An archived account in the middle of the chain is skipped
+                // as a *result* entry, but the walk still passes through it
+                // to reach any active ancestor above it.
+                if active_ids.contains(&id) {
+                    let entry = rolled.entry(id.clone()).or_default();
+                    for (code, value) in balances.iter() {
+                        entry
+                            .try_add(&Amount::new(value, code))
+                            .map_err(|e| BcError::BadData(format!("rollup overflow: {e}")))?;
+                    }
                 }
                 cursor = parent_of.get(&id).cloned().flatten();
             }
@@ -3531,5 +3549,83 @@ mod tests {
         assert_eq!(income_bal.get("USD"), Some(dec!(-30.00)));
 
         assert!(!rollup.contains_key(&old));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rollup_balances_folds_past_an_archived_intermediate_account(pool: sqlx::SqlitePool) {
+        // Assets (active) -> Bank (archived) -> Savings (active, has postings).
+        // Bank sits between two active accounts but must not itself appear in
+        // the result, and its archival must not sever the fold: Assets still
+        // has to receive Savings' contribution through it.
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let assets = acct_svc
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("assets");
+        let bank = acct_svc
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&assets)
+            .call()
+            .await
+            .expect("bank");
+        let savings = acct_svc
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&bank)
+            .call()
+            .await
+            .expect("savings");
+        let income = acct_svc
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("income");
+
+        sqlx::query("UPDATE accounts SET archived_at = '2024-06-30T00:00:00Z' WHERE id = ?")
+            .bind(bank.to_string())
+            .execute(&pool)
+            .await
+            .expect("archive bank");
+
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES \
+            ('tx_1', '2026-01-01', 'a', 'reconciled', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("txs");
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES \
+            ('p1', 'tx_1', ?, '100.00', 'AUD', 0), \
+            ('p2', 'tx_1', ?, '-100.00', 'AUD', 1)",
+        )
+        .bind(savings.to_string())
+        .bind(income.to_string())
+        .execute(&pool)
+        .await
+        .expect("postings");
+
+        let engine = Engine::new(pool.clone());
+        let rollup = engine.rollup_balances().await.expect("rollup");
+
+        let assets_bal = rollup.get(&assets).expect("assets present");
+        assert_eq!(assets_bal.get("AUD"), Some(dec!(100.00)));
+
+        let savings_bal = rollup.get(&savings).expect("savings present");
+        assert_eq!(savings_bal.get("AUD"), Some(dec!(100.00)));
+
+        assert!(!rollup.contains_key(&bank));
     }
 }
