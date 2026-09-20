@@ -1081,6 +1081,107 @@ impl Engine {
             })
             .collect()
     }
+
+    /// Computes per-commodity totals over every active account and its active
+    /// descendants.
+    ///
+    /// Own concrete postings and own elided residuals are summed per account,
+    /// then each account's totals are added into every ancestor. Accounts
+    /// whose whole subtree holds no postings are absent from the map. No
+    /// commodity conversion takes place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or parse failure, or if a running total
+    /// overflows [`Decimal`].
+    #[inline]
+    pub async fn rollup_balances(
+        &self,
+    ) -> BcResult<std::collections::HashMap<AccountId, bc_models::Balances>> {
+        let account_rows: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT id, parent_id FROM accounts WHERE archived_at IS NULL")
+                .fetch_all(&self.pool)
+                .await?;
+        if account_rows.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let parent_of: std::collections::HashMap<String, Option<String>> =
+            account_rows.into_iter().collect();
+
+        // Own concrete postings, summed per (account, commodity) in SQL is
+        // unavailable (amounts are TEXT), so fetch and sum in Rust.
+        let posting_rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT p.account_id, p.commodity, p.amount
+             FROM postings p
+             JOIN accounts a ON a.id = p.account_id
+             WHERE a.archived_at IS NULL
+               AND p.amount IS NOT NULL
+               AND p.commodity IS NOT NULL",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut own: std::collections::HashMap<String, bc_models::Balances> =
+            std::collections::HashMap::new();
+        for (acc_id, commodity, amt_str) in posting_rows {
+            let value = amt_str
+                .parse::<Decimal>()
+                .map_err(|e| BcError::BadData(format!("invalid amount '{amt_str}': {e}")))?;
+            own.entry(acc_id)
+                .or_default()
+                .try_add(&Amount::new(value, commodity))
+                .map_err(|e| BcError::BadData(format!("rollup overflow: {e}")))?;
+        }
+
+        // Own elided residuals. `Residuals::load` has no archived filter, so
+        // intersect against the active set here.
+        let residuals = crate::residual::Residuals::for_all_accounts(&self.pool).await?;
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "each residual is folded into its own account's entry via commutative addition; order is irrelevant"
+        )]
+        for (acc_id, balances) in residuals.totals_by_account()? {
+            if !parent_of.contains_key(&acc_id) {
+                continue;
+            }
+            let entry = own.entry(acc_id).or_default();
+            for (code, value) in balances.iter() {
+                entry
+                    .try_add(&Amount::new(value, code))
+                    .map_err(|e| BcError::BadData(format!("rollup overflow: {e}")))?;
+            }
+        }
+
+        // Fold each account's own totals into itself and every ancestor.
+        let mut rolled: std::collections::HashMap<String, bc_models::Balances> =
+            std::collections::HashMap::new();
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "each account's totals are added to a fixed ancestor chain via commutative addition; order is irrelevant"
+        )]
+        for (acc_id, balances) in &own {
+            let mut cursor = Some(acc_id.clone());
+            while let Some(id) = cursor {
+                let entry = rolled.entry(id.clone()).or_default();
+                for (code, value) in balances.iter() {
+                    entry
+                        .try_add(&Amount::new(value, code))
+                        .map_err(|e| BcError::BadData(format!("rollup overflow: {e}")))?;
+                }
+                cursor = parent_of.get(&id).cloned().flatten();
+            }
+        }
+
+        rolled
+            .into_iter()
+            .map(|(id_str, balances)| {
+                let id = id_str
+                    .parse::<AccountId>()
+                    .map_err(|e| BcError::BadData(format!("invalid account id '{id_str}': {e}")))?;
+                Ok((id, balances))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -3305,5 +3406,130 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(Amount::new(dec!(0.25), "BTC"), Valuation::Unvalued)]
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rollup_balances_folds_subtree_per_commodity(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let assets = acct_svc
+            .create()
+            .name("Assets")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("assets");
+        let bank = acct_svc
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&assets)
+            .call()
+            .await
+            .expect("bank");
+        let savings = acct_svc
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&bank)
+            .call()
+            .await
+            .expect("savings");
+        let broker = acct_svc
+            .create()
+            .name("Broker")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&assets)
+            .call()
+            .await
+            .expect("broker");
+        let old = acct_svc
+            .create()
+            .name("Old")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .parent_id(&assets)
+            .call()
+            .await
+            .expect("old");
+        let income = acct_svc
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("income");
+        sqlx::query("UPDATE accounts SET archived_at = '2026-01-01T00:00:00Z' WHERE id = ?")
+            .bind(old.to_string())
+            .execute(&pool)
+            .await
+            .expect("archive old");
+
+        // tx_1: savings +100 AUD, income -100 AUD (concrete legs)
+        // tx_2: broker +30 USD, income elided (residual -30 USD)
+        // tx_3: bank +5 AUD, income -5 AUD (bank's own posting)
+        // tx_4: old +999 AUD, income -999 AUD (archived; must not roll up)
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES \
+            ('tx_1', '2026-01-01', 'a', 'reconciled', '2026-01-01T00:00:00Z'), \
+            ('tx_2', '2026-01-02', 'b', 'reconciled', '2026-01-01T00:00:00Z'), \
+            ('tx_3', '2026-01-03', 'c', 'reconciled', '2026-01-01T00:00:00Z'), \
+            ('tx_4', '2026-01-04', 'd', 'reconciled', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("txs");
+        let posting = |id: &str,
+                       tx: &str,
+                       acct: &AccountId,
+                       amt: Option<&str>,
+                       com: Option<&str>,
+                       pos: i32| {
+            sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(id.to_owned())
+                .bind(tx.to_owned())
+                .bind(acct.to_string())
+                .bind(amt.map(ToOwned::to_owned))
+                .bind(com.map(ToOwned::to_owned))
+                .bind(pos)
+        };
+        for q in [
+            posting("p1", "tx_1", &savings, Some("100.00"), Some("AUD"), 0_i32),
+            posting("p2", "tx_1", &income, Some("-100.00"), Some("AUD"), 1_i32),
+            posting("p3", "tx_2", &broker, Some("30.00"), Some("USD"), 0_i32),
+            posting("p4", "tx_2", &income, None, None, 1_i32),
+            posting("p5", "tx_3", &bank, Some("5.00"), Some("AUD"), 0_i32),
+            posting("p6", "tx_3", &income, Some("-5.00"), Some("AUD"), 1_i32),
+            posting("p7", "tx_4", &old, Some("999.00"), Some("AUD"), 0_i32),
+            posting("p8", "tx_4", &income, Some("-999.00"), Some("AUD"), 1_i32),
+        ] {
+            q.execute(&pool).await.expect("posting");
+        }
+
+        let engine = Engine::new(pool.clone());
+        let rollup = engine.rollup_balances().await.expect("rollup");
+
+        let assets_bal = rollup.get(&assets).expect("assets present");
+        assert_eq!(assets_bal.get("AUD"), Some(dec!(105.00)));
+        assert_eq!(assets_bal.get("USD"), Some(dec!(30.00)));
+        assert_eq!(assets_bal.len(), 2);
+
+        let bank_bal = rollup.get(&bank).expect("bank present");
+        assert_eq!(bank_bal.get("AUD"), Some(dec!(105.00)));
+        assert_eq!(bank_bal.get("USD"), None);
+
+        let savings_bal = rollup.get(&savings).expect("savings present");
+        assert_eq!(savings_bal.get("AUD"), Some(dec!(100.00)));
+
+        // Elided residual counts for the income leaf, in USD.
+        let income_bal = rollup.get(&income).expect("income present");
+        assert_eq!(income_bal.get("AUD"), Some(dec!(-1104.00)));
+        assert_eq!(income_bal.get("USD"), Some(dec!(-30.00)));
+
+        assert!(!rollup.contains_key(&old));
     }
 }
