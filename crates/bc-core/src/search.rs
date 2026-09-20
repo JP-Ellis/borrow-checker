@@ -1302,6 +1302,7 @@ mod search_tests {
     use bc_models::Posting;
     use bc_models::PostingId;
     use bc_models::Reconciliation;
+    use bc_models::TagPath;
     use bc_models::Transaction;
     use bc_models::TransactionId;
     use jiff::Timestamp;
@@ -1938,8 +1939,6 @@ mod search_tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn tags_dim_matches_via_transaction_tags(pool: sqlx::SqlitePool) {
-        use bc_models::TagPath;
-
         let accts = crate::account::Service::new(pool.clone());
         let a = accts
             .create()
@@ -2526,8 +2525,6 @@ mod search_tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn filtered_stats_tag_dim_sums_only_tagged_legs(pool: sqlx::SqlitePool) {
-        use bc_models::TagPath;
-
         let accts = crate::account::Service::new(pool.clone());
         let a = accts
             .create()
@@ -2797,8 +2794,6 @@ mod search_tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn filtered_buckets_scope_to_tag(pool: sqlx::SqlitePool) {
-        use bc_models::TagPath;
-
         let accts = crate::account::Service::new(pool.clone());
         let a = accts
             .create()
@@ -3382,8 +3377,6 @@ mod search_tests {
         // `leg_matches` requires a single leg — or a transaction-level tag
         // hit — to satisfy both. The candidate must be excluded from the
         // page, from `total`, and from the filtered running sum.
-        use bc_models::TagPath;
-
         let (a, b, svc) = two_accounts(&pool).await;
         let tags = crate::tag::Service::new(pool.clone());
         let tag = tags
