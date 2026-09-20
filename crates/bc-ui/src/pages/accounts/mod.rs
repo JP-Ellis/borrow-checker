@@ -63,10 +63,21 @@ pub fn Accounts() -> impl IntoView {
     let include_descendants = include_descendants.0;
 
     // Expanded sidebar ids: persisted, seeded with the roots so the first
-    // level is visible, and grown by the selected account's ancestors.
-    let expanded = RwSignal::new(components::sidebar::load_expanded().unwrap_or_default());
+    // level is visible, and grown by the selected account's ancestors. An
+    // absent key is the only "never seeded" state: a persisted empty set is a
+    // deliberate collapse-all and stays that way.
+    let stored_expanded = components::sidebar::load_expanded();
+    let seed_pending = StoredValue::new(stored_expanded.is_none());
+    let expanded = RwSignal::new(stored_expanded.unwrap_or_default());
     Effect::new(move |_| {
-        expanded.with(components::sidebar::save_expanded);
+        expanded.with(|e| {
+            // Nothing is written until the roots have been seeded: an empty
+            // set persisted before the account list resolves would read as a
+            // collapse-all on the next mount.
+            if !seed_pending.get_value() {
+                components::sidebar::save_expanded(e);
+            }
+        });
     });
 
     // Initialise collapsed on narrow viewports (≤ 480px, matching $bp-sm).
@@ -117,7 +128,8 @@ pub fn Accounts() -> impl IntoView {
             .get()
             .map(|id| tree::ancestors_of(&nodes, &id))
             .unwrap_or_default();
-        let seed_roots = expanded.with_untracked(HashSet::is_empty);
+        let seed_roots = seed_pending.get_value();
+        seed_pending.set_value(false);
         let to_add: Vec<String> = expanded.with_untracked(|e| {
             seed_roots
                 .then(|| roots.iter().cloned())
