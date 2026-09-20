@@ -349,40 +349,6 @@ pub async fn get_account_stats(
     .await
 }
 
-/// Argument struct for [`account_latest_activity`].
-#[derive(Serialize)]
-struct AccountLatestActivityArgs<'a> {
-    /// Account ID to query.
-    account_id: &'a str,
-    /// Fold the account's subtree into the result.
-    include_descendants: bool,
-}
-
-/// Returns the most recent transaction date for `account_id`, or `None`.
-///
-/// # Arguments
-///
-/// * `account_id` - Account to query.
-/// * `include_descendants` - Fold the account's subtree into the result.
-///
-/// # Errors
-///
-/// Returns [`BcError::Internal`] if the Tauri invoke fails.
-#[inline]
-pub async fn account_latest_activity(
-    account_id: &str,
-    include_descendants: bool,
-) -> Result<Option<jiff::civil::Date>, BcError> {
-    tauri_sys::core::invoke_result::<Option<jiff::civil::Date>, BcError>(
-        commands::ACCOUNT_LATEST_ACTIVITY,
-        AccountLatestActivityArgs {
-            account_id,
-            include_descendants,
-        },
-    )
-    .await
-}
-
 /// Gets period-bucketed cash-flow data for a sparkline.
 ///
 /// # Arguments
