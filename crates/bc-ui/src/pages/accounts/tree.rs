@@ -14,13 +14,8 @@ fn type_rank(ty: AccountType) -> u8 {
         AccountType::Equity => 2,
         AccountType::Income => 3,
         AccountType::Expense => 4,
-        #[cfg_attr(
-            target_arch = "wasm32",
-            expect(
-                clippy::wildcard_enum_match_arm,
-                reason = "AccountType is #[non_exhaustive]; unknown variants sort last"
-            )
-        )]
+        // Covers only future #[non_exhaustive] variants; every known variant
+        // is matched explicitly above.
         _ => 5,
     }
 }
