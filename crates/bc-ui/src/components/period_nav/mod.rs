@@ -398,10 +398,6 @@ pub fn step_window(
 
 /// The register's display window: every transaction, or one calendar period.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "used by WindowNav and page state in later tasks")
-)]
 pub enum DisplayWindow {
     /// No date bound; the whole ledger.
     AllTime,
@@ -414,13 +410,13 @@ pub enum DisplayWindow {
     },
 }
 
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "used by WindowNav and page state in later tasks")
-)]
 impl DisplayWindow {
     /// Half-open `[from, until)` date bounds; both `None` for all time.
     #[must_use]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "used by register/balance queries in a later task")
+    )]
     pub fn bounds(&self) -> (Option<Date>, Option<Date>) {
         match self {
             Self::AllTime => (None, None),
@@ -430,6 +426,10 @@ impl DisplayWindow {
 
     /// `true` when `date` falls inside the window (always, for all time).
     #[must_use]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "used by register/balance queries in a later task")
+    )]
     pub fn contains(&self, date: Date) -> bool {
         match self {
             Self::AllTime => true,
@@ -565,6 +565,122 @@ fn period_to_str(p: &Period) -> &'static str {
     }
 }
 
+/// `(value, text)` pairs of the granularity `<select>`, in display order.
+#[cfg(target_arch = "wasm32")]
+const PERIOD_OPTIONS: &[(&str, &str)] = &[
+    ("weekly", "Weekly"),
+    ("fortnightly", "Fortnightly"),
+    ("monthly", "Monthly"),
+    ("quarterly", "Quarterly"),
+    ("financial_quarter", "Financial Quarter"),
+    ("financial_year", "Financial Year"),
+    ("calendar_year", "Calendar Year"),
+];
+
+/// `<select>` value of the all-time entry offered by [`WindowNav`].
+///
+/// [`WindowNav`]'s option list duplicates [`PERIOD_OPTIONS`]'s seven period
+/// rows with this entry prepended; a `const` slice cannot be built by
+/// concatenation, so the two lists are kept separately in sync by hand.
+#[cfg(target_arch = "wasm32")]
+const ALL_TIME_VALUE: &str = "all_time";
+
+/// Stateless `◀ label ▶` plus a granularity `<select>`. Owns no signals; the
+/// wrapper decides what each control does.
+///
+/// # Arguments
+///
+/// * `label` - Window label text.
+/// * `show_steps` - Render the `◀`/`▶` buttons.
+/// * `selected` - Value of the active `<option>`.
+/// * `options` - `(value, text)` pairs for the `<select>`.
+/// * `on_prev` / `on_next` - Step callbacks.
+/// * `on_select` - Receives the chosen `<option>` value.
+/// * `compact` - Trims chrome for tight contexts.
+/// * `disabled` - Dims the control and blocks interaction.
+#[cfg(target_arch = "wasm32")]
+#[component]
+fn NavChrome(
+    /// Window label text.
+    label: Signal<String>,
+    /// Render the `◀`/`▶` buttons.
+    show_steps: Signal<bool>,
+    /// Value of the active `<option>`.
+    selected: Signal<&'static str>,
+    /// `(value, text)` pairs for the `<select>`.
+    options: &'static [(&'static str, &'static str)],
+    /// Called when the `◀` button is clicked.
+    on_prev: Callback<()>,
+    /// Called when the `▶` button is clicked.
+    on_next: Callback<()>,
+    /// Receives the chosen `<option>` value.
+    on_select: Callback<String>,
+    /// Trims chrome for tight contexts.
+    compact: bool,
+    /// Dims the control and blocks interaction.
+    disabled: Signal<bool>,
+) -> impl IntoView {
+    let base_row_class = if compact {
+        format!("{} {}", style::nav_row, style::compact)
+    } else {
+        style::nav_row.to_owned()
+    };
+    let row_class = move || {
+        if disabled.get() {
+            format!("{base_row_class} {}", style::disabled)
+        } else {
+            base_row_class.clone()
+        }
+    };
+    view! {
+        <div class=row_class>
+            {move || {
+                show_steps
+                    .get()
+                    .then(|| {
+                        view! {
+                            <button
+                                class=style::nav_btn
+                                aria-label="previous period"
+                                disabled=move || disabled.get()
+                                on:click=move |_| on_prev.run(())
+                            >
+                                "\u{25C0}"
+                            </button>
+                        }
+                    })
+            }} <span class=style::nav_label>{move || label.get()}</span>
+            {move || {
+                show_steps
+                    .get()
+                    .then(|| {
+                        view! {
+                            <button
+                                class=style::nav_btn
+                                aria-label="next period"
+                                disabled=move || disabled.get()
+                                on:click=move |_| on_next.run(())
+                            >
+                                "\u{25B6}"
+                            </button>
+                        }
+                    })
+            }}
+            <select
+                class=style::period_select
+                prop:value=move || selected.get()
+                disabled=move || disabled.get()
+                on:change=move |ev| on_select.run(event_target_value(&ev))
+            >
+                {options
+                    .iter()
+                    .map(|(value, text)| view! { <option value=*value>{*text}</option> })
+                    .collect::<Vec<_>>()}
+            </select>
+        </div>
+    }
+}
+
 /// Shared period stepper: `◀ label ▶` plus a granularity `<select>`.
 ///
 /// The control writes both signals: `◀`/`▶` step `window_start`, and changing
@@ -592,62 +708,97 @@ pub fn PeriodNav(
     #[prop(optional, into)]
     disabled: Signal<bool>,
 ) -> impl IntoView {
-    let label = move || window_label(&period.get(), window_start.get());
-    let base_row_class = if compact {
-        format!("{} {}", style::nav_row, style::compact)
-    } else {
-        style::nav_row.to_owned()
-    };
-    let row_class = move || {
-        if disabled.get() {
-            format!("{base_row_class} {}", style::disabled)
-        } else {
-            base_row_class.clone()
-        }
-    };
-
     view! {
-        <div class=row_class>
-            <button
-                class=style::nav_btn
-                aria-label="previous period"
-                disabled=move || disabled.get()
-                on:click=move |_| {
-                    window_start.update(|ws| *ws = step_window(&period.get(), *ws, false));
+        <NavChrome
+            label=Signal::derive(move || window_label(&period.get(), window_start.get()))
+            show_steps=Signal::derive(|| true)
+            selected=Signal::derive(move || period_to_str(&period.get()))
+            options=PERIOD_OPTIONS
+            on_prev=Callback::new(move |()| {
+                window_start.update(|ws| *ws = step_window(&period.get(), *ws, false));
+            })
+            on_next=Callback::new(move |()| {
+                window_start.update(|ws| *ws = step_window(&period.get(), *ws, true));
+            })
+            on_select=Callback::new(move |value: String| {
+                let new_period = parse_period(&value);
+                window_start.update(|ws| *ws = window_containing(&new_period, *ws));
+                period.set(new_period);
+            })
+            compact=compact
+            disabled=disabled
+        />
+    }
+}
+
+/// Window stepper for the accounts page: [`PeriodNav`] plus an `All time`
+/// entry. In all time the step buttons are not rendered; choosing a
+/// granularity lands on the period containing today.
+///
+/// # Arguments
+///
+/// * `window` - The page's display window (page-owned; written here).
+/// * `compact` - Trims chrome for tight contexts.
+/// * `disabled` - Dims the control and blocks interaction.
+#[cfg(target_arch = "wasm32")]
+#[component]
+pub fn WindowNav(
+    /// The display window (page-owned; written by this control).
+    window: RwSignal<DisplayWindow>,
+    /// Trims chrome for tight contexts.
+    #[prop(optional)]
+    compact: bool,
+    /// Dims the control and blocks interaction.
+    #[prop(optional, into)]
+    disabled: Signal<bool>,
+) -> impl IntoView {
+    const OPTIONS: &[(&str, &str)] = &[
+        (ALL_TIME_VALUE, "All time"),
+        ("weekly", "Weekly"),
+        ("fortnightly", "Fortnightly"),
+        ("monthly", "Monthly"),
+        ("quarterly", "Quarterly"),
+        ("financial_quarter", "Financial Quarter"),
+        ("financial_year", "Financial Year"),
+        ("calendar_year", "Calendar Year"),
+    ];
+    let step = move |forward: bool| {
+        window.update(|w| {
+            if let DisplayWindow::Period { period, start } = w {
+                *start = step_window(period, *start, forward);
+            }
+        });
+    };
+    view! {
+        <NavChrome
+            label=Signal::derive(move || window.with(DisplayWindow::label))
+            show_steps=Signal::derive(move || window.with(|w| w.period().is_some()))
+            selected=Signal::derive(move || {
+                window.with(|w| w.period().map_or(ALL_TIME_VALUE, period_to_str))
+            })
+            options=OPTIONS
+            on_prev=Callback::new(move |()| step(false))
+            on_next=Callback::new(move |()| step(true))
+            on_select=Callback::new(move |value: String| {
+                if value == ALL_TIME_VALUE {
+                    window.set(DisplayWindow::AllTime);
+                    return;
                 }
-            >
-                "\u{25C0}"
-            </button>
-            <span class=style::nav_label>{label}</span>
-            <button
-                class=style::nav_btn
-                aria-label="next period"
-                disabled=move || disabled.get()
-                on:click=move |_| {
-                    window_start.update(|ws| *ws = step_window(&period.get(), *ws, true));
-                }
-            >
-                "\u{25B6}"
-            </button>
-            <select
-                class=style::period_select
-                prop:value=move || period_to_str(&period.get())
-                disabled=move || disabled.get()
-                on:change=move |ev| {
-                    let new_period = parse_period(&event_target_value(&ev));
-                    window_start.update(|ws| *ws = window_containing(&new_period, *ws));
-                    period.set(new_period);
-                }
-            >
-                <option value="weekly">"Weekly"</option>
-                <option value="fortnightly">"Fortnightly"</option>
-                <option value="monthly">"Monthly"</option>
-                <option value="quarterly">"Quarterly"</option>
-                <option value="financial_quarter">"Financial Quarter"</option>
-                <option value="financial_year">"Financial Year"</option>
-                <option value="calendar_year">"Calendar Year"</option>
-            </select>
-        </div>
+                let period = parse_period(&value);
+                let anchor = window
+                    .with_untracked(|w| match w {
+                        DisplayWindow::Period { start, .. } => *start,
+                        DisplayWindow::AllTime => jiff::Zoned::now().date(),
+                    });
+                window
+                    .set(DisplayWindow::Period {
+                        start: window_containing(&period, anchor),
+                        period,
+                    });
+            })
+            compact=compact
+            disabled=disabled
+        />
     }
 }
 
