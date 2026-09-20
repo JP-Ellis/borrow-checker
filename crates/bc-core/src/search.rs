@@ -507,17 +507,18 @@ impl Service {
     }
 
     /// Computes filtered [`PeriodStats`](crate::balance::PeriodStats) for
-    /// `account_id` in `commodity` over the window `[from, until)`.
+    /// `ids` in `commodity` over the window `[from, until)`.
     ///
     /// The filter selects a transaction set via [`Self::search`]; this method
-    /// scopes that set to transactions touching `account_id` and sums the
-    /// account's own legs, bucketing by the window edge. The query's own date
-    /// bounds are ignored — `from`/`until` are the authority (the lower bound is
-    /// dropped from the search so pre-window legs feed the opening balance).
+    /// scopes that set to transactions touching an account in `ids` and sums
+    /// those accounts' own legs, bucketing by the window edge. The query's
+    /// own date bounds are ignored — `from`/`until` are the authority (the
+    /// lower bound is dropped from the search so pre-window legs feed the
+    /// opening balance).
     ///
     /// # Arguments
     ///
-    /// * `account_id` - The account whose legs are aggregated.
+    /// * `ids` - The accounts whose legs are attributed (typically a subtree).
     /// * `commodity` - Commodity code; legs in other commodities are ignored in the sums.
     /// * `query` - The active query; its non-date dimensions and accounts drive membership.
     /// * `from` - Inclusive window start (use [`jiff::civil::Date::MIN`] for an open start).
@@ -529,7 +530,7 @@ impl Service {
     /// running total overflows [`Decimal`]'s range.
     pub async fn filtered_period_stats(
         &self,
-        account_id: &AccountId,
+        ids: &[AccountId],
         commodity: &str,
         query: &TransactionQuery,
         from: Date,
@@ -551,7 +552,7 @@ impl Service {
             let mut touches_in_window = false;
             let residual = crate::residual::residual_of_postings(tx.postings());
             for posting in tx.postings() {
-                if posting.account_id() != account_id {
+                if !ids.contains(posting.account_id()) {
                     continue;
                 }
                 if date >= from && date < until {
@@ -610,12 +611,13 @@ impl Service {
     }
 
     /// Computes filtered cash-flow [`PostingBucket`](crate::balance::PostingBucket)s
-    /// for `account_id` in `commodity`, `count` buckets of `period` trailing from
+    /// for `ids` in `commodity`, `count` buckets of `period` trailing from
     /// `as_of`.
     ///
     /// The filter selects a transaction set via [`Self::search`]; this method
-    /// scopes that set to transactions touching `account_id` and buckets the
-    /// account's own legs by date into inflow (positive) / outflow (`|negative|`).
+    /// scopes that set to transactions touching an account in `ids` and
+    /// buckets those accounts' own legs by date into inflow (positive) /
+    /// outflow (`|negative|`).
     /// `matched_postings` decides membership only, never which legs are summed.
     /// The query's own date bounds are overridden with the bucket span, so the
     /// bucket ranges are the single date authority.
@@ -638,7 +640,7 @@ impl Service {
     ///
     /// # Arguments
     ///
-    /// * `account_id` - The account whose legs are bucketed.
+    /// * `ids` - The accounts whose legs are attributed (typically a subtree).
     /// * `commodity` - Commodity code; legs in other commodities are ignored.
     /// * `query` - The active query; its non-date dimensions and accounts drive membership.
     /// * `period` - Bucket width.
@@ -656,7 +658,7 @@ impl Service {
     /// bucket total overflows [`Decimal`]'s range.
     pub async fn filtered_posting_buckets(
         &self,
-        account_id: &AccountId,
+        ids: &[AccountId],
         commodity: &str,
         query: &TransactionQuery,
         period: &bc_models::Period,
@@ -682,7 +684,7 @@ impl Service {
             let date = tx.date();
             let residual = crate::residual::residual_of_postings(tx.postings());
             for posting in tx.postings() {
-                if posting.account_id() != account_id {
+                if !ids.contains(posting.account_id()) {
                     continue;
                 }
                 let value = if let Some(amount) = posting.amount() {
@@ -1763,7 +1765,7 @@ mod search_tests {
 
         let stats = svc
             .filtered_period_stats(
-                &a,
+                core::slice::from_ref(&a),
                 "AUD",
                 &TransactionQuery::default(),
                 date(2026, 6, 1),
@@ -1867,7 +1869,7 @@ mod search_tests {
         // the derived residual to zero.
         let filtered = svc
             .filtered_period_stats(
-                &bank,
+                core::slice::from_ref(&bank),
                 "AUD",
                 &TransactionQuery::default(),
                 date(2026, 6, 1),
@@ -1926,7 +1928,7 @@ mod search_tests {
         let count = core::num::NonZeroUsize::new(1).expect("nonzero");
         let buckets = svc
             .filtered_posting_buckets(
-                &bank,
+                core::slice::from_ref(&bank),
                 "AUD",
                 &TransactionQuery::default(),
                 &Period::Monthly,
@@ -1978,7 +1980,13 @@ mod search_tests {
             ..Default::default()
         };
         let stats = svc
-            .filtered_period_stats(&a, "AUD", &query, date(2026, 6, 1), date(2026, 7, 1))
+            .filtered_period_stats(
+                core::slice::from_ref(&a),
+                "AUD",
+                &query,
+                date(2026, 6, 1),
+                date(2026, 7, 1),
+            )
             .await
             .expect("stats");
 
@@ -2026,7 +2034,13 @@ mod search_tests {
             ..Default::default()
         };
         let stats = svc
-            .filtered_period_stats(&a, "AUD", &query, date(2026, 6, 1), date(2026, 7, 1))
+            .filtered_period_stats(
+                core::slice::from_ref(&a),
+                "AUD",
+                &query,
+                date(2026, 6, 1),
+                date(2026, 7, 1),
+            )
             .await
             .expect("stats");
 
@@ -2070,7 +2084,7 @@ mod search_tests {
 
         let stats = svc
             .filtered_period_stats(
-                &a,
+                core::slice::from_ref(&a),
                 "AUD",
                 &TransactionQuery::default(),
                 date(2026, 6, 1),
@@ -2173,7 +2187,13 @@ mod search_tests {
             ..Default::default()
         };
         let stats = svc
-            .filtered_period_stats(&a, "AUD", &query, date(2026, 6, 1), date(2026, 7, 1))
+            .filtered_period_stats(
+                core::slice::from_ref(&a),
+                "AUD",
+                &query,
+                date(2026, 6, 1),
+                date(2026, 7, 1),
+            )
             .await
             .expect("stats");
 
@@ -2218,7 +2238,7 @@ mod search_tests {
         // nothing precedes the window, so opening is 0 and both legs are in-window.
         let open_start = svc
             .filtered_period_stats(
-                &a,
+                core::slice::from_ref(&a),
                 "AUD",
                 &TransactionQuery::default(),
                 Date::MIN,
@@ -2235,7 +2255,7 @@ mod search_tests {
         // the May leg is pre-window opening, June is the only in-window flow.
         let open_end = svc
             .filtered_period_stats(
-                &a,
+                core::slice::from_ref(&a),
                 "AUD",
                 &TransactionQuery::default(),
                 date(2026, 6, 1),
@@ -2288,7 +2308,13 @@ mod search_tests {
             ..Default::default()
         };
         let stats = svc
-            .filtered_period_stats(&a, "AUD", &query, date(2026, 6, 1), date(2026, 7, 1))
+            .filtered_period_stats(
+                core::slice::from_ref(&a),
+                "AUD",
+                &query,
+                date(2026, 6, 1),
+                date(2026, 7, 1),
+            )
             .await
             .expect("stats");
 
@@ -2336,7 +2362,7 @@ mod search_tests {
             .expect("posting_buckets");
         let filtered = svc
             .filtered_posting_buckets(
-                &a,
+                core::slice::from_ref(&a),
                 "AUD",
                 &TransactionQuery::default(),
                 &period,
@@ -2419,7 +2445,14 @@ mod search_tests {
         let period = Period::Monthly;
 
         let buckets = svc
-            .filtered_posting_buckets(&a, "AUD", &query, &period, count, as_of)
+            .filtered_posting_buckets(
+                core::slice::from_ref(&a),
+                "AUD",
+                &query,
+                &period,
+                count,
+                as_of,
+            )
             .await
             .expect("filtered_posting_buckets");
 
@@ -2471,7 +2504,14 @@ mod search_tests {
         let period = Period::Monthly;
 
         let buckets = svc
-            .filtered_posting_buckets(&a, "AUD", &query, &period, count, as_of)
+            .filtered_posting_buckets(
+                core::slice::from_ref(&a),
+                "AUD",
+                &query,
+                &period,
+                count,
+                as_of,
+            )
             .await
             .expect("filtered_posting_buckets");
 
@@ -2521,7 +2561,14 @@ mod search_tests {
         };
         let count = core::num::NonZeroUsize::new(3).expect("3 > 0");
         let buckets = svc
-            .filtered_posting_buckets(&a, "AUD", &query, &Period::Weekly, count, date(2025, 2, 12))
+            .filtered_posting_buckets(
+                core::slice::from_ref(&a),
+                "AUD",
+                &query,
+                &Period::Weekly,
+                count,
+                date(2025, 2, 12),
+            )
             .await
             .expect("filtered_posting_buckets");
 
@@ -2598,7 +2645,7 @@ mod search_tests {
         let count = core::num::NonZeroUsize::new(1).expect("1 > 0");
         let buckets = svc
             .filtered_posting_buckets(
-                &a,
+                core::slice::from_ref(&a),
                 "AUD",
                 &query,
                 &Period::Monthly,
@@ -2671,7 +2718,7 @@ mod search_tests {
         let count = core::num::NonZeroUsize::new(1).expect("1 > 0");
         let buckets = svc
             .filtered_posting_buckets(
-                &a,
+                core::slice::from_ref(&a),
                 "AUD",
                 &TransactionQuery::default(),
                 &Period::Monthly,
