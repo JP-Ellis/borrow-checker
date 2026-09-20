@@ -21,7 +21,8 @@ pub fn get(key: &str) -> Option<String> {
         .flatten()
 }
 
-/// Writes `value` under `key` in `localStorage`; a failure is ignored.
+/// Writes `value` under `key` in `localStorage`; a failure is logged and
+/// otherwise ignored.
 ///
 /// # Arguments
 ///
