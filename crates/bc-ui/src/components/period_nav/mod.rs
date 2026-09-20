@@ -397,7 +397,7 @@ pub fn step_window(
 // MARK: DisplayWindow
 
 /// The register's display window: every transaction, or one calendar period.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DisplayWindow {
     /// No date bound; the whole ledger.
     AllTime,

@@ -1172,7 +1172,7 @@ impl SparkPoint {
 ///
 /// Maps to [`bc_models::Period`] on the backend; only variants meaningful to a
 /// frontend caller are exposed here.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Period {
