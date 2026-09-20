@@ -19,6 +19,9 @@ pub(crate) mod rollup;
 pub(crate) mod tree;
 
 #[cfg(target_arch = "wasm32")]
+use std::collections::HashSet;
+
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::NewTransaction;
 #[cfg(target_arch = "wasm32")]
 use components::add_transaction::AddTransactionForm;
@@ -114,12 +117,19 @@ pub fn Accounts() -> impl IntoView {
             .get()
             .map(|id| tree::ancestors_of(&nodes, &id))
             .unwrap_or_default();
-        expanded.update(|e| {
-            if e.is_empty() {
-                e.extend(roots);
-            }
-            e.extend(ancestors);
+        let seed_roots = expanded.with_untracked(HashSet::is_empty);
+        let to_add: Vec<String> = expanded.with_untracked(|e| {
+            seed_roots
+                .then(|| roots.iter().cloned())
+                .into_iter()
+                .flatten()
+                .chain(ancestors)
+                .filter(|id| !e.contains(id))
+                .collect()
         });
+        if !to_add.is_empty() {
+            expanded.update(|e| e.extend(to_add));
+        }
     });
 
     // Page-level period/window state, shared with TransactionRegister
@@ -147,14 +157,11 @@ pub fn Accounts() -> impl IntoView {
             .with_untracked(|f| crate::pages::accounts::query::effective_filter(f, &period, start));
         // Re-subscribe to the filter signal so edits re-run the resource.
         filter_store.filter.track();
-        let scope: std::collections::HashSet<String> = if include_descendants.get() {
-            accounts_resource
-                .get_untracked()
-                .and_then(Result::ok)
-                .map_or_else(
-                    || [id.clone()].into_iter().collect(),
-                    |nodes| crate::pages::accounts::tree::descendants_of(&nodes, &id),
-                )
+        let scope: HashSet<String> = if include_descendants.get() {
+            accounts_resource.get().and_then(Result::ok).map_or_else(
+                || [id.clone()].into_iter().collect(),
+                |nodes| tree::descendants_of(&nodes, &id),
+            )
         } else {
             [id.clone()].into_iter().collect()
         };
@@ -201,7 +208,7 @@ pub fn Accounts() -> impl IntoView {
         // Re-subscribe to the filter signal so edits re-run the resource.
         filter_store.filter.track();
         let commodity = accounts_resource
-            .get_untracked()
+            .get()
             .and_then(Result::ok)
             .and_then(|nodes| nodes.into_iter().find(|n| n.id == id))
             .and_then(|n| {
