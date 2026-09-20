@@ -27,6 +27,11 @@
 .row_selected { background: var(--bc-surface-alt); }
 .row_expanded { background: var(--bc-accent-soft); }
 
+/* With the balance column (register only): one extra 150px track at md+. */
+.row_with_balance {
+  @media (min-width: #{bp.$bp-md}) { grid-template-columns: 40px 2fr 1fr 110px 150px 20px; }
+}
+
 .date {
   display: none;
   font-family: var(--bc-font-mono);
@@ -126,6 +131,13 @@
 .amt_pos { color: var(--bc-good); }
 .amt_neg { color: var(--bc-bad); }
 .amt_neu { color: var(--bc-ink-mute); }
+
+.balance_col {
+  display: none;
+  min-width: 0;
+  align-self: stretch;
+  @media (min-width: #{bp.$bp-md}) { display: block; }
+}
 
 /* Two-line amount cell: the headline on top, the price annotation and the
    split / unbalanced pills beneath in the muted mono caption style. */
