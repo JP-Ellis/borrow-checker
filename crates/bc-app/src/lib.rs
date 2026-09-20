@@ -124,7 +124,6 @@ pub fn run() {
             commands::accounts::get_transaction_audit,
             commands::accounts::get_account_stats,
             commands::accounts::get_account_sparkline,
-            commands::accounts::latest_activity,
             commands::accounts::search_transactions,
             commands::accounts::register_page,
             commands::tags::create_tag,

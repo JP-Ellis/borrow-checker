@@ -175,15 +175,13 @@ fn partially_matched_transaction() -> FilteredTransaction {
 /// dimmed in the detail editor.
 #[component]
 fn DimmedRegisterShowcase() -> impl IntoView {
-    let period = RwSignal::new(bc_ipc::Period::Monthly);
-    let window_start = RwSignal::new(jiff::Zoned::now().date());
+    let window = RwSignal::new(crate::components::period_nav::DisplayWindow::AllTime);
 
     view! {
         <TransactionRegister
             transactions=Signal::derive(|| vec![partially_matched_transaction()])
             viewing_account_id="cb-smart-access"
-            period=period
-            window_start=window_start
+            window=window
         />
     }
 }
@@ -191,8 +189,7 @@ fn DimmedRegisterShowcase() -> impl IntoView {
 /// Renders [`TransactionRegister`] with full and empty data sets.
 #[component]
 pub fn TransactionRegisterQa() -> impl IntoView {
-    let period = RwSignal::new(bc_ipc::Period::Monthly);
-    let window_start = RwSignal::new(jiff::Zoned::now().date());
+    let window = RwSignal::new(crate::components::period_nav::DisplayWindow::AllTime);
 
     view! {
         <div style="display:flex;flex-direction:column;gap:32px;padding:24px">
@@ -204,8 +201,7 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                 <TransactionRegister
                     transactions=Signal::derive(sample_transactions)
                     viewing_account_id="cb-smart-access"
-                    period=period
-                    window_start=window_start
+                    window=window
                 />
             </section>
 
@@ -216,8 +212,7 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                 <TransactionRegister
                     transactions=Signal::derive(Vec::new)
                     viewing_account_id="cb-smart-access"
-                    period=period
-                    window_start=window_start
+                    window=window
                 />
             </section>
 

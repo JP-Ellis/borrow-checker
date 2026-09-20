@@ -392,21 +392,6 @@ pub async fn get_account_sparkline(
     .await
 }
 
-/// Returns the most recent transaction date across the whole ledger, or `None`
-/// when the ledger is empty.
-///
-/// # Errors
-///
-/// Returns [`BcError::Internal`] if the Tauri invoke fails.
-#[inline]
-pub async fn latest_activity() -> Result<Option<jiff::civil::Date>, BcError> {
-    tauri_sys::core::invoke_result::<Option<jiff::civil::Date>, BcError>(
-        commands::LATEST_ACTIVITY,
-        NoArgs {},
-    )
-    .await
-}
-
 /// Lists all installed plugins from the backend.
 ///
 /// # Errors

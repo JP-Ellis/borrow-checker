@@ -145,13 +145,9 @@ pub fn Accounts() -> impl IntoView {
         }
     });
 
-    // Page-level period/window state, shared with TransactionRegister
-    // (Task 10) and AccountDashboard (Task 11).
-    let display_period = RwSignal::new(bc_ipc::Period::Monthly);
-    let window_start = RwSignal::new({
-        let today = jiff::Zoned::now().date();
-        crate::components::period_nav::window_containing(&bc_ipc::Period::Monthly, today)
-    });
+    // Page-level display window, shared with TransactionRegister and
+    // AccountDashboard. Opens on the whole ledger; nothing picks a period.
+    let window = RwSignal::new(crate::components::period_nav::DisplayWindow::AllTime);
 
     // Re-fetches whenever the selected account, data_version, or the
     // displayed window changes.
@@ -160,14 +156,13 @@ pub fn Accounts() -> impl IntoView {
     // the `move || async move {}` form is required here.
     let transactions_resource = LocalResource::new(move || async move {
         data_version.get();
-        let period = display_period.get();
-        let start = window_start.get();
+        let win = window.get();
         let Some(id) = selected_id.get() else {
             return Ok::<_, bc_ipc::BcError>(Vec::new());
         };
         let eff = filter_store
             .filter
-            .with_untracked(|f| crate::pages::accounts::query::effective_filter(f, &period, start));
+            .with_untracked(|f| crate::pages::accounts::query::effective_filter(f, &win));
         // Re-subscribe to the filter signal so edits re-run the resource.
         filter_store.filter.track();
         let scope: HashSet<String> = if include_descendants.get() {
@@ -185,39 +180,19 @@ pub fn Accounts() -> impl IntoView {
             .collect::<Vec<_>>())
     });
 
-    // Seed the window once from the ledger's most recent transaction, so a
-    // backfilled database opens on its last month rather than today. A
-    // navigation made before the response lands wins over the seed.
-    let unseeded_window = window_start.get_untracked();
-    leptos::task::spawn_local(async move {
-        if let Ok(Some(latest)) = bc_ipc::client::latest_activity().await {
-            // The component may already be disposed by the time this
-            // response lands; the `try_` accessors are silent no-ops then
-            // instead of panicking on a dropped signal.
-            if window_start.try_get_untracked() != Some(unseeded_window) {
-                return;
-            }
-            let period = display_period.get_untracked();
-            window_start.try_set(crate::components::period_nav::window_containing(
-                &period, latest,
-            ));
-        }
-    });
-
     // Resolved account statistics for the selected account, recomputed against
     // the effective filter (register-style: filter dates win, else the
     // page-level display window). Shared by the sticky bar and the dashboard
     // so both headlines stay in lockstep.
     let stats_resource = LocalResource::new(move || async move {
         data_version.get();
-        let period = display_period.get();
-        let start = window_start.get();
+        let win = window.get();
         let rollup_on = include_descendants.get();
         let Some(id) = selected_id.get() else {
             return Ok(None);
         };
         let (from, until, filter) = filter_store.filter.with_untracked(|f| {
-            let eff = crate::pages::accounts::query::effective_filter(f, &period, start);
+            let eff = crate::pages::accounts::query::effective_filter(f, &win);
             let active =
                 crate::pages::accounts::query::filter_has_non_date_dim(f).then(|| eff.clone());
             (
@@ -300,12 +275,7 @@ pub fn Accounts() -> impl IntoView {
             close_add_tx();
             if let Some(date) = pending_new_date.get_untracked() {
                 pending_new_date.set(None);
-                period_notify::notify_if_out_of_period(
-                    toasts,
-                    display_period.get_untracked(),
-                    window_start,
-                    date,
-                );
+                period_notify::notify_if_out_of_period(toasts, window, date);
             }
         }
     });
@@ -419,8 +389,7 @@ pub fn Accounts() -> impl IntoView {
                                 stats=stats_signal
                                 data_version=data_version.read_only()
                                 on_add_tx=Callback::new(move |()| open_add_tx())
-                                period_window=display_period.read_only().into()
-                                window_start=window_start.read_only().into()
+                                window=window.read_only().into()
                             />
 
                             {move || {
@@ -461,8 +430,7 @@ pub fn Accounts() -> impl IntoView {
                                 transactions=transactions_signal
                                 viewing_account_id=node_id_register
                                 accounts=account_refs
-                                period=display_period
-                                window_start=window_start
+                                window=window
                                 on_change=Callback::new(move |()| {
                                     data_version.update(|v| *v = v.wrapping_add(1));
                                 })

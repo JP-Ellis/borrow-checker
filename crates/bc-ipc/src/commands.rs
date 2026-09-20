@@ -19,9 +19,6 @@ pub const GET_ACCOUNT_STATS: &str = "get_account_stats";
 /// Command: get period-bucketed cash-flow data for a sparkline chart.
 pub const GET_ACCOUNT_SPARKLINE: &str = "get_account_sparkline";
 
-/// Command: get the most recent transaction date across the whole ledger.
-pub const LATEST_ACTIVITY: &str = "latest_activity";
-
 /// Command: list installed plugins.
 pub const LIST_PLUGINS: &str = "list_plugins";
 

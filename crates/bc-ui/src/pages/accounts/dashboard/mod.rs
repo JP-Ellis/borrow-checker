@@ -32,8 +32,7 @@ static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 ///   the real opening/closing for a muted reference).
 /// * `data_version` - Optional monotonic counter; when it changes, the sparkline re-fetches.
 /// * `on_add_tx` - Optional callback fired when the user clicks "+ transaction".
-/// * `period_window` - Page-level period granularity (read-only; the register's `PeriodNav` writes it).
-/// * `window_start` - Page-level display-window start (read-only).
+/// * `window` - Page-level display window (read-only; the register's `WindowNav` writes it).
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -56,10 +55,8 @@ pub fn AccountDashboard(
     /// Optional callback fired when the user clicks the "+ transaction" action button.
     #[prop(optional)]
     on_add_tx: Option<Callback<()>>,
-    /// Page-level period granularity (read-only; the register's `PeriodNav` writes it).
-    period_window: Signal<bc_ipc::Period>,
-    /// Page-level display-window start (read-only).
-    window_start: Signal<jiff::civil::Date>,
+    /// Page-level display window (read-only; the register's `WindowNav` writes it).
+    window: Signal<crate::components::period_nav::DisplayWindow>,
 ) -> impl IntoView {
     let currencies = crate::currency_ctx::use_currency_store();
     let sparkline_account_id = node.id.clone();
@@ -68,13 +65,14 @@ pub fn AccountDashboard(
     let filter_store = crate::filter_ctx::use_filter_store();
 
     // Single source of truth for the sparkline's bucketing + anchor, derived
-    // from the active filter and the page period/window.
+    // from the active filter and the page display window.
     let bucketing = Signal::derive(move || {
-        let period = period_window.get();
-        let start_win = window_start.get();
-        filter_store
-            .filter
-            .with(|f| crate::pages::accounts::query::sparkline_bucketing(f, &period, start_win))
+        let win = window.get();
+        let first_activity = stats.get().and_then(|s| s.first_activity);
+        let today = jiff::Zoned::now().date();
+        filter_store.filter.with(|f| {
+            crate::pages::accounts::query::sparkline_bucketing(f, &win, first_activity, today)
+        })
     });
 
     // Whether the filter contributes a membership dimension — the same notion
@@ -310,10 +308,8 @@ pub fn AccountDashboard(
                 <StatCards count=4>
                     {move || {
                         let stats = stats.get();
-                        let window_label = crate::components::period_nav::window_label(
-                            &period_window.get(),
-                            window_start.get(),
-                        );
+                        let window_label = window
+                            .with(crate::components::period_nav::DisplayWindow::label);
                         let (income_str, expense_str, tx_count_str) = stats
                             .as_ref()
                             .map_or_else(
