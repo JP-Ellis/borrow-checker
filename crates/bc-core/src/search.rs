@@ -2051,6 +2051,151 @@ mod search_tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_stats_multi_account_set_sums_both_sides(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let income = accts
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("Income");
+        let wallet = accts
+            .create()
+            .name("Wallet")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("Wallet");
+        let savings = accts
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("Savings");
+        let svc = Service::new(pool.clone());
+
+        // Income -> Wallet: only Wallet's leg is in the set.
+        svc.create(tx_on(
+            &wallet,
+            &income,
+            date(2026, 6, 2),
+            "salary",
+            dec!(1000),
+        ))
+        .await
+        .expect("t1");
+        // Wallet -> Savings: a transfer where BOTH legs are in the set, so
+        // each side is attributed to its own account rather than one leg
+        // being treated as the transaction's "other side".
+        svc.create(tx_on(
+            &savings,
+            &wallet,
+            date(2026, 6, 3),
+            "transfer",
+            dec!(400),
+        ))
+        .await
+        .expect("t2");
+
+        let ids = [wallet.clone(), savings.clone()];
+        let stats = svc
+            .filtered_period_stats(
+                &ids,
+                "AUD",
+                &TransactionQuery::default(),
+                date(2026, 6, 1),
+                date(2026, 7, 1),
+            )
+            .await
+            .expect("stats");
+
+        // Wallet's +1000 salary leg, plus Savings' +400 transfer-in leg.
+        assert_eq!(stats.income.value(), dec!(1400));
+        // Wallet's -400 transfer-out leg.
+        assert_eq!(stats.expenses.value(), dec!(400));
+        assert_eq!(stats.net.value(), dec!(1000));
+        assert_eq!(stats.closing.value(), dec!(1000));
+        // Both transactions touch an in-set account within the window.
+        assert_eq!(stats.tx_count, 2_u32);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_buckets_multi_account_set_sums_both_sides(pool: sqlx::SqlitePool) {
+        let accts = crate::account::Service::new(pool.clone());
+        let income = accts
+            .create()
+            .name("Income")
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("Income");
+        let wallet = accts
+            .create()
+            .name("Wallet")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("Wallet");
+        let savings = accts
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("Savings");
+        let svc = Service::new(pool.clone());
+
+        svc.create(tx_on(
+            &wallet,
+            &income,
+            date(2026, 6, 2),
+            "salary",
+            dec!(1000),
+        ))
+        .await
+        .expect("t1");
+        svc.create(tx_on(
+            &savings,
+            &wallet,
+            date(2026, 6, 3),
+            "transfer",
+            dec!(400),
+        ))
+        .await
+        .expect("t2");
+
+        let ids = [wallet.clone(), savings.clone()];
+        let count = core::num::NonZeroUsize::new(1).expect("1 > 0");
+        let as_of = date(2026, 6, 30);
+        let buckets = svc
+            .filtered_posting_buckets(
+                &ids,
+                "AUD",
+                &TransactionQuery::default(),
+                &Period::Monthly,
+                count,
+                as_of,
+            )
+            .await
+            .expect("filtered_posting_buckets");
+
+        assert_eq!(buckets.len(), 1);
+        let bucket = buckets.first().expect("one bucket");
+        // Inflow: Wallet's +1000 salary leg, Savings' +400 transfer-in leg.
+        assert_eq!(bucket.inflow.value(), dec!(1400));
+        // Outflow: Wallet's -400 transfer-out leg.
+        assert_eq!(bucket.outflow.value(), dec!(400));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn filtered_stats_negative_flows_and_opening(pool: sqlx::SqlitePool) {
         let accts = crate::account::Service::new(pool.clone());
         let a = accts
