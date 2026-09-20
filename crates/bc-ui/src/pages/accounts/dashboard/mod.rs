@@ -63,6 +63,7 @@ pub fn AccountDashboard(
 ) -> impl IntoView {
     let currencies = crate::currency_ctx::use_currency_store();
     let sparkline_account_id = node.id.clone();
+    let include_descendants = crate::pages::accounts::rollup::use_include_descendants();
 
     let filter_store = crate::filter_ctx::use_filter_store();
 
@@ -85,6 +86,16 @@ pub fn AccountDashboard(
             .with(crate::pages::accounts::query::filter_has_non_date_dim)
     });
 
+    let own_code = node.balance.as_ref().map(|b| b.currency_code.clone());
+    let rollup_code = node.rollup.first().map(|a| a.currency_code.clone());
+    let sparkline_currency = Signal::derive(move || {
+        if include_descendants.get() {
+            rollup_code.clone()
+        } else {
+            own_code.clone()
+        }
+    });
+
     let sparkline_resource = LocalResource::new(move || {
         let id = sparkline_account_id.clone();
         let (bucket, count, span_end) = bucketing.get();
@@ -96,19 +107,24 @@ pub fn AccountDashboard(
         if let Some(v) = data_version {
             v.get();
         }
+        let rollup_on = include_descendants.get();
+        let commodity = sparkline_currency.get();
         async move {
             if count == 0 {
                 return Ok(vec![]);
             }
-            bc_ipc::client::get_account_sparkline(&id, bucket, count, as_of, membership.as_ref())
-                .await
+            bc_ipc::client::get_account_sparkline(
+                &id,
+                commodity.as_deref(),
+                rollup_on,
+                bucket,
+                count,
+                as_of,
+                membership.as_ref(),
+            )
+            .await
         }
     });
-
-    let sparkline_currency_code = node
-        .balance
-        .as_ref()
-        .map_or_else(String::new, |b| b.currency_code.clone());
 
     // Closing / opening / net (formatted) plus a net-is-negative flag and the
     // muted real closing (only present when a filter is active), computed once
@@ -178,6 +194,17 @@ pub fn AccountDashboard(
         <div class=style::dashboard>
             <div class=style::header_row>
                 <div class=style::breadcrumb>{breadcrumb}</div>
+
+                <label class=style::rollup_toggle>
+                    <input
+                        type="checkbox"
+                        prop:checked=move || include_descendants.get()
+                        on:change=move |ev| {
+                            include_descendants.set(event_target_checked(&ev));
+                        }
+                    />
+                    " include sub-accounts"
+                </label>
 
                 <div class=style::actions>
                     <div class=style::actions_inline>
@@ -365,7 +392,10 @@ pub fn AccountDashboard(
                 };
                 view! {
                     <div data-testid="dashboard-sparkline">
-                        <Sparkline points=points currency_code=sparkline_currency_code.clone()>
+                        <Sparkline
+                            points=points
+                            currency_code=sparkline_currency.get().unwrap_or_default()
+                        >
                             <Title slot>{title}</Title>
                         </Sparkline>
                     </div>

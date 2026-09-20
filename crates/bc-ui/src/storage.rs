@@ -28,7 +28,9 @@ pub fn get(key: &str) -> Option<String> {
 /// * `key` - Storage key.
 /// * `value` - Value to persist.
 pub fn set(key: &str, value: &str) {
-    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        storage.set_item(key, value).ok();
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten())
+        && let Err(e) = storage.set_item(key, value)
+    {
+        leptos::logging::warn!("localStorage set_item failed: {e:?}");
     }
 }

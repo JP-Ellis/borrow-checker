@@ -48,7 +48,6 @@ pub fn save_expanded(expanded: &HashSet<String>) {
 /// * `selected_id` - Currently selected account ID (derived from route).
 /// * `collapsed` - Whether the sidebar is in dot-rail mode.
 /// * `expanded` - Ids whose children are shown; owned by the page.
-#[expect(clippy::too_many_lines, reason = "Leptos view! block")]
 #[component]
 pub fn AccountSidebar(
     /// All account nodes.
@@ -218,7 +217,7 @@ fn SidebarNode(
                                 <SidebarNode
                                     node=child
                                     nodes=all.clone()
-                                    depth=depth + 1
+                                    depth=depth.saturating_add(1)
                                     selected_id=selected_id
                                     expanded=expanded
                                 />

@@ -55,6 +55,17 @@ pub fn Accounts() -> impl IntoView {
     let params = use_params_map();
     let selected_id = Signal::derive(move || params.with(|p| p.get("id")));
 
+    let include_descendants = rollup::create_include_descendants();
+    provide_context(include_descendants);
+    let include_descendants = include_descendants.0;
+
+    // Expanded sidebar ids: persisted, seeded with the roots so the first
+    // level is visible, and grown by the selected account's ancestors.
+    let expanded = RwSignal::new(components::sidebar::load_expanded().unwrap_or_default());
+    Effect::new(move |_| {
+        expanded.with(components::sidebar::save_expanded);
+    });
+
     // Initialise collapsed on narrow viewports (≤ 480px, matching $bp-sm).
     let sidebar_collapsed = {
         let narrow = web_sys::window()
@@ -90,6 +101,27 @@ pub fn Accounts() -> impl IntoView {
         bc_ipc::client::list_accounts()
     });
 
+    // Roots open one level on first load; ancestors of the selection always open.
+    Effect::new(move |_| {
+        let Some(Ok(nodes)) = accounts_resource.get() else {
+            return;
+        };
+        let roots: Vec<String> = tree::ordered_roots(&nodes)
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        let ancestors = selected_id
+            .get()
+            .map(|id| tree::ancestors_of(&nodes, &id))
+            .unwrap_or_default();
+        expanded.update(|e| {
+            if e.is_empty() {
+                e.extend(roots);
+            }
+            e.extend(ancestors);
+        });
+    });
+
     // Page-level period/window state, shared with TransactionRegister
     // (Task 10) and AccountDashboard (Task 11).
     let display_period = RwSignal::new(bc_ipc::Period::Monthly);
@@ -97,7 +129,6 @@ pub fn Accounts() -> impl IntoView {
         let today = jiff::Zoned::now().date();
         crate::components::period_nav::window_containing(&bc_ipc::Period::Monthly, today)
     });
-    let has_seeded = RwSignal::new(false);
 
     // Re-fetches whenever the selected account, data_version, or the
     // displayed window changes.
@@ -116,38 +147,33 @@ pub fn Accounts() -> impl IntoView {
             .with_untracked(|f| crate::pages::accounts::query::effective_filter(f, &period, start));
         // Re-subscribe to the filter signal so edits re-run the resource.
         filter_store.filter.track();
+        let scope: std::collections::HashSet<String> = if include_descendants.get() {
+            accounts_resource
+                .get_untracked()
+                .and_then(Result::ok)
+                .map_or_else(
+                    || [id.clone()].into_iter().collect(),
+                    |nodes| crate::pages::accounts::tree::descendants_of(&nodes, &id),
+                )
+        } else {
+            [id.clone()].into_iter().collect()
+        };
         let all = bc_ipc::client::search_transactions(&eff).await?;
         Ok(all
             .into_iter()
-            .filter(|ft| crate::pages::accounts::query::touches_account(&ft.transaction, &id))
+            .filter(|ft| crate::pages::accounts::query::touches_account(&ft.transaction, &scope))
             .collect::<Vec<_>>())
     });
 
-    // Seed the window once from the account's most recent activity, the
-    // first time an account becomes selected. Subsequent account switches
-    // do not re-seed.
-    Effect::new(move |_| {
-        if has_seeded.get() {
-            return;
+    // Seed the window once from the ledger's most recent transaction, so a
+    // backfilled database opens on its last month rather than today.
+    leptos::task::spawn_local(async move {
+        if let Ok(Some(latest)) = bc_ipc::client::latest_activity().await {
+            let period = display_period.get_untracked();
+            window_start.set(crate::components::period_nav::window_containing(
+                &period, latest,
+            ));
         }
-        let Some(id) = selected_id.get() else { return };
-        let period = display_period.get_untracked();
-        leptos::task::spawn_local(async move {
-            if let Ok(latest) = bc_ipc::client::account_latest_activity(&id).await {
-                // Guard against a stale resolution: if the user switched
-                // accounts while this request was in flight, the request for the
-                // now-selected account owns the window. Only apply (and mark
-                // seeded) when this account is still the selected one.
-                if selected_id.get_untracked().as_deref() != Some(id.as_str()) {
-                    return;
-                }
-                let anchor = latest.unwrap_or_else(|| jiff::Zoned::now().date());
-                window_start.set(crate::components::period_nav::window_containing(
-                    &period, anchor,
-                ));
-                has_seeded.set(true);
-            }
-        });
     });
 
     // Resolved account statistics for the selected account, recomputed against
@@ -158,6 +184,7 @@ pub fn Accounts() -> impl IntoView {
         data_version.get();
         let period = display_period.get();
         let start = window_start.get();
+        let rollup_on = include_descendants.get();
         let Some(id) = selected_id.get() else {
             return Ok(None);
         };
@@ -173,9 +200,27 @@ pub fn Accounts() -> impl IntoView {
         });
         // Re-subscribe to the filter signal so edits re-run the resource.
         filter_store.filter.track();
-        bc_ipc::client::get_account_stats(&id, from, until, filter.as_ref())
-            .await
-            .map(Some)
+        let commodity = accounts_resource
+            .get_untracked()
+            .and_then(Result::ok)
+            .and_then(|nodes| nodes.into_iter().find(|n| n.id == id))
+            .and_then(|n| {
+                if rollup_on {
+                    n.rollup.first().map(|a| a.currency_code.clone())
+                } else {
+                    n.balance.map(|b| b.currency_code)
+                }
+            });
+        bc_ipc::client::get_account_stats(
+            &id,
+            commodity.as_deref(),
+            rollup_on,
+            from,
+            until,
+            filter.as_ref(),
+        )
+        .await
+        .map(Some)
     });
 
     let stats_signal = Signal::derive(move || stats_resource.get().and_then(Result::ok).flatten());
@@ -291,6 +336,7 @@ pub fn Accounts() -> impl IntoView {
                                     nodes=accounts
                                     selected_id=selected_id
                                     collapsed=sidebar_collapsed.read_only()
+                                    expanded=expanded
                                 />
                             }
                                 .into_any()
