@@ -248,7 +248,8 @@ impl Residuals {
     ///
     /// # Arguments
     ///
-    /// * `pool` - Connection pool.
+    /// * `executor` - Connection pool, or the read transaction the caller has
+    ///   already opened so the load sees the same snapshot as its own queries.
     /// * `ids` - The accounts whose elided legs to resolve (typically a subtree).
     ///
     /// # Errors
@@ -256,11 +257,14 @@ impl Residuals {
     /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if
     /// a stored amount cannot be parsed, a total overflows, or the id list
     /// cannot be serialised.
-    pub(crate) async fn for_accounts(pool: &SqlitePool, ids: &[AccountId]) -> BcResult<Self> {
+    pub(crate) async fn for_accounts<'e, E>(executor: E, ids: &[AccountId]) -> BcResult<Self>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         let rows: Vec<ResidualRow> =
             sqlx::query_as(sqlx::AssertSqlSafe(residual_sql(ELIDED_BY_ACCOUNTS)))
                 .bind(crate::balance::ids_json(ids)?)
-                .fetch_all(pool)
+                .fetch_all(executor)
                 .await?;
         Self::from_rows(rows)
     }

@@ -385,13 +385,20 @@ impl Engine {
     /// a running total overflowing [`Decimal`].
     pub async fn scope_ledger(&self, ids: &[AccountId]) -> BcResult<ScopeLedger> {
         let ids_param = ids_json(ids)?;
+
+        // One deferred transaction across the three reads, as in
+        // `fetch_postings_in_range`: the elided-id query and the residual load
+        // must agree on which postings exist, or `residual` reports an id the
+        // load never saw as an out-of-scope error.
+        let mut tx = self.pool.begin().await?;
+
         let concrete: Vec<(String, String, String, String)> = sqlx::query_as(SCOPE_CONCRETE_SQL)
             .bind(&ids_param)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
         let elided: Vec<(String, String, String)> = sqlx::query_as(SCOPE_ELIDED_SQL)
             .bind(&ids_param)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
 
         // (date, tx_id, commodity, delta) for every leg, before ordering.
@@ -407,7 +414,7 @@ impl Engine {
             legs.push((date, tx_id, commodity, value));
         }
         if !elided.is_empty() {
-            let residuals = crate::residual::Residuals::for_accounts(&self.pool, ids).await?;
+            let residuals = crate::residual::Residuals::for_accounts(&mut *tx, ids).await?;
             for (posting_id, tx_id, date_str) in elided {
                 let date = date_str
                     .parse::<jiff::civil::Date>()
@@ -420,6 +427,8 @@ impl Engine {
                 }
             }
         }
+        // Nothing was written, so the snapshot is released rather than committed.
+        tx.rollback().await?;
 
         // Chronological: date ascending, then id descending (reverse of the
         // register's display order).
