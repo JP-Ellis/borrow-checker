@@ -170,6 +170,16 @@ pub(crate) struct Residuals {
 /// Elided-leg predicate scoping the load to one account.
 const ELIDED_BY_ACCOUNT: &str = "AND e.account_id = ?1";
 
+/// Elided-leg predicate scoping the load to a set of accounts, passed as a JSON array.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "used by for_accounts, called by Engine::scope_ledger in Task 2"
+    )
+)]
+const ELIDED_BY_ACCOUNTS: &str = "AND e.account_id IN (SELECT value FROM json_each(?1))";
+
 /// Elided-leg predicate scoping the load to one account and a half-open date window.
 const ELIDED_BY_ACCOUNT_IN_RANGE: &str = "AND e.account_id = ?1 AND e.date >= ?2 AND e.date < ?3";
 
@@ -239,6 +249,34 @@ impl Residuals {
     /// a stored amount cannot be parsed or a total overflows.
     pub(crate) async fn for_account(pool: &SqlitePool, account_id: &AccountId) -> BcResult<Self> {
         Self::load(pool, Some(account_id.to_string())).await
+    }
+
+    /// Loads residuals for the elided postings of every account in `ids`.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - Connection pool.
+    /// * `ids` - The accounts whose elided legs to resolve (typically a subtree).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if
+    /// a stored amount cannot be parsed, a total overflows, or the id list
+    /// cannot be serialised.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "called by Engine::scope_ledger in Task 2 to load residuals for a paginated register"
+        )
+    )]
+    pub(crate) async fn for_accounts(pool: &SqlitePool, ids: &[AccountId]) -> BcResult<Self> {
+        let rows: Vec<ResidualRow> =
+            sqlx::query_as(sqlx::AssertSqlSafe(residual_sql(ELIDED_BY_ACCOUNTS)))
+                .bind(crate::balance::ids_json(ids)?)
+                .fetch_all(pool)
+                .await?;
+        Self::from_rows(rows)
     }
 
     /// Loads residuals for every elided posting in the database.
@@ -1599,6 +1637,50 @@ mod tests {
                 .get(bank.to_string().as_str())
                 .and_then(|b| b.get("AUD")),
             Some(dec!(-50.00))
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn for_accounts_covers_every_listed_account(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let cash = make_account(&pool, "Cash", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        insert_tx(&pool, "tx_1", "2026-01-01").await;
+        insert_posting(
+            &pool,
+            "p_food1",
+            "tx_1",
+            &food.to_string(),
+            Some("50.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 1).await;
+        insert_tx(&pool, "tx_2", "2026-01-02").await;
+        insert_posting(
+            &pool,
+            "p_food2",
+            "tx_2",
+            &food.to_string(),
+            Some("20.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(&pool, "p_cash", "tx_2", &cash.to_string(), None, None, 1).await;
+
+        let residuals = Residuals::for_accounts(&pool, &[bank, cash])
+            .await
+            .expect("load");
+
+        assert_eq!(
+            residuals.component("p_bank", "AUD").expect("in scope"),
+            Some(dec!(-50.00))
+        );
+        assert_eq!(
+            residuals.component("p_cash", "AUD").expect("in scope"),
+            Some(dec!(-20.00))
         );
     }
 }
