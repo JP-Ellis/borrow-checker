@@ -252,7 +252,7 @@ pub struct MatchedTransaction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[expect(
     clippy::exhaustive_structs,
-    reason = "constructed only inside bc-core (register_page); a new field is a compile error at every call site, which is the point"
+    reason = "a plain (date, id) pair, deliberately exhaustive: a new field is a compile error at every constructor, which is the point"
 )]
 pub struct RegisterCursor {
     /// Date of the last row.
@@ -643,7 +643,7 @@ impl Service {
             let mut keep = Vec::new();
             // Cloned: `candidates` is still needed below when `hydrated` turns
             // out `None` on this arm's sibling branch (never at runtime here,
-            // but the borrow checker cannot see that across the `match`).
+            // but the borrow checker cannot see that across the `if`/`else`).
             for tx in self.assemble_transactions(candidates.clone()).await? {
                 let matched = compute_matched_postings(
                     &tx,
