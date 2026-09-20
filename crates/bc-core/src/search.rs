@@ -593,15 +593,22 @@ impl Service {
     /// also touch a scope account, sliced after `cursor`, each row carrying the
     /// scope's real balance and the filtered running sum after it.
     ///
-    /// The `amount` dimension is exact only after hydration, so with it active
-    /// every candidate is hydrated before slicing; otherwise only the page is.
+    /// Membership is exact only after hydration whenever a dimension can
+    /// disagree with the SQL candidate filter: the `amount` dimension (whose
+    /// exact value depends on residual derivation in Rust), and the
+    /// combination of `accounts` and `tags` (SQL admits a transaction that
+    /// has the account on one leg and the tag on another via two independent
+    /// `EXISTS`, but [`leg_matches`] requires a single leg — or a
+    /// transaction-level tag hit — to satisfy both). Either condition
+    /// hydrates every candidate before slicing; otherwise only the page is.
     ///
     /// # Arguments
     ///
     /// * `query` - The parsed filter.
     /// * `scope` - The viewed account, or its subtree with roll-up on.
     /// * `cursor` - Resume after this row; `None` for the first page.
-    /// * `limit` - Maximum rows.
+    /// * `limit` - Maximum rows, clamped to at least 1 so a caller can never
+    ///   read a zero-row page as the register's end.
     ///
     /// # Errors
     ///
@@ -617,6 +624,7 @@ impl Service {
         cursor: Option<&RegisterCursor>,
         limit: u32,
     ) -> BcResult<RegisterPage> {
+        let effective_limit = limit.max(1);
         let account_set = resolve_account_subtrees(self.pool(), &query.accounts).await?;
         let tag_set: Option<HashSet<TagId>> =
             (!query.tags.is_empty()).then(|| query.tags.iter().cloned().collect());
@@ -625,9 +633,12 @@ impl Service {
             .await?;
 
         // Exact membership. `ordered` is (id, date) in display order; `hydrated`
-        // holds every candidate only on the amount path.
+        // holds every candidate whenever a dimension can disagree with the SQL
+        // candidate filter (see the `# Arguments` note above).
+        let needs_exact_membership =
+            query.amount.is_some() || (account_set.is_some() && tag_set.is_some());
         let mut hydrated: Option<HashMap<String, (Transaction, HashSet<PostingId>)>> = None;
-        let ordered: Vec<(String, Date)> = if query.amount.is_some() {
+        let ordered: Vec<(String, Date)> = if needs_exact_membership {
             let mut map = HashMap::new();
             let mut keep = Vec::new();
             // Cloned: `candidates` is still needed below when `hydrated` turns
@@ -670,7 +681,7 @@ impl Service {
                 .unwrap_or(ordered.len())
         });
         let end = start
-            .saturating_add(usize::try_from(limit).unwrap_or(usize::MAX))
+            .saturating_add(usize::try_from(effective_limit).unwrap_or(usize::MAX))
             .min(ordered.len());
         let page_ids: Vec<(String, Date)> = ordered.get(start..end).unwrap_or_default().to_vec();
         let next_cursor = (end < ordered.len())
@@ -737,20 +748,24 @@ impl Service {
 
         let rows = page_ids
             .iter()
-            .filter_map(|(id, _)| page_txs.remove(id).map(|pair| (id, pair)))
-            .map(|(id, (transaction, matched_postings))| {
+            .map(|(id, _)| {
+                let (transaction, matched_postings) = page_txs.remove(id).ok_or_else(|| {
+                    crate::BcError::BadData(format!(
+                        "register page invariant broken: '{id}' was sliced into the page but hydration did not return it"
+                    ))
+                })?;
                 let focal = ledger.focal_commodity(id);
                 let balance_after = focal.map(|c| Amount::new(ledger.balance_after(id, c), c));
                 let filtered_sum_after =
                     focal.and_then(|c| filtered_sum.get(id).map(|v| Amount::new(*v, c)));
-                RegisterRow {
+                Ok(RegisterRow {
                     transaction,
                     matched_postings,
                     balance_after,
                     filtered_sum_after,
-                }
+                })
             })
-            .collect();
+            .collect::<BcResult<Vec<_>>>()?;
 
         Ok(RegisterPage {
             rows,
@@ -3358,6 +3373,288 @@ mod search_tests {
                 .value(),
             dec!(100)
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn register_page_account_and_tag_cross_leg_is_excluded(pool: sqlx::SqlitePool) {
+        // A leg satisfying `accounts` and a *different* leg satisfying `tags`
+        // pass the SQL candidate filter (two independent `EXISTS`), but
+        // `leg_matches` requires a single leg — or a transaction-level tag
+        // hit — to satisfy both. The candidate must be excluded from the
+        // page, from `total`, and from the filtered running sum.
+        use bc_models::TagPath;
+
+        let (a, b, svc) = two_accounts(&pool).await;
+        let tags = crate::tag::Service::new(pool.clone());
+        let tag = tags
+            .create_path(&"cross-leg".parse::<TagPath>().expect("path"))
+            .await
+            .expect("tag");
+
+        // Real match: the tag sits on A's own leg.
+        svc.create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 6, 1))
+                .description("tagged on a")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(a.clone())
+                        .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+                        .tag_ids(vec![tag.clone()])
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(b.clone())
+                        .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Unreconciled)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("tagged on a");
+
+        // Cross-leg candidate: A's leg carries no tag, B's leg carries it.
+        // SQL admits it (account EXISTS hits A's leg, tag EXISTS hits B's),
+        // but no single leg satisfies both dimensions.
+        svc.create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 6, 2))
+                .description("cross leg")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(a.clone())
+                        .amount(Amount::new(dec!(30), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(b.clone())
+                        .amount(Amount::new(dec!(-30), CommodityCode::new("AUD")))
+                        .tag_ids(vec![tag.clone()])
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Unreconciled)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("cross leg");
+
+        // Real match: the tag sits on A's own leg again.
+        svc.create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 6, 3))
+                .description("tagged on a again")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(a.clone())
+                        .amount(Amount::new(dec!(10), CommodityCode::new("AUD")))
+                        .tag_ids(vec![tag.clone()])
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(b.clone())
+                        .amount(Amount::new(dec!(-10), CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Unreconciled)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("tagged on a again");
+
+        let query = TransactionQuery {
+            accounts: vec![a.clone()],
+            tags: vec![tag],
+            ..Default::default()
+        };
+        let page = svc
+            .register_page(&query, core::slice::from_ref(&a), None, 50)
+            .await
+            .expect("page");
+
+        assert_eq!(page.total, 2, "the cross-leg candidate must not be counted");
+        let descriptions: Vec<&str> = page
+            .rows
+            .iter()
+            .map(|r| r.transaction.description())
+            .collect();
+        assert_eq!(descriptions, vec!["tagged on a again", "tagged on a"]);
+
+        let newest = page.rows.first().expect("row 0");
+        let oldest = page.rows.get(1).expect("row 1");
+        assert_eq!(
+            newest.filtered_sum_after.as_ref().expect("focal").value(),
+            dec!(110),
+            "the cross-leg candidate's delta must not enter the running sum"
+        );
+        assert_eq!(
+            oldest.filtered_sum_after.as_ref().expect("focal").value(),
+            dec!(100)
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn register_page_amount_path_hydrates_all_and_paginates(pool: sqlx::SqlitePool) {
+        let (a, b, svc) = two_accounts(&pool).await;
+        let accts = crate::account::Service::new(pool.clone());
+        let c = accts
+            .create()
+            .name("C")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("C");
+
+        // Three exact matches at magnitude 100 (min == max == 100).
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "a", dec!(100)))
+            .await
+            .expect("a");
+        svc.create(tx_on(&a, &b, date(2026, 6, 3), "c", dec!(100)))
+            .await
+            .expect("c");
+        svc.create(tx_on(&a, &b, date(2026, 6, 6), "e", dec!(100)))
+            .await
+            .expect("e");
+
+        // SQL over-matches this one through the epsilon-widened f64 bound;
+        // the exact `Decimal` comparison in `compute_matched_postings` must
+        // drop it from `total` and the page.
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "b", dec!(100.00005)))
+            .await
+            .expect("b");
+
+        // Touches the scope account in two commodities: no single focal
+        // commodity, so its balances must come back `None` while the
+        // neighbouring single-commodity rows are unaffected.
+        svc.create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 6, 5))
+                .description("multi")
+                .postings(vec![
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(a.clone())
+                        .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(b.clone())
+                        .amount(Amount::new(dec!(-100), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(a.clone())
+                        .amount(Amount::new(dec!(50), CommodityCode::new("USD")))
+                        .build(),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(c.clone())
+                        .amount(Amount::new(dec!(-50), CommodityCode::new("USD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Unreconciled)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("multi");
+
+        let query = TransactionQuery {
+            amount: Some(AmountQuery {
+                min: Some(dec!(100)),
+                max: Some(dec!(100)),
+                commodity: None,
+            }),
+            ..Default::default()
+        };
+
+        // Page through with a small limit: `total` counts only the 4 exact
+        // matches (a, c, e, multi), never the SQL-only "b".
+        let p1 = svc
+            .register_page(&query, core::slice::from_ref(&a), None, 2)
+            .await
+            .expect("p1");
+        assert_eq!(p1.total, 4);
+        let p1_descriptions: Vec<&str> = p1
+            .rows
+            .iter()
+            .map(|r| r.transaction.description())
+            .collect();
+        assert_eq!(p1_descriptions, vec!["e", "multi"]);
+
+        let cursor = p1.next_cursor.clone().expect("more");
+        let p2 = svc
+            .register_page(&query, core::slice::from_ref(&a), Some(&cursor), 2)
+            .await
+            .expect("p2");
+        assert_eq!(p2.total, 4);
+        assert_eq!(p2.next_cursor, None);
+        let p2_descriptions: Vec<&str> = p2
+            .rows
+            .iter()
+            .map(|r| r.transaction.description())
+            .collect();
+        assert_eq!(p2_descriptions, vec!["c", "a"]);
+
+        // The multi-commodity row has no single focal commodity.
+        let multi_row = p1.rows.get(1).expect("multi row");
+        assert!(multi_row.balance_after.is_none());
+        assert!(multi_row.filtered_sum_after.is_none());
+
+        // Neighbouring single-commodity rows are unaffected: the running sum
+        // skips "multi" entirely rather than breaking or double-counting.
+        let newest = p1.rows.first().expect("e row");
+        assert_eq!(
+            newest.filtered_sum_after.as_ref().expect("focal").value(),
+            dec!(300)
+        );
+        let c_row = p2.rows.first().expect("c row");
+        let a_row = p2.rows.get(1).expect("a row");
+        assert_eq!(
+            c_row.filtered_sum_after.as_ref().expect("focal").value(),
+            dec!(200)
+        );
+        assert_eq!(
+            a_row.filtered_sum_after.as_ref().expect("focal").value(),
+            dec!(100)
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn register_page_limit_zero_is_clamped_to_one(pool: sqlx::SqlitePool) {
+        // `limit: 0` must not read as "end of register": a caller passing it
+        // by mistake still gets a real row and a cursor to keep going.
+        let (a, b, svc) = two_accounts(&pool).await;
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "first", dec!(10)))
+            .await
+            .expect("t1");
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "second", dec!(10)))
+            .await
+            .expect("t2");
+
+        let page = svc
+            .register_page(
+                &TransactionQuery::default(),
+                core::slice::from_ref(&a),
+                None,
+                0,
+            )
+            .await
+            .expect("page");
+        assert_eq!(page.total, 2);
+        assert_eq!(page.rows.len(), 1);
+        assert!(page.next_cursor.is_some());
     }
 }
 
