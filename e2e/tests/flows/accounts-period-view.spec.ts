@@ -23,9 +23,9 @@ import { browser, $ } from '@wdio/globals';
 /**
  * Navigate to Accounts → `name` via the top-bar nav and sidebar. Always goes
  * through the bare `/accounts` route first, which unmounts/remounts the
- * Accounts page component — so every test starts from a freshly seeded
- * window (the page seeds it once per mount from the ledger's latest
- * activity).
+ * Accounts page component — so every test starts from a freshly mounted page,
+ * open in all time. Tests that need a period select one via
+ * `selectGranularity`.
  */
 async function openAccount(name: string): Promise<void> {
     const navAccounts = await $('[data-testid="nav-accounts"]');
@@ -122,7 +122,10 @@ async function selectGranularity(value: string): Promise<void> {
     await select.waitForDisplayed();
     await select.selectByAttribute('value', value);
     await browser.waitUntil(
-        async () => (await periodNavLabel()) !== 'all time' && (await periodNavLabel()) !== '',
+        async () => {
+            const label = await periodNavLabel();
+            return label !== 'all time' && label !== '';
+        },
         { timeoutMsg: `Window label did not leave "all time" after selecting ${value}` },
     );
 }
@@ -145,7 +148,10 @@ describe('Accounts — period view', () => {
         await waitForRegisterRows();
         await selectGranularity('monthly');
         await browser.waitUntil(
-            async () => (await statValue('transactions')) !== '',
+            async () => {
+                const tx = await statValue('transactions');
+                return tx !== '' && tx !== '—';
+            },
             { timeoutMsg: 'Dashboard tx-count did not populate after selecting monthly' },
         );
 
