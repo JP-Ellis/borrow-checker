@@ -19,9 +19,13 @@
     border-bottom-width var(--bc-duration-fast) var(--bc-ease-out);
 }
 
-/* animation targets: match the bar's resting height and border width */
+/* animation targets: match the bar's resting height and border width.
+   without an explicit height, the row's auto content height sits below
+   --bc-account-bar-height, merely capped by max-height; pinning height
+   makes the bar's border meet the register header's `top` offset. */
 .bar_visible {
   max-height: var(--bc-account-bar-height);
+  height: var(--bc-account-bar-height);
   border-bottom-width: 2px;
 }
 
