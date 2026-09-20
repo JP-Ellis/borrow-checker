@@ -10,9 +10,8 @@ import { browser, $, $$ } from '@wdio/globals';
 /**
  * Navigate to Accounts → `name` via the top-bar nav and sidebar. Always goes
  * through the bare `/accounts` route first, which unmounts/remounts the
- * Accounts page component — so every call starts from a freshly seeded
- * window (the page seeds it once per mount from the ledger's latest
- * activity).
+ * Accounts page component — so every call starts from a freshly mounted
+ * page, open in all time.
  */
 async function openAccount(name: string): Promise<void> {
     const navAccounts = await $('[data-testid="nav-accounts"]');

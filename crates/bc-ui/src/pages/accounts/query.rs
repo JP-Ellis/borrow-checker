@@ -124,8 +124,8 @@ fn nav_end(window: &DisplayWindow, today: Date) -> Date {
 ///
 /// * `user` - The active global filter.
 /// * `window` - The page's display window.
-/// * `first_activity` - Earliest transaction date of the viewed account scope
-///   (the account, plus its descendants under roll-up), if any.
+/// * `first_activity` - The selected account's earliest activity date (and, with
+///   roll-up, its descendants'), if any.
 /// * `today` - Today's date; only consulted for an unbounded all-time span.
 ///
 /// # Returns
@@ -201,8 +201,8 @@ fn coverage_count(bucket: &Period, span_start: Date, as_of: Date) -> u32 {
 ///
 /// * `user` - The active global filter.
 /// * `window` - The page's display window.
-/// * `first_activity` - Earliest transaction date of the viewed account scope
-///   (the account, plus its descendants under roll-up), if any.
+/// * `first_activity` - The selected account's earliest activity date (and, with
+///   roll-up, its descendants'), if any.
 /// * `today` - Today's date; only consulted for an unbounded all-time span.
 ///
 /// # Returns

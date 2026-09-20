@@ -147,6 +147,8 @@ pub fn Accounts() -> impl IntoView {
     // AccountDashboard. Opens on the whole ledger; nothing picks a period.
     let window = RwSignal::new(crate::components::period_nav::DisplayWindow::AllTime);
 
+    let toasts = crate::components::toast::use_toasts();
+
     // MARK: Register paging
 
     let register = RwSignal::new(LoadedRegister::default());
@@ -181,6 +183,11 @@ pub fn Accounts() -> impl IntoView {
                 Err(e) => {
                     leptos::logging::warn!("register page failed: {e:?}");
                     register.try_update(|r| r.fail(generation));
+                    toasts.push(
+                        crate::components::toast::ToastKind::Error,
+                        format!("Couldn't load transactions: {e}"),
+                        None,
+                    );
                 }
             }
         });
@@ -211,6 +218,11 @@ pub fn Accounts() -> impl IntoView {
                 Err(e) => {
                     leptos::logging::warn!("register page failed: {e:?}");
                     register.try_update(|r| r.fail(generation));
+                    toasts.push(
+                        crate::components::toast::ToastKind::Error,
+                        format!("Couldn't load transactions: {e}"),
+                        None,
+                    );
                 }
             }
         });
@@ -321,7 +333,6 @@ pub fn Accounts() -> impl IntoView {
         async move { bc_ipc::client::create_transaction(&tx).await }
     });
 
-    let toasts = crate::components::toast::use_toasts();
     let pending_new_date = RwSignal::new(None::<jiff::civil::Date>);
 
     // Controls whether the add-transaction form is shown.
