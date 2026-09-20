@@ -581,8 +581,10 @@ pub async fn search_transactions(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] for a malformed id, or
-/// [`bc_ipc::BcError::Internal`] if a service call fails.
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed account or cursor
+/// id, [`bc_ipc::BcError::Internal`] if the account or tag lookups fail, and
+/// the IPC mapping of the core error (`BadData` becomes `Validation`) if the
+/// register query itself fails.
 #[expect(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
