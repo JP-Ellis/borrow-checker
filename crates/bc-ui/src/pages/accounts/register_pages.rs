@@ -89,6 +89,10 @@ impl LoadedRegister {
     }
 
     /// `true` once every matching row is loaded.
+    ///
+    /// A default, never-reset register also reports `true`: it has no
+    /// `next_cursor` because it has never asked for one, not because it
+    /// exhausted the register.
     #[must_use]
     pub fn fully_loaded(&self) -> bool {
         self.next_cursor.is_none()
@@ -185,6 +189,7 @@ mod tests {
     use bc_ipc::Transaction;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
+    use pretty_assertions::assert_ne;
     use rstest::rstest;
     use rust_decimal::Decimal;
 
@@ -235,6 +240,58 @@ mod tests {
         // An edit refreshes what is on screen: the limit covers the loaded rows.
         let (_, limit) = r.begin_reset();
         assert_eq!(limit, PAGE_SIZE.max(4));
+    }
+
+    #[test]
+    #[expect(
+        clippy::shadow_unrelated,
+        reason = "second limit is an unrelated later reset; reusing the name keeps the test readable"
+    )]
+    fn reset_limit_grows_past_page_size() {
+        let mut r = LoadedRegister::default();
+        let ids: Vec<String> = (0_u32..150_u32).map(|i| format!("r{i}")).collect();
+        let rows: Vec<RegisterRow> = ids
+            .iter()
+            .map(|id| row(id, Some((100, "AUD")), None))
+            .collect();
+        let loaded = rows.len();
+
+        let (g0, limit) = r.begin_reset();
+        assert_eq!(limit, PAGE_SIZE, "nothing loaded yet");
+        assert!(r.apply_reset(
+            g0,
+            RegisterPage::new(rows, u32::try_from(loaded).expect("fits u32"), None)
+        ));
+
+        // More than a page is on screen: the limit must cover it, past PAGE_SIZE.
+        let (_, limit) = r.begin_reset();
+        assert_eq!(limit, u32::try_from(loaded).expect("fits u32"));
+        assert!(limit > PAGE_SIZE);
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    fn apply_extend_stale_generation_is_dropped() {
+        let mut r = LoadedRegister::default();
+        let (g0, _) = r.begin_reset();
+        assert!(r.apply_reset(g0, page(&["a"], 5, true)));
+        let (g_extend, _cursor) = r.begin_extend().expect("more");
+
+        // A reset starts (e.g. the filter changes) before the extend's
+        // response arrives, bumping the generation past the extend's.
+        let (g1, _) = r.begin_reset();
+        assert_ne!(g_extend, g1);
+
+        assert!(!r.apply_extend(g_extend, page(&["b"], 5, true)));
+
+        // The stale extend changed nothing beyond what the second
+        // begin_reset already did.
+        assert_eq!(r.generation, g1);
+        assert!(r.loading);
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].transaction.id, "a");
+        assert_eq!(r.total, 5);
+        assert!(r.next_cursor.is_some());
     }
 
     #[test]
