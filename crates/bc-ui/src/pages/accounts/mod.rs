@@ -158,7 +158,7 @@ pub fn Accounts() -> impl IntoView {
         data_version.get();
         let win = window.get();
         let Some(id) = selected_id.get() else {
-            return Ok::<_, bc_ipc::BcError>(Vec::new());
+            return Ok::<_, bc_ipc::BcError>((win, Vec::new()));
         };
         let eff = filter_store
             .filter
@@ -174,22 +174,28 @@ pub fn Accounts() -> impl IntoView {
             [id.clone()].into_iter().collect()
         };
         let all = bc_ipc::client::search_transactions(&eff).await?;
-        Ok(all
+        let rows = all
             .into_iter()
             .filter(|ft| crate::pages::accounts::query::touches_account(&ft.transaction, &scope))
-            .collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        Ok((win, rows))
     });
 
     // Resolved account statistics for the selected account, recomputed against
     // the effective filter (register-style: filter dates win, else the
     // page-level display window). Shared by the sticky bar and the dashboard
     // so both headlines stay in lockstep.
+    //
+    // Both resources return the window they answered for. A `LocalResource`
+    // keeps serving its previous value while a refetch is in flight, so the
+    // window tag is the only way to tell "fresh" from "stale" data; the
+    // `*_busy` signals below compare it with the current window.
     let stats_resource = LocalResource::new(move || async move {
         data_version.get();
         let win = window.get();
         let rollup_on = include_descendants.get();
         let Some(id) = selected_id.get() else {
-            return Ok(None);
+            return Ok::<_, bc_ipc::BcError>((win, None));
         };
         let (from, until, filter) = filter_store.filter.with_untracked(|f| {
             let eff = crate::pages::accounts::query::effective_filter(f, &win);
@@ -214,7 +220,7 @@ pub fn Accounts() -> impl IntoView {
                     n.balance.map(|b| b.currency_code)
                 }
             });
-        bc_ipc::client::get_account_stats(
+        let stats = bc_ipc::client::get_account_stats(
             &id,
             commodity.as_deref(),
             rollup_on,
@@ -222,18 +228,32 @@ pub fn Accounts() -> impl IntoView {
             until,
             filter.as_ref(),
         )
-        .await
-        .map(Some)
+        .await?;
+        Ok((win, Some(stats)))
     });
 
-    let stats_signal = Signal::derive(move || stats_resource.get().and_then(Result::ok).flatten());
+    let stats_signal = Signal::derive(move || {
+        let (_, stats) = stats_resource.get().and_then(Result::ok)?;
+        stats
+    });
+    let stats_busy = Signal::derive(move || {
+        let current = window.get();
+        stats_resource
+            .with(|r| crate::pages::accounts::query::awaiting_window(r.as_ref(), &current))
+    });
 
     // Derive a flat signal from the resource for TransactionRegister.
     let transactions_signal = Signal::derive(move || {
         transactions_resource
             .get()
             .and_then(Result::ok)
+            .map(|(_, rows)| rows)
             .unwrap_or_default()
+    });
+    let register_busy = Signal::derive(move || {
+        let current = window.get();
+        transactions_resource
+            .with(|r| crate::pages::accounts::query::awaiting_window(r.as_ref(), &current))
     });
 
     // Derive selected node as a Signal so StickyAccountBar can receive it.
@@ -390,6 +410,7 @@ pub fn Accounts() -> impl IntoView {
                                 data_version=data_version.read_only()
                                 on_add_tx=Callback::new(move |()| open_add_tx())
                                 window=window.read_only().into()
+                                busy=stats_busy
                             />
 
                             {move || {
@@ -431,6 +452,7 @@ pub fn Accounts() -> impl IntoView {
                                 viewing_account_id=node_id_register
                                 accounts=account_refs
                                 window=window
+                                busy=register_busy
                                 on_change=Callback::new(move |()| {
                                     data_version.update(|v| *v = v.wrapping_add(1));
                                 })

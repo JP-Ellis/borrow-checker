@@ -85,15 +85,34 @@ async function statValue(label: string): Promise<string> {
 }
 
 /**
- * Waits until the register's row count agrees with the dashboard's
- * "transactions" stat. The register keeps its previous rows on screen until
- * its own `register_page` IPC lands, while the dashboard stat comes from a
- * separate, faster IPC — so right after a window change the stat can already
- * reflect the new window while the register still shows the old one. Reads
- * both values once per poll into locals so a value changing between the two
- * reads can't produce a spurious match.
+ * Waits until neither the register nor the dashboard is `aria-busy`. Each
+ * surface keeps its previous window's data on screen until its own IPC lands
+ * (a Leptos resource serves the old value while refetching), and sets
+ * `aria-busy="true"` while the data it shows was fetched for a window other
+ * than the one now selected. Reading a stat or row count before this settles
+ * can return the previous window's figure, which may happen to agree with an
+ * equally stale neighbour.
+ */
+async function waitForWindowToSettle(): Promise<void> {
+    await browser.waitUntil(
+        async () => browser.execute(() => {
+            const busy = (selector: string): string | null | undefined =>
+                document.querySelector(selector)?.getAttribute('aria-busy');
+            return busy('[aria-label="transaction register"]') === 'false'
+                && busy('[aria-label="account dashboard"]') === 'false';
+        }),
+        { timeoutMsg: 'Register and dashboard did not settle on the selected window' },
+    );
+}
+
+/**
+ * Waits for the window to settle, then until the register's row count agrees
+ * with the dashboard's "transactions" stat. Reads both values once per poll
+ * into locals so a value changing between the two reads can't produce a
+ * spurious match.
  */
 async function waitForRegisterToMatchStat(): Promise<void> {
+    await waitForWindowToSettle();
     await browser.waitUntil(
         async () => {
             const tx = await statValue('transactions');
@@ -168,13 +187,6 @@ describe('Accounts — period view', () => {
         await openAccount('Checking');
         await waitForRegisterRows();
         await selectGranularity('monthly');
-        await browser.waitUntil(
-            async () => {
-                const tx = await statValue('transactions');
-                return tx !== '' && tx !== '—';
-            },
-            { timeoutMsg: 'Dashboard tx-count did not populate after selecting monthly' },
-        );
 
         const initialRows = await registerRowCount();
         const initialTxCount = await statValue('transactions');
@@ -185,7 +197,7 @@ describe('Accounts — period view', () => {
 
         // The register row count should reflect the same window as the
         // dashboard's "transactions" stat (both derive from the same
-        // shared window_start/period).
+        // shared `DisplayWindow`).
         expect(initialRows.toString()).toBe(initialTxCount);
 
         const prevBtn = await $('[aria-label="previous period"]');
@@ -284,10 +296,7 @@ describe('Accounts — period view', () => {
         expect(await periodNavLabel()).toBe('all time');
         expect(await $('[aria-label="previous period"]').isExisting()).toBe(false);
 
-        await browser.waitUntil(
-            async () => (await registerRowCount()).toString() === (await statValue('transactions')),
-            { timeoutMsg: 'Register row count did not match the all-time transaction stat' },
-        );
+        await waitForRegisterToMatchStat();
         expect(await registerRowCount()).toBeGreaterThan(0);
 
         // Leaving all time lands on the current month; Transport is empty there.

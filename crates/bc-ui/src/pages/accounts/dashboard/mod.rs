@@ -33,6 +33,7 @@ static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 /// * `data_version` - Optional monotonic counter; when it changes, the sparkline re-fetches.
 /// * `on_add_tx` - Optional callback fired when the user clicks "+ transaction".
 /// * `window` - Page-level display window (read-only; the register's `WindowNav` writes it).
+/// * `busy` - `true` while `stats` still describes a previous window.
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -57,6 +58,11 @@ pub fn AccountDashboard(
     on_add_tx: Option<Callback<()>>,
     /// Page-level display window (read-only; the register's `WindowNav` writes it).
     window: Signal<crate::components::period_nav::DisplayWindow>,
+    /// `true` while `stats` still describes a previous window; rendered as
+    /// `aria-busy` so assistive tech and the e2e suite can tell stale figures
+    /// from settled ones.
+    #[prop(optional, into)]
+    busy: Signal<bool>,
 ) -> impl IntoView {
     let currencies = crate::currency_ctx::use_currency_store();
     let sparkline_account_id = node.id.clone();
@@ -189,7 +195,11 @@ pub fn AccountDashboard(
     };
 
     view! {
-        <div class=style::dashboard>
+        <div
+            class=style::dashboard
+            aria-label="account dashboard"
+            aria-busy=move || if busy.get() { "true" } else { "false" }
+        >
             <div class=style::header_row>
                 <div class=style::breadcrumb>{breadcrumb}</div>
 
