@@ -1309,6 +1309,7 @@ mod search_tests {
     use jiff::civil::Date;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
     use super::AmountQuery;
@@ -3292,6 +3293,59 @@ mod search_tests {
                 .description(),
             "on a"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn register_page_rolls_up_a_multi_account_scope(pool: sqlx::SqlitePool) {
+        let (a, b, svc) = two_accounts(&pool).await;
+        let accts = crate::account::Service::new(pool.clone());
+        let c = accts
+            .create()
+            .name("C")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("C");
+        let d = accts
+            .create()
+            .name("D")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("D");
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "on a", dec!(10)))
+            .await
+            .expect("t1");
+        svc.create(tx_on(&c, &b, date(2026, 6, 2), "on c", dec!(20)))
+            .await
+            .expect("t2");
+        // Internal transfer within the scope: nets to zero but still touches AUD.
+        svc.create(tx_on(&a, &c, date(2026, 6, 3), "a to c", dec!(5)))
+            .await
+            .expect("t3");
+        svc.create(tx_on(&d, &b, date(2026, 6, 4), "outside", dec!(40)))
+            .await
+            .expect("t4");
+
+        let page = svc
+            .register_page(&TransactionQuery::default(), &[a, c], None, 50)
+            .await
+            .expect("page");
+        assert_eq!(page.total, 3);
+        let descriptions: Vec<&str> = page
+            .rows
+            .iter()
+            .map(|r| r.transaction.description())
+            .collect();
+        assert_eq!(descriptions, vec!["a to c", "on c", "on a"]);
+        let balances: Vec<Decimal> = page
+            .rows
+            .iter()
+            .map(|r| r.balance_after.as_ref().expect("focal").value())
+            .collect();
+        assert_eq!(balances, vec![dec!(30), dec!(30), dec!(10)]);
     }
 
     #[sqlx::test(migrations = "./migrations")]
