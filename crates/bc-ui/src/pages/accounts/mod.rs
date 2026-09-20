@@ -15,6 +15,14 @@ pub(crate) mod figure;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod period_notify;
 pub(crate) mod query;
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        dead_code,
+        reason = "consumed by the wasm-only register in Tasks 17-18"
+    )
+)]
+pub(crate) mod register_pages;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod rollup;
 pub(crate) mod tree;
