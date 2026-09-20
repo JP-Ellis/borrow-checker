@@ -32,14 +32,14 @@
 .row_line {
   display: flex;
   align-items: center;
-  padding-left: calc(var(--bc-space-3) + var(--depth) * 12px);
+  padding-left: calc(var(--bc-space-3) + var(--depth) * var(--bc-space-5));
 }
 
 .chevron,
 .chevron_spacer {
-  flex: 0 0 18px;
-  width: 18px;
-  height: 18px;
+  flex: 0 0 var(--bc-space-7);
+  width: var(--bc-space-7);
+  height: var(--bc-space-7);
   display: inline-flex;
   align-items: center;
   justify-content: center;
