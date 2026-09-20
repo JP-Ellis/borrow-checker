@@ -55,6 +55,8 @@ mod meta_keys_ctx;
 mod pages;
 #[cfg(any(target_arch = "wasm32", test))]
 mod shell;
+#[cfg(target_arch = "wasm32")]
+mod storage;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

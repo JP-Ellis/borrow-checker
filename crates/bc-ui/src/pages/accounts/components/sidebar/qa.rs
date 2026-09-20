@@ -1,5 +1,7 @@
 //! QA page for [`super::AccountSidebar`].
 
+use std::collections::HashSet;
+
 use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
 use bc_ipc::Amount;
@@ -35,7 +37,11 @@ fn sample_accounts() -> Vec<AccountNode> {
             vec![],
             None,
             None,
-        ),
+        )
+        .with_rollup(vec![
+            Amount::new(Decimal::new(6_842_842, 2), "AUD"),
+            Amount::new(Decimal::new(120_000, 2), "USD"),
+        ]),
         AccountNode::new(
             "amex-platinum",
             "Amex Platinum",
@@ -69,6 +75,7 @@ pub fn AccountSidebarQa() -> impl IntoView {
                         nodes=sample_accounts()
                         selected_id=selected_id.read_only().into()
                         collapsed=collapsed
+                        expanded=RwSignal::new(HashSet::new())
                     />
                 </div>
             </div>
@@ -82,6 +89,7 @@ pub fn AccountSidebarQa() -> impl IntoView {
                         nodes=sample_accounts()
                         selected_id=selected_id.read_only().into()
                         collapsed=collapsed_true
+                        expanded=RwSignal::new(HashSet::new())
                     />
                 </div>
             </div>

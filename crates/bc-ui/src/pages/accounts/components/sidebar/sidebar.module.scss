@@ -27,22 +27,48 @@
 
 .tree { padding: var(--bc-space-3) 0; }
 
-.section { margin-bottom: var(--bc-space-5); }
+.node { --depth: 0; }
 
-.section_label {
+.row_line {
+  display: flex;
+  align-items: center;
+  padding-left: calc(var(--bc-space-3) + var(--depth) * 12px);
+}
+
+.chevron,
+.chevron_spacer {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink-dim);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+
+  &:hover { color: var(--bc-ink); }
+}
+
+.chevron_spacer { cursor: default; }
+
+.badge {
+  margin-left: var(--bc-space-1);
   font-size: var(--bc-text-eyebrow);
   color: var(--bc-ink-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: var(--bc-space-3) var(--bc-space-5) var(--bc-space-2);
 }
 
 .row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: var(--bc-space-2) var(--bc-space-5) var(--bc-space-2) var(--bc-space-7);
+  padding: var(--bc-space-2) var(--bc-space-5) var(--bc-space-2) var(--bc-space-2);
+  flex: 1 1 auto;
+  min-width: 0;
   font-family: var(--bc-font-mono);
   font-size: var(--bc-text-body);
   color: var(--bc-ink-soft);
@@ -51,8 +77,6 @@
 
   &:hover { background: var(--bc-surface-alt); }
 }
-
-.row_indent { padding-left: var(--bc-space-9); }
 
 .row_active {
   background: var(--bc-accent-soft);

@@ -1,12 +1,41 @@
-//! Account tree sidebar — full tree and collapsed dot-rail states.
+//! Account tree sidebar — full recursive tree and collapsed dot-rail states.
+
+use std::collections::HashSet;
 
 use bc_ipc::AccountNode;
-use bc_ipc::AccountType;
 use leptos::prelude::*;
 use leptos_router::components::A;
 use stylance::import_style;
 
+use crate::pages::accounts::tree::children_of;
+use crate::pages::accounts::tree::ordered_roots;
+
 import_style!(style, "sidebar.module.scss");
+
+/// `localStorage` key holding the expanded account ids as a JSON array.
+pub const EXPANDED_STORAGE_KEY: &str = "bc.sidebar.expanded";
+
+/// Reads the persisted expansion set, or `None` when absent or unreadable.
+#[must_use]
+pub fn load_expanded() -> Option<HashSet<String>> {
+    let raw = crate::storage::get(EXPANDED_STORAGE_KEY)?;
+    serde_json::from_str::<Vec<String>>(&raw)
+        .ok()
+        .map(|v| v.into_iter().collect())
+}
+
+/// Persists the expansion set as a JSON array.
+///
+/// # Arguments
+///
+/// * `expanded` - The ids of expanded accounts.
+pub fn save_expanded(expanded: &HashSet<String>) {
+    let mut ids: Vec<&String> = expanded.iter().collect();
+    ids.sort();
+    if let Ok(raw) = serde_json::to_string(&ids) {
+        crate::storage::set(EXPANDED_STORAGE_KEY, &raw);
+    }
+}
 
 /// Account tree sidebar.
 ///
@@ -18,6 +47,7 @@ import_style!(style, "sidebar.module.scss");
 /// * `nodes` - All account nodes (flat vec; hierarchy via `parent_id`).
 /// * `selected_id` - Currently selected account ID (derived from route).
 /// * `collapsed` - Whether the sidebar is in dot-rail mode.
+/// * `expanded` - Ids whose children are shown; owned by the page.
 #[expect(clippy::too_many_lines, reason = "Leptos view! block")]
 #[component]
 pub fn AccountSidebar(
@@ -27,64 +57,38 @@ pub fn AccountSidebar(
     selected_id: Signal<Option<String>>,
     /// Whether the sidebar is collapsed to dot-rail.
     collapsed: ReadSignal<bool>,
+    /// Ids whose children are shown.
+    expanded: RwSignal<HashSet<String>>,
 ) -> impl IntoView {
-    let all_types = [
-        (AccountType::Asset, "assets"),
-        (AccountType::Liability, "liabilities"),
-        (AccountType::Equity, "equity"),
-        (AccountType::Income, "income"),
-        (AccountType::Expense, "expenses"),
-    ];
-
-    let sections: Vec<(AccountType, &'static str, Vec<AccountNode>)> = all_types
-        .into_iter()
-        .filter_map(|(ty, label)| {
-            let roots: Vec<AccountNode> = nodes
-                .iter()
-                .filter(|n| n.account_type == ty && n.parent_id.is_none())
-                .cloned()
-                .collect();
-            if roots.is_empty() {
-                None
-            } else {
-                Some((ty, label, roots))
-            }
-        })
-        .collect();
-
-    // Use StoredValue so the vecs can be retrieved from reactive closures
-    // (Leptos Show/fallback children require Fn, not FnOnce).
+    let roots = ordered_roots(&nodes);
     let stored_nodes = StoredValue::new(nodes);
-    let stored_sections = StoredValue::new(sections);
+    let stored_roots = StoredValue::new(roots);
+
+    let tree = move || {
+        let all = stored_nodes.get_value();
+        stored_roots
+            .get_value()
+            .into_iter()
+            .map(|root| {
+                view! {
+                    <SidebarNode
+                        node=root
+                        nodes=all.clone()
+                        depth=0
+                        selected_id=selected_id
+                        expanded=expanded
+                    />
+                }
+            })
+            .collect::<Vec<_>>()
+    };
 
     view! {
         <>
-            // Desktop sidebar — hidden on mobile via CSS
             <nav class=style::nav aria-label="account navigation">
                 <Show
                     when=move || collapsed.get()
-                    fallback=move || {
-                        view! {
-                            <div class=style::tree>
-                                {stored_sections
-                                    .with_value(|secs| {
-                                        let all_nodes = stored_nodes.get_value();
-                                        secs.iter()
-                                            .map(|(_, label, roots)| {
-                                                view! {
-                                                    <SidebarSection
-                                                        label=label
-                                                        nodes=all_nodes.clone()
-                                                        roots=roots.clone()
-                                                        selected_id=selected_id
-                                                    />
-                                                }
-                                            })
-                                            .collect::<Vec<_>>()
-                                    })}
-                            </div>
-                        }
-                    }
+                    fallback=move || view! { <div class=style::tree>{tree()}</div> }
                 >
                     <div class=style::rail>
                         {move || {
@@ -123,7 +127,6 @@ pub fn AccountSidebar(
                 </Show>
             </nav>
 
-            // Mobile: dot-rail trigger button — shown below bp-md
             <button
                 class=style::mobile_trigger
                 popovertarget="bc-sidebar-drawer"
@@ -141,126 +144,158 @@ pub fn AccountSidebar(
                 </div>
             </button>
 
-            // Mobile: full sidebar as a popover overlay
             <nav
                 id="bc-sidebar-drawer"
                 class=style::drawer
                 popover="auto"
                 aria-label="account navigation"
             >
-                <div class=style::tree>
-                    {stored_sections
-                        .with_value(|secs| {
-                            secs.iter()
-                                .map(|(_, label, roots)| {
-                                    view! {
-                                        <SidebarSection
-                                            label=label
-                                            nodes=stored_nodes.get_value()
-                                            roots=roots.clone()
-                                            selected_id=selected_id
-                                        />
-                                    }
-                                })
-                                .collect::<Vec<_>>()
-                        })}
-                </div>
+                <div class=style::tree>{tree()}</div>
             </nav>
         </>
     }
 }
 
-/// Renders one account type section of the account tree.
+/// One account row plus, when expanded, its children rendered recursively.
 #[component]
-fn SidebarSection(
-    /// Section label shown as eyebrow.
-    label: &'static str,
+fn SidebarNode(
+    /// Account node to render.
+    node: AccountNode,
     /// Full node vec (needed to find children).
     nodes: Vec<AccountNode>,
-    /// Top-level nodes for this section.
-    roots: Vec<AccountNode>,
+    /// Nesting depth; drives the indent.
+    depth: u32,
     /// Currently selected account ID.
     selected_id: Signal<Option<String>>,
-) -> impl IntoView {
+    /// Ids whose children are shown.
+    expanded: RwSignal<HashSet<String>>,
+) -> AnyView {
+    let children = children_of(&nodes, &node.id);
+    let has_children = !children.is_empty();
+    let id = node.id.clone();
+    let id_for_toggle = node.id.clone();
+    let is_open = Signal::derive(move || expanded.with(|e| e.contains(&id)));
+    let toggle = move |_: leptos::ev::MouseEvent| {
+        expanded.update(|e| {
+            if !e.remove(&id_for_toggle) {
+                e.insert(id_for_toggle.clone());
+            }
+        });
+    };
+    let stored_children = StoredValue::new(children);
+    let stored_nodes = StoredValue::new(nodes);
+    let name = node.name.clone();
+
     view! {
-        <div class=style::section>
-            <div class=style::section_label>{label}</div>
-            {roots
-                .into_iter()
-                .map(|root| {
-                    let children: Vec<AccountNode> = nodes
-                        .iter()
-                        .filter(|n| n.parent_id.as_deref() == Some(root.id.as_str()))
-                        .cloned()
-                        .collect();
+        <div class=style::node style=format!("--depth: {depth}")>
+            <div class=style::row_line>
+                {if has_children {
                     view! {
-                        <SidebarRow node=root.clone() selected_id=selected_id indent=false />
-                        {children
-                            .into_iter()
-                            .map(|child| {
-                                view! {
-                                    <SidebarRow node=child selected_id=selected_id indent=true />
-                                }
-                            })
-                            .collect::<Vec<_>>()}
+                        <button
+                            class=style::chevron
+                            on:click=toggle
+                            aria-expanded=move || if is_open.get() { "true" } else { "false" }
+                            aria-label=format!("toggle {name}")
+                        >
+                            {move || if is_open.get() { "▾" } else { "▸" }}
+                        </button>
                     }
-                })
-                .collect::<Vec<_>>()}
+                        .into_any()
+                } else {
+                    view! { <span class=style::chevron_spacer aria-hidden="true" /> }.into_any()
+                }} <SidebarRow node=node selected_id=selected_id />
+            </div>
+            <Show when=move || {
+                has_children && is_open.get()
+            }>
+                {move || {
+                    let all = stored_nodes.get_value();
+                    stored_children
+                        .get_value()
+                        .into_iter()
+                        .map(|child| {
+                            view! {
+                                <SidebarNode
+                                    node=child
+                                    nodes=all.clone()
+                                    depth=depth + 1
+                                    selected_id=selected_id
+                                    expanded=expanded
+                                />
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                }}
+            </Show>
         </div>
     }
+    .into_any()
 }
 
-/// A single row in the account tree.
+/// A single account link with its balance figure.
 #[component]
 fn SidebarRow(
     /// Account node to render.
     node: AccountNode,
     /// Currently selected account ID.
     selected_id: Signal<Option<String>>,
-    /// Whether this row is indented (child account).
-    indent: bool,
 ) -> impl IntoView {
     let currencies = crate::currency_ctx::use_currency_store();
+    let include_descendants = crate::pages::accounts::rollup::use_include_descendants();
     let id = node.id.clone();
-    let balance_amount = node.balance.clone();
-    let balance = move || {
-        balance_amount.as_ref().map_or_else(
-            || "\u{2014}".to_owned(),
-            |b| {
+    let own = node.balance.clone();
+    let rollup = node.rollup.clone();
+
+    // (formatted figure, is_negative, extra commodity count)
+    let figure = Memo::new(move |_| {
+        let shown = if include_descendants.get() {
+            rollup.first().cloned()
+        } else {
+            own.clone()
+        };
+        let extra = if include_descendants.get() {
+            rollup.len().saturating_sub(1)
+        } else {
+            0
+        };
+        match shown {
+            None => ("\u{2014}".to_owned(), false, extra),
+            Some(b) => {
                 let (sym, after) =
                     crate::currency_ctx::short_symbol(&b.currency_code, &currencies.get());
-                b.format_short(sym.as_deref(), after)
-            },
-        )
-    };
+                (
+                    b.format_short(sym.as_deref(), after),
+                    b.value < rust_decimal::Decimal::ZERO,
+                    extra,
+                )
+            }
+        }
+    });
     let is_active = Signal::derive(move || selected_id.get().as_deref() == Some(id.as_str()));
-    let balance_class = if node
-        .balance
-        .as_ref()
-        .is_some_and(|b| b.value < rust_decimal::Decimal::ZERO)
-    {
-        style::bal_neg
-    } else {
-        style::bal
-    };
     let href = format!("/accounts/{}", node.id);
 
     view! {
         <A
             href=href
             attr:class=move || {
-                let mut cls = vec![style::row];
-                if indent {
-                    cls.push(style::row_indent);
-                }
                 if is_active.get() {
-                    cls.push(style::row_active);
+                    format!("{} {}", style::row, style::row_active)
+                } else {
+                    style::row.to_owned()
                 }
-                cls.join(" ")
             }
         >
             <span class=style::row_name>{node.name.clone()}</span>
-            <span class=balance_class>{balance}</span>
+            <span class=move || {
+                if figure.with(|f| f.1) { style::bal_neg } else { style::bal }
+            }>
+                {move || figure.with(|f| f.0.clone())}
+                {move || {
+                    let extra = figure.with(|f| f.2);
+                    (extra > 0)
+                        .then(|| view! { <span class=style::badge>{format!("+{extra}")}</span> })
+                }}
+            </span>
         </A>
     }
 }

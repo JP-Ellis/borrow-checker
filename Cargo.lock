@@ -616,6 +616,7 @@ dependencies = [
  "pretty_assertions",
  "rstest",
  "rust_decimal",
+ "serde_json",
  "stylance",
  "tauri-sys",
  "wasm-bindgen",
