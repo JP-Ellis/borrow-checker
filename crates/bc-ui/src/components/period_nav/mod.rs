@@ -571,7 +571,7 @@ fn period_to_str(p: &Period) -> &'static str {
 
 /// `(value, text)` pairs of the granularity `<select>`, in display order.
 #[cfg(target_arch = "wasm32")]
-const PERIOD_OPTIONS: &[(&str, &str)] = &[
+const PERIOD_OPTIONS: [(&str, &str); 7] = [
     ("weekly", "Weekly"),
     ("fortnightly", "Fortnightly"),
     ("monthly", "Monthly"),
@@ -582,12 +582,33 @@ const PERIOD_OPTIONS: &[(&str, &str)] = &[
 ];
 
 /// `<select>` value of the all-time entry offered by [`WindowNav`].
-///
-/// [`WindowNav`]'s option list duplicates [`PERIOD_OPTIONS`]'s seven period
-/// rows with this entry prepended; a `const` slice cannot be built by
-/// concatenation, so the two lists are kept separately in sync by hand.
 #[cfg(target_arch = "wasm32")]
 const ALL_TIME_VALUE: &str = "all_time";
+
+/// [`WindowNav`]'s `<select>` rows: `All time`, then every [`PERIOD_OPTIONS`]
+/// row. The destructure keeps the two lists in step at compile time.
+#[cfg(target_arch = "wasm32")]
+const WINDOW_OPTIONS: [(&str, &str); 8] = {
+    let [
+        weekly,
+        fortnightly,
+        monthly,
+        quarterly,
+        fin_quarter,
+        fin_year,
+        cal_year,
+    ] = PERIOD_OPTIONS;
+    [
+        (ALL_TIME_VALUE, "All time"),
+        weekly,
+        fortnightly,
+        monthly,
+        quarterly,
+        fin_quarter,
+        fin_year,
+        cal_year,
+    ]
+};
 
 /// Stateless `◀ label ▶` plus a granularity `<select>`. Owns no signals; the
 /// wrapper decides what each control does.
@@ -717,7 +738,7 @@ pub fn PeriodNav(
             label=Signal::derive(move || window_label(&period.get(), window_start.get()))
             show_steps=Signal::derive(|| true)
             selected=Signal::derive(move || period_to_str(&period.get()))
-            options=PERIOD_OPTIONS
+            options=&PERIOD_OPTIONS
             on_prev=Callback::new(move |()| {
                 window_start.update(|ws| *ws = step_window(&period.get(), *ws, false));
             })
@@ -756,16 +777,6 @@ pub fn WindowNav(
     #[prop(optional, into)]
     disabled: Signal<bool>,
 ) -> impl IntoView {
-    const OPTIONS: &[(&str, &str)] = &[
-        (ALL_TIME_VALUE, "All time"),
-        ("weekly", "Weekly"),
-        ("fortnightly", "Fortnightly"),
-        ("monthly", "Monthly"),
-        ("quarterly", "Quarterly"),
-        ("financial_quarter", "Financial Quarter"),
-        ("financial_year", "Financial Year"),
-        ("calendar_year", "Calendar Year"),
-    ];
     let step = move |forward: bool| {
         window.update(|w| {
             if let DisplayWindow::Period { period, start } = w {
@@ -780,7 +791,7 @@ pub fn WindowNav(
             selected=Signal::derive(move || {
                 window.with(|w| w.period().map_or(ALL_TIME_VALUE, period_to_str))
             })
-            options=OPTIONS
+            options=&WINDOW_OPTIONS
             on_prev=Callback::new(move |()| step(false))
             on_next=Callback::new(move |()| step(true))
             on_select=Callback::new(move |value: String| {
