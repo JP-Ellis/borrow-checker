@@ -176,7 +176,7 @@ fn partially_matched_transaction() -> FilteredTransaction {
 
 /// Builds a [`LoadedRegister`] from sample [`FilteredTransaction`]s, all with
 /// the same fake AUD balance and no further pages.
-fn loaded_register(transactions: Vec<FilteredTransaction>) -> LoadedRegister {
+pub(crate) fn loaded_register(transactions: Vec<FilteredTransaction>) -> LoadedRegister {
     let rows: Vec<RegisterRow> = transactions
         .into_iter()
         .map(|ft| {

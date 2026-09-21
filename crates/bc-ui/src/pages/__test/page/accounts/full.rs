@@ -13,7 +13,6 @@ use bc_ipc::FilteredTransaction;
 use bc_ipc::Posting;
 use bc_ipc::PostingAmount;
 use bc_ipc::Reconciliation;
-use bc_ipc::RegisterRow;
 use bc_ipc::Transaction;
 use leptos::prelude::*;
 use stylance::import_style;
@@ -24,9 +23,9 @@ import_style!(style, "full.module.scss");
 use rust_decimal::Decimal;
 
 use crate::pages::accounts::components::transaction_register::TransactionRegister;
+use crate::pages::accounts::components::transaction_register::qa::loaded_register;
 use crate::pages::accounts::dashboard::AccountDashboard;
 use crate::pages::accounts::register_pages::BalanceMode;
-use crate::pages::accounts::register_pages::LoadedRegister;
 
 /// Display name shown in the QA index.
 pub const TITLE: &str = "Full account view";
@@ -142,31 +141,6 @@ fn coles_transaction() -> Transaction {
             "from commbank-au.wasm@1.4.2",
         )],
     )
-}
-
-/// Builds a [`LoadedRegister`] from sample [`FilteredTransaction`]s, all with
-/// the same fake AUD balance and no further pages.
-fn loaded_register(transactions: Vec<FilteredTransaction>) -> LoadedRegister {
-    let rows: Vec<RegisterRow> = transactions
-        .into_iter()
-        .map(|ft| {
-            RegisterRow::new(
-                ft.transaction,
-                ft.matched_postings,
-                Some(Amount::new(Decimal::new(12_345, 2), "AUD")),
-                None,
-            )
-        })
-        .collect();
-    let total = u32::try_from(rows.len()).unwrap_or(u32::MAX);
-    LoadedRegister {
-        rows,
-        total,
-        next_cursor: None,
-        loading: false,
-        failed: false,
-        generation: 0,
-    }
 }
 
 /// Returns the sample salary transaction.
