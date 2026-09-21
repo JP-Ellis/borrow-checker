@@ -45,6 +45,12 @@ let transactions = LocalResource::new(move || async move {
 
 No `<Suspense>` wrapper is needed — the `None` arm renders the skeleton directly.
 
+The exception is state that a fetch *appends to* rather than replaces. The
+accounts register (`pages/accounts/register_pages.rs`) keeps loaded pages in an
+`RwSignal` and issues each request from an `Effect` via `spawn_local`, tagging
+it with a generation counter so a stale response is dropped: `LocalResource`
+replaces its value on every refetch and cannot express "extend what is loaded".
+
 ## Skeleton Components
 
 - Match the loaded content's exact dimensions to prevent layout shift
