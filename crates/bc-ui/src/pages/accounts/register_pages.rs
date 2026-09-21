@@ -31,6 +31,13 @@ pub enum LoadTrigger {
 /// collapse the list. An *extend* appends the next page. Every request carries
 /// the `generation` current when it started; a response from an older
 /// generation is dropped.
+///
+/// `epoch` moves only when `rows` is replaced, so a keyed row view can key on
+/// `(epoch, id)`: a reset remounts every row once its response lands, while
+/// an append and the wait for a response leave the mounted rows alone. Keying
+/// on `generation` instead would remount the old rows under the keys the
+/// response is about to claim, and the keyed view would then keep the stale
+/// rows.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LoadedRegister {
     /// Rows in display order.
@@ -45,6 +52,8 @@ pub struct LoadedRegister {
     pub failed: bool,
     /// Bumped by every reset.
     pub generation: u32,
+    /// Bumped whenever `rows` is replaced (a reset landing, or a clear).
+    pub epoch: u32,
 }
 
 impl LoadedRegister {
@@ -83,6 +92,7 @@ impl LoadedRegister {
         if generation != self.generation {
             return false;
         }
+        self.epoch = self.epoch.wrapping_add(1);
         self.rows = page.rows;
         self.total = page.total;
         self.next_cursor = page.next_cursor;
@@ -115,6 +125,7 @@ impl LoadedRegister {
     /// dropped instead of repopulating it.
     pub fn clear(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.epoch = self.epoch.wrapping_add(1);
         self.rows.clear();
         self.total = 0;
         self.next_cursor = None;
@@ -380,6 +391,36 @@ mod tests {
         assert_eq!(g2, g1, "a retry is not a reset");
         assert!(!r.failed);
         assert!(r.loading);
+    }
+
+    #[test]
+    fn epoch_moves_only_when_rows_are_replaced() {
+        let mut r = LoadedRegister::default();
+        let e0 = r.epoch;
+
+        // Starting a reset leaves the rows on screen, so their keys must not
+        // move yet; a remount here would show the old rows under the keys the
+        // response is about to claim, and the keyed view would keep them.
+        let (g0, _) = r.begin_reset();
+        assert_eq!(r.epoch, e0);
+        r.apply_reset(g0, page(&["a", "b"], 3, true));
+        let e1 = r.epoch;
+        assert_ne!(e1, e0, "landing a reset replaces the rows");
+
+        // Appending keeps the existing rows mounted.
+        let (g1, _) = r.begin_extend(LoadTrigger::Scroll).expect("more");
+        r.apply_extend(g1, page(&["c"], 3, false));
+        assert_eq!(r.epoch, e1);
+
+        // A stale reset response changes nothing; the current one lands.
+        let (g2, _) = r.begin_reset();
+        r.apply_reset(g0, page(&["z"], 1, false));
+        assert_eq!(r.epoch, e1);
+        r.apply_reset(g2, page(&["a", "b", "c"], 3, false));
+        assert_ne!(r.epoch, e1);
+
+        r.clear();
+        assert_ne!(r.epoch, e1);
     }
 
     #[test]

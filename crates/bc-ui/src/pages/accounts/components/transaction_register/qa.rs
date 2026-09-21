@@ -196,6 +196,7 @@ pub(crate) fn loaded_register(transactions: Vec<FilteredTransaction>) -> LoadedR
         loading: false,
         failed: false,
         generation: 0,
+        epoch: 0,
     }
 }
 
