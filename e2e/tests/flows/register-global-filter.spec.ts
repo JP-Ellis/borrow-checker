@@ -266,6 +266,15 @@ describe('Accounts register — global filter', () => {
         await expect(chips2).toBeDisplayed();
         expect(await chips2.getText()).toContain('tag: reimbursable');
 
+        // The register keeps its previous rows on screen while the filtered
+        // page is in flight, and every one of those stale bistro rows matches
+        // the payee check below. Wait for the single surviving row to land
+        // before touching one, or the expansion reads the unfiltered legs.
+        await browser.waitUntil(
+            async () => (await registerRowCount()) === 1,
+            { timeoutMsg: 'Register did not narrow to the one reimbursable row' },
+        );
+
         // `reimbursable` sets no date bounds, so the register's PeriodNav stays
         // enabled — step back until the sole matching (January) bistro appears.
         for (let i = 0; i < 10 && !(await registerContainsPayee('The Local Bistro')); i += 1) {
