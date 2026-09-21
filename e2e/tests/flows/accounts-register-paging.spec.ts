@@ -45,11 +45,15 @@ async function openAccount(name: string): Promise<void> {
     await register.waitForDisplayed();
 }
 
-/** Reads the number of transaction rows currently rendered in the register. */
+/**
+ * Reads the number of transaction rows currently rendered in the register.
+ * Rows are the only `role="button"` elements carrying `aria-expanded`; an
+ * expanded row's status pill is a button too, and must not be counted.
+ */
 async function registerRowCount(): Promise<number> {
     return browser.execute(
         () => document.querySelector('[aria-label="transaction register"]')
-            ?.querySelectorAll('[role="button"]').length ?? 0,
+            ?.querySelectorAll('[role="button"][aria-expanded]').length ?? 0,
     );
 }
 
@@ -117,7 +121,12 @@ describe('Accounts register — lazy loading', () => {
         expect(await loadMore.isExisting()).toBe(true);
         expect(await loadMore.getText()).toBe('load more · 50 remaining');
 
-        await loadMore.click();
+        // Click through the DOM: WebDriver's own click scrolls the button
+        // into view first, and that scroll event already asks for the next
+        // page, which would make this the scroll test in disguise.
+        await browser.execute(() => {
+            document.querySelector<HTMLButtonElement>('[data-testid="load-more"]')?.click();
+        });
 
         // Second (final) page: every row loaded, header collapses to just
         // the total, sentinel and button are gone.
