@@ -73,10 +73,15 @@ async function stickyBalance(): Promise<string> {
     return (await el.getText()).trim();
 }
 
-/** aria-label of the first (newest) row's balance cell, e.g. "balance A$1,234.00 AUD". */
+/**
+ * aria-label of the first (newest) row's balance cell, e.g. "balance A$ 1,234.00 AUD".
+ * The formatter joins symbol and number with U+00A0; `getAttribute` keeps it
+ * while `getText` (used for the sticky bar) folds it to a space, so it is
+ * normalised here to let the two compare.
+ */
 async function firstRowBalanceLabel(): Promise<string> {
     const cells = await $$('[data-testid="balance-cell"]');
-    return (await cells[0].getAttribute('aria-label')) ?? '';
+    return ((await cells[0].getAttribute('aria-label')) ?? '').replace(/\u00a0/g, ' ');
 }
 
 describe('Accounts — register balance column', () => {
