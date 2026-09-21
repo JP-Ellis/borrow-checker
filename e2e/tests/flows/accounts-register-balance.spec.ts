@@ -112,6 +112,14 @@ describe('Accounts — register balance column', () => {
         // so the persisted mode must come back from localStorage rather than
         // from any in-memory page state.
         await browser.refresh();
+        // The reload repeats the cold start that `wdio.conf.ts`'s `before`
+        // absorbs once per session (11-14 s under Xvfb, longer on a loaded
+        // CI runner), so give the shell the same allowance before the
+        // 15 s `waitforTimeout` applies to the navigation.
+        await $('nav[aria-label="main navigation"]').waitForDisplayed({
+            timeout: 120_000,
+            timeoutMsg: 'Shell did not remount within 120 s of the reload',
+        });
         await openAccount('Checking');
         await waitForRegisterRows();
         const toggleAfterReload = await $('[data-testid="balance-mode"]');
