@@ -145,10 +145,9 @@ describe('Account dashboard — global filter', () => {
         await clearAllChips();
 
         // 1-2. Select CreditCard and capture the unfiltered baseline closing
-        // balance + transaction count. The seed gives CreditCard current-month
-        // `recurring`-tagged activity (a membership charge and a refund) plus a
-        // pre-window tagged leg, so `tag:recurring` resolves to a smaller, live
-        // in-window set — not an empty one.
+        // balance + transaction count. The page opens in all time; the seed
+        // gives CreditCard three `recurring`-tagged legs among many others, so
+        // `tag:recurring` resolves to a smaller, live subset — not an empty one.
         await openAccount('CreditCard');
         await waitForTxCount(count => count > 0, 'Dashboard tx-count tile never populated');
         const baselineBalance = await dashboardBalance();
@@ -156,8 +155,8 @@ describe('Account dashboard — global filter', () => {
         expect(await dashboardRealBalanceVisible()).toBe(false);
 
         // 3-4. Commit `tag:recurring` — the tile count must drop to a positive
-        // (non-empty) in-window subset and a muted real-balance span must
-        // appear alongside the now-filtered headline.
+        // (non-empty) subset and a muted real-balance span must appear
+        // alongside the now-filtered headline.
         await commitTagToken('recurring');
 
         const chips = await $('[data-testid="filter-chips"]');
