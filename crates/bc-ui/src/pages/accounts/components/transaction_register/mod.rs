@@ -198,11 +198,11 @@ pub fn TransactionRegister(
                             r.rows
                                 .iter()
                                 .enumerate()
-                                .map(|(i, row)| (r.generation, i, row.clone()))
+                                .map(|(i, row)| (r.epoch, i, row.clone()))
                                 .collect::<Vec<_>>()
                         })
                 }
-                key=|(generation, _, row)| (*generation, row.transaction.id.clone())
+                key=|(epoch, _, row)| (*epoch, row.transaction.id.clone())
                 children=move |(_, i, row)| {
                     let vid = vid.clone();
                     let matched = row.matched_postings.clone();
