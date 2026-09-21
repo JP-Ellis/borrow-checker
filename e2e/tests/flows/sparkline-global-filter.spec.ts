@@ -250,11 +250,12 @@ describe('Account dashboard — sparkline global filter', () => {
         await clearAllChips();
 
         // 1-2. Select CreditCard and capture the settled unfiltered geometry.
-        // The seed gives CreditCard current-month `recurring`-tagged activity
-        // (an 80.00 membership charge and a 15.00 refund, both inside the
-        // sparkline's default trailing window) alongside many other unrelated
-        // current-month postings, so narrowing to `tag:recurring` collapses the
-        // chart to just those two flows.
+        // The page opens in all time, so the sparkline spans the account's
+        // whole history. The seed gives CreditCard three `recurring`-tagged
+        // flows in that span: a 22.99 streaming charge six months back, and
+        // an 80.00 membership charge plus a 15.00 refund in the current month,
+        // alongside many unrelated postings. Narrowing to `tag:recurring`
+        // collapses the chart to just those three.
         await openAccount('CreditCard');
         await waitForSparkline();
         const before = await waitForSettledSparkline(
@@ -284,21 +285,26 @@ describe('Account dashboard — sparkline global filter', () => {
         );
         expect(filtered.signature).not.toBe(before.signature);
 
-        // The filtered chart must be exactly the two seeded `recurring` legs:
-        // one bucket of inflow (the 15.00 refund), one bucket of outflow (the
-        // 80.00 charge), every other bucket flat at zero. Both counts and the
-        // 15/80 ratio are clock-independent — the seed dates are relative to
-        // the current month, and the ratio is recovered from the shared y-axis
-        // rather than from any absolute date or bucket index.
+        // The filtered chart must be exactly the three seeded `recurring`
+        // legs: one bucket of inflow (the 15.00 refund) and two of outflow
+        // (the 22.99 charge six months back, then the 80.00 charge), every
+        // other bucket flat at zero. The counts and ratios are
+        // clock-independent — the seed dates are relative to the current
+        // month, and the ratios are recovered from the shared y-axis rather
+        // than from any absolute date or bucket index. The bucket count is
+        // unchanged by the filter because the all-time span starts at the
+        // account's first activity, which the filter does not move.
         const fracs = toFractions(filtered);
         expect(filtered.incomeY.length).toBe(before.incomeY.length);
         const incomeBuckets = nonZeroBuckets(fracs.income);
         const expenseBuckets = nonZeroBuckets(fracs.expenses);
         expect(incomeBuckets.length).toBe(1);
-        expect(expenseBuckets.length).toBe(1);
+        expect(expenseBuckets.length).toBe(2);
         // The 80.00 outflow is the largest plotted flow, so it normalises to 1;
-        // the 15.00 inflow must sit at 15/80 of it.
-        expect(expenseBuckets[0][1]).toBeCloseTo(1, 2);
+        // the earlier 22.99 outflow and the 15.00 inflow sit at their share
+        // of it.
+        expect(expenseBuckets[0][1]).toBeCloseTo(22.99 / 80, 2);
+        expect(expenseBuckets[1][1]).toBeCloseTo(1, 2);
         expect(incomeBuckets[0][1]).toBeCloseTo(15 / 80, 2);
 
         // 4. Remove the chip — the sparkline resource re-fetches unfiltered and
