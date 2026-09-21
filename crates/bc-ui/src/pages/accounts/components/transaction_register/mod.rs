@@ -11,6 +11,7 @@ use crate::components::period_nav::DisplayWindow;
 use crate::components::transaction_row::RowPerspective;
 use crate::components::transaction_row::TransactionRow;
 use crate::pages::accounts::register_pages::BalanceMode;
+use crate::pages::accounts::register_pages::LoadTrigger;
 use crate::pages::accounts::register_pages::LoadedRegister;
 use crate::pages::accounts::register_pages::axes_for;
 
@@ -45,8 +46,8 @@ import_style!(style, "register.module.scss");
 pub fn TransactionRegister(
     /// Everything loaded so far.
     register: Signal<LoadedRegister>,
-    /// Asks the page for the next page of rows.
-    on_load_more: Callback<()>,
+    /// Asks the page for the next page of rows; `Explicit` retries after a failure.
+    on_load_more: Callback<LoadTrigger>,
     /// What the balance column shows (page-owned, persisted).
     balance_mode: RwSignal<BalanceMode>,
     /// Account ID being viewed (determines headline amounts).
@@ -105,7 +106,7 @@ pub fn TransactionRegister(
         match e.key().as_str() {
             "j" | "ArrowDown" => {
                 if selected_idx.get_untracked() == Some(row_count.saturating_sub(1)) {
-                    on_load_more.run(());
+                    on_load_more.run(LoadTrigger::Explicit);
                 }
                 selected_idx.update(|s| {
                     *s =
@@ -256,16 +257,19 @@ pub fn TransactionRegister(
                                         u32::try_from(r.rows.len()).unwrap_or(u32::MAX),
                                     );
                                 let loading = r.loading;
+                                let failed = r.failed;
                                 view! {
                                     <div class=style::sentinel data-testid="register-sentinel" />
                                     <button
                                         class=style::load_more
                                         data-testid="load-more"
                                         disabled=loading
-                                        on:click=move |_| on_load_more.run(())
+                                        on:click=move |_| on_load_more.run(LoadTrigger::Explicit)
                                     >
                                         {if loading {
                                             "loading\u{2026}".to_owned()
+                                        } else if failed {
+                                            format!("retry \u{00b7} {remaining} remaining")
                                         } else {
                                             format!("load more \u{00b7} {remaining} remaining")
                                         }}

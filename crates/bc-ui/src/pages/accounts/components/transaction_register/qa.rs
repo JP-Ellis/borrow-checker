@@ -210,7 +210,7 @@ fn DimmedRegisterShowcase() -> impl IntoView {
     view! {
         <TransactionRegister
             register=Signal::derive(move || loaded.clone())
-            on_load_more=Callback::new(|()| {})
+            on_load_more=Callback::new(|_| {})
             balance_mode=RwSignal::new(BalanceMode::Real)
             viewing_account_id="cb-smart-access"
             window=window
@@ -241,7 +241,7 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                 </p>
                 <TransactionRegister
                     register=Signal::derive(move || typical.clone())
-                    on_load_more=Callback::new(|()| {})
+                    on_load_more=Callback::new(|_| {})
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     viewing_account_id="cb-smart-access"
                     window=window
@@ -254,7 +254,7 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                 </p>
                 <TransactionRegister
                     register=Signal::derive(move || empty.clone())
-                    on_load_more=Callback::new(|()| {})
+                    on_load_more=Callback::new(|_| {})
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     viewing_account_id="cb-smart-access"
                     window=window
@@ -267,7 +267,7 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                 </p>
                 <TransactionRegister
                     register=Signal::derive(move || paged.clone())
-                    on_load_more=Callback::new(|()| {})
+                    on_load_more=Callback::new(|_| {})
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     viewing_account_id="cb-smart-access"
                     window=window

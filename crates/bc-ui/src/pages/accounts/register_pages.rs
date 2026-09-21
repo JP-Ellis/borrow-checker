@@ -15,6 +15,15 @@ pub const PAGE_SIZE: u32 = 100;
 /// `localStorage` key holding the balance mode's [`BalanceMode::as_str`] value.
 pub const BALANCE_MODE_KEY: &str = "accounts.balance_mode";
 
+/// What asked for the next page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadTrigger {
+    /// The scroll handler, which fires on every scroll event.
+    Scroll,
+    /// The load-more button or `j` past the last row: a deliberate request.
+    Explicit,
+}
+
 /// Everything the register has loaded so far.
 ///
 /// A *reset* (selection, window, filter, roll-up or data change) replaces
@@ -32,7 +41,7 @@ pub struct LoadedRegister {
     pub next_cursor: Option<RegisterCursor>,
     /// A request is in flight.
     pub loading: bool,
-    /// The most recent request failed and has not yet been retried by a reset.
+    /// The most recent request failed and has not been retried yet.
     pub failed: bool,
     /// Bumped by every reset.
     pub generation: u32,
@@ -49,14 +58,20 @@ impl LoadedRegister {
         (self.generation, PAGE_SIZE.max(loaded))
     }
 
-    /// Starts an extend, or `None` while a request is in flight, the end has
-    /// been reached, or the last request failed. A failed extend is retried
-    /// only by a reset, not by the scroll handler that keeps calling this —
-    /// otherwise a persistent backend error would re-fire one IPC call per
-    /// scroll event.
-    pub fn begin_extend(&mut self) -> Option<(u32, RegisterCursor)> {
-        if self.loading || self.failed {
+    /// Starts an extend, or `None` while a request is in flight or the end
+    /// has been reached. After a failed request only an [`LoadTrigger::Explicit`]
+    /// call (or a reset) tries again; the scroll handler keeps calling this and
+    /// would otherwise re-fire one IPC call per scroll event against a
+    /// persistent backend error.
+    pub fn begin_extend(&mut self, trigger: LoadTrigger) -> Option<(u32, RegisterCursor)> {
+        if self.loading {
             return None;
+        }
+        if self.failed {
+            if trigger == LoadTrigger::Scroll {
+                return None;
+            }
+            self.failed = false;
         }
         let cursor = self.next_cursor.clone()?;
         self.loading = true;
@@ -253,7 +268,7 @@ mod tests {
         let (g0, limit) = r.begin_reset();
         assert_eq!(limit, PAGE_SIZE);
         assert!(r.apply_reset(g0, page(&["a", "b"], 5, true)));
-        let (g1, _) = r.begin_extend().expect("more");
+        let (g1, _) = r.begin_extend(LoadTrigger::Scroll).expect("more");
         assert!(r.apply_extend(g1, page(&["c", "d"], 5, true)));
         assert_eq!(r.rows.len(), 4);
         // An edit refreshes what is on screen: the limit covers the loaded rows.
@@ -294,7 +309,7 @@ mod tests {
         let mut r = LoadedRegister::default();
         let (g0, _) = r.begin_reset();
         assert!(r.apply_reset(g0, page(&["a"], 5, true)));
-        let (g_extend, _cursor) = r.begin_extend().expect("more");
+        let (g_extend, _cursor) = r.begin_extend(LoadTrigger::Scroll).expect("more");
 
         // A reset starts (e.g. the filter changes) before the extend's
         // response arrives, bumping the generation past the extend's.
@@ -323,7 +338,7 @@ mod tests {
         assert!(r.apply_reset(g1, page(&["new"], 1, false)));
         assert_eq!(r.rows[0].transaction.id, "new");
         assert!(r.fully_loaded());
-        assert_eq!(r.begin_extend(), None);
+        assert_eq!(r.begin_extend(LoadTrigger::Scroll), None);
     }
 
     #[test]
@@ -331,12 +346,12 @@ mod tests {
         let mut r = LoadedRegister::default();
         let (g0, _) = r.begin_reset();
         r.apply_reset(g0, page(&["a"], 3, true));
-        let (g1, _) = r.begin_extend().expect("first extend");
-        assert_eq!(r.begin_extend(), None, "in flight");
+        let (g1, _) = r.begin_extend(LoadTrigger::Scroll).expect("first extend");
+        assert_eq!(r.begin_extend(LoadTrigger::Scroll), None, "in flight");
         // A successful response (rather than a failure) clears `loading`
         // without setting `failed`, so another extend is allowed again.
         assert!(r.apply_extend(g1, page(&["b"], 3, false)));
-        assert_eq!(r.begin_extend(), None, "fully loaded");
+        assert_eq!(r.begin_extend(LoadTrigger::Scroll), None, "fully loaded");
     }
 
     #[test]
@@ -344,13 +359,27 @@ mod tests {
         let mut r = LoadedRegister::default();
         let (g0, _) = r.begin_reset();
         r.apply_reset(g0, page(&["a"], 3, true));
-        let (g1, _) = r.begin_extend().expect("first extend");
+        let (g1, _) = r.begin_extend(LoadTrigger::Scroll).expect("first extend");
         r.fail(g1);
         assert!(r.failed);
         // A persistent backend error must not be retried by the scroll
         // handler that keeps calling begin_extend.
-        assert_eq!(r.begin_extend(), None);
-        assert_eq!(r.begin_extend(), None);
+        assert_eq!(r.begin_extend(LoadTrigger::Scroll), None);
+        assert_eq!(r.begin_extend(LoadTrigger::Scroll), None);
+    }
+
+    #[test]
+    fn explicit_extend_retries_after_failure() {
+        let mut r = LoadedRegister::default();
+        let (g0, _) = r.begin_reset();
+        r.apply_reset(g0, page(&["a"], 3, true));
+        let (g1, _) = r.begin_extend(LoadTrigger::Scroll).expect("first extend");
+        r.fail(g1);
+
+        let (g2, _) = r.begin_extend(LoadTrigger::Explicit).expect("retry");
+        assert_eq!(g2, g1, "a retry is not a reset");
+        assert!(!r.failed);
+        assert!(r.loading);
     }
 
     #[test]
@@ -358,7 +387,7 @@ mod tests {
         let mut r = LoadedRegister::default();
         let (g0, _) = r.begin_reset();
         r.apply_reset(g0, page(&["a"], 3, true));
-        let (g1, _) = r.begin_extend().expect("first extend");
+        let (g1, _) = r.begin_extend(LoadTrigger::Scroll).expect("first extend");
         r.fail(g1);
         assert!(r.failed);
 
