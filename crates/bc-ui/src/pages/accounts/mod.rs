@@ -44,6 +44,8 @@ use stylance::import_style;
 #[cfg(target_arch = "wasm32")]
 use crate::pages::accounts::register_pages::BalanceMode;
 #[cfg(target_arch = "wasm32")]
+use crate::pages::accounts::register_pages::LoadTrigger;
+#[cfg(target_arch = "wasm32")]
 use crate::pages::accounts::register_pages::LoadedRegister;
 
 #[cfg(target_arch = "wasm32")]
@@ -194,12 +196,11 @@ pub fn Accounts() -> impl IntoView {
     });
 
     // Extend: append the next page. A no-op while loading or at the end.
-    let load_more = Callback::new(move |()| {
+    let load_more = Callback::new(move |trigger: LoadTrigger| {
         let Some((filter, id, rollup)) = request_base.get_untracked() else {
             return;
         };
-        let Some((generation, cursor)) =
-            register.try_update(LoadedRegister::begin_extend).flatten()
+        let Some((generation, cursor)) = register.try_update(|r| r.begin_extend(trigger)).flatten()
         else {
             return;
         };
@@ -238,7 +239,7 @@ pub fn Accounts() -> impl IntoView {
                 .saturating_sub(el.scroll_top())
                 .saturating_sub(el.client_height());
             if remaining < el.client_height().saturating_mul(2_i32) {
-                load_more.run(());
+                load_more.run(LoadTrigger::Scroll);
             }
         }
     };
