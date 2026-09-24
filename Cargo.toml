@@ -99,7 +99,7 @@ members  = [
     features = ["env-filter", "fmt", "json"]
   }
   wasmtime              = {
-    version          = "48",
+    version          = "49",
     default-features = false,
     features         = [
       "component-model",
@@ -108,7 +108,7 @@ members  = [
       "std",
     ]
   }
-  wasmtime-wasi         = { version = "48" }
+  wasmtime-wasi         = { version = "49" }
   winnow                = "1.0"
   wit-bindgen           = {
     version          = "0.62",
