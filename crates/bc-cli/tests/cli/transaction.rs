@@ -1075,3 +1075,210 @@ fn add_accepts_account_paths() {
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+/// Runs `cmd` and parses its stdout as JSON.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn json_of(cmd: &mut assert_cmd::Command) -> serde_json::Value {
+    let output = cmd.output().expect("command runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("valid JSON")
+}
+
+/// The `field` of each posting in a transaction's JSON.
+fn posting_fields(tx: &serde_json::Value, field: &str) -> Vec<String> {
+    tx.get("postings")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.get(field).and_then(serde_json::Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// Adds the unbalanced grocery transaction the edit tests start from.
+fn add_groceries(ctx: &TestContext) -> serde_json::Value {
+    json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "add",
+        "--date",
+        "2026-03-01",
+        "--description",
+        "Grocery shopping",
+        "--posting",
+        "Assets:Checking:-50.00:AUD",
+        "--posting",
+        "Expenses:Groceries:30.00:AUD",
+    ]))
+}
+
+/// Creates `Expenses:Household` and returns its ID.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn create_household(ctx: &TestContext) -> String {
+    let out = ctx
+        .command()
+        .args(["--json", "account", "create", "Expenses:Household"])
+        .output()
+        .expect("create household");
+    parse_account_id(&out.stdout)
+}
+
+#[test]
+fn edit_adds_a_posting_by_selector() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    create_household(&ctx);
+    add_groceries(&ctx);
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "edit",
+        "--account",
+        "Assets:Checking",
+        "--date",
+        "2026-03-01",
+        "--amount",
+        "-50",
+        "--add-posting",
+        "Expenses:Household:20.00:AUD",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+
+    let listed = json_of(ctx.command().args(["--json", "transaction", "list"]));
+    let first = listed.get(0).cloned().unwrap_or_default();
+    assert_eq!(posting_fields(&first, "id").len(), 3);
+}
+
+#[test]
+fn edit_set_posting_keeps_the_posting_id() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let household = create_household(&ctx);
+    let added = add_groceries(&ctx);
+    let edited = json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "edit",
+        "--account",
+        "Assets:Checking",
+        "--date",
+        "2026-03-01",
+        "--set-posting",
+        "Expenses:Groceries=Expenses:Household:50.00:AUD",
+    ]));
+    assert_eq!(posting_fields(&edited, "id"), posting_fields(&added, "id"));
+    assert_eq!(
+        posting_fields(&edited, "account_id").get(1),
+        Some(&household)
+    );
+}
+
+#[test]
+fn edit_by_transaction_id_removes_a_posting() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    create_household(&ctx);
+    let added = add_groceries(&ctx);
+    let id = added
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let edited = json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "edit",
+        &id,
+        "--add-posting",
+        "Expenses:Household:50.00:AUD",
+        "--remove-posting",
+        "Expenses:Groceries",
+    ]));
+    assert_eq!(posting_fields(&edited, "id").len(), 2);
+}
+
+#[test]
+fn edit_with_no_matching_transaction() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    add_groceries(&ctx);
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "edit",
+        "--account",
+        "Assets:Checking",
+        "--date",
+        "2026-03-02",
+        "--add-posting",
+        "Expenses:Groceries:20.00:AUD",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn edit_with_two_matching_transactions() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    add_groceries(&ctx);
+    add_groceries(&ctx);
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "edit",
+        "--account",
+        "Assets:Checking",
+        "--date",
+        "2026-03-01",
+        "--add-posting",
+        "Expenses:Groceries:20.00:AUD",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn edit_without_an_operation() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    add_groceries(&ctx);
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "edit",
+        "--account",
+        "Assets:Checking",
+        "--date",
+        "2026-03-01",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn edit_rejects_a_posting_named_twice() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    create_household(&ctx);
+    add_groceries(&ctx);
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "edit",
+        "--account",
+        "Assets:Checking",
+        "--date",
+        "2026-03-01",
+        "--set-posting",
+        "Expenses:Groceries=Expenses:Household:30.00:AUD",
+        "--remove-posting",
+        "Expenses:Groceries",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+
+    let listed = json_of(ctx.command().args(["--json", "transaction", "list"]));
+    let first = listed.get(0).cloned().unwrap_or_default();
+    assert_eq!(posting_fields(&first, "id").len(), 2, "nothing was written");
+}

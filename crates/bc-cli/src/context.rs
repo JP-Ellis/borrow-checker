@@ -21,6 +21,8 @@ pub struct AppContext {
     pub commodities: bc_core::CommodityService,
     /// Transaction service.
     pub transactions: bc_core::TransactionService,
+    /// Import source references, read to warn when an edit removes an imported leg.
+    pub sources: bc_core::SourceService,
     /// Balance computation engine.
     pub balances: bc_core::BalanceEngine,
     /// Import profile service.
@@ -109,7 +111,7 @@ impl AppContext {
         ));
         let engine = bc_core::ImportEngine::builder()
             .transactions(transactions.clone())
-            .sources(sources)
+            .sources(sources.clone())
             .accounts(accounts.clone())
             .commodities(commodities.clone())
             .tags(tags.clone())
@@ -131,6 +133,7 @@ impl AppContext {
             accounts,
             commodities,
             transactions,
+            sources,
             balances: bc_core::BalanceEngine::new(pool.clone()),
             profiles,
             assets: bc_core::AssetService::new(pool.clone()),
