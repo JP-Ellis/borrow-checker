@@ -1180,8 +1180,8 @@ fn edit_set_posting_keeps_the_posting_id() {
 #[test]
 fn edit_by_transaction_id_removes_a_posting() {
     let ctx = TestContext::new();
-    setup_accounts(&ctx);
-    create_household(&ctx);
+    let (_checking, groceries) = setup_accounts(&ctx);
+    let household = create_household(&ctx);
     let added = add_groceries(&ctx);
     let id = added
         .get("id")
@@ -1198,7 +1198,16 @@ fn edit_by_transaction_id_removes_a_posting() {
         "--remove-posting",
         "Expenses:Groceries",
     ]));
+    let account_ids = posting_fields(&edited, "account_id");
     assert_eq!(posting_fields(&edited, "id").len(), 2);
+    assert!(
+        !account_ids.contains(&groceries),
+        "Groceries was removed: {account_ids:?}"
+    );
+    assert!(
+        account_ids.contains(&household),
+        "Household was added: {account_ids:?}"
+    );
 }
 
 #[test]
