@@ -276,6 +276,9 @@ pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> 
                 amount: posting.amount().cloned(),
                 price: posting.price().cloned(),
                 cost: posting.cost().cloned(),
+                metadata: posting.metadata().clone(),
+                tag_ids: posting.tag_ids().to_vec(),
+                spread: spread_pair(posting),
             }),
             Some(prev) => events.extend(diff_posting(&id, prev, posting)),
         }
@@ -5071,6 +5074,45 @@ mod tests {
                 amount: added.amount().cloned(),
                 price: None,
                 cost: Some(cost),
+                metadata: Metadata::default(),
+                tag_ids: Vec::new(),
+                spread: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn diff_records_metadata_tags_and_spread_on_an_added_leg() {
+        let current = sample_tx();
+        let tag = TagId::new();
+        let added = Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
+            .amount(Amount::new(dec!(5), CommodityCode::new("AUD")))
+            .metadata(text_meta(&[("note", "paid by a")]))
+            .tag_ids(vec![tag.clone()])
+            .spread_from(jiff::civil::date(2026, 1, 1))
+            .spread_until(jiff::civil::date(2026, 12, 31))
+            .build();
+        let mut postings = current.postings().to_vec();
+        postings.push(added.clone());
+        let updated = current.clone().with_postings(postings);
+
+        assert_eq!(
+            diff_transaction(&current, &updated),
+            vec![Event::PostingAdded {
+                id: current.id().clone(),
+                posting_id: added.id().clone(),
+                account: added.account_id().clone(),
+                amount: added.amount().cloned(),
+                price: None,
+                cost: None,
+                metadata: text_meta(&[("note", "paid by a")]),
+                tag_ids: vec![tag],
+                spread: Some((
+                    jiff::civil::date(2026, 1, 1),
+                    jiff::civil::date(2026, 12, 31)
+                )),
             }]
         );
     }
