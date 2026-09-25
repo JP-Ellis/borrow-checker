@@ -1807,7 +1807,7 @@ mod tests {
         ));
         let engine = bc_core::ImportEngine::builder()
             .transactions(transactions.clone())
-            .sources(sources)
+            .sources(sources.clone())
             .accounts(accounts.clone())
             .commodities(bc_core::CommodityService::new(pool.clone()))
             .tags(tags.clone())
@@ -1829,6 +1829,7 @@ mod tests {
             accounts,
             commodities: bc_core::CommodityService::new(pool.clone()),
             transactions,
+            sources,
             balances: bc_core::BalanceEngine::new(pool.clone()),
             profiles,
             assets: bc_core::AssetService::new(pool.clone()),

@@ -2,7 +2,7 @@
     clippy::mod_module_files,
     reason = "module split into transaction/mod.rs, transaction/leg.rs and transaction/spec.rs"
 )]
-//! Transaction management sub-commands: list, add, amend, reverse.
+//! Transaction management sub-commands: list, add, amend, edit, reverse.
 
 use core::str::FromStr as _;
 
@@ -11,6 +11,7 @@ use clap::Subcommand;
 use crate::context::AppContext;
 use crate::error::CliResult;
 
+mod edit;
 mod leg;
 mod spec;
 
@@ -76,6 +77,12 @@ pub enum Command {
         #[arg(long = "clear-meta", value_name = "KEY", num_args = 1)]
         clear_meta: Vec<String>,
     },
+    /// Change the postings of an existing transaction.
+    ///
+    /// Find the transaction by ID, or by --account and --date, adding
+    /// --amount when several transactions touch that account on that day.
+    /// Postings no operation names are kept unchanged.
+    Edit(EditArgs),
     /// Reverse a transaction by creating a new transaction with negated postings.
     Reverse {
         /// Transaction ID to reverse.
@@ -83,13 +90,42 @@ pub enum Command {
     },
 }
 
+/// Arguments for `transaction edit`.
+#[non_exhaustive]
+#[derive(Debug, clap::Args)]
+pub struct EditArgs {
+    /// Transaction ID. Give this, or --account and --date.
+    #[arg(conflicts_with_all = ["account", "date", "amount"])]
+    pub id: Option<String>,
+    /// Find the transaction by a posting on exactly this account (path or ID).
+    #[arg(long, requires = "date")]
+    pub account: Option<String>,
+    /// The transaction's date (YYYY-MM-DD).
+    #[arg(long, requires = "account")]
+    pub date: Option<String>,
+    /// That posting's signed amount, when several transactions match.
+    #[arg(long, requires = "account", allow_hyphen_values = true)]
+    pub amount: Option<String>,
+    /// Add a posting `ACCOUNT:AMOUNT:COMMODITY[{COST}][@PRICE]`. Repeat for each.
+    #[arg(long = "add-posting", value_name = "SPEC", num_args = 1)]
+    pub add: Vec<String>,
+    /// Replace a posting's account, amount, cost and price, keeping its
+    /// metadata, tags and import link. `POSTING` is a posting ID, an account,
+    /// or `ACCOUNT:AMOUNT:COMMODITY` when the account holds several postings.
+    #[arg(long = "set-posting", value_name = "POSTING=SPEC", num_args = 1)]
+    pub set: Vec<String>,
+    /// Remove a posting, named as for --set-posting. Repeat for each.
+    #[arg(long = "remove-posting", value_name = "POSTING", num_args = 1)]
+    pub remove: Vec<String>,
+}
+
 /// Serialises `value` and adds a `warnings` key naming each warning's
 /// [`Display`](std::fmt::Display) rendering.
 ///
-/// Used for the JSON payload of a write that can raise [`bc_core::Warning`]s
-/// on a value that otherwise carries none of its own: the payload stays a
-/// plain object a script can index straight into, rather than nesting the
-/// written value under its own key.
+/// Used for the JSON payload of a write that can raise warnings, whether
+/// [`bc_core::Warning`]s or the CLI's own, on a value that otherwise carries
+/// none of its own: the payload stays a plain object a script can index
+/// straight into, rather than nesting the written value under its own key.
 ///
 /// Each call site also prints these same warnings to stderr unconditionally,
 /// so stdout stays parseable while a human still sees them on the terminal.
@@ -99,12 +135,10 @@ pub enum Command {
 /// # Errors
 ///
 /// Returns [`crate::error::CliError::Json`] if `value` cannot serialise.
-fn with_warnings<T>(
-    value: &T,
-    warnings: &[bc_core::Warning],
-) -> crate::error::CliResult<serde_json::Value>
+fn with_warnings<T, W>(value: &T, warnings: &[W]) -> crate::error::CliResult<serde_json::Value>
 where
     T: serde::Serialize,
+    W: core::fmt::Display,
 {
     let mut json = serde_json::to_value(value)?;
     if let serde_json::Value::Object(ref mut map) = json {
@@ -143,6 +177,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             meta: meta_specs,
             clear_meta,
         } => amend(ctx, id, date, description, &meta_specs, &clear_meta).await,
+        Command::Edit(edit_args) => edit(ctx, edit_args).await,
         Command::Reverse { id } => reverse(ctx, id).await,
     }
 }
@@ -278,7 +313,7 @@ async fn add(
 
     if ctx.json {
         let created = ctx.transactions.find_by_id(&tx_id).await?;
-        return crate::output::print_json(&with_warnings(&created, &warned.warnings)?);
+        return crate::output::print_json(&with_warnings(&created, warned.warnings.as_slice())?);
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
@@ -343,12 +378,170 @@ async fn amend(
 
     if ctx.json {
         let reloaded = ctx.transactions.find_by_id(&tx_id).await?;
-        return crate::output::print_json(&with_warnings(&reloaded, &warned.warnings)?);
+        return crate::output::print_json(&with_warnings(&reloaded, warned.warnings.as_slice())?);
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         println!("Amended transaction: {id}");
+    }
+    Ok(())
+}
+
+/// Renders a posting as `Account:Path 50.00 AUD` for messages.
+fn describe_posting(posting: &bc_models::Posting, resolver: &bc_core::AccountResolver) -> String {
+    let account = resolver
+        .path_of(posting.account_id())
+        .map_or_else(|| posting.account_id().to_string(), ToOwned::to_owned);
+    match leg::render_leg(posting) {
+        Some(rendered) => format!("{account} {rendered}"),
+        None => account,
+    }
+}
+
+/// Finds the transaction `args` names, by ID or by selector.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError::Arg`] when the selector matches no
+/// transaction or several, listing the candidates in the second case.
+async fn find_target(
+    ctx: &AppContext,
+    args: &EditArgs,
+    lookup: &spec::Lookup<'_>,
+    describe: &dyn Fn(&bc_models::Posting) -> String,
+) -> CliResult<bc_models::Transaction> {
+    if let Some(id) = &args.id {
+        let tx_id = bc_models::TransactionId::from_str(id).map_err(|e| {
+            crate::error::CliError::Arg(format!("invalid transaction ID '{id}': {e}"))
+        })?;
+        return Ok(ctx.transactions.find_by_id(&tx_id).await?);
+    }
+    let (Some(account), Some(date)) = (&args.account, &args.date) else {
+        return Err(crate::error::CliError::Arg(
+            "give a transaction ID, or --account and --date to find one".into(),
+        ));
+    };
+    let account_id = lookup(account)
+        .ok_or_else(|| crate::error::CliError::Arg(format!("no account '{account}'")))?;
+    let day = jiff::civil::Date::from_str(date)
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{date}': {e}")))?;
+    let next = day
+        .tomorrow()
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{date}': {e}")))?;
+    let amount = args
+        .amount
+        .as_deref()
+        .map(|raw| {
+            rust_decimal::Decimal::from_str(raw)
+                .map_err(|e| crate::error::CliError::Arg(format!("invalid amount '{raw}': {e}")))
+        })
+        .transpose()?;
+
+    let mut found: Vec<bc_models::Transaction> = ctx
+        .transactions
+        .list_for_account_in_range(&account_id, day, next)
+        .await?
+        .filter(|tx| edit::touches(tx, &account_id, amount))
+        .collect();
+    let wanted = amount.map(|a| format!(" for {a}")).unwrap_or_default();
+    if found.len() > 1 {
+        let candidates: Vec<String> = found
+            .iter()
+            .map(|tx| {
+                let legs: Vec<String> = tx.postings().iter().map(describe).collect();
+                format!("  {}  {}: {}", tx.date(), tx.description(), legs.join(", "))
+            })
+            .collect();
+        return Err(crate::error::CliError::Arg(format!(
+            "{} transactions on {account} dated {date}{wanted}; narrow the selector:\n{}",
+            found.len(),
+            candidates.join("\n")
+        )));
+    }
+    found.pop().ok_or_else(|| {
+        crate::error::CliError::Arg(format!("no transaction on {account} dated {date}{wanted}"))
+    })
+}
+
+/// Changes the postings of an existing transaction.
+async fn edit(ctx: &AppContext, args: EditArgs) -> CliResult<()> {
+    if args.add.is_empty() && args.set.is_empty() && args.remove.is_empty() {
+        return Err(crate::error::CliError::Arg(
+            "nothing to edit: give --add-posting, --set-posting or --remove-posting".into(),
+        ));
+    }
+    let resolver = bc_core::AccountResolver::load(&ctx.accounts).await?;
+    let lookup = spec::account_lookup(&resolver);
+    let describe = |posting: &bc_models::Posting| describe_posting(posting, &resolver);
+
+    let current = find_target(ctx, &args, &lookup, &describe).await?;
+    let select = |text: &str| -> CliResult<bc_models::PostingId> {
+        let selector = edit::parse_selector(text, &lookup)?;
+        edit::select_posting(&current, &selector, text, &describe).cloned()
+    };
+
+    let mut set = Vec::with_capacity(args.set.len());
+    for text in &args.set {
+        let (target, spec_text) = text.split_once('=').ok_or_else(|| {
+            crate::error::CliError::Arg(format!(
+                "invalid --set-posting '{text}': expected POSTING=SPEC"
+            ))
+        })?;
+        set.push((select(target)?, spec::parse_posting(spec_text, &lookup)?));
+    }
+    let ops = edit::Ops {
+        add: args
+            .add
+            .iter()
+            .map(|s| spec::parse_posting(s, &lookup))
+            .collect::<CliResult<_>>()?,
+        set,
+        remove: args
+            .remove
+            .iter()
+            .map(|t| select(t))
+            .collect::<CliResult<_>>()?,
+    };
+    let updated = edit::apply(&current, &ops, &describe)?;
+
+    let imported: std::collections::HashSet<String> = ctx
+        .sources
+        .provenance_by_posting(current.id())
+        .await?
+        .into_keys()
+        .collect();
+    let mut warnings: Vec<String> = edit::imported_removals(&current, &ops, &imported)
+        .into_iter()
+        .map(|p| {
+            format!(
+                "removed posting {} came from an import and no longer matches its statement row",
+                describe(p)
+            )
+        })
+        .collect();
+
+    let warned = ctx.transactions.edit(updated).await?;
+    warnings.extend(warned.warnings.iter().map(ToString::to_string));
+    for warning in &warnings {
+        #[expect(clippy::print_stderr, reason = "CLI output")]
+        {
+            eprintln!("warning: {warning}");
+        }
+    }
+
+    if ctx.json {
+        let reloaded = ctx.transactions.find_by_id(current.id()).await?;
+        return crate::output::print_json(&with_warnings(&reloaded, warnings.as_slice())?);
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!(
+            "Edited transaction: {} ({})",
+            current.description(),
+            current.date()
+        );
     }
     Ok(())
 }

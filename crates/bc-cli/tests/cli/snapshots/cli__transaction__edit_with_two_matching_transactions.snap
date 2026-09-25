@@ -1,0 +1,11 @@
+---
+source: crates/bc-cli/tests/cli/transaction.rs
+expression: output
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: 2 transactions on Assets:Checking dated 2026-03-01; narrow the selector:
+  2026-03-01  Grocery shopping: Assets:Checking -50.00 AUD, Expenses:Groceries 30.00 AUD
+  2026-03-01  Grocery shopping: Assets:Checking -50.00 AUD, Expenses:Groceries 30.00 AUD
