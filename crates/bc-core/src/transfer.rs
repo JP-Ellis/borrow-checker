@@ -11,6 +11,8 @@ use sqlx::SqlitePool;
 
 use crate::BcError;
 use crate::BcResult;
+use crate::Warned;
+use crate::Warning;
 
 /// Merges, unmerges, and suggests transfer pairs.
 #[non_exhaustive]
@@ -53,6 +55,11 @@ impl Service {
     /// self-contained [`crate::Event::TransactionsMerged`] so the merge can be
     /// reversed by [`Service::unmerge`]. All writes share one DB transaction.
     ///
+    /// The two postings need not be equal and opposite: "warn, don't block"
+    /// means a pair that leaves a residual still merges, and the residual
+    /// comes back as a [`Warning::UnbalancedMerge`] rather than blocking the
+    /// write. A later `transaction edit --add-posting` can balance it.
+    ///
     /// # Arguments
     ///
     /// * `survivor_id` - The transaction that survives (its ID and user fields persist).
@@ -61,7 +68,9 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if either transaction is missing,
-    /// [`BcError::NotMergeable`] if the pair fails the merge preconditions, or
+    /// [`BcError::NotMergeable`] if the pair fails a hard merge precondition
+    /// (self-merge, a leg with other than one posting, a posting with no
+    /// concrete amount, differing commodities, or a zero amount), or
     /// [`BcError`] on a database failure.
     #[inline]
     #[expect(
@@ -72,7 +81,7 @@ impl Service {
         &self,
         survivor_id: &TransactionId,
         absorbed_id: &TransactionId,
-    ) -> BcResult<()> {
+    ) -> BcResult<Warned<()>> {
         if survivor_id == absorbed_id {
             return Err(BcError::NotMergeable {
                 reason: "cannot merge a transaction with itself".to_owned(),
@@ -83,7 +92,7 @@ impl Service {
 
         let survivor = txs.find_by_id(survivor_id).await?;
         let absorbed = txs.find_by_id(absorbed_id).await?;
-        check_mergeable(&survivor, &absorbed)?;
+        let warning = check_mergeable(&survivor, &absorbed)?;
 
         let absorbed_posting =
             absorbed
@@ -225,7 +234,7 @@ impl Service {
             .await?;
 
         db_tx.commit().await?;
-        Ok(())
+        Ok(Warned::new((), warning.into_iter().collect()))
     }
 
     /// Reverses the most recent un-reversed merge on `survivor_id`.
@@ -483,8 +492,10 @@ impl Service {
 
 /// Validates that two transactions may be merged.
 ///
-/// Each must have exactly one concrete posting; the two postings must share a
-/// commodity and be equal in magnitude and opposite in sign.
+/// Each must have exactly one concrete posting, and the two postings must
+/// share a commodity and be non-zero. The postings need not be equal and
+/// opposite: a pair that does not net to zero still merges ("warn, don't
+/// block"), and the imbalance comes back as a [`Warning::UnbalancedMerge`].
 ///
 /// # Arguments
 ///
@@ -493,12 +504,13 @@ impl Service {
 ///
 /// # Returns
 ///
-/// `Ok(())` if the pair may be merged.
+/// `Ok(Some(warning))` if the pair may be merged but leaves a residual,
+/// `Ok(None)` if the pair may be merged and is equal and opposite.
 ///
 /// # Errors
 ///
 /// Returns [`BcError::NotMergeable`] describing the first failed precondition.
-fn check_mergeable(survivor: &Transaction, absorbed: &Transaction) -> BcResult<()> {
+fn check_mergeable(survivor: &Transaction, absorbed: &Transaction) -> BcResult<Option<Warning>> {
     let reject = |reason: &str| {
         Err(BcError::NotMergeable {
             reason: reason.to_owned(),
@@ -517,7 +529,7 @@ fn check_mergeable(survivor: &Transaction, absorbed: &Transaction) -> BcResult<(
     if amount_a.commodity() != amount_b.commodity() {
         return reject("postings must share a commodity");
     }
-    if amount_a.value().is_zero() {
+    if amount_a.value().is_zero() || amount_b.value().is_zero() {
         return reject("posting amount must be non-zero");
     }
     #[expect(
@@ -525,10 +537,12 @@ fn check_mergeable(survivor: &Transaction, absorbed: &Transaction) -> BcResult<(
         reason = "financial negation: Decimal is bounded by the type"
     )]
     let opposite = amount_a.value() == -amount_b.value();
-    if !opposite {
-        return reject("postings must be equal and opposite");
+    if opposite {
+        return Ok(None);
     }
-    Ok(())
+    Ok(Some(Warning::UnbalancedMerge {
+        residual: amount_a.add_unchecked(amount_b),
+    }))
 }
 
 /// Ranks reconciliation states so a merge can keep the most-settled one.
@@ -695,6 +709,7 @@ mod tests {
     use bc_models::TransactionId;
     use jiff::Timestamp;
     use jiff::civil::date;
+    use pretty_assertions::assert_eq;
     use rust_decimal::Decimal;
 
     use super::*;
@@ -721,23 +736,38 @@ mod tests {
 
     #[test]
     fn accepts_equal_opposite_same_commodity() {
-        check_mergeable(&tx("a", -100, "AUD"), &tx("b", 100, "AUD")).expect("should be mergeable");
+        let warning = check_mergeable(&tx("a", -100, "AUD"), &tx("b", 100, "AUD"))
+            .expect("should be mergeable");
+        assert_eq!(
+            warning, None,
+            "an equal-and-opposite pair raises no warning"
+        );
     }
 
     #[test]
-    fn rejects_same_sign() {
-        assert!(matches!(
-            check_mergeable(&tx("a", -100, "AUD"), &tx("b", -100, "AUD")),
-            Err(BcError::NotMergeable { .. })
-        ));
+    fn warns_on_same_sign() {
+        let warning = check_mergeable(&tx("a", -100, "AUD"), &tx("b", -100, "AUD"))
+            .expect("should still merge")
+            .expect("should warn about the residual");
+        assert_eq!(
+            warning,
+            Warning::UnbalancedMerge {
+                residual: Amount::new(Decimal::from(-200_i32), CommodityCode::new("AUD")),
+            }
+        );
     }
 
     #[test]
-    fn rejects_unequal_magnitude() {
-        assert!(matches!(
-            check_mergeable(&tx("a", -100, "AUD"), &tx("b", 90, "AUD")),
-            Err(BcError::NotMergeable { .. })
-        ));
+    fn warns_on_unequal_magnitude() {
+        let warning = check_mergeable(&tx("a", -100, "AUD"), &tx("b", 90, "AUD"))
+            .expect("should still merge")
+            .expect("should warn about the residual");
+        assert_eq!(
+            warning,
+            Warning::UnbalancedMerge {
+                residual: Amount::new(Decimal::from(-10_i32), CommodityCode::new("AUD")),
+            }
+        );
     }
 
     #[test]
@@ -752,6 +782,22 @@ mod tests {
     fn rejects_zero_amount() {
         assert!(matches!(
             check_mergeable(&tx("a", 0, "AUD"), &tx("b", 0, "AUD")),
+            Err(BcError::NotMergeable { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_amount_on_absorbed_leg() {
+        assert!(matches!(
+            check_mergeable(&tx("a", -100, "AUD"), &tx("b", 0, "AUD")),
+            Err(BcError::NotMergeable { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_amount_on_survivor_leg() {
+        assert!(matches!(
+            check_mergeable(&tx("a", 0, "AUD"), &tx("b", 100, "AUD")),
             Err(BcError::NotMergeable { .. })
         ));
     }
@@ -939,16 +985,67 @@ mod db_tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn merge_rejects_unbalanced_pair(pool: SqlitePool) {
+    async fn merge_unequal_pair_persists_with_warning(pool: SqlitePool) {
         let savings = account(&pool, "Savings").await;
         let mortgage = account(&pool, "Mortgage").await;
         let a = leg(&pool, &savings, -100, date(2025, 6, 26)).await;
         let b = leg(&pool, &mortgage, 90, date(2025, 6, 27)).await;
         let svc = Service::new(pool.clone());
-        assert!(matches!(
-            svc.merge(&a, &b).await,
-            Err(crate::BcError::NotMergeable { .. })
-        ));
+
+        let warned = svc.merge(&a, &b).await.expect("unequal pair still merges");
+        assert_eq!(
+            warned.warnings,
+            vec![Warning::UnbalancedMerge {
+                residual: Amount::new(Decimal::from(-10_i32), CommodityCode::new("AUD")),
+            }]
+        );
+
+        // The merge itself still went ahead: survivor holds both postings,
+        // absorbed is gone.
+        assert_eq!(posting_count(&pool, &a).await, 2);
+        assert!(!tx_exists(&pool, &b).await, "absorbed tx deleted");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unmerge_restores_unequal_merge_exactly(pool: SqlitePool) {
+        let savings = account(&pool, "Savings").await;
+        let mortgage = account(&pool, "Mortgage").await;
+        let a = leg(&pool, &savings, -100, date(2025, 6, 26)).await;
+        let b = leg(&pool, &mortgage, 90, date(2025, 6, 27)).await;
+        let svc = Service::new(pool.clone());
+
+        svc.merge(&a, &b).await.expect("unequal pair still merges");
+        let restored = svc.unmerge(&a).await.expect("unmerge");
+        assert_eq!(restored, b, "the original absorbed id is restored");
+
+        // Both transactions are back to a single posting each.
+        assert_eq!(posting_count(&pool, &a).await, 1);
+        assert_eq!(posting_count(&pool, &b).await, 1);
+        assert!(tx_exists(&pool, &b).await, "absorbed tx recreated");
+
+        // Each posting is restored to its exact pre-merge account and amount.
+        let txs = crate::TransactionService::new(pool.clone());
+        let restored_a = txs.find_by_id(&a).await.expect("find survivor");
+        let survivor_posting = restored_a.postings().first().expect("survivor posting");
+        assert_eq!(survivor_posting.account_id(), &savings);
+        assert_eq!(
+            survivor_posting.amount(),
+            Some(&Amount::new(
+                Decimal::from(-100_i32),
+                CommodityCode::new("AUD")
+            ))
+        );
+
+        let restored_b = txs.find_by_id(&b).await.expect("find absorbed");
+        let absorbed_posting = restored_b.postings().first().expect("absorbed posting");
+        assert_eq!(absorbed_posting.account_id(), &mortgage);
+        assert_eq!(
+            absorbed_posting.amount(),
+            Some(&Amount::new(
+                Decimal::from(90_i32),
+                CommodityCode::new("AUD")
+            ))
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]

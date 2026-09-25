@@ -416,7 +416,7 @@ impl WarningKey {
                 account_id.clone(),
                 commodity_code.clone(),
             )),
-            Warning::PostingIntoArchivedAccount { .. } => None,
+            Warning::PostingIntoArchivedAccount { .. } | Warning::UnbalancedMerge { .. } => None,
         }
     }
 }
@@ -3776,7 +3776,8 @@ mod tests {
                 Warning::PostingBeforeAccountOpened { .. }
                 | Warning::PostingAfterAccountClosed { .. }
                 | Warning::PostingIntoArchivedAccount { .. }
-                | Warning::QuoteInOwnCommodity { .. } => None,
+                | Warning::QuoteInOwnCommodity { .. }
+                | Warning::UnbalancedMerge { .. } => None,
             })
             .collect();
         codes.sort_unstable();

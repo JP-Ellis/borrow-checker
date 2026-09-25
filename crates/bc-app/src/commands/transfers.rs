@@ -41,7 +41,10 @@ pub async fn merge_transactions(
     let absorbed_id = bc_models::TransactionId::from_str(&absorbed).map_err(|e| {
         bc_ipc::BcError::Validation(format!("invalid transaction id '{absorbed}': {e}"))
     })?;
-    state.transfers.merge(&survivor_id, &absorbed_id).await?;
+    let warned = state.transfers.merge(&survivor_id, &absorbed_id).await?;
+    for warning in &warned.warnings {
+        tracing::warn!(%warning, "merge produced a warning");
+    }
     Ok(())
 }
 

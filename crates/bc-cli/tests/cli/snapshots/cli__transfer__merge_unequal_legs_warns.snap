@@ -1,0 +1,10 @@
+---
+source: crates/bc-cli/tests/cli/transfer.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Merged [TRANSACTION_ID] into [TRANSACTION_ID].
+----- stderr -----
+warning: merge left a residual of -10 AUD

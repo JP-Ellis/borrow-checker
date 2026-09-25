@@ -47,9 +47,22 @@ fn parse_tx(raw: &str) -> CliResult<bc_models::TransactionId> {
 pub async fn merge(args: MergeArgs, ctx: &AppContext) -> CliResult<()> {
     let survivor = parse_tx(&args.survivor)?;
     let absorbed = parse_tx(&args.absorbed)?;
-    ctx.transfers.merge(&survivor, &absorbed).await?;
+    let warned = ctx.transfers.merge(&survivor, &absorbed).await?;
+    for warning in &warned.warnings {
+        #[expect(clippy::print_stderr, reason = "CLI output")]
+        {
+            eprintln!("warning: {warning}");
+        }
+    }
     if ctx.json {
-        return crate::output::print_json(&serde_json::json!({ "merged": survivor.to_string() }));
+        return crate::output::print_json(&serde_json::json!({
+            "merged": survivor.to_string(),
+            "warnings": warned
+                .warnings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+        }));
     }
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
