@@ -390,8 +390,8 @@ enum WarningKey {
 
 impl WarningKey {
     /// Returns the dedup key for `warning`, or `None` for a variant this
-    /// module does not dedup at collection (currently just
-    /// [`Warning::PostingIntoArchivedAccount`], deduped upstream instead).
+    /// module does not dedup at collection: [`Warning::PostingIntoArchivedAccount`]
+    /// is deduped upstream, and [`Warning::UnbalancedMerge`] never arises here.
     fn of(warning: &Warning) -> Option<Self> {
         match *warning {
             Warning::CommodityOutsideAccountList {
