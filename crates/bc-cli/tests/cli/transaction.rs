@@ -1055,3 +1055,23 @@ fn amend_appends_a_key_the_transaction_did_not_carry() {
         "a key the transaction did not hold goes after the ones it did"
     );
 }
+
+#[test]
+fn add_accepts_account_paths() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "add",
+        "--date",
+        "2026-03-01",
+        "--description",
+        "Grocery shopping",
+        "--posting",
+        "Assets:Checking:-50.00:AUD",
+        "--posting",
+        "Expenses:Groceries:50.00:AUD",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
