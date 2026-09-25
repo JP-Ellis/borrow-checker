@@ -454,7 +454,9 @@ async fn find_target(
             })
             .collect();
         return Err(crate::error::CliError::Arg(format!(
-            "{} transactions on {account} dated {date}{wanted}; narrow the selector:\n{}",
+            "{} transactions on {account} dated {date}{wanted}; narrow the \
+             selector, or pass the transaction ID (from `transaction list \
+             --json`):\n{}",
             found.len(),
             candidates.join("\n")
         )));
