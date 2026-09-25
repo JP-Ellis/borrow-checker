@@ -1,0 +1,62 @@
+---
+source: crates/bc-cli/tests/cli/transaction.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "created_at": "[TIMESTAMP]",
+  "date": "2026-03-01",
+  "description": "Grocery shopping",
+  "id": "[TRANSACTION_ID]",
+  "metadata": [],
+  "postings": [
+    {
+      "account_id": "[ACCOUNT_ID]",
+      "amount": {
+        "commodity": "AUD",
+        "value": "-50.00"
+      },
+      "cost": null,
+      "id": "[POSTING_ID]",
+      "metadata": [],
+      "price": null,
+      "spread_from": null,
+      "spread_until": null,
+      "tag_ids": []
+    },
+    {
+      "account_id": "[ACCOUNT_ID]",
+      "amount": {
+        "commodity": "AUD",
+        "value": "30.00"
+      },
+      "cost": null,
+      "id": "[POSTING_ID]",
+      "metadata": [],
+      "price": null,
+      "spread_from": null,
+      "spread_until": null,
+      "tag_ids": []
+    },
+    {
+      "account_id": "[ACCOUNT_ID]",
+      "amount": {
+        "commodity": "AUD",
+        "value": "20.00"
+      },
+      "cost": null,
+      "id": "[POSTING_ID]",
+      "metadata": [],
+      "price": null,
+      "spread_from": null,
+      "spread_until": null,
+      "tag_ids": []
+    }
+  ],
+  "reconciliation": "reconciled",
+  "tag_ids": [],
+  "warnings": []
+}
+----- stderr -----

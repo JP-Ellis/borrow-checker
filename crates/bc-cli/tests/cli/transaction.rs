@@ -5,7 +5,10 @@
     reason = "integration test file — tests/ directory is implicitly cfg(test)"
 )]
 
+use core::str::FromStr as _;
+
 use pretty_assertions::assert_eq;
+use rust_decimal_macros::dec;
 
 use crate::cmd_snapshot;
 use crate::common::TestContext;
@@ -1290,4 +1293,303 @@ fn edit_rejects_a_posting_named_twice() {
     let listed = json_of(ctx.command().args(["--json", "transaction", "list"]));
     let first = listed.get(0).cloned().unwrap_or_default();
     assert_eq!(posting_fields(&first, "id").len(), 2, "nothing was written");
+}
+
+// MARK: edit end to end on an imported fixture
+//
+// `transaction edit` has no CLI surface for import provenance or the event
+// log, so these tests seed a source reference and read events back through
+// bc-core directly, against the same SQLite file the CLI subprocess just
+// wrote. This is the most direct fixture available: no first-party importer
+// runs without a pre-built WASM plugin (`bc-plugins`'s
+// `wasm32-wasip2`-only, environment-dependent problem noted in the repo's
+// `CLAUDE.md`), so a native import is not an option in this test binary.
+
+/// Opens the CLI test's own SQLite file in-process.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+async fn open_pool(ctx: &TestContext) -> sqlx::SqlitePool {
+    bc_core::open_db_at(&ctx.db_path)
+        .await
+        .expect("open the test database")
+}
+
+/// Attaches a fake import source reference to `posting_id`, as if an
+/// importer had created that leg from a statement row.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+async fn attach_import_source(
+    pool: &sqlx::SqlitePool,
+    tx_id: &str,
+    posting_id: &str,
+    account_id: &str,
+    date: jiff::civil::Date,
+    amount: bc_models::Amount,
+) {
+    let sources = bc_core::SourceService::new(pool.clone());
+    let source_ref = bc_models::SourceRef::builder()
+        .id(bc_models::SourceRefId::new())
+        .transaction_id(bc_models::TransactionId::from_str(tx_id).expect("valid transaction id"))
+        .posting_id(Some(
+            bc_models::PostingId::from_str(posting_id).expect("valid posting id"),
+        ))
+        .account_id(bc_models::AccountId::from_str(account_id).expect("valid account id"))
+        .date(date)
+        .narration("Woolworths")
+        .amount(Some(amount))
+        .reference(None)
+        .occurrence(0)
+        .import_batch_id(None)
+        .owns_posting(true)
+        .created_at(jiff::Timestamp::now())
+        .build();
+    sources
+        .attach(&source_ref)
+        .await
+        .expect("attach fixture source reference");
+}
+
+/// Loads the event trail for `tx_id`, dropping timestamps: these assertions
+/// care about which events fired and their payload, not when.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+async fn events_of(pool: &sqlx::SqlitePool, tx_id: &str) -> Vec<bc_core::Event> {
+    let transactions = bc_core::TransactionService::new(pool.clone());
+    let id = bc_models::TransactionId::from_str(tx_id).expect("valid transaction id");
+    transactions
+        .audit_trail(&id)
+        .await
+        .expect("load audit trail")
+        .into_iter()
+        .map(|(_, event)| event)
+        .collect()
+}
+
+/// Loads the source references stored for `tx_id`.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+async fn source_refs_of(pool: &sqlx::SqlitePool, tx_id: &str) -> Vec<bc_models::SourceRef> {
+    let sources = bc_core::SourceService::new(pool.clone());
+    let id = bc_models::TransactionId::from_str(tx_id).expect("valid transaction id");
+    sources
+        .list_for_transaction(&id)
+        .await
+        .expect("list source refs")
+}
+
+/// Adds the balanced grocery transaction the imported-fixture tests start
+/// from and returns its `--json` payload.
+fn add_balanced_groceries(ctx: &TestContext) -> serde_json::Value {
+    json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "add",
+        "--date",
+        "2026-03-01",
+        "--description",
+        "Grocery shopping",
+        "--posting",
+        "Assets:Checking:-50.00:AUD",
+        "--posting",
+        "Expenses:Groceries:50.00:AUD",
+    ]))
+}
+
+#[tokio::test]
+async fn edit_set_posting_on_an_imported_leg_keeps_id_and_reference() {
+    let ctx = TestContext::new();
+    let (_checking, groceries) = setup_accounts(&ctx);
+    let household = create_household(&ctx);
+    let added = add_balanced_groceries(&ctx);
+    let tx_id = added
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let groceries_posting = posting_fields(&added, "id")
+        .get(1)
+        .cloned()
+        .unwrap_or_default();
+
+    let pool = open_pool(&ctx).await;
+    attach_import_source(
+        &pool,
+        &tx_id,
+        &groceries_posting,
+        &groceries,
+        jiff::civil::date(2026, 3, 1),
+        bc_models::Amount::new(dec!(50.00), bc_models::CommodityCode::new("AUD")),
+    )
+    .await;
+
+    let edited = json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "edit",
+        &tx_id,
+        "--set-posting",
+        &format!("{groceries_posting}=Expenses:Household:45.00:AUD"),
+    ]));
+
+    // The posting keeps its ID and moves to Household at its new amount.
+    let edited_ids = posting_fields(&edited, "id");
+    let edited_accounts = posting_fields(&edited, "account_id");
+    let idx = edited_ids
+        .iter()
+        .position(|id| *id == groceries_posting)
+        .expect("posting id survives the edit");
+    assert_eq!(
+        edited_accounts.get(idx),
+        Some(&household),
+        "got: {edited_accounts:?}"
+    );
+
+    // The event log records both a recategorise and an amount change for
+    // this exact posting.
+    let posting_id = bc_models::PostingId::from_str(&groceries_posting).expect("valid posting id");
+    let events = events_of(&pool, &tx_id).await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            bc_core::Event::PostingRecategorised { posting_id: p, .. } if *p == posting_id
+        )),
+        "expected PostingRecategorised, got: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            bc_core::Event::PostingAmountChanged { posting_id: p, .. } if *p == posting_id
+        )),
+        "expected PostingAmountChanged, got: {events:?}"
+    );
+
+    // The import reference survives, still pointing at the same posting and
+    // still recording the document's own (pre-recategorise) account.
+    let refs = source_refs_of(&pool, &tx_id).await;
+    let source_ref = refs
+        .iter()
+        .find(|r| r.posting_id() == Some(&posting_id))
+        .expect("source reference survives the edit");
+    assert_eq!(
+        source_ref.account_id().to_string(),
+        groceries,
+        "reference keeps the document's own account"
+    );
+}
+
+#[tokio::test]
+async fn edit_add_posting_records_posting_added() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let household = create_household(&ctx);
+    let added = add_groceries(&ctx);
+    let tx_id = added
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "edit",
+        &tx_id,
+        "--add-posting",
+        "Expenses:Household:20.00:AUD",
+    ]));
+
+    let pool = open_pool(&ctx).await;
+    let household_id = bc_models::AccountId::from_str(&household).expect("valid account id");
+    let events = events_of(&pool, &tx_id).await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            bc_core::Event::PostingAdded { account, .. } if *account == household_id
+        )),
+        "expected PostingAdded for Household, got: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn edit_remove_posting_on_an_imported_leg_warns_and_tombstones() {
+    let ctx = TestContext::new();
+    let (_checking, groceries) = setup_accounts(&ctx);
+    let added = add_balanced_groceries(&ctx);
+    let tx_id = added
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let groceries_posting = posting_fields(&added, "id")
+        .get(1)
+        .cloned()
+        .unwrap_or_default();
+
+    let pool = open_pool(&ctx).await;
+    attach_import_source(
+        &pool,
+        &tx_id,
+        &groceries_posting,
+        &groceries,
+        jiff::civil::date(2026, 3, 1),
+        bc_models::Amount::new(dec!(50.00), bc_models::CommodityCode::new("AUD")),
+    )
+    .await;
+
+    let output = ctx
+        .command()
+        .args([
+            "--json",
+            "transaction",
+            "edit",
+            &tx_id,
+            "--remove-posting",
+            &groceries_posting,
+        ])
+        .output()
+        .expect("command runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains("came from an import"),
+        "expected an import warning, got: {stderr}"
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    let warnings_count = json
+        .get("warnings")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    assert!(warnings_count > 0, "expected a non-empty warnings array");
+
+    let refs = source_refs_of(&pool, &tx_id).await;
+    let source_ref = refs.first().expect("source reference row still present");
+    assert!(
+        source_ref.posting_id().is_none(),
+        "reference is tombstoned, not deleted"
+    );
+}
+
+/// One `--json edit` payload, snapshotted with `insta`. IDs and timestamps
+/// are redacted by `TestContext`'s filters, the same as every other JSON
+/// snapshot in this suite.
+#[test]
+fn edit_json_output_snapshot() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    create_household(&ctx);
+    add_groceries(&ctx);
+    let mut cmd = ctx.command();
+    cmd.args([
+        "--json",
+        "transaction",
+        "edit",
+        "--account",
+        "Assets:Checking",
+        "--date",
+        "2026-03-01",
+        "--add-posting",
+        "Expenses:Household:20.00:AUD",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
 }
