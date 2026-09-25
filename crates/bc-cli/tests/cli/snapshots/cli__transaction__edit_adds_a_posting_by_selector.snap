@@ -1,9 +1,10 @@
 ---
 source: crates/bc-cli/tests/cli/transaction.rs
+assertion_line: 1152
 expression: output
 ---
 success: true
 exit_code: 0
 ----- stdout -----
-Edited transaction: Grocery shopping (2026-03-01)
+Edited transaction: [TRANSACTION_ID]
 ----- stderr -----

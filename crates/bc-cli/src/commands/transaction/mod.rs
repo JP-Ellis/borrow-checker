@@ -544,11 +544,7 @@ async fn edit(ctx: &AppContext, args: EditArgs) -> CliResult<()> {
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        println!(
-            "Edited transaction: {} ({})",
-            current.description(),
-            current.date()
-        );
+        println!("Edited transaction: {}", current.id());
     }
     Ok(())
 }
