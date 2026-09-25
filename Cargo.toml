@@ -93,7 +93,7 @@ members  = [
   toml                  = "1.0"
   toml_edit             = "0.25"
   tracing               = "0.1"
-  tracing-opentelemetry = { version = "0.33" }
+  tracing-opentelemetry = { version = "0.34" }
   tracing-subscriber    = {
     version  = "0.3",
     features = ["env-filter", "fmt", "json"]
