@@ -246,6 +246,10 @@ impl Service {
     /// restored only if they still hold the values the merge wrote. Records a
     /// [`crate::Event::TransactionUnmerged`].
     ///
+    /// The absorbed leg is moved back as it stands, so an edit to that posting
+    /// while merged would be restored in place of the original. Unmerge refuses
+    /// once that posting has been edited or removed.
+    ///
     /// # Arguments
     ///
     /// * `survivor_id` - The transaction a prior merge fused into.
@@ -257,7 +261,8 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::NotMerged`] if `survivor_id` has no un-reversed merge,
-    /// or [`BcError`] on a database failure.
+    /// [`BcError::NotUnmergeable`] if the absorbed posting was edited or removed
+    /// since that merge, or [`BcError`] on a database failure.
     #[inline]
     #[expect(
         clippy::too_many_lines,
@@ -270,7 +275,8 @@ impl Service {
         // Pair merges with unmerges LIFO; the top of the stack is the merge to reverse.
         let mut stack: Vec<crate::events::AbsorbedTransaction> = Vec::new();
         let mut snapshots: Vec<SurvivorSnapshot> = Vec::new();
-        for record in &records {
+        let mut merged_at: Vec<usize> = Vec::new();
+        for (index, record) in records.iter().enumerate() {
             match record.kind.as_str() {
                 "TransactionsMerged" => {
                     let event: crate::Event = serde_json::from_str(&record.payload)?;
@@ -284,6 +290,7 @@ impl Service {
                     } = event
                     {
                         stack.push(absorbed);
+                        merged_at.push(index);
                         snapshots.push(SurvivorSnapshot {
                             date: survivor_date_before,
                             tags: survivor_tags_before,
@@ -295,13 +302,24 @@ impl Service {
                 "TransactionUnmerged" => {
                     stack.pop();
                     snapshots.pop();
+                    merged_at.pop();
                 }
                 _ => {}
             }
         }
-        let (Some(absorbed), Some(snapshot)) = (stack.pop(), snapshots.pop()) else {
+        let (Some(absorbed), Some(snapshot), Some(merge_index)) =
+            (stack.pop(), snapshots.pop(), merged_at.pop())
+        else {
             return Err(BcError::NotMerged(survivor_id.clone()));
         };
+        if let Some(kind) = posting_edit_since(&records, merge_index, &absorbed.posting_id)? {
+            return Err(BcError::NotUnmergeable {
+                reason: format!(
+                    "absorbed posting {} has a {kind} event since the merge",
+                    absorbed.posting_id
+                ),
+            });
+        }
 
         let survivor_str = survivor_id.to_string();
         let absorbed_str = absorbed.id.to_string();
@@ -390,12 +408,26 @@ impl Service {
         .await?;
 
         // Move the posting and source refs back to the absorbed transaction.
-        sqlx::query("UPDATE postings SET transaction_id = ?, position = ? WHERE id = ?")
-            .bind(&absorbed_str)
-            .bind(posting_position)
-            .bind(absorbed.posting_id.to_string())
-            .execute(&mut *db_tx)
-            .await?;
+        // `amend` replaces postings without a per-posting event, so a missing
+        // row is checked here as well as in the event log.
+        let moved = sqlx::query(
+            "UPDATE postings SET transaction_id = ?, position = ? \
+             WHERE id = ? AND transaction_id = ?",
+        )
+        .bind(&absorbed_str)
+        .bind(posting_position)
+        .bind(absorbed.posting_id.to_string())
+        .bind(&survivor_str)
+        .execute(&mut *db_tx)
+        .await?;
+        if moved.rows_affected() != 1 {
+            return Err(BcError::NotUnmergeable {
+                reason: format!(
+                    "absorbed posting {} is no longer on the transaction",
+                    absorbed.posting_id
+                ),
+            });
+        }
         for ref_id in &absorbed.source_ref_ids {
             sqlx::query("UPDATE transaction_sources SET transaction_id = ? WHERE id = ?")
                 .bind(&absorbed_str)
@@ -488,6 +520,50 @@ impl Service {
         }
         Ok(match_transfers(&candidates))
     }
+}
+
+/// Returns the kind of the first posting event naming `posting_id` after
+/// `records[merge_index]`, or `None` if the posting is untouched since.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if a posting event's payload fails to deserialise.
+fn posting_edit_since(
+    records: &[crate::EventRecord],
+    merge_index: usize,
+    posting_id: &bc_models::PostingId,
+) -> BcResult<Option<&'static str>> {
+    for record in records.iter().skip(merge_index.saturating_add(1)) {
+        if !record.kind.starts_with("Posting") {
+            continue;
+        }
+        let event: crate::Event = serde_json::from_str(&record.payload)?;
+        let (crate::Event::PostingRecategorised {
+            posting_id: named, ..
+        }
+        | crate::Event::PostingAmountChanged {
+            posting_id: named, ..
+        }
+        | crate::Event::PostingMetadataChanged {
+            posting_id: named, ..
+        }
+        | crate::Event::PostingSpreadChanged {
+            posting_id: named, ..
+        }
+        | crate::Event::PostingAnnotationChanged {
+            posting_id: named, ..
+        }
+        | crate::Event::PostingRemoved {
+            posting_id: named, ..
+        }) = &event
+        else {
+            continue;
+        };
+        if named == posting_id {
+            return Ok(Some(event.kind()));
+        }
+    }
+    Ok(None)
 }
 
 /// Validates that two transactions may be merged.
@@ -1589,6 +1665,134 @@ mod db_tests {
             Service::new(pool.clone()).unmerge(&lone).await,
             Err(crate::BcError::NotMerged(_))
         ));
+    }
+
+    /// Rebuilds `tx` with `postings` in place of its own.
+    fn with_postings(tx: &Transaction, postings: Vec<Posting>) -> Transaction {
+        Transaction::builder()
+            .id(tx.id().clone())
+            .date(tx.date())
+            .description(tx.description().to_owned())
+            .metadata(tx.metadata().clone())
+            .postings(postings)
+            .tag_ids(tx.tag_ids().to_vec())
+            .reconciliation(tx.reconciliation())
+            .created_at(*tx.created_at())
+            .build()
+    }
+
+    /// Merges a -100/+100 pair and returns the survivor, its own posting and
+    /// the absorbed posting, as they stand after the merge.
+    async fn merged_pair(pool: &SqlitePool) -> (Transaction, Posting, Posting) {
+        let savings = account(pool, "Savings").await;
+        let mortgage = account(pool, "Mortgage").await;
+        let debit = leg(pool, &savings, -100, date(2025, 6, 26)).await;
+        let credit = leg(pool, &mortgage, 100, date(2025, 6, 27)).await;
+        Service::new(pool.clone())
+            .merge(&debit, &credit)
+            .await
+            .expect("merge");
+        let survivor = crate::TransactionService::new(pool.clone())
+            .find_by_id(&debit)
+            .await
+            .expect("survivor");
+        let own = survivor
+            .postings()
+            .iter()
+            .find(|p| p.account_id() == &savings)
+            .expect("survivor's own leg")
+            .clone();
+        let absorbed = survivor
+            .postings()
+            .iter()
+            .find(|p| p.account_id() == &mortgage)
+            .expect("absorbed leg")
+            .clone();
+        (survivor, own, absorbed)
+    }
+
+    /// Asserts `unmerge` refuses and leaves the survivor merged.
+    async fn assert_unmerge_refused(pool: &SqlitePool, survivor: &TransactionId) {
+        let result = Service::new(pool.clone()).unmerge(survivor).await;
+        assert!(
+            matches!(result, Err(crate::BcError::NotUnmergeable { .. })),
+            "got: {result:?}"
+        );
+        let unmerged: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'TransactionUnmerged'")
+                .fetch_one(pool)
+                .await
+                .expect("count unmerge events");
+        assert_eq!(unmerged, 0, "a refused unmerge records no event");
+        let transactions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions")
+            .fetch_one(pool)
+            .await
+            .expect("count transactions");
+        assert_eq!(transactions, 1, "the absorbed transaction is not recreated");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unmerge_refuses_after_the_absorbed_leg_is_removed(pool: SqlitePool) {
+        let (survivor, own, _absorbed) = merged_pair(&pool).await;
+        crate::TransactionService::new(pool.clone())
+            .edit(with_postings(&survivor, vec![own]))
+            .await
+            .expect("edit");
+        assert_unmerge_refused(&pool, survivor.id()).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unmerge_refuses_after_the_absorbed_leg_is_changed(pool: SqlitePool) {
+        let (survivor, own, absorbed) = merged_pair(&pool).await;
+        let changed = Posting::builder()
+            .id(absorbed.id().clone())
+            .account_id(absorbed.account_id().clone())
+            .amount(Amount::new(
+                Decimal::from(90_i64),
+                CommodityCode::new("AUD"),
+            ))
+            .build();
+        crate::TransactionService::new(pool.clone())
+            .edit(with_postings(&survivor, vec![own, changed]))
+            .await
+            .expect("edit");
+        assert_unmerge_refused(&pool, survivor.id()).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unmerge_refuses_after_amend_replaces_the_absorbed_leg(pool: SqlitePool) {
+        let (survivor, own, absorbed) = merged_pair(&pool).await;
+        let replacement = Posting::builder()
+            .id(PostingId::new())
+            .account_id(absorbed.account_id().clone())
+            .maybe_amount(absorbed.amount().cloned())
+            .build();
+        crate::TransactionService::new(pool.clone())
+            .amend(with_postings(&survivor, vec![own, replacement]))
+            .await
+            .expect("amend");
+        assert_unmerge_refused(&pool, survivor.id()).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unmerge_allows_an_edit_to_the_survivors_own_leg(pool: SqlitePool) {
+        let (survivor, own, absorbed) = merged_pair(&pool).await;
+        let changed = Posting::builder()
+            .id(own.id().clone())
+            .account_id(own.account_id().clone())
+            .amount(Amount::new(
+                Decimal::from(-90_i64),
+                CommodityCode::new("AUD"),
+            ))
+            .build();
+        crate::TransactionService::new(pool.clone())
+            .edit(with_postings(&survivor, vec![changed, absorbed]))
+            .await
+            .expect("edit");
+        Service::new(pool.clone())
+            .unmerge(survivor.id())
+            .await
+            .expect("unmerge");
     }
 
     #[sqlx::test(migrations = "./migrations")]
