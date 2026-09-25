@@ -119,8 +119,29 @@ fn merge_preserving(current: &Transaction, updated: &Transaction) -> Transaction
         .build()
 }
 
+/// Splits the change from `before` to `after` into added and removed tags,
+/// each sorted by ID so the event payload is deterministic.
+fn tag_delta(before: &[TagId], after: &[TagId]) -> (Vec<TagId>, Vec<TagId>) {
+    let before_set: std::collections::HashSet<&TagId> = before.iter().collect();
+    let after_set: std::collections::HashSet<&TagId> = after.iter().collect();
+    let mut added: Vec<TagId> = after_set
+        .difference(&before_set)
+        .map(|t| (*t).clone())
+        .collect();
+    let mut removed: Vec<TagId> = before_set
+        .difference(&after_set)
+        .map(|t| (*t).clone())
+        .collect();
+    added.sort_by_key(std::string::ToString::to_string);
+    removed.sort_by_key(std::string::ToString::to_string);
+    (added, removed)
+}
+
 /// Computes the events that turn `prev` into `posting`, both being the same
 /// leg of transaction `id` before and after an edit.
+///
+/// Covers a change to the posting's account, amount, spread, metadata, tags,
+/// price or cost basis.
 ///
 /// # Arguments
 ///
@@ -166,6 +187,15 @@ fn diff_posting(id: &TransactionId, prev: &Posting, posting: &Posting) -> Vec<Ev
             posting_id: posting.id().clone(),
             before: prev.metadata().clone(),
             after: posting.metadata().clone(),
+        });
+    }
+    let (added, removed) = tag_delta(prev.tag_ids(), posting.tag_ids());
+    if !added.is_empty() || !removed.is_empty() {
+        events.push(Event::PostingTagsChanged {
+            id: id.clone(),
+            posting_id: posting.id().clone(),
+            added,
+            removed,
         });
     }
     if prev.price() != posting.price() || prev.cost() != posting.cost() {
@@ -214,18 +244,7 @@ pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> 
         });
     }
 
-    let current_tags: std::collections::HashSet<&TagId> = current.tag_ids().iter().collect();
-    let updated_tags: std::collections::HashSet<&TagId> = updated.tag_ids().iter().collect();
-    let mut added: Vec<TagId> = updated_tags
-        .difference(&current_tags)
-        .map(|t| (*t).clone())
-        .collect();
-    let mut removed: Vec<TagId> = current_tags
-        .difference(&updated_tags)
-        .map(|t| (*t).clone())
-        .collect();
-    added.sort_by_key(std::string::ToString::to_string);
-    removed.sort_by_key(std::string::ToString::to_string);
+    let (added, removed) = tag_delta(current.tag_ids(), updated.tag_ids());
     if !added.is_empty() || !removed.is_empty() {
         events.push(Event::TransactionTagsChanged {
             id: id.clone(),
@@ -1907,7 +1926,7 @@ impl Service {
     ///
     /// Loads the current state, diffs it against `updated` to produce granular
     /// events (date, description, tags and metadata, and per-posting
-    /// recategorise / amount / spread / metadata / add / remove), then
+    /// recategorise / amount / spread / metadata / tags / add / remove), then
     /// atomically appends those events and rewrites the projection.
     /// Persistence is permissive: an unbalanced result is allowed.
     ///
@@ -4955,6 +4974,39 @@ mod tests {
                 .count(),
             1,
             "one leg changed, so one posting event"
+        );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    fn diff_emits_a_posting_tags_event() {
+        let current = sample_tx();
+        let kept = TagId::new();
+        let dropped = TagId::new();
+        let gained = TagId::new();
+        let tagged = |tags: Vec<TagId>| {
+            let leg = current.postings()[0].clone();
+            let retagged = Posting::builder()
+                .id(leg.id().clone())
+                .account_id(leg.account_id().clone())
+                .maybe_amount(leg.amount().cloned())
+                .tag_ids(tags)
+                .build();
+            let mut postings = current.postings().to_vec();
+            postings[0] = retagged;
+            current.clone().with_postings(postings)
+        };
+        let before = tagged(vec![kept.clone(), dropped.clone()]);
+        let after = tagged(vec![kept, gained.clone()]);
+
+        assert_eq!(
+            diff_transaction(&before, &after),
+            vec![Event::PostingTagsChanged {
+                id: before.id().clone(),
+                posting_id: before.postings()[0].id().clone(),
+                added: vec![gained],
+                removed: vec![dropped],
+            }]
         );
     }
 

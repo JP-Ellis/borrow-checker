@@ -547,6 +547,9 @@ fn posting_edit_since(
         | crate::Event::PostingMetadataChanged {
             posting_id: named, ..
         }
+        | crate::Event::PostingTagsChanged {
+            posting_id: named, ..
+        }
         | crate::Event::PostingSpreadChanged {
             posting_id: named, ..
         }
@@ -1754,6 +1757,26 @@ mod db_tests {
             .build();
         crate::TransactionService::new(pool.clone())
             .edit(with_postings(&survivor, vec![own, changed]))
+            .await
+            .expect("edit");
+        assert_unmerge_refused(&pool, survivor.id()).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unmerge_refuses_after_the_absorbed_leg_is_retagged(pool: SqlitePool) {
+        let (survivor, own, absorbed) = merged_pair(&pool).await;
+        let tag = crate::TagService::new(pool.clone())
+            .create_path(&"person:a".parse().expect("tag path"))
+            .await
+            .expect("tag");
+        let retagged = Posting::builder()
+            .id(absorbed.id().clone())
+            .account_id(absorbed.account_id().clone())
+            .maybe_amount(absorbed.amount().cloned())
+            .tag_ids(vec![tag])
+            .build();
+        crate::TransactionService::new(pool.clone())
+            .edit(with_postings(&survivor, vec![own, retagged]))
             .await
             .expect("edit");
         assert_unmerge_refused(&pool, survivor.id()).await;

@@ -214,6 +214,21 @@ pub enum Event {
         /// The full metadata list after the change.
         after: Metadata,
     },
+    /// A posting's tag set was changed.
+    ///
+    /// Shaped like [`Self::TransactionTagsChanged`]. `id` is the owning
+    /// transaction, so the event reaches
+    /// [`crate::TransactionService::audit_trail`].
+    PostingTagsChanged {
+        /// The owning transaction's ID.
+        id: TransactionId,
+        /// The posting whose tags changed.
+        posting_id: PostingId,
+        /// Tags added in this change, sorted by ID.
+        added: Vec<TagId>,
+        /// Tags removed in this change, sorted by ID.
+        removed: Vec<TagId>,
+    },
     /// A posting's accrual spread window was changed.
     PostingSpreadChanged {
         /// The owning transaction's ID.
@@ -588,6 +603,7 @@ impl Event {
             Self::PostingRecategorised { .. } => "PostingRecategorised",
             Self::PostingAmountChanged { .. } => "PostingAmountChanged",
             Self::PostingMetadataChanged { .. } => "PostingMetadataChanged",
+            Self::PostingTagsChanged { .. } => "PostingTagsChanged",
             Self::PostingSpreadChanged { .. } => "PostingSpreadChanged",
             Self::PostingAnnotationChanged { .. } => "PostingAnnotationChanged",
             Self::PostingAdded { .. } => "PostingAdded",
@@ -633,6 +649,7 @@ impl Event {
             | Self::PostingRecategorised { id, .. }
             | Self::PostingAmountChanged { id, .. }
             | Self::PostingMetadataChanged { id, .. }
+            | Self::PostingTagsChanged { id, .. }
             | Self::PostingSpreadChanged { id, .. }
             | Self::PostingAnnotationChanged { id, .. }
             | Self::PostingAdded { id, .. }
@@ -990,6 +1007,36 @@ mod tests {
         let records = store.replay_for(&id.to_string()).await.expect("replay");
         let record = records.first().expect("one record");
         assert_eq!(record.kind, "PostingMetadataChanged");
+        let replayed: Event =
+            serde_json::from_str(&record.payload).expect("payload should deserialise");
+        assert_eq!(replayed, event);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_tags_changed_aggregates_on_its_transaction(pool: sqlx::SqlitePool) {
+        use bc_models::PostingId;
+        use bc_models::TagId;
+        use bc_models::TransactionId;
+
+        let store = SqliteStore::new(pool.clone());
+        let id = TransactionId::new();
+        let event = Event::PostingTagsChanged {
+            id: id.clone(),
+            posting_id: PostingId::new(),
+            added: vec![TagId::new()],
+            removed: vec![TagId::new()],
+        };
+
+        assert_eq!(
+            event.aggregate_id(),
+            id.to_string(),
+            "the aggregate is the transaction, not the posting, so the event \
+             reaches the transaction's audit trail"
+        );
+        store.append(&event).await.expect("append");
+        let records = store.replay_for(&id.to_string()).await.expect("replay");
+        let record = records.first().expect("one record");
+        assert_eq!(record.kind, "PostingTagsChanged");
         let replayed: Event =
             serde_json::from_str(&record.payload).expect("payload should deserialise");
         assert_eq!(replayed, event);
