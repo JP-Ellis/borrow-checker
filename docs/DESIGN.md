@@ -640,7 +640,7 @@ Thin binary over `bc-core`. Commands:
 
 ```
 borrow-checker account [list|create|archive|close|reopen|set-opened-on|balance]
-borrow-checker transaction [list|add|amend|reverse]
+borrow-checker transaction [list|add|amend|edit|reverse]
 borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|book-value]
 borrow-checker profile [create|list|show|edit|remove]
 borrow-checker import run --profile <name> [--dry-run]
