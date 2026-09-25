@@ -72,6 +72,15 @@ pub enum Warning {
         /// The commodity both the amount and the quote use.
         commodity_code: String,
     },
+    /// A merge whose two legs were not equal and opposite.
+    ///
+    /// The merge still fuses the pair — "warn, don't block" — leaving the
+    /// survivor unbalanced by this amount. A follow-up
+    /// `transaction edit --add-posting` can balance the residual.
+    UnbalancedMerge {
+        /// The survivor's leg plus the absorbed leg, in their shared commodity.
+        residual: bc_models::Amount,
+    },
 }
 
 impl std::fmt::Display for Warning {
@@ -113,6 +122,12 @@ impl std::fmt::Display for Warning {
             } => write!(
                 f,
                 "{account_path} is quoted in {commodity_code}, its own commodity"
+            ),
+            Self::UnbalancedMerge { ref residual } => write!(
+                f,
+                "merge left a residual of {} {}",
+                residual.value(),
+                residual.commodity()
             ),
         }
     }
