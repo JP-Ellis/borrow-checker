@@ -65,7 +65,8 @@ impl From<crate::BcError> for bc_ipc::BcError {
             | Core::MarkerConflict { .. }
             | Core::CommodityInUse(_)
             | Core::NotMergeable { .. }
-            | Core::NotMerged(_) => bc_ipc::BcError::Validation(e.to_string()),
+            | Core::NotMerged(_)
+            | Core::NotUnmergeable { .. } => bc_ipc::BcError::Validation(e.to_string()),
             _ => bc_ipc::BcError::Internal(e.to_string()),
         }
     }
@@ -990,6 +991,15 @@ mod tests {
                 bc_ipc::BcError::Validation(_)
             ),
             "NotMerged must surface as Validation"
+        );
+        assert!(
+            matches!(
+                bc_ipc::BcError::from(crate::BcError::NotUnmergeable {
+                    reason: "absorbed leg was removed".to_owned(),
+                }),
+                bc_ipc::BcError::Validation(_)
+            ),
+            "NotUnmergeable must surface as Validation"
         );
     }
 

@@ -78,6 +78,12 @@ pub enum BcError {
     /// A transaction has no merge history to reverse.
     #[error("not merged: {0}")]
     NotMerged(TransactionId),
+    /// A merge cannot be reversed because the absorbed leg changed while merged.
+    #[error("not unmergeable: {reason}")]
+    NotUnmergeable {
+        /// Human-readable reason the unmerge was rejected.
+        reason: String,
+    },
     /// A database error.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
