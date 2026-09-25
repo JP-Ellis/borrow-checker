@@ -450,13 +450,18 @@ async fn find_target(
             .iter()
             .map(|tx| {
                 let legs: Vec<String> = tx.postings().iter().map(describe).collect();
-                format!("  {}  {}: {}", tx.date(), tx.description(), legs.join(", "))
+                format!(
+                    "  {}  {}  {}: {}",
+                    tx.id(),
+                    tx.date(),
+                    tx.description(),
+                    legs.join(", ")
+                )
             })
             .collect();
         return Err(crate::error::CliError::Arg(format!(
             "{} transactions on {account} dated {date}{wanted}; narrow the \
-             selector, or pass the transaction ID (from `transaction list \
-             --json`):\n{}",
+             selector, or pass one of these transaction IDs:\n{}",
             found.len(),
             candidates.join("\n")
         )));
