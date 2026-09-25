@@ -69,7 +69,7 @@ pub enum BcError {
     /// A commodity code was empty or contained only whitespace.
     #[error("commodity code must not be empty or blank")]
     EmptyCommodityCode,
-    /// Two transactions cannot be merged (bad sign, magnitude, commodity, or posting count).
+    /// Two transactions cannot be merged (posting count, elided or zero amount, or commodity).
     #[error("not mergeable: {reason}")]
     NotMergeable {
         /// Human-readable reason the merge was rejected.
