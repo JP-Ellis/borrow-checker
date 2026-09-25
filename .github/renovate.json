@@ -18,6 +18,18 @@
       "schedule": "before 4am on monday"
     },
     {
+      "description": "tracing-opentelemetry requires an exact opentelemetry minor, so a PR bumping one without the other cannot compile. Grouping batches them into a single PR; the release age holds an opentelemetry bump back long enough for the tracing-opentelemetry release that pairs with it to appear, since the two ship from different repositories days apart.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": [
+        "opentelemetry",
+        "opentelemetry-*",
+        "opentelemetry_*",
+        "tracing-opentelemetry"
+      ],
+      "groupName": "opentelemetry",
+      "minimumReleaseAge": "14 days"
+    },
+    {
       "description": "Crates from the wasmtime repository are published in lockstep and must be upgraded together.",
       "matchManagers": ["cargo"],
       "matchPackageNames": ["wasmtime", "wasmtime-*"],
