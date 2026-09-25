@@ -259,6 +259,9 @@ pub enum Event {
         cost_to: Option<Cost>,
     },
     /// A posting (leg) was added to a transaction (also covers splits).
+    ///
+    /// Carries every field of the new leg, so a replay needs no other event
+    /// to restore it.
     PostingAdded {
         /// The owning transaction's ID.
         id: TransactionId,
@@ -272,6 +275,12 @@ pub enum Event {
         price: Option<Quote>,
         /// The new posting's cost basis, if any.
         cost: Option<Cost>,
+        /// The new posting's metadata, in display order.
+        metadata: Metadata,
+        /// The new posting's own tags.
+        tag_ids: Vec<TagId>,
+        /// The new posting's spread `(from, until)`, or `None` if unset.
+        spread: Option<(jiff::civil::Date, jiff::civil::Date)>,
     },
     /// A posting (leg) was removed from a transaction.
     PostingRemoved {
