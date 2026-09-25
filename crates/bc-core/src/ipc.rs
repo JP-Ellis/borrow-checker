@@ -145,6 +145,10 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                     after.len()
                 ),
             ),
+            Event::PostingTagsChanged { added, removed, .. } => (
+                "tags",
+                format!("posting tags +{} -{}", added.len(), removed.len()),
+            ),
             // The four registry events aggregate on the metadata key, and
             // `TransactionService::audit_trail` selects on a transaction id, so
             // no query returns one today. The copy exists so the first reader
