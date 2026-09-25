@@ -70,14 +70,14 @@ pub(super) fn parse_selector(text: &str, lookup: &spec::Lookup<'_>) -> CliResult
     Ok(PostingSelector::AccountAmount(account, amount))
 }
 
-/// Lists a transaction's postings for an error message.
+/// Lists a transaction's postings, each next to its ID, for an error message.
 fn listing(
     tx: &bc_models::Transaction,
     describe: &dyn Fn(&bc_models::Posting) -> String,
 ) -> String {
     tx.postings()
         .iter()
-        .map(describe)
+        .map(|p| format!("{} {}", p.id(), describe(p)))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -102,7 +102,7 @@ pub(super) fn select_posting<'t>(
             listing(tx, describe)
         ))),
         (Some(_), Some(_)) => Err(CliError::Arg(format!(
-            "several postings match '{text}'; add :AMOUNT:COMMODITY to pick one: {}",
+            "several postings match '{text}'; pass one of the posting IDs below to pick one: {}",
             listing(tx, describe)
         ))),
     }
@@ -275,6 +275,7 @@ mod tests {
         let groceries = bc_models::AccountId::new();
         let first = posting(&groceries, dec!(30));
         let second = posting(&groceries, dec!(20));
+        let first_id = first.id().clone();
         let tx = transaction(vec![first, second.clone()]);
 
         let err = select_posting(
@@ -284,10 +285,13 @@ mod tests {
             &describe,
         )
         .expect_err("ambiguous");
+        let message = err.to_string();
         assert!(
-            err.to_string().contains("several postings match 'G'"),
-            "got: {err}"
+            message.contains("several postings match 'G'"),
+            "got: {message}"
         );
+        assert!(message.contains(&first_id.to_string()), "got: {message}");
+        assert!(message.contains(&second.id().to_string()), "got: {message}");
 
         let picked = select_posting(
             &tx,
@@ -301,7 +305,9 @@ mod tests {
 
     #[test]
     fn selector_with_no_match_lists_the_postings() {
-        let tx = transaction(vec![posting(&bc_models::AccountId::new(), dec!(5))]);
+        let only = posting(&bc_models::AccountId::new(), dec!(5));
+        let only_id = only.id().clone();
+        let tx = transaction(vec![only]);
         let err = select_posting(
             &tx,
             &PostingSelector::Account(bc_models::AccountId::new()),
@@ -311,6 +317,7 @@ mod tests {
         .expect_err("no match")
         .to_string();
         assert!(err.contains("no posting matches 'X'"), "got: {err}");
+        assert!(err.contains(&only_id.to_string()), "got: {err}");
     }
 
     #[test]

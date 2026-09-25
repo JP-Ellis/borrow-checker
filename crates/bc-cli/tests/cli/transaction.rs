@@ -1253,6 +1253,41 @@ fn edit_with_two_matching_transactions() {
 }
 
 #[test]
+fn edit_several_postings_match_error() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let added = json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "add",
+        "--date",
+        "2026-03-01",
+        "--description",
+        "Grocery shopping",
+        "--posting",
+        "Expenses:Groceries:10.00:AUD",
+        "--posting",
+        "Expenses:Groceries:10.00:AUD",
+        "--posting",
+        "Assets:Checking:-20.00:AUD",
+    ]));
+    let id = added
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "edit",
+        &id,
+        "--remove-posting",
+        "Expenses:Groceries:10.00:AUD",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
 fn edit_without_an_operation() {
     let ctx = TestContext::new();
     setup_accounts(&ctx);
