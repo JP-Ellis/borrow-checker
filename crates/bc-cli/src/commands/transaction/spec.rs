@@ -18,7 +18,9 @@ pub(super) fn account_lookup(
     resolver: &bc_core::AccountResolver,
 ) -> impl Fn(&str) -> Option<bc_models::AccountId> + '_ {
     move |text| {
-        if let Ok(id) = bc_models::AccountId::from_str(text.trim()) {
+        #[expect(clippy::shadow_reuse, reason = "trim yields the same string")]
+        let text = text.trim();
+        if let Ok(id) = bc_models::AccountId::from_str(text) {
             return Some(id);
         }
         let path = bc_core::AccountPath::parse(text).ok()?;
@@ -124,11 +126,13 @@ mod tests {
     use core::str::FromStr as _;
     use std::collections::HashMap;
 
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use rust_decimal_macros::dec;
 
     use super::parse_posting;
+    use super::split_account;
 
     /// A lookup over invented paths, accepting any well-formed ID as well.
     fn lookup_in(
@@ -182,12 +186,74 @@ mod tests {
     }
 
     #[test]
-    fn cost_and_price_survive_a_path_account() {
+    fn per_unit_cost_and_price_survive_a_path_account() {
         let (_map, lookup) = lookup_in(&["Assets:Broker"]);
-        let posting =
-            parse_posting("Assets:Broker:2:AAPL{105:AUD}@150:AUD", &lookup).expect("parses");
-        assert!(posting.cost().is_some());
-        assert!(posting.price().is_some());
+        let posting = parse_posting(
+            "Assets:Broker:-2:AAPL{105:AUD:2024-03-01:lot-a}@150:AUD",
+            &lookup,
+        )
+        .expect("parses");
+        let cost = posting.cost().expect("cost set");
+        assert_eq!(
+            cost.basis(),
+            &bc_models::Quote::PerUnit(bc_models::Amount::new(
+                dec!(105),
+                bc_models::CommodityCode::new("AUD")
+            ))
+        );
+        assert_eq!(cost.date(), Some(date(2024, 3, 1)));
+        assert_eq!(cost.label(), Some("lot-a"));
+        assert_eq!(
+            posting.price(),
+            Some(&bc_models::Quote::PerUnit(bc_models::Amount::new(
+                dec!(150),
+                bc_models::CommodityCode::new("AUD")
+            )))
+        );
+    }
+
+    #[test]
+    fn total_cost_and_total_price_survive_a_path_account() {
+        let (_map, lookup) = lookup_in(&["Assets:Broker"]);
+
+        let costed = parse_posting("Assets:Broker:2:AAPL{{210:AUD}}", &lookup).expect("parses");
+        assert_eq!(
+            costed.cost().map(bc_models::Cost::basis),
+            Some(&bc_models::Quote::Total(bc_models::Amount::new(
+                dec!(210),
+                bc_models::CommodityCode::new("AUD")
+            )))
+        );
+
+        let priced = parse_posting("Assets:Broker:4.00:USD@@6.37:AUD", &lookup).expect("parses");
+        assert_eq!(
+            priced.price(),
+            Some(&bc_models::Quote::Total(bc_models::Amount::new(
+                dec!(6.37),
+                bc_models::CommodityCode::new("AUD")
+            )))
+        );
+        assert!(priced.cost().is_none());
+    }
+
+    #[test]
+    fn two_valid_splits_are_reported_as_ambiguous() {
+        // A lookup and an `accept` that both accept whatever they're given,
+        // so both `Assets:Bank` and `Assets:Bank:123456789` split validly —
+        // the ambiguity `split_account` itself must reject, independent of
+        // whether the real leg grammar could ever produce it.
+        let (_map, lookup) = lookup_in(&["Assets:Bank", "Assets:Bank:123456789"]);
+        let accept = |s: &str| {
+            if s.is_empty() {
+                Err("empty".to_owned())
+            } else {
+                Ok(s.to_owned())
+            }
+        };
+        let err =
+            split_account("Assets:Bank:123456789:50", &lookup, accept).expect_err("ambiguous");
+        assert!(err.contains("Assets:Bank"), "got: {err}");
+        assert!(err.contains("Assets:Bank:123456789"), "got: {err}");
     }
 
     #[rstest]
