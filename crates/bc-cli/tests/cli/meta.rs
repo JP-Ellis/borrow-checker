@@ -49,9 +49,13 @@ fn register_key(ctx: &TestContext, spec: &str) {
             "--meta",
             spec,
             "--posting",
-            &format!("{checking}:-5.00:AUD"),
+            &checking,
+            "-5.00",
+            "AUD",
             "--posting",
-            &format!("{expenses}:5.00:AUD"),
+            &expenses,
+            "5.00",
+            "AUD",
         ])
         .output()
         .expect("add");

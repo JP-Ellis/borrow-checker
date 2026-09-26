@@ -73,9 +73,13 @@ fn add_transaction() {
         "--description",
         "Grocery shopping",
         "--posting",
-        &format!("{checking_id}:-50.00:AUD"),
+        &checking_id,
+        "-50.00",
+        "AUD",
         "--posting",
-        &format!("{expenses_id}:50.00:AUD"),
+        &expenses_id,
+        "50.00",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -94,9 +98,13 @@ fn add_transaction_json() {
         "--description",
         "Grocery shopping",
         "--posting",
-        &format!("{checking_id}:-50.00:AUD"),
+        &checking_id,
+        "-50.00",
+        "AUD",
         "--posting",
-        &format!("{expenses_id}:50.00:AUD"),
+        &expenses_id,
+        "50.00",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -128,9 +136,13 @@ fn transaction_warning() {
         "--description",
         "Grocery shopping",
         "--posting",
-        &format!("{checking_id}:-50.00:AUD"),
+        &checking_id,
+        "-50.00",
+        "AUD",
         "--posting",
-        &format!("{expenses_id}:50.00:AUD"),
+        &expenses_id,
+        "50.00",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -161,9 +173,16 @@ fn add_priced_leg_then_list() {
             "--description",
             "Online purchase",
             "--posting",
-            &format!("{checking_id}:-6.37:AUD"),
+            &checking_id,
+            "-6.37",
+            "AUD",
             "--posting",
-            &format!("{expenses_id}:4.00:USD@@6.37:AUD"),
+            &expenses_id,
+            "4.00",
+            "USD",
+            "--total-price",
+            "6.37",
+            "AUD",
         ])
         .output()
         .expect("add");
@@ -187,9 +206,20 @@ fn add_costed_leg_then_list() {
             "--description",
             "Buy shares",
             "--posting",
-            &format!("{checking_id}:-210:AUD"),
+            &checking_id,
+            "-210",
+            "AUD",
             "--posting",
-            &format!("{brokerage_id}:2:AAPL{{105:AUD,2024-03-01,lot-a}}"),
+            &brokerage_id,
+            "2",
+            "AAPL",
+            "--cost",
+            "105",
+            "AUD",
+            "--lot-date",
+            "2024-03-01",
+            "--lot-label",
+            "lot-a",
         ])
         .output()
         .expect("add");
@@ -213,12 +243,26 @@ fn add_priced_and_costed_leg_json() {
         "2026-03-01",
         "--description",
         "Sell shares",
-        "--posting",
         // Cost beats price for weighing: the AAPL leg weighs -210 AUD, so
-        // 210 AUD balances it and the @150 price is carried as stated.
-        &format!("{checking_id}:210:AUD"),
+        // 210 AUD balances it and the 150 AUD price is carried as stated.
         "--posting",
-        &format!("{brokerage_id}:-2:AAPL{{105:AUD:2024-03-01:lot-a}}@150:AUD"),
+        &checking_id,
+        "210",
+        "AUD",
+        "--posting",
+        &brokerage_id,
+        "-2",
+        "AAPL",
+        "--cost",
+        "105",
+        "AUD",
+        "--lot-date",
+        "2024-03-01",
+        "--lot-label",
+        "lot-a",
+        "--price",
+        "150",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -239,9 +283,23 @@ fn add_costed_sale_then_list() {
             "--description",
             "Sell shares",
             "--posting",
-            &format!("{checking_id}:210:AUD"),
+            &checking_id,
+            "210",
+            "AUD",
             "--posting",
-            &format!("{brokerage_id}:-2:AAPL{{105:AUD:2024-03-01:lot-a}}@150:AUD"),
+            &brokerage_id,
+            "-2",
+            "AAPL",
+            "--cost",
+            "105",
+            "AUD",
+            "--lot-date",
+            "2024-03-01",
+            "--lot-label",
+            "lot-a",
+            "--price",
+            "150",
+            "AUD",
         ])
         .output()
         .expect("add");
@@ -266,9 +324,16 @@ fn add_leg_quoted_in_its_own_commodity_warns() {
         "--description",
         "Fee",
         "--posting",
-        &format!("{checking_id}:-10:AUD"),
+        &checking_id,
+        "-10",
+        "AUD",
         "--posting",
-        &format!("{expenses_id}:5:AUD@2:AUD"),
+        &expenses_id,
+        "5",
+        "AUD",
+        "--price",
+        "2",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -286,15 +351,24 @@ fn add_rejects_negative_price() {
         "--description",
         "Bad price",
         "--posting",
-        &format!("{checking_id}:-6.37:AUD"),
+        &checking_id,
+        "-6.37",
+        "AUD",
         "--posting",
-        &format!("{expenses_id}:4.00:USD@@-6.37:AUD"),
+        &expenses_id,
+        "4.00",
+        "USD",
+        "--total-price",
+        "-6.37",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
 #[test]
-fn add_rejects_lot_selection() {
+fn add_rejects_a_lot_date_without_a_cost() {
+    // Naming a lot by its date alone selects a held lot, which needs
+    // inventory booking; a new leg's lot date needs its cost beside it.
     let ctx = TestContext::new();
     let (checking_id, _) = setup_accounts(&ctx);
     let brokerage_id = setup_brokerage(&ctx);
@@ -307,9 +381,15 @@ fn add_rejects_lot_selection() {
         "--description",
         "Sell shares",
         "--posting",
-        &format!("{checking_id}:300:AUD"),
+        &checking_id,
+        "300",
+        "AUD",
         "--posting",
-        &format!("{brokerage_id}:-2:AAPL{{}}"),
+        &brokerage_id,
+        "-2",
+        "AAPL",
+        "--lot-date",
+        "2024-03-01",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -341,9 +421,13 @@ fn transaction_warning_json() {
         "--description",
         "Grocery shopping",
         "--posting",
-        &format!("{checking_id}:-50.00:AUD"),
+        &checking_id,
+        "-50.00",
+        "AUD",
         "--posting",
-        &format!("{expenses_id}:50.00:AUD"),
+        &expenses_id,
+        "50.00",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -376,9 +460,13 @@ fn amend_transaction_warning() {
             "--description",
             "Grocery shopping",
             "--posting",
-            &format!("{checking_id}:-50.00:AUD"),
+            &checking_id,
+            "-50.00",
+            "AUD",
             "--posting",
-            &format!("{expenses_id}:50.00:AUD"),
+            &expenses_id,
+            "50.00",
+            "AUD",
         ])
         .output()
         .expect("add");
@@ -407,7 +495,9 @@ fn add_unbalanced_transaction_fails() {
         "--description",
         "Unbalanced",
         "--posting",
-        &format!("{checking_id}:-50.00:AUD"),
+        &checking_id,
+        "-50.00",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -428,9 +518,13 @@ fn reverse_existing_transaction() {
             "--description",
             "To reverse",
             "--posting",
-            &format!("{checking_id}:-10.00:AUD"),
+            &checking_id,
+            "-10.00",
+            "AUD",
             "--posting",
-            &format!("{expenses_id}:10.00:AUD"),
+            &expenses_id,
+            "10.00",
+            "AUD",
         ])
         .output()
         .expect("add");
@@ -470,9 +564,13 @@ fn amend_description() {
             "--description",
             "Original desc",
             "--posting",
-            &format!("{checking_id}:-20.00:AUD"),
+            &checking_id,
+            "-20.00",
+            "AUD",
             "--posting",
-            &format!("{expenses_id}:20.00:AUD"),
+            &expenses_id,
+            "20.00",
+            "AUD",
         ])
         .output()
         .expect("add");
@@ -510,9 +608,13 @@ fn amend_date_only() {
             "--description",
             "Original",
             "--posting",
-            &format!("{checking_id}:-10.00:AUD"),
+            &checking_id,
+            "-10.00",
+            "AUD",
             "--posting",
-            &format!("{expenses_id}:10.00:AUD"),
+            &expenses_id,
+            "10.00",
+            "AUD",
         ])
         .output()
         .expect("add");
@@ -544,9 +646,13 @@ fn amend_after_reversal_succeeds() {
             "--description",
             "To void then amend",
             "--posting",
-            &format!("{checking_id}:-10.00:AUD"),
+            &checking_id,
+            "-10.00",
+            "AUD",
             "--posting",
-            &format!("{expenses_id}:10.00:AUD"),
+            &expenses_id,
+            "10.00",
+            "AUD",
         ])
         .output()
         .expect("add");
@@ -584,10 +690,18 @@ fn add_with(ctx: &TestContext, checking: &str, expenses: &str, extra: &[&str]) -
     args.push("--description".to_owned());
     args.push("Coffee".to_owned());
     args.extend(extra.iter().map(|s| (*s).to_owned()));
-    args.push("--posting".to_owned());
-    args.push(format!("{checking}:-5.00:AUD"));
-    args.push("--posting".to_owned());
-    args.push(format!("{expenses}:5.00:AUD"));
+    for token in [
+        "--posting",
+        checking,
+        "-5.00",
+        "AUD",
+        "--posting",
+        expenses,
+        "5.00",
+        "AUD",
+    ] {
+        args.push(token.to_owned());
+    }
 
     let out = ctx.command().args(&args).output().expect("add");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
@@ -1072,9 +1186,13 @@ fn add_accepts_account_paths() {
         "--description",
         "Grocery shopping",
         "--posting",
-        "Assets:Checking:-50.00:AUD",
+        "Assets:Checking",
+        "-50.00",
+        "AUD",
         "--posting",
-        "Expenses:Groceries:50.00:AUD",
+        "Expenses:Groceries",
+        "50.00",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -1113,9 +1231,13 @@ fn add_groceries(ctx: &TestContext) -> serde_json::Value {
         "--description",
         "Grocery shopping",
         "--posting",
-        "Assets:Checking:-50.00:AUD",
+        "Assets:Checking",
+        "-50.00",
+        "AUD",
         "--posting",
-        "Expenses:Groceries:30.00:AUD",
+        "Expenses:Groceries",
+        "30.00",
+        "AUD",
     ]))
 }
 
@@ -1265,11 +1387,17 @@ fn edit_several_postings_match_error() {
         "--description",
         "Grocery shopping",
         "--posting",
-        "Expenses:Groceries:10.00:AUD",
+        "Expenses:Groceries",
+        "10.00",
+        "AUD",
         "--posting",
-        "Expenses:Groceries:10.00:AUD",
+        "Expenses:Groceries",
+        "10.00",
+        "AUD",
         "--posting",
-        "Assets:Checking:-20.00:AUD",
+        "Assets:Checking",
+        "-20.00",
+        "AUD",
     ]));
     let id = added
         .get("id")
@@ -1420,9 +1548,13 @@ fn add_balanced_groceries(ctx: &TestContext) -> serde_json::Value {
         "--description",
         "Grocery shopping",
         "--posting",
-        "Assets:Checking:-50.00:AUD",
+        "Assets:Checking",
+        "-50.00",
+        "AUD",
         "--posting",
-        "Expenses:Groceries:50.00:AUD",
+        "Expenses:Groceries",
+        "50.00",
+        "AUD",
     ]))
 }
 
@@ -1625,6 +1757,198 @@ fn edit_json_output_snapshot() {
         "2026-03-01",
         "--add-posting",
         "Expenses:Household:20.00:AUD",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+/// The paths `tag list --json` reports.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn tag_paths(ctx: &TestContext) -> Vec<String> {
+    let rows = json_of(ctx.command().args(["--json", "tag", "list"]));
+    rows.as_array()
+        .expect("rows")
+        .iter()
+        .filter_map(|row| row.get(1).and_then(serde_json::Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+#[test]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexing JSON yields null for a missing field, which fails the assertion"
+)]
+fn add_sets_posting_metadata_and_creates_a_tag() {
+    let ctx = TestContext::new();
+    let (checking, expenses) = setup_accounts(&ctx);
+    let out = ctx
+        .command()
+        .args([
+            "--json",
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "Groceries",
+            "--meta",
+            "payee=Example Market",
+            "--tag",
+            "trip:example",
+            "--posting",
+            &checking,
+            "-50.00",
+            "AUD",
+            "--posting",
+            &expenses,
+            "50.00",
+            "AUD",
+            "--meta",
+            "note=Paid by A",
+            "--tag",
+            "person:a",
+        ])
+        .output()
+        .expect("add");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: created tag 'person:a'"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("warning: created tag 'trip:example'"),
+        "{stderr}"
+    );
+
+    // `from_slice` refuses trailing content, so stdout is one JSON object.
+    let tx: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is one JSON object");
+    let warnings = tx["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str() == Some("created tag 'person:a'")),
+        "{warnings:?}"
+    );
+    assert_eq!(tx["metadata"][0]["key"], "payee");
+    assert_eq!(tx["tag_ids"].as_array().map(Vec::len), Some(1));
+
+    let legs = tx["postings"].as_array().expect("postings");
+    let grocery = legs
+        .iter()
+        .find(|p| p["account_id"] == expenses.as_str())
+        .expect("grocery leg");
+    assert_eq!(grocery["metadata"][0]["key"], "note");
+    assert_eq!(grocery["metadata"][0]["value"]["text"], "Paid by A");
+    assert_eq!(grocery["tag_ids"].as_array().map(Vec::len), Some(1));
+    let checking_leg = legs
+        .iter()
+        .find(|p| p["account_id"] == checking.as_str())
+        .expect("checking leg");
+    assert_eq!(checking_leg["metadata"].as_array().map(Vec::len), Some(0));
+    assert_eq!(checking_leg["tag_ids"].as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+fn one_new_tag_named_twice_is_created_once() {
+    let ctx = TestContext::new();
+    let (checking, expenses) = setup_accounts(&ctx);
+    let out = ctx
+        .command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "Split",
+            "--posting",
+            &checking,
+            "-50.00",
+            "AUD",
+            "--tag",
+            "person:a",
+            "--posting",
+            &expenses,
+            "50.00",
+            "AUD",
+            "--tag",
+            "person:a",
+        ])
+        .output()
+        .expect("add");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert_eq!(
+        stderr.matches("created tag 'person:a'").count(),
+        1,
+        "{stderr}"
+    );
+    let paths = tag_paths(&ctx);
+    assert_eq!(
+        paths.iter().filter(|p| *p == "person:a").count(),
+        1,
+        "{paths:?}"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexing JSON yields null for a missing field, which fails the assertion"
+)]
+fn add_sets_a_spread() {
+    let ctx = TestContext::new();
+    let (checking, expenses) = setup_accounts(&ctx);
+    let tx = json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "add",
+        "--date",
+        "2026-01-01",
+        "--description",
+        "Insurance",
+        "--posting",
+        &checking,
+        "-1200.00",
+        "AUD",
+        "--posting",
+        &expenses,
+        "1200.00",
+        "AUD",
+        "--spread",
+        "2026-01-01",
+        "2026-12-31",
+    ]));
+    let leg = tx["postings"]
+        .as_array()
+        .expect("postings")
+        .iter()
+        .find(|p| p["account_id"] == expenses.as_str())
+        .expect("leg");
+    assert_eq!(leg["spread_from"], "2026-01-01");
+    assert_eq!(leg["spread_until"], "2026-12-31");
+}
+
+#[test]
+fn add_rejects_a_posting_flag_before_any_posting() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "add",
+        "--date",
+        "2026-03-01",
+        "--description",
+        "X",
+        "--cost",
+        "1",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }

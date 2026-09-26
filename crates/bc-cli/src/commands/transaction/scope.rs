@@ -14,6 +14,7 @@ use crate::error::CliResult;
 
 /// One scoped flag, named by its long form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by transaction edit"))]
 pub(super) enum Flag {
     /// `edit`'s positional transaction ID.
     Id,
@@ -276,6 +277,7 @@ impl FlagSet for AddFlags {
 
 /// The flags of `transaction edit`.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by transaction edit"))]
 pub(super) struct EditFlags;
 
 impl FlagSet for EditFlags {
@@ -372,7 +374,6 @@ impl<S: FlagSet> clap::Args for Scoped<S> {
 
 /// The command a [`Plan`] is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "wired up by a later task"))]
 pub(super) enum Command {
     /// `transaction add`.
     Add,
@@ -382,7 +383,6 @@ pub(super) enum Command {
 
 /// What an opener names.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "wired up by a later task"))]
 pub(super) enum Opener {
     /// A new leg: its account, and its amount and commodity unless elided.
     New {
@@ -399,7 +399,6 @@ pub(super) enum Opener {
 
 /// One opener and the modifiers after it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "wired up by a later task"))]
 pub(super) struct Scope {
     /// What the opener names.
     pub opener: Opener,
@@ -411,7 +410,6 @@ pub(super) struct Scope {
 
 /// A command's scoped flags, grouped.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "wired up by a later task"))]
 pub(super) struct Plan {
     /// `edit`'s transaction ID.
     pub id: Option<String>,
@@ -467,7 +465,6 @@ fn one_or_three(written: &Written) -> CliResult<Vec<String>> {
 /// a flag sits where it does not apply, when an opener names an amount
 /// without its commodity, or when `edit` names its transaction by neither or
 /// both of `ID` and `--find`.
-#[cfg_attr(not(test), expect(dead_code, reason = "wired up by a later task"))]
 pub(super) fn fold(written: &[Written], command: Command) -> CliResult<Plan> {
     let mut plan = Plan::default();
     for item in written {

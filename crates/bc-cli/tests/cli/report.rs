@@ -157,9 +157,13 @@ fn summary_fy_includes_a_transaction_in_the_financial_year() {
             "--description",
             "Interest payment",
             "--posting",
-            &format!("{checking_id}:100.00:AUD"),
+            &checking_id,
+            "100.00",
+            "AUD",
             "--posting",
-            &format!("{interest_id}:-100.00:AUD"),
+            &interest_id,
+            "-100.00",
+            "AUD",
         ])
         .output()
         .expect("add transaction");
@@ -183,9 +187,13 @@ fn categories_fy_totals_a_transaction_in_the_financial_year() {
             "--description",
             "Interest payment",
             "--posting",
-            &format!("{checking_id}:100.00:AUD"),
+            &checking_id,
+            "100.00",
+            "AUD",
             "--posting",
-            &format!("{interest_id}:-100.00:AUD"),
+            &interest_id,
+            "-100.00",
+            "AUD",
         ])
         .output()
         .expect("add transaction");
@@ -301,9 +309,13 @@ fn net_worth_lists_a_holding_it_cannot_value() {
                 "--description",
                 &format!("Deposit {n}"),
                 "--posting",
-                &format!("{checking_id}:{amount}:{commodity}"),
+                &checking_id,
+                amount,
+                commodity,
                 "--posting",
-                &format!("{interest_id}:-{amount}:{commodity}"),
+                &interest_id,
+                &format!("-{amount}"),
+                commodity,
             ])
             .output()
             .expect("add transaction");
@@ -328,9 +340,13 @@ fn net_worth_json_lists_a_holding_it_cannot_value() {
             "--description",
             "Deposit",
             "--posting",
-            &format!("{checking_id}:0.5:BTC"),
+            &checking_id,
+            "0.5",
+            "BTC",
             "--posting",
-            &format!("{interest_id}:-0.5:BTC"),
+            &interest_id,
+            "-0.5",
+            "BTC",
         ])
         .output()
         .expect("add transaction");
@@ -355,9 +371,13 @@ fn net_worth_reports_in_the_requested_commodity() {
                 "--description",
                 &format!("Deposit {n}"),
                 "--posting",
-                &format!("{checking_id}:{amount}:{commodity}"),
+                &checking_id,
+                amount,
+                commodity,
                 "--posting",
-                &format!("{interest_id}:-{amount}:{commodity}"),
+                &interest_id,
+                &format!("-{amount}"),
+                commodity,
             ])
             .output()
             .expect("add transaction");

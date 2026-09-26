@@ -43,6 +43,7 @@ fn one_posting_transaction(ctx: &TestContext, account: &str, amount: i64) -> Str
         .output()
         .expect("create scratch account");
 
+    let negated = amount.checked_neg().expect("amount does not overflow");
     let added = json_of(ctx.command().args([
         "--json",
         "transaction",
@@ -52,12 +53,13 @@ fn one_posting_transaction(ctx: &TestContext, account: &str, amount: i64) -> Str
         "--description",
         "one-leg row",
         "--posting",
-        &format!("{account}:{amount}:AUD"),
+        account,
+        &amount.to_string(),
+        "AUD",
         "--posting",
-        &format!(
-            "{scratch}:{}:AUD",
-            amount.checked_neg().expect("amount does not overflow")
-        ),
+        &scratch,
+        &negated.to_string(),
+        "AUD",
     ]));
     let id = added
         .get("id")

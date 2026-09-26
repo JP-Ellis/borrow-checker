@@ -211,9 +211,13 @@ fn add_balancing_transaction(
             "--description",
             "Groceries",
             "--posting",
-            &format!("{debit}:{amount}:{commodity}"),
+            debit,
+            amount,
+            commodity,
             "--posting",
-            &format!("{credit}:-{amount}:{commodity}"),
+            credit,
+            &format!("-{amount}"),
+            commodity,
         ])
         .output()
         .expect("transaction add");

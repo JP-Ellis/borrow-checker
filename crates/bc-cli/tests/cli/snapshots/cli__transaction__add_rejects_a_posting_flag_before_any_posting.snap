@@ -6,4 +6,4 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: invalid posting '[ACCOUNT_ID]:-2:AAPL{}': lot selection needs inventory booking, not supported yet (#518)
+error: --cost describes a posting; put it after the posting it belongs to

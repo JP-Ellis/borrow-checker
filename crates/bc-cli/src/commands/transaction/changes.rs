@@ -67,6 +67,14 @@ fn date_of(text: &str) -> CliResult<Date> {
     Date::from_str(text).map_err(|e| CliError::Arg(format!("invalid date '{text}': {e}")))
 }
 
+/// Refuses a negative cost or price; `what` names which.
+fn non_negative(amount: bc_models::Amount, what: &str) -> Result<bc_models::Amount, String> {
+    if amount.value().is_sign_negative() && !amount.value().is_zero() {
+        return Err(format!("negative {what} not allowed"));
+    }
+    Ok(amount)
+}
+
 /// Stores `value` in `slot`, refusing a second one.
 fn once<T>(slot: &mut Option<T>, value: T, flag: Flag) -> Result<(), String> {
     if slot.is_some() {
@@ -113,7 +121,7 @@ impl Changes {
                     {
                         return Err("--cost and --total-cost cannot both be given".into());
                     }
-                    let amount = amount_of(v(0), v(1)).map_err(err)?;
+                    let amount = non_negative(amount_of(v(0), v(1)).map_err(err)?, "cost")?;
                     let quote = if item.flag == Flag::Cost {
                         bc_models::Quote::PerUnit(amount)
                     } else {
@@ -127,7 +135,7 @@ impl Changes {
                     {
                         return Err("--price and --total-price cannot both be given".into());
                     }
-                    let amount = amount_of(v(0), v(1)).map_err(err)?;
+                    let amount = non_negative(amount_of(v(0), v(1)).map_err(err)?, "price")?;
                     let quote = if item.flag == Flag::Price {
                         bc_models::Quote::PerUnit(amount)
                     } else {
@@ -179,6 +187,7 @@ impl Changes {
     }
 
     /// Whether no modifier was given.
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by transaction edit"))]
     pub(super) fn is_empty(&self) -> bool {
         *self == Self::default()
     }
@@ -190,12 +199,14 @@ pub(super) struct Resolved {
     /// The typed changes.
     pub changes: Changes,
     /// `--account`, resolved.
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by transaction edit"))]
     pub account: Option<bc_models::AccountId>,
     /// Each `--meta`, typed by the key registry, in order.
     pub entries: Vec<bc_models::MetaEntry>,
     /// Each `--tag`, resolved.
     pub tags: Vec<bc_models::TagId>,
     /// Each `--untag` that names an existing tag.
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by transaction edit"))]
     pub untags: Vec<bc_models::TagId>,
 }
 
@@ -287,6 +298,7 @@ pub(super) fn new_posting(
 /// # Errors
 ///
 /// Returns [`CliError::Arg`] when a lot date or label has no cost to attach to.
+#[cfg_attr(not(test), expect(dead_code, reason = "used by transaction edit"))]
 pub(super) fn set_posting(
     stored: &bc_models::Posting,
     resolved: &Resolved,
@@ -376,6 +388,10 @@ mod tests {
     #[case::inverted_spread(&[w(Flag::Spread, &["2026-12-31", "2026-01-01"])], "FROM 2026-12-31 is after UNTIL 2026-01-01")]
     #[case::bad_amount(&[w(Flag::Amount, &["abc", "AUD"])], "invalid amount 'abc'")]
     #[case::no_equals(&[w(Flag::Meta, &["note"])], "expected KEY=VALUE")]
+    #[case::negative_cost(&[w(Flag::Cost, &["-105", "AUD"])], "negative cost not allowed")]
+    #[case::negative_total_cost(&[w(Flag::TotalCost, &["-210", "AUD"])], "negative cost not allowed")]
+    #[case::negative_price(&[w(Flag::Price, &["-150", "AUD"])], "negative price not allowed")]
+    #[case::negative_total_price(&[w(Flag::TotalPrice, &["-6.37", "AUD"])], "negative price not allowed")]
     fn from_written_rejects(#[case] modifiers: &[Written], #[case] expected: &str) {
         let err = Changes::from_written(modifiers, "--set X")
             .expect_err("rejects")
