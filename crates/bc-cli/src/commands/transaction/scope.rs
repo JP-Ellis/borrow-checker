@@ -358,11 +358,21 @@ impl<S: FlagSet> clap::FromArgMatches for Scoped<S> {
     }
 }
 
+/// The `--help` heading every named scoped flag sits under, apart from the
+/// global options.
+const HEADING: &str = "Transaction and posting flags";
+
 impl<S: FlagSet> clap::Args for Scoped<S> {
     fn augment_args(cmd: clap::Command) -> clap::Command {
-        S::FLAGS
-            .iter()
-            .fold(cmd, |command, &flag| command.arg(S::arg(flag)))
+        S::FLAGS.iter().fold(cmd, |command, &flag| {
+            let arg = S::arg(flag);
+            // The positional ID stays under "Arguments".
+            command.arg(if flag == Flag::Id {
+                arg
+            } else {
+                arg.help_heading(HEADING)
+            })
+        })
     }
 
     fn augment_args_for_update(cmd: clap::Command) -> clap::Command {

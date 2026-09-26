@@ -1,0 +1,102 @@
+---
+source: crates/bc-cli/tests/cli/help.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Change the tags, metadata or postings of an existing transaction.
+
+Find the transaction by ID, or by --find ACCOUNT DATE [AMOUNT]. Flags before the first --add, --set or --remove change the transaction; flags after one change that posting, until the next. A --set changes only what it names, and postings no flag names are kept unchanged.
+
+Usage: borrow-checker transaction edit [OPTIONS] [ID]
+
+Arguments:
+  [ID]
+          Transaction ID. Give this, or --find.
+
+Options:
+      --json
+          Emit machine-readable JSON instead of human-readable output
+
+          [env: BC_JSON=]
+
+      --db-path <DB_PATH>
+          Path to the SQLite database file.
+
+          Overrides the `db_path` config file setting and the platform default. The `BC_DB_PATH` environment variable is also honoured via the config layer rather than directly by this flag.
+
+  -v, --verbose...
+          Increase log verbosity.
+
+          Pass once for info (`-v`), twice for debug (`-vv`), three times for trace (`-vvv`). Use `RUST_LOG` for fine-grained per-crate control.
+
+  -q, --quiet...
+          Decrease log verbosity.
+
+          Pass once for error-only output (`-q`). Use `RUST_LOG` for fine-grained per-crate control.
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Transaction and posting flags:
+      --find <ACCOUNT> <DATE> [AMOUNT]
+          Find the transaction by a posting on exactly ACCOUNT dated DATE, adding its signed AMOUNT when several match.
+
+      --add <ACCOUNT> [AMOUNT] [COMMODITY]
+          Open a new posting on ACCOUNT (path or ID). Without AMOUNT and COMMODITY its amount is elided. Posting flags after it apply to it.
+
+      --set <POSTING> [AMOUNT] [COMMODITY]
+          Change a stored posting: a posting ID, an account, or an account with its amount. Posting flags after it say what changes; the rest is kept.
+
+      --remove <POSTING> [AMOUNT] [COMMODITY]
+          Remove a stored posting, named as for --set.
+
+      --meta <KEY=VALUE>
+          Metadata entry for the transaction, or for the posting it follows. Repeat for several; a key may repeat.
+
+      --clear-meta <KEY>
+          Remove every entry under KEY from the transaction, or from the posting it follows.
+
+      --tag <TAG>
+          Tag the transaction, or the posting it follows. TAG is an ID or a path; a missing path is created.
+
+      --untag <TAG>
+          Remove a tag from the transaction, or from the posting it follows.
+
+      --account <ACCOUNT>
+          Move the posting this --set names to ACCOUNT.
+
+      --amount <AMOUNT> <COMMODITY>
+          Replace the amount of the posting this --set names.
+
+      --cost <AMOUNT> <COMMODITY>
+          Per-unit cost basis of the posting it follows.
+
+      --total-cost <AMOUNT> <COMMODITY>
+          Total cost basis of the posting it follows.
+
+      --lot-date <DATE>
+          Lot date of the posting's cost.
+
+      --lot-label <LABEL>
+          Lot label of the posting's cost.
+
+      --no-cost
+          Clear the cost of the posting this --set names.
+
+      --price <AMOUNT> <COMMODITY>
+          Per-unit price of the posting it follows.
+
+      --total-price <AMOUNT> <COMMODITY>
+          Total price of the posting it follows.
+
+      --no-price
+          Clear the price of the posting this --set names.
+
+      --spread <FROM> <UNTIL>
+          Accrue the posting it follows over FROM..=UNTIL.
+
+      --no-spread
+          Clear the spread of the posting this --set names.
+----- stderr -----

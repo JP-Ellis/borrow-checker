@@ -38,6 +38,17 @@ fn subcommand_help(#[case] subcommand: &str) {
 }
 
 #[rstest]
+#[case("add")]
+#[case("edit")]
+fn transaction_help(#[case] subcommand: &str) {
+    let ctx = TestContext::new();
+    set_snapshot_suffix!("{subcommand}");
+    let mut cmd = ctx.command();
+    cmd.args(["transaction", subcommand, "--help"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[rstest]
 #[case("plugin", "list")]
 fn stub_commands(#[case] cmd_name: &str, #[case] subcommand: &str) {
     let ctx = TestContext::new();

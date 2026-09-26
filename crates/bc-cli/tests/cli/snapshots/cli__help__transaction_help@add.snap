@@ -1,0 +1,74 @@
+---
+source: crates/bc-cli/tests/cli/help.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Record a new double-entry transaction.
+
+Flags before the first --posting describe the transaction; flags after a --posting describe that posting, until the next one.
+
+Usage: borrow-checker transaction add [OPTIONS] --date <DATE> --description <TEXT>
+
+Options:
+      --json
+          Emit machine-readable JSON instead of human-readable output
+
+          [env: BC_JSON=]
+
+      --db-path <DB_PATH>
+          Path to the SQLite database file.
+
+          Overrides the `db_path` config file setting and the platform default. The `BC_DB_PATH` environment variable is also honoured via the config layer rather than directly by this flag.
+
+  -v, --verbose...
+          Increase log verbosity.
+
+          Pass once for info (`-v`), twice for debug (`-vv`), three times for trace (`-vvv`). Use `RUST_LOG` for fine-grained per-crate control.
+
+  -q, --quiet...
+          Decrease log verbosity.
+
+          Pass once for error-only output (`-q`). Use `RUST_LOG` for fine-grained per-crate control.
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Transaction and posting flags:
+      --date <DATE>
+          The transaction's date (YYYY-MM-DD). Goes before the first posting.
+
+      --description <TEXT>
+          The transaction's description. Goes before the first posting.
+
+      --posting <ACCOUNT> [AMOUNT] [COMMODITY]
+          Open a new posting on ACCOUNT (path or ID). Without AMOUNT and COMMODITY its amount is elided. Posting flags after it apply to it.
+
+      --meta <KEY=VALUE>
+          Metadata entry for the transaction, or for the posting it follows. Repeat for several; a key may repeat.
+
+      --tag <TAG>
+          Tag the transaction, or the posting it follows. TAG is an ID or a path; a missing path is created.
+
+      --cost <AMOUNT> <COMMODITY>
+          Per-unit cost basis of the posting it follows.
+
+      --total-cost <AMOUNT> <COMMODITY>
+          Total cost basis of the posting it follows.
+
+      --lot-date <DATE>
+          Lot date of the posting's cost.
+
+      --lot-label <LABEL>
+          Lot label of the posting's cost.
+
+      --price <AMOUNT> <COMMODITY>
+          Per-unit price of the posting it follows.
+
+      --total-price <AMOUNT> <COMMODITY>
+          Total price of the posting it follows.
+
+      --spread <FROM> <UNTIL>
+          Accrue the posting it follows over FROM..=UNTIL.
+----- stderr -----
