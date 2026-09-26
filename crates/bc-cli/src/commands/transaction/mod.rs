@@ -260,7 +260,20 @@ async fn resolve_tags(ctx: &AppContext, all: &[&changes::Changes]) -> CliResult<
     resolve::tags(ctx, &tagged, &untagged).await
 }
 
+/// Prints one `warning:` line per warning to stderr.
+fn warn_all(warnings: &[String]) {
+    for warning in warnings {
+        #[expect(clippy::print_stderr, reason = "CLI output")]
+        {
+            eprintln!("warning: {warning}");
+        }
+    }
+}
+
 /// Records a new double-entry transaction.
+///
+/// Every check that needs no tag runs before any tag is created. A failure
+/// after that point still reports the tags it created.
 async fn add(ctx: &AppContext, args: AddArgs) -> CliResult<()> {
     let plan = scope::fold(&args.flags.written, scope::Command::Add)?;
     if plan.scopes.len() < 2 {
@@ -269,23 +282,17 @@ async fn add(ctx: &AppContext, args: AddArgs) -> CliResult<()> {
         ));
     }
     let tx_changes = changes::Changes::from_written(&plan.transaction, "the transaction")?;
-    let mut legs = Vec::with_capacity(plan.scopes.len());
-    for scope in &plan.scopes {
-        legs.push((
-            scope,
-            changes::Changes::from_written(&scope.modifiers, &scope.label)?,
+    let (Some(date), Some(description)) = (tx_changes.date, tx_changes.description.clone()) else {
+        return Err(crate::error::CliError::Arg(
+            "--date and --description are required".into(),
         ));
-    }
-    let all: Vec<&changes::Changes> = core::iter::once(&tx_changes)
-        .chain(legs.iter().map(|(_, c)| c))
-        .collect();
+    };
 
     let resolver = bc_core::AccountResolver::load(&ctx.accounts).await?;
     let lookup = spec::account_lookup(&resolver);
-    let tags = resolve_tags(ctx, &all).await?;
-
-    let mut postings = Vec::with_capacity(legs.len());
-    for (scope, leg) in legs {
+    let mut legs = Vec::with_capacity(plan.scopes.len());
+    for scope in &plan.scopes {
+        let leg = changes::Changes::from_written(&scope.modifiers, &scope.label)?;
         // `add` opens only new legs; `Opener` is shared with `edit`.
         let scope::Opener::New {
             account,
@@ -301,45 +308,43 @@ async fn add(ctx: &AppContext, args: AddArgs) -> CliResult<()> {
             .as_ref()
             .map(|[value, code]| changes::amount_of(value, code))
             .transpose()?;
-        let looked_up = resolve::resolved(ctx, leg, &lookup, &tags).await?;
-        postings.push(changes::new_posting(
-            account_id,
-            amount,
-            &looked_up,
-            &scope.label,
-        )?);
+        changes::cost_of(None, &leg, &scope.label)?;
+        legs.push((&scope.label, account_id, amount, leg));
     }
-    let tx = resolve::resolved(ctx, tx_changes, &lookup, &tags).await?;
-    let (Some(date), Some(description)) = (tx.changes.date, tx.changes.description.clone()) else {
-        return Err(crate::error::CliError::Arg(
-            "--date and --description are required".into(),
-        ));
-    };
 
-    let transaction = bc_models::Transaction::builder()
-        .id(bc_models::TransactionId::new())
-        .date(date)
-        .description(description)
-        .metadata(bc_models::Metadata::new(tx.entries.clone()))
-        .tag_ids(changes::retag(&[], &tx.tags, &[]))
-        .postings(postings)
-        .reconciliation(bc_models::Reconciliation::Reconciled)
-        .created_at(jiff::Timestamp::now())
-        .build();
-
-    let warned = ctx.transactions.create(transaction).await?;
+    let all: Vec<&changes::Changes> = core::iter::once(&tx_changes)
+        .chain(legs.iter().map(|(_, _, _, leg)| leg))
+        .collect();
+    let tags = resolve_tags(ctx, &all).await?;
     let mut warnings: Vec<String> = tags
         .created()
         .iter()
         .map(|path| format!("created tag '{path}'"))
         .collect();
-    warnings.extend(warned.warnings.iter().map(ToString::to_string));
-    for warning in &warnings {
-        #[expect(clippy::print_stderr, reason = "CLI output")]
-        {
-            eprintln!("warning: {warning}");
+
+    let outcome = async {
+        let mut postings = Vec::with_capacity(legs.len());
+        for (label, account_id, amount, leg) in legs {
+            let looked_up = resolve::resolved(ctx, leg, &lookup, &tags).await?;
+            postings.push(changes::new_posting(account_id, amount, &looked_up, label)?);
         }
+        let tx = resolve::resolved(ctx, tx_changes, &lookup, &tags).await?;
+        let transaction = bc_models::Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date)
+            .description(description)
+            .metadata(bc_models::Metadata::new(tx.entries.clone()))
+            .tag_ids(changes::retag(&[], &tx.tags, &[]))
+            .postings(postings)
+            .reconciliation(bc_models::Reconciliation::Reconciled)
+            .created_at(jiff::Timestamp::now())
+            .build();
+        Ok::<_, crate::error::CliError>(ctx.transactions.create(transaction).await?)
     }
+    .await;
+    let warned = outcome.inspect_err(|_| warn_all(&warnings))?;
+    warnings.extend(warned.warnings.iter().map(ToString::to_string));
+    warn_all(&warnings);
     let tx_id = warned.value;
 
     if ctx.json {

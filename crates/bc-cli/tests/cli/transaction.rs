@@ -1952,3 +1952,68 @@ fn add_rejects_a_posting_flag_before_any_posting() {
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
+
+#[test]
+fn a_refused_add_creates_no_tag_for_an_unknown_account() {
+    let ctx = TestContext::new();
+    let (checking, _) = setup_accounts(&ctx);
+    let out = ctx
+        .command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "Typo",
+            "--posting",
+            &checking,
+            "-5.00",
+            "AUD",
+            "--posting",
+            "Expenses:NoSuchAccount",
+            "5.00",
+            "AUD",
+            "--tag",
+            "x:new",
+        ])
+        .output()
+        .expect("add");
+    assert!(!out.status.success(), "the add is refused");
+    let paths = tag_paths(&ctx);
+    assert!(!paths.iter().any(|p| p == "x:new"), "{paths:?}");
+}
+
+#[test]
+fn a_refused_add_creates_no_tag_for_a_lot_date_without_a_cost() {
+    let ctx = TestContext::new();
+    let (checking, _) = setup_accounts(&ctx);
+    let brokerage = setup_brokerage(&ctx);
+    let out = ctx
+        .command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "Sell shares",
+            "--posting",
+            &checking,
+            "300",
+            "AUD",
+            "--posting",
+            &brokerage,
+            "-2",
+            "AAPL",
+            "--lot-date",
+            "2024-03-01",
+            "--tag",
+            "x:new",
+        ])
+        .output()
+        .expect("add");
+    assert!(!out.status.success(), "the add is refused");
+    let paths = tag_paths(&ctx);
+    assert!(!paths.iter().any(|p| p == "x:new"), "{paths:?}");
+}

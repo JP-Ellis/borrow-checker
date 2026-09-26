@@ -232,7 +232,11 @@ pub(super) fn retag(
 /// The cost `changes` leave on a leg that held `stored`.
 ///
 /// A lot date or label the changes do not name comes from `stored`.
-fn cost_of(
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] when a lot date or label has no cost.
+pub(super) fn cost_of(
     stored: Option<&bc_models::Cost>,
     changes: &Changes,
     context: &str,
