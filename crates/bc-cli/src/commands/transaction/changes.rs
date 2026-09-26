@@ -52,10 +52,14 @@ pub(super) struct Changes {
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Arg`] when `value` is not a decimal.
+/// Returns [`CliError::Arg`] when `value` is not a decimal or `code` is blank.
 pub(super) fn amount_of(value: &str, code: &str) -> CliResult<bc_models::Amount> {
     let number = rust_decimal::Decimal::from_str(value)
         .map_err(|e| CliError::Arg(format!("invalid amount '{value}': {e}")))?;
+    // Nothing downstream refuses an empty code, so a blank one would be stored.
+    if code.trim().is_empty() {
+        return Err(CliError::Arg(format!("amount '{value}' has no commodity")));
+    }
     Ok(bc_models::Amount::new(
         number,
         bc_models::CommodityCode::new(code),
@@ -389,6 +393,8 @@ mod tests {
     #[case::twice(&[w(Flag::Account, &["A"]), w(Flag::Account, &["B"])], "--account is given twice")]
     #[case::inverted_spread(&[w(Flag::Spread, &["2026-12-31", "2026-01-01"])], "FROM 2026-12-31 is after UNTIL 2026-01-01")]
     #[case::bad_amount(&[w(Flag::Amount, &["abc", "AUD"])], "invalid amount 'abc'")]
+    #[case::empty_commodity(&[w(Flag::Amount, &["5", ""])], "amount '5' has no commodity")]
+    #[case::blank_cost_commodity(&[w(Flag::Cost, &["105", " "])], "amount '105' has no commodity")]
     #[case::no_equals(&[w(Flag::Meta, &["note"])], "expected KEY=VALUE")]
     #[case::negative_cost(&[w(Flag::Cost, &["-105", "AUD"])], "negative cost not allowed")]
     #[case::negative_total_cost(&[w(Flag::TotalCost, &["-210", "AUD"])], "negative cost not allowed")]

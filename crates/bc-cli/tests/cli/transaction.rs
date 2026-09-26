@@ -2154,8 +2154,18 @@ fn a_refused_add_creates_no_tag_for_two_elided_postings() {
     assert!(!paths.iter().any(|p| p == "x:new"), "{paths:?}");
 }
 
-#[test]
-fn add_names_the_posting_with_a_malformed_amount() {
+#[rstest::rstest]
+#[case::not_a_number(
+    "abc",
+    "AUD",
+    "--posting Assets:Checking abc AUD: invalid amount 'abc'"
+)]
+#[case::no_commodity("5", "", "amount '5' has no commodity")]
+fn add_names_the_posting_with_a_malformed_amount(
+    #[case] value: &str,
+    #[case] code: &str,
+    #[case] expected: &str,
+) {
     let ctx = TestContext::new();
     setup_accounts(&ctx);
     let out = ctx
@@ -2169,8 +2179,8 @@ fn add_names_the_posting_with_a_malformed_amount() {
             "Groceries",
             "--posting",
             "Assets:Checking",
-            "abc",
-            "AUD",
+            value,
+            code,
             "--posting",
             "Expenses:Groceries",
         ])
@@ -2178,10 +2188,7 @@ fn add_names_the_posting_with_a_malformed_amount() {
         .expect("add");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "the add is refused");
-    assert!(
-        stderr.contains("--posting Assets:Checking abc AUD: invalid amount 'abc'"),
-        "{stderr}"
-    );
+    assert!(stderr.contains(expected), "{stderr}");
 }
 
 // MARK: scoped edit flags
