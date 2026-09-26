@@ -105,7 +105,7 @@ TransactionCreated / TransactionAmended / TransactionVoided / TransactionReverse
 TransactionDateChanged / TransactionDescriptionChanged
 TransactionTagsChanged / TransactionMetadataChanged
 TransactionReconciled
-PostingRecategorised / PostingAmountChanged / PostingMetadataChanged / PostingSpreadChanged / PostingAnnotationChanged
+PostingRecategorised / PostingAmountChanged / PostingMetadataChanged / PostingTagsChanged / PostingSpreadChanged / PostingAnnotationChanged
 PostingAdded / PostingRemoved
 MetadataKeyRegistered / MetadataKeyRetyped / MetadataKeyRenamed / MetadataKeyDeleted
 AssetValuationRecorded

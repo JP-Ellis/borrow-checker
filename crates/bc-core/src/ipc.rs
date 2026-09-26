@@ -785,6 +785,19 @@ mod tests {
     }
 
     #[test]
+    fn audit_entry_from_posting_tags_changed_counts_each_side() {
+        let event = crate::Event::PostingTagsChanged {
+            id: bc_models::TransactionId::new(),
+            posting_id: bc_models::PostingId::new(),
+            added: vec![bc_models::TagId::new(), bc_models::TagId::new()],
+            removed: vec![bc_models::TagId::new()],
+        };
+        let entry = bc_ipc::AuditEntry::from_event(Timestamp::now(), &event, &HashMap::new());
+        assert_eq!(entry.kind, "tags");
+        assert_eq!(entry.message, "posting tags +2 -1");
+    }
+
+    #[test]
     fn annotation_audit_entry_renders_each_changed_half() {
         let cost = bc_models::Cost::builder()
             .basis(bc_models::Quote::Total(Amount::new(dec!(210), "AUD")))
