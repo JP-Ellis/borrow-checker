@@ -1,6 +1,6 @@
 #![expect(
     clippy::mod_module_files,
-    reason = "module split into transaction/mod.rs, transaction/leg.rs, transaction/scope.rs and transaction/spec.rs"
+    reason = "module split into transaction/mod.rs and one file per concern"
 )]
 //! Transaction management sub-commands: list, add, amend, edit, reverse.
 
@@ -11,8 +11,15 @@ use clap::Subcommand;
 use crate::context::AppContext;
 use crate::error::CliResult;
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired into add in the next commit")
+)]
+mod changes;
 mod edit;
 mod leg;
+#[expect(dead_code, reason = "wired into add in the next commit")]
+mod resolve;
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "wired into add in the next commit")
