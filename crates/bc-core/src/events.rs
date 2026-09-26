@@ -94,20 +94,6 @@ pub enum Event {
         /// The new transaction's ID.
         id: TransactionId,
     },
-    /// A transaction was amended.
-    ///
-    /// Records the updated scalar fields. Postings, tags and metadata are
-    /// applied directly to the projection tables and are not captured in this
-    /// payload; [`Self::TransactionMetadataChanged`] covers metadata on the
-    /// [`crate::TransactionService::edit`] path.
-    TransactionAmended {
-        /// The transaction's ID.
-        id: TransactionId,
-        /// The new transaction date after amendment.
-        date: jiff::civil::Date,
-        /// The new description after amendment.
-        description: String,
-    },
     /// A transaction was voided.
     TransactionVoided {
         /// The transaction's ID.
@@ -601,7 +587,6 @@ impl Event {
             Self::AccountReopened { .. } => "AccountReopened",
             Self::AccountOpenedOnChanged { .. } => "AccountOpenedOnChanged",
             Self::TransactionCreated { .. } => "TransactionCreated",
-            Self::TransactionAmended { .. } => "TransactionAmended",
             Self::TransactionVoided { .. } => "TransactionVoided",
             Self::TransactionReversed { .. } => "TransactionReversed",
             Self::TransactionDateChanged { .. } => "TransactionDateChanged",
@@ -648,7 +633,6 @@ impl Event {
             | Self::AccountReopened { id }
             | Self::AccountOpenedOnChanged { id, .. } => id.to_string(),
             Self::TransactionCreated { id }
-            | Self::TransactionAmended { id, .. }
             | Self::TransactionVoided { id }
             | Self::TransactionDateChanged { id, .. }
             | Self::TransactionDescriptionChanged { id, .. }
@@ -899,49 +883,6 @@ mod tests {
             .await
             .expect("replay should succeed");
         assert_eq!(records.len(), 0);
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn transaction_amended_payload_round_trips(pool: sqlx::SqlitePool) {
-        use bc_models::TransactionId;
-        use jiff::civil::Date;
-
-        let store = SqliteStore::new(pool.clone());
-        let id = TransactionId::new();
-        let event = Event::TransactionAmended {
-            id: id.clone(),
-            date: Date::constant(2026, 3, 15),
-            description: "Amended description".to_owned(),
-        };
-
-        store.append(&event).await.expect("append should succeed");
-
-        let records = store
-            .replay_for(&id.to_string())
-            .await
-            .expect("replay should succeed");
-        let record = records.first().expect("one record should exist");
-        assert_eq!(record.kind, "TransactionAmended");
-
-        let replayed: Event =
-            serde_json::from_str(&record.payload).expect("payload should deserialise");
-
-        #[expect(
-            clippy::wildcard_enum_match_arm,
-            reason = "Event is #[non_exhaustive]; wildcard arm is required for exhaustive match in tests"
-        )]
-        match replayed {
-            Event::TransactionAmended {
-                id: replayed_id,
-                date,
-                description,
-            } => {
-                assert_eq!(replayed_id, id);
-                assert_eq!(date, Date::constant(2026, 3, 15));
-                assert_eq!(description, "Amended description");
-            }
-            other => panic!("expected TransactionAmended, got {other:?}"),
-        }
     }
 
     #[sqlx::test(migrations = "./migrations")]
