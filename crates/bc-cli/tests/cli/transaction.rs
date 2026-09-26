@@ -1691,6 +1691,74 @@ async fn edit_add_posting_records_posting_added() {
 }
 
 #[tokio::test]
+async fn edit_records_posting_tag_changes_and_whole_new_legs() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let household = create_household(&ctx);
+    let added = add_groceries(&ctx);
+    let tx_id = id_of(&added);
+    let groceries_posting = posting_fields(&added, "id")
+        .get(1)
+        .cloned()
+        .unwrap_or_default();
+
+    json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "edit",
+        &tx_id,
+        "--set",
+        "Expenses:Groceries",
+        "--tag",
+        "person:a",
+    ]));
+    json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "edit",
+        &tx_id,
+        "--add",
+        "Expenses:Household",
+        "20.00",
+        "AUD",
+        "--meta",
+        "note=shared",
+        "--tag",
+        "person:b",
+    ]));
+
+    let pool = open_pool(&ctx).await;
+    let events = events_of(&pool, &tx_id).await;
+    let posting_id = bc_models::PostingId::from_str(&groceries_posting).expect("valid posting id");
+    let person_a = bc_models::TagId::from_str(&tag_id(&ctx, "person:a")).expect("valid tag id");
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            bc_core::Event::PostingTagsChanged { posting_id: p, added: tagged, removed, .. }
+                if *p == posting_id && *tagged == [person_a.clone()] && removed.is_empty()
+        )),
+        "expected PostingTagsChanged adding person:a, got: {events:?}"
+    );
+
+    let household_id = bc_models::AccountId::from_str(&household).expect("valid account id");
+    let person_b = bc_models::TagId::from_str(&tag_id(&ctx, "person:b")).expect("valid tag id");
+    let note = bc_models::MetaEntry::new(
+        bc_models::MetaKey::new("note").expect("valid key"),
+        bc_models::MetaValue::Text("shared".to_owned()),
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            bc_core::Event::PostingAdded { account, metadata, tag_ids, .. }
+                if *account == household_id
+                    && metadata.entries() == [note.clone()]
+                    && *tag_ids == [person_b.clone()]
+        )),
+        "expected PostingAdded carrying note=shared and person:b, got: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn edit_remove_posting_on_an_imported_leg_warns_and_tombstones() {
     let ctx = TestContext::new();
     let (_checking, groceries) = setup_accounts(&ctx);
@@ -1789,6 +1857,20 @@ fn tag_paths(ctx: &TestContext) -> Vec<String> {
         .filter_map(|row| row.get(1).and_then(serde_json::Value::as_str))
         .map(ToOwned::to_owned)
         .collect()
+}
+
+/// The ID `tag list --json` reports for `path`.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn tag_id(ctx: &TestContext, path: &str) -> String {
+    let rows = json_of(ctx.command().args(["--json", "tag", "list"]));
+    rows.as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row.get(1).and_then(serde_json::Value::as_str) == Some(path))
+        .and_then(|row| row.get(0))
+        .and_then(serde_json::Value::as_str)
+        .expect("tag listed")
+        .to_owned()
 }
 
 #[test]
@@ -2199,7 +2281,11 @@ fn set_changes_only_what_it_names() {
         .expect("leg");
     assert_eq!(leg["metadata"].as_array().map(Vec::len), Some(1));
     assert_eq!(leg["metadata"][0]["key"], "receipt");
-    assert_eq!(leg["tag_ids"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        leg["tag_ids"],
+        serde_json::json!([tag_id(&ctx, "person:b")]),
+        "person:b is the tag kept"
+    );
     assert_eq!(leg["amount"]["value"], "30.00", "the amount is kept");
     let paths = tag_paths(&ctx);
     assert!(
