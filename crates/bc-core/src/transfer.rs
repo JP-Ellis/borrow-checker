@@ -408,8 +408,9 @@ impl Service {
         .await?;
 
         // Move the posting and source refs back to the absorbed transaction.
-        // `amend` replaces postings without a per-posting event, so a missing
-        // row is checked here as well as in the event log.
+        // A missing row is checked here as well as in the event log, as a
+        // backstop for any path that writes the projection without a
+        // per-posting event.
         let moved = sqlx::query(
             "UPDATE postings SET transaction_id = ?, position = ? \
              WHERE id = ? AND transaction_id = ?",
