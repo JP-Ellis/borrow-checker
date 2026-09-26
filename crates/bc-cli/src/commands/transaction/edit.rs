@@ -189,18 +189,28 @@ pub(super) fn apply(
         .collect::<CliResult<Vec<_>>>()?;
     postings.extend(ops.add.iter().cloned());
 
-    let (metadata, tag_ids) = match &ops.transaction {
+    let (date, description, metadata, tag_ids) = match &ops.transaction {
         Some(tx) => (
+            tx.changes.date.unwrap_or_else(|| current.date()),
+            tx.changes
+                .description
+                .clone()
+                .unwrap_or_else(|| current.description().to_owned()),
             meta::apply_changes(current.metadata(), &tx.entries, &tx.changes.clear_meta),
             changes::retag(current.tag_ids(), &tx.tags, &tx.untags),
         ),
-        None => (current.metadata().clone(), current.tag_ids().to_vec()),
+        None => (
+            current.date(),
+            current.description().to_owned(),
+            current.metadata().clone(),
+            current.tag_ids().to_vec(),
+        ),
     };
 
     Ok(bc_models::Transaction::builder()
         .id(current.id().clone())
-        .date(current.date())
-        .description(current.description().to_owned())
+        .date(date)
+        .description(description)
         .metadata(metadata)
         .postings(postings)
         .tag_ids(tag_ids)

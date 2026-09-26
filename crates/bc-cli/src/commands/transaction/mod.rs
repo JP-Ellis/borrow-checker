@@ -2,7 +2,7 @@
     clippy::mod_module_files,
     reason = "module split into transaction/mod.rs and changes, edit, leg, resolve, scope and spec"
 )]
-//! Transaction management sub-commands: list, add, amend, edit, reverse.
+//! Transaction management sub-commands: list, add, edit, reverse.
 
 use core::str::FromStr as _;
 
@@ -38,26 +38,8 @@ pub enum Command {
     /// Flags before the first --posting describe the transaction; flags after
     /// a --posting describe that posting, until the next one.
     Add(AddArgs),
-    /// Amend the date, description or metadata of an existing transaction.
-    Amend {
-        /// Transaction ID to amend.
-        id: String,
-        /// New date (YYYY-MM-DD).
-        #[arg(long)]
-        date: Option<String>,
-        /// New description.
-        #[arg(long)]
-        description: Option<String>,
-        /// Metadata entry `KEY=VALUE`, replacing every stored entry under that
-        /// key. Repeat the key to store several entries under it. To remove a
-        /// key's entries, use `--clear-meta` instead.
-        #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
-        meta: Vec<String>,
-        /// Remove every metadata entry under this key. Repeat for each key.
-        #[arg(long = "clear-meta", value_name = "KEY", num_args = 1)]
-        clear_meta: Vec<String>,
-    },
-    /// Change the tags, metadata or postings of an existing transaction.
+    /// Change the date, description, metadata, tags or postings of an
+    /// existing transaction.
     ///
     /// Find the transaction by ID, or by --find ACCOUNT DATE [AMOUNT].
     /// Flags before the first --add, --set or --remove change the
@@ -136,13 +118,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
         Command::List => list(ctx).await,
         Command::Add(add_args) => add(ctx, add_args).await,
-        Command::Amend {
-            id,
-            date,
-            description,
-            meta: meta_specs,
-            clear_meta,
-        } => amend(ctx, id, date, description, &meta_specs, &clear_meta).await,
         Command::Edit(edit_args) => edit(ctx, edit_args).await,
         Command::Reverse { id } => reverse(ctx, id).await,
     }
@@ -336,71 +311,6 @@ async fn add(ctx: &AppContext, args: AddArgs) -> CliResult<()> {
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         println!("Created transaction: {tx_id}");
-    }
-    Ok(())
-}
-
-/// Amends the date, description or metadata of an existing transaction.
-async fn amend(
-    ctx: &AppContext,
-    id: String,
-    date: Option<String>,
-    description: Option<String>,
-    meta_specs: &[String],
-    clear_meta: &[String],
-) -> CliResult<()> {
-    let tx_id = bc_models::TransactionId::from_str(&id)
-        .map_err(|e| crate::error::CliError::Arg(format!("invalid transaction ID '{id}': {e}")))?;
-
-    let original = ctx.transactions.find_by_id(&tx_id).await?;
-
-    let new_date = if let Some(d) = date {
-        jiff::civil::Date::from_str(&d)
-            .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{d}': {e}")))?
-    } else {
-        original.date()
-    };
-    let new_description = description.unwrap_or_else(|| original.description().to_owned());
-
-    let cleared: Vec<bc_models::MetaKey> = clear_meta
-        .iter()
-        .map(|key| super::meta::parse_meta_key(key))
-        .collect::<CliResult<_>>()?;
-    let entries = super::meta::entries_for(ctx, meta_specs).await?;
-    if let Some(entry) = entries.iter().find(|e| cleared.contains(e.key())) {
-        return Err(crate::error::CliError::Arg(format!(
-            "--meta and --clear-meta both name '{}': one sets the key, the other removes it",
-            entry.key()
-        )));
-    }
-    let new_metadata = super::meta::apply_changes(original.metadata(), &entries, &cleared);
-
-    let updated = bc_models::Transaction::builder()
-        .id(tx_id.clone())
-        .date(new_date)
-        .description(new_description)
-        .metadata(new_metadata)
-        .postings(original.postings().to_vec())
-        .tag_ids(original.tag_ids().to_vec())
-        .reconciliation(original.reconciliation())
-        .created_at(*original.created_at())
-        .build();
-    let warned = ctx.transactions.amend(updated).await?;
-    for warning in &warned.warnings {
-        #[expect(clippy::print_stderr, reason = "CLI output")]
-        {
-            eprintln!("warning: {warning}");
-        }
-    }
-
-    if ctx.json {
-        let reloaded = ctx.transactions.find_by_id(&tx_id).await?;
-        return crate::output::print_json(&with_warnings(&reloaded, warned.warnings.as_slice())?);
-    }
-
-    #[expect(clippy::print_stdout, reason = "CLI output")]
-    {
-        println!("Amended transaction: {id}");
     }
     Ok(())
 }

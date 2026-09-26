@@ -433,7 +433,7 @@ fn transaction_warning_json() {
 }
 
 #[test]
-fn amend_transaction_warning() {
+fn edit_transaction_warning() {
     // Amending a transaction's date to fall outside the account's declared
     // life warns the same way a create does.
     let ctx = TestContext::new();
@@ -478,7 +478,7 @@ fn amend_transaction_warning() {
         .to_owned();
 
     let mut cmd = ctx.command();
-    cmd.args(["transaction", "amend", &tx_id, "--date", "2020-01-01"]);
+    cmd.args(["transaction", "edit", &tx_id, "--date", "2020-01-01"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
@@ -549,11 +549,11 @@ fn reverse_nonexistent_transaction_returns_error() {
 }
 
 #[test]
-fn amend_description() {
+fn edit_description() {
     let ctx = TestContext::new();
     let (checking_id, expenses_id) = setup_accounts(&ctx);
 
-    let amend_out = ctx
+    let add_out = ctx
         .command()
         .args([
             "--json",
@@ -574,8 +574,8 @@ fn amend_description() {
         ])
         .output()
         .expect("add");
-    let amend_json: serde_json::Value = serde_json::from_slice(&amend_out.stdout).expect("json");
-    let tx_id = amend_json
+    let add_json: serde_json::Value = serde_json::from_slice(&add_out.stdout).expect("json");
+    let tx_id = add_json
         .get("id")
         .and_then(serde_json::Value::as_str)
         .expect("id")
@@ -584,16 +584,16 @@ fn amend_description() {
     let mut cmd = ctx.command();
     cmd.args([
         "transaction",
-        "amend",
+        "edit",
         &tx_id,
         "--description",
-        "Amended desc",
+        "Edited desc",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
 #[test]
-fn amend_date_only() {
+fn edit_date_only() {
     let ctx = TestContext::new();
     let (checking_id, expenses_id) = setup_accounts(&ctx);
 
@@ -626,12 +626,12 @@ fn amend_date_only() {
         .to_owned();
 
     let mut cmd = ctx.command();
-    cmd.args(["transaction", "amend", &tx_id, "--date", "2026-04-15"]);
+    cmd.args(["transaction", "edit", &tx_id, "--date", "2026-04-15"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
 #[test]
-fn amend_after_reversal_succeeds() {
+fn edit_after_reversal_succeeds() {
     let ctx = TestContext::new();
     let (checking_id, expenses_id) = setup_accounts(&ctx);
 
@@ -644,7 +644,7 @@ fn amend_after_reversal_succeeds() {
             "--date",
             "2026-03-01",
             "--description",
-            "To void then amend",
+            "To void then edit",
             "--posting",
             &checking_id,
             "-10.00",
@@ -671,7 +671,7 @@ fn amend_after_reversal_succeeds() {
     let mut cmd = ctx.command();
     cmd.args([
         "transaction",
-        "amend",
+        "edit",
         &tx_id,
         "--description",
         "Should succeed after reversal",
@@ -903,7 +903,7 @@ fn one_key_may_carry_several_entries() {
 }
 
 #[test]
-fn amend_replaces_one_key_in_place_and_leaves_the_others() {
+fn edit_replaces_one_key_in_place_and_leaves_the_others() {
     let ctx = TestContext::new();
     let (checking_id, expenses_id) = setup_accounts(&ctx);
     let tx_id = add_with(
@@ -921,13 +921,13 @@ fn amend_replaces_one_key_in_place_and_leaves_the_others() {
     ctx.command()
         .args([
             "transaction",
-            "amend",
+            "edit",
             &tx_id,
             "--meta",
             "payee=Other Grocer",
         ])
         .output()
-        .expect("amend");
+        .expect("edit");
 
     assert_eq!(
         metadata_of(&reload(&ctx, &tx_id)),
@@ -946,7 +946,7 @@ fn amend_replaces_one_key_in_place_and_leaves_the_others() {
 }
 
 #[test]
-fn amend_clear_meta_removes_every_entry_under_the_key() {
+fn edit_clear_meta_removes_every_entry_under_the_key() {
     let ctx = TestContext::new();
     let (checking_id, expenses_id) = setup_accounts(&ctx);
     let tx_id = add_with(
@@ -964,9 +964,9 @@ fn amend_clear_meta_removes_every_entry_under_the_key() {
     );
 
     ctx.command()
-        .args(["transaction", "amend", &tx_id, "--clear-meta", "note"])
+        .args(["transaction", "edit", &tx_id, "--clear-meta", "note"])
         .output()
-        .expect("amend");
+        .expect("edit");
 
     assert_eq!(
         metadata_of(&reload(&ctx, &tx_id)),
@@ -1007,7 +1007,7 @@ fn list_renders_metadata_and_marks_what_did_not_fit() {
 }
 
 #[test]
-fn amend_rejects_setting_and_clearing_one_key() {
+fn edit_rejects_setting_and_clearing_one_key() {
     let ctx = TestContext::new();
     let (checking_id, expenses_id) = setup_accounts(&ctx);
     let tx_id = add_with(&ctx, &checking_id, &expenses_id, &["--meta", "note=first"]);
@@ -1015,7 +1015,7 @@ fn amend_rejects_setting_and_clearing_one_key() {
     let mut cmd = ctx.command();
     cmd.args([
         "transaction",
-        "amend",
+        "edit",
         &tx_id,
         "--meta",
         "note=second",
@@ -1054,13 +1054,13 @@ fn an_account_key_resolves_a_path_to_the_account_it_names() {
     ctx.command()
         .args([
             "transaction",
-            "amend",
+            "edit",
             &tx_id,
             "--meta",
             "reimburse-to=Assets:Checking",
         ])
         .output()
-        .expect("amend");
+        .expect("edit");
 
     assert_eq!(
         metadata_of(&reload(&ctx, &tx_id)),
@@ -1081,13 +1081,13 @@ fn an_account_key_flags_a_path_naming_no_account() {
     ctx.command()
         .args([
             "transaction",
-            "amend",
+            "edit",
             &tx_id,
             "--meta",
             "reimburse-to=Assets:NoSuchAccount",
         ])
         .output()
-        .expect("amend");
+        .expect("edit");
 
     let json: serde_json::Value =
         serde_json::from_slice(&reload(&ctx, &tx_id)).expect("valid JSON");
@@ -1117,13 +1117,13 @@ fn list_renders_an_account_entry_as_its_path() {
     ctx.command()
         .args([
             "transaction",
-            "amend",
+            "edit",
             &tx_id,
             "--meta",
             "reimburse-to=Assets:Checking",
         ])
         .output()
-        .expect("amend");
+        .expect("edit");
 
     let out = ctx
         .command()
@@ -1142,7 +1142,7 @@ fn list_renders_an_account_entry_as_its_path() {
 }
 
 #[test]
-fn amend_appends_a_key_the_transaction_did_not_carry() {
+fn edit_appends_a_key_the_transaction_did_not_carry() {
     let ctx = TestContext::new();
     let (checking_id, expenses_id) = setup_accounts(&ctx);
     let tx_id = add_with(
@@ -1153,9 +1153,9 @@ fn amend_appends_a_key_the_transaction_did_not_carry() {
     );
 
     ctx.command()
-        .args(["transaction", "amend", &tx_id, "--meta", "invoice=1502"])
+        .args(["transaction", "edit", &tx_id, "--meta", "invoice=1502"])
         .output()
-        .expect("amend");
+        .expect("edit");
 
     assert_eq!(
         metadata_of(&reload(&ctx, &tx_id)),
@@ -2438,4 +2438,25 @@ fn a_refused_edit_creates_no_tag(#[case] extra: &[&str]) {
     assert!(!out.status.success(), "the edit is refused");
     let paths = tag_paths(&ctx);
     assert!(!paths.iter().any(|p| p == "x:new"), "{paths:?}");
+}
+
+#[test]
+fn edit_refuses_a_date_after_a_posting_flag() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let tx = add_groceries(&ctx);
+    let id = id_of(&tx);
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "edit",
+        &id,
+        "--set",
+        "Expenses:Groceries",
+        "--tag",
+        "person:a",
+        "--date",
+        "2026-04-01",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
 }

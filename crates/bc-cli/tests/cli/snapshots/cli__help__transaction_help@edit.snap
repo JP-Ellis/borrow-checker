@@ -5,7 +5,7 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Change the tags, metadata or postings of an existing transaction.
+Change the date, description, metadata, tags or postings of an existing transaction.
 
 Find the transaction by ID, or by --find ACCOUNT DATE [AMOUNT]. Flags before the first --add, --set or --remove change the transaction; flags after one change that posting, until the next. A --set changes only what it names, and postings no flag names are kept unchanged.
 
@@ -42,6 +42,12 @@ Options:
 Transaction and posting flags:
       --find <ACCOUNT> <DATE> [AMOUNT]
           Find the transaction by a posting on exactly ACCOUNT dated DATE, adding its signed AMOUNT when several match.
+
+      --date <DATE>
+          The transaction's date (YYYY-MM-DD). Goes before the first posting.
+
+      --description <TEXT>
+          The transaction's description. Goes before the first posting.
 
       --add <ACCOUNT> [AMOUNT] [COMMODITY]
           Open a new posting on ACCOUNT (path or ID). Without AMOUNT and COMMODITY its amount is elided. Posting flags after it apply to it.

@@ -282,6 +282,8 @@ impl FlagSet for EditFlags {
     const FLAGS: &'static [Flag] = &[
         Flag::Id,
         Flag::Find,
+        Flag::Date,
+        Flag::Description,
         Flag::Add,
         Flag::Set,
         Flag::Remove,
