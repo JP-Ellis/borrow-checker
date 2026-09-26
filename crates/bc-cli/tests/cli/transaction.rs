@@ -2043,6 +2043,65 @@ fn a_refused_add_creates_no_tag_for_a_lot_date_without_a_cost() {
     assert!(!paths.iter().any(|p| p == "x:new"), "{paths:?}");
 }
 
+#[test]
+fn a_refused_add_creates_no_tag_for_two_elided_postings() {
+    let ctx = TestContext::new();
+    let (checking, expenses) = setup_accounts(&ctx);
+    let out = ctx
+        .command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "Groceries",
+            "--posting",
+            &checking,
+            "--posting",
+            &expenses,
+            "--tag",
+            "x:new",
+        ])
+        .output()
+        .expect("add");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "the add is refused");
+    assert!(stderr.contains("two or more elided postings"), "{stderr}");
+    let paths = tag_paths(&ctx);
+    assert!(!paths.iter().any(|p| p == "x:new"), "{paths:?}");
+}
+
+#[test]
+fn add_names_the_posting_with_a_malformed_amount() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let out = ctx
+        .command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-01",
+            "--description",
+            "Groceries",
+            "--posting",
+            "Assets:Checking",
+            "abc",
+            "AUD",
+            "--posting",
+            "Expenses:Groceries",
+        ])
+        .output()
+        .expect("add");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "the add is refused");
+    assert!(
+        stderr.contains("--posting Assets:Checking abc AUD: invalid amount 'abc'"),
+        "{stderr}"
+    );
+}
+
 // MARK: scoped edit flags
 
 /// The `id` of a transaction's JSON.
@@ -2270,6 +2329,7 @@ fn set_without_a_modifier_is_refused() {
 #[case::unknown_set_account(&["--set", "Expenses:Groceries", "--account", "Expenses:NoSuchAccount", "--tag", "x:new"])]
 #[case::unknown_selector(&["--set", "Expenses:NoSuchAccount", "--tag", "x:new"])]
 #[case::lot_date_without_a_cost(&["--set", "Expenses:Groceries", "--lot-date", "2026-03-01", "--tag", "x:new"])]
+#[case::two_elided(&["--add", "Expenses:Groceries", "--add", "Assets:Checking", "--tag", "x:new"])]
 fn a_refused_edit_creates_no_tag(#[case] extra: &[&str]) {
     let ctx = TestContext::new();
     setup_accounts(&ctx);
