@@ -6,4 +6,4 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: no transaction on Assets:Checking dated 2026-03-02
+error: --find: no transaction on Assets:Checking dated 2026-03-02

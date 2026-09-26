@@ -1262,14 +1262,14 @@ fn edit_adds_a_posting_by_selector() {
     cmd.args([
         "transaction",
         "edit",
-        "--account",
+        "--find",
         "Assets:Checking",
-        "--date",
         "2026-03-01",
-        "--amount",
         "-50",
-        "--add-posting",
-        "Expenses:Household:20.00:AUD",
+        "--add",
+        "Expenses:Household",
+        "20.00",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 
@@ -1288,12 +1288,16 @@ fn edit_set_posting_keeps_the_posting_id() {
         "--json",
         "transaction",
         "edit",
-        "--account",
+        "--find",
         "Assets:Checking",
-        "--date",
         "2026-03-01",
-        "--set-posting",
-        "Expenses:Groceries=Expenses:Household:50.00:AUD",
+        "--set",
+        "Expenses:Groceries",
+        "--account",
+        "Expenses:Household",
+        "--amount",
+        "50.00",
+        "AUD",
     ]));
     assert_eq!(posting_fields(&edited, "id"), posting_fields(&added, "id"));
     assert_eq!(
@@ -1318,9 +1322,11 @@ fn edit_by_transaction_id_removes_a_posting() {
         "transaction",
         "edit",
         &id,
-        "--add-posting",
-        "Expenses:Household:50.00:AUD",
-        "--remove-posting",
+        "--add",
+        "Expenses:Household",
+        "50.00",
+        "AUD",
+        "--remove",
         "Expenses:Groceries",
     ]));
     let account_ids = posting_fields(&edited, "account_id");
@@ -1344,12 +1350,13 @@ fn edit_with_no_matching_transaction() {
     cmd.args([
         "transaction",
         "edit",
-        "--account",
+        "--find",
         "Assets:Checking",
-        "--date",
         "2026-03-02",
-        "--add-posting",
-        "Expenses:Groceries:20.00:AUD",
+        "--add",
+        "Expenses:Groceries",
+        "20.00",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -1364,12 +1371,13 @@ fn edit_with_two_matching_transactions() {
     cmd.args([
         "transaction",
         "edit",
-        "--account",
+        "--find",
         "Assets:Checking",
-        "--date",
         "2026-03-01",
-        "--add-posting",
-        "Expenses:Groceries:20.00:AUD",
+        "--add",
+        "Expenses:Groceries",
+        "20.00",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -1409,8 +1417,10 @@ fn edit_several_postings_match_error() {
         "transaction",
         "edit",
         &id,
-        "--remove-posting",
-        "Expenses:Groceries:10.00:AUD",
+        "--remove",
+        "Expenses:Groceries",
+        "10.00",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -1424,9 +1434,8 @@ fn edit_without_an_operation() {
     cmd.args([
         "transaction",
         "edit",
-        "--account",
+        "--find",
         "Assets:Checking",
-        "--date",
         "2026-03-01",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
@@ -1442,13 +1451,14 @@ fn edit_rejects_a_posting_named_twice() {
     cmd.args([
         "transaction",
         "edit",
-        "--account",
+        "--find",
         "Assets:Checking",
-        "--date",
         "2026-03-01",
-        "--set-posting",
-        "Expenses:Groceries=Expenses:Household:30.00:AUD",
-        "--remove-posting",
+        "--set",
+        "Expenses:Groceries",
+        "--account",
+        "Expenses:Household",
+        "--remove",
         "Expenses:Groceries",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
@@ -1590,8 +1600,13 @@ async fn edit_set_posting_on_an_imported_leg_keeps_id_and_reference() {
         "transaction",
         "edit",
         &tx_id,
-        "--set-posting",
-        &format!("{groceries_posting}=Expenses:Household:45.00:AUD"),
+        "--set",
+        &groceries_posting,
+        "--account",
+        "Expenses:Household",
+        "--amount",
+        "45.00",
+        "AUD",
     ]));
 
     // The posting keeps its ID and moves to Household at its new amount.
@@ -1657,8 +1672,10 @@ async fn edit_add_posting_records_posting_added() {
         "transaction",
         "edit",
         &tx_id,
-        "--add-posting",
-        "Expenses:Household:20.00:AUD",
+        "--add",
+        "Expenses:Household",
+        "20.00",
+        "AUD",
     ]));
 
     let pool = open_pool(&ctx).await;
@@ -1706,7 +1723,7 @@ async fn edit_remove_posting_on_an_imported_leg_warns_and_tombstones() {
             "transaction",
             "edit",
             &tx_id,
-            "--remove-posting",
+            "--remove",
             &groceries_posting,
         ])
         .output()
@@ -1751,12 +1768,13 @@ fn edit_json_output_snapshot() {
         "--json",
         "transaction",
         "edit",
-        "--account",
+        "--find",
         "Assets:Checking",
-        "--date",
         "2026-03-01",
-        "--add-posting",
-        "Expenses:Household:20.00:AUD",
+        "--add",
+        "Expenses:Household",
+        "20.00",
+        "AUD",
     ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
@@ -2023,4 +2041,271 @@ fn a_refused_add_creates_no_tag_for_a_lot_date_without_a_cost() {
     assert!(!out.status.success(), "the add is refused");
     let paths = tag_paths(&ctx);
     assert!(!paths.iter().any(|p| p == "x:new"), "{paths:?}");
+}
+
+// MARK: scoped edit flags
+
+/// The `id` of a transaction's JSON.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn id_of(tx: &serde_json::Value) -> String {
+    tx.get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("id")
+        .to_owned()
+}
+
+#[test]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexing JSON yields null for a missing field, which fails the assertion"
+)]
+fn edit_tags_one_of_two_new_legs_on_one_account() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let household = create_household(&ctx);
+    let id = id_of(&add_groceries(&ctx));
+    let edited = json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "edit",
+        &id,
+        "--add",
+        &household,
+        "5.00",
+        "AUD",
+        "--add",
+        &household,
+        "2.00",
+        "AUD",
+        "--tag",
+        "person:a",
+    ]));
+    let tagged: Vec<&str> = edited["postings"]
+        .as_array()
+        .expect("postings")
+        .iter()
+        .filter(|p| p["account_id"] == household.as_str())
+        .filter(|p| p["tag_ids"].as_array().is_some_and(|t| !t.is_empty()))
+        .filter_map(|p| p["amount"]["value"].as_str())
+        .collect();
+    assert_eq!(tagged, vec!["2.00"]);
+}
+
+#[test]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexing JSON yields null for a missing field, which fails the assertion"
+)]
+fn set_changes_only_what_it_names() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let id = id_of(&add_groceries(&ctx));
+    ctx.command()
+        .args([
+            "transaction",
+            "edit",
+            &id,
+            "--set",
+            "Expenses:Groceries",
+            "--meta",
+            "note=first",
+            "--meta",
+            "receipt=A1",
+            "--tag",
+            "person:a",
+            "--tag",
+            "person:b",
+        ])
+        .assert()
+        .success();
+    let edited = json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "edit",
+        &id,
+        "--set",
+        "Expenses:Groceries",
+        "--clear-meta",
+        "note",
+        "--untag",
+        "person:a",
+        "--untag",
+        "never:made",
+    ]));
+    let leg = edited["postings"]
+        .as_array()
+        .expect("postings")
+        .iter()
+        .find(|p| p["metadata"].as_array().is_some_and(|m| !m.is_empty()))
+        .expect("leg");
+    assert_eq!(leg["metadata"].as_array().map(Vec::len), Some(1));
+    assert_eq!(leg["metadata"][0]["key"], "receipt");
+    assert_eq!(leg["tag_ids"].as_array().map(Vec::len), Some(1));
+    assert_eq!(leg["amount"]["value"], "30.00", "the amount is kept");
+    let paths = tag_paths(&ctx);
+    assert!(
+        !paths.iter().any(|p| p == "never:made"),
+        "--untag of a missing path creates nothing: {paths:?}"
+    );
+}
+
+#[test]
+fn edit_untag_of_an_unknown_tag_id_is_an_error() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let id = id_of(&add_groceries(&ctx));
+    let unknown = bc_models::TagId::new().to_string();
+    let out = ctx
+        .command()
+        .args([
+            "transaction",
+            "edit",
+            &id,
+            "--set",
+            "Expenses:Groceries",
+            "--untag",
+            &unknown,
+        ])
+        .output()
+        .expect("edit");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "the edit is refused");
+    assert!(
+        stderr.contains(&format!("no tag has the ID '{unknown}'")),
+        "{stderr}"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexing JSON yields null for a missing field, which fails the assertion"
+)]
+fn edit_sets_transaction_tags_and_metadata() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let id = id_of(&add_groceries(&ctx));
+    let edited = json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "edit",
+        &id,
+        "--meta",
+        "invoice=1502",
+        "--tag",
+        "trip:example",
+    ]));
+    assert_eq!(edited["tag_ids"].as_array().map(Vec::len), Some(1));
+    assert!(edited["metadata"].to_string().contains("1502"));
+    let warnings = edited["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str() == Some("created tag 'trip:example'")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn edit_refuses_one_posting_opened_twice() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let id = id_of(&add_groceries(&ctx));
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "edit",
+        &id,
+        "--set",
+        "Expenses:Groceries",
+        "--tag",
+        "person:a",
+        "--remove",
+        "Expenses:Groceries",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+    let paths = tag_paths(&ctx);
+    assert!(
+        !paths.iter().any(|p| p == "person:a"),
+        "a refused edit creates no tag: {paths:?}"
+    );
+}
+
+#[test]
+fn edit_refuses_one_posting_set_twice() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let id = id_of(&add_groceries(&ctx));
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "edit",
+        &id,
+        "--set",
+        "Expenses:Groceries",
+        "--tag",
+        "person:a",
+        "--set",
+        "Expenses:Groceries",
+        "30.00",
+        "AUD",
+        "--meta",
+        "note=x",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn set_without_a_modifier_is_refused() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let id = id_of(&add_groceries(&ctx));
+    let mut cmd = ctx.command();
+    cmd.args(["transaction", "edit", &id, "--set", "Expenses:Groceries"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[rstest::rstest]
+#[case::unknown_new_account(&["--add", "Expenses:NoSuchAccount", "5.00", "AUD", "--tag", "x:new"])]
+#[case::unknown_set_account(&["--set", "Expenses:Groceries", "--account", "Expenses:NoSuchAccount", "--tag", "x:new"])]
+#[case::unknown_selector(&["--set", "Expenses:NoSuchAccount", "--tag", "x:new"])]
+#[case::lot_date_without_a_cost(&["--set", "Expenses:Groceries", "--lot-date", "2026-03-01", "--tag", "x:new"])]
+fn a_refused_edit_creates_no_tag(#[case] extra: &[&str]) {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let id = id_of(&add_groceries(&ctx));
+    let out = ctx
+        .command()
+        .args(["transaction", "edit", &id])
+        .args(extra)
+        .output()
+        .expect("edit");
+    assert!(!out.status.success(), "the edit is refused");
+    let paths = tag_paths(&ctx);
+    assert!(!paths.iter().any(|p| p == "x:new"), "{paths:?}");
+}
+
+#[test]
+fn a_failed_edit_still_reports_the_tags_it_created() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let id = id_of(&add_groceries(&ctx));
+    let out = ctx
+        .command()
+        .args([
+            "transaction",
+            "edit",
+            &id,
+            "--tag",
+            "x:new",
+            "--remove",
+            "Assets:Checking",
+            "--remove",
+            "Expenses:Groceries",
+        ])
+        .output()
+        .expect("edit");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "an empty transaction is refused");
+    assert!(stderr.contains("warning: created tag 'x:new'"), "{stderr}");
 }

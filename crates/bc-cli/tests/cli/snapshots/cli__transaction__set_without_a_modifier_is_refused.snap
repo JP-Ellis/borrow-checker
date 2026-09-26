@@ -6,4 +6,4 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: nothing to edit: give --add, --set, --remove, or a transaction flag
+error: --set Expenses:Groceries: nothing to change; name what changes after it

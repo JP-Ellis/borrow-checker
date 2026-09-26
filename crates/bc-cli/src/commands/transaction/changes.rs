@@ -187,7 +187,6 @@ impl Changes {
     }
 
     /// Whether no modifier was given.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by transaction edit"))]
     pub(super) fn is_empty(&self) -> bool {
         *self == Self::default()
     }
@@ -199,14 +198,12 @@ pub(super) struct Resolved {
     /// The typed changes.
     pub changes: Changes,
     /// `--account`, resolved.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by transaction edit"))]
     pub account: Option<bc_models::AccountId>,
     /// Each `--meta`, typed by the key registry, in order.
     pub entries: Vec<bc_models::MetaEntry>,
     /// Each `--tag`, resolved.
     pub tags: Vec<bc_models::TagId>,
     /// Each `--untag` that names an existing tag.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by transaction edit"))]
     pub untags: Vec<bc_models::TagId>,
 }
 
@@ -302,7 +299,6 @@ pub(super) fn new_posting(
 /// # Errors
 ///
 /// Returns [`CliError::Arg`] when a lot date or label has no cost to attach to.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by transaction edit"))]
 pub(super) fn set_posting(
     stored: &bc_models::Posting,
     resolved: &Resolved,

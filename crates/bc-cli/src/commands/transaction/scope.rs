@@ -14,7 +14,6 @@ use crate::error::CliResult;
 
 /// One scoped flag, named by its long form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "used by transaction edit"))]
 pub(super) enum Flag {
     /// `edit`'s positional transaction ID.
     Id,
@@ -277,7 +276,6 @@ impl FlagSet for AddFlags {
 
 /// The flags of `transaction edit`.
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(not(test), expect(dead_code, reason = "used by transaction edit"))]
 pub(super) struct EditFlags;
 
 impl FlagSet for EditFlags {
