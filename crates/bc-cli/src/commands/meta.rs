@@ -582,28 +582,7 @@ pub(crate) async fn entry_for(ctx: &AppContext, key: MetaKey, raw: &str) -> CliR
     Ok(MetaEntry::new(key, value))
 }
 
-/// Builds one entry per `--meta` argument, in argument order.
-///
-/// # Arguments
-///
-/// * `ctx` - The application context.
-/// * `specs` - The `--meta` arguments, as typed.
-///
-/// # Errors
-///
-/// Returns [`CliError::Arg`] for a malformed argument, and [`CliError::Core`]
-/// when the registry or the account tree cannot be read.
-pub(crate) async fn entries_for(ctx: &AppContext, specs: &[String]) -> CliResult<Vec<MetaEntry>> {
-    let mut entries = Vec::with_capacity(specs.len());
-    for spec in specs {
-        let (key, raw) = parse_meta_arg(spec)?;
-        entries.push(entry_for(ctx, key, &raw).await?);
-    }
-    Ok(entries)
-}
-
-/// Applies an amendment's `--meta` and `--clear-meta` arguments to a stored
-/// list.
+/// Applies a scope's `--meta` and `--clear-meta` arguments to a stored list.
 ///
 /// A key named by `entries` keeps the position its first stored entry held,
 /// with every stored entry under it dropped and every new one inserted there;
