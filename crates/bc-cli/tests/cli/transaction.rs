@@ -1953,8 +1953,10 @@ fn add_rejects_a_posting_flag_before_any_posting() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
-#[test]
-fn a_refused_add_creates_no_tag_for_an_unknown_account() {
+#[rstest::rstest]
+#[case::path("Expenses:NoSuchAccount".to_owned())]
+#[case::id(bc_models::AccountId::new().to_string())]
+fn a_refused_add_creates_no_tag_for_an_unknown_account(#[case] unknown: String) {
     let ctx = TestContext::new();
     let (checking, _) = setup_accounts(&ctx);
     let out = ctx
@@ -1971,7 +1973,7 @@ fn a_refused_add_creates_no_tag_for_an_unknown_account() {
             "-5.00",
             "AUD",
             "--posting",
-            "Expenses:NoSuchAccount",
+            &unknown,
             "5.00",
             "AUD",
             "--tag",
@@ -1980,6 +1982,11 @@ fn a_refused_add_creates_no_tag_for_an_unknown_account() {
         .output()
         .expect("add");
     assert!(!out.status.success(), "the add is refused");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!("no account '{unknown}'")),
+        "{stderr}"
+    );
     let paths = tag_paths(&ctx);
     assert!(!paths.iter().any(|p| p == "x:new"), "{paths:?}");
 }
