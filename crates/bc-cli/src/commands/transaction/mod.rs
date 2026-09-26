@@ -283,16 +283,14 @@ async fn add(ctx: &AppContext, args: AddArgs) -> CliResult<()> {
         else {
             continue;
         };
-        let account_id = lookup(account).ok_or_else(|| {
-            crate::error::CliError::Arg(format!("{}: no account '{account}'", scope.label))
-        })?;
-        let amount = written
-            .as_ref()
-            .map(|[value, code]| changes::amount_of(value, code))
-            .transpose()?;
-        changes::cost_of(None, &leg, &scope.label)?;
+        let (account_id, amount) = new_leg(&scope.label, account, written.as_ref(), &leg, &lookup)?;
         legs.push((&scope.label, account_id, amount, leg));
     }
+    at_most_one_elided(
+        legs.iter()
+            .filter(|(_, _, amount, _)| amount.is_none())
+            .count(),
+    )?;
 
     let all: Vec<&changes::Changes> = core::iter::once(&tx_changes)
         .chain(legs.iter().map(|(_, _, _, leg)| leg))
@@ -402,6 +400,46 @@ async fn amend(
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         println!("Amended transaction: {id}");
+    }
+    Ok(())
+}
+
+/// Checks a new leg's opener and cost flags, without creating any tag.
+///
+/// Returns the leg's account and its amount, `None` when elided.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError::Arg`], prefixed with `label`, when the
+/// account is not found, the amount is malformed, or a lot date or label has
+/// no cost.
+fn new_leg(
+    label: &str,
+    account: &str,
+    written: Option<&[String; 2]>,
+    typed: &changes::Changes,
+    lookup: &spec::Lookup<'_>,
+) -> CliResult<(bc_models::AccountId, Option<bc_models::Amount>)> {
+    let account_id = lookup(account)
+        .ok_or_else(|| crate::error::CliError::Arg(format!("{label}: no account '{account}'")))?;
+    let amount = written
+        .map(|[value, code]| changes::amount_of(value, code))
+        .transpose()
+        .map_err(|e| crate::error::CliError::Arg(format!("{label}: {e}")))?;
+    changes::cost_of(None, typed, label)?;
+    Ok((account_id, amount))
+}
+
+/// Refuses a transaction left with `elided` elided postings when that is two
+/// or more, in the words the transaction service uses.
+///
+/// The service refuses the same, but only after tags are created; this check
+/// runs before.
+fn at_most_one_elided(elided: usize) -> CliResult<()> {
+    if elided >= 2 {
+        return Err(crate::error::CliError::Arg(
+            "two or more elided postings".into(),
+        ));
     }
     Ok(())
 }
@@ -527,15 +565,7 @@ fn check_scope(
             account,
             amount: written,
         } => {
-            let account_id = lookup(account).ok_or_else(|| {
-                crate::error::CliError::Arg(format!("{label}: no account '{account}'"))
-            })?;
-            let amount = written
-                .as_ref()
-                .map(|[value, code]| changes::amount_of(value, code))
-                .transpose()
-                .map_err(in_scope)?;
-            changes::cost_of(None, typed, label)?;
+            let (account_id, amount) = new_leg(label, account, written.as_ref(), typed, lookup)?;
             Ok(Step::Add(account_id, amount))
         }
         scope::Opener::Set(tokens) => {
@@ -553,6 +583,33 @@ fn check_scope(
         }
         scope::Opener::Remove(tokens) => Ok(Step::Remove(select(tokens)?)),
     }
+}
+
+/// How many elided postings `current` holds once `steps` apply.
+///
+/// A removed posting no longer counts, a `--set` with `--amount` gives its
+/// posting an amount, and a new leg without an amount adds one.
+fn elided_after(
+    current: &bc_models::Transaction,
+    steps: &[(&scope::Scope, changes::Changes, Step)],
+) -> usize {
+    let kept = current
+        .postings()
+        .iter()
+        .filter(|p| p.amount().is_none())
+        .filter(|p| {
+            !steps.iter().any(|(_, typed, step)| match step {
+                Step::Remove(id) => id == p.id(),
+                Step::Set(id) => id == p.id() && typed.amount.is_some(),
+                Step::Add(..) => false,
+            })
+        })
+        .count();
+    let added = steps
+        .iter()
+        .filter(|(_, _, step)| matches!(step, Step::Add(_, None)))
+        .count();
+    kept.saturating_add(added)
 }
 
 /// Builds the edit `steps` describe, writes it, and returns its warnings.
@@ -656,6 +713,7 @@ async fn edit(ctx: &AppContext, args: EditArgs) -> CliResult<()> {
         }),
         &describe,
     )?;
+    at_most_one_elided(elided_after(&current, &steps))?;
 
     let all: Vec<&changes::Changes> = core::iter::once(&tx_changes)
         .chain(steps.iter().map(|(_, typed, _)| typed))
