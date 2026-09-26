@@ -1758,6 +1758,41 @@ async fn edit_records_posting_tag_changes_and_whole_new_legs() {
     );
 }
 
+#[rstest::rstest]
+#[case::date(&["--date", "2026-03-05"], "2026-03-05", "Grocery shopping")]
+#[case::description(&["--description", "Weekly shop"], "2026-03-01", "Weekly shop")]
+#[case::both(
+    &["--date", "2026-03-05", "--description", "Weekly shop"],
+    "2026-03-05",
+    "Weekly shop"
+)]
+fn edit_changes_the_date_and_description(
+    #[case] flags: &[&str],
+    #[case] date: &str,
+    #[case] description: &str,
+) {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let tx_id = id_of(&add_groceries(&ctx));
+
+    let edited = json_of(
+        ctx.command()
+            .args(["--json", "transaction", "edit", &tx_id])
+            .args(flags),
+    );
+
+    assert_eq!(
+        edited.get("date").and_then(serde_json::Value::as_str),
+        Some(date)
+    );
+    assert_eq!(
+        edited
+            .get("description")
+            .and_then(serde_json::Value::as_str),
+        Some(description)
+    );
+}
+
 #[tokio::test]
 async fn edit_date_records_transaction_date_changed() {
     let ctx = TestContext::new();
