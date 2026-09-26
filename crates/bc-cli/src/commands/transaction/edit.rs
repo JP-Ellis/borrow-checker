@@ -151,7 +151,7 @@ pub(super) fn named_once<'i>(
                 .find(|p| p.id() == id)
                 .map_or_else(|| id.to_string(), describe);
             return Err(CliError::Arg(format!(
-                "posting '{label}' is named more than once by --set and --remove"
+                "posting '{label}' is named by more than one --set or --remove"
             )));
         }
     }
@@ -520,7 +520,10 @@ mod tests {
             }
         };
         let err = apply(&tx, &ops, &describe).expect_err("twice").to_string();
-        assert!(err.contains("named more than once"), "got: {err}");
+        assert!(
+            err.contains("named by more than one --set or --remove"),
+            "got: {err}"
+        );
         assert!(err.contains(&a.account_id().to_string()), "names it: {err}");
     }
 

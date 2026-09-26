@@ -6,4 +6,4 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: --posting [ACCOUNT_ID] -2 AAPL: --lot-date and --lot-label need a cost
+error: --posting [ACCOUNT_ID] -2 AAPL: --lot-date and --lot-label need a cost; selecting a lot by date or label is not supported yet (#518)

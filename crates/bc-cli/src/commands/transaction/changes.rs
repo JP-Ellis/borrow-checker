@@ -248,7 +248,8 @@ pub(super) fn cost_of(
         (None, Some(held)) => held.basis().clone(),
         (None, None) => {
             return Err(CliError::Arg(format!(
-                "{context}: --lot-date and --lot-label need a cost"
+                "{context}: --lot-date and --lot-label need a cost; selecting a lot by \
+                 date or label is not supported yet (#518)"
             )));
         }
     };
