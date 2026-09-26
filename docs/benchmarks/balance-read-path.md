@@ -378,8 +378,8 @@ decided on this basis, not inherited from the existing DDL.
 
 **There is no rebuild path from the event log, and one cannot be built today.**
 #244's acceptance criteria call for a rebuild from the event log, but the log is
-lossy *by design*: `TransactionAmended` does not capture posting or tag
-mutations, `AccountUpdated` carries only an id, `loan_terms` cannot be recovered
+lossy *by design*: postings an import appends to an existing transaction
+carry no event, `AccountUpdated` carries only an id, `loan_terms` cannot be recovered
 by replay ("the projection DB is canonical"), and `ImportBatchDiscarded` is
 deliberately excluded from replay. The rebuild source must therefore be the
 **postings table** — i.e. `default_balances` itself, which conveniently doubles
