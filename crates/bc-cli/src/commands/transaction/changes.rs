@@ -436,6 +436,26 @@ mod tests {
         assert_eq!(changes.tags, vec!["person:a".to_owned()]);
     }
 
+    #[rstest]
+    #[case::cost(Flag::Cost, true, bc_models::Quote::PerUnit(aud(dec!(105))))]
+    #[case::total_cost(Flag::TotalCost, true, bc_models::Quote::Total(aud(dec!(105))))]
+    #[case::price(Flag::Price, false, bc_models::Quote::PerUnit(aud(dec!(105))))]
+    #[case::total_price(Flag::TotalPrice, false, bc_models::Quote::Total(aud(dec!(105))))]
+    fn each_quote_flag_types_its_quote(
+        #[case] flag: Flag,
+        #[case] is_cost: bool,
+        #[case] expected: bc_models::Quote,
+    ) {
+        let changes = Changes::from_written(&[w(flag, &["105", "AUD"])], "--add X").expect("types");
+        let (quote, other) = if is_cost {
+            (changes.cost, changes.price)
+        } else {
+            (changes.price, changes.cost)
+        };
+        assert_eq!(quote, Some(expected));
+        assert_eq!(other, None);
+    }
+
     #[test]
     fn is_empty_only_without_modifiers() {
         assert!(
