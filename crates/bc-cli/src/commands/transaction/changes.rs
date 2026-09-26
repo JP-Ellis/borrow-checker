@@ -219,6 +219,8 @@ pub(super) fn retag(
 }
 
 /// The cost `changes` leave on a leg that held `stored`.
+///
+/// A lot date or label the changes do not name comes from `stored`.
 fn cost_of(
     stored: Option<&bc_models::Cost>,
     changes: &Changes,
@@ -228,23 +230,24 @@ fn cost_of(
         return Ok(None);
     }
     let restated = changes.lot_date.is_some() || changes.lot_label.is_some();
-    let (basis, date, label) = match (&changes.cost, stored) {
-        (Some(basis), _) => (basis.clone(), changes.lot_date, changes.lot_label.clone()),
-        (None, Some(held)) if restated => (
-            held.basis().clone(),
-            changes.lot_date.or(held.date()),
-            changes
-                .lot_label
-                .clone()
-                .or_else(|| held.label().map(ToOwned::to_owned)),
-        ),
+    let basis = match (&changes.cost, stored) {
+        (Some(basis), _) => basis.clone(),
         (None, held) if !restated => return Ok(held.cloned()),
-        (None, _) => {
+        (None, Some(held)) => held.basis().clone(),
+        (None, None) => {
             return Err(CliError::Arg(format!(
                 "{context}: --lot-date and --lot-label need a cost"
             )));
         }
     };
+    let date = changes
+        .lot_date
+        .or_else(|| stored.and_then(bc_models::Cost::date));
+    let label = changes.lot_label.clone().or_else(|| {
+        stored
+            .and_then(bc_models::Cost::label)
+            .map(ToOwned::to_owned)
+    });
     Ok(Some(
         bc_models::Cost::builder()
             .basis(basis)
@@ -433,9 +436,14 @@ mod tests {
                 bc_models::Cost::builder()
                     .basis(bc_models::Quote::PerUnit(aud(dec!(1))))
                     .date(date(2026, 1, 1))
+                    .label("lot-a")
                     .build(),
             )
             .price(bc_models::Quote::PerUnit(aud(dec!(2))))
+            .metadata(bc_models::Metadata::new(vec![bc_models::MetaEntry::new(
+                bc_models::MetaKey::new("note").expect("valid key"),
+                bc_models::MetaValue::Text("a".to_owned()),
+            )]))
             .tag_ids(vec![bc_models::TagId::new()])
             .spread_from(date(2026, 1, 1))
             .spread_until(date(2026, 1, 31))
@@ -457,7 +465,22 @@ mod tests {
         assert_eq!(after.price(), before.price());
         assert_eq!(after.tag_ids(), before.tag_ids());
         assert_eq!(after.spread_from(), before.spread_from());
+        assert_eq!(after.spread_until(), before.spread_until());
         assert_eq!(after.metadata(), before.metadata());
+    }
+
+    #[test]
+    fn a_new_basis_keeps_the_stored_lot_date_and_label() {
+        let before = stored();
+        let changes = Changes {
+            cost: Some(bc_models::Quote::PerUnit(aud(dec!(2)))),
+            ..Changes::default()
+        };
+        let after = set_posting(&before, &resolved(changes), "--set X").expect("sets");
+        let cost = after.cost().expect("cost kept");
+        assert_eq!(cost.basis(), &bc_models::Quote::PerUnit(aud(dec!(2))));
+        assert_eq!(cost.date(), Some(date(2026, 1, 1)));
+        assert_eq!(cost.label(), Some("lot-a"));
     }
 
     #[test]
