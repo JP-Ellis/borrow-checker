@@ -305,12 +305,13 @@ pub(super) fn set_posting(
     context: &str,
 ) -> CliResult<bc_models::Posting> {
     let changes = &resolved.changes;
-    let spread = if changes.no_spread {
-        None
+    // Each stored half is kept on its own, so a half-open spread survives.
+    let (spread_from, spread_until) = if changes.no_spread {
+        (None, None)
+    } else if let Some((from, until)) = changes.spread {
+        (Some(from), Some(until))
     } else {
-        changes
-            .spread
-            .or(stored.spread_from().zip(stored.spread_until()))
+        (stored.spread_from(), stored.spread_until())
     };
     let price = if changes.no_price {
         None
@@ -334,8 +335,8 @@ pub(super) fn set_posting(
             &changes.clear_meta,
         ))
         .tag_ids(retag(stored.tag_ids(), &resolved.tags, &resolved.untags))
-        .maybe_spread_from(spread.map(|(from, _)| from))
-        .maybe_spread_until(spread.map(|(_, until)| until))
+        .maybe_spread_from(spread_from)
+        .maybe_spread_until(spread_until)
         .build())
 }
 
@@ -503,6 +504,23 @@ mod tests {
         assert_eq!(after.spread_from(), before.spread_from());
         assert_eq!(after.spread_until(), before.spread_until());
         assert_eq!(after.metadata(), before.metadata());
+    }
+
+    #[test]
+    fn set_keeps_a_half_open_spread() {
+        let before = bc_models::Posting::builder()
+            .id(bc_models::PostingId::new())
+            .account_id(bc_models::AccountId::new())
+            .amount(aud(dec!(50)))
+            .spread_from(date(2026, 1, 1))
+            .build();
+        let changes = Changes {
+            amount: Some(aud(dec!(45))),
+            ..Changes::default()
+        };
+        let after = set_posting(&before, &resolved(changes), "--set X").expect("sets");
+        assert_eq!(after.spread_from(), Some(date(2026, 1, 1)));
+        assert_eq!(after.spread_until(), None);
     }
 
     #[test]
