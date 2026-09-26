@@ -2423,6 +2423,8 @@ fn set_without_a_modifier_is_refused() {
 #[case::unknown_selector(&["--set", "Expenses:NoSuchAccount", "--tag", "x:new"])]
 #[case::lot_date_without_a_cost(&["--set", "Expenses:Groceries", "--lot-date", "2026-03-01", "--tag", "x:new"])]
 #[case::two_elided(&["--add", "Expenses:Groceries", "--add", "Assets:Checking", "--tag", "x:new"])]
+#[case::no_postings(&["--remove", "Assets:Checking", "--remove", "Expenses:Groceries", "--tag", "x:new"])]
+#[case::lone_elided(&["--remove", "Assets:Checking", "--remove", "Expenses:Groceries", "--add", "Expenses:Groceries", "--tag", "x:new"])]
 fn a_refused_edit_creates_no_tag(#[case] extra: &[&str]) {
     let ctx = TestContext::new();
     setup_accounts(&ctx);
@@ -2436,29 +2438,4 @@ fn a_refused_edit_creates_no_tag(#[case] extra: &[&str]) {
     assert!(!out.status.success(), "the edit is refused");
     let paths = tag_paths(&ctx);
     assert!(!paths.iter().any(|p| p == "x:new"), "{paths:?}");
-}
-
-#[test]
-fn a_failed_edit_still_reports_the_tags_it_created() {
-    let ctx = TestContext::new();
-    setup_accounts(&ctx);
-    let id = id_of(&add_groceries(&ctx));
-    let out = ctx
-        .command()
-        .args([
-            "transaction",
-            "edit",
-            &id,
-            "--tag",
-            "x:new",
-            "--remove",
-            "Assets:Checking",
-            "--remove",
-            "Expenses:Groceries",
-        ])
-        .output()
-        .expect("edit");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "an empty transaction is refused");
-    assert!(stderr.contains("warning: created tag 'x:new'"), "{stderr}");
 }

@@ -286,7 +286,8 @@ async fn add(ctx: &AppContext, args: AddArgs) -> CliResult<()> {
         let (account_id, amount) = new_leg(&scope.label, account, written.as_ref(), &leg, &lookup)?;
         legs.push((&scope.label, account_id, amount, leg));
     }
-    at_most_one_elided(
+    writable_postings(
+        legs.len(),
         legs.iter()
             .filter(|(_, _, amount, _)| amount.is_none())
             .count(),
@@ -430,18 +431,22 @@ fn new_leg(
     Ok((account_id, amount))
 }
 
-/// Refuses a transaction left with `elided` elided postings when that is two
-/// or more, in the words the transaction service uses.
+/// Refuses a transaction left with `total` postings, `elided` of them
+/// elided, when the transaction service would, in the words it uses.
 ///
 /// The service refuses the same, but only after tags are created; this check
 /// runs before.
-fn at_most_one_elided(elided: usize) -> CliResult<()> {
-    if elided >= 2 {
-        return Err(crate::error::CliError::Arg(
-            "two or more elided postings".into(),
-        ));
-    }
-    Ok(())
+fn writable_postings(total: usize, elided: usize) -> CliResult<()> {
+    let refusal = if total == 0 {
+        "transaction has no postings"
+    } else if elided >= 2 {
+        "two or more elided postings"
+    } else if elided == 1 && total == 1 {
+        "a lone elided posting carries no amount"
+    } else {
+        return Ok(());
+    };
+    Err(crate::error::CliError::Arg(refusal.into()))
 }
 
 /// Renders a posting as `Account:Path 50.00 AUD` for messages.
@@ -585,31 +590,45 @@ fn check_scope(
     }
 }
 
-/// How many elided postings `current` holds once `steps` apply.
+/// How many postings `current` holds once `steps` apply, and how many of
+/// those are elided.
 ///
 /// A removed posting no longer counts, a `--set` with `--amount` gives its
-/// posting an amount, and a new leg without an amount adds one.
-fn elided_after(
+/// posting an amount, and a new leg adds one, elided when it has no amount.
+fn postings_after(
     current: &bc_models::Transaction,
     steps: &[(&scope::Scope, changes::Changes, Step)],
-) -> usize {
-    let kept = current
+) -> (usize, usize) {
+    let kept: Vec<&bc_models::Posting> = current
         .postings()
+        .iter()
+        .filter(|p| {
+            !steps
+                .iter()
+                .any(|(_, _, step)| matches!(step, Step::Remove(id) if id == p.id()))
+        })
+        .collect();
+    let kept_elided = kept
         .iter()
         .filter(|p| p.amount().is_none())
         .filter(|p| {
-            !steps.iter().any(|(_, typed, step)| match step {
-                Step::Remove(id) => id == p.id(),
-                Step::Set(id) => id == p.id() && typed.amount.is_some(),
-                Step::Add(..) => false,
+            !steps.iter().any(|(_, typed, step)| {
+                matches!(step, Step::Set(id) if id == p.id()) && typed.amount.is_some()
             })
         })
         .count();
     let added = steps
         .iter()
+        .filter(|(_, _, step)| matches!(step, Step::Add(..)))
+        .count();
+    let added_elided = steps
+        .iter()
         .filter(|(_, _, step)| matches!(step, Step::Add(_, None)))
         .count();
-    kept.saturating_add(added)
+    (
+        kept.len().saturating_add(added),
+        kept_elided.saturating_add(added_elided),
+    )
 }
 
 /// Builds the edit `steps` describe, writes it, and returns its warnings.
@@ -713,7 +732,8 @@ async fn edit(ctx: &AppContext, args: EditArgs) -> CliResult<()> {
         }),
         &describe,
     )?;
-    at_most_one_elided(elided_after(&current, &steps))?;
+    let (total, elided) = postings_after(&current, &steps);
+    writable_postings(total, elided)?;
 
     let all: Vec<&changes::Changes> = core::iter::once(&tx_changes)
         .chain(steps.iter().map(|(_, typed, _)| typed))
