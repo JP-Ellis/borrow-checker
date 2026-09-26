@@ -461,8 +461,8 @@ fn one_or_three(written: &Written) -> CliResult<Vec<String>> {
 ///
 /// Returns [`CliError::Arg`] naming the flag and the opener it follows when
 /// a flag sits where it does not apply, when an opener names an amount
-/// without its commodity, or when `edit` names its transaction by neither or
-/// both of `ID` and `--find`.
+/// without its commodity, when `--find` is given twice, or when `edit` names
+/// its transaction by neither or both of `ID` and `--find`.
 pub(super) fn fold(written: &[Written], command: Command) -> CliResult<Plan> {
     let mut plan = Plan::default();
     for item in written {
@@ -476,7 +476,12 @@ pub(super) fn fold(written: &[Written], command: Command) -> CliResult<Plan> {
                 ));
             }
             Flag::Id => plan.id = item.values.first().cloned(),
-            Flag::Find => plan.find = Some(item.values.clone()),
+            Flag::Find => {
+                if plan.find.is_some() {
+                    return Err(CliError::Arg("--find is given twice".into()));
+                }
+                plan.find = Some(item.values.clone());
+            }
             Flag::Posting | Flag::Add => {
                 let tokens = one_or_three(item)?;
                 let mut values = tokens.into_iter();
@@ -557,17 +562,27 @@ pub(super) fn fold(written: &[Written], command: Command) -> CliResult<Plan> {
     Ok(plan)
 }
 
+/// How messages name `flag`: `--long`, or "the transaction ID" for the
+/// positional ID, which has no flag form.
+fn named(flag: Flag) -> String {
+    if flag == Flag::Id {
+        "the transaction ID".to_owned()
+    } else {
+        format!("--{}", flag.long())
+    }
+}
+
 /// The error for `item` sitting where it does not apply.
 fn misplaced(item: &Written, open: Option<&Scope>, reason: &str) -> CliError {
     match open {
         Some(scope) => CliError::Arg(format!(
-            "--{} follows {}: {reason}",
-            item.flag.long(),
+            "{} follows {}: {reason}",
+            named(item.flag),
             scope.label
         )),
         None => CliError::Arg(format!(
-            "--{} describes a posting; put it after the posting it belongs to",
-            item.flag.long()
+            "{} describes a posting; put it after the posting it belongs to",
+            named(item.flag)
         )),
     }
 }
@@ -859,6 +874,8 @@ mod tests {
     #[case::account_on_transaction(&["ID0", "--account", "Expenses:Other"], "--account describes a posting")]
     #[case::find_after_opener(&["--remove", "Expenses:Office", "--find", "Assets:Checking", "2026-03-01"], "--find follows --remove Expenses:Office")]
     #[case::find_one_value(&["--find", "Assets:Checking"], "")]
+    #[case::find_twice(&["--find", "Assets:Checking", "2026-03-01", "--find", "Assets:Checking", "2026-03-02"], "--find is given twice")]
+    #[case::id_after_opener(&["--remove", "Expenses:Office", "5", "AUD", "ID0"], "the transaction ID follows --remove Expenses:Office 5 AUD")]
     #[case::id_and_find(&["ID0", "--find", "Assets:Checking", "2026-03-01"], "give a transaction ID or --find, not both")]
     #[case::neither(&["--remove", "Expenses:Office"], "give a transaction ID, or --find")]
     fn edit_rejects(#[case] args: &[&str], #[case] expected: &str) {

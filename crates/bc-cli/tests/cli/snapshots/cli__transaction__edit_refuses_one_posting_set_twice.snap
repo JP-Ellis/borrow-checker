@@ -6,4 +6,4 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: posting 'Expenses:Groceries 30.00 AUD' is named more than once by --set and --remove
+error: posting 'Expenses:Groceries 30.00 AUD' is named by more than one --set or --remove
