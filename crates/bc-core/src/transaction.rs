@@ -1929,8 +1929,9 @@ impl Service {
     ///
     /// Loads the current state, diffs it against `updated` to produce granular
     /// events (date, description, tags and metadata, and per-posting
-    /// recategorise / amount / spread / metadata / tags / add / remove), then
-    /// atomically appends those events and rewrites the projection.
+    /// recategorise / amount / spread / metadata / tags / annotation / add /
+    /// remove), then atomically appends those events and rewrites the
+    /// projection.
     /// Persistence is permissive: an unbalanced result is allowed.
     ///
     /// # Arguments
