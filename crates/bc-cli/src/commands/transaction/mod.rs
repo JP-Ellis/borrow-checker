@@ -600,7 +600,8 @@ async fn write_edit(
     Ok(warnings)
 }
 
-/// Changes the tags, metadata or postings of an existing transaction.
+/// Changes the date, description, metadata, tags or postings of an existing
+/// transaction.
 ///
 /// Every check that needs no tag runs before any tag is created. A failure
 /// after that point still reports the tags it created.
