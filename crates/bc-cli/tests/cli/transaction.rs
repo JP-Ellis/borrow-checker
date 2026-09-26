@@ -1759,6 +1759,33 @@ async fn edit_records_posting_tag_changes_and_whole_new_legs() {
 }
 
 #[tokio::test]
+async fn edit_date_records_transaction_date_changed() {
+    let ctx = TestContext::new();
+    setup_accounts(&ctx);
+    let tx_id = id_of(&add_groceries(&ctx));
+
+    json_of(ctx.command().args([
+        "--json",
+        "transaction",
+        "edit",
+        &tx_id,
+        "--date",
+        "2026-03-05",
+    ]));
+
+    let pool = open_pool(&ctx).await;
+    let events = events_of(&pool, &tx_id).await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            bc_core::Event::TransactionDateChanged { from, to, .. }
+                if *from == jiff::civil::date(2026, 3, 1) && *to == jiff::civil::date(2026, 3, 5)
+        )),
+        "expected TransactionDateChanged 2026-03-01 -> 2026-03-05, got: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn edit_remove_posting_on_an_imported_leg_warns_and_tombstones() {
     let ctx = TestContext::new();
     let (_checking, groceries) = setup_accounts(&ctx);
