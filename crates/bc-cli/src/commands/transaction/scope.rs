@@ -9,6 +9,9 @@ use core::marker::PhantomData;
 
 use clap::ArgAction;
 
+use crate::error::CliError;
+use crate::error::CliResult;
+
 /// One scoped flag, named by its long form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Flag {
@@ -178,6 +181,47 @@ impl Flag {
             Self::NoSpread => switch(named, "Clear the spread of the posting this --set names."),
         }
     }
+
+    /// Why this modifier cannot sit at `place`, or `None` when it can.
+    fn refusal(self, place: Place) -> Option<&'static str> {
+        use Place::AddTransaction;
+        use Place::EditTransaction;
+        use Place::NewLeg;
+        use Place::RemoveLeg;
+        use Place::SetLeg;
+        match (self, place) {
+            (_, RemoveLeg) => Some("a removed leg takes no posting flags"),
+            (Self::Date | Self::Description, AddTransaction | EditTransaction)
+            | (Self::Meta | Self::Tag, _)
+            | (Self::ClearMeta | Self::Untag, EditTransaction | SetLeg)
+            | (
+                Self::Account | Self::Amount | Self::NoCost | Self::NoPrice | Self::NoSpread,
+                SetLeg,
+            )
+            | (
+                Self::Cost
+                | Self::TotalCost
+                | Self::LotDate
+                | Self::LotLabel
+                | Self::Price
+                | Self::TotalPrice
+                | Self::Spread,
+                NewLeg | SetLeg,
+            ) => None,
+            (Self::Date | Self::Description | Self::Id | Self::Find, _) => {
+                Some("transaction flags go before the first posting")
+            }
+            (Self::ClearMeta | Self::Untag, NewLeg) => Some("a new leg has nothing to remove"),
+            (Self::Account | Self::Amount, NewLeg) => {
+                Some("the opener already names the account and amount")
+            }
+            (Self::NoCost | Self::NoPrice | Self::NoSpread, NewLeg) => {
+                Some("a new leg has nothing to clear")
+            }
+            (_, AddTransaction | EditTransaction) => Some("it describes a posting"),
+            _ => Some("it does not apply here"),
+        }
+    }
 }
 
 /// One flag as written, with its values.
@@ -326,11 +370,219 @@ impl<S: FlagSet> clap::Args for Scoped<S> {
     }
 }
 
+/// The command a [`Plan`] is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "wired up by a later task"))]
+pub(super) enum Command {
+    /// `transaction add`.
+    Add,
+    /// `transaction edit`.
+    Edit,
+}
+
+/// What an opener names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "wired up by a later task"))]
+pub(super) enum Opener {
+    /// A new leg: its account, and its amount and commodity unless elided.
+    New {
+        /// The account path or ID, as typed.
+        account: String,
+        /// The amount and commodity, as typed.
+        amount: Option<[String; 2]>,
+    },
+    /// A stored leg to change, named by one or three tokens.
+    Set(Vec<String>),
+    /// A stored leg to drop, named by one or three tokens.
+    Remove(Vec<String>),
+}
+
+/// One opener and the modifiers after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "wired up by a later task"))]
+pub(super) struct Scope {
+    /// What the opener names.
+    pub opener: Opener,
+    /// The opener as typed, for messages.
+    pub label: String,
+    /// The modifiers, in order.
+    pub modifiers: Vec<Written>,
+}
+
+/// A command's scoped flags, grouped.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "wired up by a later task"))]
+pub(super) struct Plan {
+    /// `edit`'s transaction ID.
+    pub id: Option<String>,
+    /// `edit`'s `--find` values.
+    pub find: Option<Vec<String>>,
+    /// Modifiers before the first opener.
+    pub transaction: Vec<Written>,
+    /// Each opener with its modifiers, in order.
+    pub scopes: Vec<Scope>,
+}
+
+/// Where a modifier sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// Before the first opener of `add`.
+    AddTransaction,
+    /// Before the first opener of `edit`.
+    EditTransaction,
+    /// After `--posting` or `--add`.
+    NewLeg,
+    /// After `--set`.
+    SetLeg,
+    /// After `--remove`.
+    RemoveLeg,
+}
+
+/// Renders a flag and its values as typed.
+fn label(written: &Written) -> String {
+    let mut out = format!("--{}", written.flag.long());
+    for value in &written.values {
+        out.push(' ');
+        out.push_str(value);
+    }
+    out
+}
+
+/// Reads a one-or-three-token opener, refusing two.
+fn one_or_three(written: &Written) -> CliResult<Vec<String>> {
+    if written.values.len() == 2 {
+        return Err(CliError::Arg(format!(
+            "{}: an amount needs its commodity",
+            label(written)
+        )));
+    }
+    Ok(written.values.clone())
+}
+
+/// Groups `written` into a transaction scope and one scope per opener.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] naming the flag and the opener it follows when
+/// a flag sits where it does not apply, when an opener names an amount
+/// without its commodity, or when `edit` names its transaction by neither or
+/// both of `ID` and `--find`.
+#[cfg_attr(not(test), expect(dead_code, reason = "wired up by a later task"))]
+pub(super) fn fold(written: &[Written], command: Command) -> CliResult<Plan> {
+    let mut plan = Plan::default();
+    for item in written {
+        let open = plan.scopes.last();
+        match item.flag {
+            Flag::Id | Flag::Find if open.is_some() => {
+                return Err(misplaced(
+                    item,
+                    open,
+                    "transaction flags go before the first posting",
+                ));
+            }
+            Flag::Id => plan.id = item.values.first().cloned(),
+            Flag::Find => plan.find = Some(item.values.clone()),
+            Flag::Posting | Flag::Add => {
+                let tokens = one_or_three(item)?;
+                let mut values = tokens.into_iter();
+                let account = values.next().unwrap_or_default();
+                let amount = match (values.next(), values.next()) {
+                    (Some(value), Some(code)) => Some([value, code]),
+                    _ => None,
+                };
+                plan.scopes.push(Scope {
+                    opener: Opener::New { account, amount },
+                    label: label(item),
+                    modifiers: Vec::new(),
+                });
+            }
+            Flag::Set | Flag::Remove => {
+                let tokens = one_or_three(item)?;
+                let opener = if item.flag == Flag::Set {
+                    Opener::Set(tokens)
+                } else {
+                    Opener::Remove(tokens)
+                };
+                plan.scopes.push(Scope {
+                    opener,
+                    label: label(item),
+                    modifiers: Vec::new(),
+                });
+            }
+            Flag::Date
+            | Flag::Description
+            | Flag::Meta
+            | Flag::ClearMeta
+            | Flag::Tag
+            | Flag::Untag
+            | Flag::Account
+            | Flag::Amount
+            | Flag::Cost
+            | Flag::TotalCost
+            | Flag::LotDate
+            | Flag::LotLabel
+            | Flag::NoCost
+            | Flag::Price
+            | Flag::TotalPrice
+            | Flag::NoPrice
+            | Flag::Spread
+            | Flag::NoSpread => {
+                let place = match (open.map(|scope| &scope.opener), command) {
+                    (None, Command::Add) => Place::AddTransaction,
+                    (None, Command::Edit) => Place::EditTransaction,
+                    (Some(Opener::New { .. }), _) => Place::NewLeg,
+                    (Some(Opener::Set(_)), _) => Place::SetLeg,
+                    (Some(Opener::Remove(_)), _) => Place::RemoveLeg,
+                };
+                if let Some(reason) = item.flag.refusal(place) {
+                    return Err(misplaced(item, open, reason));
+                }
+                match plan.scopes.last_mut() {
+                    Some(scope) => scope.modifiers.push(item.clone()),
+                    None => plan.transaction.push(item.clone()),
+                }
+            }
+        }
+    }
+    if command == Command::Edit {
+        match (&plan.id, &plan.find) {
+            (Some(_), Some(_)) => {
+                return Err(CliError::Arg(
+                    "give a transaction ID or --find, not both".into(),
+                ));
+            }
+            (None, None) => {
+                return Err(CliError::Arg(
+                    "give a transaction ID, or --find ACCOUNT DATE [AMOUNT]".into(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(plan)
+}
+
+/// The error for `item` sitting where it does not apply.
+fn misplaced(item: &Written, open: Option<&Scope>, reason: &str) -> CliError {
+    match open {
+        Some(scope) => CliError::Arg(format!(
+            "--{} follows {}: {reason}",
+            item.flag.long(),
+            scope.label
+        )),
+        None => CliError::Arg(format!(
+            "--{} describes a posting; put it after the posting it belongs to",
+            item.flag.long()
+        )),
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use clap::Parser as _;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::AddFlags;
     use super::EditFlags;
@@ -498,5 +750,132 @@ mod tests {
             parsed.flags.written[0],
             written(Flag::Id, &["01JTXIDPLACEHOLDERXXXXXXXX"])
         );
+    }
+
+    #[expect(
+        clippy::unwrap_in_result,
+        reason = "a parse failure here is a test bug"
+    )]
+    fn fold_add(extra: &[&str]) -> crate::error::CliResult<super::Plan> {
+        let mut argv = vec!["add", "--date", "2026-03-01", "--description", "Groceries"];
+        argv.extend_from_slice(extra);
+        let parsed = Add::try_parse_from(argv).expect("parses");
+        super::fold(&parsed.flags.written, super::Command::Add)
+    }
+
+    #[expect(
+        clippy::unwrap_in_result,
+        reason = "a parse failure here is a test bug"
+    )]
+    fn fold_edit(extra: &[&str]) -> crate::error::CliResult<super::Plan> {
+        let mut argv = vec!["edit"];
+        argv.extend_from_slice(extra);
+        let parsed = Edit::try_parse_from(argv).expect("parses");
+        super::fold(&parsed.flags.written, super::Command::Edit)
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    fn modifiers_bind_to_the_opener_before_them() {
+        let plan = fold_add(&[
+            "--meta",
+            "payee=Example",
+            "--posting",
+            "Assets:Checking",
+            "-60.00",
+            "AUD",
+            "--posting",
+            "Expenses:Groceries",
+            "60.00",
+            "AUD",
+            "--tag",
+            "person:a",
+        ])
+        .expect("folds");
+        let tx: Vec<Flag> = plan.transaction.iter().map(|w| w.flag).collect();
+        assert_eq!(tx, vec![Flag::Date, Flag::Description, Flag::Meta]);
+        assert_eq!(plan.scopes.len(), 2);
+        assert!(plan.scopes[0].modifiers.is_empty());
+        assert_eq!(
+            plan.scopes[1].modifiers,
+            vec![written(Flag::Tag, &["person:a"])]
+        );
+        assert_eq!(
+            plan.scopes[1].opener,
+            super::Opener::New {
+                account: "Expenses:Groceries".to_owned(),
+                amount: Some(["60.00".to_owned(), "AUD".to_owned()]),
+            }
+        );
+        assert_eq!(
+            plan.scopes[1].label,
+            "--posting Expenses:Groceries 60.00 AUD"
+        );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    fn an_account_alone_opens_an_elided_leg() {
+        let plan = fold_add(&[
+            "--posting",
+            "Assets:Checking",
+            "-5",
+            "AUD",
+            "--posting",
+            "Equity:Opening",
+        ])
+        .expect("folds");
+        assert_eq!(
+            plan.scopes[1].opener,
+            super::Opener::New {
+                account: "Equity:Opening".to_owned(),
+                amount: None
+            }
+        );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test with known length")]
+    fn edit_folds_a_valid_command() {
+        let plan =
+            fold_edit(&["ID0", "--set", "Expenses:Office", "--tag", "person:a"]).expect("folds");
+        assert_eq!(plan.id, Some("ID0".to_owned()));
+        assert_eq!(plan.scopes.len(), 1);
+        assert_eq!(
+            plan.scopes[0].modifiers,
+            vec![written(Flag::Tag, &["person:a"])]
+        );
+    }
+
+    #[rstest]
+    #[case::amount_without_commodity(&["--posting", "Assets:Checking", "-5"], "an amount needs its commodity")]
+    #[case::posting_flag_on_transaction(&["--cost", "105", "AUD"], "--cost describes a posting")]
+    #[case::date_after_opener(&["--posting", "Assets:Checking", "-5", "AUD", "--date", "2026-03-02"], "--date follows --posting Assets:Checking -5 AUD")]
+    fn add_rejects(#[case] args: &[&str], #[case] expected: &str) {
+        let err = fold_add(args).expect_err("rejects").to_string();
+        assert!(err.contains(expected), "got: {err}");
+    }
+
+    #[rstest]
+    #[case::untag_on_new_leg(&["ID0", "--add", "Expenses:Office", "5", "AUD", "--untag", "person:a"], "--untag follows --add Expenses:Office 5 AUD: a new leg has nothing to remove")]
+    #[case::account_on_new_leg(&["ID0", "--add", "Expenses:Office", "5", "AUD", "--account", "Expenses:Other"], "the opener already names the account and amount")]
+    #[case::no_cost_on_new_leg(&["ID0", "--add", "Expenses:Office", "5", "AUD", "--no-cost"], "a new leg has nothing to clear")]
+    #[case::modifier_on_remove(&["ID0", "--remove", "Expenses:Office", "--tag", "person:a"], "a removed leg takes no posting flags")]
+    #[case::account_on_transaction(&["ID0", "--account", "Expenses:Other"], "--account describes a posting")]
+    #[case::find_after_opener(&["--remove", "Expenses:Office", "--find", "Assets:Checking", "2026-03-01"], "--find follows --remove Expenses:Office")]
+    #[case::find_one_value(&["--find", "Assets:Checking"], "")]
+    #[case::id_and_find(&["ID0", "--find", "Assets:Checking", "2026-03-01"], "give a transaction ID or --find, not both")]
+    #[case::neither(&["--remove", "Expenses:Office"], "give a transaction ID, or --find")]
+    fn edit_rejects(#[case] args: &[&str], #[case] expected: &str) {
+        let Ok(parsed) = Edit::try_parse_from(std::iter::once("edit").chain(args.iter().copied()))
+        else {
+            // `--find` with one value is clap's to reject.
+            assert_eq!(expected, "");
+            return;
+        };
+        let err = super::fold(&parsed.flags.written, super::Command::Edit)
+            .expect_err("rejects")
+            .to_string();
+        assert!(err.contains(expected), "got: {err}");
     }
 }
