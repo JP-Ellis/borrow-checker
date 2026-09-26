@@ -11,19 +11,10 @@ use clap::Subcommand;
 use crate::context::AppContext;
 use crate::error::CliResult;
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into add in the next commit")
-)]
 mod changes;
 mod edit;
 mod leg;
-#[expect(dead_code, reason = "wired into add in the next commit")]
 mod resolve;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into add in the next commit")
-)]
 mod scope;
 mod spec;
 
@@ -43,33 +34,10 @@ pub enum Command {
     /// List all non-voided transactions ordered by date descending.
     List,
     /// Record a new double-entry transaction.
-    Add {
-        /// Transaction date in YYYY-MM-DD format.
-        #[arg(long)]
-        date: String,
-        /// Transaction description.
-        #[arg(long)]
-        description: String,
-        /// Metadata entry `KEY=VALUE`. Repeat for each entry, including
-        /// repeats of one key. The value's type comes from the key registry,
-        /// and is inferred from the value for a key not yet registered.
-        #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
-        meta: Vec<String>,
-        /// Posting `ACCOUNT:AMOUNT:COMMODITY`, where `ACCOUNT` is an account
-        /// path or an account ID, optionally followed by a cost block and a
-        /// price: `ID:2:AAPL{105:AUD:2024-03-01:lot-a}@150:AUD`,
-        /// `ID:4.00:USD@@6.37:AUD`, `ID:2:AAPL{{210:AUD}}`. Cost components may
-        /// be separated by `:` or `,` in any order; wrap a label in `"…"` to
-        /// keep `,`, `:` or `}` inside it. Quote the value when it holds a
-        /// comma, or the shell brace-expands it. Repeat for each posting; at
-        /// least two are required.
-        #[arg(
-            long = "posting",
-            value_name = "ACCOUNT:AMOUNT:COMMODITY[{COST}][@PRICE]",
-            num_args = 1
-        )]
-        postings: Vec<String>,
-    },
+    ///
+    /// Flags before the first --posting describe the transaction; flags after
+    /// a --posting describe that posting, until the next one.
+    Add(AddArgs),
     /// Amend the date, description or metadata of an existing transaction.
     Amend {
         /// Transaction ID to amend.
@@ -100,6 +68,15 @@ pub enum Command {
         /// Transaction ID to reverse.
         id: String,
     },
+}
+
+/// Arguments for `transaction add`.
+#[non_exhaustive]
+#[derive(Debug, clap::Args)]
+pub struct AddArgs {
+    /// The transaction and posting flags, in the order written.
+    #[command(flatten)]
+    flags: scope::Scoped<scope::AddFlags>,
 }
 
 /// Arguments for `transaction edit`.
@@ -176,12 +153,7 @@ where
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     match args.command {
         Command::List => list(ctx).await,
-        Command::Add {
-            date,
-            description,
-            meta: meta_specs,
-            postings,
-        } => add(ctx, date, description, &meta_specs, postings).await,
+        Command::Add(add_args) => add(ctx, add_args).await,
         Command::Amend {
             id,
             date,
@@ -275,47 +247,94 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
     Ok(())
 }
 
+/// Resolves the tags every scope and the transaction name, in one call.
+async fn resolve_tags(ctx: &AppContext, all: &[&changes::Changes]) -> CliResult<resolve::Tags> {
+    let tagged: Vec<&str> = all
+        .iter()
+        .flat_map(|c| c.tags.iter().map(String::as_str))
+        .collect();
+    let untagged: Vec<&str> = all
+        .iter()
+        .flat_map(|c| c.untags.iter().map(String::as_str))
+        .collect();
+    resolve::tags(ctx, &tagged, &untagged).await
+}
+
 /// Records a new double-entry transaction.
-async fn add(
-    ctx: &AppContext,
-    date: String,
-    description: String,
-    meta_specs: &[String],
-    posting_specs: Vec<String>,
-) -> CliResult<()> {
-    if posting_specs.len() < 2 {
+async fn add(ctx: &AppContext, args: AddArgs) -> CliResult<()> {
+    let plan = scope::fold(&args.flags.written, scope::Command::Add)?;
+    if plan.scopes.len() < 2 {
         return Err(crate::error::CliError::Arg(
             "at least two --posting arguments are required".into(),
         ));
     }
+    let tx_changes = changes::Changes::from_written(&plan.transaction, "the transaction")?;
+    let mut legs = Vec::with_capacity(plan.scopes.len());
+    for scope in &plan.scopes {
+        legs.push((
+            scope,
+            changes::Changes::from_written(&scope.modifiers, &scope.label)?,
+        ));
+    }
+    let all: Vec<&changes::Changes> = core::iter::once(&tx_changes)
+        .chain(legs.iter().map(|(_, c)| c))
+        .collect();
 
     let resolver = bc_core::AccountResolver::load(&ctx.accounts).await?;
     let lookup = spec::account_lookup(&resolver);
-    let postings: Vec<bc_models::Posting> = posting_specs
-        .iter()
-        .map(|s| spec::parse_posting(s, &lookup))
-        .collect::<crate::error::CliResult<_>>()?;
+    let tags = resolve_tags(ctx, &all).await?;
 
-    let parsed_date = jiff::civil::Date::from_str(&date)
-        .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{date}': {e}")))?;
+    let mut postings = Vec::with_capacity(legs.len());
+    for (scope, leg) in legs {
+        // `add` opens only new legs; `Opener` is shared with `edit`.
+        let scope::Opener::New {
+            account,
+            amount: written,
+        } = &scope.opener
+        else {
+            continue;
+        };
+        let account_id = lookup(account).ok_or_else(|| {
+            crate::error::CliError::Arg(format!("{}: no account '{account}'", scope.label))
+        })?;
+        let amount = written
+            .as_ref()
+            .map(|[value, code]| changes::amount_of(value, code))
+            .transpose()?;
+        let looked_up = resolve::resolved(ctx, leg, &lookup, &tags).await?;
+        postings.push(changes::new_posting(
+            account_id,
+            amount,
+            &looked_up,
+            &scope.label,
+        )?);
+    }
+    let tx = resolve::resolved(ctx, tx_changes, &lookup, &tags).await?;
+    let (Some(date), Some(description)) = (tx.changes.date, tx.changes.description.clone()) else {
+        return Err(crate::error::CliError::Arg(
+            "--date and --description are required".into(),
+        ));
+    };
 
-    let metadata: bc_models::Metadata = super::meta::entries_for(ctx, meta_specs)
-        .await?
-        .into_iter()
-        .collect();
-
-    let tx = bc_models::Transaction::builder()
+    let transaction = bc_models::Transaction::builder()
         .id(bc_models::TransactionId::new())
-        .date(parsed_date)
+        .date(date)
         .description(description)
-        .metadata(metadata)
+        .metadata(bc_models::Metadata::new(tx.entries.clone()))
+        .tag_ids(changes::retag(&[], &tx.tags, &[]))
         .postings(postings)
         .reconciliation(bc_models::Reconciliation::Reconciled)
         .created_at(jiff::Timestamp::now())
         .build();
 
-    let warned = ctx.transactions.create(tx).await?;
-    for warning in &warned.warnings {
+    let warned = ctx.transactions.create(transaction).await?;
+    let mut warnings: Vec<String> = tags
+        .created()
+        .iter()
+        .map(|path| format!("created tag '{path}'"))
+        .collect();
+    warnings.extend(warned.warnings.iter().map(ToString::to_string));
+    for warning in &warnings {
         #[expect(clippy::print_stderr, reason = "CLI output")]
         {
             eprintln!("warning: {warning}");
@@ -325,7 +344,7 @@ async fn add(
 
     if ctx.json {
         let created = ctx.transactions.find_by_id(&tx_id).await?;
-        return crate::output::print_json(&with_warnings(&created, warned.warnings.as_slice())?);
+        return crate::output::print_json(&with_warnings(&created, warnings.as_slice())?);
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]

@@ -6,4 +6,4 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: --posting [ACCOUNT_ID] 4.00 USD: negative price not allowed
+error: --posting [ACCOUNT_ID] -2 AAPL: --lot-date and --lot-label need a cost

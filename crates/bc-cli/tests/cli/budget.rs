@@ -277,9 +277,13 @@ fn seed_unvalued_spend(ctx: &TestContext) {
             "--description",
             "Imported lunch",
             "--posting",
-            &format!("{checking_id}:-5.00:USD"),
+            &checking_id,
+            "-5.00",
+            "USD",
             "--posting",
-            &format!("{expenses_id}:5.00:USD"),
+            &expenses_id,
+            "5.00",
+            "USD",
         ])
         .output()
         .expect("add transaction");
